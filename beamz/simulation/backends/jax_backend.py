@@ -8,7 +8,7 @@ from typing import Optional, Tuple, Dict, Any
 import numpy as np
 from beamz.simulation.backends.base import Backend
 
-
+# TODO: Make this go brrrr on RTX
 class JAXBackend(Backend):
     """High-performance JAX backend for FDTD with JIT compilation and multi-device support."""
 
