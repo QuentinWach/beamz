@@ -4,6 +4,9 @@ from beamz.design.sources import ModeSource, GaussianSource
 
 def apply_sources(fdtd) -> None:
     """Apply all sources for the current time step to fdtd fields."""
+    backend_name = getattr(fdtd.backend, "backend_name", "numpy")
+    is_jax_backend = backend_name == "jax"
+
     for source in fdtd.sources:
         if isinstance(source, ModeSource):
             mode_profile = source.mode_profiles[0]
@@ -35,19 +38,71 @@ def apply_sources(fdtd) -> None:
                     source_value = amplitude * modulation
 
                 if fdtd.is_3d:
-                    fdtd.Ez[z_target, y, x] += source_value
-                    if source.direction == "+x" and x > 0: fdtd.Ez[z_target, y, x-1] = 0
-                    elif source.direction == "-x" and x < fdtd.nx-1: fdtd.Ez[z_target, y, x+1] = 0
-                    elif source.direction == "+y" and y > 0: fdtd.Ez[z_target, y-1, x] = 0
-                    elif source.direction == "-y" and y < fdtd.ny-1: fdtd.Ez[z_target, y+1, x] = 0
-                    elif source.direction == "+z" and z_target > 0: fdtd.Ez[z_target-1, y, x] = 0
-                    elif source.direction == "-z" and z_target < fdtd.Ez.shape[0]-1: fdtd.Ez[z_target+1, y, x] = 0
+                    value = fdtd.Ez.dtype.type(source_value)
+                    if is_jax_backend:
+                        fdtd.Ez = fdtd.Ez.at[z_target, y, x].add(value)
+                    else:
+                        fdtd.Ez[z_target, y, x] += value
+
+                    zero_val = fdtd.Ez.dtype.type(0)
+                    if source.direction == "+x" and x > 0:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[z_target, y, x-1].set(zero_val)
+                        else:
+                            fdtd.Ez[z_target, y, x-1] = zero_val
+                    elif source.direction == "-x" and x < fdtd.nx-1:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[z_target, y, x+1].set(zero_val)
+                        else:
+                            fdtd.Ez[z_target, y, x+1] = zero_val
+                    elif source.direction == "+y" and y > 0:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[z_target, y-1, x].set(zero_val)
+                        else:
+                            fdtd.Ez[z_target, y-1, x] = zero_val
+                    elif source.direction == "-y" and y < fdtd.ny-1:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[z_target, y+1, x].set(zero_val)
+                        else:
+                            fdtd.Ez[z_target, y+1, x] = zero_val
+                    elif source.direction == "+z" and z_target > 0:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[z_target-1, y, x].set(zero_val)
+                        else:
+                            fdtd.Ez[z_target-1, y, x] = zero_val
+                    elif source.direction == "-z" and z_target < fdtd.Ez.shape[0]-1:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[z_target+1, y, x].set(zero_val)
+                        else:
+                            fdtd.Ez[z_target+1, y, x] = zero_val
                 else:
-                    fdtd.Ez[y, x] += source_value
-                    if source.direction == "+x" and x > 0: fdtd.Ez[y, x-1] = 0
-                    elif source.direction == "-x" and x < fdtd.nx-1: fdtd.Ez[y, x+1] = 0
-                    elif source.direction == "+y" and y > 0: fdtd.Ez[y-1, x] = 0
-                    elif source.direction == "-y" and y < fdtd.ny-1: fdtd.Ez[y+1, x] = 0
+                    value = fdtd.Ez.dtype.type(source_value)
+                    if is_jax_backend:
+                        fdtd.Ez = fdtd.Ez.at[y, x].add(value)
+                    else:
+                        fdtd.Ez[y, x] += value
+
+                    zero_val = fdtd.Ez.dtype.type(0)
+                    if source.direction == "+x" and x > 0:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[y, x-1].set(zero_val)
+                        else:
+                            fdtd.Ez[y, x-1] = zero_val
+                    elif source.direction == "-x" and x < fdtd.nx-1:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[y, x+1].set(zero_val)
+                        else:
+                            fdtd.Ez[y, x+1] = zero_val
+                    elif source.direction == "+y" and y > 0:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[y-1, x].set(zero_val)
+                        else:
+                            fdtd.Ez[y-1, x] = zero_val
+                    elif source.direction == "-y" and y < fdtd.ny-1:
+                        if is_jax_backend:
+                            fdtd.Ez = fdtd.Ez.at[y+1, x].set(zero_val)
+                        else:
+                            fdtd.Ez[y+1, x] = zero_val
 
         elif isinstance(source, GaussianSource):
             modulation = source.signal[fdtd.current_step]
@@ -88,7 +143,14 @@ def apply_sources(fdtd) -> None:
                 gaussian_amp = np.exp(exponent)
                 gaussian_amp = fdtd.backend.from_numpy(gaussian_amp)
                 z_ez_idx = max(0, min(fdtd.Ez.shape[0]-1, z_start))
-                fdtd.Ez[z_ez_idx:z_ez_idx + (z_end - z_start), y_start:y_end, x_start:x_end] += gaussian_amp[:(z_end - z_start), :, :] * modulation
+                z_slice = slice(z_ez_idx, z_ez_idx + (z_end - z_start))
+                y_slice = slice(y_start, y_end)
+                x_slice = slice(x_start, x_end)
+                increment = (gaussian_amp[:(z_end - z_start), :, :] * modulation).astype(fdtd.Ez.dtype)
+                if is_jax_backend:
+                    fdtd.Ez = fdtd.Ez.at[z_slice, y_slice, x_slice].add(increment)
+                else:
+                    fdtd.Ez[z_slice, y_slice, x_slice] += increment
             else:
                 width_x_grid = width_phys / fdtd.dx
                 width_y_grid = width_phys / fdtd.dy
@@ -111,7 +173,11 @@ def apply_sources(fdtd) -> None:
                 exponent = -(dist_x_sq / (2 * sigma_x_sq) + dist_y_sq / (2 * sigma_y_sq))
                 gaussian_amp = np.exp(exponent) / 4
                 gaussian_amp = fdtd.backend.from_numpy(gaussian_amp)
-                fdtd.Ez[y_start:y_end, x_start:x_end] += gaussian_amp * modulation
+                increment = (gaussian_amp * modulation).astype(fdtd.Ez.dtype)
+                if is_jax_backend:
+                    fdtd.Ez = fdtd.Ez.at[y_start:y_end, x_start:x_end].add(increment)
+                else:
+                    fdtd.Ez[y_start:y_end, x_start:x_end] += increment
 
 def accumulate_power(fdtd) -> None:
     """Accumulate power for current step if requested (updates fdtd.power_accumulated)."""

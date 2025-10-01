@@ -12,6 +12,8 @@ from beamz.simulation.backends.base import Backend
 class JAXBackend(Backend):
     """High-performance JAX backend for FDTD with JIT compilation and multi-device support."""
 
+    backend_name = "jax"
+
     def __init__(self, device="auto", **kwargs):
         super().__init__()
         
@@ -97,21 +99,44 @@ class JAXBackend(Backend):
             self.update_e_field_compiled = self._update_e_field_core
             self.update_fields_fused_compiled = self._update_fields_fused
 
+    def _resolve_dtype(self, dtype):
+        resolved = dtype if dtype is not None else self.dtype
+        if not self.use_64bit:
+            if resolved in (np.float64, jnp.float64):
+                resolved = jnp.float32
+            elif resolved in (np.complex128, jnp.complex128):
+                resolved = jnp.complex64
+        return resolved
+
     def zeros(self, shape, dtype=None):
         """Create an array of zeros with the given shape and optional dtype."""
-        return jnp.zeros(shape, dtype=(dtype if dtype is not None else self.dtype))
-        
+        resolved_dtype = self._resolve_dtype(dtype)
+        return jnp.zeros(shape, dtype=resolved_dtype)
+
     def ones(self, shape, dtype=None):
         """Create an array of ones with the given shape and optional dtype."""
-        return jnp.ones(shape, dtype=(dtype if dtype is not None else self.dtype))
+        resolved_dtype = self._resolve_dtype(dtype)
+        return jnp.ones(shape, dtype=resolved_dtype)
         
     def copy(self, array):
         """Create a copy of the array."""
         return jnp.array(array)
 
     def from_numpy(self, arr):
-        """Convert NumPy array to JAX array."""
-        return jnp.asarray(arr, dtype=self.dtype)
+        """Convert NumPy array to a JAX array while preserving meaningful dtypes."""
+        jax_array = jnp.asarray(arr)
+
+        target_np_dtype = np.dtype(self.dtype)
+        if (jax_array.dtype != self.dtype and
+                np.issubdtype(jax_array.dtype, np.floating) and
+                np.issubdtype(target_np_dtype, np.floating)):
+            jax_array = jax_array.astype(self.dtype)
+        elif (jax_array.dtype != self.dtype and
+              np.issubdtype(jax_array.dtype, np.complexfloating) and
+              np.issubdtype(target_np_dtype, np.complexfloating)):
+            jax_array = jax_array.astype(self.dtype)
+
+        return jax_array
 
     def to_numpy(self, arr):
         """Convert JAX array to NumPy array."""
