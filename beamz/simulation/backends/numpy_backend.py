@@ -3,6 +3,8 @@ from beamz.simulation.backends.base import Backend
 
 class NumPyBackend(Backend):
     """NumPy backend for FDTD computations."""
+
+    backend_name = "numpy"
     def __init__(self, **kwargs):
         """Initialize NumPy backend."""
         pass

@@ -18,7 +18,8 @@ class FDTD:
     - 2D: TE-polarized (Ez, Hx, Hy fields)
     - 3D: Full Maxwell equations (Ex, Ey, Ez, Hx, Hy, Hz fields)
     """
-    def __init__(self, design, time, mesh: str = "regular", resolution: float = 0.02*µm, backend="numpy", backend_options=None):
+    def __init__(self, design, time, mesh: str = "regular", resolution: float = 0.02*µm,
+                 backend="auto", backend_options=None):
         # Initialize the design and detect dimensionality
         self.design = design
         self.resolution = resolution
@@ -50,7 +51,13 @@ class FDTD:
         
         # Initialize the backend
         backend_options = backend_options or {}
-        self.backend = get_backend(name=backend, **backend_options)
+        requested_backend = backend or "auto"
+        if self.is_3d and requested_backend in ("auto", "jax"):
+            display_status("JAX backend currently supports only 2D FDTD; falling back to NumPy for 3D simulations.",
+                           "warning")
+            requested_backend = "numpy"
+
+        self.backend = get_backend(name=requested_backend, **backend_options)
         
         # Initialize fields based on dimensionality
         self._init_fields()
