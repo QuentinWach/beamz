@@ -18,7 +18,7 @@ from beamz.design.structures import (
 from beamz.devices.sources import ModeSource, GaussianSource
 from beamz.devices.monitors import Monitor
 from beamz.devices.signals import ramped_cosine, plot_signal
-from beamz.devices.mode import solve_modes, slab_mode_source
+from beamz.devices.mode import solve_modes
 
 # Import simulation-related classes and functions
 from beamz.simulation.meshing import RegularGrid
@@ -78,7 +78,6 @@ _exports = {
     
     # Mode calculations
     'solve_modes': solve_modes,
-    'slab_mode_source': slab_mode_source,
     
     # Simulation
     'RegularGrid': RegularGrid,

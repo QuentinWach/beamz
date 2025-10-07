@@ -11,7 +11,7 @@ from beamz.design.pml import PML
 from beamz.devices.sources import ModeSource, GaussianSource
 from beamz.devices.monitors import Monitor
 from beamz.devices.signals import ramped_cosine, plot_signal
-from beamz.devices.mode import solve_modes, slab_mode_source
+from beamz.devices.mode import solve_modes
 
 __all__ = [
     'Material', 'CustomMaterial',
@@ -19,6 +19,5 @@ __all__ = [
     'CircularBend', 'Polygon', 'Taper', 'PML',
     'ModeSource', 'GaussianSource',
     'Monitor',
-    'ramped_cosine', 'plot_signal',
-    'solve_modes', 'slab_mode_source'
+    'ramped_cosine', 'plot_signal'
 ]
