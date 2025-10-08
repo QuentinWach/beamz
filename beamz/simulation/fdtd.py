@@ -309,7 +309,7 @@ class FDTD:
         Ey[1:-1, :, 1:-1] = factor_ey * Ey[1:-1, :, 1:-1] + source_ey * (curlH_y)
         Ez[:, 1:-1, 1:-1] = factor_ez * Ez[:, 1:-1, 1:-1] + source_ez * (curlH_z)
 
-    def initialize_simulation(self, save=True, live=True, axis_scale=[-1,1], save_animation=False,
+    def initialize_simulation(self, save=True, live=True, axis_scale=None, save_animation=False,
                              animation_filename='fdtd_animation.mp4', clean_visualization=True,
                              save_fields=None, decimate_save=1, accumulate_power=False,
                              save_memory_mode=False, fields_to_cache: Optional[Sequence[str]] = None):
@@ -347,7 +347,39 @@ class FDTD:
         self._save_fields = save_fields
         self._decimate_save = decimate_save
         self._live = live
-        self._axis_scale = axis_scale
+        # Determine default axis scale: power if accumulating, else field amplitude
+        if axis_scale is None:
+            if accumulate_power:
+                power_scale = 0.0  # in W/m^2
+                for src in self.design.sources:
+                    if isinstance(src, ModeSource):
+                        max_pd = float(getattr(src, "max_power_density", 0.0) or 0.0)
+                        sig = float(getattr(src, "max_signal_magnitude", 1.0) or 1.0)
+                        candidate = max_pd * (sig ** 2)
+                        if np.isfinite(candidate): power_scale = max(power_scale, candidate)
+                if power_scale <= 0.0: power_scale = 1.0
+                # Store SI W/m^2 range; viz converts to W/µm²
+                self._axis_scale = [0.0, power_scale]
+                self._live_quantity = "power"
+            else:
+                scale = 0.0
+                for src in self.design.sources:
+                    if isinstance(src, ModeSource):
+                        field_amp = getattr(src, "max_field_amplitude", None)
+                        signal_amp = getattr(src, "max_signal_magnitude", None)
+                        if field_amp is not None and signal_amp is not None:
+                            try:
+                                value = float(field_amp) * float(signal_amp)
+                            except (TypeError, ValueError):
+                                continue
+                            if np.isfinite(value):
+                                scale = max(scale, abs(value))
+                if scale <= 0.0: scale = 1.0
+                self._axis_scale = [-scale, scale]
+                self._live_quantity = "field"
+        else:
+            self._axis_scale = axis_scale
+            self._live_quantity = "field"
 
         # Reset stored results for a new run
         for key in list(self.results.keys()):
@@ -457,7 +489,7 @@ class FDTD:
         self.last_objectives = objective_results
         return self.results
 
-    def run(self, steps: Optional[int] = None, save=True, live=True, axis_scale=[-1,1], save_animation=False,
+    def run(self, steps: Optional[int] = None, save=True, live=True, axis_scale=None, save_animation=False,
             animation_filename='fdtd_animation.mp4', clean_visualization=True,
             save_fields=None, decimate_save=1, accumulate_power=False,
             save_memory_mode=False, fields_to_cache: Optional[Sequence[str]] = None) -> Dict:

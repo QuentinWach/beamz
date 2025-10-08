@@ -415,7 +415,7 @@ def plot_fdtd_field(fdtd, field: str = "Ez", t: float = None, z_slice: int = Non
     plt.show()
 
 
-def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=[-1,1], z_slice=None):
+def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slice=None):
     """Animate FDTD field in real time using matplotlib animation."""
     import matplotlib.pyplot as plt
 
@@ -430,17 +430,64 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=[-1,1], z_sl
     else:
         slice_info = ""
 
-    if np.iscomplexobj(field_data):
-        field_data = np.real(field_data)
+    # Determine plotting quantity and scale
+    quantity = getattr(fdtd, "_live_quantity", "field")
+    if quantity == "power":
+        # Compute instantaneous power magnitude Sx,Sy (2D) and plot W/µm²
+        Ez_np = field_data
+        Hx_raw = fdtd.backend.to_numpy(getattr(fdtd, 'Hx')) if hasattr(fdtd, 'Hx') else None
+        Hy_raw = fdtd.backend.to_numpy(getattr(fdtd, 'Hy')) if hasattr(fdtd, 'Hy') else None
+        if np.iscomplexobj(Ez_np):
+            Ez_real = np.real(Ez_np); Ez_imag = np.imag(Ez_np)
+        else:
+            Ez_real = Ez_np; Ez_imag = 0.0
+        if Hx_raw is None or Hy_raw is None:
+            current_field = np.zeros_like(Ez_real)
+        else:
+            if np.iscomplexobj(Hx_raw) or np.iscomplexobj(Hy_raw):
+                Hx_full = np.zeros_like(Ez_real, dtype=np.complex128)
+                Hy_full = np.zeros_like(Ez_real, dtype=np.complex128)
+            else:
+                Hx_full = np.zeros_like(Ez_real)
+                Hy_full = np.zeros_like(Ez_real)
+            Hx_full[:, :-1] = Hx_raw
+            Hy_full[:-1, :] = Hy_raw
+            if np.iscomplexobj(Hx_full) or np.iscomplexobj(Hy_full) or np.iscomplexobj(Ez_np):
+                Hx_real = np.real(Hx_full); Hx_imag = np.imag(Hx_full)
+                Hy_real = np.real(Hy_full); Hy_imag = np.imag(Hy_full)
+                Sx = -Ez_real * Hy_real - Ez_imag * Hy_imag
+                Sy = Ez_real * Hx_real + Ez_imag * Hx_imag
+            else:
+                Sx = -Ez_real * Hy_full
+                Sy = Ez_real * Hx_full
+            power_si = Sx**2 + Sy**2  # W^2/m^4 (magnitude squared); for visualization
+            # Use linear power density magnitude for color scaling (W/m^2)
+            power_mag = np.sqrt(power_si)
+            # Convert to W/µm² for display
+            power_um2 = power_mag * (1.0e-12)
+            current_field = power_um2
+        if axis_scale is None:
+            ax_min, ax_max = 0.0, float(getattr(fdtd, "_axis_scale", [0.0, np.max(current_field) + 1e-9])[1])
+        else:
+            ax_min, ax_max = axis_scale
+        cbar_label = f'Power Density (W/µm²)'
+    else:
+        if np.iscomplexobj(field_data):
+            field_data = np.real(field_data)
+        current_field = field_data
+        if axis_scale is None:
+            ax_min, ax_max = getattr(fdtd, "_axis_scale", [-1, 1])
+        else:
+            ax_min, ax_max = axis_scale
+        cbar_label = f'{field}{slice_info} Field Amplitude'
 
     if fdtd.fig is not None and plt.fignum_exists(fdtd.fig.number):
-        fdtd.im.set_array(field_data)
+        fdtd.im.set_array(current_field)
         fdtd.ax.set_title(f't = {fdtd.t:.2e} s{slice_info}')
         fdtd.fig.canvas.draw_idle()
         fdtd.fig.canvas.flush_events()
         return
 
-    current_field = field_data
     grid_height, grid_width = current_field.shape
     aspect_ratio = grid_width / grid_height
     base_size = 5
@@ -448,9 +495,9 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=[-1,1], z_sl
     fdtd.fig, fdtd.ax = plt.subplots(figsize=figsize)
     fdtd.im = fdtd.ax.imshow(current_field, origin='lower',
                              extent=(0, fdtd.design.width, 0, fdtd.design.height),
-                             cmap='RdBu', aspect='equal', interpolation='bicubic', vmin=axis_scale[0], vmax=axis_scale[1])
+                             cmap='RdBu', aspect='equal', interpolation='bicubic', vmin=ax_min, vmax=ax_max)
     colorbar = plt.colorbar(fdtd.im, orientation='vertical', aspect=30, extend='both')
-    colorbar.set_label(f'{field}{slice_info} Field Amplitude')
+    colorbar.set_label(cbar_label)
 
     try:
         tmp_design = fdtd.design.copy()

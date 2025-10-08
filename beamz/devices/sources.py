@@ -1,5 +1,5 @@
 import numpy as np
-from beamz.const import LIGHT_SPEED, µm
+from beamz.const import LIGHT_SPEED, µm, EPS_0, MU_0
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from beamz.devices.mode import solve_modes, _direction_to_axis
@@ -16,6 +16,12 @@ class GaussianSource():
         self.position = self._ensure_3d_position(position)
         self.width = width
         self.signal = signal
+        try:
+            self.max_signal_magnitude = float(np.max(np.abs(signal)))
+        except TypeError:
+            self.max_signal_magnitude = float(abs(signal))
+        if self.max_signal_magnitude == 0:
+            self.max_signal_magnitude = 1.0
     
     def _ensure_3d_position(self, position):
         """Convert 2D position to 3D with z=0 if needed."""
@@ -110,6 +116,15 @@ class ModeSource():
         self.wavelength = wavelength
         self.design = design
         self.signal = signal
+        try:
+            self.max_signal_magnitude = float(np.max(np.abs(signal)))
+        except TypeError:
+            if np.isscalar(signal):
+                self.max_signal_magnitude = float(abs(signal))
+            else:
+                self.max_signal_magnitude = 1.0
+        if not np.isfinite(self.max_signal_magnitude) or self.max_signal_magnitude == 0:
+            self.max_signal_magnitude = 1.0
         self.direction = direction
         self.npml = npml
         self.num_modes = num_modes
@@ -119,6 +134,8 @@ class ModeSource():
         self.dL = self.wavelength / grid_resolution  # Sampling resolution
         eps_1d = self.get_eps_1d()
         self.omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
+        self.max_field_amplitude = 0.0
+        self.max_power_density = 0.0
         
         # Choose mode solver based on the setting
         if mode_solver == "analytical":
@@ -188,8 +205,8 @@ class ModeSource():
             # Use default numerical eigenmode solver with full field takeaway
             (
                 self.effective_indices,
-                mode_e_fields,
-                mode_h_fields,
+                self.mode_e_fields,
+                self.mode_h_fields,
                 self.propagation_axis,
             ) = solve_modes(
                 eps_1d,
@@ -202,9 +219,14 @@ class ModeSource():
             )
 
             # Convert tidy3d field grids to 1D profiles along the source span
+            mode_e_fields = self.mode_e_fields
+            mode_h_fields = self.mode_h_fields
             self.mode_vectors = np.zeros((eps_1d.size, mode_e_fields.shape[0]), dtype=complex)
             self.mode_profiles = []
             ez_idx, hx_idx, hy_idx = self._field_component_indices()
+            line_length = np.hypot(self.end[0] - self.start[0], self.end[1] - self.start[1])
+            spacing = line_length / max(eps_1d.size - 1, 1)
+
             for mode_idx in range(mode_e_fields.shape[0]):
                 e_field = mode_e_fields[mode_idx]
                 h_field = mode_h_fields[mode_idx]
@@ -213,18 +235,33 @@ class ModeSource():
                 Hx_line = self._collapse_field_to_line(h_field, hx_idx, eps_1d.size)
                 Hy_line = self._collapse_field_to_line(h_field, hy_idx, eps_1d.size)
 
-                max_amp = np.max(np.abs(Ez_line)) or 1.0
-                Ez_line /= max_amp
-                Hx_line /= max_amp
-                Hy_line /= max_amp
+                S_complex = -Ez_line * np.conj(Hy_line)
+                power_total = np.real(np.sum(S_complex) * spacing)
+                if power_total == 0.0:
+                    power_total = 1e-12
+                scale = 1.0 / np.sqrt(power_total)
+                Ez_line *= scale
+                Hx_line *= scale
+                Hy_line *= scale
+
+                power_density_mag = np.abs(np.real(-Ez_line * np.conj(Hy_line)))
+                if power_density_mag.size:
+                    self.max_power_density = max(self.max_power_density, float(np.max(power_density_mag)))
 
                 self.mode_vectors[:, mode_idx] = Ez_line
+                self.max_field_amplitude = max(self.max_field_amplitude, float(np.max(np.abs(Ez_line))))
                 profile = []
                 for idx, (Ez_amp, Hx_amp, Hy_amp) in enumerate(zip(Ez_line, Hx_line, Hy_line)):
                     x = self.start[0] + (self.end[0] - self.start[0]) * idx / max(len(Ez_line) - 1, 1)
                     y = self.start[1] + (self.end[1] - self.start[1]) * idx / max(len(Ez_line) - 1, 1)
-                    profile.append({"Ez": Ez_amp, "Hx": Hx_amp, "Hy": Hy_amp, "x": x, "y": y})
+                    profile.append({"Ez": Ez_amp, "Hx": Hx_amp, "Hy": Hy_amp, "x": x, "y": y, "z": 0.0})
                 self.mode_profiles.append(profile)
+
+            if self.max_power_density <= 0.0:
+                eta0 = np.sqrt(MU_0 / EPS_0)
+                if self.max_field_amplitude <= 0.0:
+                    self.max_field_amplitude = 1.0
+                self.max_power_density = (self.max_field_amplitude ** 2) / max(eta0, 1e-12)
 
             return
 
@@ -246,6 +283,7 @@ class ModeSource():
             else:
                 for mode_number in range(self.mode_vectors.shape[1]):
                     self.mode_profiles.append(self.get_xy_mode_line(self.mode_vectors, mode_number))
+            self.max_field_amplitude = max(self.max_field_amplitude, float(np.max(np.abs(self.mode_vectors)) or 0.0))
 
     def _collapse_field_to_line(self, field: np.ndarray, component_idx: int, target_len: int) -> np.ndarray:
         component = np.squeeze(field[component_idx])
@@ -446,22 +484,30 @@ class ModeSource():
         ny, nx = e_field.shape[1:]
         xs = np.linspace(self.start[0], self.end[0], nx)
         ys = np.linspace(self.start[1], self.end[1], ny)
-        max_e = np.max(np.abs(e_field[ez_idx])) or 1.0
+        dx = (xs[1] - xs[0]) if nx > 1 else self.dL
+        dy = (ys[1] - ys[0]) if ny > 1 else self.dL
+
+        Ez_grid = e_field[ez_idx]
+        Hx_grid = h_field[hx_idx]
+        Hy_grid = h_field[hy_idx]
+        power_density = -np.real(Ez_grid * np.conj(Hy_grid))
+        power_total = np.sum(power_density) * dx * dy
+        power_total = max(power_total, 1e-12)
+        scale = 1.0 / np.sqrt(power_total)
+        Ez_grid *= scale
+        Hx_grid *= scale
+        Hy_grid *= scale
+
         profile = []
-        threshold = 0.02 * max_e
         for j, y in enumerate(ys):
             for i, x in enumerate(xs):
-                Ez_amp = e_field[ez_idx, j, i]
-                if np.abs(Ez_amp) < threshold:
-                    continue
-                Hx_amp = h_field[hx_idx, j, i]
-                Hy_amp = h_field[hy_idx, j, i]
                 profile.append({
-                    "Ez": Ez_amp,
-                    "Hx": Hx_amp,
-                    "Hy": Hy_amp,
+                    "Ez": Ez_grid[j, i],
+                    "Hx": Hx_grid[j, i],
+                    "Hy": Hy_grid[j, i],
                     "x": x,
                     "y": y,
+                    "z": 0.0,
                 })
         return profile
 
