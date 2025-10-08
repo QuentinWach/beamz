@@ -130,18 +130,15 @@ def compute_mode(frequency: float, inv_permittivities: np.ndarray,
     permittivities = 1 / inv_permittivities
     permittivities = np.asarray(permittivities, dtype=np.complex128)
     dims = permittivities.shape
-    try:
-        propagation_axis = next(idx for idx, size in enumerate(dims) if size == 1)
-    except StopIteration:
-        raise ValueError("Expected a singleton propagation axis in permittivity array")
+    try: propagation_axis = next(idx for idx, size in enumerate(dims) if size == 1)
+    except StopIteration: raise ValueError("Expected a singleton propagation axis in permittivity array")
     other_axes = [ax for ax in range(3) if ax != propagation_axis]
     coords = [np.arange(dims[dim] + 1) * resolution / 1e-6 for dim in other_axes]
     permittivity_squeezed = np.take(permittivities, indices=0, axis=propagation_axis)
 
-    if isinstance(inv_permeabilities, np.ndarray):
+    if isinstance(inv_permeabilities, np.ndarray): 
         permeability_squeezed = np.take(1 / inv_permeabilities, indices=0, axis=propagation_axis)
-    else:
-        permeability_squeezed = 1 / inv_permeabilities
+    else: permeability_squeezed = 1 / inv_permeabilities
 
     mode_E_raw, mode_H_raw, eff_idx = mode_helper(permittivity_squeezed, permeability_squeezed)
     mode_E = np.expand_dims(mode_E_raw, axis=propagation_axis + 1)
@@ -152,18 +149,64 @@ def compute_mode(frequency: float, inv_permittivities: np.ndarray,
     return mode_E_norm, mode_H_norm, eff_idx
 
 
-def tidy3d_mode_computation_wrapper(
-    frequency: float,
-    permittivity_cross_section: np.ndarray,
-    coords: List[np.ndarray],
-    direction: Literal["+", "-"],
-    permeability_cross_section: np.ndarray | None = None,
-    target_neff: float | None = None,
-    angle_theta: float = 0.0,
-    angle_phi: float = 0.0,
-    num_modes: int = 10,
-    precision: Literal["single", "double"] = "double",
-) -> List[ModeTupleType]:
+def solve_modes(
+    eps: np.ndarray,
+    omega: float,
+    dL: float,
+    npml: int = 0,
+    m: int = 2,
+    direction: Literal["+x", "-x", "+y", "-y", "+z", "-z"] = "+x",
+    filter_pol: Literal["te", "tm", None] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Solve for guided modes using the Tidy3D-based mode solver.
+
+    This function maintains the legacy interface expected by ``ModeSource`` by
+    collapsing the returned field profiles onto the 1D sampling line.
+    """
+
+    if eps.ndim != 1:
+        raise ValueError("solve_modes expects a 1D permittivity array")
+
+    freq = omega / (2 * np.pi)
+    inv_eps = (1.0 / np.asarray(eps, dtype=np.complex128)).reshape(1, eps.size, 1)
+    inv_mu: float | np.ndarray = 1.0
+
+    forward_dir = "+" if not direction.startswith("-") else "-"
+
+    neffs: list[complex] = []
+    mode_vectors: list[np.ndarray] = []
+
+    for mode_index in range(m):
+        try:
+            E, _H, neff = compute_mode(
+                frequency=freq,
+                inv_permittivities=inv_eps,
+                inv_permeabilities=inv_mu,
+                resolution=dL,
+                direction=forward_dir,
+                mode_index=mode_index,
+                filter_pol=filter_pol,
+            )
+        except Exception:
+            break
+
+        field_component = np.squeeze(E[0])
+        if field_component.ndim > 1:
+            field_component = field_component[:, 0]
+
+        neffs.append(neff)
+        mode_vectors.append(field_component)
+
+    if not neffs:
+        return np.asarray(neffs, dtype=np.complex128), np.zeros((eps.size, 0), dtype=np.complex128)
+
+    return np.asarray(neffs, dtype=np.complex128), np.column_stack(mode_vectors)
+
+
+def tidy3d_mode_computation_wrapper(frequency: float, permittivity_cross_section: np.ndarray, coords: List[np.ndarray], 
+    direction: Literal["+", "-"], permeability_cross_section: np.ndarray | None = None,
+    target_neff: float | None = None, angle_theta: float = 0.0, angle_phi: float = 0.0, num_modes: int = 10,
+    precision: Literal["single", "double"] = "double") -> List[ModeTupleType]:
     """Compute optical modes of a waveguide cross-section.
 
     This function uses the Tidy3D mode solver to compute the optical modes of a given
