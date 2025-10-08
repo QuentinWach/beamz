@@ -2,7 +2,7 @@ import numpy as np
 from beamz.const import LIGHT_SPEED, µm
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from beamz.devices.mode import solve_modes
+from beamz.devices.mode import solve_modes, _direction_to_axis
 
 class GaussianSource():
     """A Gaussian current distribution in space.
@@ -169,30 +169,94 @@ class ModeSource():
             
             except Exception as e:
                 print(f"Warning: Analytical mode solver failed, falling back to numerical: {e}")
-                self.effective_indices, self.mode_vectors = solve_modes(eps_1d, self.omega, self.dL, npml=self.npml, m=self.num_modes)
+                (
+                    self.effective_indices,
+                    self.mode_e_fields,
+                    self.mode_h_fields,
+                    self.propagation_axis,
+                ) = solve_modes(
+                    eps_1d,
+                    self.omega,
+                    self.dL,
+                    npml=self.npml,
+                    m=self.num_modes,
+                    direction=self.direction,
+                    filter_pol=None,
+                    return_fields=True,
+                )
         else:
-            # Use default numerical eigenmode solver
-            self.effective_indices, self.mode_vectors = solve_modes(eps_1d, self.omega, self.dL, npml=self.npml, m=self.num_modes)
-            
-        # Extract mode profiles for all modes
-        self.mode_profiles = []
-        if self.height and self.height > 0:
-            # 3D rectangular cross-section: build a separable 2D mode profile in the cross-section plane
-            try:
-                profiles_3d = self._build_3d_rect_mode_profiles()
-                if profiles_3d:
-                    self.mode_profiles = profiles_3d
-                else:
-                    # Fallback to 1D line profile along width
+            # Use default numerical eigenmode solver with full field takeaway
+            (
+                self.effective_indices,
+                mode_e_fields,
+                mode_h_fields,
+                self.propagation_axis,
+            ) = solve_modes(
+                eps_1d,
+                self.omega,
+                self.dL,
+                npml=self.npml,
+                m=self.num_modes,
+                direction=self.direction,
+                return_fields=True,
+            )
+
+            # Convert tidy3d field grids to 1D profiles along the source span
+            self.mode_vectors = np.zeros((eps_1d.size, mode_e_fields.shape[0]), dtype=complex)
+            self.mode_profiles = []
+            ez_idx, hx_idx, hy_idx = self._field_component_indices()
+            for mode_idx in range(mode_e_fields.shape[0]):
+                e_field = mode_e_fields[mode_idx]
+                h_field = mode_h_fields[mode_idx]
+
+                Ez_line = self._collapse_field_to_line(e_field, ez_idx, eps_1d.size)
+                Hx_line = self._collapse_field_to_line(h_field, hx_idx, eps_1d.size)
+                Hy_line = self._collapse_field_to_line(h_field, hy_idx, eps_1d.size)
+
+                max_amp = np.max(np.abs(Ez_line)) or 1.0
+                Ez_line /= max_amp
+                Hx_line /= max_amp
+                Hy_line /= max_amp
+
+                self.mode_vectors[:, mode_idx] = Ez_line
+                profile = []
+                for idx, (Ez_amp, Hx_amp, Hy_amp) in enumerate(zip(Ez_line, Hx_line, Hy_line)):
+                    x = self.start[0] + (self.end[0] - self.start[0]) * idx / max(len(Ez_line) - 1, 1)
+                    y = self.start[1] + (self.end[1] - self.start[1]) * idx / max(len(Ez_line) - 1, 1)
+                    profile.append({"Ez": Ez_amp, "Hx": Hx_amp, "Hy": Hy_amp, "x": x, "y": y})
+                self.mode_profiles.append(profile)
+
+            return
+
+        # Analytical or fallback numerical case uses legacy line profiles
+        if not hasattr(self, "mode_vectors"):
+            self.mode_profiles = []
+            if self.height and self.height > 0:
+                try:
+                    profiles_3d = self._build_3d_rect_mode_profiles()
+                    if profiles_3d:
+                        self.mode_profiles = profiles_3d
+                    else:
+                        for mode_number in range(self.mode_vectors.shape[1]):
+                            self.mode_profiles.append(self.get_xy_mode_line(self.mode_vectors, mode_number))
+                except Exception as e:
+                    print(f"Warning: 3D mode profile construction failed: {e}. Falling back to 1D line mode.")
                     for mode_number in range(self.mode_vectors.shape[1]):
                         self.mode_profiles.append(self.get_xy_mode_line(self.mode_vectors, mode_number))
-            except Exception as e:
-                print(f"Warning: 3D mode profile construction failed: {e}. Falling back to 1D line mode.")
+            else:
                 for mode_number in range(self.mode_vectors.shape[1]):
                     self.mode_profiles.append(self.get_xy_mode_line(self.mode_vectors, mode_number))
-        else:
-            for mode_number in range(self.mode_vectors.shape[1]):
-                self.mode_profiles.append(self.get_xy_mode_line(self.mode_vectors, mode_number))
+
+    def _collapse_field_to_line(self, field: np.ndarray, component_idx: int, target_len: int) -> np.ndarray:
+        component = np.squeeze(field[component_idx])
+        if component.ndim == 2:
+            # Average over axis perpendicular to the source span
+            component = component.mean(axis=-1)
+        src = np.linspace(0.0, 1.0, component.size)
+        dst = np.linspace(0.0, 1.0, target_len)
+        real_interp = np.interp(dst, src, component.real)
+        imag_interp = np.interp(dst, src, component.imag)
+        return real_interp + 1j * imag_interp
     
     def copy(self):
         """Create a deep copy of the ModeSource."""
@@ -374,6 +438,40 @@ class ModeSource():
                 mode_profile.append([amp, x0, y, z])
         # Only one mode profile used for injection
         return [mode_profile]
+
+    def _sample_mode_field(self, mode_number: int):
+        ez_idx, hx_idx, hy_idx = self._field_component_indices()
+        e_field = self.mode_e_fields[mode_number]
+        h_field = self.mode_h_fields[mode_number]
+        ny, nx = e_field.shape[1:]
+        xs = np.linspace(self.start[0], self.end[0], nx)
+        ys = np.linspace(self.start[1], self.end[1], ny)
+        max_e = np.max(np.abs(e_field[ez_idx])) or 1.0
+        profile = []
+        threshold = 0.02 * max_e
+        for j, y in enumerate(ys):
+            for i, x in enumerate(xs):
+                Ez_amp = e_field[ez_idx, j, i]
+                if np.abs(Ez_amp) < threshold:
+                    continue
+                Hx_amp = h_field[hx_idx, j, i]
+                Hy_amp = h_field[hy_idx, j, i]
+                profile.append({
+                    "Ez": Ez_amp,
+                    "Hx": Hx_amp,
+                    "Hy": Hy_amp,
+                    "x": x,
+                    "y": y,
+                })
+        return profile
+
+    def _field_component_indices(self):
+        axis = getattr(self, "propagation_axis", _direction_to_axis(self.direction))
+        if axis == 0:
+            return 0, 1, 2
+        if axis == 1:
+            return 1, 2, 0
+        return 2, 0, 1
 
     def show(self):
         """Show the mode profiles for a cross section given a 1D permittivity profile."""

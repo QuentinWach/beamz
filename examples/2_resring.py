@@ -6,7 +6,7 @@ WL = 1.55*µm
 TIME = 80*WL/LIGHT_SPEED
 X, Y = 20*µm, 19*µm
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
-DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.9999, points_per_wavelength=10)
+DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.9, points_per_wavelength=12)
 RING_RADIUS, WG_WIDTH = 6*µm, 0.565*µm
 
 # Create the design
@@ -18,10 +18,16 @@ design += Ring(position=(X/2, WL*2+WG_WIDTH+RING_RADIUS+WG_WIDTH/2+0.2*WG_WIDTH)
 
 # Define the signal & source
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(time_steps, amplitude=0.35, frequency=LIGHT_SPEED/WL, phase=0, 
+signal = ramped_cosine(time_steps, amplitude=0.15, frequency=LIGHT_SPEED/WL, phase=0,
                        ramp_duration=WL*20/LIGHT_SPEED, t_max=TIME/3)
-design += ModeSource(design=design, start=(WL*2, WL*2+WG_WIDTH/2-1.5*µm), end=(WL*2, WL*2+WG_WIDTH/2+1.5*µm), 
-                     wavelength=WL, signal=signal)
+design += ModeSource(
+    design=design,
+    start=(WL*2, WL*2+WG_WIDTH/2-1.5*µm),
+    end=(WL*2, WL*2+WG_WIDTH/2+1.5*µm),
+    wavelength=WL,
+    signal=signal,
+    direction="+x",
+)
 design.show()
 
 # Run the simulation

@@ -1,7 +1,7 @@
 # Adapted from FDTDx by Yannik Mahlau
 from collections import namedtuple
 from types import SimpleNamespace
-from typing import List, Literal
+from typing import List, Literal, Tuple, Union
 
 import numpy as np
 import tidy3d
@@ -52,15 +52,23 @@ def sort_modes(
     return matching_sorted + non_matching_sorted
 
 
+def _direction_to_axis(direction: str) -> int:
+    axis_map = {"x": 0, "y": 1, "z": 2}
+    key = direction[-1].lower()
+    if key not in axis_map:
+        raise ValueError(f"Unknown propagation direction: {direction}")
+    return axis_map[key]
+
+
 def compute_mode(
     frequency: float,
     inv_permittivities: np.ndarray,
-    inv_permeabilities: np.ndarray | float,
+    inv_permeabilities: Union[np.ndarray, float],
     resolution: float,
     direction: Literal["+", "-"],
     mode_index: int = 0,
     filter_pol: Literal["te", "tm"] | None = None,
-) -> tuple[np.ndarray, np.ndarray, complex]:
+) -> tuple[np.ndarray, np.ndarray, complex, int]:
     inv_permittivities = np.asarray(inv_permittivities, dtype=np.complex128)
     if inv_permittivities.ndim == 1:
         inv_permittivities = inv_permittivities[np.newaxis, :, np.newaxis]
@@ -130,7 +138,7 @@ def compute_mode(
     H *= tidy3d.constants.ETA_0
 
     E_norm, H_norm = _normalize_by_poynting_flux(E, H, axis=propagation_axis)
-    return E_norm, H_norm, np.asarray(mode.neff, dtype=np.complex128)
+    return E_norm, H_norm, np.asarray(mode.neff, dtype=np.complex128), propagation_axis
 
 
 def solve_modes(
@@ -141,19 +149,24 @@ def solve_modes(
     m: int = 2,
     direction: Literal["+x", "-x", "+y", "-y", "+z", "-z"] = "+x",
     filter_pol: Literal["te", "tm", None] = None,
-) -> tuple[np.ndarray, np.ndarray]:
+    return_fields: bool = False,
+    propagation_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z"] | None = None,
+) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
     if eps.ndim != 1:
         raise ValueError("solve_modes expects a 1D permittivity array")
 
     freq = omega / (2 * np.pi)
     inv_eps = (1.0 / np.asarray(eps, dtype=np.complex128)).reshape(1, eps.size, 1)
     direction_flag = "+" if direction.startswith("+") else "-"
+    axis_hint = propagation_axis if propagation_axis is not None else direction
 
     neffs: list[complex] = []
+    e_fields: list[np.ndarray] = []
+    h_fields: list[np.ndarray] = []
     mode_vectors: list[np.ndarray] = []
 
     for mode_index in range(m):
-        E_full, _H_full, neff = compute_mode(
+        E_full, H_full, neff, prop_axis = compute_mode(
             frequency=freq,
             inv_permittivities=inv_eps,
             inv_permeabilities=1.0,
@@ -163,18 +176,33 @@ def solve_modes(
             filter_pol=filter_pol,
         )
 
-        component_norms = [np.linalg.norm(np.squeeze(E_full[i])) for i in range(3)]
-        component_idx = int(np.argmax(component_norms))
-        field_line = np.squeeze(E_full[component_idx])
-        if field_line.ndim > 1:
-            field_line = field_line[:, 0]
-        max_amp = np.max(np.abs(field_line)) or 1.0
-        field_line = field_line / max_amp
-
         neffs.append(neff)
-        mode_vectors.append(field_line)
+        if return_fields:
+            e_fields.append(E_full)
+            h_fields.append(H_full)
+        else:
+            component_norms = [np.linalg.norm(np.squeeze(E_full[i])) for i in range(3)]
+            component_idx = int(np.argmax(component_norms))
+            field_line = np.squeeze(E_full[component_idx])
+            if field_line.ndim > 1:
+                field_line = field_line[:, 0]
+            max_amp = np.max(np.abs(field_line)) or 1.0
+            mode_vectors.append(field_line / max_amp)
 
-    return np.asarray(neffs, dtype=np.complex128), np.column_stack(mode_vectors)
+    neff_array = np.asarray(neffs, dtype=np.complex128)
+
+    if return_fields:
+        return (
+            neff_array,
+            np.stack(e_fields) if e_fields else np.empty((0, 3, 0, 0)),
+            np.stack(h_fields) if h_fields else np.empty((0, 3, 0, 0)),
+            prop_axis,
+        )
+
+    if not mode_vectors:
+        return neff_array, np.zeros((eps.size, 0), dtype=np.complex128)
+
+    return neff_array, np.column_stack(mode_vectors)
 
 
 def tidy3d_mode_computation_wrapper(

@@ -9,11 +9,21 @@ def apply_sources(fdtd) -> None:
             mode_profile = source.mode_profiles[0]
             modulation = source.signal[fdtd.current_step]
             for point in mode_profile:
-                if len(point) == 4:
-                    amplitude, x_raw, y_raw, z_raw = point
+                if isinstance(point, dict):
+                    Ez_amp = point.get("Ez", 0.0)
+                    Hx_amp = point.get("Hx", 0.0)
+                    Hy_amp = point.get("Hy", 0.0)
+                    x_raw = point.get("x", 0.0)
+                    y_raw = point.get("y", 0.0)
+                    z_raw = point.get("z", 0.0)
                 else:
-                    amplitude, x_raw, y_raw = point
-                    z_raw = 0
+                    Ez_amp = point[0]
+                    x_raw = point[1]
+                    y_raw = point[2]
+                    z_raw = point[3] if len(point) > 3 else 0.0
+                    Hx_amp = 0.0
+                    Hy_amp = 0.0
+
                 x = int(round(x_raw / fdtd.dx))
                 y = int(round(y_raw / fdtd.dy))
                 if fdtd.is_3d:
@@ -26,18 +36,16 @@ def apply_sources(fdtd) -> None:
                         continue
                     z_target = None
 
-                if hasattr(fdtd, 'is_complex_backend') and not fdtd.is_complex_backend:
-                    if isinstance(amplitude * modulation, complex):
-                        source_value = np.real(amplitude * modulation)
-                    else:
-                        source_value = amplitude * modulation
-                else:
-                    source_value = amplitude * modulation
-
                 enforce_direction = getattr(source, "enforce_direction", True)
 
                 if fdtd.is_3d:
-                    fdtd.Ez[z_target, y, x] += source_value
+                    fdtd.Ez[z_target, y, x] += Ez_amp * modulation
+                    if hasattr(fdtd, "Hx") and fdtd.Hx is not None and fdtd.Hx.size and Hx_amp != 0.0:
+                        if z_target < fdtd.Hx.shape[0] and y < fdtd.Hx.shape[1] and x < fdtd.Hx.shape[2]:
+                            fdtd.Hx[z_target, y, x] += Hx_amp * modulation
+                    if hasattr(fdtd, "Hy") and fdtd.Hy is not None and fdtd.Hy.size and Hy_amp != 0.0:
+                        if z_target < fdtd.Hy.shape[0] and y < fdtd.Hy.shape[1] and x < fdtd.Hy.shape[2]:
+                            fdtd.Hy[z_target, y, x] += Hy_amp * modulation
                     if enforce_direction:
                         if source.direction == "+x" and x > 0: fdtd.Ez[z_target, y, x-1] = 0
                         elif source.direction == "-x" and x < fdtd.nx-1: fdtd.Ez[z_target, y, x+1] = 0
@@ -46,7 +54,13 @@ def apply_sources(fdtd) -> None:
                         elif source.direction == "+z" and z_target > 0: fdtd.Ez[z_target-1, y, x] = 0
                         elif source.direction == "-z" and z_target < fdtd.Ez.shape[0]-1: fdtd.Ez[z_target+1, y, x] = 0
                 else:
-                    fdtd.Ez[y, x] += source_value
+                    fdtd.Ez[y, x] += Ez_amp * modulation
+                    if hasattr(fdtd, "Hx") and Hx_amp != 0.0 and fdtd.Hx is not None and fdtd.Hx.size:
+                        if y < fdtd.Hx.shape[0] and x < fdtd.Hx.shape[1]:
+                            fdtd.Hx[y, x] += Hx_amp * modulation
+                    if hasattr(fdtd, "Hy") and Hy_amp != 0.0 and fdtd.Hy is not None and fdtd.Hy.size:
+                        if y < fdtd.Hy.shape[0] and x < fdtd.Hy.shape[1]:
+                            fdtd.Hy[y, x] += Hy_amp * modulation
                     if enforce_direction:
                         if source.direction == "+x" and x > 0: fdtd.Ez[y, x-1] = 0
                         elif source.direction == "-x" and x < fdtd.nx-1: fdtd.Ez[y, x+1] = 0
