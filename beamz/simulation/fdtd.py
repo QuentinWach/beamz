@@ -556,7 +556,7 @@ class FDTD:
             field = "Ez"
             data = getattr(self, field)
             Ez_np = self.backend.to_numpy(data)
-            viz.animate_fdtd_live(self, field_data=Ez_np, field=field, axis_scale=self._axis_scale)
+            viz.animate_fdtd_live(self, field_data=Ez_np, field=field, axis_scale=None)
 
     def _record_monitor_data(self, step):
         """Record field data at monitor locations (delegated to helper)."""

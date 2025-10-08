@@ -430,8 +430,8 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
     else:
         slice_info = ""
 
-    # Determine plotting quantity and scale
-    quantity = getattr(fdtd, "_live_quantity", "field")
+    # Always visualize Ez field amplitude for live view
+    quantity = "field"
     if quantity == "power":
         # Compute instantaneous power magnitude Sx,Sy (2D) and plot W/µm²
         Ez_np = field_data
@@ -475,14 +475,23 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
         if np.iscomplexobj(field_data):
             field_data = np.real(field_data)
         current_field = field_data
+        # Enforce symmetric color scale around zero for fields
+        # Use instantaneous amplitude to set symmetric limits
         if axis_scale is None:
-            ax_min, ax_max = getattr(fdtd, "_axis_scale", [-1, 1])
+            amax = float(np.max(np.abs(current_field)) or 1.0)
         else:
-            ax_min, ax_max = axis_scale
+            amax = float(max(abs(axis_scale[0]), abs(axis_scale[1])))
+            if not np.isfinite(amax) or amax <= 0:
+                amax = float(np.max(np.abs(current_field)) or 1.0)
+        ax_min, ax_max = -amax, amax
         cbar_label = f'{field}{slice_info} Field Amplitude'
 
     if fdtd.fig is not None and plt.fignum_exists(fdtd.fig.number):
         fdtd.im.set_array(current_field)
+        try:
+            fdtd.im.set_clim(vmin=ax_min, vmax=ax_max)
+        except Exception:
+            pass
         fdtd.ax.set_title(f't = {fdtd.t:.2e} s{slice_info}')
         fdtd.fig.canvas.draw_idle()
         fdtd.fig.canvas.flush_events()
