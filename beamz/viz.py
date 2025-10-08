@@ -474,9 +474,9 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
     else:
         if np.iscomplexobj(field_data):
             field_data = np.real(field_data)
-        current_field = field_data
-        # Enforce symmetric color scale around zero for fields
-        # Use instantaneous amplitude to set symmetric limits
+        # Convert Ez from V/m to V/µm for display
+        current_field = field_data * 1.0e-6
+        # Use instantaneous amplitude of the scaled data to set symmetric limits
         if axis_scale is None:
             amax = float(np.max(np.abs(current_field)) or 1.0)
         else:
@@ -484,7 +484,7 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
             if not np.isfinite(amax) or amax <= 0:
                 amax = float(np.max(np.abs(current_field)) or 1.0)
         ax_min, ax_max = -amax, amax
-        cbar_label = f'{field}{slice_info} Field Amplitude'
+        cbar_label = f'{field}{slice_info} Field Amplitude (V/µm)'
 
     if fdtd.fig is not None and plt.fignum_exists(fdtd.fig.number):
         fdtd.im.set_array(current_field)
