@@ -388,7 +388,7 @@ def plot_fdtd_field(fdtd, field: str = "Ez", t: float = None, z_slice: int = Non
     plt.imshow(current_field, origin='lower', 
                extent=(0, fdtd.design.width, 0, fdtd.design.height),
                cmap='RdBu', aspect='equal', interpolation='bicubic')
-    plt.colorbar(label=f'{field_label} Field Amplitude')
+    plt.colorbar(label=f'{field_label}')
     plt.title(f'{field_label} Field at t = {current_t:.2e} s')
     plt.xlabel(f'X ({unit})'); plt.ylabel(f'Y ({unit})')
     plt.gca().xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
@@ -484,7 +484,7 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
             if not np.isfinite(amax) or amax <= 0:
                 amax = float(np.max(np.abs(current_field)) or 1.0)
         ax_min, ax_max = -amax, amax
-        cbar_label = f'{field}{slice_info} Field Amplitude (V/µm)'
+        cbar_label = f'{field}{slice_info} (V/µm)'
 
     if fdtd.fig is not None and plt.fignum_exists(fdtd.fig.number):
         fdtd.im.set_array(current_field)
@@ -580,7 +580,7 @@ def save_fdtd_animation(fdtd, field: str = "Ez", axis_scale=[-1, 1], filename='f
                    vmin=axis_scale[0], vmax=axis_scale[1])
     if not clean_visualization:
         colorbar = plt.colorbar(im, orientation='vertical', aspect=30, extend='both')
-        colorbar.set_label(f'{field} Field Amplitude')
+        colorbar.set_label(f'{field}')
 
     try:
         tmp_design = fdtd.design.copy()
