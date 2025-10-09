@@ -15,8 +15,12 @@ design += Rectangle(position=(0,3.5*µm-WG_WIDTH/2), width=18*µm, height=WG_WID
 # Create the signal
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, phase=0, ramp_duration=WL*30/LIGHT_SPEED, t_max=TIME/2)
-design += ModeSource(design=design, start=(2*µm, 3.5*µm-1.2*µm), end=(2*µm, 3.5*µm+1.2*µm), wavelength=WL, signal=signal)
+source = ModeSource(design=design, start=(2*µm, 3.5*µm-1.2*µm), end=(2*µm, 3.5*µm+1.2*µm), wavelength=WL, signal=signal,
+    num_modes=4)
+design += source
 design.show()
+
+source.show()
 
 # Run the simulation
 sim = FDTD(design=design, time=time_steps, mesh="regular", resolution=DX)

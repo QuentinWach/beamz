@@ -136,154 +136,69 @@ class ModeSource():
         self.omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         self.max_field_amplitude = 0.0
         self.max_power_density = 0.0
-        
-        # Choose mode solver based on the setting
-        if mode_solver == "analytical":
-            # Try to use analytical solver if possible
-            # This assumes a simple rectangular waveguide structure
-            # Extract core/cladding indices for analytical solver
-            try:
-                from beamz.devices.mode import slab_mode_source
-                
-                # Sample x coordinates along the cross-section
-                num_points = eps_1d.size
-                x0, y0 = self.start[0], self.start[1]  # Use 3D-safe indexing
-                x1, y1 = self.end[0], self.end[1]      # Use 3D-safe indexing
-                x = np.linspace(0, np.hypot(x1 - x0, y1 - y0), num_points)
-                
-                # Find the maximum index (core) and minimum index (cladding)
-                n_core = np.sqrt(np.max(eps_1d))
-                n_clad = np.sqrt(np.min(eps_1d))
-                
-                # Estimate the width of the waveguide core
-                above_threshold = eps_1d > (np.max(eps_1d) * 0.9)
-                core_indices = np.where(above_threshold)[0]
-                if len(core_indices) > 0:
-                    core_width = (core_indices[-1] - core_indices[0]) * self.dL
-                else:
-                    core_width = 1.0 * self.wavelength  # Fallback
-                
-                # Calculate modes analytically
-                self.effective_indices = []
-                self.mode_vectors = np.zeros((num_points, self.num_modes), dtype=complex)
-                
-                for m in range(self.num_modes):
-                    try:
-                        E, n_eff = slab_mode_source(
-                            x=x, w=core_width, n_WG=n_core, n0=n_clad, 
-                            wavelength=self.wavelength, ind_m=m
-                        )
-                        self.mode_vectors[:, m] = E
-                        self.effective_indices.append(n_eff)
-                    except Exception as e:
-                        print(f"Warning: Could not solve for analytical mode {m}: {e}")
-                        # Fill with zeros if mode calculation fails
-                        self.mode_vectors[:, m] = 0
-                        self.effective_indices.append(0)
-                
-                # Convert to numpy array to match format from numerical solver
-                self.effective_indices = np.array(self.effective_indices)
-            
-            except Exception as e:
-                print(f"Warning: Analytical mode solver failed, falling back to numerical: {e}")
-                (
-                    self.effective_indices,
-                    self.mode_e_fields,
-                    self.mode_h_fields,
-                    self.propagation_axis,
-                ) = solve_modes(
-                    eps_1d,
-                    self.omega,
-                    self.dL,
-                    npml=self.npml,
-                    m=self.num_modes,
-                    direction=self.direction,
-                    filter_pol=None,
-                    return_fields=True,
-                )
-        else:
-            # Use default numerical eigenmode solver with full field takeaway
-            (
-                self.effective_indices,
-                self.mode_e_fields,
-                self.mode_h_fields,
-                self.propagation_axis,
-            ) = solve_modes(
-                eps_1d,
-                self.omega,
-                self.dL,
-                npml=self.npml,
-                m=self.num_modes,
-                direction=self.direction,
-                return_fields=True,
-            )
 
-            # Convert tidy3d field grids to 1D profiles along the source span
-            mode_e_fields = self.mode_e_fields
-            mode_h_fields = self.mode_h_fields
-            self.mode_vectors = np.zeros((eps_1d.size, mode_e_fields.shape[0]), dtype=complex)
-            self.mode_profiles = []
-            ez_idx, hx_idx, hy_idx = self._field_component_indices()
-            line_length = np.hypot(self.end[0] - self.start[0], self.end[1] - self.start[1])
-            spacing = line_length / max(eps_1d.size - 1, 1)
+        # Use default numerical eigenmode solver with full field takeaway
+        (
+            self.effective_indices,
+            self.mode_e_fields,
+            self.mode_h_fields,
+            self.propagation_axis,
+        ) = solve_modes(
+            eps_1d,
+            self.omega,
+            self.dL,
+            npml=self.npml,
+            m=self.num_modes,
+            direction=self.direction,
+            return_fields=True,
+        )
 
-            for mode_idx in range(mode_e_fields.shape[0]):
-                e_field = mode_e_fields[mode_idx]
-                h_field = mode_h_fields[mode_idx]
+        # Convert tidy3d field grids to 1D profiles along the source span
+        mode_e_fields = self.mode_e_fields
+        mode_h_fields = self.mode_h_fields
+        self.mode_vectors = np.zeros((eps_1d.size, mode_e_fields.shape[0]), dtype=complex)
+        self.mode_profiles = []
+        ez_idx, hx_idx, hy_idx = self._field_component_indices()
+        line_length = np.hypot(self.end[0] - self.start[0], self.end[1] - self.start[1])
+        spacing = line_length / max(eps_1d.size - 1, 1)
 
-                Ez_line = self._collapse_field_to_line(e_field, ez_idx, eps_1d.size)
-                Hx_line = self._collapse_field_to_line(h_field, hx_idx, eps_1d.size)
-                Hy_line = self._collapse_field_to_line(h_field, hy_idx, eps_1d.size)
+        for mode_idx in range(mode_e_fields.shape[0]):
+            e_field = mode_e_fields[mode_idx]
+            h_field = mode_h_fields[mode_idx]
 
-                S_complex = -Ez_line * np.conj(Hy_line)
-                power_total = np.real(np.sum(S_complex) * spacing)
-                if power_total == 0.0:
-                    power_total = 1e-12
-                scale = 1.0 / np.sqrt(power_total)
-                Ez_line *= scale
-                Hx_line *= scale
-                Hy_line *= scale
+            Ez_line = self._collapse_field_to_line(e_field, ez_idx, eps_1d.size)
+            Hx_line = self._collapse_field_to_line(h_field, hx_idx, eps_1d.size)
+            Hy_line = self._collapse_field_to_line(h_field, hy_idx, eps_1d.size)
 
-                power_density_mag = np.abs(np.real(-Ez_line * np.conj(Hy_line)))
-                if power_density_mag.size:
-                    self.max_power_density = max(self.max_power_density, float(np.max(power_density_mag)))
+            S_complex = -Ez_line * np.conj(Hy_line)
+            power_total = np.real(np.sum(S_complex) * spacing)
+            if power_total == 0.0:
+                power_total = 1e-12
+            scale = 1.0 / np.sqrt(power_total)
+            Ez_line *= scale
+            Hx_line *= scale
+            Hy_line *= scale
 
-                self.mode_vectors[:, mode_idx] = Ez_line
-                self.max_field_amplitude = max(self.max_field_amplitude, float(np.max(np.abs(Ez_line))))
-                profile = []
-                for idx, (Ez_amp, Hx_amp, Hy_amp) in enumerate(zip(Ez_line, Hx_line, Hy_line)):
-                    x = self.start[0] + (self.end[0] - self.start[0]) * idx / max(len(Ez_line) - 1, 1)
-                    y = self.start[1] + (self.end[1] - self.start[1]) * idx / max(len(Ez_line) - 1, 1)
-                    profile.append({"Ez": Ez_amp, "Hx": Hx_amp, "Hy": Hy_amp, "x": x, "y": y, "z": 0.0})
-                self.mode_profiles.append(profile)
+            power_density_mag = np.abs(np.real(-Ez_line * np.conj(Hy_line)))
+            if power_density_mag.size:
+                self.max_power_density = max(self.max_power_density, float(np.max(power_density_mag)))
 
-            if self.max_power_density <= 0.0:
-                eta0 = np.sqrt(MU_0 / EPS_0)
-                if self.max_field_amplitude <= 0.0:
-                    self.max_field_amplitude = 1.0
-                self.max_power_density = (self.max_field_amplitude ** 2) / max(eta0, 1e-12)
+            self.mode_vectors[:, mode_idx] = Ez_line
+            self.max_field_amplitude = max(self.max_field_amplitude, float(np.max(np.abs(Ez_line))))
+            profile = []
+            for idx, (Ez_amp, Hx_amp, Hy_amp) in enumerate(zip(Ez_line, Hx_line, Hy_line)):
+                x = self.start[0] + (self.end[0] - self.start[0]) * idx / max(len(Ez_line) - 1, 1)
+                y = self.start[1] + (self.end[1] - self.start[1]) * idx / max(len(Ez_line) - 1, 1)
+                profile.append({"Ez": Ez_amp, "Hx": Hx_amp, "Hy": Hy_amp, "x": x, "y": y, "z": 0.0})
+            self.mode_profiles.append(profile)
 
-            return
+        if self.max_power_density <= 0.0:
+            eta0 = np.sqrt(MU_0 / EPS_0)
+            if self.max_field_amplitude <= 0.0:
+                self.max_field_amplitude = 1.0
+            self.max_power_density = (self.max_field_amplitude ** 2) / max(eta0, 1e-12)
 
-        # Analytical or fallback numerical case uses legacy line profiles
-        if not hasattr(self, "mode_vectors"):
-            self.mode_profiles = []
-            if self.height and self.height > 0:
-                try:
-                    profiles_3d = self._build_3d_rect_mode_profiles()
-                    if profiles_3d:
-                        self.mode_profiles = profiles_3d
-                    else:
-                        for mode_number in range(self.mode_vectors.shape[1]):
-                            self.mode_profiles.append(self.get_xy_mode_line(self.mode_vectors, mode_number))
-                except Exception as e:
-                    print(f"Warning: 3D mode profile construction failed: {e}. Falling back to 1D line mode.")
-                    for mode_number in range(self.mode_vectors.shape[1]):
-                        self.mode_profiles.append(self.get_xy_mode_line(self.mode_vectors, mode_number))
-            else:
-                for mode_number in range(self.mode_vectors.shape[1]):
-                    self.mode_profiles.append(self.get_xy_mode_line(self.mode_vectors, mode_number))
-            self.max_field_amplitude = max(self.max_field_amplitude, float(np.max(np.abs(self.mode_vectors)) or 0.0))
+        return
 
     def _collapse_field_to_line(self, field: np.ndarray, component_idx: int, target_len: int) -> np.ndarray:
         component = np.squeeze(field[component_idx])
