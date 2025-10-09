@@ -130,6 +130,37 @@ def main():
     fig.savefig("modesolver_2d_modes.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
 
+    # Detailed field components (Ey, Ez, Hy, Hz) for first mode
+    if modes:
+        mode0 = modes[0]
+        Ey = np.array(mode0.Ey)
+        Ez = np.array(mode0.Ez)
+        Hy = np.array(mode0.Hy)
+        Hz = np.array(mode0.Hz)
+
+        fields = {
+            "Ey": Ey,
+            "Ez": Ez,
+            "Hy": Hy,
+            "Hz": Hz,
+        }
+
+        fig_comp, ax_comp = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
+        for (name, field), ax in zip(fields.items(), ax_comp.ravel()):
+            magnitude = np.abs(field)
+            im = ax.imshow(magnitude.T / np.max(magnitude + 1e-18), origin="lower",
+                           extent=(y_centered[0] / µm, y_centered[-1] / µm, z_centered[0] / µm, z_centered[-1] / µm),
+                           cmap="viridis", aspect="equal")
+            add_geometry_overlays(ax, y_centered, z_centered, core_wy, core_wz, substrate_thickness)
+            ax.set_title(f"Mode 0: |{name}| (norm)")
+            ax.set_xlabel("y (µm)")
+            ax.set_ylabel("z (µm)")
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+        fig_comp.suptitle(f"Mode 0 component magnitudes, λ = {wavelength/µm:.2f} µm", y=1.02)
+        fig_comp.savefig("modesolver_2d_mode0_components.png", dpi=200, bbox_inches="tight")
+        plt.close(fig_comp)
+
 
 if __name__ == "__main__":
     main()
