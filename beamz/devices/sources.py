@@ -2,7 +2,7 @@ import numpy as np
 from beamz.const import LIGHT_SPEED, µm, EPS_0, MU_0
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from beamz.devices.mode import solve_modes, _direction_to_axis
+from beamz.devices.mode import solve_modes, tidy3d_mode_computation_wrapper, _direction_to_axis
 
 class GaussianSource():
     """A Gaussian current distribution in space.
@@ -435,7 +435,12 @@ class ModeSource():
         return 2, 0, 1
 
     def show(self):
-        """Show the mode profiles for a cross section given a 1D permittivity profile."""
+        """Visualize the mode profiles for this source."""
+        if getattr(self.design, "is_3d", False) and self.height and self.height > 0:
+            return self._show_3d_slice()
+        return self._show_1d_profile()
+
+    def _show_1d_profile(self):
         eps_1d = self.get_eps_1d()
         N = eps_1d.size
         # Recalculate physical coordinates for plotting (assuming linear path)
@@ -486,6 +491,94 @@ class ModeSource():
         ax2.legend(unique_labels.values(), unique_labels.keys(), loc='upper right')
         plt.grid(True)
         fig.tight_layout()
+        plt.show()
+
+    def _show_3d_slice(self):
+        try:
+            import tidy3d  # noqa: F401
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("ModeSource.show requires tidy3d for 3D designs.") from exc
+
+        pos = self.position
+        direction_axis = _direction_to_axis(self.direction)
+        if direction_axis == 0:  # propagation ±x, slice in y-z plane
+            axis1, axis2 = 1, 2
+        elif direction_axis == 1:  # ±y
+            axis1, axis2 = 0, 2
+        else:  # ±z
+            axis1, axis2 = 0, 1
+
+        center1 = pos[axis1]
+        center2 = pos[axis2]
+        half1 = (self.width or (self.dL * 20)) / 2
+        half2 = (self.height or self.width or (self.dL * 20)) / 2
+
+        resolution = max(self.dL, 1e-8)
+        n1 = max(64, int(np.round((2 * half1) / resolution)))
+        n2 = max(64, int(np.round((2 * half2) / resolution)))
+
+        coords1 = np.linspace(center1 - half1, center1 + half1, n1)
+        coords2 = np.linspace(center2 - half2, center2 + half2, n2)
+
+        eps = np.empty((n2, n1), dtype=float)
+        for i, c2 in enumerate(coords2):
+            for j, c1 in enumerate(coords1):
+                sample = [pos[0], pos[1], pos[2]]
+                sample[axis1] = c1
+                sample[axis2] = c2
+                eps_val, _, _ = self.design.get_material_value(*sample)
+                eps[i, j] = float(eps_val)
+
+        edges1 = np.linspace(coords1[0] - resolution / 2, coords1[-1] + resolution / 2, n1 + 1)
+        edges2 = np.linspace(coords2[0] - resolution / 2, coords2[-1] + resolution / 2, n2 + 1)
+
+        frequency = self.omega / (2 * np.pi)
+        modes = tidy3d_mode_computation_wrapper(
+            frequency=frequency,
+            permittivity_cross_section=eps,
+            coords=[edges1 / µm, edges2 / µm],
+            direction="+" if self.direction.startswith("+") else "-",
+            num_modes=min(6, self.num_modes + 2),
+            precision="double",
+        )
+
+        modes = sorted(modes, key=lambda m: float(np.real(m.neff)), reverse=True)
+        window_um = (max(half1, half2) * 1.1) / µm
+
+        extent = (edges1[0] / µm, edges1[-1] / µm, edges2[0] / µm, edges2[-1] / µm)
+
+        fig, axes = plt.subplots(2, min(3, len(modes)), figsize=(12, 7), constrained_layout=True)
+        axes = np.atleast_2d(axes)
+
+        labels_axis = ['x', 'y', 'z']
+        axis_labels = [labels_axis[axis1], labels_axis[axis2]]
+
+        for col, mode in enumerate(modes[:3]):
+            Ez = np.real(np.array(mode.Ez))
+            Hy = np.real(np.array(mode.Hy))
+            vmax_e = np.max(np.abs(Ez)) or 1.0
+            vmax_h = np.max(np.abs(Hy)) or 1.0
+
+            ax_top = axes[0, col]
+            ax_top.imshow(Ez.T / vmax_e, origin="lower", extent=extent, cmap="viridis", vmin=-1, vmax=1)
+            ax_top.set_aspect('equal')
+            ax_top.set_xlim(-window_um, window_um)
+            ax_top.set_ylim(-window_um, window_um)
+            ax_top.set_title(f"Mode {col}: Re(Ez)\nneff = {float(np.real(mode.neff)):.3f}")
+            ax_top.set_xlabel(f"{axis_labels[0]} (µm)")
+            ax_top.set_ylabel(f"{axis_labels[1]} (µm)")
+
+            ax_bottom = axes[1, col]
+            im = ax_bottom.imshow(Hy.T / vmax_h, origin="lower", extent=extent, cmap="viridis", vmin=-1, vmax=1)
+            ax_bottom.set_aspect('equal')
+            ax_bottom.set_xlim(-window_um, window_um)
+            ax_bottom.set_ylim(-window_um, window_um)
+            ax_bottom.set_title(f"Mode {col}: Re(Hy)")
+            ax_bottom.set_xlabel(f"{axis_labels[0]} (µm)")
+            ax_bottom.set_ylabel(f"{axis_labels[1]} (µm)")
+            plt.colorbar(im, ax=ax_bottom, fraction=0.046, pad=0.04)
+
+        fig.suptitle("Mode profiles on source cross-section", y=1.02)
         plt.show()
 
     def add_to_plot(self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None):
