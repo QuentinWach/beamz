@@ -19,12 +19,14 @@ def add_geometry_overlays(ax, y_edges_centered, z_edges_centered, core_wy, core_
     # Substrate: z < 0
     if z_min_um < 0:
         sub_height = min(0.0, z_max_um) - z_min_um
-        ax.add_patch(Rectangle((y_min_um, z_min_um), width_um, sub_height, facecolor="#e8f1ff", edgecolor="none", alpha=0.5))
+        ax.add_patch(Rectangle((y_min_um, z_min_um), width_um, sub_height,
+                               facecolor="#e8f1ff", edgecolor="none", alpha=0.18, zorder=-10))
     # Air: z > core thickness
     air_start = substrate_thickness / µm
     if z_max_um > air_start:
         air_height = z_max_um - max(air_start, z_min_um)
-        ax.add_patch(Rectangle((y_min_um, max(air_start, z_min_um)), width_um, air_height, facecolor="#fff7e6", edgecolor="none", alpha=0.5))
+        ax.add_patch(Rectangle((y_min_um, max(air_start, z_min_um)), width_um, air_height,
+                               facecolor="#fff7e6", edgecolor="none", alpha=0.12, zorder=-10))
     # Core outline
     ax.add_patch(Rectangle((-core_wy/(2*µm), 0.0), core_wy/µm, core_wz/µm,
                            facecolor="none", edgecolor="black", linewidth=1.5))
@@ -103,25 +105,27 @@ def main():
         mode: ModeTupleType = modes[col]
         Ez = np.array(mode.Ez)
         Hy = np.array(mode.Hy)
-        Ez_int = np.abs(Ez) ** 2
-        Hy_int = np.abs(Hy) ** 2
+        Ez_mag = np.real(Ez)
+        Hy_mag = np.real(Hy)
 
         ax_top = axes[0, col] if n_cols > 1 else axes[0]
-        im1 = ax_top.imshow(Ez_int.T / np.max(Ez_int + 1e-18), origin="lower",
+        vmax_ez = np.max(np.abs(Ez_mag)) or 1.0
+        im1 = ax_top.imshow(Ez_mag.T / vmax_ez, origin="lower",
                             extent=(y_centered[0] / µm, y_centered[-1] / µm, z_centered[0] / µm, z_centered[-1] / µm),
-                            cmap="magma", aspect="equal")
+                            cmap="RdBu", aspect="equal", vmin=-1, vmax=1)
         add_geometry_overlays(ax_top, y_centered, z_centered, core_wy, core_wz, substrate_thickness)
-        ax_top.set_title(f"Mode {col}: |Ez|² (norm)\nneff = {float(np.real(mode.neff)):.3f}")
+        ax_top.set_title(f"Mode {col}: Re(Ez) (norm)\nneff = {float(np.real(mode.neff)):.3f}")
         ax_top.set_xlabel("y (µm)")
         ax_top.set_ylabel("z (µm)")
         plt.colorbar(im1, ax=ax_top, fraction=0.046, pad=0.04)
 
         ax_bot = axes[1, col] if n_cols > 1 else axes[1]
-        im2 = ax_bot.imshow(Hy_int.T / np.max(Hy_int + 1e-18), origin="lower",
+        vmax_hy = np.max(np.abs(Hy_mag)) or 1.0
+        im2 = ax_bot.imshow(Hy_mag.T / vmax_hy, origin="lower",
                             extent=(y_centered[0] / µm, y_centered[-1] / µm, z_centered[0] / µm, z_centered[-1] / µm),
-                            cmap="viridis", aspect="equal")
+                            cmap="RdBu", aspect="equal", vmin=-1, vmax=1)
         add_geometry_overlays(ax_bot, y_centered, z_centered, core_wy, core_wz, substrate_thickness)
-        ax_bot.set_title(f"Mode {col}: |Hy|² (norm)")
+        ax_bot.set_title(f"Mode {col}: Re(Hy) (norm)")
         ax_bot.set_xlabel("y (µm)")
         ax_bot.set_ylabel("z (µm)")
         plt.colorbar(im2, ax=ax_bot, fraction=0.046, pad=0.04)
@@ -133,31 +137,36 @@ def main():
     # Detailed field components (Ey, Ez, Hy, Hz) for first mode
     if modes:
         mode0 = modes[0]
+        Ex = np.array(mode0.Ex)
         Ey = np.array(mode0.Ey)
         Ez = np.array(mode0.Ez)
+        Hx = np.array(mode0.Hx)
         Hy = np.array(mode0.Hy)
         Hz = np.array(mode0.Hz)
 
         fields = {
+            "Ex": Ex,
             "Ey": Ey,
             "Ez": Ez,
+            "Hx": Hx,
             "Hy": Hy,
             "Hz": Hz,
         }
 
-        fig_comp, ax_comp = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
+        fig_comp, ax_comp = plt.subplots(2, 3, figsize=(12, 8), constrained_layout=True)
         for (name, field), ax in zip(fields.items(), ax_comp.ravel()):
-            magnitude = np.abs(field)
-            im = ax.imshow(magnitude.T / np.max(magnitude + 1e-18), origin="lower",
+            real_field = np.real(field)
+            vmax = np.max(np.abs(real_field)) or 1.0
+            im = ax.imshow(real_field.T / vmax, origin="lower",
                            extent=(y_centered[0] / µm, y_centered[-1] / µm, z_centered[0] / µm, z_centered[-1] / µm),
-                           cmap="viridis", aspect="equal")
+                           cmap="RdBu", aspect="equal", vmin=-1, vmax=1)
             add_geometry_overlays(ax, y_centered, z_centered, core_wy, core_wz, substrate_thickness)
-            ax.set_title(f"Mode 0: |{name}| (norm)")
+            ax.set_title(f"Mode 0: Re({name}) (norm)")
             ax.set_xlabel("y (µm)")
             ax.set_ylabel("z (µm)")
             plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-        fig_comp.suptitle(f"Mode 0 component magnitudes, λ = {wavelength/µm:.2f} µm", y=1.02)
+        fig_comp.suptitle(f"Mode 0 component fields, λ = {wavelength/µm:.2f} µm", y=1.02)
         fig_comp.savefig("modesolver_2d_mode0_components.png", dpi=200, bbox_inches="tight")
         plt.close(fig_comp)
 
