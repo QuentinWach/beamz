@@ -112,7 +112,7 @@ def main():
         vmax_ez = np.max(np.abs(Ez_mag)) or 1.0
         im1 = ax_top.imshow(Ez_mag.T / vmax_ez, origin="lower",
                             extent=(y_centered[0] / µm, y_centered[-1] / µm, z_centered[0] / µm, z_centered[-1] / µm),
-                            cmap="RdBu", aspect="equal", vmin=-1, vmax=1)
+                            cmap="viridis", aspect="equal", vmin=-1, vmax=1)
         add_geometry_overlays(ax_top, y_centered, z_centered, core_wy, core_wz, substrate_thickness)
         ax_top.set_title(f"Mode {col}: Re(Ez) (norm)\nneff = {float(np.real(mode.neff)):.3f}")
         ax_top.set_xlabel("y (µm)")
@@ -123,7 +123,7 @@ def main():
         vmax_hy = np.max(np.abs(Hy_mag)) or 1.0
         im2 = ax_bot.imshow(Hy_mag.T / vmax_hy, origin="lower",
                             extent=(y_centered[0] / µm, y_centered[-1] / µm, z_centered[0] / µm, z_centered[-1] / µm),
-                            cmap="RdBu", aspect="equal", vmin=-1, vmax=1)
+                            cmap="viridis", aspect="equal", vmin=-1, vmax=1)
         add_geometry_overlays(ax_bot, y_centered, z_centered, core_wy, core_wz, substrate_thickness)
         ax_bot.set_title(f"Mode {col}: Re(Hy) (norm)")
         ax_bot.set_xlabel("y (µm)")
@@ -159,7 +159,7 @@ def main():
             vmax = np.max(np.abs(real_field)) or 1.0
             im = ax.imshow(real_field.T / vmax, origin="lower",
                            extent=(y_centered[0] / µm, y_centered[-1] / µm, z_centered[0] / µm, z_centered[-1] / µm),
-                           cmap="RdBu", aspect="equal", vmin=-1, vmax=1)
+                           cmap="viridis", aspect="equal", vmin=-1, vmax=1)
             add_geometry_overlays(ax, y_centered, z_centered, core_wy, core_wz, substrate_thickness)
             ax.set_title(f"Mode 0: Re({name}) (norm)")
             ax.set_xlabel("y (µm)")
