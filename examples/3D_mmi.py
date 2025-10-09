@@ -30,10 +30,14 @@ design += monitor
 # Define the source
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, phase=0, ramp_duration=WL*5/LIGHT_SPEED, t_max=TIME/2)
-source = ModeSource(design=design, position=(1*µm, Y/2, Z/2), 
+source = ModeSource(design=design, position=(2.5*µm, Y/2, Z/2), 
                     width=2*µm, height=2*µm, direction="+x", signal=signal)
 design += source
 design.show()
+
+source.show()
+
+
 # Kick off live visualization for the monitor (updates will occur during run)
 monitor.start_live_visualization(field_component='Ez')
 
