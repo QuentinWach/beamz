@@ -80,6 +80,7 @@ class ModeSource():
         orientation: Orientation of the cross-section ("xy", "xz", "yz") - auto-determined from direction if not specified
         npml: Number of PML layers to use at boundaries
         num_modes: Number of modes to calculate
+        mode_index: Index of the mode to inject (0 = fundamental mode, 1 = first higher-order mode, etc.)
         grid_resolution: Points per wavelength for grid resolution (higher = finer)
         mode_solver: Mode solver to use ("num_eigen" or "analytical")
         
@@ -88,7 +89,7 @@ class ModeSource():
         end: End point of the source line (x,y) or (x,y,z) - use position + width/height instead
     """
     def __init__(self, design, position=None, width=None, height=None, wavelength=1.55*µm, signal=0, direction="+x", 
-                 orientation=None, npml=20, num_modes=2, grid_resolution=2000, mode_solver="num_eigen",
+                 orientation=None, npml=20, num_modes=2, mode_index=0, grid_resolution=2000, mode_solver="num_eigen",
                  start=None, end=None):
         # Handle legacy start/end parameters vs new position/width/height approach
         if start is not None and end is not None:
@@ -146,8 +147,15 @@ class ModeSource():
         self.direction = direction
         self.npml = npml
         self.num_modes = num_modes
+        self.mode_index = mode_index
         self.grid_resolution = grid_resolution
         self.mode_solver = mode_solver
+        
+        # Validate mode_index
+        if mode_index < 0:
+            raise ValueError(f"mode_index must be non-negative, got {mode_index}")
+        if mode_index >= num_modes:
+            raise ValueError(f"mode_index ({mode_index}) must be less than num_modes ({num_modes})")
         # Calculate and store mode profiles
         self.dL = self.wavelength / grid_resolution  # Sampling resolution
         eps_1d = self.get_eps_1d()
@@ -242,6 +250,7 @@ class ModeSource():
                 direction=self.direction,
                 npml=self.npml,
                 num_modes=self.num_modes,
+                mode_index=self.mode_index,
                 grid_resolution=self.grid_resolution,
                 mode_solver=self.mode_solver
             )
@@ -258,6 +267,7 @@ class ModeSource():
                 orientation=self.orientation,
                 npml=self.npml,
                 num_modes=self.num_modes,
+                mode_index=self.mode_index,
                 grid_resolution=self.grid_resolution,
                 mode_solver=self.mode_solver
             )

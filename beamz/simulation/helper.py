@@ -2,12 +2,60 @@ import numpy as np
 from beamz.devices.sources import ModeSource, GaussianSource
 
 
+def _get_tfsf_boundary_info(source, fdtd):
+    """Get TFSF boundary information for a mode source.
+    
+    Returns a dict with:
+    - 'axis': propagation axis (0=x, 1=y, 2=z)
+    - 'direction': +1 or -1 for forward/backward propagation
+    - 'boundary_position': position of the TFSF boundary in grid coordinates
+    - 'transverse_indices': list of (coord, index) tuples for transverse plane
+    """
+    from beamz.devices.sources import _direction_to_axis
+    
+    axis = _direction_to_axis(source.direction)
+    direction_sign = 1 if source.direction.startswith("+") else -1
+    
+    # Get source center position
+    center_x = (source.start[0] + source.end[0]) / 2
+    center_y = (source.start[1] + source.end[1]) / 2
+    center_z = (source.start[2] + source.end[2]) / 2 if fdtd.is_3d else 0
+    
+    # Convert to grid indices
+    center_idx_x = int(round(center_x / fdtd.dx))
+    center_idx_y = int(round(center_y / fdtd.dy))
+    center_idx_z = int(round(center_z / fdtd.dz)) if fdtd.is_3d else 0
+    
+    return {
+        'axis': axis,
+        'direction': direction_sign,
+        'center_idx': (center_idx_x, center_idx_y, center_idx_z),
+        'source': source
+    }
+
+
 def apply_sources(fdtd) -> None:
-    """Apply all sources for the current time step to fdtd fields."""
+    """Apply all sources for the current time step to fdtd fields using TFSF."""
     for source in fdtd.sources:
         if isinstance(source, ModeSource):
-            mode_profile = source.mode_profiles[0]
-            modulation = source.signal[fdtd.current_step]
+            # Use the selected mode index
+            mode_idx = getattr(source, 'mode_index', 0)
+            if mode_idx >= len(source.mode_profiles):
+                mode_idx = 0  # Fallback to fundamental mode
+            
+            mode_profile = source.mode_profiles[mode_idx]
+            
+            # E-field modulation at integer time step n
+            e_modulation = source.signal[fdtd.current_step]
+            
+            # H-field modulation at half-integer time step (n-1/2)
+            # Interpolate between current and previous step
+            if fdtd.current_step > 0:
+                h_modulation = 0.5 * (source.signal[fdtd.current_step - 1] + source.signal[fdtd.current_step])
+            else:
+                h_modulation = source.signal[0]
+            
+            # TFSF soft source injection (additive, no field zeroing)
             for point in mode_profile:
                 if isinstance(point, dict):
                     Ez_amp = point.get("Ez", 0.0)
@@ -26,46 +74,37 @@ def apply_sources(fdtd) -> None:
 
                 x = int(round(x_raw / fdtd.dx))
                 y = int(round(y_raw / fdtd.dy))
+                
                 if fdtd.is_3d:
                     z = int(round(z_raw / fdtd.dz))
                     if (x < 0 or x >= fdtd.nx or y < 0 or y >= fdtd.ny or z < 0 or z >= fdtd.nz):
                         continue
                     z_target = min(z, fdtd.Ez.shape[0] - 1) if z < fdtd.Ez.shape[0] else fdtd.Ez.shape[0] // 2
+                    
+                    # Inject E-field with current time step modulation
+                    fdtd.Ez[z_target, y, x] += Ez_amp * e_modulation
+                    
+                    # Inject H-fields with time-staggered (half-step) modulation
+                    if hasattr(fdtd, "Hx") and fdtd.Hx is not None and fdtd.Hx.size and Hx_amp != 0.0:
+                        if z_target < fdtd.Hx.shape[0] and y < fdtd.Hx.shape[1] and x < fdtd.Hx.shape[2]:
+                            fdtd.Hx[z_target, y, x] += Hx_amp * h_modulation
+                    if hasattr(fdtd, "Hy") and fdtd.Hy is not None and fdtd.Hy.size and Hy_amp != 0.0:
+                        if z_target < fdtd.Hy.shape[0] and y < fdtd.Hy.shape[1] and x < fdtd.Hy.shape[2]:
+                            fdtd.Hy[z_target, y, x] += Hy_amp * h_modulation
                 else:
                     if x < 0 or x >= fdtd.nx or y < 0 or y >= fdtd.ny:
                         continue
-                    z_target = None
-
-                enforce_direction = getattr(source, "enforce_direction", True)
-
-                if fdtd.is_3d:
-                    fdtd.Ez[z_target, y, x] += Ez_amp * modulation
-                    if hasattr(fdtd, "Hx") and fdtd.Hx is not None and fdtd.Hx.size and Hx_amp != 0.0:
-                        if z_target < fdtd.Hx.shape[0] and y < fdtd.Hx.shape[1] and x < fdtd.Hx.shape[2]:
-                            fdtd.Hx[z_target, y, x] += Hx_amp * modulation
-                    if hasattr(fdtd, "Hy") and fdtd.Hy is not None and fdtd.Hy.size and Hy_amp != 0.0:
-                        if z_target < fdtd.Hy.shape[0] and y < fdtd.Hy.shape[1] and x < fdtd.Hy.shape[2]:
-                            fdtd.Hy[z_target, y, x] += Hy_amp * modulation
-                    if enforce_direction:
-                        if source.direction == "+x" and x > 0: fdtd.Ez[z_target, y, x-1] = 0
-                        elif source.direction == "-x" and x < fdtd.nx-1: fdtd.Ez[z_target, y, x+1] = 0
-                        elif source.direction == "+y" and y > 0: fdtd.Ez[z_target, y-1, x] = 0
-                        elif source.direction == "-y" and y < fdtd.ny-1: fdtd.Ez[z_target, y+1, x] = 0
-                        elif source.direction == "+z" and z_target > 0: fdtd.Ez[z_target-1, y, x] = 0
-                        elif source.direction == "-z" and z_target < fdtd.Ez.shape[0]-1: fdtd.Ez[z_target+1, y, x] = 0
-                else:
-                    fdtd.Ez[y, x] += Ez_amp * modulation
+                    
+                    # Inject E-field with current time step modulation
+                    fdtd.Ez[y, x] += Ez_amp * e_modulation
+                    
+                    # Inject H-fields with time-staggered (half-step) modulation
                     if hasattr(fdtd, "Hx") and Hx_amp != 0.0 and fdtd.Hx is not None and fdtd.Hx.size:
                         if y < fdtd.Hx.shape[0] and x < fdtd.Hx.shape[1]:
-                            fdtd.Hx[y, x] += Hx_amp * modulation
+                            fdtd.Hx[y, x] += Hx_amp * h_modulation
                     if hasattr(fdtd, "Hy") and Hy_amp != 0.0 and fdtd.Hy is not None and fdtd.Hy.size:
                         if y < fdtd.Hy.shape[0] and x < fdtd.Hy.shape[1]:
-                            fdtd.Hy[y, x] += Hy_amp * modulation
-                    if enforce_direction:
-                        if source.direction == "+x" and x > 0: fdtd.Ez[y, x-1] = 0
-                        elif source.direction == "-x" and x < fdtd.nx-1: fdtd.Ez[y, x+1] = 0
-                        elif source.direction == "+y" and y > 0: fdtd.Ez[y-1, x] = 0
-                        elif source.direction == "-y" and y < fdtd.ny-1: fdtd.Ez[y+1, x] = 0
+                            fdtd.Hy[y, x] += Hy_amp * h_modulation
 
         elif isinstance(source, GaussianSource):
             modulation = source.signal[fdtd.current_step]
