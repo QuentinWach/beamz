@@ -2,7 +2,25 @@ import numpy as np
 from beamz.const import LIGHT_SPEED, µm, EPS_0, MU_0
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from beamz.devices.mode import solve_modes, tidy3d_mode_computation_wrapper, _direction_to_axis
+from beamz.devices.mode import solve_modes, tidy3d_mode_computation_wrapper
+
+def _direction_to_axis(direction: str) -> int:
+    """Convert direction string to axis index.
+    
+    Args:
+        direction: Direction string ("+x", "-x", "+y", "-y", "+z", "-z")
+        
+    Returns:
+        Axis index (0 for x, 1 for y, 2 for z)
+    """
+    if direction in ["+x", "-x"]:
+        return 0
+    elif direction in ["+y", "-y"]:
+        return 1
+    elif direction in ["+z", "-z"]:
+        return 2
+    else:
+        raise ValueError(f"Invalid direction: {direction}. Must be one of '+x', '-x', '+y', '-y', '+z', '-z'")
 
 class GaussianSource():
     """A Gaussian current distribution in space.
