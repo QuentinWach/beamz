@@ -6,7 +6,7 @@ WL = 1.55*µm
 TIME = 90*WL/LIGHT_SPEED
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
 WG_WIDTH = 0.565*µm
-DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, points_per_wavelength=10)
+DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, points_per_wavelength=20)
 
 # Create the design
 design = Design(width=18*µm, height=7*µm, material=Material(N_CLAD**2), pml_size=WL)
@@ -24,5 +24,5 @@ source.show()
 
 # Run the simulation
 sim = FDTD(design=design, time=time_steps, mesh="regular", resolution=DX)
-sim.run(live=True, save_memory_mode=True, accumulate_power=True)
+sim.run(live=True, save_memory_mode=True, accumulate_power=True, axis_scale=[-7, 7])
 sim.plot_power(db_colorbar=True)

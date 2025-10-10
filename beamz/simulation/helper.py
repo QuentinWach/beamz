@@ -60,9 +60,10 @@ def apply_sources(fdtd) -> None:
             prop_axis = _direction_to_axis(source.direction)
             is_forward = source.direction.startswith("+")
             
-            # Hard source injection for unidirectional propagation:
-            # Set field values directly at source plane (not additive)
-            # This naturally prevents backward propagation
+            # Hard source with unidirectional injection:
+            # Directly sets field values at source plane to ensure forward-only propagation
+            # This is the industry-standard approach for mode sources in FDTD
+            # Note: Reflections are typically absorbed by PML before returning to source
             for point in mode_profile:
                 if isinstance(point, dict):
                     Ez_amp = point.get("Ez", 0.0)
@@ -88,7 +89,7 @@ def apply_sources(fdtd) -> None:
                         continue
                     z_target = min(z, fdtd.Ez.shape[0] - 1) if z < fdtd.Ez.shape[0] else fdtd.Ez.shape[0] // 2
                     
-                    # Hard source: SET field values directly (unidirectional)
+                    # Hard source: directly set field values for unidirectional injection
                     fdtd.Ez[z_target, y, x] = Ez_amp * e_modulation
                     if hasattr(fdtd, "Hx") and fdtd.Hx is not None and fdtd.Hx.size and Hx_amp != 0.0:
                         if z_target < fdtd.Hx.shape[0] and y < fdtd.Hx.shape[1] and x < fdtd.Hx.shape[2]:
@@ -101,7 +102,7 @@ def apply_sources(fdtd) -> None:
                     if x < 0 or x >= fdtd.nx or y < 0 or y >= fdtd.ny:
                         continue
                     
-                    # Hard source: SET field values directly (unidirectional)
+                    # Hard source: directly set field values for unidirectional injection
                     fdtd.Ez[y, x] = Ez_amp * e_modulation
                     if hasattr(fdtd, "Hx") and Hx_amp != 0.0 and fdtd.Hx is not None and fdtd.Hx.size:
                         if y < fdtd.Hx.shape[0] and x < fdtd.Hx.shape[1]:

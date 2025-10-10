@@ -20,7 +20,7 @@ design += Rectangle(position=(X/2-W/2, Y/2-H/2), width=W, height=H, material=Mat
 # Define the source
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=0.1, frequency=LIGHT_SPEED/WL, phase=0, ramp_duration=WL*5/LIGHT_SPEED, t_max=TIME/2)
-source = ModeSource(design=design, start=(2*µm, Y/2-1.2*µm), end=(2*µm, Y/2+1.2*µm), wavelength=WL, signal=signal, direction="+x", orientation="yz")
+source = ModeSource(design=design, start=(2*µm, Y/2-1.2*µm), end=(2*µm, Y/2+1.2*µm), wavelength=WL, signal=signal)
 design += source
 design.show()
 
