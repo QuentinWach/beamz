@@ -707,9 +707,7 @@ def plot_fdtd_power(fdtd, cmap: str = "hot", vmin: float = None, vmax: float = N
             structure.add_to_plot(fdtd.ax, edgecolor="white", linestyle='--', facecolor='none', alpha=0.5)
         elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
             structure.add_to_plot(fdtd.ax, facecolor="none", edgecolor="white", linestyle='-')
-    for source in fdtd.design.sources:
-        if hasattr(source, 'add_to_plot'):
-            source.add_to_plot(fdtd.ax)
+    # Sources are not shown in power plot to avoid visual clutter
     for monitor in fdtd.design.monitors:
         if hasattr(monitor, 'add_to_plot'):
             monitor.add_to_plot(fdtd.ax, edgecolor="white")
