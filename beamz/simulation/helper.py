@@ -35,7 +35,7 @@ def _get_tfsf_boundary_info(source, fdtd):
 
 
 def apply_sources(fdtd) -> None:
-    """Apply all sources for the current time step to fdtd fields using TFSF."""
+    """Apply all sources for the current time step to fdtd fields using unidirectional TFSF."""
     for source in fdtd.sources:
         if isinstance(source, ModeSource):
             # Use the selected mode index
@@ -55,7 +55,14 @@ def apply_sources(fdtd) -> None:
             else:
                 h_modulation = source.signal[0]
             
-            # TFSF soft source injection (additive, no field zeroing)
+            # Determine propagation direction for TFSF boundary
+            from beamz.devices.sources import _direction_to_axis
+            prop_axis = _direction_to_axis(source.direction)
+            is_forward = source.direction.startswith("+")
+            
+            # TFSF unidirectional injection:
+            # - Inject fields at source plane (forward boundary)
+            # - Subtract fields one cell behind (backward boundary) to prevent backward propagation
             for point in mode_profile:
                 if isinstance(point, dict):
                     Ez_amp = point.get("Ez", 0.0)
@@ -81,30 +88,81 @@ def apply_sources(fdtd) -> None:
                         continue
                     z_target = min(z, fdtd.Ez.shape[0] - 1) if z < fdtd.Ez.shape[0] else fdtd.Ez.shape[0] // 2
                     
-                    # Inject E-field with current time step modulation
+                    # Forward boundary: ADD incident field
                     fdtd.Ez[z_target, y, x] += Ez_amp * e_modulation
-                    
-                    # Inject H-fields with time-staggered (half-step) modulation
                     if hasattr(fdtd, "Hx") and fdtd.Hx is not None and fdtd.Hx.size and Hx_amp != 0.0:
                         if z_target < fdtd.Hx.shape[0] and y < fdtd.Hx.shape[1] and x < fdtd.Hx.shape[2]:
                             fdtd.Hx[z_target, y, x] += Hx_amp * h_modulation
                     if hasattr(fdtd, "Hy") and fdtd.Hy is not None and fdtd.Hy.size and Hy_amp != 0.0:
                         if z_target < fdtd.Hy.shape[0] and y < fdtd.Hy.shape[1] and x < fdtd.Hy.shape[2]:
                             fdtd.Hy[z_target, y, x] += Hy_amp * h_modulation
+                    
+                    # Backward boundary: SUBTRACT incident field to prevent backward propagation
+                    if prop_axis == 0:  # x-direction
+                        x_back = x - 1 if is_forward else x + 1
+                        if 0 <= x_back < fdtd.nx:
+                            fdtd.Ez[z_target, y, x_back] -= Ez_amp * e_modulation
+                            if hasattr(fdtd, "Hx") and fdtd.Hx is not None and Hx_amp != 0.0:
+                                if z_target < fdtd.Hx.shape[0] and y < fdtd.Hx.shape[1] and x_back < fdtd.Hx.shape[2]:
+                                    fdtd.Hx[z_target, y, x_back] -= Hx_amp * h_modulation
+                            if hasattr(fdtd, "Hy") and fdtd.Hy is not None and Hy_amp != 0.0:
+                                if z_target < fdtd.Hy.shape[0] and y < fdtd.Hy.shape[1] and x_back < fdtd.Hy.shape[2]:
+                                    fdtd.Hy[z_target, y, x_back] -= Hy_amp * h_modulation
+                    elif prop_axis == 1:  # y-direction
+                        y_back = y - 1 if is_forward else y + 1
+                        if 0 <= y_back < fdtd.ny:
+                            fdtd.Ez[z_target, y_back, x] -= Ez_amp * e_modulation
+                            if hasattr(fdtd, "Hx") and fdtd.Hx is not None and Hx_amp != 0.0:
+                                if z_target < fdtd.Hx.shape[0] and y_back < fdtd.Hx.shape[1] and x < fdtd.Hx.shape[2]:
+                                    fdtd.Hx[z_target, y_back, x] -= Hx_amp * h_modulation
+                            if hasattr(fdtd, "Hy") and fdtd.Hy is not None and Hy_amp != 0.0:
+                                if z_target < fdtd.Hy.shape[0] and y_back < fdtd.Hy.shape[1] and x < fdtd.Hy.shape[2]:
+                                    fdtd.Hy[z_target, y_back, x] -= Hy_amp * h_modulation
+                    elif prop_axis == 2:  # z-direction
+                        z_back = z_target - 1 if is_forward else z_target + 1
+                        if 0 <= z_back < fdtd.Ez.shape[0]:
+                            fdtd.Ez[z_back, y, x] -= Ez_amp * e_modulation
+                            if hasattr(fdtd, "Hx") and fdtd.Hx is not None and Hx_amp != 0.0:
+                                if z_back < fdtd.Hx.shape[0] and y < fdtd.Hx.shape[1] and x < fdtd.Hx.shape[2]:
+                                    fdtd.Hx[z_back, y, x] -= Hx_amp * h_modulation
+                            if hasattr(fdtd, "Hy") and fdtd.Hy is not None and Hy_amp != 0.0:
+                                if z_back < fdtd.Hy.shape[0] and y < fdtd.Hy.shape[1] and x < fdtd.Hy.shape[2]:
+                                    fdtd.Hy[z_back, y, x] -= Hy_amp * h_modulation
                 else:
+                    # 2D case
                     if x < 0 or x >= fdtd.nx or y < 0 or y >= fdtd.ny:
                         continue
                     
-                    # Inject E-field with current time step modulation
+                    # Forward boundary: ADD incident field
                     fdtd.Ez[y, x] += Ez_amp * e_modulation
-                    
-                    # Inject H-fields with time-staggered (half-step) modulation
                     if hasattr(fdtd, "Hx") and Hx_amp != 0.0 and fdtd.Hx is not None and fdtd.Hx.size:
                         if y < fdtd.Hx.shape[0] and x < fdtd.Hx.shape[1]:
                             fdtd.Hx[y, x] += Hx_amp * h_modulation
                     if hasattr(fdtd, "Hy") and Hy_amp != 0.0 and fdtd.Hy is not None and fdtd.Hy.size:
                         if y < fdtd.Hy.shape[0] and x < fdtd.Hy.shape[1]:
                             fdtd.Hy[y, x] += Hy_amp * h_modulation
+                    
+                    # Backward boundary: SUBTRACT incident field to prevent backward propagation
+                    if prop_axis == 0:  # x-direction
+                        x_back = x - 1 if is_forward else x + 1
+                        if 0 <= x_back < fdtd.nx:
+                            fdtd.Ez[y, x_back] -= Ez_amp * e_modulation
+                            if hasattr(fdtd, "Hx") and Hx_amp != 0.0 and fdtd.Hx is not None:
+                                if y < fdtd.Hx.shape[0] and x_back < fdtd.Hx.shape[1]:
+                                    fdtd.Hx[y, x_back] -= Hx_amp * h_modulation
+                            if hasattr(fdtd, "Hy") and Hy_amp != 0.0 and fdtd.Hy is not None:
+                                if y < fdtd.Hy.shape[0] and x_back < fdtd.Hy.shape[1]:
+                                    fdtd.Hy[y, x_back] -= Hy_amp * h_modulation
+                    elif prop_axis == 1:  # y-direction
+                        y_back = y - 1 if is_forward else y + 1
+                        if 0 <= y_back < fdtd.ny:
+                            fdtd.Ez[y_back, x] -= Ez_amp * e_modulation
+                            if hasattr(fdtd, "Hx") and Hx_amp != 0.0 and fdtd.Hx is not None:
+                                if y_back < fdtd.Hx.shape[0] and x < fdtd.Hx.shape[1]:
+                                    fdtd.Hx[y_back, x] -= Hx_amp * h_modulation
+                            if hasattr(fdtd, "Hy") and Hy_amp != 0.0 and fdtd.Hy is not None:
+                                if y_back < fdtd.Hy.shape[0] and x < fdtd.Hy.shape[1]:
+                                    fdtd.Hy[y_back, x] -= Hy_amp * h_modulation
 
         elif isinstance(source, GaussianSource):
             modulation = source.signal[fdtd.current_step]
