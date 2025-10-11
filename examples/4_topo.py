@@ -255,19 +255,43 @@ def build_adjoint_source(design, signal, target_positions, target_samples):
         profile_positions = np.array([float(pt.get("x", 0.0)) for pt in profile], dtype=float)
         real_interp = np.interp(profile_positions, target_positions, target_samples.real, left=0.0, right=0.0)
         imag_interp = np.interp(profile_positions, target_positions, target_samples.imag, left=0.0, right=0.0)
+        
+        # Store original H-field ratios for maintaining unidirectionality
+        first_point = profile[0]
+        e_field_name = None
+        h_field_names = []
+        for key in first_point.keys():
+            if key.startswith('E') and key not in ['x', 'y', 'z']:
+                e_field_name = key
+            elif key.startswith('H') and key not in ['x', 'y', 'z']:
+                h_field_names.append(key)
+        
         for idx, point in enumerate(profile):
             target_component = MODE_WEIGHT * (real_interp[idx] + 1j * imag_interp[idx])
             transmission_component = TRANSMISSION_WEIGHT
             combined = transmission_component + target_component
             
-            # Set all field components to avoid NaN injection
-            # For -y direction, fields are Ez, Hz, Hx
-            point["Ez"] = combined if np.isfinite(combined) else transmission_component
-            # Set H-fields to zero to avoid injecting NaNs
-            if "Hz" in point:
-                point["Hz"] = 0.0
-            if "Hx" in point:
-                point["Hx"] = 0.0
+            if not np.isfinite(combined):
+                combined = transmission_component
+            
+            # Scale E-field by target amplitude
+            original_e = point.get(e_field_name, 1.0) if e_field_name else 1.0
+            if abs(original_e) > 1e-15:
+                scale_factor = combined / original_e
+            else:
+                scale_factor = combined
+            
+            # Apply same scaling to E and H to maintain unidirectional Poynting vector
+            if e_field_name:
+                point[e_field_name] = combined
+            
+            # Scale H-fields proportionally to maintain S = E × H direction
+            for h_name in h_field_names:
+                original_h = point.get(h_name, 0.0)
+                if np.isfinite(original_h) and np.isfinite(scale_factor):
+                    point[h_name] = original_h * scale_factor
+                else:
+                    point[h_name] = 0.0
     return adjoint
 
 
@@ -338,17 +362,17 @@ for step in range(1,STEPS+1):
     print(f"[STEP {step}] Running ADJOINT simulation...")
     adj_source = build_adjoint_source(design, signal, monitor.target_positions, monitor.target_samples)
     
-    # Debug: check adjoint source profile
-    if adj_source.mode_profiles:
-        adj_profile_sample = adj_source.mode_profiles[0][0]
-        adj_field_names = [k for k in adj_profile_sample.keys() if k not in ['x', 'y', 'z']]
-        print(f"  Adjoint source field components: {adj_field_names}")
-        for fname in adj_field_names:
-            val = adj_profile_sample.get(fname, 0.0)
-            if np.isfinite(val):
-                print(f"    {fname}: {abs(val):.3e}")
-            else:
-                print(f"    {fname}: NaN/Inf ⚠️")
+    # Debug: check adjoint source profile (disabled for production)
+    # if adj_source.mode_profiles:
+    #     adj_profile_sample = adj_source.mode_profiles[0][0]
+    #     adj_field_names = [k for k in adj_profile_sample.keys() if k not in ['x', 'y', 'z']]
+    #     print(f"  Adjoint source field components: {adj_field_names}")
+    #     for fname in adj_field_names:
+    #         val = adj_profile_sample.get(fname, 0.0)
+    #         if np.isfinite(val):
+    #             print(f"    {fname}: {abs(val):.3e}")
+    #         else:
+    #             print(f"    {fname}: NaN/Inf ⚠️")
     
     adj = FDTD(design=grid, devices=[adj_source], time=t)
     adj.initialize_simulation(save=False, live=False, accumulate_power=True, save_memory_mode=True, fields_to_cache=None)

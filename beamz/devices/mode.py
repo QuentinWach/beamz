@@ -235,11 +235,16 @@ def tidy3d_mode_computation_wrapper(
 def _normalize_by_poynting_flux(E: np.ndarray, H: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray]:
     S = np.cross(E, np.conjugate(H), axis=0)
     power = float(np.real(np.sum(S[axis])))
+    
+    # Debug: check which normalization path is taken
+    # print(f"[DEBUG normalize] axis={axis}, power={power:.3e}, E_norm={np.linalg.norm(E):.3e}, H_norm={np.linalg.norm(H):.3e}")
+    
     # Guard against tiny/negative/NaN power from numerical noise
     if not np.isfinite(power) or abs(power) < 1e-18:
         # Fallback: normalize by field amplitude
         e_norm = float(np.linalg.norm(E))
         if e_norm > 1e-18 and np.isfinite(e_norm):
+            # print(f"[DEBUG normalize] Using E-norm fallback: {e_norm:.3e}")
             return E / e_norm, H / e_norm
         return E, H
     # Normalize by magnitude of power to avoid sqrt of negative

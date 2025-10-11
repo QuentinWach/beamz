@@ -89,7 +89,7 @@ class ModeSource():
         end: End point of the source line (x,y) or (x,y,z) - use position + width/height instead
     """
     def __init__(self, design, position=None, width=None, height=None, wavelength=1.55*µm, signal=0, direction="+x", 
-                 orientation=None, npml=20, num_modes=2, mode_index=0, grid_resolution=2000, mode_solver="num_eigen",
+                 orientation=None, npml=20, num_modes=2, mode_index=0, filter_pol=None, grid_resolution=2000, mode_solver="num_eigen",
                  start=None, end=None):
         # Handle legacy start/end parameters vs new position/width/height approach
         if start is not None and end is not None:
@@ -151,6 +151,26 @@ class ModeSource():
         self.grid_resolution = grid_resolution
         self.mode_solver = mode_solver
         
+        # Auto-set filter_pol to "te" for 2D simulations if not specified
+        # Robustly detect if this is a 2D or 3D simulation
+        design_is_3d = False
+        if hasattr(design, 'is_3d'):
+            design_is_3d = design.is_3d
+        elif hasattr(design, 'design') and hasattr(design.design, 'is_3d'):
+            design_is_3d = design.design.is_3d
+        # Also check depth
+        design_depth = getattr(design, 'depth', None) or getattr(getattr(design, 'design', None), 'depth', None)
+        if design_depth is not None and design_depth > 0:
+            design_is_3d = True
+        else:
+            design_is_3d = False  # If depth is 0 or None, it's 2D
+        
+        is_2d = not design_is_3d
+        if filter_pol is None and is_2d:
+            filter_pol = "te"  # Force TE modes (Ez dominant) for 2D
+        self.filter_pol = filter_pol
+        # print(f"[DEBUG] ModeSource init: is_2d={is_2d}, filter_pol={filter_pol}, design_depth={design_depth}")
+        
         # Validate mode_index
         if mode_index < 0:
             raise ValueError(f"mode_index must be non-negative, got {mode_index}")
@@ -180,6 +200,7 @@ class ModeSource():
             npml=self.npml,
             m=self.num_modes,
             direction=self.direction,
+            filter_pol=self.filter_pol,
             return_fields=True,
         )
 
@@ -200,10 +221,63 @@ class ModeSource():
             e_field = mode_e_fields[mode_idx]
             h_field = mode_h_fields[mode_idx]
 
-            # Extract field components using dynamic indices
-            E_main_line = self._collapse_field_to_line(e_field, e_idx, eps_1d.size)
-            H_trans1_line = self._collapse_field_to_line(h_field, h1_idx, eps_1d.size)
-            H_trans2_line = self._collapse_field_to_line(h_field, h2_idx, eps_1d.size)
+            # Auto-detect dominant field components
+            e_norms = [np.linalg.norm(e_field[i]) for i in range(3)]
+            h_norms = [np.linalg.norm(h_field[i]) for i in range(3)]
+            e_idx_use = int(np.argmax(e_norms))
+            h_sorted = np.argsort(h_norms)[::-1]
+            h1_idx_use = int(h_sorted[0])
+            h2_idx_use = int(h_sorted[1])
+            
+            # Extract field components
+            E_main_line = self._collapse_field_to_line(e_field, e_idx_use, eps_1d.size)
+            H_trans1_line = self._collapse_field_to_line(h_field, h1_idx_use, eps_1d.size)
+            H_trans2_line = self._collapse_field_to_line(h_field, h2_idx_use, eps_1d.size)
+            
+            # For 2D FDTD compatibility: Always map dominant E to "Ez" regardless of actual component
+            # This ensures injection works with 2D simulations that only have Ez field
+            # Re-check is_2d using same logic as __init__
+            design_is_3d = False
+            if hasattr(self.design, 'is_3d'):
+                design_is_3d = self.design.is_3d
+            elif hasattr(self.design, 'design') and hasattr(self.design.design, 'is_3d'):
+                design_is_3d = self.design.design.is_3d
+            design_depth = getattr(self.design, 'depth', None) or getattr(getattr(self.design, 'design', None), 'depth', None)
+            if design_depth is not None and design_depth > 0:
+                design_is_3d = True
+            else:
+                design_is_3d = False
+            is_2d = not design_is_3d
+            axis = _direction_to_axis(self.direction)
+            
+            # print(f"[DEBUG mode loop] is_2d={is_2d}, mode_idx={mode_idx}")
+            
+            if is_2d:
+                # Map dominant E-field to "Ez" for 2D compatibility
+                field_map = {
+                    'E_main': 'Ez',  # Always Ez for 2D
+                    'H_trans1': 'Hx',  # Dummy (not injected in 2D)
+                    'H_trans2': 'Hy'   # Dummy (not injected in 2D)
+                }
+                # print(f"[DEBUG 2D mode] field_map set to: {field_map}")
+            else:
+                # 3D: Use actual component names from mode solver
+                if axis == 0:
+                    comp_names = [['Ez', 'Ex', 'Ey'], ['Hz', 'Hx', 'Hy']]
+                elif axis == 1:
+                    comp_names = [['Ex', 'Ez', 'Ey'], ['Hx', 'Hz', 'Hy']]
+                else:
+                    comp_names = [['Ex', 'Ey', 'Ez'], ['Hx', 'Hy', 'Hz']]
+                
+                e_main_name = comp_names[0][e_idx_use]
+                h1_name = comp_names[1][h1_idx_use]
+                h2_name = comp_names[1][h2_idx_use]
+                
+                field_map = {
+                    'E_main': e_main_name,
+                    'H_trans1': h1_name,
+                    'H_trans2': h2_name
+                }
 
             # For backward propagation, flip H-field signs to maintain correct Poynting vector direction
             is_backward = not self.direction.startswith("+")
@@ -211,15 +285,9 @@ class ModeSource():
                 H_trans1_line = -H_trans1_line
                 H_trans2_line = -H_trans2_line
 
-            # Calculate Poynting vector using appropriate components for this direction
-            S_e_name, S_h_name = field_map['S_components']
-            if S_e_name == field_map['E_main'] and S_h_name == field_map['H_trans2']:
-                # Sx = -Ez * Hy* or Sy = Ez * Hx*
-                sign = -1 if _direction_to_axis(self.direction) == 0 else 1
-                S_complex = sign * E_main_line * np.conj(H_trans2_line)
-            else:
-                # Fallback
-                S_complex = E_main_line * np.conj(H_trans1_line)
+            # Calculate Poynting vector: Use the two largest field components
+            # S = E × H, so power flows along dominant E × dominant H
+            S_complex = E_main_line * np.conj(H_trans1_line)
             
             power_total = np.real(np.sum(S_complex) * spacing)
             if power_total == 0.0 or not np.isfinite(power_total):
@@ -228,6 +296,15 @@ class ModeSource():
             E_main_line *= scale
             H_trans1_line *= scale
             H_trans2_line *= scale
+            
+            # Additional normalization to ensure fields are on a reasonable scale
+            # Target: |E| ~ 1 for unit amplitude injection
+            e_max = np.max(np.abs(E_main_line))
+            if e_max > 1.0 and np.isfinite(e_max):
+                renorm = 1.0 / e_max
+                E_main_line *= renorm
+                H_trans1_line *= renorm
+                H_trans2_line *= renorm
 
             power_density_mag = np.abs(np.real(S_complex))
             if power_density_mag.size:
@@ -248,6 +325,12 @@ class ModeSource():
                 point[field_map['H_trans1']] = H1_amp
                 point[field_map['H_trans2']] = H2_amp
                 profile.append(point)
+            
+            # Debug: print what was actually stored (first iteration only)
+            # if mode_idx == 0 and len(profile) > 0:
+            #     sample = profile[0]
+            #     field_keys = [k for k in sample.keys() if k not in ['x', 'y', 'z']]
+            #     print(f"[DEBUG ModeSource {self.direction}] Stored fields in profile: {field_keys}")
             
             self.mode_profiles.append(profile)
 
@@ -564,12 +647,24 @@ class ModeSource():
         return profile
 
     def _field_component_indices(self):
+        """Return indices to extract (E_main, H_trans1, H_trans2) from mode solver output.
+        
+        Mode solver returns stacked arrays based on propagation axis:
+        - axis=0 (x): E=[Ez, Ex, Ey], H=[Hz, Hx, Hy]
+        - axis=1 (y): E=[Ex, Ez, Ey], H=[-Hx, -Hz, -Hy]
+        - axis=2 (z): E=[Ex, Ey, Ez], H=[Hx, Hy, Hz]
+        
+        For 2D TE modes we want:
+        - x-prop: Ez, Hx, Hy
+        - y-prop: Ez, Hz, Hx
+        - z-prop: Ex, Hy, Hz
+        """
         axis = getattr(self, "propagation_axis", _direction_to_axis(self.direction))
-        if axis == 0:
-            return 0, 1, 2
-        if axis == 1:
-            return 1, 2, 0
-        return 2, 0, 1
+        if axis == 0:  # x-propagation
+            return 0, 1, 2  # Ez, Hx, Hy
+        if axis == 1:  # y-propagation
+            return 1, 1, 0  # Ez, Hz, Hx (note: H[1] is -Hz but we flip sign for backward)
+        return 2, 0, 1  # Ex, Hy, Hz (for z-propagation)
 
     def show(self):
         """Visualize the mode profiles for this source."""
