@@ -407,7 +407,7 @@ for step in range(1,STEPS+1):
     # Manual visualization context for adjoint Ez field (V/µm)
     ez_extent = (0.0, float(design.width), 0.0, float(design.height))
     manual_viz_ctx = None
-    viz_stride = 2  # update plot every N steps
+    viz_stride = 2  # match forward animation cadence
     
     # Track max field magnitudes during adjoint simulation
     adj_ez_max_overall = 0.0
@@ -428,7 +428,10 @@ for step in range(1,STEPS+1):
                 percentile=99,
                 title=f"Adjoint Ez (step {step_idx})",
                 units='V/µm',
-                pause=0.01,
+                pause=0.002,
+                auto_interval=4,
+                smoothing=0.25,
+                design=design,
             )
         
         # Sample field magnitude every 100 steps

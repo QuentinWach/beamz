@@ -549,12 +549,18 @@ def animate_manual_field(field_array,
                          percentile=99,
                          title=None,
                          units='V/µm',
-                         pause=0.01):
+                         pause=0.002,
+                         auto_interval=4,
+                         smoothing=0.25,
+                         design=None,
+                         show_structures=True,
+                         show_sources=True,
+                         show_monitors=True):
     """Create or update a live Matplotlib view of a 2D field array.
 
     Args:
         field_array: 2D numeric array to visualise (already converted to desired units).
-        context: Optional dict (``{'fig','ax','im','cbar'}``) returned by a previous call.
+        context: Optional dict (``{'fig','ax','im','cbar','frame','auto_scale'}``) returned by a previous call.
         axis_scale: Optional tuple/list ``(vmin, vmax)`` for fixed scaling.
         extent: Optional Matplotlib extent tuple ``(xmin, xmax, ymin, ymax)``.
         cmap: Matplotlib colormap to use.
@@ -562,29 +568,46 @@ def animate_manual_field(field_array,
         title: Optional title string for the plot.
         units: Axis label for the colour bar.
         pause: Seconds to pause after drawing (keeps UI responsive).
+        auto_interval: Recompute auto scaling every N frames when ``axis_scale`` is ``None``.
+        smoothing: Exponential smoothing factor (0-1) applied to auto scale updates.
+        design: Optional FDTD design object to overlay structures, sources, and monitors.
+        show_structures: Boolean to control if design structures are overlaid.
+        show_sources: Boolean to control if design sources are overlaid.
+        show_monitors: Boolean to control if design monitors are overlaid.
 
     Returns:
         context dict containing references to the Matplotlib objects for reuse.
     """
     import matplotlib.pyplot as plt
 
-    data = np.asarray(field_array)
+    data = np.asarray(field_array, dtype=float)
     if data.size == 0:
         return context
 
+    if context is None:
+        context = {}
+
     if axis_scale is None:
-        abs_data = np.abs(data)
-        if abs_data.size > 10:
-            vmax = np.percentile(abs_data, percentile)
+        frame = context.get('frame', 0)
+        use_cached = ('auto_scale' in context) and (frame % auto_interval != 0)
+        if use_cached:
+            vmax = context['auto_scale']
         else:
-            vmax = float(np.max(abs_data) or 1.0)
-        if not np.isfinite(vmax) or vmax <= 0:
-            vmax = float(np.max(abs_data) or 1.0)
+            abs_data = np.abs(data)
+            if abs_data.size > 10:
+                vmax = np.percentile(abs_data, percentile)
+            else:
+                vmax = float(np.max(abs_data) or 1.0)
+            if not np.isfinite(vmax) or vmax <= 0:
+                vmax = float(np.max(abs_data) or 1.0)
+            if 'auto_scale' in context:
+                vmax = (1.0 - smoothing) * context['auto_scale'] + smoothing * vmax
+            context['auto_scale'] = vmax
         vmin, vmax = -vmax, vmax
     else:
         vmin, vmax = axis_scale
 
-    if context is None or context.get('im') is None:
+    if context.get('im') is None:
         fig, ax = plt.subplots()
         if extent is not None:
             im = ax.imshow(data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
@@ -593,10 +616,42 @@ def animate_manual_field(field_array,
         cbar = plt.colorbar(im, ax=ax, orientation='vertical', label=f'Ez ({units})')
         if title:
             ax.set_title(title)
+
+        if design is not None and show_structures:
+            try:
+                tmp_design = design.copy()
+                tmp_design.unify_polygons()
+                overlay_structures = tmp_design.structures
+            except Exception:
+                overlay_structures = getattr(design, 'structures', [])
+            for structure in overlay_structures or []:
+                if hasattr(structure, 'is_pml') and structure.is_pml:
+                    structure.add_to_plot(ax, edgecolor="black", linestyle='--', facecolor='none', alpha=0.5)
+                elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
+                    structure.add_to_plot(ax, facecolor="none", edgecolor="black", linestyle='-')
+            if show_sources:
+                for source in getattr(design, 'sources', []) or []:
+                    if hasattr(source, 'add_to_plot'):
+                        source.add_to_plot(ax)
+            if show_monitors:
+                for monitor in getattr(design, 'monitors', []) or []:
+                    if hasattr(monitor, 'add_to_plot'):
+                        monitor.add_to_plot(ax)
+
+        if design is not None:
+            max_dim = max(design.width, design.height)
+            scale, unit = get_si_scale_and_label(max_dim)
+            ax.set_xlabel(f'X ({unit})')
+            ax.set_ylabel(f'Y ({unit})')
+            ax.xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
+            ax.yaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
+
         plt.tight_layout()
         plt.show(block=False)
         plt.pause(pause)
-        return {'fig': fig, 'ax': ax, 'im': im, 'cbar': cbar}
+        context.update({'fig': fig, 'ax': ax, 'im': im, 'cbar': cbar, 'frame': 1})
+        context.setdefault('auto_scale', vmax if axis_scale is None else None)
+        return context
 
     # Update existing plot
     im = context['im']
@@ -604,8 +659,12 @@ def animate_manual_field(field_array,
     im.set_clim(vmin, vmax)
     if title:
         context['ax'].set_title(title)
-    context['fig'].canvas.draw_idle()
-    context['fig'].canvas.flush_events()
+    context['frame'] = context.get('frame', 0) + 1
+    if context.get('cbar') is not None:
+        context['cbar'].mappable.set_clim(vmin, vmax)
+    fig = context['fig']
+    fig.canvas.draw_idle()
+    fig.canvas.flush_events()
     plt.pause(pause)
     return context
 
