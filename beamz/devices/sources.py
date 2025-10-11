@@ -182,12 +182,33 @@ class ModeSource():
         
         # Calculate and store mode profiles
         self.dL = self.wavelength / grid_resolution  # Sampling resolution
-        eps_1d = self.get_eps_1d()
         self.omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         self.max_field_amplitude = 0.0
         self.max_power_density = 0.0
+        
+        # Solve modes using default resolution
+        self._solve_modes_internal(resolution=self.dL)
 
-        # Use default numerical eigenmode solver with full field takeaway
+    def _solve_modes_internal(self, resolution: float):
+        """Internal method to solve modes with given resolution.
+        
+        Args:
+            resolution: Grid spacing for mode solving (in meters)
+        """
+        # Sample permittivity along source line with given resolution
+        x0, y0, z0 = self.start[0], self.start[1], self.start[2]
+        x1, y1, z1 = self.end[0], self.end[1], self.end[2]
+        line_length = np.hypot(x1 - x0, y1 - y0)
+        num_points = max(int(line_length / resolution), 10)  # At least 10 points
+        
+        x = np.linspace(x0, x1, num_points)
+        y = np.linspace(y0, y1, num_points)
+        z = np.linspace(z0, z1, num_points)
+        eps_1d = np.zeros(num_points)
+        for i, (x_i, y_i, z_i) in enumerate(zip(x, y, z)):
+            eps_1d[i], _, _ = self.design.get_material_value(x_i, y_i, z_i)
+        
+        # Solve modes
         (
             self.effective_indices,
             self.mode_e_fields,
@@ -196,7 +217,7 @@ class ModeSource():
         ) = solve_modes(
             eps_1d,
             self.omega,
-            self.dL,
+            resolution,
             npml=self.npml,
             m=self.num_modes,
             direction=self.direction,
@@ -204,18 +225,13 @@ class ModeSource():
             return_fields=True,
         )
 
-        # Convert tidy3d field grids to 1D profiles along the source span
+        # Convert mode fields to profiles along source line
         mode_e_fields = self.mode_e_fields
         mode_h_fields = self.mode_h_fields
         self.mode_vectors = np.zeros((eps_1d.size, mode_e_fields.shape[0]), dtype=complex)
         self.mode_profiles = []
         
-        # Get dynamic field component mapping for current direction
-        field_map = self._get_field_components_for_direction()
-        e_idx, h1_idx, h2_idx = self._field_component_indices()
-        
-        line_length = np.hypot(self.end[0] - self.start[0], self.end[1] - self.start[1])
-        spacing = line_length / max(eps_1d.size - 1, 1)
+        spacing = line_length / max(num_points - 1, 1)
 
         for mode_idx in range(mode_e_fields.shape[0]):
             e_field = mode_e_fields[mode_idx]
@@ -230,13 +246,11 @@ class ModeSource():
             h2_idx_use = int(h_sorted[1])
             
             # Extract field components
-            E_main_line = self._collapse_field_to_line(e_field, e_idx_use, eps_1d.size)
-            H_trans1_line = self._collapse_field_to_line(h_field, h1_idx_use, eps_1d.size)
-            H_trans2_line = self._collapse_field_to_line(h_field, h2_idx_use, eps_1d.size)
+            E_main_line = self._collapse_field_to_line(e_field, e_idx_use, num_points)
+            H_trans1_line = self._collapse_field_to_line(h_field, h1_idx_use, num_points)
+            H_trans2_line = self._collapse_field_to_line(h_field, h2_idx_use, num_points)
             
-            # For 2D FDTD compatibility: Always map dominant E to "Ez" regardless of actual component
-            # This ensures injection works with 2D simulations that only have Ez field
-            # Re-check is_2d using same logic as __init__
+            # For 2D FDTD compatibility: Always map dominant E to "Ez"
             design_is_3d = False
             if hasattr(self.design, 'is_3d'):
                 design_is_3d = self.design.is_3d
@@ -250,18 +264,15 @@ class ModeSource():
             is_2d = not design_is_3d
             axis = _direction_to_axis(self.direction)
             
-            # print(f"[DEBUG mode loop] is_2d={is_2d}, mode_idx={mode_idx}")
-            
             if is_2d:
                 # Map dominant E-field to "Ez" for 2D compatibility
                 field_map = {
-                    'E_main': 'Ez',  # Always Ez for 2D
-                    'H_trans1': 'Hx',  # Dummy (not injected in 2D)
-                    'H_trans2': 'Hy'   # Dummy (not injected in 2D)
+                    'E_main': 'Ez',
+                    'H_trans1': 'Hx',
+                    'H_trans2': 'Hy'
                 }
-                # print(f"[DEBUG 2D mode] field_map set to: {field_map}")
             else:
-                # 3D: Use actual component names from mode solver
+                # 3D: Use actual component names
                 if axis == 0:
                     comp_names = [['Ez', 'Ex', 'Ey'], ['Hz', 'Hx', 'Hy']]
                 elif axis == 1:
@@ -279,16 +290,14 @@ class ModeSource():
                     'H_trans2': h2_name
                 }
 
-            # For backward propagation, flip H-field signs to maintain correct Poynting vector direction
+            # For backward propagation, flip H-field signs
             is_backward = not self.direction.startswith("+")
             if is_backward:
                 H_trans1_line = -H_trans1_line
                 H_trans2_line = -H_trans2_line
 
-            # Calculate Poynting vector: Use the two largest field components
-            # S = E × H, so power flows along dominant E × dominant H
+            # Calculate Poynting vector and normalize
             S_complex = E_main_line * np.conj(H_trans1_line)
-            
             power_total = np.real(np.sum(S_complex) * spacing)
             if power_total == 0.0 or not np.isfinite(power_total):
                 power_total = 1e-12
@@ -297,8 +306,7 @@ class ModeSource():
             H_trans1_line *= scale
             H_trans2_line *= scale
             
-            # Additional normalization to ensure fields are on a reasonable scale
-            # Target: |E| ~ 1 for unit amplitude injection
+            # Additional normalization
             e_max = np.max(np.abs(E_main_line))
             if e_max > 1.0 and np.isfinite(e_max):
                 renorm = 1.0 / e_max
@@ -313,24 +321,18 @@ class ModeSource():
             self.mode_vectors[:, mode_idx] = E_main_line
             self.max_field_amplitude = max(self.max_field_amplitude, float(np.max(np.abs(E_main_line))))
             
-            # Build profile with dynamic field component names
+            # Build profile with exact coordinates along source line
             profile = []
             for idx, (E_amp, H1_amp, H2_amp) in enumerate(zip(E_main_line, H_trans1_line, H_trans2_line)):
-                x = self.start[0] + (self.end[0] - self.start[0]) * idx / max(len(E_main_line) - 1, 1)
-                y = self.start[1] + (self.end[1] - self.start[1]) * idx / max(len(E_main_line) - 1, 1)
-                z = self.start[2] + (self.end[2] - self.start[2]) * idx / max(len(E_main_line) - 1, 1)
+                x_pos = x[idx]
+                y_pos = y[idx]
+                z_pos = z[idx]
                 
-                point = {"x": x, "y": y, "z": z}
+                point = {"x": x_pos, "y": y_pos, "z": z_pos}
                 point[field_map['E_main']] = E_amp
                 point[field_map['H_trans1']] = H1_amp
                 point[field_map['H_trans2']] = H2_amp
                 profile.append(point)
-            
-            # Debug: print what was actually stored (first iteration only)
-            # if mode_idx == 0 and len(profile) > 0:
-            #     sample = profile[0]
-            #     field_keys = [k for k in sample.keys() if k not in ['x', 'y', 'z']]
-            #     print(f"[DEBUG ModeSource {self.direction}] Stored fields in profile: {field_keys}")
             
             self.mode_profiles.append(profile)
 
@@ -339,9 +341,34 @@ class ModeSource():
             if self.max_field_amplitude <= 0.0:
                 self.max_field_amplitude = 1.0
             self.max_power_density = (self.max_field_amplitude ** 2) / max(eta0, 1e-12)
-
-        return
-
+    
+    def compute_modes_on_fdtd_grid(self, dx: float, dy: float, dz: float = None):
+        """Recompute modes using FDTD grid spacing for perfect alignment.
+        
+        This method resolves modes on the exact FDTD grid spacing, eliminating 
+        interpolation errors and ensuring 1:1 mapping between mode profiles 
+        and FDTD cells.
+        
+        Args:
+            dx: FDTD grid spacing in x direction (meters)
+            dy: FDTD grid spacing in y direction (meters)
+            dz: FDTD grid spacing in z direction (meters), optional for 2D
+        
+        The mode solver resolution is set to the finest grid spacing to ensure
+        the mode captures all grid-scale features of the permittivity distribution.
+        """
+        # Use the finest grid spacing as mode solver resolution
+        # This ensures modes capture all grid-scale features
+        if dz is not None:
+            resolution = min(dx, dy, dz)
+        else:
+            resolution = min(dx, dy)
+        
+        # Recompute modes with FDTD grid resolution
+        print(f"[ModeSource] Recomputing modes with FDTD grid resolution: {resolution*1e9:.3f} nm")
+        self._solve_modes_internal(resolution=resolution)
+        print(f"[ModeSource] Grid-aligned mode profiles generated: {len(self.mode_profiles)} modes")
+    
     def _collapse_field_to_line(self, field: np.ndarray, component_idx: int, target_len: int) -> np.ndarray:
         component = np.squeeze(field[component_idx])
         if component.ndim == 2:

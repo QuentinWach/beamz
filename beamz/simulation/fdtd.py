@@ -128,6 +128,14 @@ class FDTD:
             else:
                 raise TypeError(f"Unsupported device type: {type(device)}")
         
+        # Grid-aligned mode solving: Recompute mode profiles on FDTD grid for perfect injection
+        for source in self.sources:
+            if isinstance(source, ModeSource):
+                if self.is_3d:
+                    source.compute_modes_on_fdtd_grid(self.dx, self.dy, self.dz)
+                else:
+                    source.compute_modes_on_fdtd_grid(self.dx, self.dy)
+        
         # Initialize the results based on dimensionality
         if self.is_3d: self.results = {"Ex": [], "Ey": [], "Ez": [], "Hx": [], "Hy": [], "Hz": [], "t": []}
         else: self.results = {"Ez": [], "Hx": [], "Hy": [], "t": []}

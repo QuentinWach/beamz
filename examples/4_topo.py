@@ -13,7 +13,7 @@ WG_W = 0.5*µm
 N_CORE, N_CLAD = 2.25, 1.444
 EPS_CORE, EPS_CLAD = N_CORE**2, N_CLAD**2
 WL = 1.55*µm
-STEPS, LR = 50, 0.1
+STEPS, LR = 2, 0.1
 DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE,N_CLAD), dims=2, safety_factor=0.99, points_per_wavelength=9)
 TIME = 30*WL/LIGHT_SPEED
 t = np.arange(0, TIME, DT)
