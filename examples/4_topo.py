@@ -342,9 +342,9 @@ for step in range(1,STEPS+1):
         print(f"  ⚠️ WARNING: Permittivity out of reasonable bounds!")
     
     forward = FDTD(design=grid, devices=[source, monitor], time=t)
-    # Use explicit axis_scale to make small field amplitudes visible (in V/µm)
-    # Signal amplitude is 1e-6, so expect fields around 1e-10 to 1e-9 V/µm
-    fres = forward.run(live=True, axis_scale=[-5e-10, 5e-10], save_memory_mode=True, accumulate_power=True, save_fields=["Ez"], fields_to_cache=["Ez"])
+    # Use explicit axis_scale to make field amplitudes visible (in V/µm)
+    # New normalization: |E| ~ 1e6 V/m × signal(1e-6) × viz_scale(1e-6) = 1 V/µm
+    fres = forward.run(live=True, save_memory_mode=True, accumulate_power=True, save_fields=["Ez"], fields_to_cache=["Ez"])
     
     # Check if forward fields are reasonable
     if fres.get("Ez"):
@@ -394,12 +394,20 @@ for step in range(1,STEPS+1):
             amplitudes = [abs(pt.get(fname, 0.0)) for pt in adj_profile]
             max_amp = max(amplitudes) if amplitudes else 0.0
             print(f"    {fname} max amplitude: {max_amp:.3e}")
+        
+        # Debug: Check field signs at center to verify unidirectionality (disabled for production)
+        # center_idx = len(adj_profile) // 2
+        # if center_idx < len(adj_profile):
+        #     center_pt = adj_profile[center_idx]
+        #     print(f"  Center point fields (for unidirectional check):")
+        #     for fname in adj_field_names:
+        #         val = center_pt.get(fname, 0.0)
+        #         print(f"    {fname} = {val.real:.3e} + {val.imag:.3e}j")
     
     adj = FDTD(design=grid, devices=[adj_source], time=t)
-    # Use wider axis_scale to ensure fields are clearly visible
-    # Measured: Adjoint Ez_max ~1.8e-4 V/m → ~1.8e-10 V/µm after scaling
-    # Using 2x wider range ensures fields appear in middle of colormap for better contrast
-    adj.initialize_simulation(save=False, live=True, axis_scale=[-1e-9, 1e-9], accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
+    # Note: FDTD's live animation won't be used; we use manual viz below
+    # But initialize with live=False to avoid creating unused figure
+    adj.initialize_simulation(save=False, live=False, accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
     grad = np.zeros_like(base)
     num_ffields = len(ffields)
     print(f"  Forward fields available: {num_ffields}")
@@ -577,10 +585,11 @@ plt.close(final_density_fig)
 
 final_source = build_forward_source(design, signal)
 final_monitor = build_output_monitor(design)
-# Use explicit axis_scale to make small field amplitudes visible (in V/µm)
+# Use explicit axis_scale to make field amplitudes visible (in V/µm)
+# New normalization: |E| ~ 1e6 V/m × signal(1e-6) × viz_scale(1e-6) = 1 V/µm
 final = FDTD(design=grid, devices=[final_source, final_monitor], time=t).run(
     live=True,
-    axis_scale=[-5e-10, 5e-10],
+    axis_scale=[-2, 2],
     save_memory_mode=True,
     accumulate_power=True,
     save_fields=["Ez"],

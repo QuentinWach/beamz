@@ -195,15 +195,39 @@ class ModeSource():
         Args:
             resolution: Grid spacing for mode solving (in meters)
         """
-        # Sample permittivity along source line with given resolution
+        # Sample permittivity along source line aligned to FDTD cell centers
         x0, y0, z0 = self.start[0], self.start[1], self.start[2]
         x1, y1, z1 = self.end[0], self.end[1], self.end[2]
-        line_length = np.hypot(x1 - x0, y1 - y0)
-        num_points = max(int(line_length / resolution), 10)  # At least 10 points
         
-        x = np.linspace(x0, x1, num_points)
-        y = np.linspace(y0, y1, num_points)
-        z = np.linspace(z0, z1, num_points)
+        # Align coordinates to FDTD cell centers for perfect grid matching
+        # FDTD cells are centered at (i + 0.5) * resolution
+        # Determine which axis varies (perpendicular to propagation)
+        dx_line = abs(x1 - x0)
+        dy_line = abs(y1 - y0)
+        dz_line = abs(z1 - z0)
+        
+        if dx_line > max(dy_line, dz_line):  # x varies (horizontal line)
+            i_start = int(np.floor(x0 / resolution))
+            i_end = int(np.ceil(x1 / resolution))
+            x = np.array([(i + 0.5) * resolution for i in range(i_start, i_end)])
+            y = np.full_like(x, y0)
+            z = np.full_like(x, z0)
+        elif dy_line > max(dx_line, dz_line):  # y varies (vertical line)
+            j_start = int(np.floor(y0 / resolution))
+            j_end = int(np.ceil(y1 / resolution))
+            y = np.array([(j + 0.5) * resolution for j in range(j_start, j_end)])
+            x = np.full_like(y, x0)
+            z = np.full_like(y, z0)
+        else:  # z varies (3D case)
+            k_start = int(np.floor(z0 / resolution))
+            k_end = int(np.ceil(z1 / resolution))
+            z = np.array([(k + 0.5) * resolution for k in range(k_start, k_end)])
+            x = np.full_like(z, x0)
+            y = np.full_like(z, y0)
+        
+        num_points = len(x)
+        line_length = np.hypot(dx_line, dy_line)
+        
         eps_1d = np.zeros(num_points)
         for i, (x_i, y_i, z_i) in enumerate(zip(x, y, z)):
             eps_1d[i], _, _ = self.design.get_material_value(x_i, y_i, z_i)
@@ -290,11 +314,18 @@ class ModeSource():
                     'H_trans2': h2_name
                 }
 
-            # For backward propagation, flip H-field signs
-            is_backward = not self.direction.startswith("+")
-            if is_backward:
-                H_trans1_line = -H_trans1_line
-                H_trans2_line = -H_trans2_line
+            # NOTE: Mode solver already returns modes with correct propagation direction
+            # via the 'direction' parameter, so NO sign flip is needed!
+            # Previous H-field sign flip was causing bidirectional radiation bug.
+            
+            # Debug: Verify Poynting vector direction (disable in production)
+            # if mode_idx == 0:
+            #     is_backward = not self.direction.startswith("+")
+            #     E_sample = E_main_line[len(E_main_line)//2]
+            #     H1_sample = H_trans1_line[len(H_trans1_line)//2]
+            #     S_sample = E_sample * np.conj(H1_sample)
+            #     print(f"[DEBUG ModeSource] direction={self.direction}, field_map={field_map}")
+            #     print(f"  Poynting (E×H*): {S_sample.real:.3e} (should be {'negative' if is_backward else 'positive'})")
 
             # Calculate Poynting vector and normalize
             S_complex = E_main_line * np.conj(H_trans1_line)
@@ -306,10 +337,11 @@ class ModeSource():
             H_trans1_line *= scale
             H_trans2_line *= scale
             
-            # Additional normalization
+            # Additional normalization to target |E| ~ 1e6 V/m
+            # This produces nice V/µm display values: 1e6 V/m × signal(1e-6) × viz_scale(1e-6) = 1 V/µm
             e_max = np.max(np.abs(E_main_line))
-            if e_max > 1.0 and np.isfinite(e_max):
-                renorm = 1.0 / e_max
+            if e_max > 0 and np.isfinite(e_max):
+                renorm = 1e6 / e_max  # Target |E| ~ 1e6 V/m for nice V/µm display
                 E_main_line *= renorm
                 H_trans1_line *= renorm
                 H_trans2_line *= renorm

@@ -26,5 +26,5 @@ design.show()
 
 # Run the simulation and show results
 sim = FDTD(design=design, time=time_steps, mesh="regular", resolution=DX)
-sim.run(live=True, save_memory_mode=True, accumulate_power=True, axis_scale=[-1, 1]) #axis_scale=[-1000/(µm), 1000/(µm)]
+sim.run(live=True, save_memory_mode=True, accumulate_power=True) #axis_scale=[-1000/(µm), 1000/(µm)]
 sim.plot_power(db_colorbar=True)
