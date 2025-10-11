@@ -156,6 +156,10 @@ class ModeSource():
             raise ValueError(f"mode_index must be non-negative, got {mode_index}")
         if mode_index >= num_modes:
             raise ValueError(f"mode_index ({mode_index}) must be less than num_modes ({num_modes})")
+        
+        # Validate source line orientation matches propagation direction
+        self._validate_source_orientation()
+        
         # Calculate and store mode profiles
         self.dL = self.wavelength / grid_resolution  # Sampling resolution
         eps_1d = self.get_eps_1d()
@@ -184,7 +188,11 @@ class ModeSource():
         mode_h_fields = self.mode_h_fields
         self.mode_vectors = np.zeros((eps_1d.size, mode_e_fields.shape[0]), dtype=complex)
         self.mode_profiles = []
-        ez_idx, hx_idx, hy_idx = self._field_component_indices()
+        
+        # Get dynamic field component mapping for current direction
+        field_map = self._get_field_components_for_direction()
+        e_idx, h1_idx, h2_idx = self._field_component_indices()
+        
         line_length = np.hypot(self.end[0] - self.start[0], self.end[1] - self.start[1])
         spacing = line_length / max(eps_1d.size - 1, 1)
 
@@ -192,30 +200,55 @@ class ModeSource():
             e_field = mode_e_fields[mode_idx]
             h_field = mode_h_fields[mode_idx]
 
-            Ez_line = self._collapse_field_to_line(e_field, ez_idx, eps_1d.size)
-            Hx_line = self._collapse_field_to_line(h_field, hx_idx, eps_1d.size)
-            Hy_line = self._collapse_field_to_line(h_field, hy_idx, eps_1d.size)
+            # Extract field components using dynamic indices
+            E_main_line = self._collapse_field_to_line(e_field, e_idx, eps_1d.size)
+            H_trans1_line = self._collapse_field_to_line(h_field, h1_idx, eps_1d.size)
+            H_trans2_line = self._collapse_field_to_line(h_field, h2_idx, eps_1d.size)
 
-            S_complex = -Ez_line * np.conj(Hy_line)
+            # For backward propagation, flip H-field signs to maintain correct Poynting vector direction
+            is_backward = not self.direction.startswith("+")
+            if is_backward:
+                H_trans1_line = -H_trans1_line
+                H_trans2_line = -H_trans2_line
+
+            # Calculate Poynting vector using appropriate components for this direction
+            S_e_name, S_h_name = field_map['S_components']
+            if S_e_name == field_map['E_main'] and S_h_name == field_map['H_trans2']:
+                # Sx = -Ez * Hy* or Sy = Ez * Hx*
+                sign = -1 if _direction_to_axis(self.direction) == 0 else 1
+                S_complex = sign * E_main_line * np.conj(H_trans2_line)
+            else:
+                # Fallback
+                S_complex = E_main_line * np.conj(H_trans1_line)
+            
             power_total = np.real(np.sum(S_complex) * spacing)
-            if power_total == 0.0:
+            if power_total == 0.0 or not np.isfinite(power_total):
                 power_total = 1e-12
-            scale = 1.0 / np.sqrt(power_total)
-            Ez_line *= scale
-            Hx_line *= scale
-            Hy_line *= scale
+            scale = 1.0 / np.sqrt(abs(power_total))
+            E_main_line *= scale
+            H_trans1_line *= scale
+            H_trans2_line *= scale
 
-            power_density_mag = np.abs(np.real(-Ez_line * np.conj(Hy_line)))
+            power_density_mag = np.abs(np.real(S_complex))
             if power_density_mag.size:
                 self.max_power_density = max(self.max_power_density, float(np.max(power_density_mag)))
 
-            self.mode_vectors[:, mode_idx] = Ez_line
-            self.max_field_amplitude = max(self.max_field_amplitude, float(np.max(np.abs(Ez_line))))
+            self.mode_vectors[:, mode_idx] = E_main_line
+            self.max_field_amplitude = max(self.max_field_amplitude, float(np.max(np.abs(E_main_line))))
+            
+            # Build profile with dynamic field component names
             profile = []
-            for idx, (Ez_amp, Hx_amp, Hy_amp) in enumerate(zip(Ez_line, Hx_line, Hy_line)):
-                x = self.start[0] + (self.end[0] - self.start[0]) * idx / max(len(Ez_line) - 1, 1)
-                y = self.start[1] + (self.end[1] - self.start[1]) * idx / max(len(Ez_line) - 1, 1)
-                profile.append({"Ez": Ez_amp, "Hx": Hx_amp, "Hy": Hy_amp, "x": x, "y": y, "z": 0.0})
+            for idx, (E_amp, H1_amp, H2_amp) in enumerate(zip(E_main_line, H_trans1_line, H_trans2_line)):
+                x = self.start[0] + (self.end[0] - self.start[0]) * idx / max(len(E_main_line) - 1, 1)
+                y = self.start[1] + (self.end[1] - self.start[1]) * idx / max(len(E_main_line) - 1, 1)
+                z = self.start[2] + (self.end[2] - self.start[2]) * idx / max(len(E_main_line) - 1, 1)
+                
+                point = {"x": x, "y": y, "z": z}
+                point[field_map['E_main']] = E_amp
+                point[field_map['H_trans1']] = H1_amp
+                point[field_map['H_trans2']] = H2_amp
+                profile.append(point)
+            
             self.mode_profiles.append(profile)
 
         if self.max_power_density <= 0.0:
@@ -272,6 +305,82 @@ class ModeSource():
                 mode_solver=self.mode_solver
             )
             
+    def _get_field_components_for_direction(self) -> dict:
+        """Return the field component names for current propagation direction.
+        
+        For 2D TE-like propagation:
+        - x-propagation: Main E-field is Ez (perpendicular to xy plane)
+        - y-propagation: Main E-field is Ez (perpendicular to xy plane)
+        
+        Returns dict with keys: 'E_main', 'H_trans1', 'H_trans2'
+        """
+        axis = _direction_to_axis(self.direction)
+        
+        if axis == 0:  # x-propagation
+            # TE mode: Ez is main, Hx and Hy are transverse
+            return {
+                'E_main': 'Ez',
+                'H_trans1': 'Hx', 
+                'H_trans2': 'Hy',
+                'S_components': ('Ez', 'Hy')  # For Poynting: Sx = -Ez * Hy*
+            }
+        elif axis == 1:  # y-propagation
+            # TE mode: Ez is main, Hz and Hx are transverse
+            return {
+                'E_main': 'Ez',
+                'H_trans1': 'Hz',
+                'H_trans2': 'Hx',
+                'S_components': ('Ez', 'Hx')  # For Poynting: Sy = Ez * Hx*
+            }
+        else:  # z-propagation (3D only)
+            # Use Ex as main field
+            return {
+                'E_main': 'Ex',
+                'H_trans1': 'Hy',
+                'H_trans2': 'Hz',
+                'S_components': ('Ex', 'Hz')  # For Poynting: Sz = Ex * Hy* - Ey * Hx*
+            }
+    
+    def _validate_source_orientation(self):
+        """Validate that the source line is perpendicular to the propagation direction."""
+        if not hasattr(self, 'start') or not hasattr(self, 'end'):
+            return  # Skip validation for position/width/height mode
+        
+        dx = abs(self.end[0] - self.start[0])
+        dy = abs(self.end[1] - self.start[1])
+        dz = abs(self.end[2] - self.start[2])
+        
+        # Determine which axis the source line is along
+        threshold = 1e-9
+        line_is_along_x = dx > max(dy, dz) + threshold
+        line_is_along_y = dy > max(dx, dz) + threshold
+        line_is_along_z = dz > max(dx, dy) + threshold
+        
+        # Check if line orientation is perpendicular to propagation
+        prop_axis = _direction_to_axis(self.direction)
+        
+        if prop_axis == 0:  # Propagation in x
+            if line_is_along_x:
+                raise ValueError(
+                    f"ModeSource line must be perpendicular to propagation direction '{self.direction}'.\n"
+                    f"For propagation in ±x, the source line should span in y or z direction.\n"
+                    f"Current line: start={self.start}, end={self.end}"
+                )
+        elif prop_axis == 1:  # Propagation in y
+            if line_is_along_y:
+                raise ValueError(
+                    f"ModeSource line must be perpendicular to propagation direction '{self.direction}'.\n"
+                    f"For propagation in ±y, the source line should span in x or z direction.\n"
+                    f"Current line: start={self.start}, end={self.end}"
+                )
+        elif prop_axis == 2:  # Propagation in z
+            if line_is_along_z:
+                raise ValueError(
+                    f"ModeSource line must be perpendicular to propagation direction '{self.direction}'.\n"
+                    f"For propagation in ±z, the source line should span in x or y direction.\n"
+                    f"Current line: start={self.start}, end={self.end}"
+                )
+    
     def _ensure_3d_position(self, position):
         """Convert 2D position to 3D with z=0 if needed."""
         if position is None:

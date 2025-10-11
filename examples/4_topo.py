@@ -28,7 +28,8 @@ FINAL_PROJECTION_BETA = 32.0
 FINAL_PROJECTION_THRESHOLD = 0.5
 
 # Create the design
-signal = ramped_cosine(t=t,amplitude=1.0, frequency=LIGHT_SPEED/WL, t_max=TIME, ramp_duration=6*WL/LIGHT_SPEED, phase=0)
+# Use very small amplitude to prevent divergence in topology optimization
+signal = ramped_cosine(t=t,amplitude=1e-6, frequency=LIGHT_SPEED/WL, t_max=TIME, ramp_duration=6*WL/LIGHT_SPEED, phase=0)
 design = Design(width=W, height=H, pml_size=2*µm)
 design += Rectangle(position=(0*µm,H/2-WG_W/2), width=3.5*µm, height=WG_W, material=Material(permittivity=EPS_CORE))
 design += Rectangle(position=(W/2-WG_W/2,H), width=WG_W, height=-3.5*µm, material=Material(permittivity=EPS_CORE))
@@ -257,7 +258,16 @@ def build_adjoint_source(design, signal, target_positions, target_samples):
         for idx, point in enumerate(profile):
             target_component = MODE_WEIGHT * (real_interp[idx] + 1j * imag_interp[idx])
             transmission_component = TRANSMISSION_WEIGHT
-            point["Ez"] = transmission_component + target_component
+            combined = transmission_component + target_component
+            
+            # Set all field components to avoid NaN injection
+            # For -y direction, fields are Ez, Hz, Hx
+            point["Ez"] = combined if np.isfinite(combined) else transmission_component
+            # Set H-fields to zero to avoid injecting NaNs
+            if "Hz" in point:
+                point["Hz"] = 0.0
+            if "Hx" in point:
+                point["Hx"] = 0.0
     return adjoint
 
 
@@ -294,10 +304,30 @@ for step in range(1,STEPS+1):
     np.copyto(grid.permittivity, eps)
     
     # Forward simulation using non-reflective source and mode-aware monitor
+    print(f"\n[STEP {step}] Running FORWARD simulation...")
     source = build_forward_source(design, signal)
     monitor = build_output_monitor(design)
+    
+    # Debug: check permittivity for NaN/Inf
+    eps_min = float(np.min(grid.permittivity))
+    eps_max = float(np.max(grid.permittivity))
+    has_nan = not np.all(np.isfinite(grid.permittivity))
+    print(f"  Permittivity range: [{eps_min:.3f}, {eps_max:.3f}], has NaN/Inf: {has_nan}")
+    if has_nan or eps_min < 0 or eps_max > 100:
+        print(f"  ⚠️ WARNING: Permittivity out of reasonable bounds!")
+    
     forward = FDTD(design=grid, devices=[source, monitor], time=t)
-    fres = forward.run(live=True, save_memory_mode=True, accumulate_power=True, save_fields=["Ez"], fields_to_cache=["Ez"])
+    fres = forward.run(live=False, save_memory_mode=True, accumulate_power=True, save_fields=["Ez"], fields_to_cache=["Ez"])
+    
+    # Check if forward fields are reasonable
+    if fres.get("Ez"):
+        last_ez = fres["Ez"][-1] if fres["Ez"] else None
+        if last_ez is not None:
+            ez_max = float(np.max(np.abs(last_ez)))
+            ez_has_nan = not np.all(np.isfinite(last_ez))
+            print(f"  Forward Ez_max: {ez_max:.3e}, has NaN/Inf: {ez_has_nan}")
+            if ez_has_nan or ez_max > 1e3:
+                print(f"  ⚠️ WARNING: Forward simulation may have diverged!")
     forward.plot_power(db_colorbar=False)
     forward_power_path = f"forward_power_step{step:03d}.png"
     forward.fig.savefig(forward_power_path, dpi=200, bbox_inches="tight")
@@ -305,13 +335,37 @@ for step in range(1,STEPS+1):
     ffields = list(fres.get("Ez",[]))
     
     # Adjoint simulation, computing the overlap gradient
+    print(f"[STEP {step}] Running ADJOINT simulation...")
     adj_source = build_adjoint_source(design, signal, monitor.target_positions, monitor.target_samples)
+    
+    # Debug: check adjoint source profile
+    if adj_source.mode_profiles:
+        adj_profile_sample = adj_source.mode_profiles[0][0]
+        adj_field_names = [k for k in adj_profile_sample.keys() if k not in ['x', 'y', 'z']]
+        print(f"  Adjoint source field components: {adj_field_names}")
+        for fname in adj_field_names:
+            val = adj_profile_sample.get(fname, 0.0)
+            if np.isfinite(val):
+                print(f"    {fname}: {abs(val):.3e}")
+            else:
+                print(f"    {fname}: NaN/Inf ⚠️")
+    
     adj = FDTD(design=grid, devices=[adj_source], time=t)
-    adj.initialize_simulation(save=False, live=True, accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
+    adj.initialize_simulation(save=False, live=False, accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
     grad = np.zeros_like(base)
-    for _ in range(adj.num_steps):
-        if not ffields or not adj.step(): break
+    num_ffields = len(ffields)
+    print(f"  Forward fields available: {num_ffields}")
+    
+    for step_idx in range(adj.num_steps):
+        if not ffields or not adj.step(): 
+            break
         grad += np.real(adj.backend.to_numpy(adj.Ez)*np.conj(ffields.pop()))
+    
+    # Check gradient for issues
+    grad_max = float(np.max(np.abs(grad)))
+    grad_has_nan = not np.all(np.isfinite(grad))
+    print(f"  Adjoint gradient_max: {grad_max:.3e}, has NaN/Inf: {grad_has_nan}")
+    
     adj.finalize_simulation()
     adj.plot_power(db_colorbar=False)
     adj_power_path = f"adjoint_power_step{step:03d}.png"
@@ -341,7 +395,14 @@ for step in range(1,STEPS+1):
         filter_radius_cells,
     )
     grad_design = np.where(mask, grad_design, 0.0)
-    grad_norm = grad_design / ((np.abs(grad_design).max()) or 1.0)
+    
+    # Robust gradient normalization with NaN guards
+    grad_design_max = np.abs(grad_design).max()
+    if not np.isfinite(grad_design_max) or grad_design_max == 0.0:
+        print(f"  ⚠️ WARNING: Gradient is zero or NaN! Skipping update.")
+        grad_norm = np.zeros_like(grad_design)
+    else:
+        grad_norm = grad_design / grad_design_max
     adam_update = optimizer.step(-grad_norm)
     adam_update = np.where(mask, adam_update, 0.0)
     new_design_density = design_density + adam_update

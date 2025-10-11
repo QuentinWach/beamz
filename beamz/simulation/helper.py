@@ -66,19 +66,22 @@ def apply_sources(fdtd) -> None:
             # Note: Reflections are typically absorbed by PML before returning to source
             for point in mode_profile:
                 if isinstance(point, dict):
-                    Ez_amp = point.get("Ez", 0.0)
-                    Hx_amp = point.get("Hx", 0.0)
-                    Hy_amp = point.get("Hy", 0.0)
+                    # Extract all field components dynamically (supports all directions)
+                    field_amplitudes = {}
+                    for field_name in ['Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz']:
+                        amp = point.get(field_name, None)
+                        if amp is not None:
+                            field_amplitudes[field_name] = amp
+                    
                     x_raw = point.get("x", 0.0)
                     y_raw = point.get("y", 0.0)
                     z_raw = point.get("z", 0.0)
                 else:
-                    Ez_amp = point[0]
+                    # Legacy format fallback (Ez only)
+                    field_amplitudes = {"Ez": point[0]}
                     x_raw = point[1]
                     y_raw = point[2]
                     z_raw = point[3] if len(point) > 3 else 0.0
-                    Hx_amp = 0.0
-                    Hy_amp = 0.0
 
                 x = int(round(x_raw / fdtd.dx))
                 y = int(round(y_raw / fdtd.dy))
@@ -88,28 +91,66 @@ def apply_sources(fdtd) -> None:
                     if (x < 0 or x >= fdtd.nx or y < 0 or y >= fdtd.ny or z < 0 or z >= fdtd.nz):
                         continue
                     z_target = min(z, fdtd.Ez.shape[0] - 1) if z < fdtd.Ez.shape[0] else fdtd.Ez.shape[0] // 2
+                    # Skip injection inside PML: identify PML by sigma > 0 around boundaries
+                    try:
+                        # 3D sigma aligned with Ez shape (nz-1, ny, nx)
+                        sigma_slice = fdtd.sigma
+                        if sigma_slice.ndim == 3:
+                            sigma_here = float(sigma_slice[z_target, y, x])
+                        else:
+                            sigma_here = 0.0
+                        if sigma_here > 0:
+                            continue
+                    except Exception:
+                        pass
                     
-                    # Hard source: directly set field values for unidirectional injection
-                    fdtd.Ez[z_target, y, x] = Ez_amp * e_modulation
-                    if hasattr(fdtd, "Hx") and fdtd.Hx is not None and fdtd.Hx.size and Hx_amp != 0.0:
-                        if z_target < fdtd.Hx.shape[0] and y < fdtd.Hx.shape[1] and x < fdtd.Hx.shape[2]:
-                            fdtd.Hx[z_target, y, x] = Hx_amp * h_modulation
-                    if hasattr(fdtd, "Hy") and fdtd.Hy is not None and fdtd.Hy.size and Hy_amp != 0.0:
-                        if z_target < fdtd.Hy.shape[0] and y < fdtd.Hy.shape[1] and x < fdtd.Hy.shape[2]:
-                            fdtd.Hy[z_target, y, x] = Hy_amp * h_modulation
+                    # Hard source: dynamically inject all field components present
+                    for field_name, amplitude in field_amplitudes.items():
+                        if not hasattr(fdtd, field_name):
+                            continue
+                        
+                        field_array = getattr(fdtd, field_name)
+                        if field_array is None or field_array.size == 0:
+                            continue
+                        
+                        # Use appropriate modulation (E-fields at integer steps, H-fields at half-steps)
+                        modulation = e_modulation if field_name.startswith('E') else h_modulation
+                        
+                        # Check bounds and inject
+                        if z_target < field_array.shape[0] and y < field_array.shape[1] and x < field_array.shape[2]:
+                            field_array[z_target, y, x] = amplitude * modulation
                 else:
                     # 2D case
                     if x < 0 or x >= fdtd.nx or y < 0 or y >= fdtd.ny:
                         continue
+                    # Skip injection inside PML: sigma > 0 near boundaries
+                    try:
+                        sigma_here = float(fdtd.sigma[y, x]) if fdtd.sigma.ndim == 2 else 0.0
+                        if sigma_here > 0:
+                            continue
+                    except Exception:
+                        pass
                     
-                    # Hard source: directly set field values for unidirectional injection
-                    fdtd.Ez[y, x] = Ez_amp * e_modulation
-                    if hasattr(fdtd, "Hx") and Hx_amp != 0.0 and fdtd.Hx is not None and fdtd.Hx.size:
-                        if y < fdtd.Hx.shape[0] and x < fdtd.Hx.shape[1]:
-                            fdtd.Hx[y, x] = Hx_amp * h_modulation
-                    if hasattr(fdtd, "Hy") and Hy_amp != 0.0 and fdtd.Hy is not None and fdtd.Hy.size:
-                        if y < fdtd.Hy.shape[0] and x < fdtd.Hy.shape[1]:
-                            fdtd.Hy[y, x] = Hy_amp * h_modulation
+                    # Hard source: dynamically inject all field components present
+                    # Only inject non-zero, finite amplitudes
+                    for field_name, amplitude in field_amplitudes.items():
+                        # Skip if amplitude is zero, NaN, or Inf
+                        if amplitude == 0.0 or not np.isfinite(amplitude):
+                            continue
+                        
+                        if not hasattr(fdtd, field_name):
+                            continue
+                        
+                        field_array = getattr(fdtd, field_name)
+                        if field_array is None or field_array.size == 0:
+                            continue
+                        
+                        # Use appropriate modulation (E-fields at integer steps, H-fields at half-steps)
+                        modulation = e_modulation if field_name.startswith('E') else h_modulation
+                        
+                        # Check bounds and inject
+                        if y < field_array.shape[0] and x < field_array.shape[1]:
+                            field_array[y, x] = amplitude * modulation
 
         elif isinstance(source, GaussianSource):
             modulation = source.signal[fdtd.current_step]
