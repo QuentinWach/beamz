@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numpy.lib.stride_tricks import sliding_window_view
 
-plt.switch_backend("Agg")
+#plt.switch_backend("Agg")
 from beamz import *
 from beamz.optimization.optimizers import Optimizer
 from beamz.devices.mode import solve_modes
@@ -341,7 +341,7 @@ for step in range(1,STEPS+1):
         print(f"  ⚠️ WARNING: Permittivity out of reasonable bounds!")
     
     forward = FDTD(design=grid, devices=[source, monitor], time=t)
-    fres = forward.run(live=False, save_memory_mode=True, accumulate_power=True, save_fields=["Ez"], fields_to_cache=["Ez"])
+    fres = forward.run(live=True, save_memory_mode=True, accumulate_power=True, save_fields=["Ez"], fields_to_cache=["Ez"])
     
     # Check if forward fields are reasonable
     if fres.get("Ez"):
@@ -352,7 +352,7 @@ for step in range(1,STEPS+1):
             print(f"  Forward Ez_max: {ez_max:.3e}, has NaN/Inf: {ez_has_nan}")
             if ez_has_nan or ez_max > 1e3:
                 print(f"  ⚠️ WARNING: Forward simulation may have diverged!")
-    forward.plot_power(db_colorbar=False)
+    forward.plot_power(db_colorbar=True)
     forward_power_path = f"forward_power_step{step:03d}.png"
     forward.fig.savefig(forward_power_path, dpi=200, bbox_inches="tight")
     plt.close(forward.fig)
@@ -375,7 +375,7 @@ for step in range(1,STEPS+1):
     #             print(f"    {fname}: NaN/Inf ⚠️")
     
     adj = FDTD(design=grid, devices=[adj_source], time=t)
-    adj.initialize_simulation(save=False, live=False, accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
+    adj.initialize_simulation(save=False, live=True, accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
     grad = np.zeros_like(base)
     num_ffields = len(ffields)
     print(f"  Forward fields available: {num_ffields}")
@@ -391,7 +391,7 @@ for step in range(1,STEPS+1):
     print(f"  Adjoint gradient_max: {grad_max:.3e}, has NaN/Inf: {grad_has_nan}")
     
     adj.finalize_simulation()
-    adj.plot_power(db_colorbar=False)
+    adj.plot_power(db_colorbar=True)
     adj_power_path = f"adjoint_power_step{step:03d}.png"
     adj.fig.savefig(adj_power_path, dpi=200, bbox_inches="tight")
     plt.close(adj.fig)
