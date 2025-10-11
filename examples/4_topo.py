@@ -341,7 +341,9 @@ for step in range(1,STEPS+1):
         print(f"  ⚠️ WARNING: Permittivity out of reasonable bounds!")
     
     forward = FDTD(design=grid, devices=[source, monitor], time=t)
-    fres = forward.run(live=True, save_memory_mode=True, accumulate_power=True, save_fields=["Ez"], fields_to_cache=["Ez"])
+    # Use explicit axis_scale to make small field amplitudes visible (in V/µm)
+    # Signal amplitude is 1e-6, so expect fields around 1e-10 to 1e-9 V/µm
+    fres = forward.run(live=True, axis_scale=[-5e-10, 5e-10], save_memory_mode=True, accumulate_power=True, save_fields=["Ez"], fields_to_cache=["Ez"])
     
     # Check if forward fields are reasonable
     if fres.get("Ez"):
@@ -375,7 +377,8 @@ for step in range(1,STEPS+1):
     #             print(f"    {fname}: NaN/Inf ⚠️")
     
     adj = FDTD(design=grid, devices=[adj_source], time=t)
-    adj.initialize_simulation(save=False, live=True, accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
+    # Use explicit axis_scale to make small field amplitudes visible (in V/µm)
+    adj.initialize_simulation(save=False, live=True, axis_scale=[-5e-10, 5e-10], accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
     grad = np.zeros_like(base)
     num_ffields = len(ffields)
     print(f"  Forward fields available: {num_ffields}")
@@ -503,8 +506,10 @@ plt.close(final_density_fig)
 
 final_source = build_forward_source(design, signal)
 final_monitor = build_output_monitor(design)
+# Use explicit axis_scale to make small field amplitudes visible (in V/µm)
 final = FDTD(design=grid, devices=[final_source, final_monitor], time=t).run(
     live=True,
+    axis_scale=[-5e-10, 5e-10],
     save_memory_mode=True,
     accumulate_power=True,
     save_fields=["Ez"],
