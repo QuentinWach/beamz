@@ -585,11 +585,10 @@ plt.close(final_density_fig)
 
 final_source = build_forward_source(design, signal)
 final_monitor = build_output_monitor(design)
-# Use explicit axis_scale to make field amplitudes visible (in V/µm)
+# Use auto-scaling with percentile-based clipping for optimal display
 # New normalization: |E| ~ 1e6 V/m × signal(1e-6) × viz_scale(1e-6) = 1 V/µm
 final = FDTD(design=grid, devices=[final_source, final_monitor], time=t).run(
     live=True,
-    axis_scale=[-2, 2],
     save_memory_mode=True,
     accumulate_power=True,
     save_fields=["Ez"],
