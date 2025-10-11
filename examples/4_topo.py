@@ -5,7 +5,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 plt.switch_backend("Agg")
 from beamz import *
 from beamz.optimization.optimizers import Optimizer
-from beamz.devices.mode import slab_mode_source
+from beamz.devices.mode import solve_modes
 
 # Parameters
 W = H = 15*µm
@@ -165,16 +165,46 @@ def build_output_monitor(design):
     x_positions = np.array([pt[0] * dx for pt in grid_points], dtype=float)
     center_x = 0.5 * (monitor_start[0] + monitor_end[0])
     relative_x = x_positions - center_x
-    target_profile, _ = slab_mode_source(
-        x=relative_x,
-        w=WG_W,
-        n_WG=N_CORE,
-        n0=N_CLAD,
-        wavelength=WL,
-        ind_m=0,
-        x0=0.0,
-    )
-    target_samples = np.asarray(target_profile, dtype=complex)
+    # Compute target mode profile using the new numerical mode solver
+    # Build 1D permittivity cross-section along the monitor line (fixed y)
+    fixed_y = monitor_start[1]
+    eps_line = np.array([design.get_material_value(float(xp), float(fixed_y), 0.0)[0] for xp in x_positions], dtype=float)
+    # Solve the 1D eigenmode for propagation in +y (monitor is horizontal)
+    omega = 2 * np.pi * LIGHT_SPEED / WL
+    try:
+        neffs, mode_e_fields, mode_h_fields, prop_axis = solve_modes(
+            eps=eps_line,
+            omega=omega,
+            dL=dx,
+            npml=0,
+            m=1,
+            direction="+y",
+            return_fields=True,
+        )
+        if mode_e_fields.size:
+            ez_idx_lookup = {0: 0, 1: 1, 2: 2}
+            ez_idx = ez_idx_lookup.get(prop_axis, 0)
+            ez_component = mode_e_fields[0][ez_idx]
+            ez_line = np.squeeze(ez_component)
+            if ez_line.ndim > 1:
+                ez_line = ez_line.reshape(-1)
+            mode_vec = np.asarray(ez_line, dtype=complex)
+        else:
+            mode_vec = np.ones_like(eps_line, dtype=complex)
+    except Exception:
+        mode_vec = np.ones_like(eps_line, dtype=complex)
+    mode_vec = np.asarray(mode_vec, dtype=complex)
+    if mode_vec.size == 0:
+        mode_vec = np.ones_like(eps_line, dtype=complex)
+    elif mode_vec.size != eps_line.size:
+        src = np.linspace(0.0, 1.0, mode_vec.size)
+        dst = np.linspace(0.0, 1.0, eps_line.size)
+        mode_vec = (
+            np.interp(dst, src, mode_vec.real, left=mode_vec.real[0], right=mode_vec.real[-1])
+            + 1j * np.interp(dst, src, mode_vec.imag, left=mode_vec.imag[0], right=mode_vec.imag[-1])
+        )
+    # Normalize target samples
+    target_samples = np.asarray(mode_vec, dtype=complex)
     target_norm = np.linalg.norm(target_samples)
     if target_norm == 0.0:
         target_norm = 1.0
@@ -218,16 +248,16 @@ def build_adjoint_source(design, signal, target_positions, target_samples):
         direction="-y",
         num_modes=1,
     )
-    adjoint.enforce_direction = False
     if adjoint.mode_profiles:
         profile = adjoint.mode_profiles[0]
-        profile_positions = np.array([pt[1] for pt in profile], dtype=float)
+        # profile entries are dicts with coordinates
+        profile_positions = np.array([float(pt.get("x", 0.0)) for pt in profile], dtype=float)
         real_interp = np.interp(profile_positions, target_positions, target_samples.real, left=0.0, right=0.0)
         imag_interp = np.interp(profile_positions, target_positions, target_samples.imag, left=0.0, right=0.0)
         for idx, point in enumerate(profile):
             target_component = MODE_WEIGHT * (real_interp[idx] + 1j * imag_interp[idx])
             transmission_component = TRANSMISSION_WEIGHT
-            profile[idx][0] = transmission_component + target_component
+            point["Ez"] = transmission_component + target_component
     return adjoint
 
 
@@ -243,7 +273,6 @@ def build_forward_source(design, signal):
         direction="+x",
         num_modes=1,
     )
-    source.enforce_direction = False
     return source
 rng = np.random.default_rng(0)
 design_density = np.zeros_like(base)
