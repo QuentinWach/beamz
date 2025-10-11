@@ -4,6 +4,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 #plt.switch_backend("Agg")
 from beamz import *
+from beamz import viz
 from beamz.optimization.optimizers import Optimizer
 from beamz.devices.mode import solve_modes
 
@@ -354,6 +355,24 @@ for step in range(1,STEPS+1):
             print(f"  Forward Ez_max: {ez_max:.3e}, has NaN/Inf: {ez_has_nan}")
             if ez_has_nan or ez_max > 1e3:
                 print(f"  ⚠️ WARNING: Forward simulation may have diverged!")
+    
+    # Debug: check accumulated power statistics
+    if forward.power_accumulated is not None:
+        power_min = float(np.min(forward.power_accumulated))
+        power_max = float(np.max(forward.power_accumulated))
+        power_mean = float(np.mean(forward.power_accumulated))
+        power_nonzero = np.count_nonzero(forward.power_accumulated)
+        print(f"  Forward power: min={power_min:.3e}, max={power_max:.3e}, mean={power_mean:.3e}, nonzero={power_nonzero}/{forward.power_accumulated.size}")
+        
+        # Show power distribution percentiles for debugging
+        nonzero = forward.power_accumulated[forward.power_accumulated > 0]
+        if len(nonzero) > 0:
+            p50 = np.percentile(nonzero, 50)
+            p95 = np.percentile(nonzero, 95)
+            p99 = np.percentile(nonzero, 99)
+            print(f"  Power percentiles: p50={p50:.3e}, p95={p95:.3e}, p99={p99:.3e}, max={power_max:.3e}")
+            print(f"  Ratio p99/max: {(p99/power_max)*100:.1f}% (shows if max is outlier)")
+    
     forward.plot_power(db_colorbar=True)
     forward_power_path = f"forward_power_step{step:03d}.png"
     forward.fig.savefig(forward_power_path, dpi=200, bbox_inches="tight")
@@ -364,36 +383,65 @@ for step in range(1,STEPS+1):
     print(f"[STEP {step}] Running ADJOINT simulation...")
     adj_source = build_adjoint_source(design, signal, monitor.target_positions, monitor.target_samples)
     
-    # Debug: check adjoint source profile (disabled for production)
-    # if adj_source.mode_profiles:
-    #     adj_profile_sample = adj_source.mode_profiles[0][0]
-    #     adj_field_names = [k for k in adj_profile_sample.keys() if k not in ['x', 'y', 'z']]
-    #     print(f"  Adjoint source field components: {adj_field_names}")
-    #     for fname in adj_field_names:
-    #         val = adj_profile_sample.get(fname, 0.0)
-    #         if np.isfinite(val):
-    #             print(f"    {fname}: {abs(val):.3e}")
-    #         else:
-    #             print(f"    {fname}: NaN/Inf ⚠️")
+    # Debug: check adjoint source profile to verify field amplitudes
+    if adj_source.mode_profiles:
+        adj_profile = adj_source.mode_profiles[0]
+        adj_profile_sample = adj_profile[0]
+        adj_field_names = [k for k in adj_profile_sample.keys() if k not in ['x', 'y', 'z']]
+        print(f"  Adjoint source field components: {adj_field_names}")
+        # Get max amplitudes across the profile
+        for fname in adj_field_names:
+            amplitudes = [abs(pt.get(fname, 0.0)) for pt in adj_profile]
+            max_amp = max(amplitudes) if amplitudes else 0.0
+            print(f"    {fname} max amplitude: {max_amp:.3e}")
     
     adj = FDTD(design=grid, devices=[adj_source], time=t)
-    # Use explicit axis_scale to make small field amplitudes visible (in V/µm)
-    adj.initialize_simulation(save=False, live=True, axis_scale=[-5e-10, 5e-10], accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
+    # Use wider axis_scale to ensure fields are clearly visible
+    # Measured: Adjoint Ez_max ~1.8e-4 V/m → ~1.8e-10 V/µm after scaling
+    # Using 2x wider range ensures fields appear in middle of colormap for better contrast
+    adj.initialize_simulation(save=False, live=True, axis_scale=[-1e-9, 1e-9], accumulate_power=True, save_memory_mode=True, fields_to_cache=None)
     grad = np.zeros_like(base)
     num_ffields = len(ffields)
     print(f"  Forward fields available: {num_ffields}")
     
+    # Track max field magnitudes during adjoint simulation
+    adj_ez_max_overall = 0.0
     for step_idx in range(adj.num_steps):
         if not ffields or not adj.step(): 
             break
         grad += np.real(adj.backend.to_numpy(adj.Ez)*np.conj(ffields.pop()))
+        
+        # Sample field magnitude every 100 steps
+        if step_idx % 100 == 0:
+            adj_ez_max = float(np.max(np.abs(adj.backend.to_numpy(adj.Ez))))
+            adj_ez_max_overall = max(adj_ez_max_overall, adj_ez_max)
     
     # Check gradient for issues
     grad_max = float(np.max(np.abs(grad)))
     grad_has_nan = not np.all(np.isfinite(grad))
-    print(f"  Adjoint gradient_max: {grad_max:.3e}, has NaN/Inf: {grad_has_nan}")
+    print(f"  Adjoint Ez_max: {adj_ez_max_overall:.3e}, gradient_max: {grad_max:.3e}, has NaN/Inf: {grad_has_nan}")
     
     adj.finalize_simulation()
+    
+    # Debug: check accumulated power statistics
+    if adj.power_accumulated is not None:
+        power_min = float(np.min(adj.power_accumulated))
+        power_max = float(np.max(adj.power_accumulated))
+        power_mean = float(np.mean(adj.power_accumulated))
+        power_nonzero = np.count_nonzero(adj.power_accumulated)
+        print(f"  Adjoint power: min={power_min:.3e}, max={power_max:.3e}, mean={power_mean:.3e}, nonzero={power_nonzero}/{adj.power_accumulated.size}")
+        
+        # Show power distribution percentiles for debugging
+        nonzero = adj.power_accumulated[adj.power_accumulated > 0]
+        if len(nonzero) > 0:
+            p50 = np.percentile(nonzero, 50)
+            p95 = np.percentile(nonzero, 95)
+            p99 = np.percentile(nonzero, 99)
+            print(f"  Power percentiles: p50={p50:.3e}, p95={p95:.3e}, p99={p99:.3e}, max={power_max:.3e}")
+            print(f"  Ratio p99/max: {(p99/power_max)*100:.1f}% (shows if max is outlier)")
+    else:
+        print(f"  ⚠️ WARNING: Adjoint power_accumulated is None!")
+    
     adj.plot_power(db_colorbar=True)
     adj_power_path = f"adjoint_power_step{step:03d}.png"
     adj.fig.savefig(adj_power_path, dpi=200, bbox_inches="tight")

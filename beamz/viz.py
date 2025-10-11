@@ -673,28 +673,49 @@ def plot_fdtd_power(fdtd, cmap: str = "hot", vmin: float = None, vmax: float = N
         print("No field data to calculate power. Make sure to run the simulation with save=True or accumulate_power=True.")
         return
 
+    # Normalize power using 99th percentile to avoid source-dominated colormaps
+    # This makes propagated power visible by clipping source peaks
+    power_sorted = np.sort(power.flatten())
+    nonzero_power = power_sorted[power_sorted > 0]
+    if len(nonzero_power) > 100:  # Need sufficient data points
+        p99 = np.percentile(nonzero_power, 99)
+        power_clipped = np.clip(power, 0, p99)
+        if p99 > 0:
+            power_normalized = power_clipped / p99
+        else:
+            power_normalized = power
+    else:
+        # Fallback to max normalization for small datasets
+        power_max = np.max(power)
+        if power_max > 0 and np.isfinite(power_max):
+            power_normalized = power / power_max
+        else:
+            power_normalized = power
+    
     scale, unit = get_si_scale_and_label(max(fdtd.design.width, fdtd.design.height))
     aspect_ratio = power.shape[1] / power.shape[0]
     base_size = 8
     figsize = (base_size * aspect_ratio, base_size) if aspect_ratio > 1 else (base_size, base_size / aspect_ratio)
 
     fdtd.fig, fdtd.ax = plt.subplots(figsize=figsize)
-    fdtd.im = fdtd.ax.imshow(power, origin='lower',
+    # Use normalized power for display to avoid numerical precision issues with tiny values
+    display_power = power_normalized if vmin is None and vmax is None else power
+    fdtd.im = fdtd.ax.imshow(display_power, origin='lower',
                              extent=(0, fdtd.design.width, 0, fdtd.design.height),
                              cmap=cmap, aspect='equal', interpolation='bicubic', vmin=vmin, vmax=vmax)
     colorbar = plt.colorbar(fdtd.im, orientation='vertical', aspect=30, extend='both')
     if db_colorbar:
-        max_power = np.max(power)
+        # dB scale now works on normalized power (0 to 1)
         def db_formatter(x, pos):
             if x <= 0: return "-∞ dB"
-            ratio = max(x / max_power, 1e-10)
+            ratio = max(x, 1e-10)  # x is already normalized to max=1
             db_val = 10 * np.log10(ratio)
             return f"{db_val:.1f} dB"
         colorbar.formatter = plt.FuncFormatter(db_formatter)
         colorbar.update_ticks()
         colorbar.set_label('Relative Power (dB)')
     else:
-        colorbar.set_label('Power (a.u.)')
+        colorbar.set_label('Normalized Power')
 
     try:
         tmp_design = fdtd.design.copy()
