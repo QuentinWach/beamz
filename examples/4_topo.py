@@ -404,16 +404,36 @@ for step in range(1,STEPS+1):
     num_ffields = len(ffields)
     print(f"  Forward fields available: {num_ffields}")
     
+    # Manual visualization context for adjoint Ez field (V/µm)
+    ez_extent = (0.0, float(design.width), 0.0, float(design.height))
+    manual_viz_ctx = None
+    viz_stride = 2  # update plot every N steps
+    
     # Track max field magnitudes during adjoint simulation
     adj_ez_max_overall = 0.0
     for step_idx in range(adj.num_steps):
         if not ffields or not adj.step(): 
             break
-        grad += np.real(adj.backend.to_numpy(adj.Ez)*np.conj(ffields.pop()))
+        ez_field = adj.backend.to_numpy(adj.Ez)
+        grad += np.real(ez_field*np.conj(ffields.pop()))
+        
+        if step_idx % viz_stride == 0:
+            ez_real = np.real(ez_field)  # ensure float for visualization
+            manual_viz_ctx = viz.animate_manual_field(
+                ez_real * 1.0e-6,
+                context=manual_viz_ctx,
+                axis_scale=None,
+                extent=ez_extent,
+                cmap='RdBu',
+                percentile=99,
+                title=f"Adjoint Ez (step {step_idx})",
+                units='V/µm',
+                pause=0.01,
+            )
         
         # Sample field magnitude every 100 steps
         if step_idx % 100 == 0:
-            adj_ez_max = float(np.max(np.abs(adj.backend.to_numpy(adj.Ez))))
+            adj_ez_max = float(np.max(np.abs(ez_field)))
             adj_ez_max_overall = max(adj_ez_max_overall, adj_ez_max)
     
     # Check gradient for issues

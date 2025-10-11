@@ -540,6 +540,76 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
     plt.pause(0.001)
 
 
+def animate_manual_field(field_array,
+                         context=None,
+                         *,
+                         axis_scale=None,
+                         extent=None,
+                         cmap='RdBu',
+                         percentile=99,
+                         title=None,
+                         units='V/µm',
+                         pause=0.01):
+    """Create or update a live Matplotlib view of a 2D field array.
+
+    Args:
+        field_array: 2D numeric array to visualise (already converted to desired units).
+        context: Optional dict (``{'fig','ax','im','cbar'}``) returned by a previous call.
+        axis_scale: Optional tuple/list ``(vmin, vmax)`` for fixed scaling.
+        extent: Optional Matplotlib extent tuple ``(xmin, xmax, ymin, ymax)``.
+        cmap: Matplotlib colormap to use.
+        percentile: Percentile used for auto scaling when ``axis_scale`` not provided.
+        title: Optional title string for the plot.
+        units: Axis label for the colour bar.
+        pause: Seconds to pause after drawing (keeps UI responsive).
+
+    Returns:
+        context dict containing references to the Matplotlib objects for reuse.
+    """
+    import matplotlib.pyplot as plt
+
+    data = np.asarray(field_array)
+    if data.size == 0:
+        return context
+
+    if axis_scale is None:
+        abs_data = np.abs(data)
+        if abs_data.size > 10:
+            vmax = np.percentile(abs_data, percentile)
+        else:
+            vmax = float(np.max(abs_data) or 1.0)
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = float(np.max(abs_data) or 1.0)
+        vmin, vmax = -vmax, vmax
+    else:
+        vmin, vmax = axis_scale
+
+    if context is None or context.get('im') is None:
+        fig, ax = plt.subplots()
+        if extent is not None:
+            im = ax.imshow(data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
+        else:
+            im = ax.imshow(data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+        cbar = plt.colorbar(im, ax=ax, orientation='vertical', label=f'Ez ({units})')
+        if title:
+            ax.set_title(title)
+        plt.tight_layout()
+        plt.show(block=False)
+        plt.pause(pause)
+        return {'fig': fig, 'ax': ax, 'im': im, 'cbar': cbar}
+
+    # Update existing plot
+    im = context['im']
+    im.set_data(data)
+    im.set_clim(vmin, vmax)
+    if title:
+        context['ax'].set_title(title)
+    context['fig'].canvas.draw_idle()
+    context['fig'].canvas.flush_events()
+    plt.pause(pause)
+    return context
+
+
 def save_fdtd_animation(fdtd, field: str = "Ez", axis_scale=[-1, 1], filename='fdtd_animation.mp4', 
                         fps=60, frame_skip=4, clean_visualization=False):
     """Save an animation of FDTD results as an mp4 file."""
