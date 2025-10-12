@@ -138,14 +138,32 @@ class ModeSource:
         box = _ensure_box(plane, dims, default_center, default_size)
         self.plane = box
 
+        center_tuple = self.plane.center
+        if len(center_tuple) == 2:
+            center_tuple = (*center_tuple, 0.0)
+        self.center = tuple(float(c) for c in center_tuple)
+        size_tuple = self.plane.size
+        if len(size_tuple) == 2:
+            size_tuple = (*size_tuple, 0.0)
+        self.plane_size = tuple(float(s) for s in size_tuple)
+        self.axis = axis
+        self.mode_index = 0
+        self.max_field_amplitude: float | None = None
+        self.max_signal_magnitude: float = float(np.max(np.abs(self.signal))) if self.signal.size else 0.0
+        self._design = getattr(grid, "design", None)
+
         self._mode_cache = None
         self._mode_metadata: list[_ModeMetadata] | None = None
+        self.mode_profiles: list[list[dict[str, complex]]] = []
         self._mode_type = "1d" if dims == 2 else "2d"
+
+        self._update_line_endpoints()
 
     def compute_modes(self, force: bool = False):
         if self._mode_cache is not None and not force:
             return self._mode_cache
 
+        self.mode_profiles = []
         permittivity = np.asarray(self.grid.permittivity, dtype=float)
         axis = _direction_to_axis(self.direction)
 
@@ -158,7 +176,31 @@ class ModeSource:
 
         self._mode_cache = modes
         self._mode_metadata = metadata
+        self.max_field_amplitude = (
+            max(float(np.max(np.abs(meta.E))) for meta in metadata)
+            if metadata else None
+        )
+        self.mode_profiles = [
+            _serialize_mode_profile(md, modes[idx], self.center, self.axis, self.plane_size)
+            for idx, md in enumerate(metadata)
+        ]
         return modes
+
+    # Compatibility stubs for legacy simulation code
+    def compute_modes_on_fdtd_grid(self, mesh, dx, dy, dz=None):  # pragma: no cover - backward compat
+        return self.compute_modes(force=True)
+
+    def initialize_for_fdtd(self, mesh, dx, dy, dz=None):
+        self.compute_modes(force=True)
+
+    @property
+    def design(self):  # pragma: no cover - required by FDTD initialization
+        return self._design
+
+    @design.setter
+    def design(self, value):
+        self._design = value
+
 
     def show(self, modes=None, component="Etot", figsize=None):
         modes = modes or self.compute_modes()
@@ -170,6 +212,42 @@ class ModeSource:
             self._show_1d(modes, metadata, component=component, figsize=figsize)
         else:
             self._show_2d(modes, metadata, component=component, figsize=figsize)
+
+    def _update_line_endpoints(self):
+        axis = self.axis
+        if axis == 0:
+            self.start = (
+                self.center[0],
+                self.center[1] - self.plane_size[1] / 2,
+                self.center[2],
+            )
+            self.end = (
+                self.center[0],
+                self.center[1] + self.plane_size[1] / 2,
+                self.center[2],
+            )
+        elif axis == 1:
+            self.start = (
+                self.center[0] - self.plane_size[0] / 2,
+                self.center[1],
+                self.center[2],
+            )
+            self.end = (
+                self.center[0] + self.plane_size[0] / 2,
+                self.center[1],
+                self.center[2],
+            )
+        else:
+            self.start = (
+                self.center[0] - self.plane_size[0] / 2,
+                self.center[1] - self.plane_size[1] / 2,
+                self.center[2],
+            )
+            self.end = (
+                self.center[0] + self.plane_size[0] / 2,
+                self.center[1] + self.plane_size[1] / 2,
+                self.center[2],
+            )
 
     def _compute_modes_1d(self, permittivity: np.ndarray, axis: int):
         if not isinstance(self.grid, RegularGrid):
@@ -188,17 +266,17 @@ class ModeSource:
             y_start = int(np.clip(np.floor(y_min / dy), 0, ny - 1))
             y_end = int(np.clip(np.ceil(y_max / dy), y_start + 1, ny))
 
-            x_idx = int(np.clip(np.round(center[0] / dx - 0.5), 0, nx - 1))
+            x_idx = int(np.clip(np.round(self.center[0] / dx - 0.5), 0, nx - 1))
             eps_profile = permittivity[y_start:y_end, x_idx]
             coords = (np.arange(y_start, y_end) + 0.5) * dy
             dL = dy
         else:  # propagation along y, transverse coordinate is x
-            x_min = max(0.0, center[0] - abs(size[0]) / 2)
-            x_max = min(self.grid.width, center[0] + abs(size[0]) / 2)
+            x_min = max(0.0, self.center[0] - abs(size[0]) / 2)
+            x_max = min(self.grid.width, self.center[0] + abs(size[0]) / 2)
             x_start = int(np.clip(np.floor(x_min / dx), 0, nx - 1))
             x_end = int(np.clip(np.ceil(x_max / dx), x_start + 1, nx))
 
-            y_idx = int(np.clip(np.round(center[1] / dy - 0.5), 0, ny - 1))
+            y_idx = int(np.clip(np.round(self.center[1] / dy - 0.5), 0, ny - 1))
             eps_profile = permittivity[y_idx, x_start:x_end]
             coords = (np.arange(x_start, x_end) + 0.5) * dx
             dL = dx
@@ -228,10 +306,20 @@ class ModeSource:
         for idx in range(max_modes):
             Ez = np.squeeze(e_fields[idx][2])
             Ez = Ez if Ez.ndim == 1 else Ez[:, 0]
+            Ex = np.squeeze(e_fields[idx][0])
+            Ey = np.squeeze(e_fields[idx][1])
+            Hx = np.squeeze(h_fields[idx][0])
+            Hy = np.squeeze(h_fields[idx][1])
+            Hz = np.squeeze(h_fields[idx][2])
             modes.append({
                 "index": idx,
                 "neff": float(np.real(neff[idx])),
                 "Ez": Ez,
+                "Ex": Ex,
+                "Ey": Ey,
+                "Hx": Hx,
+                "Hy": Hy,
+                "Hz": Hz,
                 "coord": coords,
                 "eps": eps_profile,
                 "axis": axis,
@@ -324,6 +412,7 @@ class ModeSource:
                 "Ex": np.array(mode.Ex),
                 "Hy": np.array(mode.Hy),
                 "Hx": np.array(mode.Hx),
+                "Hz": np.array(mode.Hz),
                 "eps": eps_slice,
                 "y_edges": y_edges,
                 "z_edges": z_edges,
@@ -427,6 +516,92 @@ def _extract_mode_component_2d(meta: _ModeMetadata, component: str) -> np.ndarra
         raise ValueError(
             f"Unknown component '{component}'. Use Ex, Ey, Ez, Hx, Hy, Hz, Etot, or Htot"
         ) from exc
+
+
+def _serialize_mode_profile(meta: _ModeMetadata, mode_dict: dict, center: tuple[float, float, float], axis: int, size: tuple[float, float, float]) -> list[dict[str, complex]]:
+    if meta.E.ndim == 1:
+        coords = mode_dict["coord"]
+        if axis == 0:
+            x_coords = np.full_like(coords, center[0])
+            y_coords = coords
+        elif axis == 1:
+            x_coords = coords
+            y_coords = np.full_like(coords, center[1])
+        else:
+            x_coords = coords
+            y_coords = np.full_like(coords, center[1])
+        z_coords = np.full_like(coords, center[2])
+        data_slices = {
+            "Ez": meta.component("ez"),
+            "Ex": meta.component("ex"),
+            "Ey": meta.component("ey"),
+            "Hx": meta.component("hx"),
+            "Hy": meta.component("hy"),
+            "Hz": meta.component("hz"),
+        }
+    else:
+        y_edges = mode_dict.get("y_edges")
+        z_edges = mode_dict.get("z_edges")
+        if y_edges is None or z_edges is None:
+            y_span = meta.E.shape[-2] if meta.E.ndim == 3 else meta.E.shape[-1]
+            z_span = meta.E.shape[-1] if meta.E.ndim == 3 else 1
+            y_edges = np.linspace(center[1] - size[1] / 2, center[1] + size[1] / 2, y_span + 1)
+            z_edges = np.linspace(center[2] - size[2] / 2, center[2] + size[2] / 2, z_span + 1)
+        y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+        z_centers = 0.5 * (z_edges[:-1] + z_edges[1:])
+        y_grid, z_grid = np.meshgrid(y_centers, z_centers, indexing="ij")
+        if axis == 0:  # propagation along x, plane normal in x
+            x_coords = np.full_like(y_grid, center[0])
+            y_coords = y_grid
+            z_coords = z_grid
+        elif axis == 1:  # along y
+            x_coords = y_grid
+            y_coords = np.full_like(y_grid, center[1])
+            z_coords = z_grid
+        else:  # along z
+            x_coords = y_grid
+            y_coords = z_grid
+            z_coords = np.full_like(y_grid, center[2])
+        data_slices = {
+            "Ez": meta.component("ez"),
+            "Ex": meta.component("ex"),
+            "Ey": meta.component("ey"),
+            "Hx": meta.component("hx"),
+            "Hy": meta.component("hy"),
+            "Hz": meta.component("hz"),
+        }
+    profile = []
+    total_points = data_slices["Ez"].reshape(-1).shape[0]
+    for idx in range(total_points):
+        if meta.E.ndim == 1:
+            coord_val = float(mode_dict["coord"][idx])
+            if axis == 0:
+                x_val = center[0]
+                y_val = coord_val
+                z_val = center[2]
+            elif axis == 1:
+                x_val = coord_val
+                y_val = center[1]
+                z_val = center[2]
+            else:  # axis == 2
+                x_val = coord_val
+                y_val = center[1]
+                z_val = center[2]
+        else:
+            flat_x = x_coords.reshape(-1)
+            flat_y = y_coords.reshape(-1)
+            flat_z = z_coords.reshape(-1)
+            entry = {
+                "x": float(flat_x[idx]) if meta.E.ndim > 1 else float(x_coords[idx]),
+                "y": float(flat_y[idx]) if meta.E.ndim > 1 else float(y_coords[idx]),
+                "z": float(flat_z[idx]) if meta.E.ndim > 1 else float(z_coords[idx]),
+                "index": meta.index,
+            }
+            for key, arr in data_slices.items():
+                value = arr.reshape(-1)[idx] if arr.ndim > 1 else arr[idx]
+                entry[key] = complex(value)
+            profile.append(entry)
+    return profile
 
     def _show_2d(self, modes, metadata, component="Etot", figsize=None):
         num_modes = len(modes)

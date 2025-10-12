@@ -17,10 +17,26 @@ design.show()
 grid = design.rasterize(resolution=DX)
 grid.show(field="permittivity")
 
-# Create the signal & source (visualizing modes only)
+# Create the signal & source
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, phase=0, ramp_duration=WL*5/LIGHT_SPEED, t_max=TIME/2)
-source = ModeSource(grid=grid, center=(4*µm, design.height/2), width=1.5*µm, wavelength=WL, modes=2, pol="tm", signal=signal)
+signal = ramped_cosine(
+    time_steps,
+    amplitude=1.0,
+    frequency=LIGHT_SPEED / WL,
+    phase=0,
+    ramp_duration=WL * 5 / LIGHT_SPEED,
+    t_max=TIME / 2,
+)
+source = ModeSource(
+    grid=grid,
+    center=(4 * µm, design.height / 2),
+    width=1.5 * µm,
+    wavelength=WL,
+    modes=1,
+    pol="tm",
+    signal=signal,
+)
+# Visualize the solved modes
 source.show(component="Ez")
 
 # Run the simulation

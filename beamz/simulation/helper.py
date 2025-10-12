@@ -38,50 +38,37 @@ def apply_sources(fdtd) -> None:
     """Apply all sources for the current time step to fdtd fields using unidirectional TFSF."""
     for source in fdtd.sources:
         if isinstance(source, ModeSource):
-            # Use the selected mode index
+            if not source.mode_profiles:
+                source.compute_modes()
+
             mode_idx = getattr(source, 'mode_index', 0)
             if mode_idx >= len(source.mode_profiles):
-                mode_idx = 0  # Fallback to fundamental mode
-            
+                mode_idx = 0
+
             mode_profile = source.mode_profiles[mode_idx]
-            
-            # E-field modulation at integer time step n
-            e_modulation = source.signal[fdtd.current_step]
-            
-            # H-field modulation at half-integer time step (n-1/2)
-            # Interpolate between current and previous step
+
+            e_modulation = source.signal[min(fdtd.current_step, source.signal.size - 1)]
+
             if fdtd.current_step > 0:
-                h_modulation = 0.5 * (source.signal[fdtd.current_step - 1] + source.signal[fdtd.current_step])
+                prev_idx = min(fdtd.current_step - 1, source.signal.size - 1)
+                curr_idx = min(fdtd.current_step, source.signal.size - 1)
+                h_modulation = 0.5 * (source.signal[prev_idx] + source.signal[curr_idx])
             else:
                 h_modulation = source.signal[0]
-            
-            # Determine propagation direction
+
             from beamz.devices.sources import _direction_to_axis
-            prop_axis = _direction_to_axis(source.direction)
-            is_forward = source.direction.startswith("+")
-            
-            # Hard source with unidirectional injection:
-            # Directly sets field values at source plane to ensure forward-only propagation
-            # This is the industry-standard approach for mode sources in FDTD
-            # Note: Reflections are typically absorbed by PML before returning to source
+
+            scale_factor = float(getattr(source, "max_field_amplitude", 1.0) or 1.0)
             for point in mode_profile:
-                if isinstance(point, dict):
-                    # Extract all field components dynamically (supports all directions)
-                    field_amplitudes = {}
-                    for field_name in ['Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz']:
-                        amp = point.get(field_name, None)
-                        if amp is not None:
-                            field_amplitudes[field_name] = amp
-                    
-                    x_raw = point.get("x", 0.0)
-                    y_raw = point.get("y", 0.0)
-                    z_raw = point.get("z", 0.0)
-                else:
-                    # Legacy format fallback (Ez only)
-                    field_amplitudes = {"Ez": point[0]}
-                    x_raw = point[1]
-                    y_raw = point[2]
-                    z_raw = point[3] if len(point) > 3 else 0.0
+                field_amplitudes = {}
+                for field_name in ['Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz']:
+                    amp = point.get(field_name, None)
+                    if amp is not None:
+                        field_amplitudes[field_name] = amp / scale_factor
+
+                x_raw = point.get("x", source.center[0])
+                y_raw = point.get("y", source.center[1])
+                z_raw = point.get("z", source.center[2])
 
                 x = int(round(x_raw / fdtd.dx))
                 y = int(round(y_raw / fdtd.dy))
