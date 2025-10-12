@@ -605,3 +605,43 @@ class Design:
         new_design.layers = self.layers.copy() if hasattr(self, 'layers') else {}
         
         return new_design
+
+    def rasterize(self, resolution, grid_type="regular", **kwargs):
+        """Rasterize the design into a mesh grid using beamz.simulation.meshing.
+
+        Args:
+            resolution: Grid resolution (float or tuple depending on grid type).
+            grid_type: "regular" (2D), "regular3d"/"3d", "auto", or a grid class.
+            **kwargs: Additional keyword arguments forwarded to the grid constructor
+                (e.g., resolution_z for 3D grids, auto_select flags, etc.).
+
+        Returns:
+            A mesh grid instance (RegularGrid, RegularGrid3D, or custom grid).
+        """
+        from beamz.simulation import meshing
+
+        grid_cls = None
+
+        if isinstance(grid_type, str):
+            gt = grid_type.lower()
+            if gt in {"regular", "regulargrid", "2d"}:
+                grid_cls = meshing.RegularGrid
+            elif gt in {"regular3d", "3d"}:
+                grid_cls = meshing.RegularGrid3D
+            elif gt in {"auto", "auto-select", "autoselect"}:
+                return meshing.create_mesh(self, resolution, **kwargs)
+            else:
+                raise ValueError(f"Unknown grid_type '{grid_type}'. Expected 'regular', 'regular3d', or 'auto'.")
+        elif isinstance(grid_type, type):
+            grid_cls = grid_type
+        else:
+            raise TypeError("grid_type must be a string or a mesh grid class")
+
+        if grid_cls is meshing.RegularGrid3D:
+            # Expect resolution_xy (required) and optional resolution_z in kwargs
+            resolution_xy = resolution
+            resolution_z = kwargs.pop("resolution_z", None)
+            return grid_cls(self, resolution_xy=resolution_xy, resolution_z=resolution_z)
+
+        # Default path: RegularGrid or custom grid class with (design, resolution)
+        return grid_cls(self, resolution, **kwargs)
