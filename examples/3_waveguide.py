@@ -6,7 +6,7 @@ WL = 1.55*µm
 TIME = 90*WL/LIGHT_SPEED
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
 WG_WIDTH = 0.565*µm
-DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, points_per_wavelength=12)
+DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, points_per_wavelength=20)
 
 # Create the design
 design = Design(width=18*µm, height=7*µm, material=Material(N_CLAD**2), pml_size=WL)
@@ -18,16 +18,12 @@ grid = design.rasterize(resolution=DX)
 grid.show(field="permittivity")
 
 # Create the signal & source (visualizing modes only)
-source = ModeSource(
-    grid=grid,
-    plane=dict(center=(4*µm, design.height/2), size=(-1.3*µm, 1.3*µm)),
-    wavelength=WL,
-    num_modes=2,
-    polarization="tm"
-)
+time_steps = np.arange(0, TIME, DT)
+signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, phase=0, ramp_duration=WL*5/LIGHT_SPEED, t_max=TIME/2)
+source = ModeSource(grid=grid, center=(4*µm, design.height/2), width=1.5*µm, wavelength=WL, modes=2, pol="tm", signal=signal)
 source.show(component="Ez")
 
 # Run the simulation
-#sim = FDTD(design=grid, devices=[source], time=time_steps)
-#sim.run(live=True, save_memory_mode=True, accumulate_power=True)
-#sim.plot_power(db_colorbar=True)
+sim = FDTD(design=grid, devices=[source], time=time_steps)
+sim.run(live=True, save_memory_mode=True, accumulate_power=True)
+sim.plot_power(db_colorbar=True)

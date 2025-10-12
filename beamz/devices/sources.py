@@ -58,18 +58,45 @@ def _ensure_box(plane, dims: int, default_center, default_size) -> Box:
     return Box(center, size)
 
 
+def _coerce_center(center, dims: int, default_center) -> tuple[float, ...]:
+    if center is None:
+        return tuple(default_center)
+    if isinstance(center, (list, tuple)):
+        if len(center) != dims:
+            raise ValueError(f"center must have length {dims}, got {len(center)}")
+        return tuple(float(c) for c in center)
+    raise TypeError("center must be a tuple/list of coordinates")
+
+
+def _coerce_size(width, dims: int, default_size, axis: int) -> tuple[float, ...]:
+    if width is None:
+        return tuple(default_size)
+    if isinstance(width, (int, float)):
+        size = list(default_size)
+        for idx in range(dims):
+            size[idx] = 0.0 if idx == axis else float(width)
+        return tuple(size)
+    if isinstance(width, (list, tuple)):
+        if len(width) != dims:
+            raise ValueError(f"width must have length {dims}, got {len(width)}")
+        return tuple(float(w) for w in width)
+    raise TypeError("width must be a float or a tuple/list of floats")
+
+
 class ModeSource:
     """Visualise eigenmodes from a mesh grid using a Tidy3D-like plane specification."""
 
     def __init__(
         self,
         grid,
-        plane=None,
+        center=None,
+        width=None,
         wavelength: float = 1.55e-6,
         direction: str = "+x",
-        num_modes: int = 3,
+        modes: int = 3,
         target_neff: float | None = None,
-        polarization: str | None = "tm",
+        pol: str | None = "tm",
+        signal=None,
     ) -> None:
         if getattr(grid, "permittivity", None) is None:
             raise ValueError("Grid must expose a 'permittivity' array. Did you call Design.rasterize()?")
@@ -77,12 +104,17 @@ class ModeSource:
         self.wavelength = float(wavelength)
         self.omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         self.direction = direction
-        self.num_modes = int(num_modes)
+        self.num_modes = int(modes)
         self.target_neff = target_neff
-        self.polarization = polarization
+        self.polarization = pol
+        if signal is None:
+            # Default to continuous-wave unit amplitude modulation
+            self.signal = np.array([1.0], dtype=float)
+        else:
+            self.signal = np.asarray(signal)
 
         if self.num_modes <= 0:
-            raise ValueError("num_modes must be positive")
+            raise ValueError("modes must be positive")
 
         permittivity = np.asarray(self.grid.permittivity, dtype=float)
         if permittivity.ndim == 2:
@@ -95,6 +127,13 @@ class ModeSource:
             default_size = (0.0, self.grid.height, getattr(self.grid, "depth", 0.0) or 1e-6)
         else:
             raise ValueError("Unsupported permittivity dimensionality")
+
+        axis = _direction_to_axis(self.direction)
+        plane = None
+        if center is not None or width is not None:
+            center_tuple = _coerce_center(center, dims, default_center)
+            size_tuple = _coerce_size(width, dims, default_size, axis)
+            plane = Box(center_tuple, size_tuple)
 
         box = _ensure_box(plane, dims, default_center, default_size)
         self.plane = box

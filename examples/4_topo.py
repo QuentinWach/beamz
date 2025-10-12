@@ -248,7 +248,7 @@ def build_adjoint_source(design, signal, target_positions, target_samples):
         wavelength=WL,
         signal=signal,
         direction="-y",
-        num_modes=1,
+        modes=1,
     )
     if adjoint.mode_profiles:
         profile = adjoint.mode_profiles[0]
@@ -306,7 +306,7 @@ def build_forward_source(design, signal):
         wavelength=WL,
         signal=signal,
         direction="+x",
-        num_modes=1,
+        modes=1,
     )
     return source
 rng = np.random.default_rng(0)
