@@ -93,7 +93,7 @@ class ModeSource:
         width=None,
         wavelength: float = 1.55e-6,
         direction: str = "+x",
-        modes: int = 3,
+        mode: int = 0,
         target_neff: float | None = None,
         pol: str | None = "tm",
         signal=None,
@@ -104,7 +104,7 @@ class ModeSource:
         self.wavelength = float(wavelength)
         self.omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         self.direction = direction
-        self.num_modes = int(modes)
+        self.mode_index = int(mode)
         self.target_neff = target_neff
         self.polarization = pol
         if signal is None:
@@ -113,8 +113,8 @@ class ModeSource:
         else:
             self.signal = np.asarray(signal)
 
-        if self.num_modes <= 0:
-            raise ValueError("modes must be positive")
+        if self.mode_index < 0:
+            raise ValueError("mode must be non-negative")
 
         permittivity = np.asarray(self.grid.permittivity, dtype=float)
         if permittivity.ndim == 2:
@@ -147,7 +147,6 @@ class ModeSource:
             size_tuple = (*size_tuple, 0.0)
         self.plane_size = tuple(float(s) for s in size_tuple)
         self.axis = axis
-        self.mode_index = 0
         self.max_field_amplitude: float | None = None
         self.max_signal_magnitude: float = float(np.max(np.abs(self.signal))) if self.signal.size else 0.0
         self._design = getattr(grid, "design", None)
@@ -184,11 +183,14 @@ class ModeSource:
             _serialize_mode_profile(md, modes[idx], self.center, self.axis, self.plane_size)
             for idx, md in enumerate(metadata)
         ]
+        if self.mode_profiles:
+            self.mode_profiles = [self.mode_profiles[-1]]
         return modes
 
     # Compatibility stubs for legacy simulation code
     def compute_modes_on_fdtd_grid(self, mesh, dx, dy, dz=None):  # pragma: no cover - backward compat
-        return self.compute_modes(force=True)
+        modes = self.compute_modes(force=True)
+        return modes
 
     def initialize_for_fdtd(self, mesh, dx, dy, dz=None):
         self.compute_modes(force=True)
@@ -293,7 +295,7 @@ class ModeSource:
             omega=self.omega,
             dL=dL,
             npml=npml,
-            m=self.num_modes,
+            m=self.mode_index + 1,
             direction=self.direction,
             filter_pol=self.polarization,
             return_fields=True,
@@ -302,7 +304,7 @@ class ModeSource:
 
         modes = []
         metadata = []
-        max_modes = min(self.num_modes, len(neff))
+        max_modes = min(self.mode_index + 1, len(neff))
         for idx in range(max_modes):
             Ez = np.squeeze(e_fields[idx][2])
             Ez = Ez if Ez.ndim == 1 else Ez[:, 0]
@@ -397,13 +399,13 @@ class ModeSource:
             permittivity_cross_section=eps_slice,
             coords=[y_edges / µm, z_edges / µm],
             direction="+",
-            num_modes=self.num_modes,
+            num_modes=self.mode_index + 1,
             precision="double",
         )
 
         modes = []
         metadata = []
-        for idx, mode in enumerate(tidy_modes[: self.num_modes]):
+        for idx, mode in enumerate(tidy_modes[: self.mode_index + 1]):
             modes.append({
                 "index": idx,
                 "neff": float(np.real(mode.neff)),

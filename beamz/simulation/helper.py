@@ -41,11 +41,7 @@ def apply_sources(fdtd) -> None:
             if not source.mode_profiles:
                 source.compute_modes()
 
-            mode_idx = getattr(source, 'mode_index', 0)
-            if mode_idx >= len(source.mode_profiles):
-                mode_idx = 0
-
-            mode_profile = source.mode_profiles[mode_idx]
+            mode_profile = source.mode_profiles[0]
 
             e_modulation = source.signal[min(fdtd.current_step, source.signal.size - 1)]
 

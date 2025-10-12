@@ -32,7 +32,6 @@ source = ModeSource(
     center=(4 * µm, design.height / 2),
     width=1.5 * µm,
     wavelength=WL,
-    modes=1,
     pol="tm",
     signal=signal,
 )
