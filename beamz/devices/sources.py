@@ -69,7 +69,7 @@ class ModeSource:
         direction: str = "+x",
         num_modes: int = 3,
         target_neff: float | None = None,
-        polarization: str | None = "te",
+        polarization: str | None = "tm",
     ) -> None:
         if getattr(grid, "permittivity", None) is None:
             raise ValueError("Grid must expose a 'permittivity' array. Did you call Design.rasterize()?")
@@ -100,6 +100,7 @@ class ModeSource:
         self.plane = box
 
         self._mode_cache = None
+        self._mode_metadata: list[_ModeMetadata] | None = None
         self._mode_type = "1d" if dims == 2 else "2d"
 
     def compute_modes(self, force: bool = False):
@@ -110,24 +111,26 @@ class ModeSource:
         axis = _direction_to_axis(self.direction)
 
         if permittivity.ndim == 2:
-            modes = self._compute_modes_1d(permittivity, axis)
+            modes, metadata = self._compute_modes_1d(permittivity, axis)
         elif permittivity.ndim == 3:
-            modes = self._compute_modes_2d(permittivity, axis)
+            modes, metadata = self._compute_modes_2d(permittivity, axis)
         else:
             raise ValueError("Unsupported permittivity dimensionality")
 
         self._mode_cache = modes
+        self._mode_metadata = metadata
         return modes
 
-    def show(self, modes=None, figsize=None):
+    def show(self, modes=None, component="Etot", figsize=None):
         modes = modes or self.compute_modes()
+        metadata = self._mode_metadata or []
         if not modes:
             raise RuntimeError("No modes available to visualise")
 
         if self._mode_type == "1d":
-            self._show_1d(modes, figsize=figsize)
+            self._show_1d(modes, metadata, component=component, figsize=figsize)
         else:
-            self._show_2d(modes, figsize=figsize)
+            self._show_2d(modes, metadata, component=component, figsize=figsize)
 
     def _compute_modes_1d(self, permittivity: np.ndarray, axis: int):
         if not isinstance(self.grid, RegularGrid):
@@ -181,6 +184,7 @@ class ModeSource:
         )
 
         modes = []
+        metadata = []
         max_modes = min(self.num_modes, len(neff))
         for idx in range(max_modes):
             Ez = np.squeeze(e_fields[idx][2])
@@ -193,7 +197,13 @@ class ModeSource:
                 "eps": eps_profile,
                 "axis": axis,
             })
-        return modes
+            metadata.append(_ModeMetadata.from_fields(
+                index=idx,
+                neff=float(np.real(neff[idx])),
+                e_field=e_fields[idx],
+                h_field=h_fields[idx],
+            ))
+        return modes, metadata
 
     def _compute_modes_2d(self, permittivity: np.ndarray, axis: int):
         if not isinstance(self.grid, RegularGrid3D):
@@ -265,6 +275,7 @@ class ModeSource:
         )
 
         modes = []
+        metadata = []
         for idx, mode in enumerate(tidy_modes[: self.num_modes]):
             modes.append({
                 "index": idx,
@@ -278,12 +289,18 @@ class ModeSource:
                 "y_edges": y_edges,
                 "z_edges": z_edges,
             })
-        return modes
+            metadata.append(_ModeMetadata.from_fields(
+                index=idx,
+                neff=float(np.real(mode.neff)),
+                e_field=np.stack([mode.Ex, mode.Ey, mode.Ez], axis=0),
+                h_field=np.stack([mode.Hx, mode.Hy, mode.Hz], axis=0),
+            ))
+        return modes, metadata
 
     # ------------------------------------------------------------------
     # Plotting utilities
     # ------------------------------------------------------------------
-    def _show_1d(self, modes, figsize=None):
+    def _show_1d(self, modes, metadata, component="Etot", figsize=None):
         eps_profile = modes[0]["eps"]
         coord = modes[0]["coord"] / µm
         axis = modes[0]["axis"]
@@ -297,38 +314,102 @@ class ModeSource:
         ax1.grid(True, alpha=0.3)
 
         ax2 = ax1.twinx()
-        for mode in modes:
-            Ez = mode["Ez"]
-            intensity = np.abs(Ez) ** 2
+        for mode, meta in zip(modes, metadata):
+            field = _extract_mode_component_1d(meta, component)
+            intensity = np.abs(field) ** 2
             intensity /= np.max(intensity) + 1e-18
             ax2.plot(coord, intensity, label=f"Mode {mode['index']} (neff={mode['neff']:.3f})")
 
-        ax2.set_ylabel("|Ez|² (norm)")
+        ax2.set_ylabel(f"|{component}|² (norm)")
         ax2.legend(loc="upper right")
         fig.tight_layout()
         plt.show()
 
-    def _show_2d(self, modes, figsize=None):
+
+class _ModeMetadata:
+    __slots__ = ("index", "neff", "E", "H")
+
+    def __init__(self, index: int, neff: float, E: np.ndarray, H: np.ndarray) -> None:
+        self.index = index
+        self.neff = neff
+        self.E = E
+        self.H = H
+
+    @classmethod
+    def from_fields(cls, index: int, neff: float, e_field: np.ndarray, h_field: np.ndarray) -> "_ModeMetadata":
+        E = np.asarray(e_field, dtype=np.complex128)
+        H = np.asarray(h_field, dtype=np.complex128)
+        if E.ndim >= 3:
+            E = np.squeeze(E)
+        if H.ndim >= 3:
+            H = np.squeeze(H)
+        return cls(index=index, neff=neff, E=E, H=H)
+
+    def component(self, name: str) -> np.ndarray:
+        comp = name.lower()
+        if comp == "ex":
+            return self.E[0]
+        if comp == "ey":
+            return self.E[1]
+        if comp == "ez":
+            return self.E[2]
+        if comp == "hx":
+            return self.H[0]
+        if comp == "hy":
+            return self.H[1]
+        if comp == "hz":
+            return self.H[2]
+        raise KeyError(name)
+
+
+def _extract_mode_component_1d(meta: _ModeMetadata, component: str) -> np.ndarray:
+    comp = component.lower()
+    if comp == "etot":
+        return np.sqrt(np.sum(np.abs(meta.E) ** 2, axis=0))
+    if comp == "htot":
+        return np.sqrt(np.sum(np.abs(meta.H) ** 2, axis=0))
+    try:
+        return meta.component(component)
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown component '{component}'. Use Ex, Ey, Ez, Hx, Hy, Hz, Etot, or Htot"
+        ) from exc
+
+
+def _extract_mode_component_2d(meta: _ModeMetadata, component: str) -> np.ndarray:
+    comp = component.lower()
+    if comp == "etot":
+        return np.sqrt(np.sum(np.abs(meta.E) ** 2, axis=0))
+    if comp == "htot":
+        return np.sqrt(np.sum(np.abs(meta.H) ** 2, axis=0))
+    try:
+        return meta.component(component)
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown component '{component}'. Use Ex, Ey, Ez, Hx, Hy, Hz, Etot, or Htot"
+        ) from exc
+
+    def _show_2d(self, modes, metadata, component="Etot", figsize=None):
         num_modes = len(modes)
         cols = min(2, num_modes)
         rows = int(np.ceil(num_modes / cols))
         fig, axes = plt.subplots(rows, cols, figsize=figsize or (5 * cols, 4 * rows), constrained_layout=True)
         axes = np.array(axes).reshape(rows, cols)
 
-        for mode, ax in zip(modes, axes.ravel()):
-            Ez = np.real(mode["Ez"])
+        for mode, meta, ax in zip(modes, metadata, axes.ravel()):
+            field = np.real(_extract_mode_component_2d(meta, component))
             eps = mode["eps"]
             y_edges = mode["y_edges"] / µm
             z_edges = mode["z_edges"] / µm
 
             extent = (y_edges[0], y_edges[-1], z_edges[0], z_edges[-1])
             ax.imshow(eps.T, origin="lower", extent=extent, cmap="Greys", alpha=0.3, aspect="equal")
-            vmax = np.max(np.abs(Ez)) or 1.0
-            im = ax.imshow(Ez.T / vmax, origin="lower", extent=extent, cmap="RdBu", aspect="equal", vmin=-1, vmax=1)
-            ax.set_title(f"Mode {mode['index']} (Re(Ez), neff={mode['neff']:.3f})")
+            vmax = np.max(np.abs(field)) or 1.0
+            im = ax.imshow(field.T / vmax, origin="lower", extent=extent, cmap="RdBu", aspect="equal", vmin=-1, vmax=1)
+            ax.set_title(f"Mode {mode['index']} ({component}, neff={mode['neff']:.3f})")
             ax.set_xlabel("y (µm)")
             ax.set_ylabel("z (µm)")
-            fig.colorbar(im, ax=ax, shrink=0.8, label="Re(Ez) (norm)")
+            fig.colorbar(im, ax=ax, shrink=0.8, label="Re(field) (norm)")
 
         plt.show()
 

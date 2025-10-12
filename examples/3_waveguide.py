@@ -20,11 +20,12 @@ grid.show(field="permittivity")
 # Create the signal & source (visualizing modes only)
 source = ModeSource(
     grid=grid,
-    plane=dict(center=(4*µm, design.height/2), size=(-1*µm, 1*µm)),
+    plane=dict(center=(4*µm, design.height/2), size=(-1.3*µm, 1.3*µm)),
     wavelength=WL,
-    num_modes=2
+    num_modes=2,
+    polarization="tm"
 )
-source.show()
+source.show(component="Ez")
 
 # If you wish to run a full FDTD simulation, instantiate FDTD with this grid
 # and add a separate source implementation tailored for the simulation backend.
