@@ -6,7 +6,7 @@ WL = 1.55*µm
 TIME = 90*WL/LIGHT_SPEED
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
 WG_WIDTH = 0.565*µm
-DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, points_per_wavelength=100)
+DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, points_per_wavelength=12)
 
 # Create the design
 design = Design(width=18*µm, height=7*µm, material=Material(N_CLAD**2), pml_size=WL)
@@ -26,10 +26,6 @@ source = ModeSource(
     polarization="tm"
 )
 source.show(component="Ez")
-
-# If you wish to run a full FDTD simulation, instantiate FDTD with this grid
-# and add a separate source implementation tailored for the simulation backend.
-
 
 # Run the simulation
 #sim = FDTD(design=grid, devices=[source], time=time_steps)
