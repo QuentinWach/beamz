@@ -477,26 +477,18 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
         # Convert Ez from V/m to V/µm for display
         current_field = field_data * 1.0e-6
         
-        # Use percentile-based auto-scaling when axis_scale not provided
-        # This prevents source injection points from saturating the colormap
         if axis_scale is None:
-            field_abs = np.abs(current_field)
-            if field_abs.size > 100:
-                # Use 99th percentile for auto-scaling (clips source peaks)
-                p99 = np.percentile(field_abs, 99)
-                if p99 > 0 and np.isfinite(p99):
-                    amax = p99
-                else:
-                    amax = float(np.max(field_abs) or 1.0)
+            if isinstance(getattr(fdtd, "_axis_scale", None), (list, tuple)):
+                ax_min, ax_max = fdtd._axis_scale
             else:
+                field_abs = np.abs(current_field)
                 amax = float(np.max(field_abs) or 1.0)
+                ax_min, ax_max = -amax, amax
         else:
-            # Use provided fixed scale
             amax = float(max(abs(axis_scale[0]), abs(axis_scale[1])))
             if not np.isfinite(amax) or amax <= 0:
                 amax = float(np.max(np.abs(current_field)) or 1.0)
-        
-        ax_min, ax_max = -amax, amax
+            ax_min, ax_max = -amax, amax
         cbar_label = f'{field}{slice_info} (V/µm)'
 
     if fdtd.fig is not None and plt.fignum_exists(fdtd.fig.number):

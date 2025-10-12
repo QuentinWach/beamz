@@ -370,20 +370,7 @@ class FDTD:
                 self._axis_scale = [0.0, power_scale]
                 self._live_quantity = "power"
             else:
-                scale = 0.0
-                for src in self.design.sources:
-                    if isinstance(src, ModeSource):
-                        field_amp = getattr(src, "max_field_amplitude", None)
-                        signal_amp = getattr(src, "max_signal_magnitude", None)
-                        if field_amp is not None and signal_amp is not None:
-                            try:
-                                value = float(field_amp) * float(signal_amp)
-                            except (TypeError, ValueError):
-                                continue
-                            if np.isfinite(value):
-                                scale = max(scale, abs(value))
-                if scale <= 0.0: scale = 1.0
-                self._axis_scale = [-scale, scale]
+                self._axis_scale = None  # defer to dynamic scaling in viz
                 self._live_quantity = "field"
         else:
             self._axis_scale = axis_scale

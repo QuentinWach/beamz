@@ -54,7 +54,7 @@ def apply_sources(fdtd) -> None:
 
             from beamz.devices.sources import _direction_to_axis
 
-            scale_factor = float(getattr(source, "max_field_amplitude", 1.0) or 1.0)
+            scale_factor = 1.0
             for point in mode_profile:
                 field_amplitudes = {}
                 for field_name in ['Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz']:

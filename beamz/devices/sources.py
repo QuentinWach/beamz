@@ -121,6 +121,8 @@ class ModeSource:
             dims = 2
             default_center = (self.grid.width / 2, self.grid.height / 2)
             default_size = (0.0, min(self.grid.width, self.grid.height))
+            if self.polarization is None:
+                self.polarization = "tm"
         elif permittivity.ndim == 3:
             dims = 3
             default_center = (self.grid.width / 2, self.grid.height / 2, getattr(self.grid, "depth", 0.0) / 2)
@@ -308,11 +310,11 @@ class ModeSource:
         for idx in range(max_modes):
             Ez = np.squeeze(e_fields[idx][2])
             Ez = Ez if Ez.ndim == 1 else Ez[:, 0]
-            Ex = np.squeeze(e_fields[idx][0])
-            Ey = np.squeeze(e_fields[idx][1])
+            Ex = np.squeeze(e_fields[idx][0]) if self.polarization != "te" else np.zeros_like(Ez)
+            Ey = np.squeeze(e_fields[idx][1]) if self.polarization != "te" else np.zeros_like(Ez)
             Hx = np.squeeze(h_fields[idx][0])
             Hy = np.squeeze(h_fields[idx][1])
-            Hz = np.squeeze(h_fields[idx][2])
+            Hz = np.squeeze(h_fields[idx][2]) if self.polarization != "te" else np.zeros_like(Ez)
             modes.append({
                 "index": idx,
                 "neff": float(np.real(neff[idx])),
@@ -329,8 +331,8 @@ class ModeSource:
             metadata.append(_ModeMetadata.from_fields(
                 index=idx,
                 neff=float(np.real(neff[idx])),
-                e_field=e_fields[idx],
-                h_field=h_fields[idx],
+                e_field=np.stack([Ex, Ey, Ez], axis=0),
+                h_field=np.stack([Hx, Hy, Hz], axis=0),
             ))
         return modes, metadata
 
@@ -521,6 +523,11 @@ def _extract_mode_component_2d(meta: _ModeMetadata, component: str) -> np.ndarra
 
 
 def _serialize_mode_profile(meta: _ModeMetadata, mode_dict: dict, center: tuple[float, float, float], axis: int, size: tuple[float, float, float]) -> list[dict[str, complex]]:
+    # Amplification factor to make fields visible in live visualization
+    # Modes are normalized to 1 W power, giving ~0.2 V/m fields
+    # We need ~1e6 V/m to get ~1 V/µm after the viz conversion (×1e-6)
+    AMPLIFICATION = 5e6
+    
     if meta.E.ndim == 1:
         coords = mode_dict["coord"]
         if axis == 0:
@@ -534,12 +541,12 @@ def _serialize_mode_profile(meta: _ModeMetadata, mode_dict: dict, center: tuple[
             y_coords = np.full_like(coords, center[1])
         z_coords = np.full_like(coords, center[2])
         data_slices = {
-            "Ez": meta.component("ez"),
-            "Ex": meta.component("ex"),
-            "Ey": meta.component("ey"),
-            "Hx": meta.component("hx"),
-            "Hy": meta.component("hy"),
-            "Hz": meta.component("hz"),
+            "Ez": meta.component("ez") * AMPLIFICATION,
+            "Ex": meta.component("ex") * AMPLIFICATION,
+            "Ey": meta.component("ey") * AMPLIFICATION,
+            "Hx": meta.component("hx") * AMPLIFICATION,
+            "Hy": meta.component("hy") * AMPLIFICATION,
+            "Hz": meta.component("hz") * AMPLIFICATION,
         }
     else:
         y_edges = mode_dict.get("y_edges")
@@ -565,12 +572,12 @@ def _serialize_mode_profile(meta: _ModeMetadata, mode_dict: dict, center: tuple[
             y_coords = z_grid
             z_coords = np.full_like(y_grid, center[2])
         data_slices = {
-            "Ez": meta.component("ez"),
-            "Ex": meta.component("ex"),
-            "Ey": meta.component("ey"),
-            "Hx": meta.component("hx"),
-            "Hy": meta.component("hy"),
-            "Hz": meta.component("hz"),
+            "Ez": meta.component("ez") * AMPLIFICATION,
+            "Ex": meta.component("ex") * AMPLIFICATION,
+            "Ey": meta.component("ey") * AMPLIFICATION,
+            "Hx": meta.component("hx") * AMPLIFICATION,
+            "Hy": meta.component("hy") * AMPLIFICATION,
+            "Hz": meta.component("hz") * AMPLIFICATION,
         }
     profile = []
     total_points = data_slices["Ez"].reshape(-1).shape[0]

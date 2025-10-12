@@ -34,6 +34,7 @@ source = ModeSource(
     wavelength=WL,
     pol="tm",
     signal=signal,
+    direction="+x",
 )
 # Visualize the solved modes
 source.show(component="Ez")
