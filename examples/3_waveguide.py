@@ -22,7 +22,7 @@ source = ModeSource(
     grid=grid,
     plane=dict(center=(4*µm, design.height/2), size=(-1*µm, 1*µm)),
     wavelength=WL,
-    num_modes=3
+    num_modes=2
 )
 source.show()
 

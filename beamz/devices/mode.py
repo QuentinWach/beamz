@@ -54,6 +54,7 @@ def compute_mode(
     direction: Literal["+", "-"],
     mode_index: int = 0,
     filter_pol: Literal["te", "tm"] | None = None,
+    target_neff: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, complex, int]:
     inv_permittivities = np.asarray(inv_permittivities, dtype=np.complex128)
     if inv_permittivities.ndim == 1: inv_permittivities = inv_permittivities[np.newaxis, :, np.newaxis]
@@ -94,6 +95,7 @@ def compute_mode(
         coords=coords,
         direction=direction,
         num_modes=2 * (mode_index + 1) + 5,
+        target_neff=target_neff,
     )
     modes = sort_modes(modes, filter_pol, (0, 1))
     if mode_index >= len(modes): raise ValueError(f"Requested mode index {mode_index}, but only {len(modes)} modes available")
@@ -126,6 +128,7 @@ def solve_modes(
     filter_pol: Literal["te", "tm", None] = None,
     return_fields: bool = False,
     propagation_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z"] | None = None,
+    target_neff: float | None = None,
 ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
     if eps.ndim != 1: raise ValueError("solve_modes expects a 1D permittivity array")
 
@@ -148,6 +151,7 @@ def solve_modes(
             direction=direction_flag,
             mode_index=mode_index,
             filter_pol=filter_pol,
+            target_neff=target_neff,
         )
 
         neffs.append(neff)

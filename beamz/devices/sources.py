@@ -140,33 +140,44 @@ class ModeSource:
         center = self.plane.center
         size = self.plane.size
 
-        if axis == 0:  # propagation along x, slice along y
+        if axis == 0:  # propagation along x, transverse coordinate is y
             y_min = max(0.0, center[1] - abs(size[1]) / 2)
             y_max = min(self.grid.height, center[1] + abs(size[1]) / 2)
-            idx_start = int(np.clip(np.floor(y_min / dy), 0, ny - 1))
-            idx_end = int(np.clip(np.ceil(y_max / dy), idx_start + 1, ny))
-            eps_profile = permittivity[idx_start:idx_end, :]
-            eps_profile = eps_profile.mean(axis=1)
-            coords = (np.arange(idx_start, idx_end) + 0.5) * dy
+            y_start = int(np.clip(np.floor(y_min / dy), 0, ny - 1))
+            y_end = int(np.clip(np.ceil(y_max / dy), y_start + 1, ny))
+
+            x_idx = int(np.clip(np.round(center[0] / dx - 0.5), 0, nx - 1))
+            eps_profile = permittivity[y_start:y_end, x_idx]
+            coords = (np.arange(y_start, y_end) + 0.5) * dy
             dL = dy
-        else:  # along y, slice columns across x
+        else:  # propagation along y, transverse coordinate is x
             x_min = max(0.0, center[0] - abs(size[0]) / 2)
             x_max = min(self.grid.width, center[0] + abs(size[0]) / 2)
-            idx_start = int(np.clip(np.floor(x_min / dx), 0, nx - 1))
-            idx_end = int(np.clip(np.ceil(x_max / dx), idx_start + 1, nx))
-            eps_profile = permittivity[:, idx_start:idx_end]
-            eps_profile = eps_profile.mean(axis=1)
-            coords = (np.arange(ny) + 0.5) * dy
-            dL = dy
+            x_start = int(np.clip(np.floor(x_min / dx), 0, nx - 1))
+            x_end = int(np.clip(np.ceil(x_max / dx), x_start + 1, nx))
+
+            y_idx = int(np.clip(np.round(center[1] / dy - 0.5), 0, ny - 1))
+            eps_profile = permittivity[y_idx, x_start:x_end]
+            coords = (np.arange(x_start, x_end) + 0.5) * dx
+            dL = dx
+
+        eps_profile = np.asarray(eps_profile, dtype=float)
+        if eps_profile.ndim != 1:
+            eps_profile = np.squeeze(eps_profile)
+
+        # Mimic modesolver_1d default PML padding for stability
+        npml = max(0, min(20, eps_profile.size // 4))
 
         neff, e_fields, h_fields, _ = mode_solver.solve_modes(
             eps=eps_profile,
             omega=self.omega,
             dL=dL,
+            npml=npml,
             m=self.num_modes,
             direction=self.direction,
             filter_pol=self.polarization,
             return_fields=True,
+            target_neff=self.target_neff,
         )
 
         modes = []
