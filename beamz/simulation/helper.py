@@ -116,9 +116,9 @@ def apply_sources(fdtd) -> None:
                         # Use appropriate modulation (E-fields at integer steps, H-fields at half-steps)
                         modulation = e_modulation if field_name.startswith('E') else h_modulation
                         
-                        # Check bounds and inject
+                        # Check bounds and inject (soft source: add instead of overwrite)
                         if z_target < field_array.shape[0] and y < field_array.shape[1] and x < field_array.shape[2]:
-                            field_array[z_target, y, x] = amplitude * modulation
+                            field_array[z_target, y, x] += amplitude * modulation
                 else:
                     # 2D case
                     if x < 0 or x >= fdtd.nx or y < 0 or y >= fdtd.ny:
@@ -153,9 +153,9 @@ def apply_sources(fdtd) -> None:
                         # Use appropriate modulation (E-fields at integer steps, H-fields at half-steps)
                         modulation = e_modulation if field_name.startswith('E') else h_modulation
                         
-                        # Check bounds and inject
+                        # Check bounds and inject (soft source: add instead of overwrite)
                         if y < field_array.shape[0] and x < field_array.shape[1]:
-                            field_array[y, x] = amplitude * modulation
+                            field_array[y, x] += amplitude * modulation
 
         elif isinstance(source, GaussianSource):
             modulation = source.signal[fdtd.current_step]

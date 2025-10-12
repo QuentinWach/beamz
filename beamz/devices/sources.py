@@ -64,8 +64,7 @@ class GaussianSource():
             signal=self.signal
         )
 
-# TODO: Add mode solver options to integrate the analytical mode solver in mode.py. Future: Add FDFD mode solver and Tidy3D mode solver.
-# Make a comparison study!
+
 class ModeSource():
     """Calculates and injects the mode profiles for a cross section.
     
@@ -228,9 +227,31 @@ class ModeSource():
         num_points = len(x)
         line_length = np.hypot(dx_line, dy_line)
         
+        # Sample permittivity: use FDTD grid if available, otherwise query design
         eps_1d = np.zeros(num_points)
-        for i, (x_i, y_i, z_i) in enumerate(zip(x, y, z)):
-            eps_1d[i], _, _ = self.design.get_material_value(x_i, y_i, z_i)
+        if hasattr(self, '_fdtd_mesh') and self._fdtd_mesh is not None:
+            # Direct grid sampling for perfect consistency with FDTD simulation
+            perm_grid = self._fdtd_mesh.permittivity
+            for i, (x_i, y_i, z_i) in enumerate(zip(x, y, z)):
+                # Convert physical coordinates to grid indices
+                ix = int(round(x_i / resolution))
+                iy = int(round(y_i / resolution))
+                # Sample from grid (2D or 3D)
+                if perm_grid.ndim == 2:
+                    if 0 <= iy < perm_grid.shape[0] and 0 <= ix < perm_grid.shape[1]:
+                        eps_1d[i] = perm_grid[iy, ix]
+                    else:
+                        eps_1d[i] = 1.0  # Outside grid
+                elif perm_grid.ndim == 3:
+                    iz = int(round(z_i / resolution))
+                    if 0 <= iz < perm_grid.shape[0] and 0 <= iy < perm_grid.shape[1] and 0 <= ix < perm_grid.shape[2]:
+                        eps_1d[i] = perm_grid[iz, iy, ix]
+                    else:
+                        eps_1d[i] = 1.0  # Outside grid
+        else:
+            # Fallback: query design material values
+            for i, (x_i, y_i, z_i) in enumerate(zip(x, y, z)):
+                eps_1d[i], _, _ = self.design.get_material_value(x_i, y_i, z_i)
         
         # Solve modes
         (
@@ -374,32 +395,39 @@ class ModeSource():
                 self.max_field_amplitude = 1.0
             self.max_power_density = (self.max_field_amplitude ** 2) / max(eta0, 1e-12)
     
-    def compute_modes_on_fdtd_grid(self, dx: float, dy: float, dz: float = None):
-        """Recompute modes using FDTD grid spacing for perfect alignment.
+    def compute_modes_on_fdtd_grid(self, fdtd_mesh, dx: float, dy: float, dz: float = None):
+        """Recompute modes using actual FDTD permittivity grid for perfect consistency.
         
-        This method resolves modes on the exact FDTD grid spacing, eliminating 
-        interpolation errors and ensuring 1:1 mapping between mode profiles 
-        and FDTD cells.
+        This method samples permittivity directly from the FDTD grid instead of 
+        querying the design, ensuring modes see exactly what the simulation sees.
         
         Args:
+            fdtd_mesh: The RegularGrid or RegularGrid3D mesh object with permittivity array
             dx: FDTD grid spacing in x direction (meters)
             dy: FDTD grid spacing in y direction (meters)
             dz: FDTD grid spacing in z direction (meters), optional for 2D
-        
-        The mode solver resolution is set to the finest grid spacing to ensure
-        the mode captures all grid-scale features of the permittivity distribution.
         """
         # Use the finest grid spacing as mode solver resolution
-        # This ensures modes capture all grid-scale features
         if dz is not None:
             resolution = min(dx, dy, dz)
         else:
             resolution = min(dx, dy)
         
-        # Recompute modes with FDTD grid resolution
-        print(f"[ModeSource] Recomputing modes with FDTD grid resolution: {resolution*1e9:.3f} nm")
+        # Store mesh reference for grid-based permittivity sampling
+        self._fdtd_mesh = fdtd_mesh
+        
+        # Recompute modes with FDTD grid resolution using actual grid permittivity
+        print(f"[ModeSource] Recomputing modes from FDTD permittivity grid: {resolution*1e9:.3f} nm (direction={self.direction})")
         self._solve_modes_internal(resolution=resolution)
         print(f"[ModeSource] Grid-aligned mode profiles generated: {len(self.mode_profiles)} modes")
+        
+        # Verify unidirectionality after grid recomputation
+        if self.mode_profiles and len(self.mode_profiles) > 0:
+            profile = self.mode_profiles[0]
+            if len(profile) > 2:
+                center_pt = profile[len(profile)//2]
+                field_names = [k for k in center_pt.keys() if k not in ['x', 'y', 'z']]
+                # print(f"[ModeSource] After grid recomputation, center fields: {[(k, center_pt[k]) for k in field_names]}")
     
     def _collapse_field_to_line(self, field: np.ndarray, component_idx: int, target_len: int) -> np.ndarray:
         component = np.squeeze(field[component_idx])
