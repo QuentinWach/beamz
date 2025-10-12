@@ -361,16 +361,38 @@ class ModeSource:
             Hy = np.squeeze(h_fields[idx][2])  # Use H[2]
             Hz = np.zeros_like(Ez)
             
-            # For +x propagation, flip H-fields to ensure proper Poynting vector direction
-            # S = E × H, for S_x > 0 we need specific E-H phase relationship
-            if axis == 0 and self.direction.startswith("+"):
-                Hy = -Hy
-            elif axis == 0 and self.direction.startswith("-"):
-                Hy = Hy  # Keep as is for -x
-            elif axis == 1 and self.direction.startswith("+"):
-                Hx = -Hx
-            elif axis == 1 and self.direction.startswith("-"):
-                Hx = Hx  # Keep as is for -y
+            # Ensure unidirectional propagation by computing correct Poynting vector S = E × H
+            # For 2D TM mode (Ez, Hx, Hy):
+            #   S = E × H = (0, 0, Ez) × (Hx, Hy, 0) = (-Ez*Hy, Ez*Hx, 0)
+            # Wait, this is wrong. Let me use the standard convention:
+            #   S = E × H where E = (0, 0, Ez) and H = (Hx, Hy, 0)
+            #   S_x = E_y * H_z - E_z * H_y = 0 - Ez * Hy = -Ez * Hy
+            #   S_y = E_z * H_x - E_x * H_z = Ez * Hx - 0 = Ez * Hx
+            
+            # For propagation in +x: need S_x > 0, so -Ez*Hy > 0, meaning Ez and Hy opposite sign
+            # For propagation in +y: need S_y > 0, so Ez*Hx > 0, meaning Ez and Hx same sign
+            # For propagation in -x: need S_x < 0, so -Ez*Hy < 0, meaning Ez and Hy same sign
+            # For propagation in -y: need S_y < 0, so Ez*Hx < 0, meaning Ez and Hx opposite sign
+            
+            # The mode solver returns fields with arbitrary phase. We need to check and correct:
+            if axis == 0:  # x-propagation
+                # Compute average Poynting vector S_x = -Ez * Hy
+                Sx_avg = -np.mean(np.real(Ez * np.conj(Hy)))
+                if self.direction.startswith("+") and Sx_avg < 0:
+                    # Wrong direction, flip Hy
+                    Hy = -Hy
+                elif self.direction.startswith("-") and Sx_avg > 0:
+                    # Wrong direction, flip Hy
+                    Hy = -Hy
+            elif axis == 1:  # y-propagation
+                # Compute average Poynting vector S_y = Ez * Hx
+                Sy_avg = np.mean(np.real(Ez * np.conj(Hx)))
+                if self.direction.startswith("+") and Sy_avg < 0:
+                    # Wrong direction, flip Hx
+                    Hx = -Hx
+                elif self.direction.startswith("-") and Sy_avg > 0:
+                    # Wrong direction, flip Hx
+                    Hx = -Hx
             modes.append({
                 "index": idx,
                 "neff": float(np.real(neff[idx])),

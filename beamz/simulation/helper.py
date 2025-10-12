@@ -114,11 +114,12 @@ def apply_sources(fdtd) -> None:
                     except Exception:
                         pass
                     
-                    # Hard source for 2D: Inject E and H fields for unidirectional propagation
-                    # Only inject components that exist in 2D TE (Ez, Hx, Hy)
-                    # Skip Hz which doesn't exist in 2D
+                    # Unidirectional hard source injection for 2D TM mode
+                    # Use hard source (overwrite instead of add) to force the field values
+                    # This prevents reflections from building up
+                    
                     for field_name, amplitude in field_amplitudes.items():
-                        # Skip Hz in 2D (doesn't exist in TE mode)
+                        # Skip Hz in 2D (doesn't exist in TM mode)
                         if field_name == 'Hz':
                             continue
                         
@@ -136,9 +137,11 @@ def apply_sources(fdtd) -> None:
                         # Use appropriate modulation (E-fields at integer steps, H-fields at half-steps)
                         modulation = e_modulation if field_name.startswith('E') else h_modulation
                         
-                        # Check bounds and inject (soft source: add instead of overwrite)
+                        # Check bounds and inject using HARD source (overwrite = forced value)
                         if y < field_array.shape[0] and x < field_array.shape[1]:
-                            field_array[y, x] += amplitude * modulation
+                            # Hard source: SET the field value instead of adding
+                            # This forces the boundary condition at the source plane
+                            field_array[y, x] = amplitude * modulation
 
         elif isinstance(source, GaussianSource):
             modulation = source.signal[fdtd.current_step]
