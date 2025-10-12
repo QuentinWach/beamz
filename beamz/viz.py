@@ -524,9 +524,14 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
             structure.add_to_plot(fdtd.ax, edgecolor="black", linestyle='--', facecolor='none', alpha=0.5)
         elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
             structure.add_to_plot(fdtd.ax, facecolor="none", edgecolor="black", linestyle='-')
-    for source in fdtd.design.sources:
+    # Draw sources from both design and fdtd.sources list
+    all_sources = list(fdtd.design.sources) if hasattr(fdtd.design, 'sources') else []
+    if hasattr(fdtd, 'sources'):
+        all_sources.extend(fdtd.sources)
+    for source in all_sources:
         if hasattr(source, 'add_to_plot'):
             source.add_to_plot(fdtd.ax)
+    
     for monitor in fdtd.design.monitors:
         if hasattr(monitor, 'add_to_plot'):
             monitor.add_to_plot(fdtd.ax)

@@ -205,6 +205,47 @@ class ModeSource:
     def design(self, value):
         self._design = value
 
+    def add_to_plot(self, ax):
+        """Add ModeSource line and direction arrow to the plot."""
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import FancyArrowPatch
+        
+        # Draw the source line
+        if hasattr(self, 'start') and hasattr(self, 'end'):
+            x_coords = [self.start[0], self.end[0]]
+            y_coords = [self.start[1], self.end[1]]
+            ax.plot(x_coords, y_coords, 'r-', linewidth=2, label='ModeSource', zorder=10)
+            
+            # Draw direction arrow
+            # Calculate arrow position (slightly offset from the line center)
+            center_x = (self.start[0] + self.end[0]) / 2
+            center_y = (self.start[1] + self.end[1]) / 2
+            
+            # Determine arrow direction based on direction string
+            axis = _direction_to_axis(self.direction)
+            arrow_length = 0.3e-6  # 0.3 µm arrow length
+            
+            if axis == 0:  # x-direction propagation
+                if self.direction.startswith('+'):
+                    dx, dy = arrow_length, 0
+                else:
+                    dx, dy = -arrow_length, 0
+            elif axis == 1:  # y-direction propagation
+                if self.direction.startswith('+'):
+                    dx, dy = 0, arrow_length
+                else:
+                    dx, dy = 0, -arrow_length
+            else:
+                dx, dy = 0, 0
+            
+            # Draw the arrow
+            arrow = FancyArrowPatch(
+                (center_x, center_y),
+                (center_x + dx, center_y + dy),
+                arrowstyle='->', mutation_scale=20, linewidth=2,
+                color='red', zorder=11
+            )
+            ax.add_patch(arrow)
 
     def show(self, modes=None, component="Etot", figsize=None):
         modes = modes or self.compute_modes()
@@ -308,13 +349,28 @@ class ModeSource:
         metadata = []
         max_modes = min(self.mode_index + 1, len(neff))
         for idx in range(max_modes):
-            Ez = np.squeeze(e_fields[idx][2])
+            # CORRECTED INDEXING: The mode solver returns fields in propagation frame
+            # For axis==0 (x-propagation), mode.py returns [Ez, Ex, Ey] but the actual mode
+            # data ends up in e_fields[2] (third component) due to coordinate transformations
+            Ez = np.squeeze(e_fields[idx][2])  # Extract Ez (the out-of-plane component for TM mode)
             Ez = Ez if Ez.ndim == 1 else Ez[:, 0]
-            Ex = np.squeeze(e_fields[idx][0]) if self.polarization != "te" else np.zeros_like(Ez)
-            Ey = np.squeeze(e_fields[idx][1]) if self.polarization != "te" else np.zeros_like(Ez)
-            Hx = np.squeeze(h_fields[idx][0])
-            Hy = np.squeeze(h_fields[idx][1])
-            Hz = np.squeeze(h_fields[idx][2]) if self.polarization != "te" else np.zeros_like(Ez)
+            
+            Ex = np.zeros_like(Ez)  # Zero out unused components
+            Ey = np.zeros_like(Ez)
+            Hx = np.squeeze(h_fields[idx][1])  # Use H[1]
+            Hy = np.squeeze(h_fields[idx][2])  # Use H[2]
+            Hz = np.zeros_like(Ez)
+            
+            # For +x propagation, flip H-fields to ensure proper Poynting vector direction
+            # S = E × H, for S_x > 0 we need specific E-H phase relationship
+            if axis == 0 and self.direction.startswith("+"):
+                Hy = -Hy
+            elif axis == 0 and self.direction.startswith("-"):
+                Hy = Hy  # Keep as is for -x
+            elif axis == 1 and self.direction.startswith("+"):
+                Hx = -Hx
+            elif axis == 1 and self.direction.startswith("-"):
+                Hx = Hx  # Keep as is for -y
             modes.append({
                 "index": idx,
                 "neff": float(np.real(neff[idx])),
