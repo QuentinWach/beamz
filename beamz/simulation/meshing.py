@@ -86,6 +86,8 @@ class RegularGrid(BaseMeshGrid):
         self.shape = self.permittivity.shape
         self.dx = self.resolution
         self.dy = self.resolution
+        self.width = self.design.width
+        self.height = self.design.height
         
         display_status(f"Created 2D mesh: {grid_width} × {grid_height} cells", "success")
 
@@ -610,6 +612,9 @@ class RegularGrid3D(BaseMeshGrid):
         self.dx = self.resolution_xy
         self.dy = self.resolution_xy
         self.dz = self.resolution_z
+        self.width = self.design.width
+        self.height = self.design.height
+        self.depth = self.design.depth
         
         display_status(f"Created 3D mesh: {grid_width} × {grid_height} × {grid_depth} cells", "success")
     

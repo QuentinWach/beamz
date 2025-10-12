@@ -6,7 +6,7 @@ WL = 1.55*µm
 TIME = 90*WL/LIGHT_SPEED
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
 WG_WIDTH = 0.565*µm
-DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, points_per_wavelength=30)
+DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, points_per_wavelength=100)
 
 # Create the design
 design = Design(width=18*µm, height=7*µm, material=Material(N_CLAD**2), pml_size=WL)
@@ -20,11 +20,9 @@ grid.show(field="permittivity")
 # Create the signal & source (visualizing modes only)
 source = ModeSource(
     grid=grid,
-    start=(2*µm, 3.5*µm-0.5*µm),
-    end=(2*µm, 3.5*µm+0.5*µm),
+    plane=dict(center=(4*µm, design.height/2), size=(-1*µm, 1*µm)),
     wavelength=WL,
-    num_modes=3,
-    direction="+x",
+    num_modes=3
 )
 source.show()
 

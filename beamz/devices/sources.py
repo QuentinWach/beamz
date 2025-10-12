@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt
+from dataclasses import dataclass
 
 from beamz.const import LIGHT_SPEED, µm
 from beamz.devices import mode as mode_solver
@@ -12,77 +13,106 @@ except ImportError:  # pragma: no cover - during packaging
     RegularGrid = RegularGrid3D = object
 
 
-class ModeSource:
-    """Visualise eigenmodes from a rasterised permittivity grid.
+@dataclass
+class Box:
+    center: tuple[float, ...]
+    size: tuple[float, ...]
 
-    Parameters
-    ----------
-    grid : RegularGrid | RegularGrid3D
-        Rasterised design produced via ``Design.rasterize``.
-    start, end : tuple[float, float] | tuple[float, float, float]
-        Points (in metres) defining a line across the modal cross-section.
-        Only the dominant varying axis is used for slicing.
-    wavelength : float
-        Free-space wavelength in metres.
-    num_modes : int, optional
-        Number of modes to compute (default 3).
-    polarization : str, optional
-        Target polarization for 1D solver ("te" or "tm").
-    direction : str, optional
-        Propagation direction hint for the solver (default "+x").
-    """
+
+def _direction_to_axis(direction: str) -> int:
+    d = direction.strip().lower()
+    if "x" in d:
+        return 0
+    if "y" in d:
+        return 1
+    if "z" in d:
+        return 2
+    raise ValueError(f"Unknown propagation direction '{direction}'")
+
+
+def _ensure_box(plane, dims: int, default_center, default_size) -> Box:
+    if plane is None:
+        return Box(tuple(default_center), tuple(default_size))
+    if isinstance(plane, Box):
+        center = tuple(float(c) for c in plane.center)
+        size = tuple(float(s) for s in plane.size)
+    elif isinstance(plane, dict):
+        center = tuple(float(c) for c in plane.get("center", default_center))
+        size = tuple(float(s) for s in plane.get("size", default_size))
+    elif isinstance(plane, (list, tuple)) and len(plane) == 2:
+        center = tuple(float(c) for c in plane[0])
+        size = tuple(float(s) for s in plane[1])
+    else:
+        raise TypeError("plane must be Box, dict, or (center, size) tuple")
+
+    if len(center) != dims:
+        if len(center) == 2 and dims == 3:
+            center = (*center, 0.0)
+        else:
+            raise ValueError("Plane center dimensionality mismatch")
+    if len(size) != dims:
+        if len(size) == 2 and dims == 3:
+            size = (*size, 0.0)
+        else:
+            raise ValueError("Plane size dimensionality mismatch")
+    return Box(center, size)
+
+
+class ModeSource:
+    """Visualise eigenmodes from a mesh grid using a Tidy3D-like plane specification."""
 
     def __init__(
         self,
         grid,
-        start,
-        end,
-        wavelength: float,
-        num_modes: int = 3,
-        polarization: str | None = "te",
+        plane=None,
+        wavelength: float = 1.55e-6,
         direction: str = "+x",
+        num_modes: int = 3,
+        target_neff: float | None = None,
+        polarization: str | None = "te",
     ) -> None:
         if getattr(grid, "permittivity", None) is None:
             raise ValueError("Grid must expose a 'permittivity' array. Did you call Design.rasterize()?")
         self.grid = grid
-        self.start = np.asarray(start, dtype=float)
-        self.end = np.asarray(end, dtype=float)
         self.wavelength = float(wavelength)
         self.omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
-        self.num_modes = int(num_modes)
-        self.polarization = polarization
         self.direction = direction
+        self.num_modes = int(num_modes)
+        self.target_neff = target_neff
+        self.polarization = polarization
 
         if self.num_modes <= 0:
             raise ValueError("num_modes must be positive")
 
-        if self.start.shape != self.end.shape:
-            raise ValueError("start and end points must have the same dimensionality")
+        permittivity = np.asarray(self.grid.permittivity, dtype=float)
+        if permittivity.ndim == 2:
+            dims = 2
+            default_center = (self.grid.width / 2, self.grid.height / 2)
+            default_size = (0.0, min(self.grid.width, self.grid.height))
+        elif permittivity.ndim == 3:
+            dims = 3
+            default_center = (self.grid.width / 2, self.grid.height / 2, getattr(self.grid, "depth", 0.0) / 2)
+            default_size = (0.0, self.grid.height, getattr(self.grid, "depth", 0.0) or 1e-6)
+        else:
+            raise ValueError("Unsupported permittivity dimensionality")
+
+        box = _ensure_box(plane, dims, default_center, default_size)
+        self.plane = box
 
         self._mode_cache = None
-        self._mode_type = None  # "1d" or "2d"
+        self._mode_type = "1d" if dims == 2 else "2d"
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     def compute_modes(self, force: bool = False):
-        """Compute eigenmodes using the stored grid.
-
-        Parameters
-        ----------
-        force : bool
-            Recompute even if cached results exist.
-        """
         if self._mode_cache is not None and not force:
             return self._mode_cache
 
         permittivity = np.asarray(self.grid.permittivity, dtype=float)
+        axis = _direction_to_axis(self.direction)
+
         if permittivity.ndim == 2:
-            modes = self._compute_modes_1d(permittivity)
-            self._mode_type = "1d"
+            modes = self._compute_modes_1d(permittivity, axis)
         elif permittivity.ndim == 3:
-            modes = self._compute_modes_2d(permittivity)
-            self._mode_type = "2d"
+            modes = self._compute_modes_2d(permittivity, axis)
         else:
             raise ValueError("Unsupported permittivity dimensionality")
 
@@ -90,22 +120,16 @@ class ModeSource:
         return modes
 
     def show(self, modes=None, figsize=None):
-        """Display the computed modes using matplotlib."""
         modes = modes or self.compute_modes()
         if not modes:
             raise RuntimeError("No modes available to visualise")
 
         if self._mode_type == "1d":
             self._show_1d(modes, figsize=figsize)
-        elif self._mode_type == "2d":
-            self._show_2d(modes, figsize=figsize)
         else:
-            raise RuntimeError("Unknown mode type")
+            self._show_2d(modes, figsize=figsize)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-    def _compute_modes_1d(self, permittivity: np.ndarray):
+    def _compute_modes_1d(self, permittivity: np.ndarray, axis: int):
         if not isinstance(self.grid, RegularGrid):
             raise TypeError("RegularGrid expected for 1D mode computation")
 
@@ -113,21 +137,38 @@ class ModeSource:
         dx = getattr(self.grid, "dx", 1.0)
         dy = getattr(self.grid, "dy", 1.0)
 
-        x_col = float(self.start[0])
-        col_idx = int(np.clip(np.round(x_col / dx), 0, nx - 1))
-        eps_profile = permittivity[:, col_idx]
+        center = self.plane.center
+        size = self.plane.size
+
+        if axis == 0:  # propagation along x, slice along y
+            y_min = max(0.0, center[1] - abs(size[1]) / 2)
+            y_max = min(self.grid.height, center[1] + abs(size[1]) / 2)
+            idx_start = int(np.clip(np.floor(y_min / dy), 0, ny - 1))
+            idx_end = int(np.clip(np.ceil(y_max / dy), idx_start + 1, ny))
+            eps_profile = permittivity[idx_start:idx_end, :]
+            eps_profile = eps_profile.mean(axis=1)
+            coords = (np.arange(idx_start, idx_end) + 0.5) * dy
+            dL = dy
+        else:  # along y, slice columns across x
+            x_min = max(0.0, center[0] - abs(size[0]) / 2)
+            x_max = min(self.grid.width, center[0] + abs(size[0]) / 2)
+            idx_start = int(np.clip(np.floor(x_min / dx), 0, nx - 1))
+            idx_end = int(np.clip(np.ceil(x_max / dx), idx_start + 1, nx))
+            eps_profile = permittivity[:, idx_start:idx_end]
+            eps_profile = eps_profile.mean(axis=1)
+            coords = (np.arange(ny) + 0.5) * dy
+            dL = dy
 
         neff, e_fields, h_fields, _ = mode_solver.solve_modes(
             eps=eps_profile,
             omega=self.omega,
-            dL=dy,
+            dL=dL,
             m=self.num_modes,
             direction=self.direction,
             filter_pol=self.polarization,
             return_fields=True,
         )
 
-        y_coords = (np.arange(ny) + 0.5) * dy
         modes = []
         max_modes = min(self.num_modes, len(neff))
         for idx in range(max_modes):
@@ -137,29 +178,71 @@ class ModeSource:
                 "index": idx,
                 "neff": float(np.real(neff[idx])),
                 "Ez": Ez,
-                "y": y_coords,
+                "coord": coords,
                 "eps": eps_profile,
+                "axis": axis,
             })
         return modes
 
-    def _compute_modes_2d(self, permittivity: np.ndarray):
+    def _compute_modes_2d(self, permittivity: np.ndarray, axis: int):
         if not isinstance(self.grid, RegularGrid3D):
             raise TypeError("RegularGrid3D expected for 2D mode computation")
 
-        nz, ny, nx = permittivity.shape  # z, y, x order
+        nz, ny, nx = permittivity.shape
         dx = getattr(self.grid, "dx", 1.0)
         dy = getattr(self.grid, "dy", 1.0)
         dz = getattr(self.grid, "dz", 1.0)
 
-        x_col = float(self.start[0])
-        col_idx = int(np.clip(np.round(x_col / dx), 0, nx - 1))
+        center = self.plane.center
+        size = self.plane.size
 
-        eps_slice = permittivity[:, :, col_idx]  # (nz, ny)
-        # reorder to (ny, nz) for tidy3d wrapper
+        if axis == 0:  # prop along x, perpendicular plane is y/z
+            y_min = max(0.0, center[1] - abs(size[1]) / 2)
+            y_max = min(self.grid.height, center[1] + abs(size[1]) / 2)
+            z_min = max(0.0, center[2] - abs(size[2]) / 2)
+            z_max = min(getattr(self.grid, "depth", dz * nz), center[2] + abs(size[2]) / 2)
+
+            y_start = int(np.clip(np.floor(y_min / dy), 0, ny - 1))
+            y_end = int(np.clip(np.ceil(y_max / dy), y_start + 1, ny))
+            z_start = int(np.clip(np.floor(z_min / dz), 0, nz - 1))
+            z_end = int(np.clip(np.ceil(z_max / dz), z_start + 1, nz))
+
+            eps_slice = permittivity[z_start:z_end, y_start:y_end, :]
+            eps_slice = eps_slice.mean(axis=2)
+            y_edges = np.linspace(y_start * dy, y_end * dy, y_end - y_start + 1)
+            z_edges = np.linspace(z_start * dz, z_end * dz, z_end - z_start + 1)
+        elif axis == 1:  # prop along y, plane is x/z
+            x_min = max(0.0, center[0] - abs(size[0]) / 2)
+            x_max = min(self.grid.width, center[0] + abs(size[0]) / 2)
+            z_min = max(0.0, center[2] - abs(size[2]) / 2)
+            z_max = min(getattr(self.grid, "depth", dz * nz), center[2] + abs(size[2]) / 2)
+
+            x_start = int(np.clip(np.floor(x_min / dx), 0, nx - 1))
+            x_end = int(np.clip(np.ceil(x_max / dx), x_start + 1, nx))
+            z_start = int(np.clip(np.floor(z_min / dz), 0, nz - 1))
+            z_end = int(np.clip(np.ceil(z_max / dz), z_start + 1, nz))
+
+            eps_slice = permittivity[z_start:z_end, :, x_start:x_end]
+            eps_slice = eps_slice.mean(axis=2)
+            y_edges = np.linspace(0.0, ny * dy, ny + 1)
+            z_edges = np.linspace(z_start * dz, z_end * dz, z_end - z_start + 1)
+        else:  # axis == 2 (prop along z)
+            x_min = max(0.0, center[0] - abs(size[0]) / 2)
+            x_max = min(self.grid.width, center[0] + abs(size[0]) / 2)
+            y_min = max(0.0, center[1] - abs(size[1]) / 2)
+            y_max = min(self.grid.height, center[1] + abs(size[1]) / 2)
+
+            x_start = int(np.clip(np.floor(x_min / dx), 0, nx - 1))
+            x_end = int(np.clip(np.ceil(x_max / dx), x_start + 1, nx))
+            y_start = int(np.clip(np.floor(y_min / dy), 0, ny - 1))
+            y_end = int(np.clip(np.ceil(y_max / dy), y_start + 1, ny))
+
+            eps_slice = permittivity[:, y_start:y_end, x_start:x_end]
+            eps_slice = eps_slice.mean(axis=0)
+            y_edges = np.linspace(y_start * dy, y_end * dy, y_end - y_start + 1)
+            z_edges = np.linspace(x_start * dx, x_end * dx, x_end - x_start + 1)
+
         eps_slice = np.transpose(eps_slice, (1, 0))
-
-        y_edges = np.linspace(0.0, ny * dy, ny + 1)
-        z_edges = np.linspace(0.0, nz * dz, nz + 1)
 
         tidy_modes = mode_solver.tidy3d_mode_computation_wrapper(
             frequency=LIGHT_SPEED / self.wavelength,
@@ -172,11 +255,10 @@ class ModeSource:
 
         modes = []
         for idx, mode in enumerate(tidy_modes[: self.num_modes]):
-            Ez = np.array(mode.Ez)
             modes.append({
                 "index": idx,
                 "neff": float(np.real(mode.neff)),
-                "Ez": Ez,
+                "Ez": np.array(mode.Ez),
                 "Ey": np.array(mode.Ey),
                 "Ex": np.array(mode.Ex),
                 "Hy": np.array(mode.Hy),
@@ -192,11 +274,13 @@ class ModeSource:
     # ------------------------------------------------------------------
     def _show_1d(self, modes, figsize=None):
         eps_profile = modes[0]["eps"]
-        y_coords = modes[0]["y"] / µm
+        coord = modes[0]["coord"] / µm
+        axis = modes[0]["axis"]
+        axis_label = "x" if axis == 0 else "y"
 
         fig, ax1 = plt.subplots(figsize=figsize or (7, 4))
-        ax1.plot(y_coords, eps_profile, color="black", label="εr")
-        ax1.set_xlabel("y (µm)")
+        ax1.plot(coord, eps_profile, color="black", label="εr")
+        ax1.set_xlabel(f"{axis_label} (µm)")
         ax1.set_ylabel("εr", color="black")
         ax1.tick_params(axis="y", labelcolor="black")
         ax1.grid(True, alpha=0.3)
@@ -206,7 +290,7 @@ class ModeSource:
             Ez = mode["Ez"]
             intensity = np.abs(Ez) ** 2
             intensity /= np.max(intensity) + 1e-18
-            ax2.plot(y_coords, intensity, label=f"Mode {mode['index']} (neff={mode['neff']:.3f})")
+            ax2.plot(coord, intensity, label=f"Mode {mode['index']} (neff={mode['neff']:.3f})")
 
         ax2.set_ylabel("|Ez|² (norm)")
         ax2.legend(loc="upper right")
