@@ -467,7 +467,10 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
             power_um2 = power_mag * (1.0e-12)
             current_field = power_um2
         if axis_scale is None:
-            ax_min, ax_max = 0.0, float(getattr(fdtd, "_axis_scale", [0.0, np.max(current_field) + 1e-9])[1])
+            # Dynamic scaling: compute from current field every frame
+            # Use 99th percentile for power to avoid outliers
+            ax_min = 0.0
+            ax_max = float(np.percentile(current_field, 99) or np.max(current_field) or 1e-9)
         else:
             ax_min, ax_max = axis_scale
         cbar_label = f'Power Density (W/µm²)'
@@ -478,13 +481,18 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
         current_field = field_data * 1.0e-6
         
         if axis_scale is None:
-            if isinstance(getattr(fdtd, "_axis_scale", None), (list, tuple)):
-                ax_min, ax_max = fdtd._axis_scale
-            else:
-                field_abs = np.abs(current_field)
+            # Dynamic scaling: compute from current field every frame
+            # Ignore fdtd._axis_scale for truly adaptive behavior
+            field_abs = np.abs(current_field)
+            # Use 99th percentile instead of max to avoid extreme values at source
+            # dominating the colormap
+            amax = float(np.percentile(field_abs, 99) or 1.0)
+            # Ensure at least some visible range
+            if amax < 1e-10:
                 amax = float(np.max(field_abs) or 1.0)
-                ax_min, ax_max = -amax, amax
+            ax_min, ax_max = -amax, amax
         else:
+            # Fixed scaling: use the provided axis_scale
             amax = float(max(abs(axis_scale[0]), abs(axis_scale[1])))
             if not np.isfinite(amax) or amax <= 0:
                 amax = float(np.max(np.abs(current_field)) or 1.0)
@@ -493,10 +501,19 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
 
     if fdtd.fig is not None and plt.fignum_exists(fdtd.fig.number):
         fdtd.im.set_array(current_field)
-        try:
-            fdtd.im.set_clim(vmin=ax_min, vmax=ax_max)
-        except Exception:
-            pass
+        fdtd.im.set_clim(vmin=ax_min, vmax=ax_max)
+        
+        # Update colorbar by directly modifying its properties (fast method)
+        if hasattr(fdtd, 'colorbar') and fdtd.colorbar is not None:
+            try:
+                # Update the colorbar's norm to match the new limits
+                fdtd.colorbar.mappable.set_clim(vmin=ax_min, vmax=ax_max)
+                # Force colorbar to recompute ticks
+                fdtd.colorbar.update_ticks()
+                fdtd.colorbar.draw_all()
+            except:
+                pass
+        
         fdtd.ax.set_title(f't = {fdtd.t:.2e} s{slice_info}')
         fdtd.fig.canvas.draw_idle()
         fdtd.fig.canvas.flush_events()
@@ -510,8 +527,8 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
     fdtd.im = fdtd.ax.imshow(current_field, origin='lower',
                              extent=(0, fdtd.design.width, 0, fdtd.design.height),
                              cmap='RdBu', aspect='equal', interpolation='bicubic', vmin=ax_min, vmax=ax_max)
-    colorbar = plt.colorbar(fdtd.im, orientation='vertical', aspect=30, extend='both')
-    colorbar.set_label(cbar_label)
+    fdtd.colorbar = plt.colorbar(fdtd.im, orientation='vertical', aspect=30, extend='both')
+    fdtd.colorbar.set_label(cbar_label)
 
     try:
         tmp_design = fdtd.design.copy()
