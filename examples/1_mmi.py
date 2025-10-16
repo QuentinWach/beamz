@@ -16,15 +16,25 @@ design += Rectangle(position=(0, Y/2-WG_W/2), width=X/2, height=WG_W, material=M
 design += Rectangle(position=(X/2, Y/2 + OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2, Y/2 - OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2-W/2, Y/2-H/2), width=W, height=H, material=Material(N_CORE**2))
+design.show()
+
+# Rasterize the design
+grid = design.rasterize(resolution=DX)
 
 # Define the source
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=0.1, frequency=LIGHT_SPEED/WL, phase=0, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
-source = ModeSource(grid=design, start=(2*µm, Y/2-1.2*µm), end=(2*µm, Y/2+1.2*µm), wavelength=WL, signal=signal)
-design += source
-design.show()
+source = ModeSource(
+    grid=grid,
+    center=(2*µm, Y/2),
+    width=2.4*µm,
+    wavelength=WL,
+    pol="tm",
+    signal=signal,
+    direction="+x",
+)
 
 # Run the simulation and show results
-sim = FDTD(design=design, time=time_steps, mesh="regular", resolution=DX)
+sim = FDTD(design=grid, devices=[source], time=time_steps)
 sim.run(live=True, save_memory_mode=True, accumulate_power=True) #axis_scale=[-1000/(µm), 1000/(µm)]
 sim.plot_power(db_colorbar=True)
