@@ -238,17 +238,18 @@ def build_output_monitor(design):
     return monitor
 
 
-def build_adjoint_source(design, signal, target_positions, target_samples):
+def build_adjoint_source(grid, signal, target_positions, target_samples):
     """Construct adjoint source shaped to the desired mode profile."""
 
     adjoint = ModeSource(
-        design=design,
-        position=(W/2, H - 2.5*µm),
+        grid=grid,
+        center=(W/2, H - 2.5*µm),
         width=4 * WG_W,
         wavelength=WL,
+        pol="tm",
         signal=signal,
         direction="-y",
-        modes=1,
+        mode=0,
     )
     if adjoint.mode_profiles:
         profile = adjoint.mode_profiles[0]
@@ -296,17 +297,18 @@ def build_adjoint_source(design, signal, target_positions, target_samples):
     return adjoint
 
 
-def build_forward_source(design, signal):
+def build_forward_source(grid, signal):
     """Return a forward mode source that injects the input waveguide mode without mirrors."""
 
     source = ModeSource(
-        design=design,
-        position=(2.5*µm, H/2),
+        grid=grid,
+        center=(2.5*µm, H/2),
         width=WG_W * 4,
         wavelength=WL,
+        pol="tm",
         signal=signal,
         direction="+x",
-        modes=1,
+        mode=0,
     )
     return source
 rng = np.random.default_rng(0)
@@ -330,7 +332,7 @@ for step in range(1,STEPS+1):
     
     # Forward simulation using non-reflective source and mode-aware monitor
     print(f"\n[STEP {step}] Running FORWARD simulation...")
-    source = build_forward_source(design, signal)
+    source = build_forward_source(grid, signal)
     monitor = build_output_monitor(design)
     
     # Debug: check permittivity for NaN/Inf
@@ -381,7 +383,7 @@ for step in range(1,STEPS+1):
     
     # Adjoint simulation, computing the overlap gradient
     print(f"[STEP {step}] Running ADJOINT simulation...")
-    adj_source = build_adjoint_source(design, signal, monitor.target_positions, monitor.target_samples)
+    adj_source = build_adjoint_source(grid, signal, monitor.target_positions, monitor.target_samples)
     
     # Debug: check adjoint source profile to verify field amplitudes
     if adj_source.mode_profiles:
@@ -583,7 +585,7 @@ final_density_ax.set_ylabel("y (m)")
 final_density_fig.savefig("final_binary_density.png", dpi=200, bbox_inches="tight")
 plt.close(final_density_fig)
 
-final_source = build_forward_source(design, signal)
+final_source = build_forward_source(grid, signal)
 final_monitor = build_output_monitor(design)
 # Use auto-scaling with percentile-based clipping for optimal display
 # New normalization: |E| ~ 1e6 V/m × signal(1e-6) × viz_scale(1e-6) = 1 V/µm

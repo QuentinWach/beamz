@@ -53,15 +53,15 @@ for opt_step in range(OPT_STEPS):
 
     # Run the forward FDTD simulation
     forward = FDTD(design=grid, devices=[
-        ModeSource(design=design, position=(2.5*µm, H/2), width=WG_W*4, wavelength=WL, signal=signal, direction="+x"),
+        ModeSource(grid=grid, center=(2.5*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+x", mode=0),
         Monitor(design=design, start=(W/2-WG_W*2, H-2.5*µm), end=(W/2+WG_W*2, H-2.5*µm), objective_function=objective_function)
     ], time=t) # TODO: Integrate the objective function into the FDTD simulation
     forward_fields, objective_value = forward.run(live=True, axis_scale=[-1, 1], save_memory_mode=True) # TODO: only save the Ez field!!!
     objective_history.append(objective_value)
 
     # Run the adjoint FDTD simulation step-by-step and accumulate the overlap field
-    adjoint = FDTD(design=grid, devices=[ModeSource(design=design, position=(W/2, H-2.5*µm),
-        width=WG_W*4, wavelength=WL,signal=signal, direction="-y")], time=t)
+    adjoint = FDTD(design=grid, devices=[ModeSource(grid=grid, center=(W/2, H-2.5*µm),
+        width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="-y", mode=0)], time=t)
     overlap_gradient = np.zeros_like(forward_fields["Ez"]) # TODO: Initialize with the correct shape!!!
     for step in t:
         adjoint_field = adjoint.step() # Simulate one step of the adjoint FDTD simulation
