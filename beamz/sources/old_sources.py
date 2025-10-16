@@ -714,7 +714,45 @@ def _serialize_mode_profile(meta: _ModeMetadata, mode_dict: dict, center: tuple[
 
         plt.show()
 
-# Deprecated placeholder to maintain backward compatibility
 class GaussianSource:
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("GaussianSource is deprecated in this module.")
+    """Point source with Gaussian spatial profile."""
+    
+    def __init__(self, position, width, signal):
+        """Initialize a Gaussian source.
+        
+        Args:
+            position: Tuple of (x, y) or (x, y, z) coordinates
+            width: Physical width (standard deviation) of the Gaussian profile
+            signal: Array of signal values for each time step
+        """
+        # Ensure position is a tuple with 3 elements (for 2D, z=0)
+        if len(position) == 2:
+            self.position = (*position, 0.0)
+        else:
+            self.position = tuple(position)
+        
+        self.width = float(width)
+        self.signal = np.asarray(signal, dtype=float)
+        self.max_signal_magnitude = float(np.max(np.abs(self.signal))) if self.signal.size else 0.0
+    
+    def add_to_plot(self, ax):
+        """Add GaussianSource marker to 2D plot."""
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Circle
+        
+        # Draw a circle at the source position
+        circle = Circle(
+            (self.position[0], self.position[1]),
+            radius=self.width,  # 2 sigma for visibility
+            facecolor='orangered',
+            edgecolor='red',
+            alpha=0.2,
+            linewidth=1,
+            label='GaussianSource',
+            zorder=10
+        )
+        ax.add_patch(circle)
+        
+        # Add a center marker
+        ax.plot(self.position[0], self.position[1], 'r+', markersize=6, 
+                markeredgewidth=1, zorder=11, alpha=0.2)

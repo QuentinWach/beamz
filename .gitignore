@@ -75,3 +75,7 @@ TODO.md
 
 beamz/devices/reference/
 notes/
+.mplconfig/
+.pytest_cache/
+.python_cache/
+.venv/

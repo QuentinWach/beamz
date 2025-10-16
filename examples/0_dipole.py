@@ -18,5 +18,5 @@ design += GaussianSource(position=(4*µm, 5*µm), width=WL/6, signal=signal)
 
 # Run the simulation
 sim = FDTD(design=design, time=time_steps, mesh="regular", resolution=DX)
-sim.run(live=True, axis_scale=[-1, 1], save_memory_mode=True, accumulate_power=True)
+sim.run(live=True, save_memory_mode=True, accumulate_power=True)
 sim.plot_power(db_colorbar=True)
