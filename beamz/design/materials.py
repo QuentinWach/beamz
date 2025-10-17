@@ -8,7 +8,6 @@ class Material:
     def get_sample(self):
         return self.permittivity, self.permeability, self.conductivity
 
-    
 
 # CustomMaterial: Function-based material for inverse design
 class CustomMaterial:
