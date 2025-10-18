@@ -11,12 +11,21 @@ from beamz.simulation.backends import get_backend
 from beamz.helpers import display_status, create_rich_progress, display_parameters, display_time_elapsed
 from beamz import viz as viz
 from beamz.simulation import helper as sim_helper
+from beamz.simulation.fields import Fields, GridSpacing
 
 
 class FDTD:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
-    def __init__(self, design: Design = None, devices: list[Device] = [], time: np.ndarray = None, 
-                    resolution: float = 0.02*µm, backend: str = "numpy"):
+    def __init__(
+        self,
+        design: Design = None,
+        devices: list[Device] = None,
+        time: np.ndarray = None,
+        resolution: float = 0.02 * µm,
+        backend: str = "numpy",
+        backend_options: Optional[Dict] = None,
+        mesh=None,
+    ):
 
 
         provided_mesh = None
@@ -83,21 +92,20 @@ class FDTD:
         self.mu_r = self.mesh.permeability
         self.sigma = self.mesh.conductivity
         
-        # Initialize the backend
+        # Initialize the backend and field storage
         backend_options = backend_options or {}
         self.backend = get_backend(name=backend, **backend_options)
-        
-        # Initialize fields based on dimensionality
-        self._init_fields()
-        
-        # Convert material properties to backend arrays
-        self.epsilon_r = self.backend.from_numpy(self.epsilon_r)
+
+        self.fields = self._create_fields()
+        self.epsilon_r = self.fields.epsilon_r
+        self.sigma = self.fields.sigma
         self.mu_r = self.backend.from_numpy(self.mu_r)
-        self.sigma = self.backend.from_numpy(self.sigma)
+        self.is_complex_backend = self.fields.is_complex_backend
         
-        # Initialize the time
+        if time is None or len(time) < 2:
+            raise ValueError("FDTD requires a time array with at least two entries")
         self.time = time
-        self.dt = self.time[1] - self.time[0]
+        self.dt = float(self.time[1] - self.time[0])
         self.num_steps = len(self.time)
         
         # Initialize the sources
@@ -146,166 +154,101 @@ class FDTD:
         # Initialize simulation start time
         self.start_time = None
 
-    def _init_fields(self):
-        """Initialize field arrays based on dimensionality."""
-        if self.is_3d: 
-            try:
-                # Yee grid staggering in 3D (arrays ordered as [z, y, x])
-                # Electric fields live on edges
-                self.Ex = self.backend.zeros((self.nz,     self.ny,     self.nx-1), dtype=np.complex128)
-                self.Ey = self.backend.zeros((self.nz,     self.ny-1,   self.nx    ), dtype=np.complex128)
-                self.Ez = self.backend.zeros((self.nz-1,   self.ny,     self.nx    ), dtype=np.complex128)
-                # Magnetic fields live on faces (Yee grid)
-                # Hx: (nz-1, ny-1, nx), Hy: (nz-1, ny, nx-1), Hz: (nz, ny-1, nx-1)
-                self.Hx = self.backend.zeros((self.nz-1,   self.ny-1,   self.nx    ), dtype=np.complex128)
-                self.Hy = self.backend.zeros((self.nz-1,   self.ny,     self.nx-1  ), dtype=np.complex128)
-                self.Hz = self.backend.zeros((self.nz,     self.ny-1,   self.nx-1  ), dtype=np.complex128)
-            except TypeError:
-                # Fallback if dtype not supported
-                self.Ex = self.backend.zeros((self.nz,     self.ny,     self.nx-1))
-                self.Ey = self.backend.zeros((self.nz,     self.ny-1,   self.nx    ))
-                self.Ez = self.backend.zeros((self.nz-1,   self.ny,     self.nx    ))
-                self.Hx = self.backend.zeros((self.nz-1,   self.ny-1,   self.nx    ))
-                self.Hy = self.backend.zeros((self.nz-1,   self.ny,     self.nx-1  ))
-                self.Hz = self.backend.zeros((self.nz,     self.ny-1,   self.nx-1  ))
-                self.is_complex_backend = False
-            else: self.is_complex_backend = True
-        else: 
-            try:
-                # Try with dtype parameter if supported - use (ny, nx) format to match backend
-                self.Ez = self.backend.zeros((self.ny, self.nx), dtype=np.complex128)
-            except TypeError:
-                # Fallback if dtype not supported - create real array and handle complex values in code
-                self.Ez = self.backend.zeros((self.ny, self.nx))
-                self.is_complex_backend = False
-            else: self.is_complex_backend = True
-            # Staggered magnetic fields: Hx has same rows as Ez and one fewer column; Hy has one fewer row and same columns
-            self.Hx = self.backend.zeros((self.ny, self.nx-1))
-            self.Hy = self.backend.zeros((self.ny-1, self.nx))
+    def _create_fields(self) -> Fields:
+        spacing = GridSpacing(
+            dx=self.dx,
+            dy=self.dy,
+            dz=self.dz if self.is_3d else None,
+        )
+
+        if self.is_3d:
+            grid_shape = (self.nz, self.ny, self.nx)
+        else:
+            grid_shape = (self.ny, self.nx)
+
+        fields = Fields(
+            backend=self.backend,
+            epsilon_r=self.epsilon_r,
+            sigma=self.sigma,
+            grid_shape=grid_shape,
+            spacing=spacing,
+        )
+        if self.is_3d:
+            self.Ex = fields.Ex
+            self.Ey = fields.Ey
+            self.Ez = fields.Ez
+            self.Hx = fields.Hx
+            self.Hy = fields.Hy
+            self.Hz = fields.Hz
+        else:
+            self.Ez = fields.Ez
+            self.Hx = fields.Hx
+            self.Hy = fields.Hy
+        return fields
 
     def simulate_step(self):
         """Perform one FDTD step with stability checks."""
-        if self.is_3d: self._update_3d_fields()
-        else:
-            # 2D TE-polarized Maxwell equations update
-            self.Hx, self.Hy = self.backend.update_h_fields(
-                self.Hx, self.Hy, self.Ez, self.sigma, 
-                self.dx, self.dy, self.dt, MU_0, EPS_0)
-            self.Ez = self.backend.update_e_field(
-                self.Ez, self.Hx, self.Hy, self.sigma, self.epsilon_r,
-                self.dx, self.dy, self.dt, EPS_0)
+        self.fields.update(self.dt)
 
-    def _update_3d_fields(self):
-        """Full 3D Yee update for all 6 field components with PML via sigma arrays."""
-        dt = self.dt; dx = self.dx; dy = self.dy; dz = self.dz
-        mu0 = MU_0; eps0 = EPS_0
+    # Backward-compatible property accessors for existing helpers/monitors
+    def _get_field_attr(self, name: str):
+        if not hasattr(self.fields, name):
+            raise AttributeError(f"Field '{name}' is not available for this simulation dimensionality")
+        return getattr(self.fields, name)
 
-        # Convenience references
-        Ex = self.Ex; Ey = self.Ey; Ez = self.Ez
-        Hx = self.Hx; Hy = self.Hy; Hz = self.Hz
-        eps_r = self.epsilon_r; sigma = self.sigma
+    def _set_field_attr(self, name: str, value):
+        if not hasattr(self.fields, name):
+            raise AttributeError(f"Field '{name}' is not available for this simulation dimensionality")
+        setattr(self.fields, name, value)
 
-        # --- Update H fields (n -> n+1/2) ---
-        # Magnetic conductivities at staggered positions
-        sigma_m_hx = (sigma[:-1, :-1, :] * mu0 / eps0) if sigma.ndim == 3 else sigma * 0
-        sigma_m_hy = (sigma[:-1, :, :-1] * mu0 / eps0) if sigma.ndim == 3 else sigma * 0
-        sigma_m_hz = (sigma[:, :-1, :-1] * mu0 / eps0) if sigma.ndim == 3 else sigma * 0
+    @property
+    def Ex(self):
+        return self._get_field_attr("Ex")
 
-        # Curls of E at H locations
-        # Hx shape: (nz-1, ny-1, nx)
-        dEz_dy = (Ez[:, 1:, :] - Ez[:, :-1, :]) / dy          # (nz-1, ny-1, nx)
-        dEy_dz = (Ey[1:, :, :] - Ey[:-1, :, :]) / dz          # (nz-1, ny-1, nx)
-        curlE_x = dEz_dy - dEy_dz
+    @Ex.setter
+    def Ex(self, value):
+        self._set_field_attr("Ex", value)
 
-        # Hy shape: (nz-1, ny, nx-1)
-        dEx_dz = (Ex[1:, :, :] - Ex[:-1, :, :]) / dz          # (nz-1, ny, nx-1)
-        dEz_dx = (Ez[:, :, 1:] - Ez[:, :, :-1]) / dx          # (nz-1, ny, nx-1)
-        curlE_y = dEx_dz - dEz_dx
+    @property
+    def Ey(self):
+        return self._get_field_attr("Ey")
 
-        # Hz shape: (nz, ny-1, nx-1)
-        dEy_dx = (Ey[:, :, 1:] - Ey[:, :, :-1]) / dx          # (nz, ny-1, nx-1)
-        dEx_dy = (Ex[:, 1:, :] - Ex[:, :-1, :]) / dy          # (nz, ny-1, nx-1)
-        curlE_z = dEy_dx - dEx_dy
+    @Ey.setter
+    def Ey(self, value):
+        self._set_field_attr("Ey", value)
 
-        # Semi-implicit PML factors for H
-        denom_hx = 1.0 + sigma_m_hx * dt / (2.0 * mu0)
-        factor_hx = (1.0 - sigma_m_hx * dt / (2.0 * mu0)) / denom_hx
-        source_hx = (dt / mu0) / denom_hx
+    @property
+    def Ez(self):
+        return self._get_field_attr("Ez")
 
-        denom_hy = 1.0 + sigma_m_hy * dt / (2.0 * mu0)
-        factor_hy = (1.0 - sigma_m_hy * dt / (2.0 * mu0)) / denom_hy
-        source_hy = (dt / mu0) / denom_hy
+    @Ez.setter
+    def Ez(self, value):
+        self._set_field_attr("Ez", value)
 
-        denom_hz = 1.0 + sigma_m_hz * dt / (2.0 * mu0)
-        factor_hz = (1.0 - sigma_m_hz * dt / (2.0 * mu0)) / denom_hz
-        source_hz = (dt / mu0) / denom_hz
+    @property
+    def Hx(self):
+        return self._get_field_attr("Hx")
 
-        Hx[:] = factor_hx * Hx - source_hx * curlE_x
-        Hy[:] = factor_hy * Hy - source_hy * curlE_y
-        Hz[:] = factor_hz * Hz - source_hz * curlE_z
+    @Hx.setter
+    def Hx(self, value):
+        self._set_field_attr("Hx", value)
 
-        # --- Update E fields (n+1/2 -> n+1) ---
-        # Electric conductivities and permittivities at E locations (use interior slices)
-        # Ex interior: [1:-1, 1:-1, :]
-        if eps_r.ndim == 3:
-            eps_ex = eps_r[1:-1, 1:-1, :-1]
-            sig_ex = sigma[1:-1, 1:-1, :-1]
-        else:
-            eps_ex = eps_r
-            sig_ex = sigma
+    @property
+    def Hy(self):
+        return self._get_field_attr("Hy")
 
-        # Ey interior: [1:-1, :, 1:-1]
-        if eps_r.ndim == 3:
-            eps_ey = eps_r[1:-1, :-1, 1:-1]
-            sig_ey = sigma[1:-1, :-1, 1:-1]
-        else:
-            eps_ey = eps_r
-            sig_ey = sigma
+    @Hy.setter
+    def Hy(self, value):
+        self._set_field_attr("Hy", value)
 
-        # Ez interior: [:, 1:-1, 1:-1]
-        if eps_r.ndim == 3:
-            eps_ez = eps_r[:-1, 1:-1, 1:-1]
-            sig_ez = sigma[:-1, 1:-1, 1:-1]
-        else:
-            eps_ez = eps_r
-            sig_ez = sigma
+    @property
+    def Hz(self):
+        return self._get_field_attr("Hz")
 
-        # Curls of H at E locations (interior updates)
-        # Ex interior indices
-        dHz_dy_ex = (Hz[:, 1:, :] - Hz[:, :-1, :]) / dy              # (nz, ny-2, nx-1)
-        dHy_dz_ex = (Hy[1:, :, :] - Hy[:-1, :, :]) / dz              # (nz-2, ny, nx-1)
-        # Align to (nz-2, ny-2, nx-1)
-        curlH_x = dHz_dy_ex[1:-1, :, :] - dHy_dz_ex[:, 1:-1, :]
+    @Hz.setter
+    def Hz(self, value):
+        self._set_field_attr("Hz", value)
 
-        # Ey interior indices
-        dHx_dz_ey = (Hx[1:, :, :] - Hx[:-1, :, :]) / dz              # (nz-2, ny-1, nx)
-        dHz_dx_ey = (Hz[:, :, 1:] - Hz[:, :, :-1]) / dx              # (nz, ny-1, nx-1)
-        # Align to (nz-2, ny-1, nx-2)
-        curlH_y = dHx_dz_ey[:, :, 1:-1] - dHz_dx_ey[1:-1, :, :]
-
-        # Ez interior indices
-        dHy_dx_ez = (Hy[:, :, 1:] - Hy[:, :, :-1]) / dx              # (nz-1, ny, nx-2)
-        dHx_dy_ez = (Hx[:, 1:, :] - Hx[:, :-1, :]) / dy              # (nz-1, ny-2, nx)
-        # Align to (nz-1, ny-2, nx-2)
-        curlH_z = dHy_dx_ez[:, 1:-1, :] - dHx_dy_ez[:, :, 1:-1]
-
-        # Semi-implicit PML factors for E
-        denom_ex = 1.0 + sig_ex * dt / (2.0 * eps0 * eps_ex)
-        factor_ex = (1.0 - sig_ex * dt / (2.0 * eps0 * eps_ex)) / denom_ex
-        source_ex = (dt / (eps0 * eps_ex)) / denom_ex
-
-        denom_ey = 1.0 + sig_ey * dt / (2.0 * eps0 * eps_ey)
-        factor_ey = (1.0 - sig_ey * dt / (2.0 * eps0 * eps_ey)) / denom_ey
-        source_ey = (dt / (eps0 * eps_ey)) / denom_ey
-
-        denom_ez = 1.0 + sig_ez * dt / (2.0 * eps0 * eps_ez)
-        factor_ez = (1.0 - sig_ez * dt / (2.0 * eps0 * eps_ez)) / denom_ez
-        source_ez = (dt / (eps0 * eps_ez)) / denom_ez
-
-        # Apply updates to interior regions
-        Ex[1:-1, 1:-1, :] = factor_ex * Ex[1:-1, 1:-1, :] + source_ex * (curlH_x)
-        Ey[1:-1, :, 1:-1] = factor_ey * Ey[1:-1, :, 1:-1] + source_ey * (curlH_y)
-        Ez[:, 1:-1, 1:-1] = factor_ez * Ez[:, 1:-1, 1:-1] + source_ez * (curlH_z)
 
     def initialize_simulation(self, save=True, live=True, axis_scale=None, save_animation=False,
                              animation_filename='fdtd_animation.mp4', clean_visualization=True,
