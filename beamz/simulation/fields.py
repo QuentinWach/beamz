@@ -8,12 +8,11 @@ from beamz.simulation import ops
 class Fields:
     """Container for E/H field arrays on staggered Yee grid with FDTD update logic."""
 
-    def __init__(self, epsilon_r, sigma, grid_shape, dx, dy, dz=None, complex_dtype=np.complex128):
+    def __init__(self, epsilon_r, sigma, grid_shape, dx, dy, dz=None):
         """Initialize field arrays on a Yee grid for 2D (Ez, Hx, Hy) or 3D (Ex, Ey, Ez, Hx, Hy, Hz) simulations."""
         self.dx = dx
         self.dy = dy
         self.dz = dz
-        self.complex_dtype = complex_dtype
         self.epsilon_r = np.asarray(epsilon_r)
         self.sigma = np.asarray(sigma)
 
@@ -26,18 +25,18 @@ class Fields:
 
     def _init_fields_2d(self, ny, nx):
         """Initialize 2D TM mode field arrays (Ez, Hx, Hy) on staggered Yee grid."""
-        self.Ez = np.zeros((ny, nx), dtype=self.complex_dtype)
-        self.Hx = np.zeros((ny, nx - 1), dtype=np.float64)
-        self.Hy = np.zeros((ny - 1, nx), dtype=np.float64)
+        self.Ez = np.zeros((ny, nx))
+        self.Hx = np.zeros((ny, nx - 1))
+        self.Hy = np.zeros((ny - 1, nx))
 
     def _init_fields_3d(self, nx, ny, nz):
         """Initialize 3D field arrays (Ex, Ey, Ez, Hx, Hy, Hz) with proper Yee grid staggering."""
-        self.Ex = np.zeros((nz, ny, nx - 1), dtype=self.complex_dtype)
-        self.Ey = np.zeros((nz, ny - 1, nx), dtype=self.complex_dtype)
-        self.Ez = np.zeros((nz - 1, ny, nx), dtype=self.complex_dtype)
-        self.Hx = np.zeros((nz - 1, ny - 1, nx), dtype=self.complex_dtype)
-        self.Hy = np.zeros((nz - 1, ny, nx - 1), dtype=self.complex_dtype)
-        self.Hz = np.zeros((nz, ny - 1, nx - 1), dtype=self.complex_dtype)
+        self.Ex = np.zeros((nz, ny, nx - 1))
+        self.Ey = np.zeros((nz, ny - 1, nx))
+        self.Ez = np.zeros((nz - 1, ny, nx))
+        self.Hx = np.zeros((nz - 1, ny - 1, nx))
+        self.Hy = np.zeros((nz - 1, ny, nx - 1))
+        self.Hz = np.zeros((nz, ny - 1, nx - 1))
 
     def update(self, dt):
         """Advance all fields by one FDTD time step: update H from curl(E), then E from curl(H)."""
@@ -71,4 +70,3 @@ class Fields:
         self.Ex = ops.advance_e_field(self.Ex, curlH_x, sig_x, eps_x, dt, region_x)
         self.Ey = ops.advance_e_field(self.Ey, curlH_y, sig_y, eps_y, dt, region_y)
         self.Ez = ops.advance_e_field(self.Ez, curlH_z, sig_z, eps_z, dt, region_z)
-

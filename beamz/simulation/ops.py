@@ -48,7 +48,7 @@ def curl_h_to_e(h_fields, spacings, target_shape):
         # 2D case: compute curl_hz = ∂Hy/∂x - ∂Hx/∂y for Ez update
         hx, hy = h_fields
         dx, dy, _ = spacings
-        curl = np.zeros(target_shape, dtype=np.result_type(hx, hy))
+        curl = np.zeros(target_shape)
         # Update interior points only (boundaries handled separately)
         curl[1:-1, 1:-1] = ((hy[1:, 1:-1] - hy[:-1, 1:-1]) / dx - (hx[1:-1, 1:] - hx[1:-1, :-1]) / dy)
         return (curl,)
@@ -67,7 +67,6 @@ def curl_h_to_e(h_fields, spacings, target_shape):
 
 def magnetic_conductivity_terms(sigma, field_shapes):
     """Compute magnetic conductivity σ_m = σ * μ₀/ε₀ for H-field PML absorption, handles 2D/3D staggered grid positions."""
-    dtype = sigma.dtype if isinstance(sigma, np.ndarray) else np.float64
     if sigma.ndim == 3:
         # 3D: slice and reshape sigma for each H component's staggered position
         hx_shape, hy_shape, hz_shape = field_shapes
@@ -84,7 +83,7 @@ def magnetic_conductivity_terms(sigma, field_shapes):
         return (sigma_m_x.reshape(hx_shape), sigma_m_y.reshape(hy_shape))
 
     # Scalar sigma: return zero arrays (no PML)
-    return tuple(np.zeros(shape, dtype=dtype) for shape in field_shapes)
+    return tuple(np.zeros(shape) for shape in field_shapes)
 
 
 def advance_h_field(field, curl, sigma_m, dt):
