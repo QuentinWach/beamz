@@ -15,18 +15,14 @@ from beamz.devices.core import Device
 
 class FDTD:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
-    def __init__(self, design: Design=None, devices: list[Device]=None, time: list[float]=None,
-        resolution: float=0.02*µm, backend: str="numpy"):
-
+    def __init__(self, design:Design=None, devices:list[Device]=None, time:np.array=None, res:float=0.02*µm, backend:str="numpy"):
 
         provided_mesh = None
 
         if isinstance(design, BaseMeshGrid):
             provided_mesh = design
-            using_provided_mesh = True
             mesh_design = getattr(provided_mesh, "design", None)
-            if mesh_design is None:
-                raise ValueError("Provided mesh must expose its originating design via the `design` attribute.")
+            if mesh_design is None: raise ValueError("Provided mesh must expose its originating design via the `design` attribute.")
             design = mesh_design
 
         # Initialize the design and detect dimensionality
@@ -34,38 +30,18 @@ class FDTD:
         self.is_3d = design.is_3d and design.depth > 0
 
         mesh_obj = None
-        if provided_mesh is not None:
-            mesh_obj = provided_mesh
-        elif isinstance(mesh, BaseMeshGrid):
-            mesh_obj = mesh
-            using_provided_mesh = True
-        elif mesh == "regular":
-            if self.is_3d:
-                mesh_obj = RegularGrid3D(design=self.design, resolution_xy=resolution)
-            else:
-                mesh_obj = RegularGrid(design=self.design, resolution=resolution)
-        else:
-            raise ValueError(f"Unsupported mesh specification: {mesh!r}")
+        if provided_mesh is not None: mesh_obj = provided_mesh
+        elif isinstance(mesh, BaseMeshGrid): mesh_obj = mesh
+        elif mesh == "regular": mesh_obj = RegularGrid3D(design=self.design, resolution_xy=resolution) if self.is_3d else RegularGrid(design=self.design, resolution=resolution)
+        else: raise ValueError(f"Unsupported mesh specification: {mesh!r}")
 
-        if mesh_obj is None:
-            raise ValueError("Failed to initialize FDTD mesh.")
-
-        if hasattr(mesh_obj, "design") and mesh_obj.design is not None and mesh_obj.design is not self.design:
-            raise ValueError("Provided mesh was generated from a different design instance.")
-
-        if self.is_3d and not isinstance(mesh_obj, RegularGrid3D):
-            raise ValueError("3D designs require a RegularGrid3D mesh.")
-        if not self.is_3d and not isinstance(mesh_obj, RegularGrid):
-            raise ValueError("2D designs require a RegularGrid mesh.")
+        if mesh_obj is None: raise ValueError("Failed to initialize FDTD mesh.")
+        if hasattr(mesh_obj, "design") and mesh_obj.design is not None and mesh_obj.design is not self.design: raise ValueError("Provided mesh was generated from a different design instance.")
+        if self.is_3d and not isinstance(mesh_obj, RegularGrid3D): raise ValueError("3D designs require a RegularGrid3D mesh.")
+        if not self.is_3d and not isinstance(mesh_obj, RegularGrid): raise ValueError("2D designs require a RegularGrid mesh.")
 
         self.mesh = mesh_obj
-
-        if hasattr(self.mesh, "resolution"):
-            self.resolution = self.mesh.resolution
-        elif hasattr(self.mesh, "resolution_xy"):
-            self.resolution = self.mesh.resolution_xy
-        else:
-            self.resolution = resolution
+        self.resolution = self.mesh.resolution if hasattr(self.mesh, "resolution") else (self.mesh.resolution_xy if hasattr(self.mesh, "resolution_xy") else resolution)
 
         
         # Set grid resolutions
@@ -77,87 +53,50 @@ class FDTD:
         if self.is_3d: self.nz, self.ny, self.nx = self.mesh.permittivity.shape
         else: self.ny, self.nx = self.mesh.permittivity.shape
 
-        # Get material properties
-        self.epsilon_r = self.mesh.permittivity
-        self.mu_r = self.mesh.permeability
-        self.sigma = self.mesh.conductivity
-        
-        # Initialize the backend and field storage
-        backend_options = backend_options or {}
-        self.backend = get_backend(name=backend, **backend_options)
-
+        # Get material properties and initialize backend
+        self.epsilon_r, self.mu_r, self.sigma = self.mesh.permittivity, self.mesh.permeability, self.mesh.conductivity
+        self.backend = get_backend(name=backend, **(backend_options or {}))
         self.fields = self._create_fields()
-        self.epsilon_r = self.fields.epsilon_r
-        self.sigma = self.fields.sigma
-        self.mu_r = np.asarray(self.mu_r)
+        self.epsilon_r, self.sigma, self.mu_r = self.fields.epsilon_r, self.fields.sigma, np.asarray(self.mu_r)
         
-        if time is None or len(time) < 2:
-            raise ValueError("FDTD requires a time array with at least two entries")
+        if time is None or len(time) < 2: raise ValueError("FDTD requires a time array with at least two entries")
         self.time = time
         self.dt = float(self.time[1] - self.time[0])
         self.num_steps = len(self.time)
         
-        # Initialize the sources
-        if devices is None:
-            devices = []
-        self.sources = list(self.design.sources)
-        self.monitors = list(self.design.monitors)
+        # Initialize sources and monitors
+        if devices is None: devices = []
+        self.sources, self.monitors = list(self.design.sources), list(self.design.monitors)
 
         for device in devices:
             if isinstance(device, (ModeSource, GaussianSource)):
-                if device.design is None:
-                    device.design = self.design
+                if device.design is None: device.design = self.design
                 self.sources.append(device)
             elif isinstance(device, Monitor):
-                if device.design is None:
-                    device.design = self.design
+                if device.design is None: device.design = self.design
                 self.monitors.append(device)
-            else:
-                raise TypeError(f"Unsupported device type: {type(device)}")
+            else: raise TypeError(f"Unsupported device type: {type(device)}")
         
         # Grid-aligned mode solving: Recompute mode profiles using actual FDTD permittivity grid
         for source in self.sources:
             if isinstance(source, ModeSource):
-                if self.is_3d:
-                    source.compute_modes_on_fdtd_grid(self.mesh, self.dx, self.dy, self.dz)
-                else:
-                    source.compute_modes_on_fdtd_grid(self.mesh, self.dx, self.dy)
+                source.compute_modes_on_fdtd_grid(self.mesh, self.dx, self.dy, self.dz) if self.is_3d else source.compute_modes_on_fdtd_grid(self.mesh, self.dx, self.dy)
         
-        # Initialize the results based on dimensionality
-        if self.is_3d: self.results = {"Ex": [], "Ey": [], "Ez": [], "Hx": [], "Hy": [], "Hz": [], "t": []}
-        else: self.results = {"Ez": [], "Hx": [], "Hy": [], "t": []}
-            
-        # Initialize animation attributes
-        self.fig = None
-        self.ax = None
-        self.anim = None
-        self.im = None
-        
-        # Initialize monitor data storage
-        self.monitor_data = {}
-        
-        # Initialize power accumulation
-        self.power_accumulated = None
-        self.power_accumulation_count = 0
-        
-        # Initialize simulation start time
-        self.start_time = None
+        # Initialize results, animation attributes, monitor data, power accumulation, and start time
+        self.results = {"Ex": [], "Ey": [], "Ez": [], "Hx": [], "Hy": [], "Hz": [], "t": []} if self.is_3d else {"Ez": [], "Hx": [], "Hy": [], "t": []}
+        self.fig, self.ax, self.anim, self.im = None, None, None, None
+        self.monitor_data, self.power_accumulated, self.power_accumulation_count, self.start_time = {}, None, 0, None
 
     def _create_fields(self):
+        """Create and return Fields object with appropriate grid shape and spacing for 2D or 3D simulation."""
         grid_shape = (self.nz, self.ny, self.nx) if self.is_3d else (self.ny, self.nx)
-        return Fields(epsilon_r=self.epsilon_r, sigma=self.sigma, grid_shape=grid_shape, 
-                        dx=self.dx, dy=self.dy, dz=self.dz if self.is_3d else None)
+        return Fields(epsilon_r=self.epsilon_r, sigma=self.sigma, grid_shape=grid_shape, dx=self.dx, dy=self.dy, dz=self.dz if self.is_3d else None)
 
-    def initialize_simulation(self, save=True, live=True, axis_scale=None, save_animation=False,
-                             animation_filename='fdtd_animation.mp4', clean_visualization=True, save_fields=None,
-                             decimate_save=1, accumulate_power=False, save_memory_mode=False, fields_to_cache=None):
+    def initialize_simulation(self, save=True, live=True, axis_scale=None, save_animation=False, animation_filename='fdtd_animation.mp4',
+                             clean_visualization=True, save_fields=None, decimate_save=1, accumulate_power=False, save_memory_mode=False, fields_to_cache=None):
         """Initialize simulation state, configure save/visualization options, check stability, and prepare for time stepping."""
         # Set default save_fields based on dimensionality
-        if save_fields is None:
-            if self.is_3d:
-                save_fields = ['Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz']
-            else:
-                save_fields = ['Ez', 'Hx', 'Hy']
+        if save_fields is None: save_fields = ['Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz'] if self.is_3d else ['Ez', 'Hx', 'Hy']
         self._cache_fields = list(fields_to_cache) if fields_to_cache else []
         self._cache_frequency = 1 if self._cache_fields else None
 
@@ -322,27 +261,32 @@ class FDTD:
         return self.finalize_simulation()
 
     def _apply_sources(self):
-        """Apply all sources for the current time step (delegated to helper)."""
-        from beamz.simulation import helper as sim_helper  # local import to avoid cycles
-        return sim_helper.apply_sources(self)
+        """Apply electromagnetic sources (mode injections, gaussian beams) at current time step to inject energy into simulation."""
+        from beamz.simulation import helper as sim_helper
+        result = sim_helper.apply_sources(self)
+        return result
 
     def _accumulate_power(self):
-        """Accumulate power (delegated to helper)."""
-        from beamz.simulation import helper as sim_helper  # local import to avoid cycles
-        return sim_helper.accumulate_power(self)
+        """Accumulate time-averaged Poynting vector power flow for post-simulation power density analysis."""
+        from beamz.simulation import helper as sim_helper
+        result = sim_helper.accumulate_power(self)
+        return result
 
     def _save_step_results(self):
-        """Save step results (delegated to helper)."""
-        from beamz.simulation import helper as sim_helper  # local import to avoid cycles
-        return sim_helper.save_step_results(self)
+        """Save current field values to results dictionary for post-processing and animation generation."""
+        from beamz.simulation import helper as sim_helper
+        result = sim_helper.save_step_results(self)
+        return result
 
     def plot_field(self, field="Ez", t=None, z_slice=None):
-        """Delegate to viz.plot_fdtd_field."""
-        return viz.plot_fdtd_field(self, field=field, t=t, z_slice=z_slice)
+        """Plot specified electromagnetic field component at given time step using visualization module."""
+        result = viz.plot_fdtd_field(self, field=field, t=t, z_slice=z_slice)
+        return result
 
     def animate_live(self, field_data=None, field="Ez", axis_scale=[-1,1], z_slice=None):
-        """Delegate to viz.animate_fdtd_live."""
-        return viz.animate_fdtd_live(self, field_data=field_data, field=field, axis_scale=axis_scale, z_slice=z_slice)
+        """Display live animated visualization of electromagnetic field evolution during simulation run."""
+        result = viz.animate_fdtd_live(self, field_data=field_data, field=field, axis_scale=axis_scale, z_slice=z_slice)
+        return result
 
     def _update_live_animation(self):
         """Update live animation if requested."""
@@ -354,23 +298,25 @@ class FDTD:
             viz.animate_fdtd_live(self, field_data=Ez_np, field=field, axis_scale=axis_scale)
 
     def _record_monitor_data(self, step):
-        """Record field data at monitor locations (delegated to helper)."""
-        from beamz.simulation import helper as sim_helper  # local import to avoid cycles
-        return sim_helper.record_monitor_data(self, step)
+        """Record electromagnetic field values at monitor positions for transmission/reflection analysis and optimization."""
+        from beamz.simulation import helper as sim_helper
+        result = sim_helper.record_monitor_data(self, step)
+        return result
 
-    def save_animation(self, field="Ez", axis_scale=[-1,1], filename='fdtd_animation.mp4', fps=60, frame_skip=4,
-                       clean_visualization=False):
-        """Delegate to viz.save_fdtd_animation."""
-        return viz.save_fdtd_animation(self, field=field, axis_scale=axis_scale, filename=filename, fps=fps,
-                                       frame_skip=frame_skip, clean_visualization=clean_visualization)
+    def save_animation(self, field="Ez", axis_scale=[-1,1], filename='fdtd_animation.mp4', fps=60, frame_skip=4, clean_visualization=False):
+        """Generate and save MP4 video animation of electromagnetic field time evolution for presentation and analysis."""
+        result = viz.save_fdtd_animation(self, field=field, axis_scale=axis_scale, filename=filename, fps=fps,
+                                        frame_skip=frame_skip, clean_visualization=clean_visualization)
+        return result
         
     def plot_power(self, cmap="hot", vmin=None, vmax=None, db_colorbar=False):
-        """Delegate to viz.plot_fdtd_power."""
-        return viz.plot_fdtd_power(self, cmap=cmap, vmin=vmin, vmax=vmax, db_colorbar=db_colorbar)
+        """Plot time-averaged Poynting vector power density distribution showing electromagnetic energy flow patterns."""
+        result = viz.plot_fdtd_power(self, cmap=cmap, vmin=vmin, vmax=vmax, db_colorbar=db_colorbar)
+        return result
 
     def estimate_memory_usage(self, time_steps=None, save_fields=None):
-        """Delegate to helper.estimate_memory_usage and display result."""
-        from beamz.simulation import helper as sim_helper  # local import to avoid cycles
+        """Calculate and display estimated RAM requirements for field storage based on grid size and time steps."""
+        from beamz.simulation import helper as sim_helper
         result = sim_helper.estimate_memory_usage(self, time_steps=time_steps, save_fields=save_fields)
         display_status(f"Estimated memory usage: {result['Full simulation']['Total memory (MB)']:.2f} MB", "info")
         return result
