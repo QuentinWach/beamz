@@ -16,12 +16,18 @@ class Fields:
         self.epsilon_r = np.asarray(epsilon_r)
         self.sigma = np.asarray(sigma)
 
+        # When you call fields.update(dt), it executes whichever method was assigned during initialization.
+        # This is called method binding or dynamic method assignment and more efficient than
+        # checking for the dimensionality in each update call. We just do it once here and then
+        # call the appropriate method when update is called.
         if dz is not None:
             nz, ny, nx = grid_shape
             self._init_fields_3d(nx, ny, nz)
+            self.update = self._update_3d
         else:
             ny, nx = grid_shape
             self._init_fields_2d(ny, nx)
+            self.update = self._update_2d
 
     def _init_fields_2d(self, ny, nx):
         """Initialize 2D TM mode field arrays (Ez, Hx, Hy) on staggered Yee grid."""
@@ -37,11 +43,6 @@ class Fields:
         self.Hx = np.zeros((nz - 1, ny - 1, nx))
         self.Hy = np.zeros((nz - 1, ny, nx - 1))
         self.Hz = np.zeros((nz, ny - 1, nx - 1))
-
-    def update(self, dt):
-        """Advance all fields by one FDTD time step: update H from curl(E), then E from curl(H)."""
-        if self.dz is not None: self._update_3d(dt)
-        else: self._update_2d(dt)
 
     def _update_2d(self, dt):
         """Execute one 2D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""

@@ -1,4 +1,3 @@
-from typing import Dict, Optional, Sequence
 import datetime
 import numpy as np
 
@@ -16,16 +15,7 @@ from beamz.simulation.fields import Fields
 
 class FDTD:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
-    def __init__(
-        self,
-        design: Design = None,
-        devices: list[Device] = None,
-        time: np.ndarray = None,
-        resolution: float = 0.02 * µm,
-        backend: str = "numpy",
-        backend_options: Optional[Dict] = None,
-        mesh=None,
-    ):
+    def __init__(self, design=None, devices=None, time=None, resolution=0.02*µm, backend="numpy", backend_options=None, mesh=None):
 
 
         provided_mesh = None
@@ -153,96 +143,15 @@ class FDTD:
         # Initialize simulation start time
         self.start_time = None
 
-    def _create_fields(self) -> Fields:
+    def _create_fields(self):
         grid_shape = (self.nz, self.ny, self.nx) if self.is_3d else (self.ny, self.nx)
-        fields = Fields(epsilon_r=self.epsilon_r, sigma=self.sigma, grid_shape=grid_shape, dx=self.dx, dy=self.dy,
-                       dz=self.dz if self.is_3d else None)
-        if self.is_3d: self.Ex, self.Ey, self.Ez, self.Hx, self.Hy, self.Hz = fields.Ex, fields.Ey, fields.Ez, fields.Hx, fields.Hy, fields.Hz
-        else: self.Ez, self.Hx, self.Hy = fields.Ez, fields.Hx, fields.Hy
-        return fields
-
-    def simulate_step(self):
-        """Perform one FDTD step with stability checks."""
-        self.fields.update(self.dt)
-
-    # Backward-compatible property accessors for existing helpers/monitors
-    def _get_field_attr(self, name: str):
-        if not hasattr(self.fields, name):
-            raise AttributeError(f"Field '{name}' is not available for this simulation dimensionality")
-        return getattr(self.fields, name)
-
-    def _set_field_attr(self, name: str, value):
-        if not hasattr(self.fields, name):
-            raise AttributeError(f"Field '{name}' is not available for this simulation dimensionality")
-        setattr(self.fields, name, value)
-
-    @property
-    def Ex(self):
-        return self._get_field_attr("Ex")
-
-    @Ex.setter
-    def Ex(self, value):
-        self._set_field_attr("Ex", value)
-
-    @property
-    def Ey(self):
-        return self._get_field_attr("Ey")
-
-    @Ey.setter
-    def Ey(self, value):
-        self._set_field_attr("Ey", value)
-
-    @property
-    def Ez(self):
-        return self._get_field_attr("Ez")
-
-    @Ez.setter
-    def Ez(self, value):
-        self._set_field_attr("Ez", value)
-
-    @property
-    def Hx(self):
-        return self._get_field_attr("Hx")
-
-    @Hx.setter
-    def Hx(self, value):
-        self._set_field_attr("Hx", value)
-
-    @property
-    def Hy(self):
-        return self._get_field_attr("Hy")
-
-    @Hy.setter
-    def Hy(self, value):
-        self._set_field_attr("Hy", value)
-
-    @property
-    def Hz(self):
-        return self._get_field_attr("Hz")
-
-    @Hz.setter
-    def Hz(self, value):
-        self._set_field_attr("Hz", value)
-
+        return Fields(epsilon_r=self.epsilon_r, sigma=self.sigma, grid_shape=grid_shape, 
+                        dx=self.dx, dy=self.dy, dz=self.dz if self.is_3d else None)
 
     def initialize_simulation(self, save=True, live=True, axis_scale=None, save_animation=False,
-                             animation_filename='fdtd_animation.mp4', clean_visualization=True,
-                             save_fields=None, decimate_save=1, accumulate_power=False,
-                             save_memory_mode=False, fields_to_cache: Optional[Sequence[str]] = None):
-        """Initialize the simulation before running steps.
-
-        Args:
-            save: Whether to save field data at each step.
-            live: Whether to show live animation of the simulation.
-            axis_scale: Color scale limits for the field visualization.
-            save_animation: Whether to save an animation of the simulation as an mp4 file.
-            animation_filename: Filename for the saved animation (must end in .mp4).
-            save_fields: List of fields to save (None = auto-select based on dimensionality)
-            decimate_save: Save only every nth time step (1 = save all, 10 = save every 10th step)
-            accumulate_power: Instead of saving all fields, accumulate power and save that
-            save_memory_mode: If True, avoid storing all field data and only keep monitors/power
-            fields_to_cache: Fields that should always be cached (complex values preserved)
-        """
+                             animation_filename='fdtd_animation.mp4', clean_visualization=True, save_fields=None,
+                             decimate_save=1, accumulate_power=False, save_memory_mode=False, fields_to_cache=None):
+        """Initialize simulation state, configure save/visualization options, check stability, and prepare for time stepping."""
         # Set default save_fields based on dimensionality
         if save_fields is None:
             if self.is_3d:
@@ -343,11 +252,11 @@ class FDTD:
                     self.results[field] = []
             display_status("Memory-saving mode active: Only storing monitor data and/or power accumulation", "info")
 
-    def step(self) -> bool:
+    def step(self):
         """Perform one simulation step. Returns True if simulation should continue, False if complete."""
         if self.current_step >= self.num_steps: return False
         # Update fields
-        self.simulate_step()
+        self.fields.update(self.dt)
         # Apply sources
         sim_helper.apply_sources(self)
         # Record monitor data
@@ -375,7 +284,7 @@ class FDTD:
         # Display memory usage estimate
         memory_usage = self.estimate_memory_usage(time_steps=self.num_steps, save_fields=self._save_fields)
         display_status(f"Estimated memory usage: {memory_usage['Full simulation']['Total memory (MB)']:.2f} MB", "info")
-        objective_results: Dict[str, float] = {}
+        objective_results = {}
         for idx, monitor in enumerate(self.monitors):
             if hasattr(monitor, 'evaluate_objective'):
                 value = monitor.evaluate_objective()
@@ -392,28 +301,10 @@ class FDTD:
         self.last_objectives = objective_results
         return self.results
 
-    def run(self, steps: Optional[int] = None, save=True, live=True, axis_scale=None, save_animation=False,
-            animation_filename='fdtd_animation.mp4', clean_visualization=True,
-            save_fields=None, decimate_save=1, accumulate_power=False,
-            save_memory_mode=False, fields_to_cache: Optional[Sequence[str]] = None) -> Dict:
-        """Run the complete simulation using the new step-by-step approach.
-
-        Args:
-            steps: Number of steps to run. If None, run until the end of the time array.
-            save: Whether to save field data at each step.
-            live: Whether to show live animation of the simulation.
-            axis_scale: Color scale limits for the field visualization.
-            save_animation: Whether to save an animation of the simulation as an mp4 file.
-            animation_filename: Filename for the saved animation (must end in .mp4).
-            save_fields: List of fields to save (None = auto-select based on dimensionality)
-            decimate_save: Save only every nth time step (1 = save all, 10 = save every 10th step)
-            accumulate_power: Instead of saving all fields, accumulate power and save that
-            save_memory_mode: If True, avoid storing all field data and only keep monitors/power
-            fields_to_cache: Fields that should always be cached even when memory saving
-
-        Returns:
-            Dictionary containing the simulation results.
-        """
+    def run(self, steps=None, save=True, live=True, axis_scale=None, save_animation=False, animation_filename='fdtd_animation.mp4',
+            clean_visualization=True, save_fields=None, decimate_save=1, accumulate_power=False, save_memory_mode=False,
+            fields_to_cache=None):
+        """Run complete FDTD simulation with specified save/visualization options and return results dictionary."""
         # Initialize the simulation
         self.initialize_simulation(save=save, live=live, axis_scale=axis_scale,
                                   save_animation=save_animation,
@@ -445,7 +336,7 @@ class FDTD:
         from beamz.simulation import helper as sim_helper  # local import to avoid cycles
         return sim_helper.save_step_results(self)
 
-    def plot_field(self, field: str = "Ez", t: float = None, z_slice: int = None) -> None:
+    def plot_field(self, field="Ez", t=None, z_slice=None):
         """Delegate to viz.plot_fdtd_field."""
         return viz.plot_fdtd_field(self, field=field, t=t, z_slice=z_slice)
 
@@ -457,17 +348,9 @@ class FDTD:
         """Update live animation if requested."""
         if self._live and (self.current_step % 2 == 0 or self.current_step == self.num_steps - 1):
             field = "Ez"
-            Ez_np = np.asarray(getattr(self, field))
-            # Determine appropriate axis scale for field visualization
-            # If accumulate_power mode set power-based scales, ignore them for field display
-            # and use dynamic scaling instead
+            Ez_np = np.asarray(getattr(self.fields, field))
             live_quantity = getattr(self, "_live_quantity", "field")
-            if live_quantity == "power":
-                # We're showing field, not power, so use dynamic scaling
-                axis_scale = None
-            else:
-                # Use the stored axis scale (either user-provided or None for dynamic)
-                axis_scale = getattr(self, "_axis_scale", None)
+            axis_scale = None if live_quantity == "power" else getattr(self, "_axis_scale", None)
             viz.animate_fdtd_live(self, field_data=Ez_np, field=field, axis_scale=axis_scale)
 
     def _record_monitor_data(self, step):
@@ -475,13 +358,13 @@ class FDTD:
         from beamz.simulation import helper as sim_helper  # local import to avoid cycles
         return sim_helper.record_monitor_data(self, step)
 
-    def save_animation(self, field: str = "Ez", axis_scale=[-1, 1], filename='fdtd_animation.mp4', 
-                       fps=60, frame_skip=4, clean_visualization=False):
+    def save_animation(self, field="Ez", axis_scale=[-1,1], filename='fdtd_animation.mp4', fps=60, frame_skip=4,
+                       clean_visualization=False):
         """Delegate to viz.save_fdtd_animation."""
-        return viz.save_fdtd_animation(self, field=field, axis_scale=axis_scale, filename=filename, fps=fps, 
-                                        frame_skip=frame_skip, clean_visualization=clean_visualization)
+        return viz.save_fdtd_animation(self, field=field, axis_scale=axis_scale, filename=filename, fps=fps,
+                                       frame_skip=frame_skip, clean_visualization=clean_visualization)
         
-    def plot_power(self, cmap: str = "hot", vmin: float = None, vmax: float = None, db_colorbar: bool = False):
+    def plot_power(self, cmap="hot", vmin=None, vmax=None, db_colorbar=False):
         """Delegate to viz.plot_fdtd_power."""
         return viz.plot_fdtd_power(self, cmap=cmap, vmin=vmin, vmax=vmax, db_colorbar=db_colorbar)
 
