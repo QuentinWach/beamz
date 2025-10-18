@@ -11,15 +11,15 @@ from beamz.helpers import display_status, create_rich_progress, display_paramete
 from beamz import viz as viz
 from beamz.simulation import helper as sim_helper
 from beamz.simulation.fields import Fields
-
+from beamz.devices.core import Device
 
 class FDTD:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
-    def __init__(self, design=None, devices=None, time=None, resolution=0.02*µm, backend="numpy", backend_options=None, mesh=None):
+    def __init__(self, design: Design=None, devices: list[Device]=None, time: list[float]=None,
+        resolution: float=0.02*µm, backend: str="numpy"):
 
 
         provided_mesh = None
-        using_provided_mesh = False
 
         if isinstance(design, BaseMeshGrid):
             provided_mesh = design
