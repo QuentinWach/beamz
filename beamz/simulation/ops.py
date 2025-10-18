@@ -85,22 +85,22 @@ def curl_h_to_e_3d(hx, hy, hz, resolution):
     return (curl_hx, curl_hy, curl_hz)
 
 
-def magnetic_conductivity_terms_2d(sigma, hx_shape, hy_shape):
-    """Compute magnetic conductivity σ_m = σ * μ₀/ε₀ for H-field PML absorption in 2D."""
-    if sigma.ndim < 2: return (np.zeros(hx_shape), np.zeros(hy_shape))  # No PML if sigma is scalar
-    # PML uses magnetic loss: σ_m = σ * (μ₀/ε₀) to create matched impedance at boundaries
-    sigma_m_x = sigma[:, :-1] * MU_0 / EPS_0  # Slice sigma to Hx staggered grid position (y, x-1/2)
-    sigma_m_y = sigma[:-1, :] * MU_0 / EPS_0  # Slice sigma to Hy staggered grid position (y-1/2, x)
+def magnetic_conductivity_terms_2d(conductivity, permeability, hx_shape, hy_shape):
+    """Compute magnetic conductivity σ_m = σ * μ₀μᵣ/ε₀ for H-field PML absorption in 2D."""
+    if conductivity.ndim < 2: return (np.zeros(hx_shape), np.zeros(hy_shape))  # No PML if conductivity is scalar
+    # PML uses magnetic loss: σ_m = σ * (μ₀μᵣ/ε₀) to create matched impedance at boundaries
+    sigma_m_x = conductivity[:, :-1] * permeability[:, :-1] * MU_0 / EPS_0  # Slice to Hx position (y, x-1/2)
+    sigma_m_y = conductivity[:-1, :] * permeability[:-1, :] * MU_0 / EPS_0  # Slice to Hy position (y-1/2, x)
     return (sigma_m_x.reshape(hx_shape), sigma_m_y.reshape(hy_shape))
 
 
-def magnetic_conductivity_terms_3d(sigma, hx_shape, hy_shape, hz_shape):
-    """Compute magnetic conductivity σ_m = σ * μ₀/ε₀ for H-field PML absorption in 3D."""
-    if sigma.ndim < 3: return (np.zeros(hx_shape), np.zeros(hy_shape), np.zeros(hz_shape))
-    # Slice sigma arrays to match staggered Yee grid positions of each H-field component
-    sigma_m_hx = (sigma[:-1, :-1, :] * MU_0 / EPS_0).reshape(hx_shape)  # Hx at (z-1/2, y-1/2, x)
-    sigma_m_hy = (sigma[:-1, :, :-1] * MU_0 / EPS_0).reshape(hy_shape)  # Hy at (z-1/2, y, x-1/2)
-    sigma_m_hz = (sigma[:, :-1, :-1] * MU_0 / EPS_0).reshape(hz_shape)  # Hz at (z, y-1/2, x-1/2)
+def magnetic_conductivity_terms_3d(conductivity, permeability, hx_shape, hy_shape, hz_shape):
+    """Compute magnetic conductivity σ_m = σ * μ₀μᵣ/ε₀ for H-field PML absorption in 3D."""
+    if conductivity.ndim < 3: return (np.zeros(hx_shape), np.zeros(hy_shape), np.zeros(hz_shape))
+    # Slice arrays to match staggered Yee grid positions of each H-field component
+    sigma_m_hx = (conductivity[:-1, :-1, :] * permeability[:-1, :-1, :] * MU_0 / EPS_0).reshape(hx_shape)  # Hx at (z-1/2, y-1/2, x)
+    sigma_m_hy = (conductivity[:-1, :, :-1] * permeability[:-1, :, :-1] * MU_0 / EPS_0).reshape(hy_shape)  # Hy at (z-1/2, y, x-1/2)
+    sigma_m_hz = (conductivity[:, :-1, :-1] * permeability[:, :-1, :-1] * MU_0 / EPS_0).reshape(hz_shape)  # Hz at (z, y-1/2, x-1/2)
     return (sigma_m_hx, sigma_m_hy, sigma_m_hz)
 
 
@@ -115,13 +115,13 @@ def advance_h_field(field, curl, sigma_m, dt):
     return factor * field - source * curl  # H^(n+1) = factor*H^n - source*∇×E
 
 
-def advance_e_field(field, curl, sigma, eps_r, dt, region):
+def advance_e_field(field, curl, conductivity, permittivity, dt, region):
     """Advance E-field one time step via Crank-Nicolson: ∂E/∂t = ∇×H/(ε₀εᵣ) - σE/(ε₀εᵣ)."""
     # Ampere's law with electric loss: ε₀εᵣ∂E/∂t = ∇×H - σE
     # Crank-Nicolson: E^(n+1) = [(1 - β)/(1 + β)]E^n + [Δt/(ε₀εᵣ)/(1 + β)]∇×H^(n+1/2)
     # where β = σΔt/(2ε₀εᵣ) for stability and second-order temporal accuracy
     updated = field.copy()  # Create copy for output (preserve boundary values)
-    current, sig, eps = field[region], sigma[region], eps_r[region]  # Extract interior region values
+    current, sig, eps = field[region], conductivity[region], permittivity[region]  # Extract interior region values
     denom = 1.0 + sig * dt / (2.0 * EPS_0 * eps)  # Denominator: 1 + β
     factor = (1.0 - sig * dt / (2.0 * EPS_0 * eps)) / denom  # Coefficient for E^n: (1 - β)/(1 + β)
     source = (dt / (EPS_0 * eps)) / denom  # Coefficient for curl term: Δt/(ε₀εᵣ(1 + β))
@@ -129,14 +129,14 @@ def advance_e_field(field, curl, sigma, eps_r, dt, region):
     return updated
 
 
-def material_slice_for_e_2d(eps_r, sigma):
+def material_slice_for_e_2d(permittivity, conductivity):
     """Extract material parameters at staggered Yee grid positions for E-field in 2D."""
     # Ez is located at (i, j) on Yee grid, interior points exclude boundaries for proper curl computation
     region = (slice(1, -1), slice(1, -1))  # [1:-1, 1:-1] selects interior, avoiding edges
-    return eps_r[region], sigma[region], region
+    return permittivity[region], conductivity[region], region
 
 
-def material_slice_for_e_3d(eps_r, sigma, orientation):
+def material_slice_for_e_3d(permittivity, conductivity, orientation):
     """Extract material parameters at staggered Yee grid positions for E-field components in 3D."""
     # Each E-field component lives at different staggered positions on Yee grid:
     # Ex at (z, y, x-1/2), Ey at (z, y-1/2, x), Ez at (z-1/2, y, x)
@@ -144,4 +144,4 @@ def material_slice_for_e_3d(eps_r, sigma, orientation):
     if orientation == "x": region = (slice(1, -1), slice(1, -1), slice(None))  # Ex: interior in z,y; full x
     elif orientation == "y": region = (slice(1, -1), slice(None), slice(1, -1))  # Ey: interior in z,x; full y
     else: region = (slice(None), slice(1, -1), slice(1, -1))  # Ez: full z; interior in y,x
-    return eps_r[region], sigma[region], region
+    return permittivity[region], conductivity[region], region

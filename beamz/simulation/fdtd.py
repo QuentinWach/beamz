@@ -11,24 +11,9 @@ class FDTD:
         self.design = design
         self.resolution = resolution
         self.is_3d = design.is_3d and design.depth > 0
-        
-        # Set grid spacing from resolution
-        self.dx = self.dy = resolution
-        self.dz = resolution if self.is_3d else None
-        
-        # Get material properties from design (design handles internal meshing at resolution)
-        self.epsilon_r = design.get_permittivity(resolution)
-        self.sigma = design.get_conductivity(resolution)
-        
-        # Set grid dimensions from material arrays
-        if self.is_3d: self.nz, self.ny, self.nx = self.epsilon_r.shape
-        else: self.ny, self.nx = self.epsilon_r.shape
-        
         # Create field storage and initialize fields
-        grid_shape = (self.nz, self.ny, self.nx) if self.is_3d else (self.ny, self.nx)
-        self.fields = Fields(epsilon_r=self.epsilon_r, sigma=self.sigma, grid_shape=grid_shape, 
-                                resolution=self.resolution, is_3d=self.is_3d)
-        
+        # from the rasterized design with the permittivity, conductivity, and permeability
+        self.fields = Fields(grid=design.get_grid(resolution))
         # Initialize time stepping
         if time is None or len(time) < 2: raise ValueError("FDTD requires a time array with at least two entries")
         self.time, self.dt, self.num_steps = time, float(time[1] - time[0]), len(time)

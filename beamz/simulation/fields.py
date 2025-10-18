@@ -23,10 +23,10 @@ class Fields:
             self._curl_h_to_e = ops.curl_h_to_e_3d
             self._material_slice = ops.material_slice_for_e_3d
             self.sigma_m_hx, self.sigma_m_hy, self.sigma_m_hz = ops.magnetic_conductivity_terms_3d(
-                self.sigma, self.Hx.shape, self.Hy.shape, self.Hz.shape)
-            self.eps_x, self.sig_x, self.region_x = self._material_slice(self.epsilon_r, self.sigma, orientation="x")
-            self.eps_y, self.sig_y, self.region_y = self._material_slice(self.epsilon_r, self.sigma, orientation="y")
-            self.eps_z, self.sig_z, self.region_z = self._material_slice(self.epsilon_r, self.sigma, orientation="z")
+                self.conductivity, self.permeability, self.Hx.shape, self.Hy.shape, self.Hz.shape)
+            self.eps_x, self.sig_x, self.region_x = self._material_slice(self.permittivity, self.conductivity, orientation="x")
+            self.eps_y, self.sig_y, self.region_y = self._material_slice(self.permittivity, self.conductivity, orientation="y")
+            self.eps_z, self.sig_z, self.region_z = self._material_slice(self.permittivity, self.conductivity, orientation="z")
         else:
             ny, nx = grid_shape
             self._init_fields_2d(ny, nx)
@@ -34,8 +34,8 @@ class Fields:
             self._curl_e_to_h = ops.curl_e_to_h_2d
             self._curl_h_to_e = ops.curl_h_to_e_2d
             self._material_slice = ops.material_slice_for_e_2d
-            self.sigma_m_x, self.sigma_m_y = ops.magnetic_conductivity_terms_2d(self.sigma, self.Hx.shape, self.Hy.shape)
-            self.eps_region, self.sig_region, self.region = self._material_slice(self.epsilon_r, self.sigma)
+            self.sigma_m_x, self.sigma_m_y = ops.magnetic_conductivity_terms_2d(self.conductivity, self.permeability, self.Hx.shape, self.Hy.shape)
+            self.eps_region, self.sig_region, self.region = self._material_slice(self.permittivity, self.conductivity)
 
     def _init_fields_2d(self, ny, nx):
         """Initialize 2D TM mode field arrays (Ez, Hx, Hy) on staggered Yee grid."""
