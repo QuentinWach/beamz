@@ -5,3 +5,4 @@
 + Only write single line descriptions in """ """ under functions rather than long argument, return explanations etc.
 + Don't use data classes.
 + Don't use decorators.
++ Don't create functions with just a single line or return.

@@ -11,7 +11,7 @@ from beamz.simulation.backends import get_backend
 from beamz.helpers import display_status, create_rich_progress, display_parameters, display_time_elapsed
 from beamz import viz as viz
 from beamz.simulation import helper as sim_helper
-from beamz.simulation.fields import Fields, GridSpacing
+from beamz.simulation.fields import Fields
 
 
 class FDTD:
@@ -99,8 +99,7 @@ class FDTD:
         self.fields = self._create_fields()
         self.epsilon_r = self.fields.epsilon_r
         self.sigma = self.fields.sigma
-        self.mu_r = self.backend.from_numpy(self.mu_r)
-        self.is_complex_backend = self.fields.is_complex_backend
+        self.mu_r = np.asarray(self.mu_r)
         
         if time is None or len(time) < 2:
             raise ValueError("FDTD requires a time array with at least two entries")
@@ -155,35 +154,11 @@ class FDTD:
         self.start_time = None
 
     def _create_fields(self) -> Fields:
-        spacing = GridSpacing(
-            dx=self.dx,
-            dy=self.dy,
-            dz=self.dz if self.is_3d else None,
-        )
-
-        if self.is_3d:
-            grid_shape = (self.nz, self.ny, self.nx)
-        else:
-            grid_shape = (self.ny, self.nx)
-
-        fields = Fields(
-            backend=self.backend,
-            epsilon_r=self.epsilon_r,
-            sigma=self.sigma,
-            grid_shape=grid_shape,
-            spacing=spacing,
-        )
-        if self.is_3d:
-            self.Ex = fields.Ex
-            self.Ey = fields.Ey
-            self.Ez = fields.Ez
-            self.Hx = fields.Hx
-            self.Hy = fields.Hy
-            self.Hz = fields.Hz
-        else:
-            self.Ez = fields.Ez
-            self.Hx = fields.Hx
-            self.Hy = fields.Hy
+        grid_shape = (self.nz, self.ny, self.nx) if self.is_3d else (self.ny, self.nx)
+        fields = Fields(epsilon_r=self.epsilon_r, sigma=self.sigma, grid_shape=grid_shape, dx=self.dx, dy=self.dy,
+                       dz=self.dz if self.is_3d else None)
+        if self.is_3d: self.Ex, self.Ey, self.Ez, self.Hx, self.Hy, self.Hz = fields.Ex, fields.Ey, fields.Ez, fields.Hx, fields.Hy, fields.Hz
+        else: self.Ez, self.Hx, self.Hy = fields.Ez, fields.Hx, fields.Hy
         return fields
 
     def simulate_step(self):
@@ -482,8 +457,7 @@ class FDTD:
         """Update live animation if requested."""
         if self._live and (self.current_step % 2 == 0 or self.current_step == self.num_steps - 1):
             field = "Ez"
-            data = getattr(self, field)
-            Ez_np = self.backend.to_numpy(data)
+            Ez_np = np.asarray(getattr(self, field))
             # Determine appropriate axis scale for field visualization
             # If accumulate_power mode set power-based scales, ignore them for field display
             # and use dynamic scaling instead
