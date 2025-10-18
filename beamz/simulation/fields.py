@@ -48,6 +48,14 @@ class Fields:
             ny, nx = grid_shape
             self._init_fields_2d(ny, nx)
 
+    def _to_numpy(self, array):
+        """Return a NumPy view/copy of the backend array."""
+        return np.asarray(self.backend.to_numpy(array))
+
+    def _from_numpy(self, array):
+        """Wrap a NumPy array back into the backend type."""
+        return self.backend.from_numpy(array)
+
     def _init_fields_2d(self, ny: int, nx: int) -> None:
         try:
             self.Ez = self.backend.zeros((ny, nx), dtype=self.complex_dtype)
@@ -85,35 +93,47 @@ class Fields:
             self._update_2d(dt)
 
     def _update_2d(self, dt: float) -> None:
-        hx_new, hy_new = self.backend.update_h_fields(
-            self.Hx,
-            self.Hy,
-            self.Ez,
-            self.sigma,
-            self.spacing.dx,
-            self.spacing.dy,
-            dt,
-            MU_0,
-            EPS_0,
-        )
-        if hx_new is not self.Hx:
-            self.Hx[...] = hx_new
-        if hy_new is not self.Hy:
-            self.Hy[...] = hy_new
+        Ez = self._to_numpy(self.Ez)
+        Hx = self._to_numpy(self.Hx)
+        Hy = self._to_numpy(self.Hy)
+        sigma = self._to_numpy(self.sigma)
+        epsilon_r = self._to_numpy(self.epsilon_r)
 
-        ez_new = self.backend.update_e_field(
-            self.Ez,
-            self.Hx,
-            self.Hy,
-            self.sigma,
-            self.epsilon_r,
-            self.spacing.dx,
-            self.spacing.dy,
-            dt,
-            EPS_0,
+        curlE_x = (Ez[:, 1:] - Ez[:, :-1]) / self.spacing.dy
+        curlE_y = (Ez[1:, :] - Ez[:-1, :]) / self.spacing.dx
+
+        sigma_m_x = sigma[:, :-1] * MU_0 / EPS_0
+        sigma_m_y = sigma[:-1, :] * MU_0 / EPS_0
+
+        denom_x = 1.0 + sigma_m_x * dt / (2.0 * MU_0)
+        factor_x = (1.0 - sigma_m_x * dt / (2.0 * MU_0)) / denom_x
+        source_x = (dt / MU_0) / denom_x
+        Hx = factor_x * Hx - source_x * curlE_x
+
+        denom_y = 1.0 + sigma_m_y * dt / (2.0 * MU_0)
+        factor_y = (1.0 - sigma_m_y * dt / (2.0 * MU_0)) / denom_y
+        source_y = (dt / MU_0) / denom_y
+        Hy = factor_y * Hy + source_y * curlE_y
+
+        curlH = np.zeros_like(Ez)
+        curlH[1:-1, 1:-1] = (
+            (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / self.spacing.dx
+            - (Hx[1:-1, 1:] - Hx[1:-1, :-1]) / self.spacing.dy
         )
-        if ez_new is not self.Ez:
-            self.Ez[...] = ez_new
+
+        sig = sigma[1:-1, 1:-1]
+        eps = epsilon_r[1:-1, 1:-1]
+        denom = 1.0 + sig * dt / (2.0 * EPS_0 * eps)
+        factor = (1.0 - sig * dt / (2.0 * EPS_0 * eps)) / denom
+        source = (dt / (EPS_0 * eps)) / denom
+
+        Ez_new = Ez.copy()
+        Ez_new[1:-1, 1:-1] = factor * Ez[1:-1, 1:-1] + source * curlH[1:-1, 1:-1]
+
+        self.Hx = self._from_numpy(Hx)
+        self.Hy = self._from_numpy(Hy)
+        self.Ez = self._from_numpy(Ez_new)
+        self.is_complex_backend = np.iscomplexobj(Ez_new)
 
     def _update_3d(self, dt: float) -> None:
         dx = self.spacing.dx
@@ -122,22 +142,68 @@ class Fields:
         if dz is None:
             raise ValueError("3D update requires a dz spacing value")
 
-        mu0 = MU_0
-        eps0 = EPS_0
+        Ex = self._to_numpy(self.Ex)
+        Ey = self._to_numpy(self.Ey)
+        Ez = self._to_numpy(self.Ez)
+        Hx = self._to_numpy(self.Hx)
+        Hy = self._to_numpy(self.Hy)
+        Hz = self._to_numpy(self.Hz)
+        sigma = self._to_numpy(self.sigma)
+        eps_r = self._to_numpy(self.epsilon_r)
 
-        Ex = self.Ex
-        Ey = self.Ey
-        Ez = self.Ez
-        Hx = self.Hx
-        Hy = self.Hy
-        Hz = self.Hz
-        eps_r = self.epsilon_r
-        sigma = self.sigma
+        curlE_x, curlE_y, curlE_z = self._curl_e_to_h_3d(Ex, Ey, Ez, dx, dy, dz)
+        sigma_m_hx, sigma_m_hy, sigma_m_hz = self._magnetic_conductivity_terms_3d(sigma)
 
-        sigma_m_hx = (sigma[:-1, :-1, :] * mu0 / eps0) if sigma.ndim == 3 else sigma * 0
-        sigma_m_hy = (sigma[:-1, :, :-1] * mu0 / eps0) if sigma.ndim == 3 else sigma * 0
-        sigma_m_hz = (sigma[:, :-1, :-1] * mu0 / eps0) if sigma.ndim == 3 else sigma * 0
+        Hx = self._advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+        Hy = self._advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+        Hz = self._advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
 
+        curlH_x, curlH_y, curlH_z = self._curl_h_to_e_3d(Hx, Hy, Hz, dx, dy, dz)
+        Ex = self._advance_e_field(Ex, curlH_x, eps_r, sigma, dt, orientation="x")
+        Ey = self._advance_e_field(Ey, curlH_y, eps_r, sigma, dt, orientation="y")
+        Ez = self._advance_e_field(Ez, curlH_z, eps_r, sigma, dt, orientation="z")
+
+        self.Ex = self._from_numpy(Ex)
+        self.Ey = self._from_numpy(Ey)
+        self.Ez = self._from_numpy(Ez)
+        self.Hx = self._from_numpy(Hx)
+        self.Hy = self._from_numpy(Hy)
+        self.Hz = self._from_numpy(Hz)
+        self.is_complex_backend = np.iscomplexobj(Ex) or np.iscomplexobj(Ey) or np.iscomplexobj(Ez)
+
+    def to_numpy(self, field_name: str):
+        field = getattr(self, field_name)
+        return self.backend.to_numpy(field)
+
+    # --- 2D helper methods -------------------------------------------------
+
+    def _curl_e_to_h_2d(self, Ez, dx, dy):
+        curl_e_x = (Ez[:, 1:] - Ez[:, :-1]) / dy
+        curl_e_y = (Ez[1:, :] - Ez[:-1, :]) / dx
+        return curl_e_x, curl_e_y
+
+    def _curl_h_to_e_2d(self, Hx, Hy, dx, dy):
+        curl = np.zeros((Hy.shape[0] + 1, Hx.shape[1] + 1), dtype=np.result_type(Hx, Hy))
+        curl[1:-1, 1:-1] = (
+            (Hy[:, 1:] - Hy[:, :-1]) / dx -
+            (Hx[1:, :] - Hx[:-1, :]) / dy
+        )
+        return curl
+
+    def _advance_e_2d(self, Ez, curlH, sigma, epsilon_r, dt):
+        Ez_new = Ez.copy()
+        interior = (slice(1, -1), slice(1, -1))
+        sig = sigma[interior]
+        eps = epsilon_r[interior]
+        denom = 1.0 + sig * dt / (2.0 * EPS_0 * eps)
+        factor = (1.0 - sig * dt / (2.0 * EPS_0 * eps)) / denom
+        source = (dt / (EPS_0 * eps)) / denom
+        Ez_new[interior] = factor * Ez[interior] + source * curlH[interior]
+        return Ez_new
+
+    # --- 3D helper methods -------------------------------------------------
+
+    def _curl_e_to_h_3d(self, Ex, Ey, Ez, dx, dy, dz):
         dEz_dy = (Ez[:, 1:, :] - Ez[:, :-1, :]) / dy
         dEy_dz = (Ey[1:, :, :] - Ey[:-1, :, :]) / dz
         curlE_x = dEz_dy - dEy_dz
@@ -149,68 +215,58 @@ class Fields:
         dEy_dx = (Ey[:, :, 1:] - Ey[:, :, :-1]) / dx
         dEx_dy = (Ex[:, 1:, :] - Ex[:, :-1, :]) / dy
         curlE_z = dEy_dx - dEx_dy
+        return curlE_x, curlE_y, curlE_z
 
-        denom_hx = 1.0 + sigma_m_hx * dt / (2.0 * mu0)
-        factor_hx = (1.0 - sigma_m_hx * dt / (2.0 * mu0)) / denom_hx
-        source_hx = (dt / mu0) / denom_hx
-
-        denom_hy = 1.0 + sigma_m_hy * dt / (2.0 * mu0)
-        factor_hy = (1.0 - sigma_m_hy * dt / (2.0 * mu0)) / denom_hy
-        source_hy = (dt / mu0) / denom_hy
-
-        denom_hz = 1.0 + sigma_m_hz * dt / (2.0 * mu0)
-        factor_hz = (1.0 - sigma_m_hz * dt / (2.0 * mu0)) / denom_hz
-        source_hz = (dt / mu0) / denom_hz
-
-        Hx[:] = factor_hx * Hx - source_hx * curlE_x
-        Hy[:] = factor_hy * Hy - source_hy * curlE_y
-        Hz[:] = factor_hz * Hz - source_hz * curlE_z
-
-        if eps_r.ndim == 3:
-            eps_ex = eps_r[1:-1, 1:-1, :-1]
-            sig_ex = sigma[1:-1, 1:-1, :-1]
-            eps_ey = eps_r[1:-1, :-1, 1:-1]
-            sig_ey = sigma[1:-1, :-1, 1:-1]
-            eps_ez = eps_r[:-1, 1:-1, 1:-1]
-            sig_ez = sigma[:-1, 1:-1, 1:-1]
+    def _magnetic_conductivity_terms_3d(self, sigma):
+        if sigma.ndim == 3:
+            sigma_m_hx = sigma[:-1, :-1, :] * MU_0 / EPS_0
+            sigma_m_hy = sigma[:-1, :, :-1] * MU_0 / EPS_0
+            sigma_m_hz = sigma[:, :-1, :-1] * MU_0 / EPS_0
         else:
-            eps_ex = eps_r
-            sig_ex = sigma
-            eps_ey = eps_r
-            sig_ey = sigma
-            eps_ez = eps_r
-            sig_ez = sigma
+            sigma_m_hx = np.zeros_like(self.Hx)
+            sigma_m_hy = np.zeros_like(self.Hy)
+            sigma_m_hz = np.zeros_like(self.Hz)
+        return sigma_m_hx, sigma_m_hy, sigma_m_hz
 
-        dHz_dy_ex = (Hz[:, 1:, :] - Hz[:, :-1, :]) / dy
-        dHy_dz_ex = (Hy[1:, :, :] - Hy[:-1, :, :]) / dz
-        curlH_x = dHz_dy_ex[1:-1, :, :] - dHy_dz_ex[:, 1:-1, :]
+    def _advance_h_field(self, field, curlE, sigma_m, dt):
+        denom = 1.0 + sigma_m * dt / (2.0 * MU_0)
+        factor = (1.0 - sigma_m * dt / (2.0 * MU_0)) / denom
+        source = (dt / MU_0) / denom
+        return factor * field - source * curlE
 
-        dHx_dz_ey = (Hx[1:, :, :] - Hx[:-1, :, :]) / dz
-        dHz_dx_ey = (Hz[:, :, 1:] - Hz[:, :, :-1]) / dx
-        curlH_y = dHx_dz_ey[:, :, 1:-1] - dHz_dx_ey[1:-1, :, :]
+    def _curl_h_to_e_3d(self, Hx, Hy, Hz, dx, dy, dz):
+        dHz_dy = (Hz[:, 1:, :] - Hz[:, :-1, :]) / dy
+        dHy_dz = (Hy[1:, :, :] - Hy[:-1, :, :]) / dz
+        curlH_x = dHz_dy[1:-1, :, :] - dHy_dz[:, 1:-1, :]
 
-        dHy_dx_ez = (Hy[:, :, 1:] - Hy[:, :, :-1]) / dx
-        dHx_dy_ez = (Hx[:, 1:, :] - Hx[:, :-1, :]) / dy
-        curlH_z = dHy_dx_ez[:, 1:-1, :] - dHx_dy_ez[:, :, 1:-1]
+        dHx_dz = (Hx[1:, :, :] - Hx[:-1, :, :]) / dz
+        dHz_dx = (Hz[:, :, 1:] - Hz[:, :, :-1]) / dx
+        curlH_y = dHx_dz[:, :, 1:-1] - dHz_dx[1:-1, :, :]
 
-        denom_ex = 1.0 + sig_ex * dt / (2.0 * eps0 * eps_ex)
-        factor_ex = (1.0 - sig_ex * dt / (2.0 * eps0 * eps_ex)) / denom_ex
-        source_ex = (dt / (eps0 * eps_ex)) / denom_ex
+        dHy_dx = (Hy[:, :, 1:] - Hy[:, :, :-1]) / dx
+        dHx_dy = (Hx[:, 1:, :] - Hx[:, :-1, :]) / dy
+        curlH_z = dHy_dx[:, 1:-1, :] - dHx_dy[:, :, 1:-1]
+        return curlH_x, curlH_y, curlH_z
 
-        denom_ey = 1.0 + sig_ey * dt / (2.0 * eps0 * eps_ey)
-        factor_ey = (1.0 - sig_ey * dt / (2.0 * eps0 * eps_ey)) / denom_ey
-        source_ey = (dt / (eps0 * eps_ey)) / denom_ey
+    def _advance_e_field(self, field, curlH, eps_r, sigma, dt, orientation: str):
+        updated = field.copy()
+        if orientation == "x":
+            eps = eps_r[1:-1, 1:-1, :-1]
+            sig = sigma[1:-1, 1:-1, :-1]
+            region = (slice(1, -1), slice(1, -1), slice(None))
+        elif orientation == "y":
+            eps = eps_r[1:-1, :-1, 1:-1]
+            sig = sigma[1:-1, :-1, 1:-1]
+            region = (slice(1, -1), slice(None), slice(1, -1))
+        else:
+            eps = eps_r[:-1, 1:-1, 1:-1]
+            sig = sigma[:-1, 1:-1, 1:-1]
+            region = (slice(None), slice(1, -1), slice(1, -1))
 
-        denom_ez = 1.0 + sig_ez * dt / (2.0 * eps0 * eps_ez)
-        factor_ez = (1.0 - sig_ez * dt / (2.0 * eps0 * eps_ez)) / denom_ez
-        source_ez = (dt / (eps0 * eps_ez)) / denom_ez
-
-        Ex[1:-1, 1:-1, :] = factor_ex * Ex[1:-1, 1:-1, :] + source_ex * curlH_x
-        Ey[1:-1, :, 1:-1] = factor_ey * Ey[1:-1, :, 1:-1] + source_ey * curlH_y
-        Ez[:, 1:-1, 1:-1] = factor_ez * Ez[:, 1:-1, 1:-1] + source_ez * curlH_z
-
-    def to_numpy(self, field_name: str):
-        field = getattr(self, field_name)
-        return self.backend.to_numpy(field)
-
+        current = field[region]
+        denom = 1.0 + sig * dt / (2.0 * EPS_0 * eps)
+        factor = (1.0 - sig * dt / (2.0 * EPS_0 * eps)) / denom
+        source = (dt / (EPS_0 * eps)) / denom
+        updated[region] = factor * current + source * curlH
+        return updated
 
