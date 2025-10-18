@@ -8,12 +8,17 @@ from beamz.simulation import ops
 class Fields:
     """Container for E/H field arrays on staggered Yee grid with FDTD update logic."""
 
-    def __init__(self, permittivity, conductivity, permeability, grid_shape, resolution, is_3d=False):
+    def __init__(self, permittivity, conductivity, permeability, resolution):
         """Initialize field arrays on a Yee grid for 2D (Ez, Hx, Hy) or 3D (Ex, Ey, Ez, Hx, Hy, Hz) simulations."""
         self.resolution = resolution
-        self.permittivity = np.asarray(permittivity)
-        self.conductivity = np.asarray(conductivity)
-        self.permeability = np.asarray(permeability)
+        # Store references to material grids owned by Design (no copying)
+        self.permittivity = permittivity
+        self.conductivity = conductivity
+        self.permeability = permeability
+        
+        # Infer dimensionality and shape from material arrays
+        is_3d = self.permittivity.ndim == 3
+        grid_shape = self.permittivity.shape
 
         if is_3d:
             nz, ny, nx = grid_shape

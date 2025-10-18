@@ -645,3 +645,16 @@ class Design:
 
         # Default path: RegularGrid or custom grid class with (design, resolution)
         return grid_cls(self, resolution, **kwargs)
+
+    def get_material_grids(self, resolution):
+        """Get rasterized material property arrays at specified resolution.
+        Caches the grids in the Design object to avoid recomputation and maintain single source of truth.
+        
+        Returns tuple of (permittivity, conductivity, permeability) numpy arrays as references.
+        """
+        # Cache the grid at this resolution to maintain ownership in Design
+        if not hasattr(self, '_cached_grid') or self._cached_resolution != resolution:
+            self._cached_grid = self.rasterize(resolution)
+            self._cached_resolution = resolution
+        
+        return (self._cached_grid.permittivity, self._cached_grid.conductivity, self._cached_grid.permeability)
