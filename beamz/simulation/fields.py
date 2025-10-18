@@ -22,16 +22,21 @@ class Fields:
             self.update = self._update_3d
             self._curl_e_to_h = ops.curl_e_to_h_3d
             self._curl_h_to_e = ops.curl_h_to_e_3d
-            self._magnetic_conductivity = ops.magnetic_conductivity_terms_3d
             self._material_slice = ops.material_slice_for_e_3d
+            self.sigma_m_hx, self.sigma_m_hy, self.sigma_m_hz = ops.magnetic_conductivity_terms_3d(
+                self.sigma, self.Hx.shape, self.Hy.shape, self.Hz.shape)
+            self.eps_x, self.sig_x, self.region_x = self._material_slice(self.epsilon_r, self.sigma, orientation="x")
+            self.eps_y, self.sig_y, self.region_y = self._material_slice(self.epsilon_r, self.sigma, orientation="y")
+            self.eps_z, self.sig_z, self.region_z = self._material_slice(self.epsilon_r, self.sigma, orientation="z")
         else:
             ny, nx = grid_shape
             self._init_fields_2d(ny, nx)
             self.update = self._update_2d
             self._curl_e_to_h = ops.curl_e_to_h_2d
             self._curl_h_to_e = ops.curl_h_to_e_2d
-            self._magnetic_conductivity = ops.magnetic_conductivity_terms_2d
             self._material_slice = ops.material_slice_for_e_2d
+            self.sigma_m_x, self.sigma_m_y = ops.magnetic_conductivity_terms_2d(self.sigma, self.Hx.shape, self.Hy.shape)
+            self.eps_region, self.sig_region, self.region = self._material_slice(self.epsilon_r, self.sigma)
 
     def _init_fields_2d(self, ny, nx):
         """Initialize 2D TM mode field arrays (Ez, Hx, Hy) on staggered Yee grid."""
@@ -51,24 +56,18 @@ class Fields:
     def _update_2d(self, dt):
         """Execute one 2D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""
         curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.dx, self.dy)
-        sigma_m_x, sigma_m_y = self._magnetic_conductivity(self.sigma, self.Hx.shape, self.Hy.shape)
-        self.Hx = ops.advance_h_field(self.Hx, curlE_x, sigma_m_x, dt)
-        self.Hy = ops.advance_h_field(self.Hy, curlE_y, sigma_m_y, dt)
+        self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
+        self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
         (curlH_z,) = self._curl_h_to_e(self.Hx, self.Hy, self.dx, self.dy, self.Ez.shape)
-        _, _, region = self._material_slice(self.epsilon_r, self.sigma)
-        self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sigma, self.epsilon_r, dt, region)
+        self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_region, self.eps_region, dt, self.region)
 
     def _update_3d(self, dt):
         """Execute one 3D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""
         curlE_x, curlE_y, curlE_z = self._curl_e_to_h(self.Ex, self.Ey, self.Ez, self.dx, self.dy, self.dz)
-        sigma_m_hx, sigma_m_hy, sigma_m_hz = self._magnetic_conductivity(self.sigma, self.Hx.shape, self.Hy.shape, self.Hz.shape)
-        self.Hx = ops.advance_h_field(self.Hx, curlE_x, sigma_m_hx, dt)
-        self.Hy = ops.advance_h_field(self.Hy, curlE_y, sigma_m_hy, dt)
-        self.Hz = ops.advance_h_field(self.Hz, curlE_z, sigma_m_hz, dt)
+        self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_hx, dt)
+        self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_hy, dt)
+        self.Hz = ops.advance_h_field(self.Hz, curlE_z, self.sigma_m_hz, dt)
         curlH_x, curlH_y, curlH_z = self._curl_h_to_e(self.Hx, self.Hy, self.Hz, self.dx, self.dy, self.dz)
-        eps_x, sig_x, region_x = self._material_slice(self.epsilon_r, self.sigma, orientation="x")
-        eps_y, sig_y, region_y = self._material_slice(self.epsilon_r, self.sigma, orientation="y")
-        eps_z, sig_z, region_z = self._material_slice(self.epsilon_r, self.sigma, orientation="z")
-        self.Ex = ops.advance_e_field(self.Ex, curlH_x, sig_x, eps_x, dt, region_x)
-        self.Ey = ops.advance_e_field(self.Ey, curlH_y, sig_y, eps_y, dt, region_y)
-        self.Ez = ops.advance_e_field(self.Ez, curlH_z, sig_z, eps_z, dt, region_z)
+        self.Ex = ops.advance_e_field(self.Ex, curlH_x, self.sig_x, self.eps_x, dt, self.region_x)
+        self.Ey = ops.advance_e_field(self.Ey, curlH_y, self.sig_y, self.eps_y, dt, self.region_y)
+        self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_z, self.eps_z, dt, self.region_z)

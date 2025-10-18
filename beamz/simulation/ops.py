@@ -51,21 +51,19 @@ def curl_h_to_e_3d(hx, hy, hz, dx, dy, dz):
 
 def magnetic_conductivity_terms_2d(sigma, hx_shape, hy_shape):
     """Compute magnetic conductivity σ_m = σ * μ₀/ε₀ for H-field PML absorption in 2D."""
-    if sigma.ndim == 2:
-        sigma_m_x = sigma[:, :-1] * MU_0 / EPS_0
-        sigma_m_y = sigma[:-1, :] * MU_0 / EPS_0
-        return (sigma_m_x.reshape(hx_shape), sigma_m_y.reshape(hy_shape))
-    return (np.zeros(hx_shape), np.zeros(hy_shape))
+    if sigma.ndim < 2: return (np.zeros(hx_shape), np.zeros(hy_shape))
+    sigma_m_x = sigma[:, :-1] * MU_0 / EPS_0
+    sigma_m_y = sigma[:-1, :] * MU_0 / EPS_0
+    return (sigma_m_x.reshape(hx_shape), sigma_m_y.reshape(hy_shape))
 
 
 def magnetic_conductivity_terms_3d(sigma, hx_shape, hy_shape, hz_shape):
     """Compute magnetic conductivity σ_m = σ * μ₀/ε₀ for H-field PML absorption in 3D."""
-    if sigma.ndim == 3:
-        sigma_m_hx = (sigma[:-1, :-1, :] * MU_0 / EPS_0).reshape(hx_shape)
-        sigma_m_hy = (sigma[:-1, :, :-1] * MU_0 / EPS_0).reshape(hy_shape)
-        sigma_m_hz = (sigma[:, :-1, :-1] * MU_0 / EPS_0).reshape(hz_shape)
-        return (sigma_m_hx, sigma_m_hy, sigma_m_hz)
-    return (np.zeros(hx_shape), np.zeros(hy_shape), np.zeros(hz_shape))
+    if sigma.ndim < 3: return (np.zeros(hx_shape), np.zeros(hy_shape), np.zeros(hz_shape))
+    sigma_m_hx = (sigma[:-1, :-1, :] * MU_0 / EPS_0).reshape(hx_shape)
+    sigma_m_hy = (sigma[:-1, :, :-1] * MU_0 / EPS_0).reshape(hy_shape)
+    sigma_m_hz = (sigma[:, :-1, :-1] * MU_0 / EPS_0).reshape(hz_shape)
+    return (sigma_m_hx, sigma_m_hy, sigma_m_hz)
 
 
 def advance_h_field(field, curl, sigma_m, dt):
