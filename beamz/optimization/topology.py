@@ -13,7 +13,7 @@ from typing import Callable, Optional, Tuple
 import numpy as _np
 from numpy.lib.stride_tricks import sliding_window_view as _sliding_window_view
 
-from .optimizers import Optimizer as _Optimizer
+from .core import Optimizer as _Optimizer
 
 DensityArray = _np.ndarray
 MaskArray = _np.ndarray

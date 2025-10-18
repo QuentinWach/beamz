@@ -21,9 +21,8 @@ from beamz.devices.signals import ramped_cosine, plot_signal
 from beamz.devices.mode import solve_modes
 
 # Import simulation-related classes and functions
-from beamz.simulation.meshing import RegularGrid
-from beamz.simulation.fdtd import FDTD
-from beamz.simulation.backends import get_backend
+from beamz.design.meshing import RegularGrid
+from beamz.simulation.core import Simulation
 
 from beamz.optimization.optimizers import Optimizer
 from beamz.optimization.topology import compute_overlap_gradient
@@ -81,8 +80,7 @@ _exports = {
     
     # Simulation
     'RegularGrid': RegularGrid,
-    'FDTD': FDTD,
-    'get_backend': get_backend,
+    'Simulation': Simulation,
 
     # Optimization
     'Optimizer': Optimizer,
