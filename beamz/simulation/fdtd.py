@@ -14,14 +14,11 @@ from beamz.simulation import helper as sim_helper
 
 
 class FDTD:
-    """FDTD simulation class supporting both 2D and 3D electromagnetic simulations.
-    
-    Automatically detects whether the design is 2D or 3D and uses appropriate Maxwell equations:
-    - 2D: TE-polarized (Ez, Hx, Hy fields)
-    - 3D: Full Maxwell equations (Ex, Ey, Ez, Hx, Hy, Hz fields)
-    """
-    def __init__(self, design, time, mesh: str = "regular", resolution: float = 0.02*µm, backend="numpy", 
-                        backend_options=None, devices=None):
+    """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
+    def __init__(self, design: Design = None, devices: list[Device] = [], time: np.ndarray = None, 
+                    resolution: float = 0.02*µm, backend: str = "numpy"):
+
+
         provided_mesh = None
         using_provided_mesh = False
 
@@ -71,13 +68,6 @@ class FDTD:
         else:
             self.resolution = resolution
 
-        if using_provided_mesh:
-            display_status("Using provided rasterized mesh", "info")
-
-        if self.is_3d:
-            display_status("Using 3D FDTD with full Maxwell equations", "info")
-        else:
-            display_status("Using 2D FDTD with TE-polarized Maxwell equations", "info")
         
         # Set grid resolutions
         self.dx = self.mesh.dx if hasattr(self.mesh, 'dx') else self.mesh.resolution_xy
