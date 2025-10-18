@@ -3,58 +3,58 @@ import numpy as np
 from beamz.const import EPS_0, MU_0
 
 
-def curl_e_to_h_2d(ez, dx, dy):
+def curl_e_to_h_2d(ez, resolution):
     """Compute curl of E-field for H update in 2D: ∂H/∂t = -∇×E/μ₀."""
     # For 2D TM mode (only Ez component), curl reduces to: ∇×E = (∂Ez/∂y)x̂ - (∂Ez/∂x)ŷ
     # Hx component comes from ∂Ez/∂y (x-component of curl)
-    diff_y = np.diff(ez, axis=1) / dy  # Finite difference: (Ez[i,j+1] - Ez[i,j]) / dy ≈ ∂Ez/∂y
+    diff_y = np.diff(ez, axis=1) / resolution  # Finite difference: (Ez[i,j+1] - Ez[i,j]) / dy ≈ ∂Ez/∂y
     pad_width_y = [(0, 0)] * len(ez.shape)  # No padding on axis 0
     pad_width_y[1] = (1, 0)  # Pad 1 zero at start of axis 1 to restore original shape after np.diff
     curl_ex = np.pad(diff_y, pad_width_y, mode="constant")  # Restores shape: np.diff reduces size by 1
     
     # Hy component comes from -∂Ez/∂x (y-component of curl, with sign flip)
-    diff_x = -np.diff(ez, axis=0) / dx  # Finite difference: -(Ez[i+1,j] - Ez[i,j]) / dx ≈ -∂Ez/∂x
+    diff_x = -np.diff(ez, axis=0) / resolution  # Finite difference: -(Ez[i+1,j] - Ez[i,j]) / dx ≈ -∂Ez/∂x
     pad_width_x = [(0, 0)] * len(ez.shape)  # No padding on axis 1
     pad_width_x[0] = (1, 0)  # Pad 1 zero at start of axis 0 to restore original shape
     curl_ey = np.pad(diff_x, pad_width_x, mode="constant")
     return (curl_ex, curl_ey)
 
 
-def curl_e_to_h_3d(ex, ey, ez, dx, dy, dz):
+def curl_e_to_h_3d(ex, ey, ez, resolution):
     """Compute curl of E-field for H update in 3D: ∂H/∂t = -∇×E/μ₀."""
     # Full 3D curl: ∇×E = [(∂Ez/∂y - ∂Ey/∂z)x̂ + (∂Ex/∂z - ∂Ez/∂x)ŷ + (∂Ey/∂x - ∂Ex/∂y)ẑ]
     
     # Hx update from x-component: (∇×E)_x = ∂Ez/∂y - ∂Ey/∂z
-    diff_ez_y = np.diff(ez, axis=1) / dy  # ∂Ez/∂y ≈ (Ez[k,j+1,i] - Ez[k,j,i]) / dy
+    diff_ez_y = np.diff(ez, axis=1) / resolution  # ∂Ez/∂y ≈ (Ez[k,j+1,i] - Ez[k,j,i]) / dy
     pad_ez_y = [(0, 0)] * 3  # Create padding list for 3D
     pad_ez_y[1] = (1, 0)  # Pad axis 1 (y) at beginning to restore shape
     term1_x = np.pad(diff_ez_y, pad_ez_y, mode="constant")
     
-    diff_ey_z = np.diff(ey, axis=0) / dz  # ∂Ey/∂z ≈ (Ey[k+1,j,i] - Ey[k,j,i]) / dz
+    diff_ey_z = np.diff(ey, axis=0) / resolution  # ∂Ey/∂z ≈ (Ey[k+1,j,i] - Ey[k,j,i]) / dz
     pad_ey_z = [(0, 0)] * 3
     pad_ey_z[0] = (1, 0)  # Pad axis 0 (z) at beginning
     term2_x = np.pad(diff_ey_z, pad_ey_z, mode="constant")
     curl_ex = term1_x - term2_x  # Combine terms for Hx
     
     # Hy update from y-component: (∇×E)_y = ∂Ex/∂z - ∂Ez/∂x
-    diff_ex_z = np.diff(ex, axis=0) / dz  # ∂Ex/∂z ≈ (Ex[k+1,j,i] - Ex[k,j,i]) / dz
+    diff_ex_z = np.diff(ex, axis=0) / resolution  # ∂Ex/∂z ≈ (Ex[k+1,j,i] - Ex[k,j,i]) / dz
     pad_ex_z = [(0, 0)] * 3
     pad_ex_z[0] = (1, 0)  # Pad axis 0 (z)
     term1_y = np.pad(diff_ex_z, pad_ex_z, mode="constant")
     
-    diff_ez_x = np.diff(ez, axis=2) / dx  # ∂Ez/∂x ≈ (Ez[k,j,i+1] - Ez[k,j,i]) / dx
+    diff_ez_x = np.diff(ez, axis=2) / resolution  # ∂Ez/∂x ≈ (Ez[k,j,i+1] - Ez[k,j,i]) / dx
     pad_ez_x = [(0, 0)] * 3
     pad_ez_x[2] = (1, 0)  # Pad axis 2 (x)
     term2_y = np.pad(diff_ez_x, pad_ez_x, mode="constant")
     curl_ey = term1_y - term2_y  # Combine terms for Hy
     
     # Hz update from z-component: (∇×E)_z = ∂Ey/∂x - ∂Ex/∂y
-    diff_ey_x = np.diff(ey, axis=2) / dx  # ∂Ey/∂x ≈ (Ey[k,j,i+1] - Ey[k,j,i]) / dx
+    diff_ey_x = np.diff(ey, axis=2) / resolution  # ∂Ey/∂x ≈ (Ey[k,j,i+1] - Ey[k,j,i]) / dx
     pad_ey_x = [(0, 0)] * 3
     pad_ey_x[2] = (1, 0)  # Pad axis 2 (x)
     term1_z = np.pad(diff_ey_x, pad_ey_x, mode="constant")
     
-    diff_ex_y = np.diff(ex, axis=1) / dy  # ∂Ex/∂y ≈ (Ex[k,j+1,i] - Ex[k,j,i]) / dy
+    diff_ex_y = np.diff(ex, axis=1) / resolution  # ∂Ex/∂y ≈ (Ex[k,j+1,i] - Ex[k,j,i]) / dy
     pad_ex_y = [(0, 0)] * 3
     pad_ex_y[1] = (1, 0)  # Pad axis 1 (y)
     term2_z = np.pad(diff_ex_y, pad_ex_y, mode="constant")
@@ -63,25 +63,25 @@ def curl_e_to_h_3d(ex, ey, ez, dx, dy, dz):
     return (curl_ex, curl_ey, curl_ez)
 
 
-def curl_h_to_e_2d(hx, hy, dx, dy, target_shape):
+def curl_h_to_e_2d(hx, hy, resolution, target_shape):
     """Compute curl of H-field for E update in 2D: ∂E/∂t = ∇×H/(ε₀εᵣ)."""
     curl = np.zeros(target_shape)  # Initialize with zeros for boundary conditions
     # For 2D TM mode: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y (z-component drives Ez)
     # Interior points only [1:-1, 1:-1] to avoid boundary issues on staggered Yee grid
-    curl[1:-1, 1:-1] = ((hy[1:, 1:-1] - hy[:-1, 1:-1]) / dx  # ∂Hy/∂x forward difference
-                        - (hx[1:-1, 1:] - hx[1:-1, :-1]) / dy)  # ∂Hx/∂y forward difference
+    curl[1:-1, 1:-1] = ((hy[1:, 1:-1] - hy[:-1, 1:-1]) / resolution  # ∂Hy/∂x forward difference
+                        - (hx[1:-1, 1:] - hx[1:-1, :-1]) / resolution)  # ∂Hx/∂y forward difference
     return (curl,)
 
 
-def curl_h_to_e_3d(hx, hy, hz, dx, dy, dz):
+def curl_h_to_e_3d(hx, hy, hz, resolution):
     """Compute curl of H-field for E update in 3D: ∂E/∂t = ∇×H/(ε₀εᵣ)."""
     # Full 3D curl: ∇×H = [(∂Hz/∂y - ∂Hy/∂z)x̂ + (∂Hx/∂z - ∂Hz/∂x)ŷ + (∂Hy/∂x - ∂Hx/∂y)ẑ]
     # Ex update from x-component: (∇×H)_x = ∂Hz/∂y - ∂Hy/∂z
-    curl_hx = (hz[:, 1:, :] - hz[:, :-1, :]) / dy - (hy[1:, :, :] - hy[:-1, :, :]) / dz
+    curl_hx = (hz[:, 1:, :] - hz[:, :-1, :]) / resolution - (hy[1:, :, :] - hy[:-1, :, :]) / resolution
     # Ey update from y-component: (∇×H)_y = ∂Hx/∂z - ∂Hz/∂x
-    curl_hy = (hx[1:, :, :] - hx[:-1, :, :]) / dz - (hz[:, :, 1:] - hz[:, :, :-1]) / dx
+    curl_hy = (hx[1:, :, :] - hx[:-1, :, :]) / resolution - (hz[:, :, 1:] - hz[:, :, :-1]) / resolution
     # Ez update from z-component: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y
-    curl_hz = (hy[:, :, 1:] - hy[:, :, :-1]) / dx - (hx[:, 1:, :] - hx[:, :-1, :]) / dy
+    curl_hz = (hy[:, :, 1:] - hy[:, :, :-1]) / resolution - (hx[:, 1:, :] - hx[:, :-1, :]) / resolution
     return (curl_hx, curl_hy, curl_hz)
 
 

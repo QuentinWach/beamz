@@ -8,15 +8,14 @@ from beamz.simulation import ops
 class Fields:
     """Container for E/H field arrays on staggered Yee grid with FDTD update logic."""
 
-    def __init__(self, epsilon_r, sigma, grid_shape, dx, dy, dz=None):
+    def __init__(self, permittivity, conductivity, permeability, grid_shape, resolution, is_3d=False):
         """Initialize field arrays on a Yee grid for 2D (Ez, Hx, Hy) or 3D (Ex, Ey, Ez, Hx, Hy, Hz) simulations."""
-        self.dx = dx
-        self.dy = dy
-        self.dz = dz
-        self.epsilon_r = np.asarray(epsilon_r)
-        self.sigma = np.asarray(sigma)
+        self.resolution = resolution
+        self.permittivity = np.asarray(permittivity)
+        self.conductivity = np.asarray(conductivity)
+        self.permeability = np.asarray(permeability)
 
-        if dz is not None:
+        if is_3d:
             nz, ny, nx = grid_shape
             self._init_fields_3d(nx, ny, nz)
             self.update = self._update_3d
@@ -55,19 +54,19 @@ class Fields:
 
     def _update_2d(self, dt):
         """Execute one 2D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""
-        curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.dx, self.dy)
+        curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.resolution)
         self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
         self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
-        (curlH_z,) = self._curl_h_to_e(self.Hx, self.Hy, self.dx, self.dy, self.Ez.shape)
+        (curlH_z,) = self._curl_h_to_e(self.Hx, self.Hy, self.resolution, self.Ez.shape)
         self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_region, self.eps_region, dt, self.region)
 
     def _update_3d(self, dt):
         """Execute one 3D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""
-        curlE_x, curlE_y, curlE_z = self._curl_e_to_h(self.Ex, self.Ey, self.Ez, self.dx, self.dy, self.dz)
+        curlE_x, curlE_y, curlE_z = self._curl_e_to_h(self.Ex, self.Ey, self.Ez, self.resolution)
         self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_hx, dt)
         self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_hy, dt)
         self.Hz = ops.advance_h_field(self.Hz, curlE_z, self.sigma_m_hz, dt)
-        curlH_x, curlH_y, curlH_z = self._curl_h_to_e(self.Hx, self.Hy, self.Hz, self.dx, self.dy, self.dz)
+        curlH_x, curlH_y, curlH_z = self._curl_h_to_e(self.Hx, self.Hy, self.Hz, self.resolution)
         self.Ex = ops.advance_e_field(self.Ex, curlH_x, self.sig_x, self.eps_x, dt, self.region_x)
         self.Ey = ops.advance_e_field(self.Ey, curlH_y, self.sig_y, self.eps_y, dt, self.region_y)
         self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_z, self.eps_z, dt, self.region_z)
