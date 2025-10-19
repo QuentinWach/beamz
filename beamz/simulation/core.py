@@ -34,6 +34,6 @@ class Simulation:
         self.current_step += 1 # Update step counter
         return True
 
-    def run(self):
+    def run(self, animate_live="Ez"):
         """Run complete FDTD simulation stepping through all time steps."""
         while self.step(): pass

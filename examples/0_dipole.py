@@ -14,7 +14,7 @@ design.show()
 grid = design.rasterize(resolution=0.1*µm)
 
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, phase=0, ramp_duration=3*WL/LIGHT_SPEED, t_max=TIME/2)
+signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=3*WL/LIGHT_SPEED, t_max=TIME/2)
 source = GaussianSource(position=(4*µm, 5*µm), width=WL/6, signal=signal)
 
 sim = Simulation(design=design, devices=[source], time=time_steps, resolution=DX)

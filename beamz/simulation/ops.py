@@ -4,19 +4,17 @@ from beamz.const import EPS_0, MU_0
 
 
 def curl_e_to_h_2d(ez, resolution):
-    """Compute curl of E-field for H update in 2D: ∂H/∂t = -∇×E/μ₀."""
+    """Compute curl of E-field for H update in 2D on staggered Yee grid: ∂H/∂t = -∇×E/μ₀."""
     # For 2D TM mode (only Ez component), curl reduces to: ∇×E = (∂Ez/∂y)x̂ - (∂Ez/∂x)ŷ
+    # On staggered Yee grid: Ez[i,j], Hx[i, j+1/2], Hy[i+1/2, j]
     # Hx component comes from ∂Ez/∂y (x-component of curl)
-    diff_y = np.diff(ez, axis=1) / resolution  # Finite difference: (Ez[i,j+1] - Ez[i,j]) / dy ≈ ∂Ez/∂y
-    pad_width_y = [(0, 0)] * len(ez.shape)  # No padding on axis 0
-    pad_width_y[1] = (1, 0)  # Pad 1 zero at start of axis 1 to restore original shape after np.diff
-    curl_ex = np.pad(diff_y, pad_width_y, mode="constant")  # Restores shape: np.diff reduces size by 1
+    # Hx is staggered in x, so curl_ex has shape (Ny, Nx-1)
+    curl_ex = np.diff(ez, axis=1) / resolution  # (Ez[i,j+1] - Ez[i,j]) / dy at position [i, j+1/2]
     
     # Hy component comes from -∂Ez/∂x (y-component of curl, with sign flip)
-    diff_x = -np.diff(ez, axis=0) / resolution  # Finite difference: -(Ez[i+1,j] - Ez[i,j]) / dx ≈ -∂Ez/∂x
-    pad_width_x = [(0, 0)] * len(ez.shape)  # No padding on axis 1
-    pad_width_x[0] = (1, 0)  # Pad 1 zero at start of axis 0 to restore original shape
-    curl_ey = np.pad(diff_x, pad_width_x, mode="constant")
+    # Hy is staggered in y, so curl_ey has shape (Ny-1, Nx)
+    curl_ey = -np.diff(ez, axis=0) / resolution  # -(Ez[i+1,j] - Ez[i,j]) / dx at position [i+1/2, j]
+    
     return (curl_ex, curl_ey)
 
 
@@ -64,12 +62,17 @@ def curl_e_to_h_3d(ex, ey, ez, resolution):
 
 
 def curl_h_to_e_2d(hx, hy, resolution, target_shape):
-    """Compute curl of H-field for E update in 2D: ∂E/∂t = ∇×H/(ε₀εᵣ)."""
-    curl = np.zeros(target_shape)  # Initialize with zeros for boundary conditions
+    """Compute curl of H-field for E update in 2D on staggered Yee grid: ∂E/∂t = ∇×H/(ε₀εᵣ)."""
     # For 2D TM mode: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y (z-component drives Ez)
-    # Interior points only [1:-1, 1:-1] to avoid boundary issues on staggered Yee grid
-    curl[1:-1, 1:-1] = ((hy[1:, 1:-1] - hy[:-1, 1:-1]) / resolution  # ∂Hy/∂x forward difference
-                        - (hx[1:-1, 1:] - hx[1:-1, :-1]) / resolution)  # ∂Hx/∂y forward difference
+    # On staggered Yee grid: Ez[i,j], Hx[i, j+1/2] with shape (Ny, Nx-1), Hy[i+1/2, j] with shape (Ny-1, Nx)
+    # Interior region excludes boundary points where sources/PML are applied
+    curl = np.zeros(target_shape)  # Initialize with zeros for boundary conditions
+    # Compute curl at interior Ez points [1:-1, 1:-1]
+    # ∂Hy/∂x: Hy is at (i+1/2, j), so we need Hy[i, j] - Hy[i-1, j] to get derivative at (i, j)
+    dHy_dx = (hy[1:, 1:-1] - hy[:-1, 1:-1]) / resolution  # Shape: (Ny-2, Nx-2)
+    # ∂Hx/∂y: Hx is at (i, j+1/2), so we need Hx[i, j] - Hx[i, j-1] to get derivative at (i, j)
+    dHx_dy = (hx[1:-1, 1:] - hx[1:-1, :-1]) / resolution  # Shape: (Ny-2, Nx-2)
+    curl[1:-1, 1:-1] = dHy_dx - dHx_dy
     return (curl,)
 
 
@@ -120,12 +123,14 @@ def advance_e_field(field, curl, conductivity, permittivity, dt, region):
     # Ampere's law with electric loss: ε₀εᵣ∂E/∂t = ∇×H - σE
     # Crank-Nicolson: E^(n+1) = [(1 - β)/(1 + β)]E^n + [Δt/(ε₀εᵣ)/(1 + β)]∇×H^(n+1/2)
     # where β = σΔt/(2ε₀εᵣ) for stability and second-order temporal accuracy
+    # Note: conductivity and permittivity are already sliced to the interior region
     updated = field.copy()  # Create copy for output (preserve boundary values)
-    current, sig, eps = field[region], conductivity[region], permittivity[region]  # Extract interior region values
-    denom = 1.0 + sig * dt / (2.0 * EPS_0 * eps)  # Denominator: 1 + β
-    factor = (1.0 - sig * dt / (2.0 * EPS_0 * eps)) / denom  # Coefficient for E^n: (1 - β)/(1 + β)
-    source = (dt / (EPS_0 * eps)) / denom  # Coefficient for curl term: Δt/(ε₀εᵣ(1 + β))
-    updated[region] = factor * current + source * curl  # E^(n+1) = factor*E^n + source*∇×H
+    current = field[region]  # Extract interior field values
+    curl_region = curl[region]  # Extract curl at interior points
+    denom = 1.0 + conductivity * dt / (2.0 * EPS_0 * permittivity)  # Denominator: 1 + β
+    factor = (1.0 - conductivity * dt / (2.0 * EPS_0 * permittivity)) / denom  # Coefficient for E^n: (1 - β)/(1 + β)
+    source = (dt / (EPS_0 * permittivity)) / denom  # Coefficient for curl term: Δt/(ε₀εᵣ(1 + β))
+    updated[region] = factor * current + source * curl_region  # E^(n+1) = factor*E^n + source*∇×H
     return updated
 
 
