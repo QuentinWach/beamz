@@ -1,5 +1,5 @@
 import numpy as np
-from beamz.helpers import display_status, get_si_scale_and_label
+from beamz.visual.helpers import display_status, get_si_scale_and_label
 
 # Optional plotting backends are imported inside functions to avoid hard deps
 

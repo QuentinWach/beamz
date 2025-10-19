@@ -1,4 +1,6 @@
 import gdspy
+from beamz.visual.helpers import display_status
+
 
 def import_gds(gds_file: str, default_depth=1e-6):
     """Import a GDS file and return polygon and layer data.
@@ -7,6 +9,9 @@ def import_gds(gds_file: str, default_depth=1e-6):
         gds_file (str): Path to the GDS file
         default_depth (float): Default depth/thickness for imported structures in meters
     """
+    from beamz.design.core import Design
+    from beamz.design.structures import Polygon
+    
     gds_lib = gdspy.GdsLibrary(infile=gds_file)
     design = Design()  # Create Design instance
     cells = gds_lib.cells  # Get all cells from the library
@@ -40,6 +45,10 @@ def export_gds(self, output_file):
     
     For 3D designs, structures with the same material that touch (in 3D) will be placed in the same layer.
     """
+    from beamz.design.structures import Polygon, Rectangle, Circle, Ring, CircularBend, Taper
+    from beamz.devices.sources import ModeSource, GaussianSource
+    from beamz.devices.monitors import Monitor
+    
     # Create library with micron units (1e-6) and nanometer precision (1e-9)
     lib = gdspy.GdsLibrary(unit=1e-6, precision=1e-9)
     cell = lib.new_cell("main")

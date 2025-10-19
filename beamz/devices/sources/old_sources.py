@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass
 
 from beamz.const import LIGHT_SPEED, µm
-from beamz.devices import mode as mode_solver
+from beamz.devices.sources import mode as mode_solver
 
 try:
     from beamz.simulation.meshing import RegularGrid, RegularGrid3D

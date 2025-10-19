@@ -5,7 +5,6 @@ from shapely.ops import unary_union
 from beamz.const import µm
 from beamz.design.materials import Material
 from beamz.design.structures import Polygon, Rectangle, Circle, Ring, CircularBend, Taper
-from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
 
 
 class Design:
@@ -26,7 +25,7 @@ class Design:
         self.add(structure)
         return self
 
-    def _unify_polygons(self):
+    def unify_polygons(self):
         """Merge overlapping polygons with the same material properties into unified shapes."""
         material_groups, non_polygon_structures, structures_to_remove = {}, [], []
         
@@ -209,8 +208,9 @@ class Design:
         
         return [epsilon, mu, sigma_base]
 
-    def _rasterize(self, resolution:float, grid_type:str="regular", **kwargs):
+    def rasterize(self, resolution:float, grid_type:str="regular", **kwargs):
         """Rasterize the design into a mesh grid at specified resolution."""
+        from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
         
         if isinstance(grid_type, str):
             gt = grid_type.lower()
@@ -220,7 +220,7 @@ class Design:
             else: return None
         elif isinstance(grid_type, type): 
             grid_cls = grid_type
-
+ 
         if grid_cls is RegularGrid3D:
             resolution_xy, resolution_z = resolution, kwargs.pop("resolution_z", None)
             return grid_cls(self, resolution_xy=resolution_xy, resolution_z=resolution_z)
@@ -254,3 +254,7 @@ class Design:
         new_design.layers = self.layers.copy() if hasattr(self, 'layers') else {}
         
         return new_design
+
+    def show(self, **kwargs):
+        from beamz.visual.viz import show_design
+        show_design(self, **kwargs)

@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
-from beamz.sources.solve import solve_modes
-from beamz.sources.tsfs import TFSFPlaneSource
+from beamz.devices.sources.solve import solve_modes
+from beamz.devices.sources.tsfs import TFSFPlaneSource
 
 Direction = Literal["+x", "-x", "+y", "-y", "+z", "-z"]
 Axis = Literal[0, 1, 2]

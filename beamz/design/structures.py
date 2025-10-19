@@ -1,7 +1,6 @@
 import random
-import numpy as np
 import colorsys
-from beamz import viz as viz
+import numpy as np
 
 class Polygon:
     def __init__(self, vertices=None, material=None, color=None, optimize=False, interiors=None, depth=0, z=0):
@@ -152,7 +151,8 @@ class Polygon:
         return self
 
     def add_to_plot(self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None):
-        return viz.draw_polygon(ax, self, facecolor=facecolor, edgecolor=edgecolor, alpha=alpha, linestyle=linestyle)
+        from beamz.visual.viz import draw_polygon
+        return draw_polygon(ax, self, facecolor=facecolor, edgecolor=edgecolor, alpha=alpha, linestyle=linestyle)
 
     def copy(self):
         copied_interiors = [list(path) for path in self.interiors if path] if self.interiors else []
@@ -402,7 +402,7 @@ class CircularBend(Polygon):
                           self.position[2]) for t in theta]
         inner_vertices = [(self.position[0] + self.inner_radius * np.cos(t + rotation_rad),
                           self.position[1] + self.inner_radius * np.sin(t + rotation_rad),
-                          self.position[2]) for t in reversed(theta)]
+                           self.position[2]) for t in reversed(theta)]
         self.vertices = outer_vertices + inner_vertices
         return self
     
