@@ -18,4 +18,5 @@ signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp
 source = GaussianSource(position=(4*µm, 5*µm), width=WL/6, signal=signal)
 
 sim = Simulation(design=design, devices=[source], time=time_steps, resolution=DX)
-sim.run()
+# Run with live Ez field animation (set animate_live=None to disable)
+sim.run(animate_live="Ez", animation_interval=1)
