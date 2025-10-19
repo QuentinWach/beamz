@@ -208,31 +208,41 @@ class Design:
         
         return [epsilon, mu, sigma_base]
 
-    def rasterize(self, resolution:float, grid_type:str="regular", **kwargs):
-        """Rasterize the design into a mesh grid at specified resolution."""
+    def rasterize(self, resolution:float, grid_type:str="regular", force_recompute:bool=False, **kwargs):
+        """Rasterize the design into a mesh grid at specified resolution and cache it internally."""
         from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
+        
+        # Return cached grid if resolution matches and no force recompute
+        if not force_recompute and hasattr(self, '_grid') and hasattr(self, '_grid_resolution'):
+            if self._grid_resolution == resolution: return self._grid
         
         if isinstance(grid_type, str):
             gt = grid_type.lower()
             if gt in {"regular", "regulargrid", "2d"}: grid_cls = RegularGrid
             elif gt in {"regular3d", "3d"}: grid_cls = RegularGrid3D
-            elif gt in {"auto", "auto-select", "autoselect"}: return create_mesh(self, resolution, **kwargs)
+            elif gt in {"auto", "auto-select", "autoselect"}:
+                self._grid = create_mesh(self, resolution, **kwargs)
+                self._grid_resolution = resolution
+                return self._grid
             else: return None
         elif isinstance(grid_type, type): 
             grid_cls = grid_type
  
         if grid_cls is RegularGrid3D:
             resolution_xy, resolution_z = resolution, kwargs.pop("resolution_z", None)
-            return grid_cls(self, resolution_xy=resolution_xy, resolution_z=resolution_z)
+            self._grid = grid_cls(self, resolution_xy=resolution_xy, resolution_z=resolution_z)
+            self._grid_resolution = resolution
+        else:
+            self._grid = grid_cls(self, resolution, **kwargs)
+            self._grid_resolution = resolution
         
-        return grid_cls(self, resolution, **kwargs)
+        return self._grid
 
     def get_material_grids(self, resolution):
         """Get cached rasterized material property arrays at specified resolution as references."""
-        if not hasattr(self, '_cached_grid') or self._cached_resolution != resolution:
-            self._cached_grid = self.rasterize(resolution)
-            self._cached_resolution = resolution
-        return (self._cached_grid.permittivity, self._cached_grid.conductivity, self._cached_grid.permeability)
+        if not hasattr(self, '_grid') or not hasattr(self, '_grid_resolution') or self._grid_resolution != resolution:
+            self.rasterize(resolution)
+        return (self._grid.permittivity, self._grid.conductivity, self._grid.permeability)
 
     def copy(self):
         """Create a deep copy of the design with all structures and properties."""

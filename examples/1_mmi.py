@@ -20,6 +20,7 @@ design.show()
 
 # Rasterize the design
 grid = design.rasterize(resolution=DX)
+grid.show(field="permittivity")
 
 # Define the source
 time_steps = np.arange(0, TIME, DT)
