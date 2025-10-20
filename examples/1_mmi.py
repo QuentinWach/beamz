@@ -11,7 +11,7 @@ H, W, OFFSET = 3.5*µm, 9*µm, 1.05*µm # height, length, offset of the MMI
 DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=10) 
 
 # Design the MMI with input and output waveguides
-design = Design(width=X, height=Y, material=Material(N_CLAD**2), pml_size=WL)
+design = Design(width=X, height=Y, material=Material(N_CLAD**2))
 design += Rectangle(position=(0, Y/2-WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2, Y/2 + OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2, Y/2 - OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
@@ -24,18 +24,9 @@ grid.show(field="permittivity")
 
 # Define the source
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(time_steps, amplitude=0.1, frequency=LIGHT_SPEED/WL, phase=0, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
-source = ModeSource(
-    grid=grid,
-    center=(2*µm, Y/2),
-    width=2.4*µm,
-    wavelength=WL,
-    pol="tm",
-    signal=signal,
-    direction="+x",
-)
+signal = ramped_cosine(time_steps, amplitude=0.1, frequency=LIGHT_SPEED/WL, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
+source = ModeSource(grid=grid, center=(2*µm, Y/2), width=2.4*µm, wavelength=WL, pol="tm", signal=signal, direction="+x")
 
 # Run the simulation and show results
-sim = FDTD(design=grid, devices=[source], time=time_steps)
-sim.run(live=True, save_memory_mode=True, accumulate_power=True) #axis_scale=[-1000/(µm), 1000/(µm)]
-sim.plot_power(db_colorbar=True)
+sim = Simulation(design=design, devices=[source], time=time_steps)
+sim.run(animate_live="Ez", animation_interval=2) #axis_scale=[-1000/(µm), 1000/(µm)]
