@@ -227,25 +227,3 @@ class CustomMaterial:
 # Drude: A dispersive medium described by the Drude model.
 
 # Debye: A dispersive medium described by the Debye model.
-
-
-# ================================
-
-# Material Library
-
-# Vacuum
-
-# Air
-
-# SiN
-
-# SiO2
-
-# Si3N4
-
-# Gold
-
-# Aluminum
-
-# Copper
-
