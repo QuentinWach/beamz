@@ -146,7 +146,7 @@ class Simulation:
                     title = f'{animate_live} at t = {self.t:.2e} s (step {self.current_step}/{self.num_steps})'
                     viz_context = animate_manual_field(field_display, context=viz_context, extent=extent, 
                                                       title=title, units='V/µm' if 'E' in animate_live else 'A/m',
-                                                      design=self.design, pause=0.001)
+                                                      design=self.design, boundaries=self.boundaries, pause=0.001)
         finally:
             # Cleanup: keep the final frame visible
             if viz_context and viz_context.get('fig'):

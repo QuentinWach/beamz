@@ -576,6 +576,7 @@ def animate_manual_field(field_array,
                          auto_interval=4,
                          smoothing=0.25,
                          design=None,
+                         boundaries=None,
                          show_structures=True,
                          show_sources=True,
                          show_monitors=True):
@@ -594,6 +595,7 @@ def animate_manual_field(field_array,
         auto_interval: Recompute auto scaling every N frames when ``axis_scale`` is ``None``.
         smoothing: Exponential smoothing factor (0-1) applied to auto scale updates.
         design: Optional FDTD design object to overlay structures, sources, and monitors.
+        boundaries: Optional list of boundary objects (PML, ABC, etc.) to visualize.
         show_structures: Boolean to control if design structures are overlaid.
         show_sources: Boolean to control if design sources are overlaid.
         show_monitors: Boolean to control if design monitors are overlaid.
@@ -660,6 +662,11 @@ def animate_manual_field(field_array,
                 for monitor in getattr(design, 'monitors', []) or []:
                     if hasattr(monitor, 'add_to_plot'):
                         monitor.add_to_plot(ax)
+
+        # Draw PML boundaries if provided
+        if boundaries:
+            for boundary in boundaries:
+                draw_boundary(ax, boundary, design, edgecolor='red', linestyle=':', alpha=0.7)
 
         if design is not None:
             max_dim = max(design.width, design.height)
