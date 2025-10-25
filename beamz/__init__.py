@@ -23,6 +23,7 @@ from beamz.devices.sources.mode import solve_modes
 # Import simulation-related classes and functions
 from beamz.design.meshing import RegularGrid
 from beamz.simulation.core import Simulation
+from beamz.simulation.boundaries import Boundary, PML, ABC, PeriodicBoundary
 
 # from beamz.optimization.optimizers import Optimizer  # TODO: Re-enable when optimizers module is created
 from beamz.optimization.topology import compute_overlap_gradient
@@ -81,6 +82,12 @@ _exports = {
     # Simulation
     'RegularGrid': RegularGrid,
     'Simulation': Simulation,
+    
+    # Boundaries
+    'Boundary': Boundary,
+    'PML': PML,
+    'ABC': ABC,
+    'PeriodicBoundary': PeriodicBoundary,
 
     # Optimization
     # 'Optimizer': Optimizer,  # TODO: Re-enable when optimizers module is created

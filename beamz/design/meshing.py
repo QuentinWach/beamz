@@ -470,50 +470,6 @@ class RegularGrid(BaseMeshGrid):
                 
                 progress.update(task, advance=1)
         
-        # Process PML separately (only add conductivity to existing material values)
-        with create_rich_progress() as progress:
-            task = progress.add_task("Processing PML boundaries...", total=len(self.design.boundaries))
-            for boundary in self.design.boundaries:
-                # Get boundary region
-                if hasattr(boundary, 'position'):
-                # Calculate PML region
-                    if hasattr(boundary, 'width') and hasattr(boundary, 'height'):
-                        # Rectangular PML
-                        pos_x, pos_y = boundary.position
-                        width, height = boundary.width, boundary.height
-                        # Convert to grid indices
-                        min_i = max(0, int(pos_y / cell_size))
-                        min_j = max(0, int(pos_x / cell_size))
-                        max_i = min(grid_height, int(np.ceil((pos_y + height) / cell_size)))
-                        max_j = min(grid_width, int(np.ceil((pos_x + width) / cell_size)))
-                    elif hasattr(boundary, 'radius'):
-                        # Corner PML
-                        center_x, center_y = boundary.position
-                        radius = boundary.radius
-                        # Calculate bounding box
-                        min_i = max(0, int((center_y - radius) / cell_size))
-                        min_j = max(0, int((center_x - radius) / cell_size))
-                        max_i = min(grid_height, int(np.ceil((center_y + radius) / cell_size)))
-                        max_j = min(grid_width, int(np.ceil((center_x + radius) / cell_size)))
-                    else:
-                        progress.update(task, advance=1)
-                        continue
-                else:
-                    progress.update(task, advance=1)
-                    continue
-                
-                # Fast calculation for entire PML region
-                for i in range(min_i, max_i):
-                    for j in range(min_j, max_j):
-                        x = x_centers[j]
-                        y = y_centers[i]
-                        # Add PML conductivity (single sample at center is sufficient)
-                        pml_conductivity = boundary.get_conductivity(x, y, dx=self.resolution, dt=dt_estimate, 
-                                                                    eps_avg=permittivity[i, j])
-                        if pml_conductivity > 0: conductivity[i, j] += pml_conductivity
-                
-                progress.update(task, advance=1)
-        
         # Assign final arrays to class instance
         self.permittivity = permittivity
         self.permeability = permeability

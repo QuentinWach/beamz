@@ -150,3 +150,37 @@ def material_slice_for_e_3d(permittivity, conductivity, orientation):
     elif orientation == "y": region = (slice(1, -1), slice(None), slice(1, -1))  # Ey: interior in z,x; full y
     else: region = (slice(None), slice(1, -1), slice(1, -1))  # Ez: full z; interior in y,x
     return permittivity[region], conductivity[region], region
+
+
+def update_e_field_upml_2d(Ez, Ez_x, Ez_y, Hx, Hy, pml_data, permittivity, conductivity, resolution, dt):
+    """Update E field with UPML split-field formulation for 2D TM mode."""
+    from beamz.const import EPS_0
+    
+    # Standard curl calculation
+    curl_h, = curl_h_to_e_2d(Hx, Hy, resolution, Ez.shape)
+    
+    # Get PML parameters
+    mask = pml_data['mask']
+    sigma_x = pml_data['sigma_x']
+    sigma_y = pml_data['sigma_y']
+    kappa_x = pml_data['kappa_x']
+    kappa_y = pml_data['kappa_y']
+    alpha_x = pml_data['alpha_x']
+    alpha_y = pml_data['alpha_y']
+    
+    # Simplified UPML implementation - use standard FDTD with PML conductivity
+    # This is more stable than the full split-field formulation
+    region = slice(1, -1), slice(1, -1)
+    
+    # Add PML conductivity to the existing conductivity
+    total_conductivity = conductivity[region] + sigma_x[region] + sigma_y[region]
+    
+    # Use standard FDTD update with modified conductivity
+    denom = 1.0 + total_conductivity * dt / (2.0 * EPS_0 * permittivity[region])
+    factor = (1.0 - total_conductivity * dt / (2.0 * EPS_0 * permittivity[region])) / denom
+    source = (dt / (EPS_0 * permittivity[region])) / denom
+    
+    # Update Ez field
+    Ez[region] = factor * Ez[region] + source * curl_h[region]
+    
+    return Ez

@@ -12,7 +12,7 @@ class Design:
         """Create a design domain with specified dimensions and background material."""
         if material is None: material = Material(permittivity=1.0, permeability=1.0, conductivity=0.0)
         background = Rectangle(position=(0,0,0), width=width, height=height, depth=depth, material=material)
-        self.structures, self.sources, self.monitors, self.boundaries = [background], [], [], []
+        self.structures, self.sources, self.monitors = [background], [], []
         self.width, self.height, self.depth, self.time = width, height, depth, 0
         self.is_3d = depth is not None and depth > 0
         self.layers: dict[int, list[Polygon]] = {}

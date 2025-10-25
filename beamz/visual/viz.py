@@ -1313,3 +1313,43 @@ def _triangulate_polygon_with_holes(exterior_vertices, interior_paths, depth, z_
             faces_i.append(inner_i + total_vertices); faces_j.append(inner_next + total_vertices); faces_k.append(inner_i)
             faces_i.append(inner_i); faces_j.append(inner_next + total_vertices); faces_k.append(inner_next)
     return {'vertices': (x_coords, y_coords, z_coords), 'faces': (faces_i, faces_j, faces_k)}
+
+def draw_boundary(ax, boundary, design, edgecolor="red", linestyle='--', alpha=0.5):
+    """Draw boundary regions on a matplotlib axis."""
+    from matplotlib.patches import Rectangle as MatplotlibRectangle
+    
+    edges = boundary._get_edges_for_dimensionality(design.is_3d)
+    
+    for edge in edges:
+        if edge == 'left':
+            rect = MatplotlibRectangle((0, 0), boundary.thickness, design.height, 
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'right':
+            rect = MatplotlibRectangle((design.width - boundary.thickness, 0), 
+                                     boundary.thickness, design.height,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'bottom':
+            rect = MatplotlibRectangle((0, 0), design.width, boundary.thickness,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'top':
+            rect = MatplotlibRectangle((0, design.height - boundary.thickness), 
+                                     design.width, boundary.thickness,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'front' and design.is_3d:
+            # 3D front edge (z=0)
+            rect = MatplotlibRectangle((0, 0), design.width, design.height,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'back' and design.is_3d:
+            # 3D back edge (z=depth)
+            rect = MatplotlibRectangle((0, 0), design.width, design.height,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        else:
+            continue
+            
+        ax.add_patch(rect)

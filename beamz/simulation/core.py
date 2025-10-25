@@ -3,6 +3,7 @@ from beamz.const import *
 from beamz.design.core import Design
 from beamz.devices.core import Device
 from beamz.simulation.fields import Fields
+from beamz.simulation.boundaries import Boundary, PML
 from beamz.visual.viz import animate_manual_field, close_fdtd_figure
 
 class Simulation:
@@ -16,25 +17,42 @@ class Simulation:
         # Get material grids from design (design owns the material grids, we reference them)
         permittivity, conductivity, permeability = design.get_material_grids(resolution)
         
+        # Initialize time stepping first
+        if time is None or len(time) < 2: raise ValueError("FDTD requires a time array with at least two entries")
+        self.time, self.dt, self.num_steps = time, float(time[1] - time[0]), len(time)
+        self.t, self.current_step = 0, 0
+        
         # Create field storage (fields owns the E/H field arrays, references material grids)
         self.fields = Fields(permittivity, conductivity, permeability, resolution)
+        
+        # Initialize PML regions if present
+        pml_boundaries = [b for b in boundaries if isinstance(b, PML)]
+        if pml_boundaries:
+            # Create PML regions (do this once, not every timestep)
+            pml_data = {}
+            for pml in pml_boundaries:
+                pml_data.update(pml.create_pml_regions(self.fields, design, resolution, self.dt))
+            self.pml_data = pml_data
+            
+            # Initialize split fields in Fields object
+            self.fields._init_upml_fields(pml_data)
+        else:
+            self.pml_data = None
         
         # Store device references (no duplication)
         self.devices = devices
         
-        # Initialize time stepping
-        if time is None or len(time) < 2: raise ValueError("FDTD requires a time array with at least two entries")
-        self.time, self.dt, self.num_steps = time, float(time[1] - time[0]), len(time)
-        self.t, self.current_step = 0, 0
+        # Store boundary references (no duplication)
+        self.boundaries = boundaries
 
     def step(self):
-        """Perform one FDTD time step by updating electromagnetic fields via Maxwell's equations."""
-        if self.current_step >= self.num_steps: return False # Check if we've reached the end of the time array
+        """Perform one FDTD time step."""
+        if self.current_step >= self.num_steps: return False
         
-        # Apply sources before field update
+        # Apply sources
         self._apply_sources()
         
-        # Update fields via Maxwell's equations
+        # Update fields (UPML is handled inside fields.update())
         self.fields.update(self.dt)
         
         # Update time and step counter
@@ -94,6 +112,7 @@ class Simulation:
         # Bounds check
         if 0 <= i < grid_shape[0] and 0 <= j < grid_shape[1]:
             self.fields.Ez[i, j] += amplitude
+    
 
     def run(self, animate_live=None, animation_interval=10):
         """Run complete FDTD simulation with optional live field visualization.

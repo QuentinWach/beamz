@@ -28,5 +28,5 @@ signal = ramped_cosine(time_steps, amplitude=0.1, frequency=LIGHT_SPEED/WL, ramp
 source = ModeSource(grid=grid, center=(2*µm, Y/2), width=2.4*µm, wavelength=WL, pol="tm", signal=signal, direction="+x")
 
 # Run the simulation and show results
-sim = Simulation(design=design, devices=[source], time=time_steps)
+sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
 sim.run(animate_live="Ez", animation_interval=2) #axis_scale=[-1000/(µm), 1000/(µm)]

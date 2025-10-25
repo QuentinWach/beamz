@@ -8,13 +8,19 @@ from beamz.simulation import ops
 class Fields:
     """Container for E/H field arrays on staggered Yee grid with FDTD update logic."""
 
-    def __init__(self, permittivity, conductivity, permeability, resolution):
+    def __init__(self, permittivity, conductivity, permeability, resolution, pml_regions=None):
         """Initialize field arrays on a Yee grid for 2D (Ez, Hx, Hy) or 3D (Ex, Ey, Ez, Hx, Hy, Hz) simulations."""
         self.resolution = resolution
         # Store references to material grids owned by Design (no copying)
         self.permittivity = permittivity
         self.conductivity = conductivity
         self.permeability = permeability
+        
+        # Initialize PML regions if present
+        if pml_regions:
+            self._init_upml_fields(pml_regions)
+        else:
+            self.has_pml = False
         
         # Infer dimensionality and shape from material arrays
         is_3d = self.permittivity.ndim == 3
@@ -42,11 +48,36 @@ class Fields:
             self.sigma_m_x, self.sigma_m_y = ops.magnetic_conductivity_terms_2d(self.conductivity, self.permeability, self.Hx.shape, self.Hy.shape)
             self.eps_region, self.sig_region, self.region = self._material_slice(self.permittivity, self.conductivity)
 
-    def _init_fields_2d(self, ny, nx):
-        """Initialize 2D TM mode field arrays (Ez, Hx, Hy) on staggered Yee grid."""
-        self.Ez = np.zeros((ny, nx))
-        self.Hx = np.zeros((ny, nx - 1))
-        self.Hy = np.zeros((ny - 1, nx))
+    def _init_upml_fields(self, pml_regions):
+        """Initialize auxiliary fields for split-field UPML."""
+        self.has_pml = True
+        self.pml_regions = pml_regions
+        
+        # Initialize split fields now that we have PML data
+        if not self.permittivity.ndim == 3:  # 2D
+            self._init_split_fields_2d()
+        else:  # 3D
+            self._init_split_fields_3d()
+    
+    def _init_split_fields_2d(self):
+        """Initialize split-field components for 2D UPML."""
+        if self.has_pml:
+            # 2D TM mode: Ez splits into Ez_x and Ez_y
+            self.Ez_x = np.zeros_like(self.Ez)
+            self.Ez_y = np.zeros_like(self.Ez)
+            # Hx and Hy don't split in standard UPML for TM mode
+    
+    def _init_split_fields_3d(self):
+        """Initialize split-field components for 3D UPML."""
+        if self.has_pml:
+            # 3D: all components split
+            self.Ex_y = np.zeros_like(self.Ex)
+            self.Ex_z = np.zeros_like(self.Ex)
+            self.Ey_x = np.zeros_like(self.Ey)
+            self.Ey_z = np.zeros_like(self.Ey)
+            self.Ez_x = np.zeros_like(self.Ez)
+            self.Ez_y = np.zeros_like(self.Ez)
+            # Similar for H fields...
 
     def _init_fields_3d(self, nx, ny, nz):
         """Initialize 3D field arrays (Ex, Ey, Ez, Hx, Hy, Hz) with proper Yee grid staggering."""
@@ -57,13 +88,34 @@ class Fields:
         self.Hy = np.zeros((nz - 1, ny, nx - 1))
         self.Hz = np.zeros((nz, ny - 1, nx - 1))
 
+    def _init_fields_2d(self, ny, nx):
+        """Initialize 2D TM mode field arrays (Ez, Hx, Hy) on staggered Yee grid."""
+        self.Ez = np.zeros((ny, nx))
+        self.Hx = np.zeros((ny, nx - 1))
+        self.Hy = np.zeros((ny - 1, nx))
+
     def _update_2d(self, dt):
-        """Execute one 2D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""
-        curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.resolution)
-        self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
-        self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
-        (curlH_z,) = self._curl_h_to_e(self.Hx, self.Hy, self.resolution, self.Ez.shape)
-        self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_region, self.eps_region, dt, self.region)
+        """Execute one 2D FDTD time step with UPML support."""
+        if self.has_pml:
+            # Use UPML split-field updates
+            from beamz.simulation.ops import update_e_field_upml_2d
+            
+            # Update H fields (standard update)
+            curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.resolution)
+            self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
+            self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
+            
+            # Update E field with UPML
+            self.Ez = update_e_field_upml_2d(self.Ez, self.Ez_x, self.Ez_y, self.Hx, self.Hy,
+                                          self.pml_regions, self.permittivity, 
+                                          self.conductivity, self.resolution, dt)
+        else:
+            # Standard update (existing code)
+            curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.resolution)
+            self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
+            self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
+            (curlH_z,) = self._curl_h_to_e(self.Hx, self.Hy, self.resolution, self.Ez.shape)
+            self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_region, self.eps_region, dt, self.region)
 
     def _update_3d(self, dt):
         """Execute one 3D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""

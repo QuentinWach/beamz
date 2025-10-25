@@ -14,5 +14,6 @@ time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=3*WL/LIGHT_SPEED, t_max=TIME/2)
 source = GaussianSource(position=(4*µm, 5*µm), width=WL/6, signal=signal)
 
-sim = Simulation(design=design, devices=[source], time=time_steps, resolution=DX)
+# Add PML boundaries to simulation (not design)
+sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
 sim.run(animate_live="Ez", animation_interval=2)
