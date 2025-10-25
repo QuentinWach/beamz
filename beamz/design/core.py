@@ -156,8 +156,7 @@ class Design:
         """Add structure to the design and update 3D flag if needed."""
         self.structures.append(structure)
         if hasattr(structure, 'depth') and structure.depth != 0: self.is_3d = True
-        if hasattr(structure, 'position') and len(structure.position) > 2 and structure.position[2] != 0: 
-            self.is_3d = True
+        if hasattr(structure, 'position') and len(structure.position) > 2 and structure.position[2] != 0: self.is_3d = True
         if hasattr(structure, 'vertices') and structure.vertices:
             for vertex in structure.vertices:
                 if len(vertex) > 2 and vertex[2] != 0:

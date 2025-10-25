@@ -7,7 +7,7 @@ from beamz.visual.viz import animate_manual_field, close_fdtd_figure
 
 class Simulation:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
-    def __init__(self, design:Design=None, devices:list[Device]=[], resolution:float=0.02*µm, time:np.ndarray=None):
+    def __init__(self, design:Design=None, devices:list[Device]=[], boundaries:list[Boundary]=[], resolution:float=0.02*µm, time:np.ndarray=None):
         """Initialize FDTD simulation with design object and extract material properties at specified resolution."""
         self.design = design
         self.resolution = resolution

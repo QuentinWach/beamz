@@ -2,6 +2,12 @@ import numpy as np
 from beamz.const import EPS_0, MU_0
 from beamz import viz as viz
 
+class Boundary:
+    def __init__():
+        pass
+
+
+
 class PML:
     """Unified PML (Perfectly Matched Layer) class for absorbing boundary conditions."""
     def __init__(self, region_type, position, size, orientation, polynomial_order=2.0, sigma_factor=1.0, alpha_max=0.1):
