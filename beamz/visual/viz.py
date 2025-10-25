@@ -136,13 +136,9 @@ def show_design_2d(design, unify_structures=True):
 
     for structure in structures_to_plot:
         if hasattr(structure, 'is_pml') and structure.is_pml:
-            structure.add_to_plot(ax, edgecolor=design.border_color, linestyle='--', facecolor='none', alpha=0.5)
+            structure.add_to_plot(ax, edgecolor='red', linestyle='--', facecolor='none', alpha=0.5)
         else:
             structure.add_to_plot(ax)
-
-    for boundary in design.boundaries:
-        if hasattr(boundary, 'add_to_plot'):
-            boundary.add_to_plot(ax, edgecolor=design.border_color, linestyle='--', facecolor='none', alpha=0.5)
 
     ax.set_title('Design Layout')
     ax.set_xlabel(f'X ({unit})')

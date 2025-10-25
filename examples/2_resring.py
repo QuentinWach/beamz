@@ -18,14 +18,14 @@ design += Ring(position=(X/2, WL*2+WG_WIDTH+RING_RADIUS+WG_WIDTH/2+0.2*WG_WIDTH)
 design.show()
 
 # Rasterize the design
-grid = design.rasterize(resolution=DX)
+#grid = design.rasterize(resolution=DX)
 
 # Define the signal & source
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=0.15, frequency=LIGHT_SPEED/WL, phase=0,
                        ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2.5)
 source = ModeSource(
-    grid=grid,
+    design=design,
     center=(WL*2, WL*2+WG_WIDTH/2),
     width=3.0*µm,
     wavelength=WL,
@@ -35,6 +35,6 @@ source = ModeSource(
 )
 
 # Run the simulation
-sim = Simulation(design=grid, devices=[source], time=time_steps)
-sim.run(live=True, save_memory_mode=True, accumulate_power=True)
+sim = Simulation(design=design, devices=[source], time=time_steps)
+sim.run(live=True)
 #sim.plot_power(db_colorbar=True)

@@ -247,7 +247,7 @@ class Design:
         """Create a deep copy of the design with all structures and properties."""
         background_material = self.structures[0].material if self.structures and hasattr(self.structures[0], 'material') else None
         new_design = Design(width=self.width, height=self.height, depth=self.depth, material=background_material)
-        new_design.structures, new_design.sources, new_design.monitors, new_design.boundaries = [], [], [], []
+        new_design.structures, new_design.sources, new_design.monitors = [], [], []
         
         for structure in self.structures:
             if hasattr(structure, 'copy'):
@@ -265,5 +265,6 @@ class Design:
         return new_design
 
     def show(self, **kwargs):
+        """Display the design using the visualization module."""
         from beamz.visual.viz import show_design
         show_design(self, **kwargs)
