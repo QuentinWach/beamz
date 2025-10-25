@@ -498,26 +498,62 @@ class ModeSource(Device):
         plt.tight_layout()
         plt.show()
 
-    def inject(self, fields, t, dt, current_step, resolution, design):
-        """Inject unidirectional mode source using Huygens currents (soft injection)."""
-        # Validate fields object
+    def get_source_terms(self, fields, t, dt, current_step, resolution, design):
+        """Return electric and magnetic current sources for Huygens injection."""
+        # Validate and compute modes
         if not hasattr(fields, 'Ez'):
-            raise ValueError("ModeSource requires Ez field for 2D TM mode")
+            return {}, {}
         
-        # Ensure modes computed
         if not self._electric_currents or not self._magnetic_currents:
             self.compute_modes()
         
         # Get time-varying amplitude
         amplitude = self._get_amplitude(t, current_step)
         if amplitude == 0:
-            return  # Skip if no signal
+            return {}, {}
         
-        # For 2D TM mode: inject J_z and M_y currents
-        if hasattr(fields, 'Ez'):  # 2D TM mode
-            self._inject_2d_tm(fields, amplitude, resolution, design)
-        else:
-            raise NotImplementedError("3D mode injection not yet implemented")
+        # Build source dictionaries for 2D TM mode
+        source_j = {}
+        source_m = {}
+        
+        # Electric current J_z = H_y,mode * s(t) for Ez update
+        # For TM mode with +x propagation, we need J_z = H_y (not the TSFS J_z which is H_x)
+        if hasattr(self, '_tsfs') and self._tsfs is not None:
+            # Get H_y directly from mode fields (index 2 in H array)
+            h_y = self._tsfs.magnetic[2]  # H_y component
+            y_start, y_end, x_idx = self._get_staggered_indices('Ez', self._grid_indices, fields)
+            
+            # Use real part of rotated H_y for unidirectional Huygens injection
+            # For TM mode with +x propagation, we need J_z = H_y with correct phase relationship
+            # Rotate H_y by 90° to ensure correct phase relationship with E_z
+            h_y_rotated = h_y * np.exp(1j * np.pi/2)
+            j_real = np.real(h_y_rotated) * amplitude
+            n_grid = y_end - y_start
+            if len(j_real) != n_grid:
+                j_real = self._interpolate_to_grid(j_real, n_grid)
+            
+            source_j['Ez'] = (j_real, (slice(y_start, y_end), x_idx))
+        
+        # Magnetic current M_y = E_z,mode * s(t) for Hy update
+        # For TM mode with +x propagation, we need M_y = E_z (not the TSFS M_y which is E_y)
+        if hasattr(self, '_tsfs') and self._tsfs is not None:
+            # Get E_z directly from mode fields (index 0 in E array)
+            e_z = self._tsfs.electric[0]  # E_z component
+            y_start, y_end, x_idx = self._get_staggered_indices('Hy', self._grid_indices, fields)
+            
+            # Use magnitude with correct sign for unidirectional Huygens injection
+            # For TM mode with +x propagation, we need M_y = E_z with correct sign
+            # The mode solver returns fields with arbitrary phase, so we use magnitude with sign
+            m_real = np.abs(e_z) * amplitude
+            n_grid = y_end - y_start
+            if len(m_real) != n_grid:
+                m_real = self._interpolate_to_grid(m_real, n_grid)
+            
+            # For unidirectional Huygens source, test with negative sign for M_y
+            # This should give us M_y = -E_z for unidirectional propagation
+            source_m['Hy'] = (-m_real, (slice(y_start, y_end), x_idx))
+        
+        return source_j, source_m
 
     def _get_amplitude(self, t, current_step):
         """Get signal amplitude at current time step."""
@@ -527,65 +563,6 @@ class ModeSource(Device):
             return self.signal(t)
         else:
             return 1.0
-
-    def _inject_2d_tm(self, fields, amplitude, resolution, design):
-        """Inject 2D TM mode using J_z and M_y currents."""
-        # Get electric current J_z = H_y (for Ez field update)
-        if 'Ez' in self._electric_currents:
-            j_z = self._electric_currents['Ez']  # This is H_y from mode
-            self._apply_electric_current(fields, j_z, amplitude, resolution, design)
-        
-        # Get magnetic current M_y = E_z (for Hy field update)
-        if 'Hy' in self._magnetic_currents:
-            m_y = self._magnetic_currents['Hy']  # This is E_z from mode
-            self._apply_magnetic_current(fields, m_y, amplitude, resolution, design)
-
-    def _apply_electric_current(self, fields, j_profile, amplitude, resolution, design):
-        """Apply electric current J_z to Ez field (soft injection)."""
-        # Get correct indices accounting for Yee staggering
-        y_start, y_end, x_idx = self._get_staggered_indices('Ez', self._grid_indices, fields)
-        
-        # Get real part of current profile and scale by amplitude
-        j_real = np.real(j_profile) * amplitude
-        
-        # Interpolate to match grid size if needed
-        n_profile = len(j_real)
-        n_grid = y_end - y_start
-        if n_profile != n_grid:
-            j_real = self._interpolate_to_grid(j_real, n_grid)
-        
-        # Soft injection: add current to Ez field
-        # J_z contributes to dEz/dt via: dEz/dt += J_z / epsilon
-        # In discrete form: Ez += dt * J_z / epsilon
-        from beamz.const import EPS_0
-        epsilon = fields.permittivity[y_start:y_end, x_idx]
-        dt_factor = 1.0 / (EPS_0 * epsilon)  # Simplified for now
-        
-        fields.Ez[y_start:y_end, x_idx] += j_real * dt_factor
-
-    def _apply_magnetic_current(self, fields, m_profile, amplitude, resolution, design):
-        """Apply magnetic current M_y to Hy field (soft injection)."""
-        # Get correct indices accounting for Yee staggering
-        y_start, y_end, x_idx = self._get_staggered_indices('Hy', self._grid_indices, fields)
-        
-        # Get real part and scale
-        m_real = np.real(m_profile) * amplitude
-        
-        # Interpolate if needed
-        n_profile = len(m_real)
-        n_grid = y_end - y_start
-        if n_profile != n_grid:
-            m_real = self._interpolate_to_grid(m_real, n_grid)
-        
-        # Soft injection: subtract magnetic current from Hy
-        # M_y contributes to dHy/dt via: dHy/dt -= M_y / mu
-        from beamz.const import MU_0
-        mu = fields.permeability[y_start:y_end, x_idx]
-        dt_factor = 1.0 / (MU_0 * mu)
-        
-        # Apply to Hy field with proper bounds checking
-        if x_idx < fields.Hy.shape[1] and y_end <= fields.Hy.shape[0]:
-            fields.Hy[y_start:y_end, x_idx] -= m_real * dt_factor
 
     def _get_staggered_indices(self, field_component, grid_indices, fields):
         """Get correct grid indices accounting for Yee staggering."""

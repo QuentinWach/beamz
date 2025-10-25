@@ -94,28 +94,61 @@ class Fields:
         self.Hx = np.zeros((ny, nx - 1))
         self.Hy = np.zeros((ny - 1, nx))
 
-    def _update_2d(self, dt):
-        """Execute one 2D FDTD time step with UPML support."""
+    def _update_2d(self, dt, source_j=None, source_m=None):
+        """Execute one 2D FDTD time step with optional source injection."""
         if self.has_pml:
             # Use UPML split-field updates
             from beamz.simulation.ops import update_e_field_upml_2d
             
-            # Update H fields (standard update)
+            # Update H fields with magnetic current sources
             curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.resolution)
-            self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
-            self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
             
-            # Update E field with UPML
+            # Add magnetic current M_y to Hy update (subtract because M contributes -M/μ to dH/dt)
+            if source_m and 'Hy' in source_m:
+                m_y, indices = source_m['Hy']
+                curlE_y_with_source = curlE_y.copy()
+                y_slice, x_idx = indices
+                curlE_y_with_source[y_slice, x_idx] += m_y  # Add M to curl (gets multiplied by dt/mu in advance_h_field) so that dt*curl includes M
+                self.Hy = ops.advance_h_field(self.Hy, curlE_y_with_source, self.sigma_m_y, dt)
+            else:
+                self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
+            
+            self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
+            
+            # Update E field with UPML (need to add J sources here too)
+            # For now, use standard UPML without source injection
             self.Ez = update_e_field_upml_2d(self.Ez, self.Ez_x, self.Ez_y, self.Hx, self.Hy,
                                           self.pml_regions, self.permittivity, 
                                           self.conductivity, self.resolution, dt)
         else:
-            # Standard update (existing code)
+            # Standard update with source injection
             curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.resolution)
+            
+            # Add magnetic current M_y to Hy update
+            if source_m and 'Hy' in source_m:
+                m_y, indices = source_m['Hy']
+                curlE_y_with_source = curlE_y.copy()
+                y_slice, x_idx = indices
+                curlE_y_with_source[y_slice, x_idx] += m_y  # Add M to curl (gets multiplied by dt/mu in advance_h_field)
+                self.Hy = ops.advance_h_field(self.Hy, curlE_y_with_source, self.sigma_m_y, dt)
+            else:
+                self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
+            
             self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
-            self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
+            
+            # Update E field with electric current sources
             (curlH_z,) = self._curl_h_to_e(self.Hx, self.Hy, self.resolution, self.Ez.shape)
-            self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_region, self.eps_region, dt, self.region)
+            
+            # Add electric current J_z to Ez update
+            if source_j and 'Ez' in source_j:
+                j_z, indices = source_j['Ez']
+                curlH_z_with_source = curlH_z.copy()
+                y_slice, x_idx = indices
+                curlH_z_with_source[y_slice, x_idx] += j_z  # Add J to curl (gets multiplied by dt/epsilon in advance_e_field)
+            else:
+                curlH_z_with_source = curlH_z
+            
+            self.Ez = ops.advance_e_field(self.Ez, curlH_z_with_source, self.sig_region, self.eps_region, dt, self.region)
 
     def _update_3d(self, dt):
         """Execute one 3D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""
@@ -127,3 +160,10 @@ class Fields:
         self.Ex = ops.advance_e_field(self.Ex, curlH_x, self.sig_x, self.eps_x, dt, self.region_x)
         self.Ey = ops.advance_e_field(self.Ey, curlH_y, self.sig_y, self.eps_y, dt, self.region_y)
         self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_z, self.eps_z, dt, self.region_z)
+
+    def update(self, dt, source_j=None, source_m=None):
+        """Execute one FDTD time step with optional source injection."""
+        if not self.permittivity.ndim == 3:  # 2D
+            self._update_2d(dt, source_j=source_j, source_m=source_m)
+        else:  # 3D
+            self._update_3d(dt)

@@ -736,8 +736,8 @@ class GaussianSource(Device):
         self.signal = np.asarray(signal, dtype=float)
         self.max_signal_magnitude = float(np.max(np.abs(self.signal))) if self.signal.size else 0.0
     
-    def inject(self, fields, t, dt, current_step, resolution, design):
-        """Inject Gaussian source into Ez field with soft injection."""
+    def get_source_terms(self, fields, t, dt, current_step, resolution, design):
+        """Return Gaussian source as electric current for Ez field."""
         # Get signal amplitude at current time step
         if hasattr(self.signal, '__len__') and len(self.signal) > current_step:
             amplitude = self.signal[current_step]
@@ -745,6 +745,9 @@ class GaussianSource(Device):
             amplitude = self.signal(t)
         else:
             amplitude = 1.0
+        
+        if amplitude == 0:
+            return {}, {}
         
         # Compute Gaussian spatial profile
         pos_x, pos_y = self.position[0], self.position[1]
@@ -757,8 +760,9 @@ class GaussianSource(Device):
         
         gaussian = amplitude * np.exp(-((X - pos_x)**2 + (Y - pos_y)**2) / (2 * self.width**2))
         
-        # Soft injection: add to existing field
-        fields.Ez += gaussian
+        # Return as electric current source for Ez field
+        source_j = {'Ez': (gaussian, (slice(None), slice(None)))}
+        return source_j, {}
     
     def add_to_plot(self, ax):
         """Add GaussianSource marker to 2D plot."""

@@ -1,15 +1,11 @@
 class Device:
     """Base class for all simulation devices (sources, monitors, etc.)."""
     
-    def inject(self, fields, t, dt, current_step, resolution, design):
-        """Inject device contribution into fields (soft injection).
+    def get_source_terms(self, fields, t, dt, current_step, resolution, design):
+        """Return source current terms for FDTD update.
         
-        Args:
-            fields: Fields object with E/H field arrays
-            t: Current simulation time
-            dt: Time step
-            current_step: Current step index
-            resolution: Grid resolution
-            design: Design object for spatial information
+        Returns:
+            source_j: dict mapping field components to (current_array, indices) tuples
+            source_m: dict mapping field components to (current_array, indices) tuples
         """
-        pass  # Override in subclasses
+        return {}, {}  # Override in subclasses

@@ -49,22 +49,29 @@ class Simulation:
         """Perform one FDTD time step."""
         if self.current_step >= self.num_steps: return False
         
-        # Apply sources
-        self._apply_sources()
+        # Collect source terms from all devices
+        source_j, source_m = self._collect_source_terms()
         
-        # Update fields (UPML is handled inside fields.update())
-        self.fields.update(self.dt)
+        # Update fields with sources (UPML is handled inside fields.update())
+        self.fields.update(self.dt, source_j=source_j, source_m=source_m)
         
         # Update time and step counter
         self.t += self.dt
         self.current_step += 1
         return True
-    
-    def _apply_sources(self):
-        """Apply all device injections to the fields at the current time step."""
+
+    def _collect_source_terms(self):
+        """Collect electric and magnetic current sources from all devices."""
+        source_j = {}  # Electric currents for E-field update
+        source_m = {}  # Magnetic currents for H-field update
+        
         for device in self.devices:
-            if hasattr(device, 'inject'):
-                device.inject(self.fields, self.t, self.dt, self.current_step, self.resolution, self.design)
+            if hasattr(device, 'get_source_terms'):
+                j, m = device.get_source_terms(self.fields, self.t, self.dt, self.current_step, self.resolution, self.design)
+                if j: source_j.update(j)
+                if m: source_m.update(m)
+        
+        return source_j, source_m
     
 
     def run(self, animate_live=None, animation_interval=10):
