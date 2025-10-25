@@ -666,7 +666,7 @@ def animate_manual_field(field_array,
         # Draw PML boundaries if provided
         if boundaries:
             for boundary in boundaries:
-                draw_boundary(ax, boundary, design, edgecolor='red', linestyle=':', alpha=0.7)
+                draw_boundary(ax, boundary, design, edgecolor='black', linestyle=':', alpha=0.7)
 
         if design is not None:
             max_dim = max(design.width, design.height)
