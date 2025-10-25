@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
+from beamz.devices.core import Device
 from beamz.devices.sources.solve import solve_modes
 from beamz.devices.sources.tsfs import TFSFPlaneSource
 
@@ -92,7 +93,7 @@ def _coerce_size(width, dims: int, default_size: Sequence[float], axis: Axis) ->
     raise TypeError("width must be a float or a tuple/list of floats")
 
 
-class ModeSource:
+class ModeSource(Device):
     """Unidirectional Huygens-mode source built on a TFSF plane."""
 
     def __init__(
@@ -496,6 +497,15 @@ class ModeSource:
         plt.legend()
         plt.tight_layout()
         plt.show()
+
+    def inject(self, fields, t, dt, current_step, resolution, design):
+        """Inject mode source into fields with soft injection.
+        
+        TODO: Implement unidirectional mode injection using cached mode profile.
+        For now, fallback to point source behavior.
+        """
+        # Placeholder implementation
+        pass
 
 
 __all__ = ["ModeSource"]

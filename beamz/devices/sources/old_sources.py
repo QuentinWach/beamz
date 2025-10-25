@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass
 
 from beamz.const import LIGHT_SPEED, µm
+from beamz.devices.core import Device
 from beamz.devices.sources import mode as mode_solver
 
 try:
@@ -714,7 +715,7 @@ def _serialize_mode_profile(meta: _ModeMetadata, mode_dict: dict, center: tuple[
 
         plt.show()
 
-class GaussianSource:
+class GaussianSource(Device):
     """Point source with Gaussian spatial profile."""
     
     def __init__(self, position, width, signal):
@@ -734,6 +735,30 @@ class GaussianSource:
         self.width = float(width)
         self.signal = np.asarray(signal, dtype=float)
         self.max_signal_magnitude = float(np.max(np.abs(self.signal))) if self.signal.size else 0.0
+    
+    def inject(self, fields, t, dt, current_step, resolution, design):
+        """Inject Gaussian source into Ez field with soft injection."""
+        # Get signal amplitude at current time step
+        if hasattr(self.signal, '__len__') and len(self.signal) > current_step:
+            amplitude = self.signal[current_step]
+        elif hasattr(self.signal, '__call__'):
+            amplitude = self.signal(t)
+        else:
+            amplitude = 1.0
+        
+        # Compute Gaussian spatial profile
+        pos_x, pos_y = self.position[0], self.position[1]
+        grid_shape = fields.Ez.shape
+        nx, ny = grid_shape[1], grid_shape[0]
+        
+        x = np.linspace(0, design.width, nx)
+        y = np.linspace(0, design.height, ny)
+        X, Y = np.meshgrid(x, y)
+        
+        gaussian = amplitude * np.exp(-((X - pos_x)**2 + (Y - pos_y)**2) / (2 * self.width**2))
+        
+        # Soft injection: add to existing field
+        fields.Ez += gaussian
     
     def add_to_plot(self, ax):
         """Add GaussianSource marker to 2D plot."""

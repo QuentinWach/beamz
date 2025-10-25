@@ -61,57 +61,10 @@ class Simulation:
         return True
     
     def _apply_sources(self):
-        """Apply all sources to the fields at the current time step."""
+        """Apply all device injections to the fields at the current time step."""
         for device in self.devices:
-            if hasattr(device, 'signal') and hasattr(device, 'position'):
-                # Get signal amplitude at current time step
-                if hasattr(device.signal, '__len__') and len(device.signal) > self.current_step:
-                    amplitude = device.signal[self.current_step]
-                elif hasattr(device.signal, '__call__'):
-                    amplitude = device.signal(self.t)
-                else:
-                    amplitude = 1.0  # Default amplitude
-                
-                # Apply to field based on source type (soft source)
-                if hasattr(device, 'width'):
-                    # Gaussian source - apply spatially distributed source
-                    self._apply_gaussian_source(device, amplitude)
-                else:
-                    # Point source fallback
-                    self._apply_point_source(device, amplitude)
-    
-    def _apply_gaussian_source(self, source, amplitude):
-        """Apply a Gaussian-distributed source to the Ez field."""
-        pos_x, pos_y = source.position[0], source.position[1]
-        width = source.width if hasattr(source, 'width') else self.resolution * 3
-        
-        # Convert position to grid indices
-        grid_shape = self.fields.Ez.shape
-        nx, ny = grid_shape[1], grid_shape[0]
-        
-        # Create coordinate grids
-        x = np.linspace(0, self.design.width, nx)
-        y = np.linspace(0, self.design.height, ny)
-        X, Y = np.meshgrid(x, y)
-        
-        # Gaussian distribution
-        gaussian = amplitude * np.exp(-((X - pos_x)**2 + (Y - pos_y)**2) / (2 * width**2))
-        
-        # Soft source: add to existing field
-        self.fields.Ez += gaussian
-    
-    def _apply_point_source(self, source, amplitude):
-        """Apply a point source to the Ez field."""
-        pos_x, pos_y = source.position[0], source.position[1]
-        
-        # Convert to grid index
-        grid_shape = self.fields.Ez.shape
-        i = int(pos_y / self.resolution)
-        j = int(pos_x / self.resolution)
-        
-        # Bounds check
-        if 0 <= i < grid_shape[0] and 0 <= j < grid_shape[1]:
-            self.fields.Ez[i, j] += amplitude
+            if hasattr(device, 'inject'):
+                device.inject(self.fields, self.t, self.dt, self.current_step, self.resolution, self.design)
     
 
     def run(self, animate_live=None, animation_interval=10):
