@@ -15,7 +15,7 @@ from beamz.design.structures import (
     Rectangle, Circle, Ring, 
     CircularBend, Polygon, Taper
 )
-from beamz.devices.sources import ModeSource, GaussianSource
+from beamz.devices.sources import ModeSource
 from beamz.devices.monitors import Monitor
 from beamz.devices.sources.signals import ramped_cosine, plot_signal
 from beamz.devices.sources.mode import solve_modes
@@ -67,7 +67,6 @@ _exports = {
     
     # Sources
     'ModeSource': ModeSource,
-    'GaussianSource': GaussianSource,
     
     # Monitors
     'Monitor': Monitor,
