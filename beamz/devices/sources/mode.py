@@ -1,51 +1,65 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Dict, Literal, Sequence
-
 import matplotlib.pyplot as plt
 import numpy as np
 
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices.core import Device
 from beamz.devices.sources.solve import solve_modes
-from beamz.devices.sources.tsfs import TFSFPlaneSource
 
-Direction = Literal["+x", "-x", "+y", "-y", "+z", "-z"]
-Axis = Literal[0, 1, 2]
-Polarization = Literal["te", "tm", None]
-
-
-@dataclass(frozen=True)
 class Box:
-    center: tuple[float, ...]
-    size: tuple[float, ...]
+    """Axis-aligned plane descriptor used to place the mode source."""
+
+    def __init__(self, center, size):
+        coords = tuple(float(c) for c in center)
+        spans = tuple(float(s) for s in size)
+        self.center = coords
+        self.size = spans
 
 
-def _direction_to_axis(direction: Direction) -> Axis:
-    if "x" in direction:
-        return 0
-    if "y" in direction:
-        return 1
-    if "z" in direction:
-        return 2
+def _direction_to_axis(direction):
+    """Return axis index for propagation direction string."""
+    if "x" in direction: return 0
+    if "y" in direction: return 1
+    if "z" in direction: return 2
     raise ValueError(f"Unknown propagation direction '{direction}'")
 
 
-def _direction_sign(direction: Direction) -> str:
-    return "+" if direction.startswith("+") else "-"
+def _direction_sign(direction):
+    """Return '+' or '-' depending on propagation sign."""
+    text = str(direction)
+    symbol = "+"
+    if text.startswith("-"): symbol = "-"
+    return symbol
 
 
-def _ensure_box(
-    plane: Box | dict | Sequence[Sequence[float]] | None,
-    dims: int,
-    default_center: Sequence[float],
-    default_size: Sequence[float],
-) -> Box:
-    if plane is None:
-        return Box(tuple(default_center), tuple(default_size))
-    if isinstance(plane, Box):
-        return plane
+def _normal_vector(axis, direction_sign):
+    """Return unit normal vector pointing along the propagation direction."""
+    vec = np.zeros(3, dtype=np.float64)
+    vec[axis] = 1.0 if direction_sign == "+" else -1.0
+    return vec
+
+
+def _surface_currents(electric, magnetic, axis, direction_sign):
+    """Return electric and magnetic sheet currents for a plane with normal along the chosen axis."""
+    normal = _normal_vector(axis, direction_sign)
+    reshape = (3,) + (1,) * (electric.ndim - 1)
+    normal_field = normal.reshape(reshape)
+    current_electric = np.cross(normal_field, magnetic, axisa=0, axisb=0, axisc=0)
+    current_magnetic = -np.cross(normal_field, electric, axisa=0, axisb=0, axisc=0)
+    return current_electric, current_magnetic
+
+
+def _poynting_density(electric, magnetic, axis, direction_sign):
+    """Return power density along the propagation axis."""
+    cross = np.cross(electric, np.conjugate(magnetic), axisa=0, axisb=0, axisc=0)
+    density = 0.5 * np.real(cross[axis])
+    sign = 1.0 if direction_sign == "+" else -1.0
+    return density * sign
+
+
+def _ensure_box(plane, dims, default_center, default_size):
+    """Return a Box instance built from various input forms."""
+    if plane is None: return Box(tuple(default_center), tuple(default_size))
+    if isinstance(plane, Box): return plane
     if isinstance(plane, dict):
         center = tuple(float(c) for c in plane.get("center", default_center))
         size = tuple(float(s) for s in plane.get("size", default_size))
@@ -65,30 +79,27 @@ def _ensure_box(
             size = (*size, 0.0)
         else:
             raise ValueError("Plane size dimensionality mismatch")
-    return Box(center=tuple(center), size=tuple(size))
+    return Box(center, size)
 
 
-def _coerce_center(center, dims: int, default_center: Sequence[float]) -> tuple[float, ...]:
-    if center is None:
-        return tuple(default_center)
+def _coerce_center(center, dims, default_center):
+    """Coerce a user-provided center to the expected dimensionality."""
+    if center is None: return tuple(default_center)
     if isinstance(center, (list, tuple)):
-        if len(center) != dims:
-            raise ValueError(f"center must have length {dims}, got {len(center)}")
+        if len(center) != dims: raise ValueError(f"center must have length {dims}, got {len(center)}")
         return tuple(float(c) for c in center)
     raise TypeError("center must be a tuple/list of coordinates")
 
 
-def _coerce_size(width, dims: int, default_size: Sequence[float], axis: Axis) -> tuple[float, ...]:
-    if width is None:
-        return tuple(default_size)
+def _coerce_size(width, dims, default_size, axis):
+    """Coerce user-provided width into a tuple matching the plane dimensionality."""
+    if width is None: return tuple(default_size)
     if isinstance(width, (int, float)):
         size = list(default_size)
-        for idx in range(dims):
-            size[idx] = 0.0 if idx == axis else float(width)
+        for idx in range(dims): size[idx] = 0.0 if idx == axis else float(width)
         return tuple(size)
     if isinstance(width, (list, tuple)):
-        if len(width) != dims:
-            raise ValueError(f"width must have length {dims}, got {len(width)}")
+        if len(width) != dims: raise ValueError(f"width must have length {dims}, got {len(width)}")
         return tuple(float(w) for w in width)
     raise TypeError("width must be a float or a tuple/list of floats")
 
@@ -96,18 +107,7 @@ def _coerce_size(width, dims: int, default_size: Sequence[float], axis: Axis) ->
 class ModeSource(Device):
     """Unidirectional Huygens-mode source built on a TFSF plane."""
 
-    def __init__(
-        self,
-        grid,
-        center=None,
-        width=None,
-        wavelength: float = 1.55e-6,
-        direction: Direction = "+x",
-        mode: int = 0,
-        target_neff: float | None = None,
-        pol: Polarization = "tm",
-        signal: Sequence[float] | None = None,
-    ) -> None:
+    def __init__(self, grid, center=None, width=None, wavelength=1.55e-6, direction="+x", mode=0, target_neff=None, pol="tm", signal=None):
         if getattr(grid, "permittivity", None) is None:
             raise ValueError("Grid must expose a 'permittivity' array. Did you call Design.rasterize()?")
         self.grid = grid
@@ -118,12 +118,17 @@ class ModeSource(Device):
         if self.mode_index < 0:
             raise ValueError("mode must be non-negative")
         self.target_neff = target_neff
-        self.polarization: Polarization = pol
+        self.polarization = pol
 
         if signal is None:
-            self.signal = np.array([1.0], dtype=float)
+            raw_signal = np.array([1.0], dtype=float)
         else:
-            self.signal = np.asarray(signal, dtype=float)
+            raw_signal = np.asarray(signal, dtype=float)
+        if raw_signal.ndim != 1:
+            raise ValueError("signal must be a one-dimensional array of samples")
+        self.signal = raw_signal.astype(float, copy=False)
+        self._repeat_signal = self.signal.size == 1
+        self._analytic_signal = self._build_analytic_signal(self.signal)
         self.max_signal_magnitude = float(np.max(np.abs(self.signal))) if self.signal.size else 0.0
 
         permittivity = np.asarray(self.grid.permittivity, dtype=float)
@@ -163,17 +168,16 @@ class ModeSource(Device):
         if permittivity.ndim == 2 and self.axis != 0:
             raise NotImplementedError("2D ModeSource currently supports propagation along the x-axis only")
         self.signal_phase_shift = 0.0
-        self.mode_profiles: list[list[dict[str, complex]]] = []
-        self.max_field_amplitude: float | None = None
-        self.max_power_density: float | None = None
-        self.total_power: float | None = None
+        self.mode_profiles = []
+        self.max_field_amplitude = None
+        self.max_power_density = None
+        self.total_power = None
 
         self._mode_cache = None
-        self._tsfs: TFSFPlaneSource | None = None
-        self._electric_currents: Dict[str, np.ndarray] = {}
-        self._magnetic_currents: Dict[str, np.ndarray] = {}
-        self._grid_indices: Dict[str, tuple[slice, int]] = {}
-        self._coordinate_vectors: Dict[str, np.ndarray] = {}
+        self._electric_currents = {}
+        self._magnetic_currents = {}
+        self._grid_indices = {}
+        self._coordinate_vectors = {}
         self._design = getattr(grid, "design", None)
 
         self._update_line_endpoints()
@@ -187,6 +191,31 @@ class ModeSource(Device):
         del args, kwargs
         self.compute_modes(force=True)
 
+    def _select_fundamental_mode(self, e_fields, neff):
+        """Select fundamental mode by analyzing spatial profiles (fewest peaks)."""
+        n_modes = e_fields.shape[0]
+        mode_scores = []
+        for i in range(n_modes):
+            Ez = np.squeeze(e_fields[i])[2] if e_fields[i].shape[0] > 2 else np.squeeze(e_fields[i])[0]
+            Ez_abs = np.abs(Ez)
+            threshold = 0.3 * np.max(Ez_abs)
+            Ez_above = Ez_abs > threshold
+            boundaries = np.diff(np.concatenate([[False], Ez_above, [False]])) != 0
+            n_peaks = np.sum(boundaries) // 2
+            central_half = len(Ez) // 4
+            max_idx = np.argmax(Ez_abs)
+            central_region = slice(max(0, max_idx - central_half), min(len(Ez), max_idx + central_half))
+            central_concentration = np.sum(Ez_abs[central_region]) / np.sum(Ez_abs)
+            if not np.isfinite(np.real(neff[i])) or np.real(neff[i]) < 1.0 or np.imag(neff[i]) > 0.01:
+                continue
+            mode_scores.append((n_peaks, 1.0 - central_concentration, -float(np.real(neff[i])), i))
+        if not mode_scores:
+            return min(self.mode_index, n_modes - 1)
+        mode_scores.sort()
+        selected_idx = mode_scores[0][3]
+        print(f"[ModeSource] Selected mode {selected_idx}: n_peaks={mode_scores[0][0]}, concentration={1.0-mode_scores[0][1]:.3f}, neff={-mode_scores[0][2]:.4f}")
+        return selected_idx
+
     # Geometry ---------------------------------------------------------------
     @property
     def design(self):
@@ -196,7 +225,7 @@ class ModeSource(Device):
     def design(self, value):
         self._design = value
 
-    def _update_line_endpoints(self) -> None:
+    def _update_line_endpoints(self):
         axis = self.axis
         if axis == 0:
             self.start = (
@@ -233,7 +262,7 @@ class ModeSource(Device):
             )
 
     # Mode computation ------------------------------------------------------
-    def compute_modes(self, force: bool = False):
+    def compute_modes(self, force=False):
         if self._mode_cache is not None and not force:
             return self._mode_cache
 
@@ -246,7 +275,7 @@ class ModeSource(Device):
         self._mode_cache = modes
         return modes
 
-    def _compute_modes_2d(self, permittivity: np.ndarray):
+    def _compute_modes_2d(self, permittivity):
         if not hasattr(self.grid, "dx") or not hasattr(self.grid, "dy"):
             raise TypeError("Grid must expose dx and dy properties for mode computation")
 
@@ -267,7 +296,7 @@ class ModeSource(Device):
             omega=self.omega,
             dL=dy if self.axis == 0 else dx,
             npml=npml,
-            m=self.mode_index + 1,
+            m=max(5, self.mode_index + 3),
             direction=self.direction,
             filter_pol=self.polarization,
             return_fields=True,
@@ -277,31 +306,24 @@ class ModeSource(Device):
         if e_fields.size == 0 or h_fields.size == 0:
             raise RuntimeError("Mode solver did not return field profiles")
 
-        mode_idx = min(self.mode_index, e_fields.shape[0] - 1)
+        mode_idx = self._select_fundamental_mode(e_fields, neff)
         E = np.squeeze(e_fields[mode_idx])
         H = np.squeeze(h_fields[mode_idx])
         E_cart, H_cart = self._reorder_components(E, H)
-
+        E_cart, H_cart = self._phase_align_fields(E_cart, H_cart)
         E_cart, H_cart = self._enforce_propagation_direction(E_cart, H_cart)
-        self._tsfs = TFSFPlaneSource(electric=E_cart, magnetic=H_cart, axis=self.axis, direction=_direction_sign(self.direction))
+        direction_sign = _direction_sign(self.direction)
+        sheet_electric, sheet_magnetic = _surface_currents(E_cart, H_cart, self.axis, direction_sign)
 
-        electric_updates = self._tsfs.electric_updates()
-        magnetic_updates = self._tsfs.magnetic_updates()
-
-        self._electric_currents = {
-            comp: np.atleast_1d(np.asarray(val, dtype=np.complex128))
-            for comp, val in electric_updates.items()
-            if np.any(val)
-        }
-        self._magnetic_currents = {
-            comp: np.atleast_1d(np.asarray(val, dtype=np.complex128))
-            for comp, val in magnetic_updates.items()
-            if np.any(val)
-        }
+        if self.axis != 0:
+            raise NotImplementedError("Only ±x propagation handled for 2D mode source")
+        jz_profile = np.asarray(np.squeeze(sheet_electric[2]), dtype=np.complex128)
+        my_profile = np.asarray(np.squeeze(sheet_magnetic[1]), dtype=np.complex128)
+        self._electric_currents = {"Ez": np.atleast_1d(jz_profile)}
+        self._magnetic_currents = {"Hy": np.atleast_1d(my_profile)}
         self._coordinate_vectors = {"primary": coords}
         self._grid_indices = self._build_grid_indices(grid_indices)
-
-        poynting = self._tsfs.poynting_density()
+        poynting = _poynting_density(E_cart, H_cart, self.axis, direction_sign)
         self.max_field_amplitude = float(np.max(np.abs(E_cart)))
         self.max_power_density = float(np.max(np.abs(poynting)))
         cell_length = dy if self.axis == 0 else dx
@@ -334,7 +356,7 @@ class ModeSource(Device):
         }
         return np.asarray(eps_profile, dtype=np.float64), coords, index_info
 
-    def _reorder_components(self, E: np.ndarray, H: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _reorder_components(self, E, H):
         if E.ndim == 1:
             E = E[:, np.newaxis]
             H = H[:, np.newaxis]
@@ -365,7 +387,18 @@ class ModeSource(Device):
         H_cart = np.vstack([Hx, Hy, Hz])
         return E_cart, H_cart
 
-    def _enforce_propagation_direction(self, E: np.ndarray, H: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _phase_align_fields(self, E, H):
+        reference = E[2] if E.shape[0] > 2 else E[0]
+        if reference.size == 0:
+            return E, H
+        pivot = int(np.abs(reference).argmax())
+        angle = np.angle(reference[pivot])
+        if not np.isfinite(angle):
+            return E, H
+        rotate = np.exp(-1j * angle)
+        return E * rotate, H * rotate
+
+    def _enforce_propagation_direction(self, E, H):
         cross = np.cross(E, np.conjugate(H), axisa=0, axisb=0, axisc=0)
         power = np.real(cross[self.axis])
         avg = np.mean(power)
@@ -374,25 +407,19 @@ class ModeSource(Device):
             H = -H
         return E, H
 
-    def _build_grid_indices(self, index_info: dict):
+    def _build_grid_indices(self, index_info):
         y_start = int(index_info["y_start"])
         y_end = int(index_info["y_end"])
         x_idx = int(index_info["x_index"])
 
-        indices: Dict[str, tuple[slice, int]] = {}
+        indices = {}
         indices["Ez"] = (slice(y_start, y_end), x_idx)
         if y_end - y_start > 1:
             indices["Hy"] = (slice(y_start, y_end - 1), x_idx)
         return indices
 
-    def _build_mode_profile(
-        self,
-        coords: np.ndarray,
-        indices: dict,
-        E: np.ndarray,
-        H: np.ndarray,
-    ) -> list[dict[str, complex]]:
-        profile: list[dict[str, complex]] = []
+    def _build_mode_profile(self, coords, indices, E, H):
+        profile = []
         y_start = indices["y_start"]
         y_end = indices["y_end"]
         x_idx = indices["x_index"]
@@ -417,32 +444,22 @@ class ModeSource(Device):
         return profile
 
     # Injection ----------------------------------------------------------------
-    def _get_electric_modulation(self, time_step: int) -> float:
-        idx = min(time_step, self.signal.size - 1)
-        return float(self.signal[idx])
-
-    def _get_magnetic_modulation(self, time_step: int) -> float:
-        if time_step <= 0 or self.signal.size == 0:
-            return float(self.signal[0]) if self.signal.size else 0.0
-        prev = self.signal[min(time_step - 1, self.signal.size - 1)]
-        curr = self.signal[min(time_step, self.signal.size - 1)]
-        return float(0.5 * (prev + curr))
-
-    def apply(self, fdtd, time_step: int) -> None:
-        if self._tsfs is None:
-            self.compute_modes(force=True)
-        if self._tsfs is None:
+    def apply(self, fdtd, time_step):
+        if not self._electric_currents and not self._magnetic_currents: self.compute_modes(force=True)
+        if not self._electric_currents and not self._magnetic_currents:
             raise RuntimeError("Mode fields not initialised")
 
         e_mod = self._get_electric_modulation(time_step)
         h_mod = self._get_magnetic_modulation(time_step)
+        normal_cell = self._normal_cell_size(getattr(fdtd, "resolution", None))
 
         dt = float(getattr(fdtd, "dt"))
 
         ez_entry = self._grid_indices.get("Ez")
         if "Ez" in self._electric_currents and ez_entry is not None:
             y_slice, x_idx = ez_entry
-            values = np.asarray(self._electric_currents["Ez"], dtype=np.complex128) * e_mod
+            values_complex = np.asarray(self._electric_currents["Ez"], dtype=np.complex128) * e_mod
+            values = np.real(values_complex) / normal_cell
             sigma = getattr(fdtd, "sigma", None)
             if sigma is not None:
                 sigma_slice = np.asarray(sigma[y_slice, x_idx])
@@ -453,30 +470,21 @@ class ModeSource(Device):
         hy_entry = self._grid_indices.get("Hy")
         if "Hy" in self._magnetic_currents and hy_entry is not None:
             y_slice, x_idx = hy_entry
-            values = np.asarray(self._prepare_h_component(self._magnetic_currents["Hy"]), dtype=np.complex128) * h_mod
+            values_complex = np.asarray(self._prepare_h_component(self._magnetic_currents["Hy"]), dtype=np.complex128) * h_mod
+            values = np.real(values_complex) / normal_cell
             sigma = getattr(fdtd, "sigma", None)
             if sigma is not None:
                 sigma_slice = np.asarray(sigma[y_slice, x_idx])
                 values = np.where(np.abs(sigma_slice) > 0, 0.0, values)
             fdtd.Hy[y_slice, x_idx] -= (dt / MU_0) * values
 
-        hx_entry = self._grid_indices.get("Hx")
-        if "Hx" in self._magnetic_currents and hx_entry is not None:
-            y_slice, x_idx = hx_entry
-            values = np.asarray(self._prepare_h_component(self._magnetic_currents["Hx"]), dtype=np.complex128) * h_mod
-            sigma = getattr(fdtd, "sigma", None)
-            if sigma is not None:
-                sigma_slice = np.asarray(sigma[y_slice, x_idx])
-                values = np.where(np.abs(sigma_slice) > 0, 0.0, values)
-            fdtd.Hx[y_slice, x_idx] -= (dt / MU_0) * values
-
-    def _prepare_h_component(self, values: np.ndarray) -> np.ndarray:
+    def _prepare_h_component(self, values):
         if values.ndim == 1 and values.size > 1:
             return 0.5 * (values[:-1] + values[1:])
         return values
 
     # Visualisation -------------------------------------------------------------
-    def show(self, component: str = "Ez", figsize=None) -> None:
+    def show(self, component="Ez", figsize=None):
         self.compute_modes()
         if not self.mode_profiles:
             raise RuntimeError("No mode profile available")
@@ -499,89 +507,79 @@ class ModeSource(Device):
         plt.show()
 
     def get_source_terms(self, fields, t, dt, current_step, resolution, design):
-        """Return electric and magnetic current sources for Huygens injection."""
-        # Validate and compute modes
-        if not hasattr(fields, 'Ez'):
+        """Return electric and magnetic sheet currents for soft Huygens injection."""
+        if not hasattr(fields, "Ez"):
             return {}, {}
-        
         if not self._electric_currents or not self._magnetic_currents:
             self.compute_modes()
-        
-        # Get time-varying amplitude
-        amplitude = self._get_amplitude(t, current_step)
-        if amplitude == 0:
+        electric_scale = self._get_electric_modulation(current_step)
+        magnetic_scale = self._get_magnetic_modulation(current_step)
+        if abs(electric_scale) < 1e-15 and abs(magnetic_scale) < 1e-15:
             return {}, {}
-        
-        # Build source dictionaries for 2D TM mode
         source_j = {}
         source_m = {}
-        
-        # Electric current J_z = H_y,mode * s(t) for Ez update
-        # For TM mode with +x propagation, we need J_z = H_y (not the TSFS J_z which is H_x)
-        if hasattr(self, '_tsfs') and self._tsfs is not None:
-            # Get H_y directly from mode fields (index 2 in H array)
-            h_y = self._tsfs.magnetic[2]  # H_y component
-            y_start, y_end, x_idx = self._get_staggered_indices('Ez', self._grid_indices, fields)
-            
-            # Use real part of rotated H_y for unidirectional Huygens injection
-            # For TM mode with +x propagation, we need J_z = H_y with correct phase relationship
-            # Rotate H_y by 90° to ensure correct phase relationship with E_z
-            h_y_rotated = h_y * np.exp(1j * np.pi/2)
-            j_real = np.real(h_y_rotated) * amplitude
-            n_grid = y_end - y_start
-            if len(j_real) != n_grid:
-                j_real = self._interpolate_to_grid(j_real, n_grid)
-            
-            source_j['Ez'] = (j_real, (slice(y_start, y_end), x_idx))
-        
-        # Magnetic current M_y = E_z,mode * s(t) for Hy update
-        # For TM mode with +x propagation, we need M_y = E_z (not the TSFS M_y which is E_y)
-        if hasattr(self, '_tsfs') and self._tsfs is not None:
-            # Get E_z directly from mode fields (index 0 in E array)
-            e_z = self._tsfs.electric[0]  # E_z component
-            y_start, y_end, x_idx = self._get_staggered_indices('Hy', self._grid_indices, fields)
-            
-            # Use magnitude with correct sign for unidirectional Huygens injection
-            # For TM mode with +x propagation, we need M_y = E_z with correct sign
-            # The mode solver returns fields with arbitrary phase, so we use magnitude with sign
-            m_real = np.abs(e_z) * amplitude
-            n_grid = y_end - y_start
-            if len(m_real) != n_grid:
-                m_real = self._interpolate_to_grid(m_real, n_grid)
-            
-            # For unidirectional Huygens source, test with negative sign for M_y
-            # This should give us M_y = -E_z for unidirectional propagation
-            source_m['Hy'] = (-m_real, (slice(y_start, y_end), x_idx))
-        
+        normal_cell = self._normal_cell_size(resolution)
+        ez_entry = self._grid_indices.get("Ez")
+        if ez_entry and "Ez" in self._electric_currents and abs(electric_scale) > 0.0:
+            y_slice, x_idx = ez_entry
+            sheet = np.asarray(self._electric_currents["Ez"], dtype=np.complex128)
+            current = np.real(sheet * electric_scale) / normal_cell
+            if current.size and np.max(np.abs(current)) > 0.0:
+                contribution = -np.asarray(current, dtype=np.float64)
+                source_j["Ez"] = (contribution, (y_slice, x_idx))
+        hy_entry = self._grid_indices.get("Hy")
+        if hy_entry and "Hy" in self._magnetic_currents and abs(magnetic_scale) > 0.0:
+            y_slice, x_idx = hy_entry
+            sheet = np.asarray(self._magnetic_currents["Hy"], dtype=np.complex128)
+            sheet = self._prepare_h_component(sheet)
+            current = np.real(sheet * magnetic_scale) / normal_cell
+            if current.size and np.max(np.abs(current)) > 0.0:
+                contribution = np.asarray(current, dtype=np.float64)
+                source_m["Hy"] = (contribution, (y_slice, x_idx))
         return source_j, source_m
 
-    def _get_amplitude(self, t, current_step):
-        """Get signal amplitude at current time step."""
-        if hasattr(self.signal, '__len__') and len(self.signal) > current_step:
-            return self.signal[current_step]
-        elif hasattr(self.signal, '__call__'):
-            return self.signal(t)
+    def _get_electric_modulation(self, time_step):
+        return self._sample_signal(time_step)
+
+    def _get_magnetic_modulation(self, time_step):
+        if time_step <= 0:
+            return self._sample_signal(0)
+        prev = self._sample_signal(time_step - 1)
+        curr = self._sample_signal(time_step)
+        return 0.5 * (prev + curr)
+
+    def _sample_signal(self, idx):
+        if idx < self._analytic_signal.size:
+            return complex(self._analytic_signal[idx])
+        if self._repeat_signal and self._analytic_signal.size:
+            return complex(self._analytic_signal[-1])
+        return 0.0 + 0.0j
+
+    def _build_analytic_signal(self, samples):
+        if samples.size == 0:
+            return np.zeros(0, dtype=np.complex128)
+        spectrum = np.fft.fft(samples)
+        n = samples.size
+        h = np.zeros(n, dtype=float)
+        if n % 2 == 0:
+            h[0] = h[n // 2] = 1.0
+            h[1:n // 2] = 2.0
         else:
-            return 1.0
+            h[0] = 1.0
+            h[1:(n + 1) // 2] = 2.0
+        analytic = np.fft.ifft(spectrum * h)
+        return analytic.astype(np.complex128, copy=False)
 
-    def _get_staggered_indices(self, field_component, grid_indices, fields):
-        """Get correct grid indices accounting for Yee staggering."""
-        if field_component in grid_indices:
-            slice_obj, x_idx = grid_indices[field_component]
-            y_start = slice_obj.start if slice_obj.start is not None else 0
-            y_end = slice_obj.stop if slice_obj.stop is not None else fields.Ez.shape[0]
-            return y_start, y_end, x_idx
-        
-        # Fallback if not found
-        return 0, fields.Ez.shape[0], 0
-
-    def _interpolate_to_grid(self, profile, target_size):
-        """Interpolate mode profile to match grid size."""
-        from scipy.interpolate import interp1d
-        x_old = np.linspace(0, 1, len(profile))
-        x_new = np.linspace(0, 1, target_size)
-        f = interp1d(x_old, profile, kind='linear', fill_value='extrapolate')
-        return f(x_new)
+    def _normal_cell_size(self, resolution):
+        if self.axis == 0 and hasattr(self.grid, "dx"):
+            return float(getattr(self.grid, "dx"))
+        if self.axis == 1 and hasattr(self.grid, "dy"):
+            return float(getattr(self.grid, "dy"))
+        if self.axis == 2 and hasattr(self.grid, "dz"):
+            return float(getattr(self.grid, "dz"))
+        if resolution is not None:
+            return float(resolution)
+        raise ValueError("Unable to determine grid spacing along source normal")
 
 
 __all__ = ["ModeSource"]

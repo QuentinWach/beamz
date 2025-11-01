@@ -29,4 +29,4 @@ source = ModeSource(grid=grid, center=(3*µm, Y/2), width=2.4*µm, wavelength=WL
 
 # Run the simulation and show results
 sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', thickness=1.2*WL)], time=time_steps, resolution=DX)
-sim.run(animate_live="Ez", animation_interval=2) #axis_scale=[-1000/(µm), 1000/(µm)]
+sim.run(animate_live="Hx", animation_interval=2) #axis_scale=[-1000/(µm), 1000/(µm)]
