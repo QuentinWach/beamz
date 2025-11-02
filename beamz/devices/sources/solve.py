@@ -28,7 +28,7 @@ def compute_mode_polarization_fraction(
 
 def sort_modes(
     modes: list[ModeTupleType],
-    filter_pol: Literal["te", "tm"] | None,
+    filter_pol: Union[Literal["te", "tm"], None],
     tangential_axes: tuple[int, int],
 ) -> list[ModeTupleType]:
     if filter_pol is None:
@@ -53,8 +53,8 @@ def compute_mode(
     resolution: float,
     direction: Literal["+", "-"],
     mode_index: int = 0,
-    filter_pol: Literal["te", "tm"] | None = None,
-    target_neff: float | None = None,
+    filter_pol: Union[Literal["te", "tm"], None] = None,
+    target_neff: Union[float, None] = None,
 ) -> tuple[np.ndarray, np.ndarray, complex, int]:
     inv_permittivities = np.asarray(inv_permittivities, dtype=np.complex128)
     if inv_permittivities.ndim == 1: inv_permittivities = inv_permittivities[np.newaxis, :, np.newaxis]
@@ -128,10 +128,10 @@ def solve_modes(
     npml: int = 0,
     m: int = 2,
     direction: Literal["+x", "-x", "+y", "-y", "+z", "-z"] = "+x",
-    filter_pol: Literal["te", "tm", None] = None,
+    filter_pol: Union[Literal["te", "tm"], None] = None,
     return_fields: bool = False,
-    propagation_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z"] | None = None,
-    target_neff: float | None = None,
+    propagation_axis: Union[Literal["+x", "-x", "+y", "-y", "+z", "-z"], None] = None,
+    target_neff: Union[float, None] = None,
 ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
     if eps.ndim != 1: raise ValueError("solve_modes expects a 1D permittivity array")
 
@@ -188,8 +188,8 @@ def tidy3d_mode_computation_wrapper(
     permittivity_cross_section: np.ndarray,
     coords: List[np.ndarray],
     direction: Literal["+", "-"],
-    permeability_cross_section: np.ndarray | None = None,
-    target_neff: float | None = None,
+    permeability_cross_section: Union[np.ndarray, None] = None,
+    target_neff: Union[float, None] = None,
     angle_theta: float = 0.0,
     angle_phi: float = 0.0,
     num_modes: int = 10,
