@@ -286,9 +286,8 @@ class ModeSource(Device):
         if self.axis not in (0,):
             raise NotImplementedError("2D mode source currently supports propagation along ±x")
 
-        line_data = self._slice_line_y(permittivity, ny, nx, dx, dy)
-
-        eps_profile, coords, grid_indices = line_data
+        yee_coords = self._compute_yee_coordinates_2d(ny, nx, dx, dy)
+        eps_profile, mode_coords, index_info = self._sample_permittivity_for_mode(permittivity, ny, nx, dx, dy, yee_coords)
 
         npml = max(0, min(20, eps_profile.size // 4))
         neff, e_fields, h_fields, _ = solve_modes(
@@ -312,33 +311,212 @@ class ModeSource(Device):
         E_cart, H_cart = self._reorder_components(E, H)
         E_cart, H_cart = self._phase_align_fields(E_cart, H_cart)
         E_cart, H_cart = self._enforce_propagation_direction(E_cart, H_cart)
+        
+        fields_at_yee = self._sample_mode_fields_at_yee_positions(E_cart, H_cart, mode_coords, yee_coords, dy)
+        
         direction_sign = _direction_sign(self.direction)
-        sheet_electric, sheet_magnetic = _surface_currents(E_cart, H_cart, self.axis, direction_sign)
-
+        
         if self.axis != 0:
             raise NotImplementedError("Only ±x propagation handled for 2D mode source")
-        jz_profile = np.asarray(np.squeeze(sheet_electric[2]), dtype=np.complex128)
-        my_profile = np.asarray(np.squeeze(sheet_magnetic[1]), dtype=np.complex128)
-        self._electric_currents = {"Ez": np.atleast_1d(jz_profile)}
-        self._magnetic_currents = {"Hy": np.atleast_1d(my_profile)}
-        self._coordinate_vectors = {"primary": coords}
-        self._grid_indices = self._build_grid_indices(grid_indices)
+        
+        E_ez = fields_at_yee["E"].get("Ez")
+        H_ez = fields_at_yee["H"].get("Ez")
+        E_hy = fields_at_yee["E"].get("Hy")
+        
+        if E_ez is None or H_ez is None:
+            raise RuntimeError("Failed to sample mode fields at Ez Yee grid positions")
+        
+        if E_hy is None:
+            raise RuntimeError("Failed to sample E_z mode field at Hy Yee grid positions")
+        
+        jz_profile = np.asarray(H_ez, dtype=np.complex128).flatten()
+        my_profile = np.asarray(E_hy, dtype=np.complex128).flatten()
+        
+        self._electric_currents = {"Ez": jz_profile}
+        self._magnetic_currents = {"Hy": my_profile}
+        self._coordinate_vectors = {"primary": mode_coords}
+        self._grid_indices = self._build_yee_grid_indices(yee_coords)
+        
+        alignment_ok = self._verify_yee_grid_alignment()
+        if not alignment_ok:
+            ez_entry = self._grid_indices.get("Ez")
+            hy_entry = self._grid_indices.get("Hy")
+            jz_size = self._electric_currents["Ez"].size if "Ez" in self._electric_currents else 0
+            my_size = self._magnetic_currents["Hy"].size if "Hy" in self._magnetic_currents else 0
+            ez_slice_size = (ez_entry[0].stop - ez_entry[0].start) if ez_entry and isinstance(ez_entry[0], slice) else 0
+            hy_slice_size = (hy_entry[0].stop - hy_entry[0].start) if hy_entry and isinstance(hy_entry[0], slice) else 0
+            print(f"[DEBUG] J_z size={jz_size}, Ez slice={ez_entry[0] if ez_entry else None} (size={ez_slice_size})")
+            print(f"[DEBUG] M_y size={my_size}, Hy slice={hy_entry[0] if hy_entry else None} (size={hy_slice_size})")
+            print(f"[DEBUG] E_ez size={E_ez.size if E_ez is not None else 0}, H_ez size={H_ez.size if H_ez is not None else 0}, E_hy size={E_hy.size if E_hy is not None else 0}")
+            raise RuntimeError(f"Mode field arrays do not match Yee grid index shapes: J_z size={jz_size}, Ez slice size={ez_slice_size}, M_y size={my_size}, Hy slice size={hy_slice_size}")
+        
         poynting = _poynting_density(E_cart, H_cart, self.axis, direction_sign)
         self.max_field_amplitude = float(np.max(np.abs(E_cart)))
         self.max_power_density = float(np.max(np.abs(poynting)))
         cell_length = dy if self.axis == 0 else dx
         self.total_power = float(np.sum(poynting) * cell_length)
 
-        profile = self._build_mode_profile(coords, grid_indices, E_cart, H_cart)
+        profile = self._build_mode_profile(mode_coords, index_info, E_cart, H_cart)
         self.mode_profiles = [profile]
         return [
             {
             "neff": neff[mode_idx],
-            "coords": coords,
+            "coords": mode_coords,
             "E": E_cart,
             "H": H_cart,
             }
         ]
+
+    def _compute_yee_coordinates_2d(self, ny, nx, dx, dy):
+        """Compute Yee grid coordinates for each field component in 2D TEz mode.
+        
+        For 2D TEz with +x propagation:
+        - Ez: at cell centers (i+1/2, j+1/2) → y coords at (j+1/2)*dy
+        - Hy: at (i, j+1/2) → y coords at (j+1/2)*dy (same y as Ez, but shifted x)
+        - Hx: at (i+1/2, j) → y coords at j*dy (not used for injection)
+        
+        Returns:
+            dict with keys 'Ez', 'Hy', 'Hx' containing:
+            - 'y_coords': array of y coordinates
+            - 'y_start': starting y index
+            - 'y_end': ending y index (exclusive)
+            - 'x_coord': x coordinate for this component
+            - 'x_idx': x grid index
+        """
+        y_min = max(0.0, self.center[1] - abs(self.plane_size[1]) / 2)
+        y_max = min(self.grid.height, self.center[1] + abs(self.plane_size[1]) / 2)
+        
+        y_ez_start = int(np.clip(np.floor(y_min / dy), 0, ny - 1))
+        y_ez_end = int(np.clip(np.ceil(y_max / dy), y_ez_start + 1, ny))
+        y_ez_coords = (np.arange(y_ez_start, y_ez_end) + 0.5) * dy
+        
+        y_hy_start = y_ez_start
+        y_hy_end = max(y_ez_start, y_ez_end - 1)
+        if y_hy_end > y_hy_start:
+            y_hy_coords = (np.arange(y_hy_start, y_hy_end) + 0.5) * dy
+        else:
+            y_hy_coords = np.array([])
+        
+        y_hx_start = y_ez_start
+        y_hx_end = y_ez_end
+        y_hx_coords = np.arange(y_hx_start, y_hx_end) * dy
+        
+        x_ez_idx = int(np.clip(np.round(self.center[0] / dx - 0.5), 0, nx - 1))
+        x_ez_coord = (x_ez_idx + 0.5) * dx
+        
+        x_hy_idx = max(0, x_ez_idx - 1)
+        x_hy_coord = x_hy_idx * dx
+        
+        return {
+            "Ez": {
+                "y_coords": y_ez_coords,
+                "y_start": y_ez_start,
+                "y_end": y_ez_end,
+                "x_coord": x_ez_coord,
+                "x_idx": x_ez_idx,
+            },
+            "Hy": {
+                "y_coords": y_hy_coords,
+                "y_start": y_hy_start,
+                "y_end": y_hy_end,
+                "x_coord": x_hy_coord,
+                "x_idx": x_hy_idx,
+            },
+            "Hx": {
+                "y_coords": y_hx_coords,
+                "y_start": y_hx_start,
+                "y_end": y_hx_end,
+                "x_coord": x_ez_coord,
+                "x_idx": x_ez_idx,
+            },
+        }
+
+    def _sample_permittivity_for_mode(self, permittivity, ny, nx, dx, dy, yee_coords):
+        """Sample permittivity at positions needed for mode solving.
+        
+        For 2D +x propagation, sample permittivity along y-axis at source x position.
+        The mode solver needs permittivity at the transverse positions where we'll
+        evaluate the mode fields. We use Ez coordinates for mode solving since
+        both Ez and Hy will be sampled at their respective Yee positions afterward.
+        
+        Args:
+            permittivity: 2D permittivity array
+            ny, nx: grid dimensions
+            dx, dy: grid spacing
+            yee_coords: output from _compute_yee_coordinates_2d()
+        
+        Returns:
+            eps_profile: 1D permittivity profile along y
+            coords: y coordinates for mode solver (Ez positions)
+            index_info: dict with y_start, y_end, x_index
+        """
+        ez_info = yee_coords["Ez"]
+        y_start = ez_info["y_start"]
+        y_end = ez_info["y_end"]
+        x_idx = ez_info["x_idx"]
+        
+        eps_profile = permittivity[y_start:y_end, x_idx]
+        coords = ez_info["y_coords"]
+        
+        index_info = {
+            "y_start": y_start,
+            "y_end": y_end,
+            "x_index": int(x_idx),
+        }
+        return np.asarray(eps_profile, dtype=np.float64), coords, index_info
+
+    def _sample_mode_fields_at_yee_positions(self, E_mode, H_mode, mode_coords, yee_coords, dy):
+        """Map mode solver output to exact Yee grid positions for each field component.
+        
+        The mode solver returns fields at coordinates mode_coords (Ez y-positions).
+        We need to sample these fields at the exact Yee grid positions for Ez and Hy.
+        
+        For 2D TEz +x propagation:
+        - Ez^mode: already at Ez Yee positions (cell centers at (j+1/2)*dy)
+        - Hy^mode: need to sample at Hy Yee positions (also at (j+1/2)*dy, but fewer points)
+        
+        Args:
+            E_mode: Electric field from mode solver, shape (3, n_points) where n_points matches mode_coords
+            H_mode: Magnetic field from mode solver, shape (3, n_points)
+            mode_coords: y coordinates where mode was solved (Ez positions)
+            yee_coords: output from _compute_yee_coordinates_2d()
+            dy: grid spacing in y direction
+        
+        Returns:
+            dict with keys 'Ez', 'Hy' containing field arrays sampled at Yee positions
+        """
+        ez_info = yee_coords["Ez"]
+        hy_info = yee_coords["Hy"]
+        
+        ez_y_coords = ez_info["y_coords"]
+        hy_y_coords = hy_info["y_coords"]
+        
+        E_sampled = {}
+        H_sampled = {}
+        
+        if len(ez_y_coords) > 0:
+            ez_indices = np.searchsorted(mode_coords, ez_y_coords, side="left")
+            ez_indices = np.clip(ez_indices, 0, len(mode_coords) - 1)
+            if len(mode_coords) == len(ez_y_coords) and np.allclose(mode_coords, ez_y_coords):
+                E_sampled["Ez"] = E_mode[2]
+                H_sampled["Ez"] = H_mode[1]
+            else:
+                E_sampled["Ez"] = E_mode[2, ez_indices]
+                H_sampled["Ez"] = H_mode[1, ez_indices]
+        
+        if len(hy_y_coords) > 0:
+            hy_start_idx = hy_info["y_start"] - ez_info["y_start"]
+            hy_end_idx = hy_start_idx + len(hy_y_coords)
+            if hy_start_idx >= 0 and hy_end_idx <= len(mode_coords):
+                E_sampled["Hy"] = E_mode[2, hy_start_idx:hy_end_idx]
+                H_sampled["Hy"] = H_mode[1, hy_start_idx:hy_end_idx]
+            else:
+                hy_indices = np.searchsorted(mode_coords, hy_y_coords, side="left")
+                hy_indices = np.clip(hy_indices, 0, len(mode_coords) - 1)
+                E_sampled["Hy"] = E_mode[2, hy_indices]
+                H_sampled["Hy"] = H_mode[1, hy_indices]
+        
+        return {"E": E_sampled, "H": H_sampled}
 
     def _slice_line_y(self, permittivity, ny, nx, dx, dy):
         y_min = max(0.0, self.center[1] - abs(self.plane_size[1]) / 2)
@@ -407,15 +585,35 @@ class ModeSource(Device):
             H = -H
         return E, H
 
-    def _build_grid_indices(self, index_info):
-        y_start = int(index_info["y_start"])
-        y_end = int(index_info["y_end"])
-        x_idx = int(index_info["x_index"])
-
+    def _build_yee_grid_indices(self, yee_coords):
+        """Build grid indices for each field component accounting for Yee grid staggering.
+        
+        For 2D TEz +x propagation:
+        - Ez: at (i+1/2, j+1/2) → indices (y_slice, x_idx) where x_idx is Ez column
+        - Hy: at (i, j+1/2) → indices (y_slice, x_idx) where x_idx may differ due to staggering
+        
+        Args:
+            yee_coords: output from _compute_yee_coordinates_2d()
+        
+        Returns:
+            dict mapping field components to (y_slice, x_idx) tuples
+        """
+        ez_info = yee_coords["Ez"]
+        hy_info = yee_coords["Hy"]
+        
         indices = {}
-        indices["Ez"] = (slice(y_start, y_end), x_idx)
-        if y_end - y_start > 1:
-            indices["Hy"] = (slice(y_start, y_end - 1), x_idx)
+        
+        y_ez_start = ez_info["y_start"]
+        y_ez_end = ez_info["y_end"]
+        x_ez_idx = ez_info["x_idx"]
+        indices["Ez"] = (slice(y_ez_start, y_ez_end), x_ez_idx)
+        
+        y_hy_start = hy_info["y_start"]
+        y_hy_end = hy_info["y_end"]
+        x_hy_idx = hy_info["x_idx"]
+        if y_hy_end > y_hy_start:
+            indices["Hy"] = (slice(y_hy_start, y_hy_end), x_hy_idx)
+        
         return indices
 
     def _build_mode_profile(self, coords, indices, E, H):
@@ -507,7 +705,12 @@ class ModeSource(Device):
         plt.show()
 
     def get_source_terms(self, fields, t, dt, current_step, resolution, design):
-        """Return electric and magnetic sheet currents for soft Huygens injection."""
+        """Return electric and magnetic sheet currents for soft Huygens injection.
+        
+        Returns source currents sampled at exact Yee grid positions:
+        - J_z = H_y^mode (electric current for Ez update)
+        - M_y = E_z^mode (magnetic current for Hy update)
+        """
         if not hasattr(fields, "Ez"):
             return {}, {}
         if not self._electric_currents or not self._magnetic_currents:
@@ -524,6 +727,9 @@ class ModeSource(Device):
             y_slice, x_idx = ez_entry
             sheet = np.asarray(self._electric_currents["Ez"], dtype=np.complex128)
             current = np.real(sheet * electric_scale) / normal_cell
+            slice_size = y_slice.stop - y_slice.start if isinstance(y_slice, slice) else len(y_slice)
+            if current.size != slice_size:
+                current = current[:slice_size] if current.size > slice_size else np.pad(current, (0, slice_size - current.size))
             if current.size and np.max(np.abs(current)) > 0.0:
                 contribution = -np.asarray(current, dtype=np.float64)
                 source_j["Ez"] = (contribution, (y_slice, x_idx))
@@ -531,7 +737,9 @@ class ModeSource(Device):
         if hy_entry and "Hy" in self._magnetic_currents and abs(magnetic_scale) > 0.0:
             y_slice, x_idx = hy_entry
             sheet = np.asarray(self._magnetic_currents["Hy"], dtype=np.complex128)
-            sheet = self._prepare_h_component(sheet)
+            slice_size = y_slice.stop - y_slice.start if isinstance(y_slice, slice) else len(y_slice)
+            if sheet.size != slice_size:
+                sheet = sheet[:slice_size] if sheet.size > slice_size else np.pad(sheet, (0, slice_size - sheet.size))
             current = np.real(sheet * magnetic_scale) / normal_cell
             if current.size and np.max(np.abs(current)) > 0.0:
                 contribution = np.asarray(current, dtype=np.float64)
@@ -580,6 +788,26 @@ class ModeSource(Device):
         if resolution is not None:
             return float(resolution)
         raise ValueError("Unable to determine grid spacing along source normal")
+
+    def _verify_yee_grid_alignment(self):
+        """Verify that mode field arrays match Yee grid index shapes."""
+        if not self._grid_indices or not self._electric_currents or not self._magnetic_currents:
+            return True
+        ez_entry = self._grid_indices.get("Ez")
+        if ez_entry and "Ez" in self._electric_currents:
+            y_slice, x_idx = ez_entry
+            jz_size = self._electric_currents["Ez"].size
+            slice_size = y_slice.stop - y_slice.start if isinstance(y_slice, slice) else len(y_slice)
+            if jz_size != slice_size:
+                return False
+        hy_entry = self._grid_indices.get("Hy")
+        if hy_entry and "Hy" in self._magnetic_currents:
+            y_slice, x_idx = hy_entry
+            my_size = self._magnetic_currents["Hy"].size
+            slice_size = y_slice.stop - y_slice.start if isinstance(y_slice, slice) else len(y_slice)
+            if my_size != slice_size:
+                return False
+        return True
 
 
 __all__ = ["ModeSource"]
