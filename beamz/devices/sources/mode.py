@@ -69,16 +69,24 @@ class ModeSource:
         y_hy_end = max(y_ez_start, y_ez_end - 1)
         y_hy_coords = (np.arange(y_hy_start, y_hy_end) + 1.0) * dy
         
-        # Sample permittivity at Ez positions for mode solving
-        eps_profile = permittivity[y_ez_start:y_ez_end, x_ez_idx]
+        # Sample permittivity at Ez positions (cell centers: i+1/2, j+1/2)
+        eps_profile_ez = permittivity[y_ez_start:y_ez_end, x_ez_idx]
         
-        # Solve for the mode
-        # The solve_modes function treats the 1D eps profile as varying along axis 1 (y in our case)
-        # and assumes propagation along axis 0 (which becomes x for us)
-        # It returns fields with propagation_axis indicating which axis is propagation
+        # Sample permittivity at Hy positions (edge centers: i, j+1/2)
+        # Hy y-coords are at (j+1.0)*dy, which fall between cell centers
+        # Use nearest cell center permittivity (Option B from plan)
+        if y_hy_end > y_hy_start:
+            # Map Hy y-coords to nearest cell center indices
+            # y_hy_coords = (j+1.0)*dy for j in [y_hy_start, y_hy_end-1]
+            # Nearest cell center is at (j+0.5)*dy, so use j = y_hy_start to y_hy_end-1
+            eps_profile_hy = permittivity[y_hy_start:y_hy_end, x_ez_idx]
+        else:
+            eps_profile_hy = np.array([], dtype=permittivity.dtype)
+        
+        # Solve for the mode at Ez positions to get H_y at Ez positions for J_z
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
-        neff, e_fields, h_fields, prop_axis = solve_modes(
-            eps=eps_profile,
+        neff_ez, e_fields_ez, h_fields_ez, prop_axis = solve_modes(
+            eps=eps_profile_ez,
             omega=omega,
             dL=dy,
             m=1,
@@ -87,70 +95,112 @@ class ModeSource:
             return_fields=True
         )
         
-        self._neff = neff[0]
+        # Solve for the mode at Hy positions to get E_z at Hy positions for M_y
+        if eps_profile_hy.size > 0:
+            neff_hy, e_fields_hy, h_fields_hy, prop_axis_hy = solve_modes(
+                eps=eps_profile_hy,
+                omega=omega,
+                dL=dy,
+                m=1,
+                direction=self.direction,
+                filter_pol=self.pol,
+                return_fields=True
+            )
+        else:
+            neff_hy = neff_ez
+            e_fields_hy = e_fields_ez
+            h_fields_hy = h_fields_ez
+            prop_axis_hy = prop_axis
         
-        # Extract mode fields
-        E_mode = e_fields[0]
-        H_mode = h_fields[0]
+        # Use average neff (should be very close)
+        self._neff = (neff_ez[0] + neff_hy[0]) / 2.0
+        if abs(neff_ez[0] - neff_hy[0]) > 1e-6:
+            print(f"[ModeSource] Warning: neff differs between Ez and Hy positions: {neff_ez[0]:.6f} vs {neff_hy[0]:.6f}")
         
-        # The mode solver returns fields where prop_axis indicates propagation direction
-        # For 2D with propagation in x and variation in y, the solver reorders components
-        # Based on polarization, extract the appropriate field components for Huygens currents
+        # Extract H_y from mode solved at Ez positions (for J_z)
+        H_mode_ez = h_fields_ez[0]
         if self.pol == "te":
-            # TE: E transverse → Ez (out of plane), Hx, Hy (in plane)
-            Ez_mode = np.squeeze(E_mode[2])  # Ez
-            Hy_mode = np.squeeze(H_mode[1])  # Hy
-            # Fallback if Ez is near zero (solver returned TM-like)
-            if np.max(np.abs(Ez_mode)) < 1e-9 and np.max(np.abs(np.squeeze(E_mode[1]))) > 1e-9:
-                if not hasattr(self, "_warned_tm_fallback"):
-                    print("[ModeSource] Warning: TE Ez component near zero; falling back to TM mapping (Ey→Ez, Hz→Hy)")
-                    self._warned_tm_fallback = True
-                Ez_mode = np.squeeze(E_mode[1])
-                Hy_mode = np.squeeze(H_mode[2])
+            Hy_mode_ez = np.squeeze(H_mode_ez[1])  # Hy
+            # Fallback if needed
+            if np.max(np.abs(Hy_mode_ez)) < 1e-9:
+                Hy_mode_ez = np.squeeze(H_mode_ez[2])
         elif self.pol == "tm":
-            # TM: H transverse → Hz (out of plane), Ex, Ey (in plane)
-            # Map to equivalent TEz-like fields: Ey→Ez, Hz→Hy
-            Ez_mode = np.squeeze(E_mode[1])  # Ey as Ez equivalent
-            Hy_mode = np.squeeze(H_mode[2])  # Hz as Hy equivalent
+            Hy_mode_ez = np.squeeze(H_mode_ez[2])  # Hz as Hy equivalent
         else:
             raise ValueError(f"Unknown polarization: {self.pol}")
         
+        # Extract E_z from mode solved at Hy positions (for M_y)
+        E_mode_hy = e_fields_hy[0]
+        if self.pol == "te":
+            Ez_mode_hy = np.squeeze(E_mode_hy[2])  # Ez
+            # Fallback if needed
+            if np.max(np.abs(Ez_mode_hy)) < 1e-9:
+                Ez_mode_hy = np.squeeze(E_mode_hy[1])
+        elif self.pol == "tm":
+            Ez_mode_hy = np.squeeze(E_mode_hy[1])  # Ey as Ez equivalent
+        else:
+            raise ValueError(f"Unknown polarization: {self.pol}")
+        
+        # For direction checking, we need both Ez and Hy at the same positions
+        # Use Ez from Hy positions and Hy from Ez positions, but check consistency
         # Ensure proper propagation direction by checking Poynting vector
-        S_x = np.real(Ez_mode * np.conj(Hy_mode))
+        # We need to interpolate one to match the other for this check
+        if Hy_mode_ez.size > 0 and Ez_mode_hy.size > 0:
+            # Interpolate Ez_mode_hy to Ez positions for consistency check
+            if y_ez_coords.size == y_hy_coords.size:
+                Ez_mode_check = Ez_mode_hy
+                Hy_mode_check = Hy_mode_ez
+            else:
+                Ez_mode_check = np.interp(y_ez_coords, y_hy_coords, np.real(Ez_mode_hy) + 1j * np.imag(Ez_mode_hy))
+                Hy_mode_check = Hy_mode_ez
+        else:
+            Ez_mode_check = Ez_mode_hy if Ez_mode_hy.size > 0 else np.array([0.0])
+            Hy_mode_check = Hy_mode_ez if Hy_mode_ez.size > 0 else np.array([0.0])
+        
+        S_x = np.real(Ez_mode_check * np.conj(Hy_mode_check))
         power_x = np.sum(S_x)
         direction_sign = 1.0 if self.direction.startswith("+") else -1.0
         if power_x * direction_sign < 0:
-            Hy_mode = -Hy_mode
+            Hy_mode_ez = -Hy_mode_ez
         
         # Phase align TOGETHER to preserve impedance relationship
         # Find the peak of E_z and align both fields to that phase
-        idx_max = np.argmax(np.abs(Ez_mode))
-        phase_ref = np.angle(Ez_mode[idx_max])
-        Ez_mode = Ez_mode * np.exp(-1j * phase_ref)
-        Hy_mode = Hy_mode * np.exp(-1j * phase_ref)
+        if Ez_mode_hy.size > 0:
+            idx_max_hy = np.argmax(np.abs(Ez_mode_hy))
+            phase_ref = np.angle(Ez_mode_hy[idx_max_hy])
+            Ez_mode_hy = Ez_mode_hy * np.exp(-1j * phase_ref)
+            # Align Hy_mode_ez using the same phase reference
+            if Hy_mode_ez.size > 0:
+                Hy_mode_ez = Hy_mode_ez * np.exp(-1j * phase_ref)
         
-        # Debug: Check mode profile
-        print(f"[DEBUG] Mode profile at peak:")
-        print(f"  Ez: real={np.real(Ez_mode[idx_max]):.6f}, imag={np.imag(Ez_mode[idx_max]):.6f}")
-        print(f"  Hy: real={np.real(Hy_mode[idx_max]):.6f}, imag={np.imag(Hy_mode[idx_max]):.6f}")
-        print(f"  Impedance ratio Hy/Ez: {np.abs(Hy_mode[idx_max]/Ez_mode[idx_max]):.6f}")
-        print(f"  Phase diff: {np.angle(Hy_mode[idx_max]/Ez_mode[idx_max])*180/np.pi:.2f} degrees")
+        # Debug: Check mode profiles
+        if Ez_mode_hy.size > 0 and Hy_mode_ez.size > 0:
+            idx_max_ez = np.argmax(np.abs(Hy_mode_ez))
+            print(f"[DEBUG] Mode profile at peaks:")
+            print(f"  Ez (at Hy pos): real={np.real(Ez_mode_hy[idx_max_hy]):.6f}, imag={np.imag(Ez_mode_hy[idx_max_hy]):.6f}")
+            print(f"  Hy (at Ez pos): real={np.real(Hy_mode_ez[idx_max_ez]):.6f}, imag={np.imag(Hy_mode_ez[idx_max_ez]):.6f}")
+            # Interpolate for ratio check
+            if y_ez_coords.size == y_hy_coords.size:
+                ratio = np.abs(Hy_mode_ez[idx_max_ez] / Ez_mode_hy[idx_max_hy])
+            else:
+                Ez_at_ez_pos = np.interp(y_ez_coords[idx_max_ez:idx_max_ez+1], y_hy_coords, Ez_mode_hy)[0]
+                ratio = np.abs(Hy_mode_ez[idx_max_ez] / Ez_at_ez_pos)
+            print(f"  Impedance ratio Hy/Ez: {ratio:.6f}")
 
         # Simple multi-lobe guard: warn if more than one local maximum in |Ez|
-        mag = np.abs(Ez_mode)
-        if mag.size >= 3:
+        if Ez_mode_hy.size >= 3:
+            mag = np.abs(Ez_mode_hy)
             peak_mask = (mag[1:-1] > mag[:-2]) & (mag[1:-1] > mag[2:])
             num_peaks = int(np.count_nonzero(peak_mask))
             if num_peaks > 1:
                 print(f"[ModeSource] Warning: Detected {num_peaks} transverse peaks in |Ez|; consider narrowing source width to avoid exciting higher modes.")
         
-        # Huygens surface currents for +x propagation:
-        # J_z at Ez positions needs H_y sampled at Ez y-coords (already aligned)
-        # M_y at Hy positions needs E_z sampled at Hy y-coords (interpolate)
-        jz_profile = Hy_mode.copy()  # same y grid as Ez_mode/y_ez_coords
-        # Interpolate Ez onto Hy y-positions to respect Yee staggering
+        # Huygens surface currents:
+        # J_z = H_y at Ez positions (from mode solved at Ez positions)
+        jz_profile = np.real(Hy_mode_ez).copy()
+        # M_y = E_z at Hy positions (from mode solved at Hy positions, no interpolation needed)
         if y_hy_end > y_hy_start:
-            my_profile = np.interp(y_hy_coords, y_ez_coords, np.real(Ez_mode))
+            my_profile = np.real(Ez_mode_hy).copy()
         else:
             my_profile = np.array([], dtype=float)
 

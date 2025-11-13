@@ -8,7 +8,7 @@ TIME = 40*WL/LIGHT_SPEED # total simulation duration
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
 WG_W = 0.565*µm # width of the waveguide
 H, W, OFFSET = 3.5*µm, 9*µm, 1.05*µm # height, length, offset of the MMI
-DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=10) 
+DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=20) 
 
 # Design the MMI with input and output waveguides
 design = Design(width=X, height=Y, material=Material(N_CLAD**2))
