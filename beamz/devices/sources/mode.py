@@ -267,25 +267,16 @@ class ModeSource:
             permittivity = design.rasterize(resolution=resolution).permittivity
             self.initialize(permittivity, resolution)
         
-        # Take real part of neff for time shift calculation
-        neff_real = float(np.real(self._neff))
-        
-        # Spatial delay due to 0.5*dx offset between Ez and Hy grids
-        # Always positive delay tau = 0.5 * dx / v_phase
-        dt_shift = 0.5 * resolution * neff_real / LIGHT_SPEED
+        # Simplified timing for TF/SF boundary condition
+        # Both J and M act at the same effective boundary location.
+        # J (driving E) is evaluated at t + 0.5*dt (half-step).
+        # M (driving H) is evaluated at t (integer step).
         
         # J_z (Electric current) centered at t + 0.5*dt
-        # This matches the FDTD central difference for E-field update: E(n+1) - E(n) ~ J(n+0.5)
         signal_value_e = self._get_signal_value(t + 0.5 * dt, dt)
         
-        # M_y (Magnetic current) signal timing
-        # Source M is at x_hx, J is at x_ez. x_hx is spatially offset from x_ez.
-        # For unidirectional launch (cancelling backward wave), we need M(t) to cancel J's backward wave.
-        # Backward wave from J(t) reaches M at t + tau.
-        # So M(t) should match J(t - tau).
-        # Since J(t) uses signal(t), M(t) should use signal(t - tau).
-        # So we use DELAY (t - dt_shift).
-        signal_value_h = self._get_signal_value(t + 0.5 * dt - dt_shift, dt)
+        # M_y (Magnetic current) centered at t
+        signal_value_h = self._get_signal_value(t, dt)
         
         # Inject J_z source into Ez field
         # Update equation: ∂_t E_z = (1/ε)[curl H - J_z]
