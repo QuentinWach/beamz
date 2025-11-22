@@ -62,17 +62,16 @@ class ModeSource:
             # So for -x (source right of Ez), we use Hx at j.
             
         # Determine the y-extent of the source
-        y_min = max(0.0, self.center[1] - abs(self.width) / 2)
-        y_max = min(self.grid.height, self.center[1] + abs(self.width) / 2)
+        # Update: We now use the FULL grid height to ensure the mode solver sees the open boundary (cladding/PML)
+        # and produces a correct eigenmode ("soft source").
+        # The 'width' parameter is now only used for logical centering or visualization if needed.
         
-        # Ez positions (center of cells): (i+1/2, j+1/2)
-        y_ez_start = int(np.clip(np.floor(y_min / dy), 0, ny - 1))
-        y_ez_end = int(np.clip(np.ceil(y_max / dy), y_ez_start + 1, ny))
+        y_ez_start = 0
+        y_ez_end = ny
         y_ez_coords = (np.arange(y_ez_start, y_ez_end) + 0.5) * dy
         
-        # Sample permittivity at Ez positions (cell centers: i+1/2, j+1/2)
-        # We use this profile for BOTH J and M mode solving to ensure consistency.
-        eps_profile = permittivity[y_ez_start:y_ez_end, x_ez_idx]
+        # Sample permittivity at Ez positions (cell centers: i+1/2, j+1/2) for the FULL column
+        eps_profile = permittivity[:, x_ez_idx]
         
         # Solve for the mode once
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
@@ -135,16 +134,10 @@ class ModeSource:
             Ez_mode_at_hx *= correction_factor
         
         # Store profiles
+        # Note: We do NOT apply Hann windowing here because we want the exact eigenmode 
+        # which naturally decays to zero at the boundaries (if domain is large enough).
         jz_profile = np.real(Hy_mode).copy()
         my_profile = np.real(Ez_mode_at_hx).copy()
-
-        # Apply Hann window across transverse extent to minimize truncation ripples
-        if jz_profile.size > 1:
-            w_ez = 0.5 * (1.0 - np.cos(2.0 * np.pi * np.arange(jz_profile.size) / (jz_profile.size - 1)))
-            jz_profile = np.real(jz_profile) * w_ez
-        if my_profile.size > 1:
-            # Same window for my_profile since size is same
-            my_profile = np.real(my_profile) * w_ez
         
         # For +x propagation, Jz (Hy) and My (Ez) must have same sign to launch forward wave.
         # But mode solver returns them with opposite signs for +x flux.
@@ -169,6 +162,14 @@ class ModeSource:
         
         x_hx_coord = x_hx_idx * dx # Approx
         print(f"[ModeSource] Initialized at x={x_ez_coord/µm:.3f}µm, neff={self._neff:.4f}")
+        
+        # Check for potential radiation issues if source width is much larger than typical single mode
+        # Update: We now inject on the full grid, so width is only used for "center".
+        # The user might be confused if they set a tiny width but we inject everywhere.
+        # But this is the "Soft Source" fix.
+        if self.width < 2.0 * µm: # If user tried to restrict it
+             print(f"[ModeSource] Note: Source injection extended to full grid height to prevent mode truncation radiation.")
+             
         print(f"[ModeSource] Direction: {self.direction}")
         print(f"[ModeSource] J_z at Ez[{y_ez_start}:{y_ez_end}, {x_ez_idx}] (x={x_ez_coord/µm:.3f}µm)")
         print(f"[ModeSource] M_y at Hx[{y_ez_start}:{y_ez_end}, {x_hx_idx}] (x~{x_hx_coord/µm:.3f}µm)")
