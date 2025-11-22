@@ -285,19 +285,22 @@ class ModeSource:
         except Exception as e:
             print(f"[ModeSource] Could not plot mode profile: {e}")
     
-    def get_source_terms(self, fields, t, dt, current_step, resolution, design):
-        """Return the source terms to be added to the FDTD update equations.
+    def inject(self, fields, t, dt, current_step, resolution, design):
+        """Inject source fields directly into the simulation grid before the FDTD update step.
         
-        Returns:
-            source_j: dict with electric current terms {component: (array, indices)}
-            source_m: dict with magnetic current terms {component: (array, indices)}
+        Args:
+            fields: The Fields object containing E and H arrays
+            t: Current simulation time
+            dt: Time step size
+            current_step: Current time step index
+            resolution: Spatial resolution (dx, dy)
+            design: The simulation Design object
         """
+        from beamz.const import EPS_0, MU_0
+        
         if self._jz_profile is None:
             permittivity = design.rasterize(resolution=resolution).permittivity
             self.initialize(permittivity, resolution)
-        
-        source_j = {}
-        source_m = {}
         
         # Get the temporal modulation (already includes any carrier; don't add extra exp(iωt))
         signal_value_e = self.signal[current_step] if current_step < len(self.signal) else 0.0
@@ -307,16 +310,45 @@ class ModeSource:
         else:
             signal_value_h = self.signal[current_step] if current_step < len(self.signal) else 0.0
         
-        # Add J_z source (subtract in Ez update: ∂_t E_z = (1/ε)[curl H - J_z])
-        jz_current = self._jz_profile * signal_value_e
-        jz_current = -jz_current / resolution  # Negative sign for subtraction, normalize by cell size
-        source_j["Ez"] = (jz_current.astype(np.float64), self._ez_indices)
+        # Inject J_z source into Ez field
+        # Update equation: ∂_t E_z = (1/ε)[curl H - J_z]
+        # Discrete update: E_z^(n+1) = E_z^n + (dt/ε) * [curl H - J_z]
+        # We inject -J_z contribution directly: E_z_new = E_z_old - (dt/ε) * J_z
+        # J_z = jz_profile * signal / resolution (normalized by cell size as per previous implementation)
+        # Actually, previous implementation normalized by resolution. Let's keep that scaling.
+        # Injection term: - (dt / (EPS_0 * epsilon)) * (jz_profile * signal / resolution)
         
-        # Add M_y source (affects Hy via: ∂_t H_y = (1/μ)[∂_x E_z - M_y])
-        # curl_ey = -∂E_z/∂x, so adding +M_y gives: H_y = H_y - dt/μ*(-∂E_z/∂x + M_y) = H_y + dt/μ*∂E_z/∂x - dt/μ*M_y ✓
-        my_current = self._my_profile * signal_value_h
-        my_current = my_current / resolution  # Positive M_y, will be subtracted via advance_h_field
-        source_m["Hy"] = (my_current.astype(np.float64), self._hy_indices)
+        # Get permittivity at injection location
+        y_ez_slice, x_ez_idx = self._ez_indices
+        eps_at_source = fields.permittivity[y_ez_slice, x_ez_idx]
+        
+        jz_term = self._jz_profile * signal_value_e / resolution
+        # Note: epsilon is relative permittivity, so multiply by EPS_0
+        ez_injection = -jz_term * dt / (EPS_0 * eps_at_source)
+        
+        fields.Ez[self._ez_indices] += ez_injection
+        
+        # Inject M_y source into Hy field
+        # Update equation: ∂_t H_y = (1/μ)[∂_x E_z - M_y]
+        # Discrete update: H_y^(n+1/2) = H_y^(n-1/2) - (dt/μ) * [curl E + M_y]
+        # Wait, previously we said H_y = H_y - dt/μ * (curlE + M_y)
+        # If we inject before update: H_y_new = H_y_old - (dt/μ) * M_y
+        # M_y = my_profile * signal / resolution
+        # Injection term: - (dt / (MU_0 * mu_relative)) * (my_profile * signal / resolution)
+        # Assuming mu_relative = 1.0 for now (typical for dielectric waveguides)
+        
+        # Get permeability at injection location (if available, otherwise assume 1.0)
+        y_hy_slice, x_hy_idx = self._hy_indices
+        if hasattr(fields, 'permeability'):
+            mu_at_source = fields.permeability[y_hy_slice, x_hy_idx]
+        else:
+            mu_at_source = 1.0
+            
+        my_term = self._my_profile * signal_value_h / resolution
+        # Note: mu is relative permeability, so multiply by MU_0
+        hy_injection = -my_term * dt / (MU_0 * mu_at_source)
+        
+        fields.Hy[self._hy_indices] += hy_injection
         
         # Diagnostics: estimate Poynting ratio (first 50 steps)
         try:
@@ -346,6 +378,4 @@ class ModeSource:
                     print(f"[ModeSource] Poynting ratio (right/left) ≈ {ratio:.2e} at step {current_step}")
         except Exception as _:
             pass
-
-        return source_j, source_m
 

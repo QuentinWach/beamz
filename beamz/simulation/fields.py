@@ -95,56 +95,55 @@ class Fields:
         self.Hy = np.zeros((ny - 1, nx))
 
     def _update_2d(self, dt, source_j=None, source_m=None):
-        """Execute one 2D FDTD time step with optional source injection."""
+        """Execute one 2D FDTD time step."""
         if self.has_pml:
             # Use UPML split-field updates
             from beamz.simulation.ops import update_e_field_upml_2d
             
-            # Update H fields with magnetic current sources
+            # Update H fields
             curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.resolution)
             
-            # Add magnetic current M_y to Hy update (subtract because M contributes -M/μ to dH/dt)
+            # Handle legacy magnetic current M_y if passed
             if source_m and 'Hy' in source_m:
                 m_y, indices = source_m['Hy']
                 curlE_y_with_source = curlE_y.copy()
                 y_slice, x_idx = indices
-                curlE_y_with_source[y_slice, x_idx] += m_y  # Add M to curl (gets multiplied by dt/mu in advance_h_field) so that dt*curl includes M
+                curlE_y_with_source[y_slice, x_idx] += m_y
                 self.Hy = ops.advance_h_field(self.Hy, curlE_y_with_source, self.sigma_m_y, dt)
             else:
                 self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
             
             self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
             
-            # Update E field with UPML (need to add J sources here too)
-            # For now, use standard UPML without source injection
+            # Update E field with UPML
             self.Ez = update_e_field_upml_2d(self.Ez, self.Ez_x, self.Ez_y, self.Hx, self.Hy,
                                           self.pml_regions, self.permittivity, 
                                           self.conductivity, self.resolution, dt)
         else:
-            # Standard update with source injection
+            # Standard update
             curlE_x, curlE_y = self._curl_e_to_h(self.Ez, self.resolution)
             
-            # Add magnetic current M_y to Hy update
+            # Handle legacy magnetic current M_y if passed
             if source_m and 'Hy' in source_m:
                 m_y, indices = source_m['Hy']
                 curlE_y_with_source = curlE_y.copy()
                 y_slice, x_idx = indices
-                curlE_y_with_source[y_slice, x_idx] += m_y  # Add M to curl (gets multiplied by dt/mu in advance_h_field)
+                curlE_y_with_source[y_slice, x_idx] += m_y
                 self.Hy = ops.advance_h_field(self.Hy, curlE_y_with_source, self.sigma_m_y, dt)
             else:
                 self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_y, dt)
             
             self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_x, dt)
             
-            # Update E field with electric current sources
+            # Update E field
             (curlH_z,) = self._curl_h_to_e(self.Hx, self.Hy, self.resolution, self.Ez.shape)
             
-            # Add electric current J_z to Ez update
+            # Handle legacy electric current J_z if passed
             if source_j and 'Ez' in source_j:
                 j_z, indices = source_j['Ez']
                 curlH_z_with_source = curlH_z.copy()
                 y_slice, x_idx = indices
-                curlH_z_with_source[y_slice, x_idx] += j_z  # Add J to curl (gets multiplied by dt/epsilon in advance_e_field)
+                curlH_z_with_source[y_slice, x_idx] += j_z
             else:
                 curlH_z_with_source = curlH_z
             
