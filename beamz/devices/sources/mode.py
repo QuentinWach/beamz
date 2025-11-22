@@ -114,6 +114,7 @@ class ModeSource:
         
         # Use average neff (should be very close)
         self._neff = (neff_ez[0] + neff_hy[0]) / 2.0
+        self._k = self._neff * 2 * np.pi / self.wavelength  # Wavenumber for spatial phase shift
         if abs(neff_ez[0] - neff_hy[0]) > 1e-6:
             print(f"[ModeSource] Warning: neff differs between Ez and Hy positions: {neff_ez[0]:.6f} vs {neff_hy[0]:.6f}")
         
@@ -270,8 +271,17 @@ class ModeSource:
             ax1.grid(True)
             
             # Plot M_y (E_z)
-            ax2.plot(y_coords/µm, np.real(my_profile), 'r-', label='Real(M_y) = Real(E_z)')
-            ax2.plot(y_coords/µm, np.imag(my_profile), 'r--', label='Imag(M_y) = Imag(E_z)')
+            # Use correct y-coords for M_y (Hy positions) if different length
+            if my_profile.size == y_coords.size:
+                y_my_coords = y_coords
+            else:
+                # Reconstruct Hy coords
+                start, end = self._hy_indices[0].start, self._hy_indices[0].stop
+                dL = y_coords[1] - y_coords[0]
+                y_my_coords = (np.arange(start, end) + 1.0) * dL
+                
+            ax2.plot(y_my_coords/µm, np.real(my_profile), 'r-', label='Real(M_y) = Real(E_z)')
+            ax2.plot(y_my_coords/µm, np.imag(my_profile), 'r--', label='Imag(M_y) = Imag(E_z)')
             ax2.set_xlabel('y (µm)')
             ax2.set_ylabel('M_y amplitude')
             ax2.set_title(f'Magnetic Current M_y = E_z (dir={self.direction})')
@@ -344,7 +354,146 @@ class ModeSource:
         else:
             mu_at_source = 1.0
             
+        # Calculate spatial phase shift for M_y to account for its offset from Ez column
+        # Hy is at x_hy_coord, Ez is at x_ez_coord
+        # Wave propagates as exp(i(kx - wt))
+        # We want fields to match the mode: Hy(x,t) = Hy_mode * exp(i*k*x - i*w*t)
+        # But our profile My is derived from Ez_mode at Hy position.
+        # For +x: Hy is at x_ez - dx. Phase is exp(-i*k*dx) relative to x_ez.
+        # For -x: Hy is at x_ez + dx. Phase is exp(i*k*dx) relative to x_ez.
+        # But we need to inject M_y such that it launches this wave.
+        # Unidirectional condition: J_z = -Hy_mode, M_y = Ez_mode.
+        # These must be phase-aligned AT THE SAME physical position.
+        # Since we inject M_y at x_hy != x_ez, we must phase-shift it to what it WOULD be at x_ez?
+        # No, we inject at x_hy. The source currents J(x_s) and M(x_s) launch the wave from x_s.
+        # Here we have two source sheets: J at x_ez, M at x_hy.
+        # To launch a wave in +x, the field from J at x_ez and M at x_hy must interfere constructively for +x.
+        # Forward wave from J at x_ez (at x>x_ez): E ~ -J * exp(ik(x-x_ez))
+        # Forward wave from M at x_hy (at x>x_hy): E ~ -M * exp(ik(x-x_hy)) * (some impedance factor)
+        # We want them to add up.
+        # If M_y = E_mode, J_z = H_mode.
+        # For pure +x wave, E_mode and H_mode are in phase.
+        # If we just use M_y = E_mode and J_z = H_mode without shift:
+        # At x_ez: Field from J is E_J. Field from M (propagated from x_hy=x_ez-dx) is E_M * exp(ik*dx).
+        # We need E_J + E_M * exp(ik*dx) = E_total.
+        # And for -x direction (at x < x_hy):
+        # Field from J (propagated to x_hy): E_J * exp(ik*dx). Field from M: E_M.
+        # We want E_J * exp(ik*dx) + E_M = 0.
+        # So E_M = -E_J * exp(ik*dx).
+        # If E_J ~ -J ~ -H_mode, then E_M ~ H_mode * exp(ik*dx).
+        # Also E_M ~ -M ~ -E_mode.
+        # So -E_mode ~ H_mode * exp(ik*dx).
+        # Since E_mode = eta * H_mode, we have -eta * H_mode ~ H_mode * exp(ik*dx).
+        # This implies M should be related to J with a phase shift.
+        # Let's use the simple rule: shift M_y to the position of J_z effectively?
+        # Correct shift: my_term should be shifted by exp(i * k * (x_hy - x_ez) * direction_sign) ?
+        # Let's apply the shift exp(1j * k * dx * direction_sign)
+        
+        direction_sign = 1.0 if self.direction.startswith("+") else -1.0
+        # For +x: x_hy = x_ez - 1. We want to effectively inject M at x_ez but physically at x_hy.
+        # To effectively behave as if at x_ez, we advance phase by k*dx?
+        # Wait, if wave is exp(i(kx - wt)), then at x-dx it is exp(-ikdx) relative to x.
+        # So value at x-dx lags value at x.
+        # So if we want to match value at x, we must multiply by exp(+ikdx)?
+        # Let's try applying the shift corresponding to the spatial offset.
+        
+        phase_shift = np.exp(1j * self._k * resolution * direction_sign)
         my_term = self._my_profile * signal_value_h / resolution
+        # Apply phase shift (taking real part as profiles are real)
+        # Actually, we should apply phase shift to the complex mode amplitude then take real part?
+        # But we only have real profiles stored.
+        # Approximation: cos(k*dx) * M_y - sin(k*dx) * M_y_imag? We don't have imag part stored!
+        # But we aligned phases so imaginary part is small.
+        # So just scaling by cos(k*dx) is approximately correct? No, that changes amplitude.
+        # We need to simply shift the time signal?
+        # s(t) -> s(t - dx/v) ?
+        # Yes! Spatial shift dx corresponds to time delay dt_shift = dx / (c/n) = n*dx/c.
+        # Phase shift exp(ikdx) = exp(i * (n w/c) * dx) = exp(i w (n dx/c)) = exp(i w dt_shift).
+        # This corresponds to time shift s(t + dt_shift).
+        # For +x: x_hy = x_ez - dx. Source is "earlier" in space.
+        # To match the wavefront at x_ez, the source at x_hy must have emitted "earlier"?
+        # No, wave travels x_hy -> x_ez.
+        # Signal at x_hy should be s(t). Signal at x_ez should be s(t - dx/v).
+        # We use same s(t).
+        # So effectively J at x_ez is "ahead" of M at x_hy by dx/v.
+        # If we use same s(t), then J is emitting "too early" relative to M?
+        # We want them to be consistent.
+        # If we shift M_y by shifting the time of signal evaluation?
+        
+        # Time shift for M_y:
+        # For +x: M at x-dx. Wave reaches x at t+dt_shift.
+        # So field at x from M(t) is proportional to M(t - dt_shift).
+        # We want this to cancel backward wave from J(t).
+        # Backward wave from J at x travels to x-dx at t+dt_shift.
+        # Field at x-dx from J(t) is proportional to J(t - dt_shift).
+        # We want M(t) + Term * J(t - dt_shift) = 0.
+        # So M(t) should be time-shifted relative to J?
+        # Actually, standard implementation uses same s(t) but specific spatial locations.
+        # But we must ensure the *grid* phase velocity matches.
+        # If we can't do fractional time shift easily, let's use the complex phase shift approximation
+        # on the profile IF we had complex profile.
+        # We stored real profiles.
+        # Let's use the phase shift factor on the real profile:
+        # My_new = My * cos(k*dx). (Assuming imaginary part was 0).
+        # This reduces amplitude. Ideally we want My * exp(ikdx).
+        # Since we discarded imaginary part, we can't rotate properly.
+        # However, for small dx, exp(ikdx) ~ 1 + ikdx.
+        # Maybe just cos(k*dx) is enough if imaginary part was negligible?
+        # Or maybe we should have stored complex profiles?
+        
+        # BETTER FIX: Store complex profiles in initialize and take real part here with phase shift.
+        # But that requires re-running initialize.
+        # Let's just multiply by real(exp(ikdx)) = cos(k*dx) for now.
+        # It's better than nothing.
+        
+        # Actually, let's assume the user wants us to fix it properly.
+        # Ideally we would interpolate s(t) to s(t +/- dt_shift).
+        # dt_shift = resolution * self._neff / LIGHT_SPEED.
+        # direction_sign: +1 for +x.
+        # For +x: M at left (earlier). J at right (later).
+        # Wave M->J takes dt_shift.
+        # We want M(t) to match J(t + dt_shift).
+        # So if J uses s(t), M should use s(t + dt_shift)?
+        # Or s(t - dt_shift)?
+        # Let's try evaluating signal at shifted time for M_y.
+        
+        # Take real part of neff for time shift calculation (group velocity approx phase velocity)
+        neff_real = float(np.real(self._neff))
+        # IMPORTANT: Hx (physical Hy) grid is staggered by 0.5*dx relative to Ez grid.
+        # x_hx_idx = x_ez_idx - 1 refers to the Hx node at (i-1)+0.5 = i-0.5.
+        # So the spatial distance between Ez injection (at i) and Hy injection (at i-0.5) is 0.5*dx.
+        # We must use 0.5 * resolution for the time shift.
+        dt_shift = 0.5 * resolution * neff_real / LIGHT_SPEED * direction_sign
+        
+        # M_y is at x_ez - 0.5*dx (for +x).
+        # To synchronize with J at x_ez, M should be evaluated at...?
+        # Let's assume J uses signal_value_e (at t).
+        # M uses signal_value_h (at t+dt/2).
+        # We add the spatial time shift to M's time.
+        # For +x: Wave moves left->right. M is at left.
+        # M(t_M) arrives at J at t_M + dt_shift.
+        # We want this to coincide with J(t).
+        # So t_M + dt_shift = t  => t_M = t - dt_shift.
+        # So M should be evaluated at (t + 0.5*dt) - dt_shift.
+        
+        # Interpolate signal at t_h_shifted
+        t_h = t + 0.5 * dt
+        t_h_shifted = t_h - dt_shift
+        
+        # Simple linear interpolation from array if available, or use function
+        # We have self.signal array and dt. t corresponds to current_step * dt.
+        # t_h_shifted index = t_h_shifted / dt.
+        idx_float = float(np.real(t_h_shifted / dt))
+        idx_low = int(np.floor(idx_float))
+        idx_high = idx_low + 1
+        frac = idx_float - idx_low
+        
+        if 0 <= idx_low < len(self.signal) - 1:
+            signal_val_shifted = (1.0 - frac) * self.signal[idx_low] + frac * self.signal[idx_high]
+        else:
+            signal_val_shifted = 0.0
+            
+        my_term = self._my_profile * signal_val_shifted / resolution
         # Note: mu is relative permeability, so multiply by MU_0
         hy_injection = -my_term * dt / (MU_0 * mu_at_source)
         
