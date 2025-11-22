@@ -146,7 +146,14 @@ class ModeSource:
             # Same window for my_profile since size is same
             my_profile = np.real(my_profile) * w_ez
         
-        # For -x propagation, flip signs
+        # For +x propagation, Jz (Hy) and My (Ez) must have same sign to launch forward wave.
+        # But mode solver returns them with opposite signs for +x flux.
+        # So we flip Jz to align them for Huygens source.
+        if self.direction == "+x":
+            jz_profile = -jz_profile
+            
+        # For -x propagation, flip both signs to match direction
+        # (Note: For -x, Hy and Ez are naturally aligned in sign, so they work as Huygens pair)
         if self.direction == "-x":
             jz_profile = -jz_profile
             my_profile = -my_profile
@@ -271,9 +278,13 @@ class ModeSource:
         signal_value_e = self._get_signal_value(t + 0.5 * dt, dt)
         
         # M_y (Magnetic current) signal timing
-        # Source M is at x_hy, J is at x_ez. x_hy is spatially offset from x_ez.
-        # To launch a unidirectional wave matching J's phase, M must be advanced by tau.
-        signal_value_h = self._get_signal_value(t + 0.5 * dt + dt_shift, dt)
+        # Source M is at x_hx, J is at x_ez. x_hx is spatially offset from x_ez.
+        # For unidirectional launch (cancelling backward wave), we need M(t) to cancel J's backward wave.
+        # Backward wave from J(t) reaches M at t + tau.
+        # So M(t) should match J(t - tau).
+        # Since J(t) uses signal(t), M(t) should use signal(t - tau).
+        # So we use DELAY (t - dt_shift).
+        signal_value_h = self._get_signal_value(t + 0.5 * dt - dt_shift, dt)
         
         # Inject J_z source into Ez field
         # Update equation: ∂_t E_z = (1/ε)[curl H - J_z]
@@ -313,49 +324,49 @@ class ModeSource:
         fields.Hx[self._hx_indices] += hx_injection
         
         # Diagnostics: estimate Poynting ratio (first 50 steps)
-        try:
-            if current_step < 50:
-                # Determine adjacent Ez columns for left/right slabs
-                y_ez_slice, x_ez = self._ez_indices
-                # Hx indices are same y-slice as Ez
-                y_hx_slice, x_hx = self._hx_indices
-                
-                ny = y_ez_slice.stop - y_ez_slice.start
-                
-                # Right probe (forward) - assume x_ez < x_ez+3
-                xr = x_ez + 3
-                if xr < fields.Ez.shape[1]:
-                    Ez_r = fields.Ez[y_ez_slice, xr][:ny]
-                    # Hx is at same y as Ez.
-                    # Sx = Ez * fields.Hx.
-                    # To get Hx at xr, average Hx[xr] and Hx[xr-1].
-                    if xr > 0:
-                         Hx_r_avg = 0.5 * (fields.Hx[y_hx_slice, xr][:ny] + fields.Hx[y_hx_slice, xr-1][:ny])
-                    else:
-                         Hx_r_avg = fields.Hx[y_hx_slice, xr][:ny]
-                    
-                    P_r = float(np.sum(np.real(Ez_r * Hx_r_avg)))
-                else:
-                    P_r = 0.0
-
-                # Left probe (backward)
-                xl = x_ez - 3
-                if xl >= 0:
-                    Ez_l = fields.Ez[y_ez_slice, xl][:ny]
-                    if xl > 0:
-                         Hx_l_avg = 0.5 * (fields.Hx[y_hx_slice, xl][:ny] + fields.Hx[y_hx_slice, xl-1][:ny])
-                    else:
-                         Hx_l_avg = fields.Hx[y_hx_slice, xl][:ny]
-                    P_l = float(np.sum(np.real(Ez_l * Hx_l_avg)))
-                else:
-                    P_l = 0.0
-                    
-                # Ratio should be P_r / P_l. If P_l is small, ratio is huge.
-                # But initially both are 0. Then P_r grows. P_l should stay small.
-                # If P_l is negative (backward flux), we take abs?
-                # Ratio of forward power to backward power.
-                ratio = (abs(P_r) / (abs(P_l) + 1e-18)) if (abs(P_r) + abs(P_l)) > 1e-12 else 0.0
-                print(f"[ModeSource] Poynting ratio (right/left) ≈ {ratio:.2e} at step {current_step}")
-        except Exception as _:
-            pass
+        # try:
+        #     if current_step < 50:
+        #         # Determine adjacent Ez columns for left/right slabs
+        #         y_ez_slice, x_ez = self._ez_indices
+        #         # Hx indices are same y-slice as Ez
+        #         y_hx_slice, x_hx = self._hx_indices
+        #         
+        #         ny = y_ez_slice.stop - y_ez_slice.start
+        #         
+        #         # Right probe (forward) - assume x_ez < x_ez+3
+        #         xr = x_ez + 3
+        #         if xr < fields.Ez.shape[1]:
+        #             Ez_r = fields.Ez[y_ez_slice, xr][:ny]
+        #             # Hx is at same y as Ez.
+        #             # Sx = Ez * fields.Hx.
+        #             # To get Hx at xr, average Hx[xr] and Hx[xr-1].
+        #             if xr > 0:
+        #                  Hx_r_avg = 0.5 * (fields.Hx[y_hx_slice, xr][:ny] + fields.Hx[y_hx_slice, xr-1][:ny])
+        #             else:
+        #                  Hx_r_avg = fields.Hx[y_hx_slice, xr][:ny]
+        #             
+        #             P_r = float(np.sum(np.real(Ez_r * Hx_r_avg)))
+        #         else:
+        #             P_r = 0.0
+        #
+        #         # Left probe (backward)
+        #         xl = x_ez - 3
+        #         if xl >= 0:
+        #             Ez_l = fields.Ez[y_ez_slice, xl][:ny]
+        #             if xl > 0:
+        #                  Hx_l_avg = 0.5 * (fields.Hx[y_hx_slice, xl][:ny] + fields.Hx[y_hx_slice, xl-1][:ny])
+        #             else:
+        #                  Hx_l_avg = fields.Hx[y_hx_slice, xl][:ny]
+        #             P_l = float(np.sum(np.real(Ez_l * Hx_l_avg)))
+        #         else:
+        #             P_l = 0.0
+        #             
+        #         # Ratio should be P_r / P_l. If P_l is small, ratio is huge.
+        #         # But initially both are 0. Then P_r grows. P_l should stay small.
+        #         # If P_l is negative (backward flux), we take abs?
+        #         # Ratio of forward power to backward power.
+        #         ratio = (abs(P_r) / (abs(P_l) + 1e-18)) if (abs(P_r) + abs(P_l)) > 1e-12 else 0.0
+        #         print(f"[ModeSource] Poynting ratio (right/left) ≈ {ratio:.2e} at step {current_step}")
+        # except Exception as _:
+        #     pass
 
