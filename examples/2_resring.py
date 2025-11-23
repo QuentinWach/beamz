@@ -3,7 +3,7 @@ import numpy as np
 
 # Parameters
 WL = 1.55*µm
-TIME = 80*WL/LIGHT_SPEED
+TIME = 1200*WL/LIGHT_SPEED
 X, Y = 20*µm, 19*µm
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
 DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=8)
@@ -43,5 +43,5 @@ sim = Simulation(
     time=time_steps,
     resolution=DX
 )
-sim.run(animate_live="Ez", animation_interval=1)
+sim.run(animate_live="Ez", animation_interval=20)
 sim.plot_power(db_colorbar=True)
