@@ -18,16 +18,17 @@ design += Ring(position=(X/2, WL*2+WG_WIDTH+RING_RADIUS+WG_WIDTH/2+0.2*WG_WIDTH)
 design.show()
 
 # Rasterize the design
-#grid = design.rasterize(resolution=DX)
+grid = design.rasterize(resolution=DX)
+grid.show(field="permittivity")
 
 # Define the signal & source
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=0.15, frequency=LIGHT_SPEED/WL, phase=0,
                        ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2.5)
 source = ModeSource(
-    design=design,
+    grid=grid,
     center=(WL*2, WL*2+WG_WIDTH/2),
-    width=3.0*µm,
+    width=WG_WIDTH * 1.2,  # Slightly wider than waveguide to capture mode tails
     wavelength=WL,
     pol="tm",
     signal=signal,
@@ -35,6 +36,12 @@ source = ModeSource(
 )
 
 # Run the simulation
-sim = Simulation(design=design, devices=[source], time=time_steps)
-sim.run(live=True)
-#sim.plot_power(db_colorbar=True)
+sim = Simulation(
+    design=design,
+    devices=[source],
+    boundaries=[PML(edges='all', thickness=1.2*WL)],
+    time=time_steps,
+    resolution=DX
+)
+sim.run(animate_live="Ez", animation_interval=1)
+sim.plot_power(db_colorbar=True)

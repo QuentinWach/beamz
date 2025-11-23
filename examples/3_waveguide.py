@@ -24,7 +24,7 @@ signal = ramped_cosine(
     amplitude=1.0,
     frequency=LIGHT_SPEED / WL,
     phase=0,
-    ramp_duration=WL * 5 / LIGHT_SPEED,
+    ramp_duration=WL * 20 / LIGHT_SPEED,
     t_max=TIME / 2,
 )
 source = ModeSource(
