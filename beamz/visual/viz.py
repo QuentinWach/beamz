@@ -3,6 +3,58 @@ from beamz.visual.helpers import display_status, get_si_scale_and_label
 
 # Optional plotting backends are imported inside functions to avoid hard deps
 
+def get_twilight_zero_cmap():
+    """Get a custom colormap similar to twilight but with grey/black for zero values.
+    
+    Returns:
+        matplotlib.colors.Colormap: A colormap that uses twilight colors but maps
+        values near zero to grey/black.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+    
+    # Get the twilight colormap
+    twilight = plt.get_cmap('twilight')
+    
+    # Create a new colormap with grey/black at zero
+    # We'll map values near zero to grey/black, and use twilight for the rest
+    n_colors = 256
+    zero_region = 0.12  # Region around zero (12% of the range) that maps to grey/black
+    
+    colors = []
+    for i in range(n_colors):
+        # Normalize index to [0, 1]
+        x = i / (n_colors - 1)
+        
+        # Map values near zero (around 0.5 for symmetric colormaps) to grey/black
+        # For twilight, the middle is around 0.5
+        if abs(x - 0.5) < zero_region / 2:
+            # Interpolate from grey to black as we approach zero
+            # Grey at edges, black at center
+            dist_from_center = abs(x - 0.5) / (zero_region / 2)
+            grey_value = 0.25 * (1 - dist_from_center)  # Grey to black transition
+            colors.append((grey_value, grey_value, grey_value, 1.0))
+        else:
+            # Use twilight colors for the rest
+            colors.append(twilight(x))
+    
+    return LinearSegmentedColormap.from_list('twilight_zero', colors, N=n_colors)
+
+# Register the custom colormap
+def _register_custom_colormaps():
+    """Register custom colormaps with matplotlib."""
+    import matplotlib.pyplot as plt
+    try:
+        # Check if already registered
+        if 'twilight_zero' not in plt.colormaps():
+            cmap = get_twilight_zero_cmap()
+            plt.colormaps.register(cmap, name='twilight_zero')
+    except Exception:
+        pass  # If registration fails, we'll create it on-the-fly when needed
+
+# Register on import
+_register_custom_colormaps()
+
 def draw_polygon(ax, polygon, facecolor=None, edgecolor="black", alpha=None, linestyle=None):
     """Draw a polygon (with possible holes) on a Matplotlib axis.
     Projects 3D vertices to 2D for plotting.
@@ -580,7 +632,8 @@ def animate_manual_field(field_array,
                          show_structures=True,
                          show_sources=True,
                          show_monitors=True,
-                         clean_visualization=False):
+                         clean_visualization=False,
+                         wavelength=None):
     """Create or update a live Matplotlib view of a 2D field array.
 
     Args:
@@ -601,6 +654,7 @@ def animate_manual_field(field_array,
         show_sources: Boolean to control if design sources are overlaid.
         show_monitors: Boolean to control if design monitors are overlaid.
         clean_visualization: If True, hide axes, title, and colorbar (only show field and structures).
+        wavelength: Optional wavelength for scale bar calculation (if None, uses design-based calculation).
 
     Returns:
         context dict containing references to the Matplotlib objects for reuse.
@@ -636,10 +690,19 @@ def animate_manual_field(field_array,
 
     if context.get('im') is None:
         fig, ax = plt.subplots()
-        if extent is not None:
-            im = ax.imshow(data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
+        # Handle custom colormap
+        if cmap == 'twilight_zero':
+            try:
+                actual_cmap = plt.get_cmap('twilight_zero')
+            except ValueError:
+                actual_cmap = get_twilight_zero_cmap()
         else:
-            im = ax.imshow(data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
+            actual_cmap = cmap
+        
+        if extent is not None:
+            im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax, extent=extent)
+        else:
+            im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax)
         
         if clean_visualization:
             ax.set_axis_off()
@@ -683,13 +746,77 @@ def animate_manual_field(field_array,
             ax.xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
             ax.yaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
 
+        if clean_visualization and design is not None:
+            # Add scale bar in bottom-right corner
+            max_dim = max(design.width, design.height)
+            scale_factor, unit = get_si_scale_and_label(max_dim)
+            
+            # Calculate scale bar length: 2 * wavelength rounded up to next integer µm
+            if wavelength is not None:
+                # Convert wavelength to µm and calculate 2 * wavelength
+                wavelength_um = wavelength * 1e6  # Convert from meters to µm
+                scale_bar_length_um = 2 * wavelength_um
+                # Round to nearest integer µm
+                scale_bar_length_um = np.round(scale_bar_length_um)
+                # Convert back to meters
+                scale_bar_length = scale_bar_length_um * 1e-6
+            else:
+                # Fallback: use design-based calculation
+                min_dim = min(design.width, design.height)
+                scale_bar_fraction = 0.18
+                scale_bar_length_physical = min_dim * scale_bar_fraction
+                
+                # Round to a nice number (round to nearest, not always down)
+                if scale_bar_length_physical > 0:
+                    order = 10 ** np.floor(np.log10(scale_bar_length_physical))
+                    normalized = scale_bar_length_physical / order
+                    if normalized <= 1.25:
+                        nice_value = 1 * order
+                    elif normalized <= 2.5:
+                        nice_value = 2 * order
+                    elif normalized <= 6:
+                        nice_value = 5 * order
+                    else:
+                        nice_value = 10 * order
+                    scale_bar_length = nice_value
+                else:
+                    scale_bar_length = min_dim * 0.15
+            
+            # Position in bottom-right corner with some margin
+            margin_x = design.width * 0.1
+            margin_y = design.height * 0.1
+            x_start = design.width - scale_bar_length - margin_x
+            x_end = design.width - margin_x
+            y_pos = margin_y
+            
+            # Draw scale bar line (solid white bar, no caps)
+            ax.plot([x_start, x_end], [y_pos, y_pos], 'w', linewidth=3, solid_capstyle="butt")
+            
+            # Add text label below the bar
+            label_y = y_pos - design.height * 0.02
+            # If wavelength-based, always display in µm as integer
+            if wavelength is not None:
+                scale_bar_length_display_um = scale_bar_length * 1e6  # Convert to µm
+                label_text = f'{int(scale_bar_length_display_um)} µm'
+            else:
+                scale_bar_length_display = scale_bar_length * scale_factor
+                if scale_bar_length_display >= 1:
+                    label_text = f'{scale_bar_length_display:.0f} {unit}'
+                elif scale_bar_length_display >= 0.1:
+                    label_text = f'{scale_bar_length_display:.1f} {unit}'
+                else:
+                    label_text = f'{scale_bar_length_display:.2f} {unit}'
+            
+            ax.text((x_start + x_end) / 2, label_y, label_text, 
+                   ha='center', va='top', color='white', fontsize=10)
+
         if clean_visualization:
             plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
         else:
             plt.tight_layout()
         plt.show(block=False)
         plt.pause(pause)
-        context.update({'fig': fig, 'ax': ax, 'im': im, 'cbar': cbar, 'frame': 1, 'clean_visualization': clean_visualization})
+        context.update({'fig': fig, 'ax': ax, 'im': im, 'cbar': cbar, 'frame': 1, 'clean_visualization': clean_visualization, 'wavelength': wavelength})
         context.setdefault('auto_scale', vmax if axis_scale is None else None)
         return context
 

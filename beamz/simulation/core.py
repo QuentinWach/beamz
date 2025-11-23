@@ -83,7 +83,7 @@ class Simulation:
         return source_j, source_m
     
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='RdBu', clean_visualization=False):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='RdBu', clean_visualization=False, wavelength=None):
         """Run complete FDTD simulation with optional live field visualization.
         
         Args:
@@ -92,6 +92,7 @@ class Simulation:
             axis_scale: Tuple (min, max) for fixed color scale during animation, or None for auto-scaling
             cmap: Matplotlib colormap name (default: 'RdBu')
             clean_visualization: If True, hide axes, title, and colorbar (only show field and structures)
+            wavelength: Wavelength for scale bar calculation (if None, tries to extract from devices)
         """
         # Handle 3D simulations - require monitor for now (not implemented yet)
         if animate_live and self.is_3d:
@@ -106,6 +107,13 @@ class Simulation:
                 print(f"Warning: Field '{animate_live}' not found. Available: Ez, Hx, Hy (2D) or Ex,Ey,Ez,Hx,Hy,Hz (3D)")
                 animate_live = None
         
+        # Extract wavelength from devices if not provided
+        if wavelength is None:
+            for device in self.devices:
+                if hasattr(device, 'wavelength'):
+                    wavelength = device.wavelength
+                    break
+        
         try:
             # Main simulation loop
             while self.step():
@@ -119,7 +127,8 @@ class Simulation:
                     viz_context = animate_manual_field(field_display, context=viz_context, extent=extent, 
                                                       title=title, units='V/µm' if 'E' in animate_live else 'A/m',
                                                       design=self.design, boundaries=self.boundaries, pause=0.001,
-                                                      axis_scale=axis_scale, cmap=cmap, clean_visualization=clean_visualization)
+                                                      axis_scale=axis_scale, cmap=cmap, clean_visualization=clean_visualization,
+                                                      wavelength=wavelength)
         finally:
             # Cleanup: keep the final frame visible
             if viz_context and viz_context.get('fig'):

@@ -3,11 +3,11 @@ import numpy as np
 
 # Parameters
 WL = 1.55*µm
-TIME = 1200*WL/LIGHT_SPEED
+TIME = 120*WL/LIGHT_SPEED
 X, Y = 20*µm, 19*µm
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
 DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=8)
-RING_RADIUS, WG_WIDTH = 6*µm, 0.565*µm
+RING_RADIUS, WG_WIDTH = 6*µm, 0.5*µm #0.565*µm
 
 # Create the design
 design = Design(width=X, height=Y, material=Material(N_CLAD**2))
@@ -15,11 +15,11 @@ design += Rectangle(position=(0,WL*2), width=X, height=WG_WIDTH, material=Materi
 design += Ring(position=(X/2, WL*2+WG_WIDTH+RING_RADIUS+WG_WIDTH/2+0.2*WG_WIDTH), 
                inner_radius=RING_RADIUS-WG_WIDTH/2, outer_radius=RING_RADIUS+WG_WIDTH/2, 
                material=Material(N_CORE**2))
-design.show()
+#design.show()
 
 # Rasterize the design
 grid = design.rasterize(resolution=DX)
-grid.show(field="permittivity")
+#grid.show(field="permittivity")
 
 # Define the signal & source
 time_steps = np.arange(0, TIME, DT)
@@ -44,7 +44,7 @@ sim = Simulation(
     resolution=DX
 )
 sim.run(animate_live="Ez", 
-    animation_interval=5,
+    animation_interval=2,
     axis_scale=[-1.5e-4, 1.5e-4],
-    cmap="twilight", 
-    clean_visualization=True)
+    cmap="twilight_zero", 
+    clean_visualization=False)
