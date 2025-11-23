@@ -23,7 +23,7 @@ grid.show(field="permittivity")
 
 # Define the signal & source
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(time_steps, amplitude=0.15, frequency=LIGHT_SPEED/WL, phase=0,
+signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, phase=0,
                        ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2.5)
 source = ModeSource(
     grid=grid,
@@ -43,4 +43,8 @@ sim = Simulation(
     time=time_steps,
     resolution=DX
 )
-sim.run(animate_live="Ez", animation_interval=20)
+sim.run(animate_live="Ez", 
+    animation_interval=5,
+    axis_scale=[-1.5e-4, 1.5e-4],
+    cmap="twilight", 
+    clean_visualization=True)

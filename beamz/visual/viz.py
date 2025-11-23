@@ -579,7 +579,8 @@ def animate_manual_field(field_array,
                          boundaries=None,
                          show_structures=True,
                          show_sources=True,
-                         show_monitors=True):
+                         show_monitors=True,
+                         clean_visualization=False):
     """Create or update a live Matplotlib view of a 2D field array.
 
     Args:
@@ -599,6 +600,7 @@ def animate_manual_field(field_array,
         show_structures: Boolean to control if design structures are overlaid.
         show_sources: Boolean to control if design sources are overlaid.
         show_monitors: Boolean to control if design monitors are overlaid.
+        clean_visualization: If True, hide axes, title, and colorbar (only show field and structures).
 
     Returns:
         context dict containing references to the Matplotlib objects for reuse.
@@ -638,9 +640,14 @@ def animate_manual_field(field_array,
             im = ax.imshow(data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
         else:
             im = ax.imshow(data, origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
-        cbar = plt.colorbar(im, ax=ax, orientation='vertical', label=f'Ez ({units})')
-        if title:
-            ax.set_title(title)
+        
+        if clean_visualization:
+            ax.set_axis_off()
+            cbar = None
+        else:
+            cbar = plt.colorbar(im, ax=ax, orientation='vertical', label=f'Ez ({units})')
+            if title:
+                ax.set_title(title)
 
         if design is not None and show_structures:
             try:
@@ -668,7 +675,7 @@ def animate_manual_field(field_array,
             for boundary in boundaries:
                 draw_boundary(ax, boundary, design, edgecolor='black', linestyle=':', alpha=0.7)
 
-        if design is not None:
+        if design is not None and not clean_visualization:
             max_dim = max(design.width, design.height)
             scale, unit = get_si_scale_and_label(max_dim)
             ax.set_xlabel(f'X ({unit})')
@@ -676,18 +683,22 @@ def animate_manual_field(field_array,
             ax.xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
             ax.yaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
 
-        plt.tight_layout()
+        if clean_visualization:
+            plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+        else:
+            plt.tight_layout()
         plt.show(block=False)
         plt.pause(pause)
-        context.update({'fig': fig, 'ax': ax, 'im': im, 'cbar': cbar, 'frame': 1})
+        context.update({'fig': fig, 'ax': ax, 'im': im, 'cbar': cbar, 'frame': 1, 'clean_visualization': clean_visualization})
         context.setdefault('auto_scale', vmax if axis_scale is None else None)
         return context
 
     # Update existing plot
+    clean_visualization = context.get('clean_visualization', False)
     im = context['im']
     im.set_data(data)
     im.set_clim(vmin, vmax)
-    if title:
+    if title and not clean_visualization:
         context['ax'].set_title(title)
     context['frame'] = context.get('frame', 0) + 1
     if context.get('cbar') is not None:

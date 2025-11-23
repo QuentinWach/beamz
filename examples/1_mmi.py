@@ -24,7 +24,7 @@ grid = design.rasterize(resolution=DX)
 
 # Define the source
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(time_steps, amplitude=2.0, frequency=LIGHT_SPEED/WL, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
+signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
 # Prefer TE polarization and restrict transverse width to single-mode core to avoid exciting higher-order lobes
 source = ModeSource(grid=grid, center=(3*µm, Y/2), width=WG_W, wavelength=WL, pol="tm", signal=signal, direction="+x")
 
@@ -33,4 +33,5 @@ sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', t
 sim.run(animate_live="Ez",
     animation_interval=5,
     axis_scale=[-9e-5, 9e-5],
-    cmap="twilight") #axis_scale=[-1000/(µm), 1000/(µm)]
+    cmap="twilight",
+    clean_visualization=True)
