@@ -44,4 +44,3 @@ sim = Simulation(
     resolution=DX
 )
 sim.run(animate_live="Ez", animation_interval=20)
-sim.plot_power(db_colorbar=True)

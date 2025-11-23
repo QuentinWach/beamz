@@ -16,4 +16,4 @@ source = GaussianSource(position=(4*µm, 5*µm), width=WL/6, signal=signal)
 
 # Add PML boundaries to simulation (not design)
 sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
-sim.run(animate_live="Ez", animation_interval=2)
+sim.run(animate_live="Ez", animation_interval=1)
