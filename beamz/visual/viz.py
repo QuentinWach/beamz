@@ -4,41 +4,27 @@ from beamz.visual.helpers import display_status, get_si_scale_and_label
 # Optional plotting backends are imported inside functions to avoid hard deps
 
 def get_twilight_zero_cmap():
-    """Get a custom colormap similar to twilight but with grey/black for zero values.
+    """Get a custom colormap similar to twilight with black at zero and white at edges.
     
     Returns:
-        matplotlib.colors.Colormap: A colormap that uses twilight colors but maps
-        values near zero to grey/black.
+        matplotlib.colors.Colormap: A custom 7-color diverging colormap with
+        white at edges, twilight-like colors in between, and black at center.
     """
-    import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap
     
-    # Get the twilight colormap
-    twilight = plt.get_cmap('twilight')
+    # 7 colors total: white -> purple -> blue -> cyan -> black -> yellow -> orange -> red -> white
+    # Similar to twilight but with black at center and white at edges
+    colors = [
+        (1.0, 1.0, 1.0),      # White (edge, negative)
+        (0.2, 0.3, 0.8),      # Purple
+        (0.1, 0.1, 0.5),      # Blue
+        (0.1, 0.1, 0.1),      # Black (center, zero)
+        (0.5, 0.1, 0.1),      # Orange
+        (0.8, 0.3, 0.2),      # Red
+        (1.0, 1.0, 1.0),      # White (edge, positive)
+    ]
     
-    # Create a new colormap with grey/black at zero
-    # We'll map values near zero to grey/black, and use twilight for the rest
-    n_colors = 256
-    zero_region = 0.12  # Region around zero (12% of the range) that maps to grey/black
-    
-    colors = []
-    for i in range(n_colors):
-        # Normalize index to [0, 1]
-        x = i / (n_colors - 1)
-        
-        # Map values near zero (around 0.5 for symmetric colormaps) to grey/black
-        # For twilight, the middle is around 0.5
-        if abs(x - 0.5) < zero_region / 2:
-            # Interpolate from grey to black as we approach zero
-            # Grey at edges, black at center
-            dist_from_center = abs(x - 0.5) / (zero_region / 2)
-            grey_value = 0.25 * (1 - dist_from_center)  # Grey to black transition
-            colors.append((grey_value, grey_value, grey_value, 1.0))
-        else:
-            # Use twilight colors for the rest
-            colors.append(twilight(x))
-    
-    return LinearSegmentedColormap.from_list('twilight_zero', colors, N=n_colors)
+    return LinearSegmentedColormap.from_list('twilight_zero', colors, N=256)
 
 # Register the custom colormap
 def _register_custom_colormaps():

@@ -33,5 +33,4 @@ sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', t
 sim.run(animate_live="Ez",
     animation_interval=5,
     axis_scale=[-9e-5, 9e-5],
-    cmap="twilight",
     clean_visualization=True)

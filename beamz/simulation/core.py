@@ -83,14 +83,14 @@ class Simulation:
         return source_j, source_m
     
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='RdBu', clean_visualization=False, wavelength=None):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None):
         """Run complete FDTD simulation with optional live field visualization.
         
         Args:
             animate_live: Field component to animate ('Ez', 'Hx', 'Hy', 'Ex', 'Ey', etc.) or None to disable
             animation_interval: Update visualization every N steps (higher = faster but less smooth)
             axis_scale: Tuple (min, max) for fixed color scale during animation, or None for auto-scaling
-            cmap: Matplotlib colormap name (default: 'RdBu')
+            cmap: Matplotlib colormap name (default: 'twilight_zero')
             clean_visualization: If True, hide axes, title, and colorbar (only show field and structures)
             wavelength: Wavelength for scale bar calculation (if None, tries to extract from devices)
         """
