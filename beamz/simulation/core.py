@@ -83,13 +83,14 @@ class Simulation:
         return source_j, source_m
     
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='RdBu'):
         """Run complete FDTD simulation with optional live field visualization.
         
         Args:
             animate_live: Field component to animate ('Ez', 'Hx', 'Hy', 'Ex', 'Ey', etc.) or None to disable
             animation_interval: Update visualization every N steps (higher = faster but less smooth)
             axis_scale: Tuple (min, max) for fixed color scale during animation, or None for auto-scaling
+            cmap: Matplotlib colormap name (default: 'RdBu')
         """
         # Handle 3D simulations - require monitor for now (not implemented yet)
         if animate_live and self.is_3d:
@@ -117,7 +118,7 @@ class Simulation:
                     viz_context = animate_manual_field(field_display, context=viz_context, extent=extent, 
                                                       title=title, units='V/µm' if 'E' in animate_live else 'A/m',
                                                       design=self.design, boundaries=self.boundaries, pause=0.001,
-                                                      axis_scale=axis_scale)
+                                                      axis_scale=axis_scale, cmap=cmap)
         finally:
             # Cleanup: keep the final frame visible
             if viz_context and viz_context.get('fig'):

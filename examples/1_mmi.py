@@ -16,18 +16,21 @@ design += Rectangle(position=(0, Y/2-WG_W/2), width=X/2, height=WG_W, material=M
 design += Rectangle(position=(X/2, Y/2 + OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2, Y/2 - OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2-W/2, Y/2-H/2), width=W, height=H, material=Material(N_CORE**2))
-design.show()
+#design.show()
 
 # Rasterize the design
 grid = design.rasterize(resolution=DX)
-grid.show(field="permittivity")
+#grid.show(field="permittivity")
 
 # Define the source
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(time_steps, amplitude=0.1, frequency=LIGHT_SPEED/WL, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
+signal = ramped_cosine(time_steps, amplitude=2.0, frequency=LIGHT_SPEED/WL, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
 # Prefer TE polarization and restrict transverse width to single-mode core to avoid exciting higher-order lobes
 source = ModeSource(grid=grid, center=(3*µm, Y/2), width=WG_W, wavelength=WL, pol="tm", signal=signal, direction="+x")
 
 # Run the simulation and show results
 sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', thickness=1.2*WL)], time=time_steps, resolution=DX)
-sim.run(animate_live="Ez", animation_interval=1) #axis_scale=[-1000/(µm), 1000/(µm)]
+sim.run(animate_live="Ez",
+    animation_interval=5,
+    axis_scale=[-9e-5, 9e-5],
+    cmap="twilight") #axis_scale=[-1000/(µm), 1000/(µm)]
