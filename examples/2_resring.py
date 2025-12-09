@@ -47,5 +47,4 @@ sim.run(animate_live="Ez",
     animation_interval=2,
     axis_scale=[-1.5e-4, 1.5e-4],
     cmap="twilight_zero", 
-    clean_visualization=True,
-    line_color="gray")
+    clean_visualization=False)

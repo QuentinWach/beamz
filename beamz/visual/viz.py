@@ -620,7 +620,8 @@ def animate_manual_field(field_array,
                          show_monitors=True,
                          clean_visualization=False,
                          wavelength=None,
-                         line_color='white'):
+                         line_color='gray',
+                         line_opacity=0.5):
     """Create or update a live Matplotlib view of a 2D field array.
 
     Args:
@@ -642,7 +643,8 @@ def animate_manual_field(field_array,
         show_monitors: Boolean to control if design monitors are overlaid.
         clean_visualization: If True, hide axes, title, and colorbar (only show field and structures).
         wavelength: Optional wavelength for scale bar calculation (if None, uses design-based calculation).
-        line_color: Color for structure and PML boundary outlines (default: 'white').
+        line_color: Color for structure and PML boundary outlines (default: 'gray').
+        line_opacity: Opacity/transparency of structure and PML boundary outlines (0.0 to 1.0, default: 0.5).
 
     Returns:
         context dict containing references to the Matplotlib objects for reuse.
@@ -709,9 +711,9 @@ def animate_manual_field(field_array,
                 overlay_structures = getattr(design, 'structures', [])
             for structure in overlay_structures or []:
                 if hasattr(structure, 'is_pml') and structure.is_pml:
-                    structure.add_to_plot(ax, edgecolor=line_color, linestyle='--', facecolor='none', alpha=0.5)
+                    structure.add_to_plot(ax, edgecolor=line_color, linestyle='--', facecolor='none', alpha=line_opacity)
                 elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
-                    structure.add_to_plot(ax, facecolor="none", edgecolor=line_color, linestyle='-')
+                    structure.add_to_plot(ax, facecolor="none", edgecolor=line_color, linestyle='-', alpha=line_opacity)
             if show_sources:
                 for source in getattr(design, 'sources', []) or []:
                     if hasattr(source, 'add_to_plot'):
@@ -724,7 +726,7 @@ def animate_manual_field(field_array,
         # Draw PML boundaries if provided
         if boundaries:
             for boundary in boundaries:
-                draw_boundary(ax, boundary, design, edgecolor=line_color, linestyle=':', alpha=0.7)
+                draw_boundary(ax, boundary, design, edgecolor=line_color, linestyle=':', alpha=line_opacity)
 
         if design is not None and not clean_visualization:
             max_dim = max(design.width, design.height)

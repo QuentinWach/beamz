@@ -83,7 +83,7 @@ class Simulation:
         return source_j, source_m
     
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='white'):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5):
         """Run complete FDTD simulation with optional live field visualization.
         
         Args:
@@ -93,7 +93,8 @@ class Simulation:
             cmap: Matplotlib colormap name (default: 'twilight_zero')
             clean_visualization: If True, hide axes, title, and colorbar (only show field and structures)
             wavelength: Wavelength for scale bar calculation (if None, tries to extract from devices)
-            line_color: Color for structure and PML boundary outlines (default: 'white')
+            line_color: Color for structure and PML boundary outlines (default: 'gray')
+            line_opacity: Opacity/transparency of structure and PML boundary outlines (0.0 to 1.0, default: 0.5)
         """
         # Handle 3D simulations - require monitor for now (not implemented yet)
         if animate_live and self.is_3d:
@@ -129,7 +130,7 @@ class Simulation:
                                                       title=title, units='V/µm' if 'E' in animate_live else 'A/m',
                                                       design=self.design, boundaries=self.boundaries, pause=0.001,
                                                       axis_scale=axis_scale, cmap=cmap, clean_visualization=clean_visualization,
-                                                      wavelength=wavelength, line_color=line_color)
+                                                      wavelength=wavelength, line_color=line_color, line_opacity=line_opacity)
         finally:
             # Cleanup: keep the final frame visible
             if viz_context and viz_context.get('fig'):
