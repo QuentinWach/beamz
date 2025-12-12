@@ -26,8 +26,8 @@ class ModeSource:
         dx = dy = resolution
         ny, nx = permittivity.shape
         axis = "x" if self.direction in ("+x", "-x") else "y"
-        # Forward (+) directions use j = -H_t, m = +E_t; reverse flips both
-        sign_map = {"+x": (-1.0, 1.0), "-x": (1.0, -1.0), "+y": (-1.0, 1.0), "-y": (1.0, -1.0)}
+        # For y propagation only: Forward (+) directions use j = -H_t, m = +E_t; reverse flips both
+        sign_map = {"+y": (-1.0, 1.0), "-y": (1.0, -1.0)}
         h_sign, m_sign = sign_map.get(self.direction, (-1.0, 1.0))
         
         if axis == "x":
@@ -82,44 +82,100 @@ class ModeSource:
         H_mode = h_fields[0]
         E_mode = e_fields[0]
         
-        hx_mode = np.squeeze(H_mode[1])
-        hy_mode = np.squeeze(H_mode[2]) if H_mode.shape[0] > 2 else hx_mode * 0.0
-        ez_mode = np.squeeze(E_mode[0])
-        ex_mode = np.squeeze(E_mode[1]) if E_mode.shape[0] > 1 else ez_mode * 0.0
-        ey_mode = np.squeeze(E_mode[2]) if E_mode.shape[0] > 2 else ez_mode * 0.0
-        
         if axis == "x":
-            h_t = hy_mode if np.max(np.abs(hy_mode)) > 1e-12 else hx_mode
+            # Original x propagation logic - extract fields exactly as original code
+            if self.pol == "te":
+                Hy_mode = np.squeeze(H_mode[1])  # Hy
+                Ez_mode = np.squeeze(E_mode[2])  # Ez
+                if np.max(np.abs(Hy_mode)) < 1e-9: Hy_mode = np.squeeze(H_mode[2])
+                if np.max(np.abs(Ez_mode)) < 1e-9: Ez_mode = np.squeeze(E_mode[1])
+            elif self.pol == "tm":
+                Hy_mode = np.squeeze(H_mode[2])  # Hz as Hy equivalent
+                Ez_mode = np.squeeze(E_mode[1])  # Ey as Ez equivalent
+            else:
+                raise ValueError(f"Unknown polarization: {self.pol}")
+            
+            # Phase align as original
+            idx_max = np.argmax(np.abs(Hy_mode))
+            phase_ref = np.angle(Hy_mode[idx_max])
+            Hy_mode = Hy_mode * np.exp(-1j * phase_ref)
+            Ez_mode = Ez_mode * np.exp(-1j * phase_ref)
+            
+            Ez_mode_at_h = Ez_mode
+            h_t = Hy_mode
+            e_t = Ez_mode
         else:
+            # Y propagation logic - use generalized extraction
+            hx_mode = np.squeeze(H_mode[1])
+            hy_mode = np.squeeze(H_mode[2]) if H_mode.shape[0] > 2 else hx_mode * 0.0
+            ez_mode = np.squeeze(E_mode[0])
+            ex_mode = np.squeeze(E_mode[1]) if E_mode.shape[0] > 1 else ez_mode * 0.0
+            ey_mode = np.squeeze(E_mode[2]) if E_mode.shape[0] > 2 else ez_mode * 0.0
+            
             h_t = hx_mode if np.max(np.abs(hx_mode)) > 1e-12 else hy_mode
-        
-        if self.pol == "te":
-            e_t = ez_mode if np.max(np.abs(ez_mode)) > 1e-12 else ey_mode
-        elif self.pol == "tm":
-            e_t = ey_mode if axis == "x" else ex_mode
-            if np.max(np.abs(e_t)) < 1e-12: e_t = ez_mode
-        else:
-            raise ValueError(f"Unknown polarization: {self.pol}")
-        
-        idx_max = np.argmax(np.abs(h_t))
-        phase_ref = np.angle(h_t[idx_max])
-        h_t = h_t * np.exp(-1j * phase_ref)
-        e_t = e_t * np.exp(-1j * phase_ref)
-        
-        Ez_mode_at_h = e_t
+            
+            if self.pol == "te":
+                e_t = ez_mode if np.max(np.abs(ez_mode)) > 1e-12 else ey_mode
+            elif self.pol == "tm":
+                e_t = ex_mode
+                if np.max(np.abs(e_t)) < 1e-12: e_t = ez_mode
+            else:
+                raise ValueError(f"Unknown polarization: {self.pol}")
+            
+            idx_max = np.argmax(np.abs(h_t))
+            phase_ref = np.angle(h_t[idx_max])
+            h_t = h_t * np.exp(-1j * phase_ref)
+            e_t = e_t * np.exp(-1j * phase_ref)
+            
+            Ez_mode_at_h = e_t
         
         ETA_0 = np.sqrt(MU_0 / EPS_0)
         Z_phys = ETA_0 / np.real(self._neff)
-        norm_h = np.max(np.abs(h_t))
-        norm_e = np.max(np.abs(Ez_mode_at_h))
-        if norm_h > 1e-12 and norm_e > 1e-12:
-            current_Z = norm_e / norm_h
-            correction_factor = Z_phys / current_Z
-            print(f"[ModeSource] Correcting impedance: Z_sim={current_Z:.2f}, Z_phys={Z_phys:.2f}. Scaling M by {correction_factor:.4f}")
-            Ez_mode_at_h *= correction_factor
         
-        jz_profile = h_sign * np.real(h_t)
-        my_profile = m_sign * np.real(Ez_mode_at_h)
+        if axis == "x":
+            # Original x propagation impedance correction
+            norm_hy = np.max(np.abs(h_t))  # This is Hy_mode after phase alignment
+            norm_ez = np.max(np.abs(Ez_mode_at_h))
+            if norm_hy > 1e-12 and norm_ez > 1e-12:
+                current_Z = norm_ez / norm_hy
+                correction_factor = Z_phys / current_Z
+                print(f"[ModeSource] Correcting impedance: Z_sim={current_Z:.2f}, Z_phys={Z_phys:.2f}. Scaling M_y by {correction_factor:.4f}")
+                Ez_mode_at_h *= correction_factor
+        else:
+            # Y propagation impedance correction
+            norm_h = np.max(np.abs(h_t))
+            norm_e = np.max(np.abs(Ez_mode_at_h))
+            if norm_h > 1e-12 and norm_e > 1e-12:
+                current_Z = norm_e / norm_h
+                correction_factor = Z_phys / current_Z
+                print(f"[ModeSource] Correcting impedance: Z_sim={current_Z:.2f}, Z_phys={Z_phys:.2f}. Scaling M by {correction_factor:.4f}")
+                Ez_mode_at_h *= correction_factor
+        
+        # Apply signs - for x propagation, use original explicit flip logic
+        # For y propagation, use sign_map
+        if axis == "x":
+            # Original code: start with real parts, then flip
+            jz_profile = np.real(h_t).copy()
+            my_profile = np.real(Ez_mode_at_h).copy()
+            # #region agent log
+            import json
+            with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"direction_fix","hypothesisId":"A","location":"mode.py:160","message":"before sign flip","data":{"direction":self.direction,"jz_initial_sign":float(np.sign(jz_profile[0])) if len(jz_profile) > 0 else 0,"my_initial_sign":float(np.sign(my_profile[0])) if len(my_profile) > 0 else 0,"jz_initial_val":float(jz_profile[0]) if len(jz_profile) > 0 else 0,"my_initial_val":float(my_profile[0]) if len(my_profile) > 0 else 0},"timestamp":int(__import__('time').time()*1000)})+"\n")
+            # #endregion
+            # For +x: flip jz to align Jz and My (mode solver returns them opposite)
+            # For -x: flip only My to reverse direction (keep Jz same as initial to get opposite propagation)
+            if self.direction == "+x":
+                jz_profile = -jz_profile
+            elif self.direction == "-x":
+                my_profile = -my_profile
+            # #region agent log
+            import json
+            with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"direction_fix","hypothesisId":"A","location":"mode.py:169","message":"after sign flip","data":{"direction":self.direction,"jz_final_sign":float(np.sign(jz_profile[0])) if len(jz_profile) > 0 else 0,"my_final_sign":float(np.sign(my_profile[0])) if len(my_profile) > 0 else 0,"jz_final_val":float(jz_profile[0]) if len(jz_profile) > 0 else 0,"my_final_val":float(my_profile[0]) if len(my_profile) > 0 else 0},"timestamp":int(__import__('time').time()*1000)})+"\n")
+            # #endregion
+        else:
+            jz_profile = h_sign * np.real(h_t)
+            my_profile = m_sign * np.real(Ez_mode_at_h)
         
         if axis == "y":
             # #region agent log
