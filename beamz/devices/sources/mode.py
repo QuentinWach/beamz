@@ -1,28 +1,11 @@
 import numpy as np
-from typing import Literal
 from beamz.devices.sources.solve import solve_modes
 from beamz.const import µm, LIGHT_SPEED, EPS_0, MU_0
 
 class ModeSource:
-    """Unidirectional mode source using Huygens surface equivalent currents on the Yee grid.
+    """Huygens mode source on Yee grid supporting ±x/±y propagation."""
     
-    For TEz 2D with +x propagation:
-    - J_z = H_y^mode injected at Ez Yee positions
-    - M_y = E_z^mode injected at Hy Yee positions
-    """
-    
-    def __init__(self, grid, center, width, wavelength, pol: Literal["te", "tm"], signal, direction: Literal["+x", "-x"] = "+x"):
-        """Initialize the mode source.
-        
-        Args:
-            grid: The simulation grid
-            center: (x, y) center position of the source plane
-            width: Width of the source in the y-direction
-            wavelength: Operating wavelength
-            pol: Polarization ("te" or "tm")
-            signal: Time-dependent signal function s(t)
-            direction: Propagation direction ("+x" or "-x")
-        """
+    def __init__(self, grid, center, width, wavelength, pol, signal, direction="+x"):
         self.grid = grid
         self.center = center if isinstance(center, (tuple, list)) else (center, grid.height / 2)
         self.width = width
@@ -34,51 +17,60 @@ class ModeSource:
         self._jz_profile = None
         self._my_profile = None
         self._ez_indices = None
-        self._hy_indices = None
+        self._h_indices = None
+        self._h_component = None
         self._neff = None
         
     def initialize(self, permittivity, resolution):
-        """Compute the mode and set up the source currents on the Yee grid."""
+        """Compute the mode and set up the source currents."""
         dx = dy = resolution
         ny, nx = permittivity.shape
+        axis = "x" if self.direction in ("+x", "-x") else "y"
+        # Forward (+) directions use j = -H_t, m = +E_t; reverse flips both
+        sign_map = {"+x": (-1.0, 1.0), "-x": (1.0, -1.0), "+y": (-1.0, 1.0), "-y": (1.0, -1.0)}
+        h_sign, m_sign = sign_map.get(self.direction, (-1.0, 1.0))
         
-        # Determine the x-column for the source plane
-        x_ez_idx = int(np.clip(np.round(self.center[0] / dx - 0.5), 0, nx - 1))
-        x_ez_coord = (x_ez_idx + 0.5) * dx
+        if axis == "x":
+            x_ez_idx = int(np.clip(np.round(self.center[0] / dx - 0.5), 0, nx - 1))
+            x_ez_coord = (x_ez_idx + 0.5) * dx
+            y_ez_slice = slice(0, ny)
+            y_coords = (np.arange(ny) + 0.5) * dy
+            eps_profile = permittivity[:, x_ez_idx]
+            if self.direction == "+x": x_h_idx = max(0, x_ez_idx - 1)
+            else: x_h_idx = min(nx - 2, x_ez_idx)
+            self._ez_indices = (y_ez_slice, x_ez_idx)
+            self._h_indices = (y_ez_slice, x_h_idx)
+            self._h_component = "Hx"
+            h_coord = x_h_idx * dx
+            print(f"[ModeSource] Direction: {self.direction}, Ez column {x_ez_idx}, Hx column {x_h_idx}")
+        else:
+            y_ez_idx = int(np.clip(np.round(self.center[1] / dy - 0.5), 0, ny - 1))
+            y_ez_coord = (y_ez_idx + 0.5) * dy
+            x_ez_slice = slice(0, nx)
+            x_coords = (np.arange(nx) + 0.5) * dx
+            eps_profile = permittivity[y_ez_idx, :]
+            if self.direction == "+y": y_h_idx = max(0, y_ez_idx - 1)
+            else: y_h_idx = min(ny - 2, y_ez_idx)
+            self._ez_indices = (y_ez_idx, x_ez_slice)
+            # For y propagation: Following TFSF boundary pattern, need row offset like x propagation has column offset
+            # For +y: use row above (y_ez_idx - 1), for -y: use same row but bound to ny-2
+            # Use Hy (staggered in y) to create proper TFSF boundary, similar to how x propagation uses Hx offset
+            # #region agent log
+            import json
+            with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"fix7","hypothesisId":"F","location":"mode.py:54","message":"y propagation: using Hy with row offset for TFSF boundary","data":{"direction":self.direction,"y_ez_idx":int(y_ez_idx),"y_h_idx":int(y_h_idx),"ny":int(ny),"nx":int(nx)},"timestamp":int(__import__('time').time()*1000)})+"\n")
+            # #endregion
+            self._h_indices = (y_h_idx, x_ez_slice)
+            self._h_component = "Hy"
+            h_coord = (y_h_idx + 0.5) * dy
+            print(f"[ModeSource] Direction: {self.direction}, Ez row {y_ez_idx}, Hy row {y_h_idx}")
         
-        # For unidirectional +x propagation: M_y at Hx column to the LEFT of Ez column
-        # Note: fields.Hx[i,j] is at x=(j+0.5)dx, y=idy. 
-        # fields.Ez[i,j] is at x=(j+0.5)dx, y=(i+0.5)dy? No, usually Ez at integer or half?
-        # In beamz ops.py: Hx from diff(Ez, axis=1). Hx is staggered in X relative to Ez?
-        # Actually, Hx and Ez share the same Y-coordinate index logic in beamz (based on curl_ex shape).
-        # But they are spatially staggered by 0.5 dx.
-        # If we want M_y at x_ez - 0.5 dx, we use index x_ez - 1 for Hx?
-        # Ez[j] is at x[j]. Hx[j-1] is at x[j]-0.5dx. 
-        if self.direction == "+x":
-            x_hx_idx = max(0, x_ez_idx - 1)  # One column to the left
-        else:  # "-x"
-            x_hx_idx = min(nx - 2, x_ez_idx)  # One column to the right? 
-            # If Ez at j. Hx at j is at x[j]+0.5dx.
-            # So for -x (source right of Ez), we use Hx at j.
-            
-        # Determine the y-extent of the source
-        # Update: We now use the FULL grid height to ensure the mode solver sees the open boundary (cladding/PML)
-        # and produces a correct eigenmode ("soft source").
-        # The 'width' parameter is now only used for logical centering or visualization if needed.
-        
-        y_ez_start = 0
-        y_ez_end = ny
-        y_ez_coords = (np.arange(y_ez_start, y_ez_end) + 0.5) * dy
-        
-        # Sample permittivity at Ez positions (cell centers: i+1/2, j+1/2) for the FULL column
-        eps_profile = permittivity[:, x_ez_idx]
-        
-        # Solve for the mode once
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
+        dL = dy if axis == "x" else dx
         neff_val, e_fields, h_fields, prop_axis = solve_modes(
             eps=eps_profile,
             omega=omega,
-            dL=dy,
+            dL=dL,
             m=1,
             direction=self.direction,
             filter_pol=self.pol,
@@ -87,95 +79,76 @@ class ModeSource:
         
         self._neff = neff_val[0]
         self._k = self._neff * 2 * np.pi / self.wavelength
-        
-        # Extract H_y (for J_z) and E_z (for M_y)
-        # H_y is physical Hy component. In solve_modes output (Ex, Ez, Ey) -> (Hx, Hz, Hy) for axis 1?
-        # solve_modes doc says: if prop_axis=1 (y): E=[Ex, Ez, Ey], H=[-Hx, -Hz, -Hy].
-        # But we are solving 1D mode with propagation in x (axis 0 of 3D or just 1D solver).
-        # solve_modes uses 1D epsilon. It returns H_y in h_fields[0][2] for TM?
         H_mode = h_fields[0]
         E_mode = e_fields[0]
         
+        hx_mode = np.squeeze(H_mode[1])
+        hy_mode = np.squeeze(H_mode[2]) if H_mode.shape[0] > 2 else hx_mode * 0.0
+        ez_mode = np.squeeze(E_mode[0])
+        ex_mode = np.squeeze(E_mode[1]) if E_mode.shape[0] > 1 else ez_mode * 0.0
+        ey_mode = np.squeeze(E_mode[2]) if E_mode.shape[0] > 2 else ez_mode * 0.0
+        
+        if axis == "x":
+            h_t = hy_mode if np.max(np.abs(hy_mode)) > 1e-12 else hx_mode
+        else:
+            h_t = hx_mode if np.max(np.abs(hx_mode)) > 1e-12 else hy_mode
+        
         if self.pol == "te":
-            Hy_mode = np.squeeze(H_mode[1])  # Hy
-            Ez_mode = np.squeeze(E_mode[2])  # Ez
-            # Fallback if needed
-            if np.max(np.abs(Hy_mode)) < 1e-9: Hy_mode = np.squeeze(H_mode[2])
-            if np.max(np.abs(Ez_mode)) < 1e-9: Ez_mode = np.squeeze(E_mode[1])
+            e_t = ez_mode if np.max(np.abs(ez_mode)) > 1e-12 else ey_mode
         elif self.pol == "tm":
-            Hy_mode = np.squeeze(H_mode[2])  # Hz as Hy equivalent
-            Ez_mode = np.squeeze(E_mode[1])  # Ey as Ez equivalent
+            e_t = ey_mode if axis == "x" else ex_mode
+            if np.max(np.abs(e_t)) < 1e-12: e_t = ez_mode
         else:
             raise ValueError(f"Unknown polarization: {self.pol}")
-            
-        # Ensure consistent phase alignment
-        # Find peak of Hy and align phase to 0
-        idx_max = np.argmax(np.abs(Hy_mode))
-        phase_ref = np.angle(Hy_mode[idx_max])
-        Hy_mode = Hy_mode * np.exp(-1j * phase_ref)
-        Ez_mode = Ez_mode * np.exp(-1j * phase_ref)
         
-        # No interpolation needed for Ez_mode since Hx grid shares Y-coordinates with Ez grid!
-        Ez_mode_at_hx = Ez_mode
-
-        # Impedance matching correction
-        # Calculate physical wave impedance for the mode: Z = eta0 / neff
+        idx_max = np.argmax(np.abs(h_t))
+        phase_ref = np.angle(h_t[idx_max])
+        h_t = h_t * np.exp(-1j * phase_ref)
+        e_t = e_t * np.exp(-1j * phase_ref)
+        
+        Ez_mode_at_h = e_t
+        
         ETA_0 = np.sqrt(MU_0 / EPS_0)
         Z_phys = ETA_0 / np.real(self._neff)
-        
-        # Check current ratio
-        norm_hy = np.max(np.abs(Hy_mode))
-        norm_ez = np.max(np.abs(Ez_mode_at_hx))
-            
-        if norm_hy > 1e-12 and norm_ez > 1e-12:
-            current_Z = norm_ez / norm_hy
+        norm_h = np.max(np.abs(h_t))
+        norm_e = np.max(np.abs(Ez_mode_at_h))
+        if norm_h > 1e-12 and norm_e > 1e-12:
+            current_Z = norm_e / norm_h
             correction_factor = Z_phys / current_Z
-            print(f"[ModeSource] Correcting impedance: Z_sim={current_Z:.2f}, Z_phys={Z_phys:.2f}. Scaling M_y by {correction_factor:.4f}")
-            Ez_mode_at_hx *= correction_factor
+            print(f"[ModeSource] Correcting impedance: Z_sim={current_Z:.2f}, Z_phys={Z_phys:.2f}. Scaling M by {correction_factor:.4f}")
+            Ez_mode_at_h *= correction_factor
         
-        # Store profiles
-        # Note: We do NOT apply Hann windowing here because we want the exact eigenmode 
-        # which naturally decays to zero at the boundaries (if domain is large enough).
-        jz_profile = np.real(Hy_mode).copy()
-        my_profile = np.real(Ez_mode_at_hx).copy()
+        jz_profile = h_sign * np.real(h_t)
+        my_profile = m_sign * np.real(Ez_mode_at_h)
         
-        # For +x propagation, Jz (Hy) and My (Ez) must have same sign to launch forward wave.
-        # But mode solver returns them with opposite signs for +x flux.
-        # So we flip Jz to align them for Huygens source.
-        if self.direction == "+x":
-            jz_profile = -jz_profile
-            
-        # For -x propagation, flip both signs to match direction
-        # (Note: For -x, Hy and Ez are naturally aligned in sign, so they work as Huygens pair)
-        if self.direction == "-x":
-            jz_profile = -jz_profile
-            my_profile = -my_profile
+        if axis == "y":
+            # #region agent log
+            import json
+            with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"fix7","hypothesisId":"B","location":"mode.py:130","message":"y propagation: profile lengths for Hy grid","data":{"jz_profile_len":len(jz_profile),"my_profile_len":len(my_profile),"nx":int(nx)},"timestamp":int(__import__('time').time()*1000)})+"\n")
+            # #endregion
+            # Align magnetic current to Hy grid (full x row, ny-1 rows)
+            jz_profile = jz_profile[:nx]  # Ez uses full row (nx elements)
+            my_profile = my_profile[:nx]  # Hy uses full x row (nx elements)
         
-        # Store the profiles (as real-valued after phase alignment)
         self._jz_profile = np.asarray(np.real(jz_profile), dtype=np.float64)
         self._my_profile = np.asarray(np.real(my_profile), dtype=np.float64)
         
-        # Store grid indices for injection
-        self._ez_indices = (slice(y_ez_start, y_ez_end), x_ez_idx)
-        # Hx indices (replaces Hy indices)
-        self._hx_indices = (slice(y_ez_start, y_ez_end), x_hx_idx)
+        if axis == "x":
+            print(f"[ModeSource] x={x_ez_coord/µm:.3f}µm, neff={self._neff:.4f}")
+            print(f"[ModeSource] J_z at Ez[:, {x_ez_idx}]")
+            print(f"[ModeSource] M at Hx[:, {self._h_indices[1]}] (x~{h_coord/µm:.3f}µm)")
+            plot_coords = y_coords
+        else:
+            print(f"[ModeSource] y={y_ez_coord/µm:.3f}µm, neff={self._neff:.4f}")
+            print(f"[ModeSource] J_z at Ez[{self._ez_indices[0]}, :]")
+            print(f"[ModeSource] M at Hy[{self._h_indices[0]}, :] (y~{h_coord/µm:.3f}µm)")
+            plot_coords = x_coords
         
-        x_hx_coord = x_hx_idx * dx # Approx
-        print(f"[ModeSource] Initialized at x={x_ez_coord/µm:.3f}µm, neff={self._neff:.4f}")
+        if self.width < 2.0 * µm:
+            print("[ModeSource] Note: Source injection extended to full transverse span.")
         
-        # Check for potential radiation issues if source width is much larger than typical single mode
-        # Update: We now inject on the full grid, so width is only used for "center".
-        # The user might be confused if they set a tiny width but we inject everywhere.
-        # But this is the "Soft Source" fix.
-        if self.width < 2.0 * µm: # If user tried to restrict it
-             print(f"[ModeSource] Note: Source injection extended to full grid height to prevent mode truncation radiation.")
-             
-        print(f"[ModeSource] Direction: {self.direction}")
-        print(f"[ModeSource] J_z at Ez[{y_ez_start}:{y_ez_end}, {x_ez_idx}] (x={x_ez_coord/µm:.3f}µm)")
-        print(f"[ModeSource] M_y at Hx[{y_ez_start}:{y_ez_end}, {x_hx_idx}] (x~{x_hx_coord/µm:.3f}µm)")
-        
-        # Plot mode profile for debugging
-        self._plot_mode_profile(y_ez_coords, self._jz_profile, self._my_profile)
+        self._plot_mode_profile(plot_coords, self._jz_profile, self._my_profile)
         
     def _enforce_propagation_direction(self, E, H, axis):
         """Ensure the mode propagates in the correct direction by checking Poynting vector."""
@@ -196,36 +169,33 @@ class ModeSource:
         phase = np.angle(field[idx_max])
         return field * np.exp(-1j * phase)
     
-    def _plot_mode_profile(self, y_coords, jz_profile, my_profile):
+    def _plot_mode_profile(self, coords, jz_profile, my_profile):
         """Plot the mode profile for debugging."""
         try:
             import matplotlib.pyplot as plt
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
             
             # Plot J_z (H_y)
-            ax1.plot(y_coords/µm, np.real(jz_profile), 'b-', label='Real(J_z) = Real(H_y)')
-            ax1.plot(y_coords/µm, np.imag(jz_profile), 'b--', label='Imag(J_z) = Imag(H_y)')
-            ax1.set_xlabel('y (µm)')
+            ax1.plot(coords/µm, np.real(jz_profile), 'b-', label='Real(J_z)')
+            ax1.plot(coords/µm, np.imag(jz_profile), 'b--', label='Imag(J_z)')
+            ax1.set_xlabel('coord (µm)')
             ax1.set_ylabel('J_z amplitude')
             ax1.set_title(f'Electric Current J_z = H_y (neff={self._neff:.4f})')
             ax1.legend()
             ax1.grid(True)
             
-            # Plot M_y (E_z)
-            # Use correct y-coords for M_y (Hy positions) if different length
-            if my_profile.size == y_coords.size:
-                y_my_coords = y_coords
+            # Plot M_y (E_z) - handle different profile lengths
+            if len(my_profile) == len(coords):
+                ax2.plot(coords/µm, np.real(my_profile), 'r-', label='Real(M)')
+                ax2.plot(coords/µm, np.imag(my_profile), 'r--', label='Imag(M)')
             else:
-                # Reconstruct Hy coords
-                start, end = self._hy_indices[0].start, self._hy_indices[0].stop
-                dL = y_coords[1] - y_coords[0]
-                y_my_coords = (np.arange(start, end) + 1.0) * dL
-                
-            ax2.plot(y_my_coords/µm, np.real(my_profile), 'r-', label='Real(M_y) = Real(E_z)')
-            ax2.plot(y_my_coords/µm, np.imag(my_profile), 'r--', label='Imag(M_y) = Imag(E_z)')
-            ax2.set_xlabel('y (µm)')
-            ax2.set_ylabel('M_y amplitude')
-            ax2.set_title(f'Magnetic Current M_y = E_z (dir={self.direction})')
+                # If my_profile is shorter (e.g., for Hx), use subset of coords
+                plot_coords = coords[:len(my_profile)]
+                ax2.plot(plot_coords/µm, np.real(my_profile), 'r-', label='Real(M)')
+                ax2.plot(plot_coords/µm, np.imag(my_profile), 'r--', label='Imag(M)')
+            ax2.set_xlabel('coord (µm)')
+            ax2.set_ylabel('M amplitude')
+            ax2.set_title(f'Magnetic Current M (dir={self.direction})')
             ax2.legend()
             ax2.grid(True)
             
@@ -251,16 +221,7 @@ class ModeSource:
             return 0.0
 
     def inject(self, fields, t, dt, current_step, resolution, design):
-        """Inject source fields directly into the simulation grid before the FDTD update step.
-        
-        Args:
-            fields: The Fields object containing E and H arrays
-            t: Current simulation time
-            dt: Time step size
-            current_step: Current time step index
-            resolution: Spatial resolution (dx, dy)
-            design: The simulation Design object
-        """
+        """Inject source fields directly into the grid before the update step."""
         from beamz.const import EPS_0, MU_0
         
         if self._jz_profile is None:
@@ -285,7 +246,7 @@ class ModeSource:
         
         # Get permittivity at injection location
         y_ez_slice, x_ez_idx = self._ez_indices
-        eps_at_source = fields.permittivity[y_ez_slice, x_ez_idx]
+        eps_at_source = fields.permittivity[self._ez_indices]
         
         jz_term = self._jz_profile * signal_value_e / resolution
         # Note: epsilon is relative permittivity, so multiply by EPS_0
@@ -293,27 +254,23 @@ class ModeSource:
         
         fields.Ez[self._ez_indices] += ez_injection
         
-        # Inject M_y source into Hx field (which corresponds to physical -Hy)
-        # Update equation for physical H_y: ∂_t H_y = (1/μ)[∂_x E_z - M_y]
-        # Beamz Hx is actually -H_y.
-        # So ∂_t (-H_y) = - (1/μ)[∂_x E_z - M_y] = (1/μ)[-∂_x E_z + M_y]
-        # Discrete update: Hx_new = Hx_old - coeff * curl_ex + coeff * M_y
-        # We inject +M_y contribution directly: Hx_new = Hx_old + (dt/μ) * M_y
-        
-        # Get permeability at injection location (if available, otherwise assume 1.0)
-        # Use Hx indices
-        y_hx_slice, x_hx_idx = self._hx_indices
         if hasattr(fields, 'permeability'):
-            mu_at_source = fields.permeability[y_hx_slice, x_hx_idx]
+            mu_at_source = fields.permeability[self._h_indices]
         else:
             mu_at_source = 1.0
             
         my_term = self._my_profile * signal_value_h / resolution
-        # Note: mu is relative permeability, so multiply by MU_0
-        # Sign is POSITIVE because we are updating -H_y with +M_y term
-        hx_injection = +my_term * dt / (MU_0 * mu_at_source)
+        h_injection = +my_term * dt / (MU_0 * mu_at_source)
         
-        fields.Hx[self._hx_indices] += hx_injection
+        # #region agent log
+        import json
+        with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"fix7","hypothesisId":"F","location":"mode.py:259","message":"inject: injecting into H component","data":{"h_component":self._h_component,"h_indices":str(self._h_indices),"direction":self.direction,"jz_sign":float(np.sign(self._jz_profile[0])) if len(self._jz_profile) > 0 else 0,"my_sign":float(np.sign(self._my_profile[0])) if len(self._my_profile) > 0 else 0},"timestamp":int(__import__('time').time()*1000)})+"\n")
+        # #endregion
+        if self._h_component == "Hx":
+            fields.Hx[self._h_indices] += h_injection
+        else:
+            fields.Hy[self._h_indices] += h_injection
         
         # Diagnostics: estimate Poynting ratio (first 50 steps)
         # try:
