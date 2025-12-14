@@ -8,15 +8,18 @@ from beamz.visual.viz import animate_manual_field, close_fdtd_figure
 
 class Simulation:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
-    def __init__(self, design:Design=None, devices:list[Device]=[], boundaries:list[Boundary]=[], resolution:float=0.02*µm, time:np.ndarray=None, plane_2d:str='xy'):
-        """Initialize FDTD simulation with design object and extract material properties at specified resolution."""
+    def __init__(self,
+        design:Design=None,
+        devices:list[Device]=[],
+        boundaries:list[Boundary]=[],
+        resolution:float=0.02*µm,
+        time:np.ndarray=None,
+        plane_2d:str='xy'):
         self.design = design
         self.resolution = resolution
         self.is_3d = design.is_3d and design.depth > 0
         self.plane_2d = plane_2d.lower()
-        if self.plane_2d not in ['xy', 'yz', 'xz']:
-            print(f"Warning: Invalid plane_2d='{plane_2d}', defaulting to 'xy'")
-            self.plane_2d = 'xy'
+        if self.plane_2d not in ['xy', 'yz', 'xz']: self.plane_2d = 'xy'
         
         # Get material grids from design (design owns the material grids, we reference them)
         permittivity, conductivity, permeability = design.get_material_grids(resolution)
