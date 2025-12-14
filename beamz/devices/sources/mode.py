@@ -60,7 +60,10 @@ class ModeSource:
             else: # TE
                 # Hz (scalar) at center_idx, Ey (transverse) at offset_idx
                 # Hz grid is (ny-1, nx-1). Ey grid is (ny-1, nx).
-                hz_col = min(nx - 2, center_idx)
+                # Adjust Hz column to match TFSF condition (H typically one cell behind E)
+                if self.direction == "+x": hz_col = max(0, center_idx - 1)
+                else: hz_col = min(nx - 2, center_idx)
+                
                 self._hz_indices = (slice(0, ny-1), hz_col)
                 self._e_indices = (slice(0, ny-1), offset_idx)
                 self._e_component = "Ey"
@@ -85,7 +88,10 @@ class ModeSource:
             else: # TE
                 # Hz (scalar) at center_idx, Ex (transverse) at offset_idx
                 # Hz grid is (ny-1, nx-1). Ex grid is (ny, nx-1).
-                hz_row = min(ny - 2, center_idx)
+                # Adjust Hz row to match TFSF condition
+                if self.direction == "+y": hz_row = max(0, center_idx - 1)
+                else: hz_row = min(ny - 2, center_idx)
+                
                 self._hz_indices = (hz_row, slice(0, nx-1))
                 self._e_indices = (offset_idx, slice(0, nx-1))
                 self._e_component = "Ex"
@@ -136,15 +142,27 @@ class ModeSource:
                     Ez_profile *= corr
                 
                 # Sign adjustment
-                # For +x: Jz = -Hy. For -x: My = -Ez (to reverse).
-                # Using original logic:
+                # For +x: Jz = +Hy (phys). M_y = Ez (phys).
+                # Note: Jz injects into Ez with - sign. My injects into H with + sign.
+                # Since H update subtracts curl, and My is added to curl, My effectively subtracts.
+                # So Profile = M_phys.
+                
                 jz_val = np.real(Hy_profile)
                 my_val = np.real(Ez_profile)
-                if self.direction == "+x": jz_val = -jz_val
-                elif self.direction == "-x": my_val = -my_val
+                if self.direction == "+x": 
+                    # Jz = Hy. Profile = Hy.
+                    # My = Ez. Profile = Ez.
+                    pass # Signs are correct as is
+                elif self.direction == "-x": 
+                    # Jz = -Hy.
+                    # My = -Ez.
+                    jz_val = -jz_val
+                    my_val = -my_val
                 
                 self._jz_profile = jz_val
                 self._my_profile = my_val
+                
+                plot_vals = (self._jz_profile, self._my_profile)
                 
                 plot_vals = (self._jz_profile, self._my_profile)
                 
@@ -182,20 +200,21 @@ class ModeSource:
                 # J = n x H = x x (0,0,Hz) = (0, -Hz, 0). So Jy = -Hz.
                 # M = -n x E = -x x (0,Ey,0) = -(0,0,Ey) = (0,0,-Ey). So Mz = -Ey.
                 
-                # If +x: n=x. Jy = -Hz. Mz = -Ey.
-                # If -x: n=-x. Jy = Hz. Mz = Ey.
+                # Profile Logic: Profile = Physical.
                 
-                mz_val = np.real(Ey_profile) # Base magnitude
-                jy_val = np.real(Hz_profile) # Base magnitude
+                mz_val = np.real(Ey_profile) # Base magnitude (Ey)
+                jy_val = np.real(Hz_profile) # Base magnitude (Hz)
                 
                 if self.direction == "+x":
-                    mz_val = -mz_val
+                    # Jy = -Hz.
+                    # Mz = -Ey.
                     jy_val = -jy_val
+                    mz_val = -mz_val
                 else:
-                    # For -x, signs flip?
-                    # J = (-x) x Hz z = -(-Hz y) = Hz y. So Jy = Hz.
-                    # M = -(-x) x Ey y = x x Ey y = Ey z. So Mz = Ey.
-                    pass # Values are positive
+                    # -x:
+                    # Jy = Hz.
+                    # Mz = Ey.
+                    pass # Signs correct
                 
                 self._mz_profile = mz_val
                 self._jy_profile = jy_val
@@ -260,13 +279,29 @@ class ModeSource:
                 # But physically `Hy` (legacy) is `Hx` (transverse).
                 # So it matches! We inject `Mx` into `Hy` (legacy/code).
                 
-                # So for TM y-prop:
-                # `_jz_profile` drives Ez.
-                # `_my_profile` drives Hy (code) -> Hx (physical).
-                # This works.
+                # TM y-prop:
+                # +y: Jz = -Hx. Mx = -Ez.
+                # -y: Jz = Hx. Mx = Ez.
+                # TM y-prop:
+                # +y: Jz = -Hx. Mx = -Ez.
+                # -y: Jz = Hx. Mx = Ez.
+                # Profiles = Physical.
                 
-                jz_val = h_sign * np.real(Hx_profile)
-                my_val = m_sign * np.real(Ez_profile)
+                jz_val = np.real(Hx_profile)
+                my_val = np.real(Ez_profile)
+                
+                if self.direction == "+y":
+                    # Jz = -Hx.
+                    # Mx = -Ez. Flip -> +Ez.
+                    jz_val = -jz_val
+                    # my_val is +Ez (Ez is positive, so leave it)
+                else:
+                    # -y:
+                    # Jz = Hx.
+                    # Mx = Ez.
+                    # jz_val is +Hx
+                    # my_val is +Ez
+                    pass
                 
                 self._jz_profile = jz_val
                 self._my_profile = my_val
@@ -302,25 +337,24 @@ class ModeSource:
                 # J = n x H = y x (0,0,Hz) = (Hz, 0, 0). So Jx = Hz.
                 # M = -n x E = -y x (Ex,0,0) = -(-Ex z) = Ex z. So Mz = Ex.
                 
-                # If +y: n=y. Jx = Hz. Mz = Ex.
-                # If -y: n=-y. Jx = -Hz. Mz = -Ex.
+                # TE y-prop:
+                # J = n x H = y x (0,0,Hz) = (Hz, 0, 0). So Jx = Hz.
+                # M = -n x E = -y x (Ex,0,0) = -(-Ex z) = Ex z. So Mz = Ex.
                 
-                # h_sign, m_sign from map: +y -> (-1, 1). -y -> (1, -1).
-                # Wait. For TM (+y): Jz = -Hx. Mx = Ez.
-                # For TE (+y): Jx = Hz. Mz = Ex.
-                # So TE signs are opposite to TM signs for J?
+                # Profiles = Physical.
                 
-                # Let's be explicit:
                 mz_val = np.real(Ex_profile)
                 jx_val = np.real(Hz_profile)
                 
                 if self.direction == "+y":
-                    # Jx = Hz (positive)
-                    # Mz = Ex (positive)
-                    pass
+                    # Jx = Hz.
+                    # Mz = Ex. Flip -> -Ex.
+                    # jx_val is +Hz.
+                    mz_val = -mz_val
                 else:
-                    # Jx = -Hz
-                    # Mz = -Ex
+                    # -y:
+                    # Jx = -Hz.
+                    # Mz = -Ex.
                     jx_val = -jx_val
                     mz_val = -mz_val
                 
@@ -417,9 +451,32 @@ class ModeSource:
         # Simplified timing for TF/SF boundary condition
         # J (driving E) is evaluated at t + 0.5*dt (half-step).
         # M (driving H) is evaluated at t (integer step).
+        # However, we must account for the physical propagation delay between the E and H source planes.
+        # In all configurations, we placed H "upstream" of E by 0.5 grid cells.
+        # So H should lead E by dt_physical = neff * dx / (2 * c).
+        # t_H_signal = t_E_signal + dt_physical
+        
+        dt_physical = 0.0
+        if self._neff is not None:
+             dt_physical = np.real(self._neff) * resolution / (2 * LIGHT_SPEED)
         
         signal_value_e = self._get_signal_value(t + 0.5 * dt, dt)
-        signal_value_h = self._get_signal_value(t, dt)
+        
+        # Simplified timing for TF/SF boundary condition
+        # J (driving E) is evaluated at t + 0.5*dt (half-step).
+        # M (driving H) is evaluated at t (integer step).
+        # However, we must account for the physical propagation delay between the E and H source planes.
+        # In all configurations, we placed H "upstream" of E by 0.5 grid cells.
+        # So H should lead E by dt_physical = neff * dx / (2 * c).
+        # t_H_signal = t_E_signal + dt_physical
+        
+        dt_physical = 0.0
+        if self._neff is not None:
+             dt_physical = np.real(self._neff) * resolution / (2 * LIGHT_SPEED)
+        
+        # H signal advanced by dt_physical relative to E signal
+        # E signal is at t + 0.5*dt.
+        signal_value_h = self._get_signal_value(t + 0.5 * dt + dt_physical, dt)
         
         if self.pol == "tm":
             # TM Injection: Jz -> Ez, M -> Hx/Hy
