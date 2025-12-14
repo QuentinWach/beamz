@@ -27,7 +27,7 @@ signal = ramped_cosine(t=tsteps, amplitude=1, frequency=LIGHT_SPEED/WL, t_max=TI
 input_source = ModeSource(grid=grid, center=(2.5*µm, H/2), width=WG_W, wavelength=WL,
                 pol="tm", signal=signal, direction="+x")
 back_source = ModeSource(grid=grid, center=(W/2, H-2.5*µm), width=WG_W, wavelength=WL,
-                pol="tm", signal=signal, direction="+y")
+                pol="tm", signal=signal, direction="-y")
 
 sim = Simulation(design=design, devices=[input_source, back_source],
     boundaries=[PML(edges='all', thickness=1.2*WL)], time=tsteps, resolution=DX)
