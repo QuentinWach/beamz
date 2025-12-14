@@ -32,14 +32,14 @@ class ModeSource:
         self._h_component = None
         self._e_component = None # For TE (Ex/Ey)
         self._neff = None
+        self._dt_physical = 0.0
         
     def initialize(self, permittivity, resolution):
         """Compute the mode and set up the source currents."""
         dx = dy = resolution
         ny, nx = permittivity.shape
         axis = "x" if self.direction in ("+x", "-x") else "y"
-        sign_map = {"+y": (-1.0, 1.0), "-y": (1.0, -1.0)}
-        h_sign, m_sign = sign_map.get(self.direction, (-1.0, 1.0))
+        self._dt_physical = 0.0
         
         # 1. Setup indices and profiles
         if axis == "x":
@@ -60,9 +60,9 @@ class ModeSource:
             else: # TE
                 # Hz (scalar) at center_idx, Ey (transverse) at offset_idx
                 # Hz grid is (ny-1, nx-1). Ey grid is (ny-1, nx).
-                # Adjust Hz column to match TFSF condition (H typically one cell behind E)
-                if self.direction == "+x": hz_col = max(0, center_idx - 1)
-                else: hz_col = min(nx - 2, center_idx)
+                # Choose Hz column so that Hz plane is one half-cell "upstream" of Ey plane.
+                if self.direction == "+x": hz_col = max(0, offset_idx - 1)
+                else: hz_col = min(nx - 2, offset_idx)
                 
                 self._hz_indices = (slice(0, ny-1), hz_col)
                 self._e_indices = (slice(0, ny-1), offset_idx)
@@ -88,9 +88,9 @@ class ModeSource:
             else: # TE
                 # Hz (scalar) at center_idx, Ex (transverse) at offset_idx
                 # Hz grid is (ny-1, nx-1). Ex grid is (ny, nx-1).
-                # Adjust Hz row to match TFSF condition
-                if self.direction == "+y": hz_row = max(0, center_idx - 1)
-                else: hz_row = min(ny - 2, center_idx)
+                # Choose Hz row so that Hz plane is one half-cell "upstream" of Ex plane.
+                if self.direction == "+y": hz_row = max(0, offset_idx - 1)
+                else: hz_row = min(ny - 2, offset_idx)
                 
                 self._hz_indices = (hz_row, slice(0, nx-1))
                 self._e_indices = (offset_idx, slice(0, nx-1))
@@ -113,6 +113,32 @@ class ModeSource:
         self._neff = neff_val[0]
         H_mode = h_fields[0]
         E_mode = e_fields[0]
+        
+        # 2.5. Compute physical time shift between E and H injection planes based on Yee-grid locations.
+        # Use dt_physical = (coord_E - coord_H) / v_g  (approx), with v ≈ c / neff.
+        # Positive dt_physical means H signal is sampled at a later time than E (H is upstream).
+        if self._neff is not None:
+            coord_e = 0.0
+            coord_h = 0.0
+            if axis == "x":
+                if self.pol == "tm":
+                    # Ez at x = (i + 0.5)dx, Hx at x = (i + 1.0)dx
+                    coord_e = (self._ez_indices[1] + 0.5) * dx
+                    coord_h = (self._h_indices[1] + 1.0) * dx
+                else:
+                    # Ey at x = (i + 0.5)dx, Hz at x = (i + 1.0)dx
+                    coord_e = (self._e_indices[1] + 0.5) * dx
+                    coord_h = (self._hz_indices[1] + 1.0) * dx
+            else:
+                if self.pol == "tm":
+                    # Ez at y = (j + 0.5)dy, Hy at y = (j + 1.0)dy
+                    coord_e = (self._ez_indices[0] + 0.5) * dy
+                    coord_h = (self._h_indices[0] + 1.0) * dy
+                else:
+                    # Ex at y = (j + 0.5)dy, Hz at y = (j + 1.0)dy
+                    coord_e = (self._e_indices[0] + 0.5) * dy
+                    coord_h = (self._hz_indices[0] + 1.0) * dy
+            self._dt_physical = (coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
         
         # 3. Extract Fields & Profiles
         if axis == "x":
@@ -141,28 +167,11 @@ class ModeSource:
                     corr = Z_phys / (norm_e / norm_h)
                     Ez_profile *= corr
                 
-                # Sign adjustment
-                # For +x: Jz = +Hy (phys). M_y = Ez (phys).
-                # Note: Jz injects into Ez with - sign. My injects into H with + sign.
-                # Since H update subtracts curl, and My is added to curl, My effectively subtracts.
-                # So Profile = M_phys.
-                
-                jz_val = np.real(Hy_profile)
-                my_val = np.real(Ez_profile)
-                if self.direction == "+x": 
-                    # Jz = Hy. Profile = Hy.
-                    # My = Ez. Profile = Ez.
-                    pass # Signs are correct as is
-                elif self.direction == "-x": 
-                    # Jz = -Hy.
-                    # My = -Ez.
-                    jz_val = -jz_val
-                    my_val = -my_val
-                
-                self._jz_profile = jz_val
-                self._my_profile = my_val
-                
-                plot_vals = (self._jz_profile, self._my_profile)
+                # Physical Huygens currents for TM x-prop:
+                # Jz = ±Hy, My = ±Ez with sign given by direction (n = ±x).
+                dir_sign = 1.0 if self.direction == "+x" else -1.0
+                self._jz_profile = dir_sign * np.real(Hy_profile)
+                self._my_profile = dir_sign * np.real(Ez_profile)
                 
                 plot_vals = (self._jz_profile, self._my_profile)
                 
@@ -196,28 +205,14 @@ class ModeSource:
                     corr = Z_phys / (norm_e / norm_h)
                     Ey_profile *= corr
                 
-                # Sources for TE x-prop:
-                # J = n x H = x x (0,0,Hz) = (0, -Hz, 0). So Jy = -Hz.
-                # M = -n x E = -x x (0,Ey,0) = -(0,0,Ey) = (0,0,-Ey). So Mz = -Ey.
-                
-                # Profile Logic: Profile = Physical.
-                
-                mz_val = np.real(Ey_profile) # Base magnitude (Ey)
-                jy_val = np.real(Hz_profile) # Base magnitude (Hz)
-                
+                # Physical Huygens currents for TE x-prop:
+                # Jy = ∓Hz, Mz = ∓Ey with sign given by direction (n = ±x).
                 if self.direction == "+x":
-                    # Jy = -Hz.
-                    # Mz = -Ey.
-                    jy_val = -jy_val
-                    mz_val = -mz_val
+                    self._jy_profile = -np.real(Hz_profile)
+                    self._mz_profile = -np.real(Ey_profile)
                 else:
-                    # -x:
-                    # Jy = Hz.
-                    # Mz = Ey.
-                    pass # Signs correct
-                
-                self._mz_profile = mz_val
-                self._jy_profile = jy_val
+                    self._jy_profile = np.real(Hz_profile)
+                    self._mz_profile = np.real(Ey_profile)
                 
                 plot_vals = (self._jy_profile, self._mz_profile) # J, M
                 
@@ -225,12 +220,13 @@ class ModeSource:
             # Y-propagation
             if self.pol == "tm":
                 # TM: Main components Ez, Hx.
-                # Solver returns Hx as H_mode[0] or H_mode[1].
-                Hx_raw = np.squeeze(H_mode[0]) # Usually Hx
-                Ez_raw = np.squeeze(E_mode[2]) # Ez
-                # General fallback logic from original code
-                if H_mode.shape[0] > 1 and np.max(np.abs(Hx_raw)) < 1e-9: Hx_raw = np.squeeze(H_mode[1])
-                if E_mode.shape[0] > 1 and np.max(np.abs(Ez_raw)) < 1e-9: Ez_raw = np.squeeze(E_mode[1])
+                # Mode solver uses propagation_axis=0 with ordering:
+                # E=(Ez, Ex, Ey), H=(Hz, Hx, Hy). For "tm", Ey dominates and pairs with Hx for power flux.
+                # We map solver Ey -> FDTD Ez and solver Hx -> transverse H for Jz.
+                Hx_raw = np.squeeze(H_mode[1])
+                Ez_raw = np.squeeze(E_mode[2])
+                if np.max(np.abs(Hx_raw)) < 1e-9: Hx_raw = np.squeeze(H_mode[2])
+                if np.max(np.abs(Ez_raw)) < 1e-9: Ez_raw = np.squeeze(E_mode[1])
                 
                 # TM y-prop: Jz = Hx (if n=y, J=y x Hx x = -Hx z? No y x x = -z. Jz = -Hx)
                 # M = -y x Ez z = -Ez x. Mx = -Ez.
@@ -279,41 +275,26 @@ class ModeSource:
                 # But physically `Hy` (legacy) is `Hx` (transverse).
                 # So it matches! We inject `Mx` into `Hy` (legacy/code).
                 
-                # TM y-prop:
-                # +y: Jz = -Hx. Mx = -Ez.
-                # -y: Jz = Hx. Mx = Ez.
-                # TM y-prop:
-                # +y: Jz = -Hx. Mx = -Ez.
-                # -y: Jz = Hx. Mx = Ez.
-                # Profiles = Physical.
-                
-                jz_val = np.real(Hx_profile)
-                my_val = np.real(Ez_profile)
-                
+                # Physical Huygens currents for TM y-prop (Beamz curl convention):
+                # Empirically, unidirectionality requires Mx to flip relative to Jz for ±y.
+                # +y: Jz = -Hx, Mx = +Ez
+                # -y: Jz = +Hx, Mx = -Ez
                 if self.direction == "+y":
-                    # Jz = -Hx.
-                    # Mx = -Ez. Flip -> +Ez.
-                    jz_val = -jz_val
-                    # my_val is +Ez (Ez is positive, so leave it)
+                    self._jz_profile = -np.real(Hx_profile)
+                    self._my_profile = np.real(Ez_profile)
                 else:
-                    # -y:
-                    # Jz = Hx.
-                    # Mx = Ez.
-                    # jz_val is +Hx
-                    # my_val is +Ez
-                    pass
-                
-                self._jz_profile = jz_val
-                self._my_profile = my_val
-                plot_vals = (jz_val, my_val)
+                    self._jz_profile = np.real(Hx_profile)
+                    self._my_profile = -np.real(Ez_profile)
+                plot_vals = (self._jz_profile, self._my_profile)
                 
             else: # TE y-prop
                 # TE: Main components Hz, Ex.
-                # Solver: Hz is H_mode[2]. Ex is E_mode[0].
+                # Mode solver ordering: E=(Ez, Ex, Ey), H=(Hz, Hx, Hy). For "te", Ex dominates and pairs with Hy for power flux.
+                # We map solver Ex -> FDTD Ex and solver Hy -> FDTD Hz.
                 Hz_raw = np.squeeze(H_mode[2])
-                Ex_raw = np.squeeze(E_mode[0])
+                Ex_raw = np.squeeze(E_mode[1])
                 if np.max(np.abs(Hz_raw)) < 1e-9: Hz_raw = np.squeeze(H_mode[1])
-                if np.max(np.abs(Ex_raw)) < 1e-9: Ex_raw = np.squeeze(E_mode[1])
+                if np.max(np.abs(Ex_raw)) < 1e-9: Ex_raw = np.squeeze(E_mode[2])
                 
                 # Interpolate to staggered (nx-1)
                 Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
@@ -337,31 +318,12 @@ class ModeSource:
                 # J = n x H = y x (0,0,Hz) = (Hz, 0, 0). So Jx = Hz.
                 # M = -n x E = -y x (Ex,0,0) = -(-Ex z) = Ex z. So Mz = Ex.
                 
-                # TE y-prop:
-                # J = n x H = y x (0,0,Hz) = (Hz, 0, 0). So Jx = Hz.
-                # M = -n x E = -y x (Ex,0,0) = -(-Ex z) = Ex z. So Mz = Ex.
-                
-                # Profiles = Physical.
-                
-                mz_val = np.real(Ex_profile)
-                jx_val = np.real(Hz_profile)
-                
-                if self.direction == "+y":
-                    # Jx = Hz.
-                    # Mz = Ex. Flip -> -Ex.
-                    # jx_val is +Hz.
-                    mz_val = -mz_val
-                else:
-                    # -y:
-                    # Jx = -Hz.
-                    # Mz = -Ex.
-                    jx_val = -jx_val
-                    mz_val = -mz_val
-                
-                self._mz_profile = mz_val
-                self._jx_profile = jx_val
-                
-                plot_vals = (jx_val, mz_val)
+                # Physical Huygens currents for TE y-prop:
+                # Jx = +Hz for +y, -Hz for -y. Mz = +Ex for +y, -Ex for -y.
+                dir_sign = 1.0 if self.direction == "+y" else -1.0
+                self._jx_profile = dir_sign * np.real(Hz_profile)
+                self._mz_profile = dir_sign * np.real(Ex_profile)
+                plot_vals = (self._jx_profile, self._mz_profile)
 
         if self.width < 2.0 * µm:
             print("[ModeSource] Note: Source injection extended to full transverse span.")
@@ -448,35 +410,10 @@ class ModeSource:
             permittivity = design.rasterize(resolution=resolution).permittivity
             self.initialize(permittivity, resolution)
         
-        # Simplified timing for TF/SF boundary condition
-        # J (driving E) is evaluated at t + 0.5*dt (half-step).
-        # M (driving H) is evaluated at t (integer step).
-        # However, we must account for the physical propagation delay between the E and H source planes.
-        # In all configurations, we placed H "upstream" of E by 0.5 grid cells.
-        # So H should lead E by dt_physical = neff * dx / (2 * c).
-        # t_H_signal = t_E_signal + dt_physical
-        
-        dt_physical = 0.0
-        if self._neff is not None:
-             dt_physical = np.real(self._neff) * resolution / (2 * LIGHT_SPEED)
-        
+        # Timing:
+        # E source (J) is evaluated at t + 0.5*dt. H source (M) is evaluated at a shifted time to match plane offset.
         signal_value_e = self._get_signal_value(t + 0.5 * dt, dt)
-        
-        # Simplified timing for TF/SF boundary condition
-        # J (driving E) is evaluated at t + 0.5*dt (half-step).
-        # M (driving H) is evaluated at t (integer step).
-        # However, we must account for the physical propagation delay between the E and H source planes.
-        # In all configurations, we placed H "upstream" of E by 0.5 grid cells.
-        # So H should lead E by dt_physical = neff * dx / (2 * c).
-        # t_H_signal = t_E_signal + dt_physical
-        
-        dt_physical = 0.0
-        if self._neff is not None:
-             dt_physical = np.real(self._neff) * resolution / (2 * LIGHT_SPEED)
-        
-        # H signal advanced by dt_physical relative to E signal
-        # E signal is at t + 0.5*dt.
-        signal_value_h = self._get_signal_value(t + 0.5 * dt + dt_physical, dt)
+        signal_value_h = self._get_signal_value(t + 0.5 * dt + self._dt_physical, dt)
         
         if self.pol == "tm":
             # TM Injection: Jz -> Ez, M -> Hx/Hy
@@ -493,7 +430,8 @@ class ModeSource:
                 mu_at_source = 1.0
                 
             my_term = self._my_profile * signal_value_h / resolution
-            h_injection = +my_term * dt / (MU_0 * mu_at_source)
+            # Magnetic current enters H update with opposite sign to curl(E): ∂H/∂t = -(curlE + M)/μ.
+            h_injection = -my_term * dt / (MU_0 * mu_at_source)
             
             if self._h_component == "Hx":
                 fields.Hx[self._h_indices] += h_injection
@@ -521,8 +459,7 @@ class ModeSource:
                 mu_at_source = 1.0
                 
             mz_term = self._mz_profile * signal_value_h / resolution
-            # M injection uses + sign (consistent with TM logic)
-            hz_injection = +mz_term * dt / (MU_0 * mu_at_source)
+            hz_injection = -mz_term * dt / (MU_0 * mu_at_source)
             fields.Hz[self._hz_indices] += hz_injection
         
         # Diagnostics: estimate Poynting ratio (first 50 steps)
