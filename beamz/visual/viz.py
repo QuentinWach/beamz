@@ -621,7 +621,8 @@ def animate_manual_field(field_array,
                          clean_visualization=False,
                          wavelength=None,
                          line_color='gray',
-                         line_opacity=0.5):
+                         line_opacity=0.5,
+                         plane_2d='xy'):
     """Create or update a live Matplotlib view of a 2D field array.
 
     Args:
@@ -645,6 +646,7 @@ def animate_manual_field(field_array,
         wavelength: Optional wavelength for scale bar calculation (if None, uses design-based calculation).
         line_color: Color for structure and PML boundary outlines (default: 'gray').
         line_opacity: Opacity/transparency of structure and PML boundary outlines (0.0 to 1.0, default: 0.5).
+        plane_2d: Plane of simulation ('xy', 'yz', 'xz') to determine axis labels.
 
     Returns:
         context dict containing references to the Matplotlib objects for reuse.
@@ -694,11 +696,16 @@ def animate_manual_field(field_array,
         else:
             im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax)
         
+        # Determine field name from title if possible, or generic
+        field_name = "Field"
+        if title and " at t =" in title:
+            field_name = title.split(" at t =")[0]
+        
         if clean_visualization:
             ax.set_axis_off()
             cbar = None
         else:
-            cbar = plt.colorbar(im, ax=ax, orientation='vertical', label=f'Ez ({units})')
+            cbar = plt.colorbar(im, ax=ax, orientation='vertical', label=f'{field_name} ({units})')
             if title:
                 ax.set_title(title)
 
@@ -731,8 +738,16 @@ def animate_manual_field(field_array,
         if design is not None and not clean_visualization:
             max_dim = max(design.width, design.height)
             scale, unit = get_si_scale_and_label(max_dim)
-            ax.set_xlabel(f'X ({unit})')
-            ax.set_ylabel(f'Y ({unit})')
+            
+            # Set axis labels based on plane
+            xlabel, ylabel = 'X', 'Y'
+            if plane_2d == 'yz':
+                xlabel, ylabel = 'Y', 'Z'
+            elif plane_2d == 'xz':
+                xlabel, ylabel = 'X', 'Z'
+                
+            ax.set_xlabel(f'{xlabel} ({unit})')
+            ax.set_ylabel(f'{ylabel} ({unit})')
             ax.xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
             ax.yaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
 

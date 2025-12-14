@@ -8,11 +8,15 @@ from beamz.visual.viz import animate_manual_field, close_fdtd_figure
 
 class Simulation:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
-    def __init__(self, design:Design=None, devices:list[Device]=[], boundaries:list[Boundary]=[], resolution:float=0.02*µm, time:np.ndarray=None):
+    def __init__(self, design:Design=None, devices:list[Device]=[], boundaries:list[Boundary]=[], resolution:float=0.02*µm, time:np.ndarray=None, plane_2d:str='xy'):
         """Initialize FDTD simulation with design object and extract material properties at specified resolution."""
         self.design = design
         self.resolution = resolution
         self.is_3d = design.is_3d and design.depth > 0
+        self.plane_2d = plane_2d.lower()
+        if self.plane_2d not in ['xy', 'yz', 'xz']:
+            print(f"Warning: Invalid plane_2d='{plane_2d}', defaulting to 'xy'")
+            self.plane_2d = 'xy'
         
         # Get material grids from design (design owns the material grids, we reference them)
         permittivity, conductivity, permeability = design.get_material_grids(resolution)
@@ -23,7 +27,7 @@ class Simulation:
         self.t, self.current_step = 0, 0
         
         # Create field storage (fields owns the E/H field arrays, references material grids)
-        self.fields = Fields(permittivity, conductivity, permeability, resolution)
+        self.fields = Fields(permittivity, conductivity, permeability, resolution, plane_2d=self.plane_2d)
         
         # Initialize PML regions if present
         pml_boundaries = [b for b in boundaries if isinstance(b, PML)]
@@ -31,11 +35,14 @@ class Simulation:
             # Create PML regions (do this once, not every timestep)
             pml_data = {}
             for pml in pml_boundaries:
-                pml_data.update(pml.create_pml_regions(self.fields, design, resolution, self.dt))
+                pml_data.update(pml.create_pml_regions(self.fields, design, resolution, self.dt, plane_2d=self.plane_2d))
             self.pml_data = pml_data
             
-            # Initialize split fields in Fields object
-            self.fields._init_upml_fields(pml_data)
+            # Initialize split fields in Fields object - DEPRECATED/REMOVED in favor of effective conductivity
+            # self.fields._init_upml_fields(pml_data)
+            
+            # Set effective conductivity for PML
+            self.fields.set_pml_conductivity(pml_data)
         else:
             self.pml_data = None
         
@@ -105,8 +112,8 @@ class Simulation:
         viz_context = None
         if animate_live:
             # Validate field component exists
-            if not hasattr(self.fields, animate_live):
-                print(f"Warning: Field '{animate_live}' not found. Available: Ez, Hx, Hy (2D) or Ex,Ey,Ez,Hx,Hy,Hz (3D)")
+            if animate_live not in self.fields.available_components():
+                print(f"Warning: Field '{animate_live}' not found. Available: {self.fields.available_components()}")
                 animate_live = None
         
         # Extract wavelength from devices if not provided
@@ -130,7 +137,8 @@ class Simulation:
                                                       title=title, units='V/µm' if 'E' in animate_live else 'A/m',
                                                       design=self.design, boundaries=self.boundaries, pause=0.001,
                                                       axis_scale=axis_scale, cmap=cmap, clean_visualization=clean_visualization,
-                                                      wavelength=wavelength, line_color=line_color, line_opacity=line_opacity)
+                                                      wavelength=wavelength, line_color=line_color, line_opacity=line_opacity,
+                                                      plane_2d=self.plane_2d)
         finally:
             # Cleanup: keep the final frame visible
             if viz_context and viz_context.get('fig'):
