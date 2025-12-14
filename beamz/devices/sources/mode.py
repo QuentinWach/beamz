@@ -177,12 +177,14 @@ class ModeSource:
                 
             else: # TE
                 # TE: Main components Hz, Ey.
-                # Solver: Hz is H_mode[2]. Ey is E_mode[1].
-                Hz_raw = np.squeeze(H_mode[2])
-                Ey_raw = np.squeeze(E_mode[1])
-                # Check fallbacks if needed? Usually TE is Hz, Ex, Ey.
-                if np.max(np.abs(Hz_raw)) < 1e-9: Hz_raw = np.squeeze(H_mode[1]) # Fallback
-                if np.max(np.abs(Ey_raw)) < 1e-9: Ey_raw = np.squeeze(E_mode[0]) # Fallback
+                # The mode solver field ordering depends on its internal propagation axis mapping.
+                # For robust injection, pick the dominant components on this 1D cross-section.
+                h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
+                e_candidates = [np.squeeze(E_mode[i]) for i in range(3)]
+                h_scores = [float(np.max(np.abs(hc))) for hc in h_candidates]
+                e_scores = [float(np.max(np.abs(ec))) for ec in e_candidates]
+                Hz_raw = h_candidates[int(np.argmax(h_scores))]
+                Ey_raw = e_candidates[int(np.argmax(e_scores))]
                 
                 # Interpolate to staggered grid (ny-1)
                 # Raw profiles are length ny. We need length ny-1.
@@ -204,15 +206,23 @@ class ModeSource:
                 if norm_h > 1e-12 and norm_e > 1e-12:
                     corr = Z_phys / (norm_e / norm_h)
                     Ey_profile *= corr
+
+                # Ensure propagation direction (use Poynting sign on the 1D cross-section).
+                # For TE x-prop, Sx ~ Re(Ey * conj(Hz)).
+                desired_sign = 1.0 if self.direction == "+x" else -1.0
+                power = float(np.sum(np.real(Ey_profile * np.conjugate(Hz_profile))))
+                if power * desired_sign < 0.0: Hz_profile = -Hz_profile
                 
-                # Physical Huygens currents for TE x-prop:
-                # Jy = ∓Hz, Mz = ∓Ey with sign given by direction (n = ±x).
+                # Physical Huygens currents for TE x-prop in Beamz sign convention.
+                # With Beamz's curl sign and our magnetic injection (-Mz), the sign pairing that launches +x is:
+                # +x: Jy = +Hz, Mz = +Ey
+                # -x: Jy = -Hz, Mz = -Ey
                 if self.direction == "+x":
-                    self._jy_profile = -np.real(Hz_profile)
-                    self._mz_profile = -np.real(Ey_profile)
-                else:
                     self._jy_profile = np.real(Hz_profile)
                     self._mz_profile = np.real(Ey_profile)
+                else:
+                    self._jy_profile = -np.real(Hz_profile)
+                    self._mz_profile = -np.real(Ey_profile)
                 
                 plot_vals = (self._jy_profile, self._mz_profile) # J, M
                 
@@ -289,12 +299,13 @@ class ModeSource:
                 
             else: # TE y-prop
                 # TE: Main components Hz, Ex.
-                # Mode solver ordering: E=(Ez, Ex, Ey), H=(Hz, Hx, Hy). For "te", Ex dominates and pairs with Hy for power flux.
-                # We map solver Ex -> FDTD Ex and solver Hy -> FDTD Hz.
-                Hz_raw = np.squeeze(H_mode[2])
-                Ex_raw = np.squeeze(E_mode[1])
-                if np.max(np.abs(Hz_raw)) < 1e-9: Hz_raw = np.squeeze(H_mode[1])
-                if np.max(np.abs(Ex_raw)) < 1e-9: Ex_raw = np.squeeze(E_mode[2])
+                # Robustly pick dominant components on this 1D cross-section.
+                h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
+                e_candidates = [np.squeeze(E_mode[i]) for i in range(3)]
+                h_scores = [float(np.max(np.abs(hc))) for hc in h_candidates]
+                e_scores = [float(np.max(np.abs(ec))) for ec in e_candidates]
+                Hz_raw = h_candidates[int(np.argmax(h_scores))]
+                Ex_raw = e_candidates[int(np.argmax(e_scores))]
                 
                 # Interpolate to staggered (nx-1)
                 Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
