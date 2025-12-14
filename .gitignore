@@ -72,3 +72,10 @@ MARKETING_2.md
 TODO.md
 *.png
 *.npy
+
+beamz/devices/reference/
+notes/
+.mplconfig/
+.pytest_cache/
+.python_cache/
+.venv/

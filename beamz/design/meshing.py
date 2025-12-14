@@ -2,8 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from beamz.design.structures import Rectangle
-from beamz.helpers import create_rich_progress, get_si_scale_and_label, display_status
-
+from beamz.visual.helpers import display_status, create_rich_progress, get_si_scale_and_label
 
 class BaseMeshGrid:
     """Base class for mesh grids with common functionality."""
@@ -64,10 +63,8 @@ class RegularGrid(BaseMeshGrid):
         
         # Check if this is actually a 2D design
         if design.is_3d and design.depth > 0:
-            display_status(
-                "Warning: Using 2D RegularGrid for a 3D design. Use RegularGrid3D for proper 3D meshing.",
-                "warning"
-            )
+            display_status("Warning: Using 2D RegularGrid for a 3D design. Use RegularGrid3D for proper 3D meshing.", 
+                          "warning")
         
         # Calculate 2D grid dimensions
         width, height = self.design.width, self.design.height
@@ -86,8 +83,8 @@ class RegularGrid(BaseMeshGrid):
         self.shape = self.permittivity.shape
         self.dx = self.resolution
         self.dy = self.resolution
-        
-        display_status(f"Created 2D mesh: {grid_width} × {grid_height} cells", "success")
+        self.width = self.design.width
+        self.height = self.design.height
 
     def __rasterize__(self):
         """Painters algorithm to rasterize the design into a grid using super-sampling
@@ -142,20 +139,12 @@ class RegularGrid(BaseMeshGrid):
         with create_rich_progress() as progress:
             task = progress.add_task("Rasterizing structures...", total=len(self.design.structures))
             progress.update(task, advance=1)  # Skip the background we already processed
-            # Process each structure (except background)
             for idx in range(1, len(self.design.structures)):
                 structure = self.design.structures[idx]
-                # Skip PML visualization structures
+                # Skip PML visualization structures or structures without material (sources, monitors, etc.)
                 if hasattr(structure, 'is_pml') and structure.is_pml:
                     progress.update(task, advance=1)
                     continue
-                # Skip sources and monitors (they don't have materials)
-                from beamz.devices.sources import ModeSource, GaussianSource
-                from beamz.devices.monitors import Monitor
-                if isinstance(structure, (ModeSource, GaussianSource, Monitor)):
-                    progress.update(task, advance=1)
-                    continue
-                # Skip structures without material
                 if not hasattr(structure, 'material') or structure.material is None:
                     progress.update(task, advance=1)
                     continue
@@ -179,7 +168,7 @@ class RegularGrid(BaseMeshGrid):
                         min_x, min_y, max_x, max_y = bbox
                     else:
                         raise ValueError(f"Invalid bounding box format: {bbox}")
-                        
+                    
                     # Convert to grid indices
                     min_i = max(0, int(min_y / cell_size) - 1)
                     min_j = max(0, int(min_x / cell_size) - 1)
@@ -475,58 +464,9 @@ class RegularGrid(BaseMeshGrid):
                                         permittivity[i, j] = permittivity[i, j] * (1 - blend_factor) + mat_perm * blend_factor
                                         permeability[i, j] = permeability[i, j] * (1 - blend_factor) + mat_permb * blend_factor
                                         conductivity[i, j] = conductivity[i, j] * (1 - blend_factor) + mat_cond * blend_factor
-                    
+                
                 except (AttributeError, TypeError) as e:
                     print(f"Warning: Structure {type(structure)} doesn't have proper bounding box: {e}")
-                
-                progress.update(task, advance=1)
-        
-        # Process PML separately (only add conductivity to existing material values)
-        with create_rich_progress() as progress:
-            task = progress.add_task("Processing PML boundaries...", total=len(self.design.boundaries))
-            for boundary in self.design.boundaries:
-                # Get boundary region
-                if hasattr(boundary, 'position'):
-                    # Calculate PML region
-                    if hasattr(boundary, 'width') and hasattr(boundary, 'height'):
-                        # Rectangular PML
-                        pos_x, pos_y = boundary.position
-                        width, height = boundary.width, boundary.height
-                        # Convert to grid indices
-                        min_i = max(0, int(pos_y / cell_size))
-                        min_j = max(0, int(pos_x / cell_size))
-                        max_i = min(grid_height, int(np.ceil((pos_y + height) / cell_size)))
-                        max_j = min(grid_width, int(np.ceil((pos_x + width) / cell_size)))
-                    elif hasattr(boundary, 'radius'):
-                        # Corner PML
-                        center_x, center_y = boundary.position
-                        radius = boundary.radius
-                        # Calculate bounding box
-                        min_i = max(0, int((center_y - radius) / cell_size))
-                        min_j = max(0, int((center_x - radius) / cell_size))
-                        max_i = min(grid_height, int(np.ceil((center_y + radius) / cell_size)))
-                        max_j = min(grid_width, int(np.ceil((center_x + radius) / cell_size)))
-                    else:
-                        progress.update(task, advance=1)
-                        continue
-                else:
-                    progress.update(task, advance=1)
-                    continue
-                
-                # Fast calculation for entire PML region
-                for i in range(min_i, max_i):
-                    for j in range(min_j, max_j):
-                        x = x_centers[j]
-                        y = y_centers[i]
-                        # Add PML conductivity (single sample at center is sufficient)
-                        pml_conductivity = boundary.get_conductivity(
-                            x, y, 
-                            dx=self.resolution, 
-                            dt=dt_estimate, 
-                            eps_avg=permittivity[i, j]
-                        )
-                        if pml_conductivity > 0:
-                            conductivity[i, j] += pml_conductivity
                 
                 progress.update(task, advance=1)
         
@@ -543,7 +483,10 @@ class RegularGrid(BaseMeshGrid):
         if grid is not None:
             # Determine appropriate SI unit and scale
             max_dim = max(self.design.width, self.design.height)
-            scale, unit = get_si_scale_and_label(max_dim)
+            if max_dim >= 1e-3: scale, unit = 1e3, 'mm'
+            elif max_dim >= 1e-6: scale, unit = 1e6, 'µm'
+            elif max_dim >= 1e-9: scale, unit = 1e9, 'nm'
+            else: scale, unit = 1, 'm'
             # Calculate figure size based on grid dimensions
             grid_height, grid_width = grid.shape
             aspect_ratio = grid_width / grid_height
@@ -610,7 +553,9 @@ class RegularGrid3D(BaseMeshGrid):
         self.dx = self.resolution_xy
         self.dy = self.resolution_xy
         self.dz = self.resolution_z
-        
+        self.width = self.design.width
+        self.height = self.design.height
+        self.depth = self.design.depth
         display_status(f"Created 3D mesh: {grid_width} × {grid_height} × {grid_depth} cells", "success")
     
     def __rasterize_3d__(self):
@@ -664,7 +609,6 @@ class RegularGrid3D(BaseMeshGrid):
                 if hasattr(structure, 'is_pml') and structure.is_pml:
                     progress.update(task, advance=1)
                     continue
-                    
                 # Skip structures without material
                 if not hasattr(structure, 'material') or structure.material is None:
                     progress.update(task, advance=1)
@@ -757,9 +701,8 @@ class RegularGrid3D(BaseMeshGrid):
     def _process_3d_pml(self, permittivity, permeability, conductivity, 
                        x_centers, y_centers, z_centers, dt_estimate):
         """Process 3D PML boundaries."""
-        if not hasattr(self.design, 'boundaries') or not self.design.boundaries:
-            return
-            
+        if not hasattr(self.design, 'boundaries') or not self.design.boundaries: return
+        
         with create_rich_progress() as progress:
             task = progress.add_task("Processing 3D PML boundaries...", total=len(self.design.boundaries))
             
@@ -769,14 +712,9 @@ class RegularGrid3D(BaseMeshGrid):
                     for i, y in enumerate(y_centers):
                         for j, x in enumerate(x_centers):
                             # Add PML conductivity
-                            pml_conductivity = boundary.get_conductivity(
-                                x, y, 
-                                dx=self.resolution_xy, 
-                                dt=dt_estimate,
-                                eps_avg=permittivity[k, i, j]
-                            )
-                            if pml_conductivity > 0:
-                                conductivity[k, i, j] += pml_conductivity
+                            pml_conductivity = boundary.get_conductivity(x, y, dx=self.resolution_xy, dt=dt_estimate,
+                                                                        eps_avg=permittivity[k, i, j])
+                            if pml_conductivity > 0: conductivity[k, i, j] += pml_conductivity
                 
                 progress.update(task, advance=1)
     
@@ -835,7 +773,10 @@ class RegularGrid3D(BaseMeshGrid):
         
         # Set labels and title
         max_dim = max(self.design.width, self.design.height, self.design.depth)
-        scale, unit = get_si_scale_and_label(max_dim)
+        if max_dim >= 1e-3: scale, unit = 1e3, 'mm'
+        elif max_dim >= 1e-6: scale, unit = 1e6, 'µm'
+        elif max_dim >= 1e-9: scale, unit = 1e9, 'nm'
+        else: scale, unit = 1, 'm'
         
         ax.set_xlabel(f'X ({unit})')
         ax.set_ylabel(f'Y ({unit})')
@@ -858,7 +799,10 @@ class RegularGrid3D(BaseMeshGrid):
         if grid is not None:
             # Determine appropriate SI unit and scale
             max_dim = max(self.design.width, self.design.height)
-            scale, unit = get_si_scale_and_label(max_dim)
+            if max_dim >= 1e-3: scale, unit = 1e3, 'mm'
+            elif max_dim >= 1e-6: scale, unit = 1e6, 'µm'
+            elif max_dim >= 1e-9: scale, unit = 1e9, 'nm'
+            else: scale, unit = 1, 'm'
             
             # Calculate figure size based on grid dimensions
             grid_height, grid_width = grid.shape
@@ -890,7 +834,7 @@ class RegularGrid3D(BaseMeshGrid):
             plt.tight_layout()
             plt.show()
         else:
-            display_status("Grid not rasterized yet.", "error")
+            print("Grid not rasterized yet.")
 
 
 # Convenience functions for automatic mesh selection

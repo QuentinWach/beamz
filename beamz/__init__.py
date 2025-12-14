@@ -17,22 +17,22 @@ from beamz.design.structures import (
 )
 from beamz.devices.sources import ModeSource, GaussianSource
 from beamz.devices.monitors import Monitor
-from beamz.devices.signals import ramped_cosine, plot_signal
-from beamz.devices.mode import solve_modes, slab_mode_source
+from beamz.devices.sources.signals import ramped_cosine, plot_signal
+from beamz.devices.sources.mode import solve_modes
 
 # Import simulation-related classes and functions
-from beamz.simulation.meshing import RegularGrid
-from beamz.simulation.fdtd import FDTD
-from beamz.simulation.backends import get_backend
+from beamz.design.meshing import RegularGrid
+from beamz.simulation.core import Simulation
+from beamz.simulation.boundaries import Boundary, PML, ABC, PeriodicBoundary
 
-from beamz.optimization.optimizers import Optimizer
+# from beamz.optimization.optimizers import Optimizer  # TODO: Re-enable when optimizers module is created
 from beamz.optimization.topology import compute_overlap_gradient
 
 # Import optimization-related classes
 # (Currently empty, to be filled as the module grows)
 
 # Import UI helpers
-from beamz.helpers import (
+from beamz.visual.helpers import (
     display_header, display_status, create_rich_progress,
     display_parameters, display_results,
     display_simulation_status, display_optimization_progress,
@@ -78,15 +78,19 @@ _exports = {
     
     # Mode calculations
     'solve_modes': solve_modes,
-    'slab_mode_source': slab_mode_source,
     
     # Simulation
     'RegularGrid': RegularGrid,
-    'FDTD': FDTD,
-    'get_backend': get_backend,
+    'Simulation': Simulation,
+    
+    # Boundaries
+    'Boundary': Boundary,
+    'PML': PML,
+    'ABC': ABC,
+    'PeriodicBoundary': PeriodicBoundary,
 
     # Optimization
-    'Optimizer': Optimizer,
+    # 'Optimizer': Optimizer,  # TODO: Re-enable when optimizers module is created
     'compute_overlap_gradient': compute_overlap_gradient,
     
     # UI helpers

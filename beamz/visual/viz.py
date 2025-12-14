@@ -1,7 +1,45 @@
 import numpy as np
-from beamz.helpers import display_status, get_si_scale_and_label
+from beamz.visual.helpers import display_status, get_si_scale_and_label
 
 # Optional plotting backends are imported inside functions to avoid hard deps
+
+def get_twilight_zero_cmap():
+    """Get a custom colormap similar to twilight with black at zero and white at edges.
+    
+    Returns:
+        matplotlib.colors.Colormap: A custom 7-color diverging colormap with
+        white at edges, twilight-like colors in between, and black at center.
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+    
+    # 7 colors total: white -> purple -> blue -> cyan -> black -> yellow -> orange -> red -> white
+    # Similar to twilight but with black at center and white at edges
+    colors = [
+        (1.0, 1.0, 1.0),      # White (edge, negative)
+        (0.2, 0.3, 0.8),      # Purple
+        (0.1, 0.1, 0.5),      # Blue
+        (0.1, 0.1, 0.1),      # Black (center, zero)
+        (0.5, 0.1, 0.1),      # Orange
+        (0.8, 0.3, 0.2),      # Red
+        (1.0, 1.0, 1.0),      # White (edge, positive)
+    ]
+    
+    return LinearSegmentedColormap.from_list('twilight_zero', colors, N=256)
+
+# Register the custom colormap
+def _register_custom_colormaps():
+    """Register custom colormaps with matplotlib."""
+    import matplotlib.pyplot as plt
+    try:
+        # Check if already registered
+        if 'twilight_zero' not in plt.colormaps():
+            cmap = get_twilight_zero_cmap()
+            plt.colormaps.register(cmap, name='twilight_zero')
+    except Exception:
+        pass  # If registration fails, we'll create it on-the-fly when needed
+
+# Register on import
+_register_custom_colormaps()
 
 def draw_polygon(ax, polygon, facecolor=None, edgecolor="black", alpha=None, linestyle=None):
     """Draw a polygon (with possible holes) on a Matplotlib axis.
@@ -136,13 +174,9 @@ def show_design_2d(design, unify_structures=True):
 
     for structure in structures_to_plot:
         if hasattr(structure, 'is_pml') and structure.is_pml:
-            structure.add_to_plot(ax, edgecolor=design.border_color, linestyle='--', facecolor='none', alpha=0.5)
+            structure.add_to_plot(ax, edgecolor='red', linestyle='--', facecolor='none', alpha=0.5)
         else:
             structure.add_to_plot(ax)
-
-    for boundary in design.boundaries:
-        if hasattr(boundary, 'add_to_plot'):
-            boundary.add_to_plot(ax, edgecolor=design.border_color, linestyle='--', facecolor='none', alpha=0.5)
 
     ax.set_title('Design Layout')
     ax.set_xlabel(f'X ({unit})')
@@ -388,7 +422,7 @@ def plot_fdtd_field(fdtd, field: str = "Ez", t: float = None, z_slice: int = Non
     plt.imshow(current_field, origin='lower', 
                extent=(0, fdtd.design.width, 0, fdtd.design.height),
                cmap='RdBu', aspect='equal', interpolation='bicubic')
-    plt.colorbar(label=f'{field_label} Field Amplitude')
+    plt.colorbar(label=f'{field_label}')
     plt.title(f'{field_label} Field at t = {current_t:.2e} s')
     plt.xlabel(f'X ({unit})'); plt.ylabel(f'Y ({unit})')
     plt.gca().xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
@@ -415,7 +449,7 @@ def plot_fdtd_field(fdtd, field: str = "Ez", t: float = None, z_slice: int = Non
     plt.show()
 
 
-def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=[-1,1], z_slice=None):
+def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slice=None):
     """Animate FDTD field in real time using matplotlib animation."""
     import matplotlib.pyplot as plt
 
@@ -430,17 +464,95 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=[-1,1], z_sl
     else:
         slice_info = ""
 
-    if np.iscomplexobj(field_data):
-        field_data = np.real(field_data)
+    # Always visualize Ez field amplitude for live view
+    quantity = "field"
+    if quantity == "power":
+        # Compute instantaneous power magnitude Sx,Sy (2D) and plot W/µm²
+        Ez_np = field_data
+        Hx_raw = fdtd.backend.to_numpy(getattr(fdtd, 'Hx')) if hasattr(fdtd, 'Hx') else None
+        Hy_raw = fdtd.backend.to_numpy(getattr(fdtd, 'Hy')) if hasattr(fdtd, 'Hy') else None
+        if np.iscomplexobj(Ez_np):
+            Ez_real = np.real(Ez_np); Ez_imag = np.imag(Ez_np)
+        else:
+            Ez_real = Ez_np; Ez_imag = 0.0
+        if Hx_raw is None or Hy_raw is None:
+            current_field = np.zeros_like(Ez_real)
+        else:
+            if np.iscomplexobj(Hx_raw) or np.iscomplexobj(Hy_raw):
+                Hx_full = np.zeros_like(Ez_real, dtype=np.complex128)
+                Hy_full = np.zeros_like(Ez_real, dtype=np.complex128)
+            else:
+                Hx_full = np.zeros_like(Ez_real)
+                Hy_full = np.zeros_like(Ez_real)
+            Hx_full[:, :-1] = Hx_raw
+            Hy_full[:-1, :] = Hy_raw
+            if np.iscomplexobj(Hx_full) or np.iscomplexobj(Hy_full) or np.iscomplexobj(Ez_np):
+                Hx_real = np.real(Hx_full); Hx_imag = np.imag(Hx_full)
+                Hy_real = np.real(Hy_full); Hy_imag = np.imag(Hy_full)
+                Sx = -Ez_real * Hy_real - Ez_imag * Hy_imag
+                Sy = Ez_real * Hx_real + Ez_imag * Hx_imag
+            else:
+                Sx = -Ez_real * Hy_full
+                Sy = Ez_real * Hx_full
+            power_si = Sx**2 + Sy**2  # W^2/m^4 (magnitude squared); for visualization
+            # Use linear power density magnitude for color scaling (W/m^2)
+            power_mag = np.sqrt(power_si)
+            # Convert to W/µm² for display
+            power_um2 = power_mag * (1.0e-12)
+            current_field = power_um2
+        if axis_scale is None:
+            # Dynamic scaling: compute from current field every frame
+            # Use 99th percentile for power to avoid outliers
+            ax_min = 0.0
+            ax_max = float(np.percentile(current_field, 99) or np.max(current_field) or 1e-9)
+        else:
+            ax_min, ax_max = axis_scale
+        cbar_label = f'Power Density (W/µm²)'
+    else:
+        if np.iscomplexobj(field_data):
+            field_data = np.real(field_data)
+        # Convert Ez from V/m to V/µm for display
+        current_field = field_data * 1.0e-6
+        
+        if axis_scale is None:
+            # Dynamic scaling: compute from current field every frame
+            # Ignore fdtd._axis_scale for truly adaptive behavior
+            field_abs = np.abs(current_field)
+            # Use 99th percentile instead of max to avoid extreme values at source
+            # dominating the colormap
+            amax = float(np.percentile(field_abs, 99) or 1.0)
+            # Ensure at least some visible range
+            if amax < 1e-10:
+                amax = float(np.max(field_abs) or 1.0)
+            ax_min, ax_max = -amax, amax
+        else:
+            # Fixed scaling: use the provided axis_scale
+            amax = float(max(abs(axis_scale[0]), abs(axis_scale[1])))
+            if not np.isfinite(amax) or amax <= 0:
+                amax = float(np.max(np.abs(current_field)) or 1.0)
+            ax_min, ax_max = -amax, amax
+        cbar_label = f'{field}{slice_info} (V/µm)'
 
     if fdtd.fig is not None and plt.fignum_exists(fdtd.fig.number):
-        fdtd.im.set_array(field_data)
+        fdtd.im.set_array(current_field)
+        fdtd.im.set_clim(vmin=ax_min, vmax=ax_max)
+        
+        # Update colorbar by directly modifying its properties (fast method)
+        if hasattr(fdtd, 'colorbar') and fdtd.colorbar is not None:
+            try:
+                # Update the colorbar's norm to match the new limits
+                fdtd.colorbar.mappable.set_clim(vmin=ax_min, vmax=ax_max)
+                # Force colorbar to recompute ticks
+                fdtd.colorbar.update_ticks()
+                fdtd.colorbar.draw_all()
+            except:
+                pass
+        
         fdtd.ax.set_title(f't = {fdtd.t:.2e} s{slice_info}')
         fdtd.fig.canvas.draw_idle()
         fdtd.fig.canvas.flush_events()
         return
 
-    current_field = field_data
     grid_height, grid_width = current_field.shape
     aspect_ratio = grid_width / grid_height
     base_size = 5
@@ -448,9 +560,9 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=[-1,1], z_sl
     fdtd.fig, fdtd.ax = plt.subplots(figsize=figsize)
     fdtd.im = fdtd.ax.imshow(current_field, origin='lower',
                              extent=(0, fdtd.design.width, 0, fdtd.design.height),
-                             cmap='RdBu', aspect='equal', interpolation='bicubic', vmin=axis_scale[0], vmax=axis_scale[1])
-    colorbar = plt.colorbar(fdtd.im, orientation='vertical', aspect=30, extend='both')
-    colorbar.set_label(f'{field}{slice_info} Field Amplitude')
+                             cmap='RdBu', aspect='equal', interpolation='bicubic', vmin=ax_min, vmax=ax_max)
+    fdtd.colorbar = plt.colorbar(fdtd.im, orientation='vertical', aspect=30, extend='both')
+    fdtd.colorbar.set_label(cbar_label)
 
     try:
         tmp_design = fdtd.design.copy()
@@ -463,9 +575,14 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=[-1,1], z_sl
             structure.add_to_plot(fdtd.ax, edgecolor="black", linestyle='--', facecolor='none', alpha=0.5)
         elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
             structure.add_to_plot(fdtd.ax, facecolor="none", edgecolor="black", linestyle='-')
-    for source in fdtd.design.sources:
+    # Draw sources from both design and fdtd.sources list
+    all_sources = list(fdtd.design.sources) if hasattr(fdtd.design, 'sources') else []
+    if hasattr(fdtd, 'sources'):
+        all_sources.extend(fdtd.sources)
+    for source in all_sources:
         if hasattr(source, 'add_to_plot'):
             source.add_to_plot(fdtd.ax)
+    
     for monitor in fdtd.design.monitors:
         if hasattr(monitor, 'add_to_plot'):
             monitor.add_to_plot(fdtd.ax)
@@ -482,6 +599,232 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=[-1,1], z_sl
     plt.tight_layout()
     plt.show(block=False)
     plt.pause(0.001)
+
+
+def animate_manual_field(field_array,
+                         context=None,
+                         *,
+                         axis_scale=None,
+                         extent=None,
+                         cmap='RdBu',
+                         percentile=99,
+                         title=None,
+                         units='V/µm',
+                         pause=0.002,
+                         auto_interval=4,
+                         smoothing=0.25,
+                         design=None,
+                         boundaries=None,
+                         show_structures=True,
+                         show_sources=True,
+                         show_monitors=True,
+                         clean_visualization=False,
+                         wavelength=None,
+                         line_color='gray',
+                         line_opacity=0.5):
+    """Create or update a live Matplotlib view of a 2D field array.
+
+    Args:
+        field_array: 2D numeric array to visualise (already converted to desired units).
+        context: Optional dict (``{'fig','ax','im','cbar','frame','auto_scale'}``) returned by a previous call.
+        axis_scale: Optional tuple/list ``(vmin, vmax)`` for fixed scaling.
+        extent: Optional Matplotlib extent tuple ``(xmin, xmax, ymin, ymax)``.
+        cmap: Matplotlib colormap to use.
+        percentile: Percentile used for auto scaling when ``axis_scale`` not provided.
+        title: Optional title string for the plot.
+        units: Axis label for the colour bar.
+        pause: Seconds to pause after drawing (keeps UI responsive).
+        auto_interval: Recompute auto scaling every N frames when ``axis_scale`` is ``None``.
+        smoothing: Exponential smoothing factor (0-1) applied to auto scale updates.
+        design: Optional FDTD design object to overlay structures, sources, and monitors.
+        boundaries: Optional list of boundary objects (PML, ABC, etc.) to visualize.
+        show_structures: Boolean to control if design structures are overlaid.
+        show_sources: Boolean to control if design sources are overlaid.
+        show_monitors: Boolean to control if design monitors are overlaid.
+        clean_visualization: If True, hide axes, title, and colorbar (only show field and structures).
+        wavelength: Optional wavelength for scale bar calculation (if None, uses design-based calculation).
+        line_color: Color for structure and PML boundary outlines (default: 'gray').
+        line_opacity: Opacity/transparency of structure and PML boundary outlines (0.0 to 1.0, default: 0.5).
+
+    Returns:
+        context dict containing references to the Matplotlib objects for reuse.
+    """
+    import matplotlib.pyplot as plt
+
+    data = np.asarray(field_array, dtype=float)
+    if data.size == 0:
+        return context
+
+    if context is None:
+        context = {}
+
+    if axis_scale is None:
+        frame = context.get('frame', 0)
+        use_cached = ('auto_scale' in context) and (frame % auto_interval != 0)
+        if use_cached:
+            vmax = context['auto_scale']
+        else:
+            abs_data = np.abs(data)
+            if abs_data.size > 10:
+                vmax = np.percentile(abs_data, percentile)
+            else:
+                vmax = float(np.max(abs_data) or 1.0)
+            if not np.isfinite(vmax) or vmax <= 0:
+                vmax = float(np.max(abs_data) or 1.0)
+            if 'auto_scale' in context:
+                vmax = (1.0 - smoothing) * context['auto_scale'] + smoothing * vmax
+            context['auto_scale'] = vmax
+        vmin, vmax = -vmax, vmax
+    else:
+        vmin, vmax = axis_scale
+
+    if context.get('im') is None:
+        fig, ax = plt.subplots()
+        # Handle custom colormap
+        if cmap == 'twilight_zero':
+            try:
+                actual_cmap = plt.get_cmap('twilight_zero')
+            except ValueError:
+                actual_cmap = get_twilight_zero_cmap()
+        else:
+            actual_cmap = cmap
+        
+        if extent is not None:
+            im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax, extent=extent)
+        else:
+            im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax)
+        
+        if clean_visualization:
+            ax.set_axis_off()
+            cbar = None
+        else:
+            cbar = plt.colorbar(im, ax=ax, orientation='vertical', label=f'Ez ({units})')
+            if title:
+                ax.set_title(title)
+
+        if design is not None and show_structures:
+            try:
+                tmp_design = design.copy()
+                tmp_design.unify_polygons()
+                overlay_structures = tmp_design.structures
+            except Exception:
+                overlay_structures = getattr(design, 'structures', [])
+            for structure in overlay_structures or []:
+                if hasattr(structure, 'is_pml') and structure.is_pml:
+                    structure.add_to_plot(ax, edgecolor=line_color, linestyle='--', facecolor='none', alpha=line_opacity)
+                elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
+                    structure.add_to_plot(ax, facecolor="none", edgecolor=line_color, linestyle='-', alpha=line_opacity)
+            if show_sources:
+                for source in getattr(design, 'sources', []) or []:
+                    if hasattr(source, 'add_to_plot'):
+                        source.add_to_plot(ax)
+            if show_monitors:
+                for monitor in getattr(design, 'monitors', []) or []:
+                    if hasattr(monitor, 'add_to_plot'):
+                        monitor.add_to_plot(ax)
+
+        # Draw PML boundaries if provided
+        if boundaries:
+            for boundary in boundaries:
+                draw_boundary(ax, boundary, design, edgecolor=line_color, linestyle=':', alpha=line_opacity)
+
+        if design is not None and not clean_visualization:
+            max_dim = max(design.width, design.height)
+            scale, unit = get_si_scale_and_label(max_dim)
+            ax.set_xlabel(f'X ({unit})')
+            ax.set_ylabel(f'Y ({unit})')
+            ax.xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
+            ax.yaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
+
+        if clean_visualization and design is not None:
+            # Add scale bar in bottom-right corner
+            max_dim = max(design.width, design.height)
+            scale_factor, unit = get_si_scale_and_label(max_dim)
+            
+            # Calculate scale bar length: 2 * wavelength rounded up to next integer µm
+            if wavelength is not None:
+                # Convert wavelength to µm and calculate 2 * wavelength
+                wavelength_um = wavelength * 1e6  # Convert from meters to µm
+                scale_bar_length_um = 2 * wavelength_um
+                # Round to nearest integer µm
+                scale_bar_length_um = np.round(scale_bar_length_um)
+                # Convert back to meters
+                scale_bar_length = scale_bar_length_um * 1e-6
+            else:
+                # Fallback: use design-based calculation
+                min_dim = min(design.width, design.height)
+                scale_bar_fraction = 0.18
+                scale_bar_length_physical = min_dim * scale_bar_fraction
+                
+                # Round to a nice number (round to nearest, not always down)
+                if scale_bar_length_physical > 0:
+                    order = 10 ** np.floor(np.log10(scale_bar_length_physical))
+                    normalized = scale_bar_length_physical / order
+                    if normalized <= 1.25:
+                        nice_value = 1 * order
+                    elif normalized <= 2.5:
+                        nice_value = 2 * order
+                    elif normalized <= 6:
+                        nice_value = 5 * order
+                    else:
+                        nice_value = 10 * order
+                    scale_bar_length = nice_value
+                else:
+                    scale_bar_length = min_dim * 0.15
+            
+            # Position in bottom-right corner with some margin
+            margin_x = design.width * 0.1
+            margin_y = design.height * 0.1
+            x_start = design.width - scale_bar_length - margin_x
+            x_end = design.width - margin_x
+            y_pos = margin_y
+            
+            # Draw scale bar line (solid white bar, no caps)
+            ax.plot([x_start, x_end], [y_pos, y_pos], 'w', linewidth=3, solid_capstyle="butt")
+            
+            # Add text label below the bar
+            label_y = y_pos - design.height * 0.02
+            # If wavelength-based, always display in µm as integer
+            if wavelength is not None:
+                scale_bar_length_display_um = scale_bar_length * 1e6  # Convert to µm
+                label_text = f'{int(scale_bar_length_display_um)} µm'
+            else:
+                scale_bar_length_display = scale_bar_length * scale_factor
+                if scale_bar_length_display >= 1:
+                    label_text = f'{scale_bar_length_display:.0f} {unit}'
+                elif scale_bar_length_display >= 0.1:
+                    label_text = f'{scale_bar_length_display:.1f} {unit}'
+                else:
+                    label_text = f'{scale_bar_length_display:.2f} {unit}'
+            
+            ax.text((x_start + x_end) / 2, label_y, label_text, 
+                   ha='center', va='top', color='white', fontsize=10)
+
+        if clean_visualization:
+            plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+        else:
+            plt.tight_layout()
+        plt.show(block=False)
+        plt.pause(pause)
+        context.update({'fig': fig, 'ax': ax, 'im': im, 'cbar': cbar, 'frame': 1, 'clean_visualization': clean_visualization, 'wavelength': wavelength})
+        context.setdefault('auto_scale', vmax if axis_scale is None else None)
+        return context
+
+    # Update existing plot
+    clean_visualization = context.get('clean_visualization', False)
+    im = context['im']
+    im.set_data(data)
+    im.set_clim(vmin, vmax)
+    if title and not clean_visualization:
+        context['ax'].set_title(title)
+    context['frame'] = context.get('frame', 0) + 1
+    if context.get('cbar') is not None:
+        context['cbar'].mappable.set_clim(vmin, vmax)
+    fig = context['fig']
+    fig.canvas.draw_idle()
+    fig.canvas.flush_events()
+    plt.pause(pause)
+    return context
 
 
 def save_fdtd_animation(fdtd, field: str = "Ez", axis_scale=[-1, 1], filename='fdtd_animation.mp4', 
@@ -524,7 +867,7 @@ def save_fdtd_animation(fdtd, field: str = "Ez", axis_scale=[-1, 1], filename='f
                    vmin=axis_scale[0], vmax=axis_scale[1])
     if not clean_visualization:
         colorbar = plt.colorbar(im, orientation='vertical', aspect=30, extend='both')
-        colorbar.set_label(f'{field} Field Amplitude')
+        colorbar.set_label(f'{field}')
 
     try:
         tmp_design = fdtd.design.copy()
@@ -617,28 +960,49 @@ def plot_fdtd_power(fdtd, cmap: str = "hot", vmin: float = None, vmax: float = N
         print("No field data to calculate power. Make sure to run the simulation with save=True or accumulate_power=True.")
         return
 
+    # Normalize power using 99th percentile to avoid source-dominated colormaps
+    # This makes propagated power visible by clipping source peaks
+    power_sorted = np.sort(power.flatten())
+    nonzero_power = power_sorted[power_sorted > 0]
+    if len(nonzero_power) > 100:  # Need sufficient data points
+        p99 = np.percentile(nonzero_power, 99)
+        power_clipped = np.clip(power, 0, p99)
+        if p99 > 0:
+            power_normalized = power_clipped / p99
+        else:
+            power_normalized = power
+    else:
+        # Fallback to max normalization for small datasets
+        power_max = np.max(power)
+        if power_max > 0 and np.isfinite(power_max):
+            power_normalized = power / power_max
+        else:
+            power_normalized = power
+    
     scale, unit = get_si_scale_and_label(max(fdtd.design.width, fdtd.design.height))
     aspect_ratio = power.shape[1] / power.shape[0]
     base_size = 8
     figsize = (base_size * aspect_ratio, base_size) if aspect_ratio > 1 else (base_size, base_size / aspect_ratio)
 
     fdtd.fig, fdtd.ax = plt.subplots(figsize=figsize)
-    fdtd.im = fdtd.ax.imshow(power, origin='lower',
+    # Use normalized power for display to avoid numerical precision issues with tiny values
+    display_power = power_normalized if vmin is None and vmax is None else power
+    fdtd.im = fdtd.ax.imshow(display_power, origin='lower',
                              extent=(0, fdtd.design.width, 0, fdtd.design.height),
                              cmap=cmap, aspect='equal', interpolation='bicubic', vmin=vmin, vmax=vmax)
     colorbar = plt.colorbar(fdtd.im, orientation='vertical', aspect=30, extend='both')
     if db_colorbar:
-        max_power = np.max(power)
+        # dB scale now works on normalized power (0 to 1)
         def db_formatter(x, pos):
             if x <= 0: return "-∞ dB"
-            ratio = max(x / max_power, 1e-10)
+            ratio = max(x, 1e-10)  # x is already normalized to max=1
             db_val = 10 * np.log10(ratio)
             return f"{db_val:.1f} dB"
         colorbar.formatter = plt.FuncFormatter(db_formatter)
         colorbar.update_ticks()
         colorbar.set_label('Relative Power (dB)')
     else:
-        colorbar.set_label('Power (a.u.)')
+        colorbar.set_label('Normalized Power')
 
     try:
         tmp_design = fdtd.design.copy()
@@ -651,9 +1015,7 @@ def plot_fdtd_power(fdtd, cmap: str = "hot", vmin: float = None, vmax: float = N
             structure.add_to_plot(fdtd.ax, edgecolor="white", linestyle='--', facecolor='none', alpha=0.5)
         elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
             structure.add_to_plot(fdtd.ax, facecolor="none", edgecolor="white", linestyle='-')
-    for source in fdtd.design.sources:
-        if hasattr(source, 'add_to_plot'):
-            source.add_to_plot(fdtd.ax)
+    # Sources are not shown in power plot to avoid visual clutter
     for monitor in fdtd.design.monitors:
         if hasattr(monitor, 'add_to_plot'):
             monitor.add_to_plot(fdtd.ax, edgecolor="white")
@@ -1082,3 +1444,43 @@ def _triangulate_polygon_with_holes(exterior_vertices, interior_paths, depth, z_
             faces_i.append(inner_i + total_vertices); faces_j.append(inner_next + total_vertices); faces_k.append(inner_i)
             faces_i.append(inner_i); faces_j.append(inner_next + total_vertices); faces_k.append(inner_next)
     return {'vertices': (x_coords, y_coords, z_coords), 'faces': (faces_i, faces_j, faces_k)}
+
+def draw_boundary(ax, boundary, design, edgecolor="red", linestyle='--', alpha=0.5):
+    """Draw boundary regions on a matplotlib axis."""
+    from matplotlib.patches import Rectangle as MatplotlibRectangle
+    
+    edges = boundary._get_edges_for_dimensionality(design.is_3d)
+    
+    for edge in edges:
+        if edge == 'left':
+            rect = MatplotlibRectangle((0, 0), boundary.thickness, design.height, 
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'right':
+            rect = MatplotlibRectangle((design.width - boundary.thickness, 0), 
+                                     boundary.thickness, design.height,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'bottom':
+            rect = MatplotlibRectangle((0, 0), design.width, boundary.thickness,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'top':
+            rect = MatplotlibRectangle((0, design.height - boundary.thickness), 
+                                     design.width, boundary.thickness,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'front' and design.is_3d:
+            # 3D front edge (z=0)
+            rect = MatplotlibRectangle((0, 0), design.width, design.height,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        elif edge == 'back' and design.is_3d:
+            # 3D back edge (z=depth)
+            rect = MatplotlibRectangle((0, 0), design.width, design.height,
+                                     facecolor='none', edgecolor=edgecolor, 
+                                     linestyle=linestyle, alpha=alpha)
+        else:
+            continue
+            
+        ax.add_patch(rect)
