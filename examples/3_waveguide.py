@@ -48,6 +48,6 @@ sim = Simulation(
 )
 sim.run(animate_live="Ez",
     animation_interval=20,
-    #axis_scale=[-9e-5, 9e-5],
+    axis_scale=[-9e-5, 9e-5],
     cmap="twilight_zero",
     clean_visualization=True)

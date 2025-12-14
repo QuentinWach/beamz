@@ -54,7 +54,7 @@ class PML(Boundary):
         # This method is now deprecated - use modify_conductivity instead
         pass
     
-    def create_pml_regions(self, fields, design, resolution, dt):
+    def create_pml_regions(self, fields, design, resolution, dt, plane_2d='xy'):
         """Create permanent PML region masks and stretched-coordinate parameters.
         
         Returns dict with:
@@ -68,72 +68,107 @@ class PML(Boundary):
             eta = np.sqrt(MU_0 / (EPS_0 * 1.0))
             self.sigma_max = 0.8 * (self.m + 1) / (eta * resolution)
         
-        # Create graded profiles for each direction
-        pml_data = self._create_upml_profiles_2d(fields, design, resolution, dt)
+        # Create graded profiles for each direction based on plane
+        pml_data = self._create_pml_profiles_2d(fields, design, resolution, dt, plane_2d)
         return pml_data
     
-    def _create_upml_profiles_2d(self, fields, design, resolution, dt):
-        """Create UPML stretched-coordinate profiles for 2D."""
-        ez_shape = fields.Ez.shape
-        ny, nx = ez_shape
+    def _create_pml_profiles_2d(self, fields, design, resolution, dt, plane_2d):
+        """Create UPML stretched-coordinate profiles for 2D plane."""
+        # Grid shape from material grid (same as field shape for collocated/main grid)
+        # Assuming design.width/height/depth match the grid dimensions
         
+        if plane_2d == 'xy':
+            shape = fields.permittivity.shape # (ny, nx)
+            dim1, dim2 = shape
+            len1, len2 = design.height, design.width
+            labels = ['y', 'x']
+        elif plane_2d == 'yz':
+            shape = fields.permittivity.shape # (nz, ny)
+            dim1, dim2 = shape
+            len1, len2 = (design.depth if design.depth else 0), design.height # Assuming depth is defined for yz slice?
+            # If 2D sim in yz, design.depth might be relevant or height/width mapping changes.
+            # Assuming standard: design.width (x), design.height (y), design.depth (z)
+            labels = ['z', 'y']
+        elif plane_2d == 'xz':
+            shape = fields.permittivity.shape # (nz, nx)
+            dim1, dim2 = shape
+            len1, len2 = (design.depth if design.depth else 0), design.width
+            labels = ['z', 'x']
+            
         # Initialize profile arrays
-        sigma_x = np.zeros(ez_shape)
-        sigma_y = np.zeros(ez_shape)
-        kappa_x = np.ones(ez_shape)
-        kappa_y = np.ones(ez_shape)
-        alpha_x = np.zeros(ez_shape)
-        alpha_y = np.zeros(ez_shape)
-        
+        profiles = {}
+        for axis in ['x', 'y', 'z']:
+            profiles[f'sigma_{axis}'] = np.zeros(shape)
+            profiles[f'kappa_{axis}'] = np.ones(shape)
+            profiles[f'alpha_{axis}'] = np.zeros(shape)
+            
         # Create coordinate arrays
-        x_coords = np.linspace(0, design.width, nx)
-        y_coords = np.linspace(0, design.height, ny)
+        coords1 = np.linspace(0, len1, dim1) # axis 0 (y or z)
+        coords2 = np.linspace(0, len2, dim2) # axis 1 (x or y)
         
         edges = self._get_edges_for_dimensionality(False)
         
-        # Apply graded profiles for each edge
+        # Map edges to axes based on plane
+        # xy: Left/Right -> x (axis 1). Bottom/Top -> y (axis 0).
+        # yz: Left/Right -> y (axis 1)? Or z? Usually Left/Right is horizontal on screen.
+        # yz plane: horizontal=y, vertical=z? Or horizontal=y, vertical=z.
+        # Let's assume consistent mapping: 
+        # dim2 is "horizontal" (second index), dim1 is "vertical" (first index).
+        # xy: x is horizontal (dim2), y is vertical (dim1).
+        # yz: y is horizontal (dim2), z is vertical (dim1).
+        # xz: x is horizontal (dim2), z is vertical (dim1).
+        
+        # Edges mapping:
+        # Left/Right -> dim2 (coords2)
+        # Bottom/Top -> dim1 (coords1)
+        
+        # Determine which sigma/kappa/alpha component to set
+        # xy: dim2->x, dim1->y
+        # yz: dim2->y, dim1->z
+        # xz: dim2->x, dim1->z
+        
+        axis1 = labels[0] # vertical axis name
+        axis2 = labels[1] # horizontal axis name
+        
         for edge in edges:
-            if edge == 'left':
-                for j in range(nx):
-                    if x_coords[j] < self.thickness:
-                        dist = self.thickness - x_coords[j]
-                        sigma_x[:, j] = self._sigma_profile(dist, self.thickness)
-                        kappa_x[:, j] = self._kappa_profile(dist, self.thickness)
-                        alpha_x[:, j] = self._alpha_profile(dist, self.thickness)
-            
-            elif edge == 'right':
-                for j in range(nx):
-                    if x_coords[j] > (design.width - self.thickness):
-                        dist = x_coords[j] - (design.width - self.thickness)
-                        sigma_x[:, j] = self._sigma_profile(dist, self.thickness)
-                        kappa_x[:, j] = self._kappa_profile(dist, self.thickness)
-                        alpha_x[:, j] = self._alpha_profile(dist, self.thickness)
-            
-            elif edge == 'bottom':
-                for i in range(ny):
-                    if y_coords[i] < self.thickness:
-                        dist = self.thickness - y_coords[i]
-                        sigma_y[i, :] = self._sigma_profile(dist, self.thickness)
-                        kappa_y[i, :] = self._kappa_profile(dist, self.thickness)
-                        alpha_y[i, :] = self._alpha_profile(dist, self.thickness)
-            
-            elif edge == 'top':
-                for i in range(ny):
-                    if y_coords[i] > (design.height - self.thickness):
-                        dist = y_coords[i] - (design.height - self.thickness)
-                        sigma_y[i, :] = self._sigma_profile(dist, self.thickness)
-                        kappa_y[i, :] = self._kappa_profile(dist, self.thickness)
-                        alpha_y[i, :] = self._alpha_profile(dist, self.thickness)
+            if edge == 'left': # Start of horizontal axis (dim2)
+                for i in range(dim2):
+                    if coords2[i] < self.thickness:
+                        dist = self.thickness - coords2[i]
+                        profiles[f'sigma_{axis2}'][:, i] = self._sigma_profile(dist, self.thickness)
+                        profiles[f'kappa_{axis2}'][:, i] = self._kappa_profile(dist, self.thickness)
+                        profiles[f'alpha_{axis2}'][:, i] = self._alpha_profile(dist, self.thickness)
+                        
+            elif edge == 'right': # End of horizontal axis (dim2)
+                for i in range(dim2):
+                    if coords2[i] > (len2 - self.thickness):
+                        dist = coords2[i] - (len2 - self.thickness)
+                        profiles[f'sigma_{axis2}'][:, i] = self._sigma_profile(dist, self.thickness)
+                        profiles[f'kappa_{axis2}'][:, i] = self._kappa_profile(dist, self.thickness)
+                        profiles[f'alpha_{axis2}'][:, i] = self._alpha_profile(dist, self.thickness)
+                        
+            elif edge == 'bottom': # Start of vertical axis (dim1)
+                for j in range(dim1):
+                    if coords1[j] < self.thickness:
+                        dist = self.thickness - coords1[j]
+                        profiles[f'sigma_{axis1}'][j, :] = self._sigma_profile(dist, self.thickness)
+                        profiles[f'kappa_{axis1}'][j, :] = self._kappa_profile(dist, self.thickness)
+                        profiles[f'alpha_{axis1}'][j, :] = self._alpha_profile(dist, self.thickness)
+                        
+            elif edge == 'top': # End of vertical axis (dim1)
+                for j in range(dim1):
+                    if coords1[j] > (len1 - self.thickness):
+                        dist = coords1[j] - (len1 - self.thickness)
+                        profiles[f'sigma_{axis1}'][j, :] = self._sigma_profile(dist, self.thickness)
+                        profiles[f'kappa_{axis1}'][j, :] = self._kappa_profile(dist, self.thickness)
+                        profiles[f'alpha_{axis1}'][j, :] = self._alpha_profile(dist, self.thickness)
         
-        # Create PML mask (True where PML is active)
-        pml_mask = (sigma_x > 0) | (sigma_y > 0)
+        # Create PML mask (True where any PML sigma is active)
+        pml_mask = (profiles[f'sigma_{axis1}'] > 0) | (profiles[f'sigma_{axis2}'] > 0)
         
-        return {
-            'mask': pml_mask,
-            'sigma_x': sigma_x, 'sigma_y': sigma_y,
-            'kappa_x': kappa_x, 'kappa_y': kappa_y,
-            'alpha_x': alpha_x, 'alpha_y': alpha_y
-        }
+        result = {'mask': pml_mask}
+        result.update(profiles)
+        return result
     
     def _modify_conductivity_3d(self, fields, design, resolution, dt, edges):
         """Modify conductivity arrays to include PML absorption in 3D."""

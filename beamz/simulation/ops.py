@@ -3,77 +3,326 @@ import numpy as np
 from beamz.const import EPS_0, MU_0
 
 
-def curl_e_to_h_2d(ez, resolution):
-    """Compute curl of E-field for H update in 2D on staggered Yee grid: ∂H/∂t = -∇×E/μ₀."""
-    # For 2D TM mode (only Ez component), curl reduces to: ∇×E = (∂Ez/∂y)x̂ - (∂Ez/∂x)ŷ
-    # On staggered Yee grid: Ez[i,j], Hx[i, j+1/2], Hy[i+1/2, j]
-    # Hx component comes from ∂Ez/∂y (x-component of curl)
-    # Hx is staggered in x, so curl_ex has shape (Ny, Nx-1)
-    curl_ex = np.diff(ez, axis=1) / resolution  # (Ez[i,j+1] - Ez[i,j]) / dy at position [i, j+1/2]
-    
-    # Hy component comes from -∂Ez/∂x (y-component of curl, with sign flip)
-    # Hy is staggered in y, so curl_ey has shape (Ny-1, Nx)
-    curl_ey = -np.diff(ez, axis=0) / resolution  # -(Ez[i+1,j] - Ez[i,j]) / dx at position [i+1/2, j]
-    
-    return (curl_ex, curl_ey)
+def curl_e_to_h_2d(e_fields, resolution, plane='xy'):
+    """Compute curl of E-field for H update in 2D on staggered Yee grid for arbitrary plane."""
+    # Unpack E-fields based on plane
+    if plane == 'xy':
+        # E = (Ex, Ey, Ez) with ∂/∂z = 0
+        Ex, Ey, Ez = e_fields
+        # Field shapes: Ez(ny, nx), Ex(ny, nx-1), Ey(ny-1, nx)
+        # H-field shapes: Hx(ny, nx-1), Hy(ny-1, nx), Hz(ny-1, nx-1)
+        
+        # Match existing convention for backward compatibility:
+        # Hx(ny, nx-1) from diff(Ez, axis=1) -> ∂Ez/∂x gives (ny, nx-1) ✓
+        # Hy(ny-1, nx) from -diff(Ez, axis=0) -> -∂Ez/∂y gives (ny-1, nx) ✓
+        curl_ex = np.diff(Ez, axis=1) / resolution  # (ny, nx-1) for Hx
+        curl_ey = -np.diff(Ez, axis=0) / resolution  # (ny-1, nx) for Hy
+        
+        # Hz(ny-1, nx-1) from ∂Ey/∂x - ∂Ex/∂y
+        # Ey(ny-1, nx) -> diff(axis=1) gives (ny-1, nx-1)
+        # Ex(ny, nx-1) -> diff(axis=0) gives (ny-1, nx-1)
+        term1_z = np.diff(Ey, axis=1) / resolution  # (ny-1, nx-1)
+        term2_z = np.diff(Ex, axis=0) / resolution  # (ny-1, nx-1)
+        curl_ez = term1_z - term2_z
+        
+        return curl_ex, curl_ey, curl_ez
 
+    elif plane == 'yz':
+        # E = (Ex, Ey, Ez) with ∂/∂x = 0
+        # Dimensions (nz, ny). Axis 0=z, Axis 1=y.
+        Ex, Ey, Ez = e_fields
+        # ∇×E = (∂Ez/∂y - ∂Ey/∂z)x̂ + (∂Ex/∂z)ŷ + (-∂Ex/∂y)ẑ
+        
+        # Hx = ∂Ez/∂y - ∂Ey/∂z
+        # Ez(nz-1, ny). ∂Ez/∂y -> diff(axis=1). (nz-1, ny-1).
+        # Ey(nz, ny-1). ∂Ey/∂z -> diff(axis=0). (nz-1, ny-1).
+        curl_ex = np.diff(Ez, axis=1)/resolution - np.diff(Ey, axis=0)/resolution
+        
+        # Hy = ∂Ex/∂z
+        # Ex(nz, ny). ∂Ex/∂z -> diff(axis=0). (nz-1, ny).
+        curl_ey = np.diff(Ex, axis=0)/resolution
+        
+        # Hz = -∂Ex/∂y
+        # Ex(nz, ny). ∂Ex/∂y -> diff(axis=1). (nz, ny-1).
+        curl_ez = -np.diff(Ex, axis=1)/resolution
+        
+        return curl_ex, curl_ey, curl_ez
 
-def curl_e_to_h_3d(ex, ey, ez, resolution):
-    """Compute curl of E-field for H update in 3D: ∂H/∂t = -∇×E/μ₀."""
-    # Full 3D curl: ∇×E = [(∂Ez/∂y - ∂Ey/∂z)x̂ + (∂Ex/∂z - ∂Ez/∂x)ŷ + (∂Ey/∂x - ∂Ex/∂y)ẑ]
+    elif plane == 'xz':
+        # E = (Ex, Ey, Ez) with ∂/∂y = 0
+        # Dimensions (nz, nx). Axis 0=z, Axis 1=x.
+        Ex, Ey, Ez = e_fields
+        # ∇×E = (-∂Ey/∂z)x̂ + (∂Ex/∂z - ∂Ez/∂x)ŷ + (∂Ey/∂x)ẑ
+        
+        # Hx = -∂Ey/∂z
+        # Ey(nz, nx). ∂Ey/∂z -> diff(axis=0). (nz-1, nx).
+        curl_ex = -np.diff(Ey, axis=0)/resolution
+        
+        # Hy = ∂Ex/∂z - ∂Ez/∂x
+        # Ex(nz, nx-1). ∂Ex/∂z -> diff(axis=0). (nz-1, nx-1).
+        # Ez(nz-1, nx). ∂Ez/∂x -> diff(axis=1). (nz-1, nx-1).
+        curl_ey = np.diff(Ex, axis=0)/resolution - np.diff(Ez, axis=1)/resolution
+        
+        # Hz = ∂Ey/∂x
+        # Ey(nz, nx). ∂Ey/∂x -> diff(axis=1). (nz, nx-1).
+        curl_ez = np.diff(Ey, axis=1)/resolution
+        
+        return curl_ex, curl_ey, curl_ez
     
-    # Hx update from x-component: (∇×E)_x = ∂Ez/∂y - ∂Ey/∂z
-    diff_ez_y = np.diff(ez, axis=1) / resolution  # ∂Ez/∂y ≈ (Ez[k,j+1,i] - Ez[k,j,i]) / dy
-    pad_ez_y = [(0, 0)] * 3  # Create padding list for 3D
-    pad_ez_y[1] = (1, 0)  # Pad axis 1 (y) at beginning to restore shape
-    term1_x = np.pad(diff_ez_y, pad_ez_y, mode="constant")
-    
-    diff_ey_z = np.diff(ey, axis=0) / resolution  # ∂Ey/∂z ≈ (Ey[k+1,j,i] - Ey[k,j,i]) / dz
-    pad_ey_z = [(0, 0)] * 3
-    pad_ey_z[0] = (1, 0)  # Pad axis 0 (z) at beginning
-    term2_x = np.pad(diff_ey_z, pad_ey_z, mode="constant")
-    curl_ex = term1_x - term2_x  # Combine terms for Hx
-    
-    # Hy update from y-component: (∇×E)_y = ∂Ex/∂z - ∂Ez/∂x
-    diff_ex_z = np.diff(ex, axis=0) / resolution  # ∂Ex/∂z ≈ (Ex[k+1,j,i] - Ex[k,j,i]) / dz
-    pad_ex_z = [(0, 0)] * 3
-    pad_ex_z[0] = (1, 0)  # Pad axis 0 (z)
-    term1_y = np.pad(diff_ex_z, pad_ex_z, mode="constant")
-    
-    diff_ez_x = np.diff(ez, axis=2) / resolution  # ∂Ez/∂x ≈ (Ez[k,j,i+1] - Ez[k,j,i]) / dx
-    pad_ez_x = [(0, 0)] * 3
-    pad_ez_x[2] = (1, 0)  # Pad axis 2 (x)
-    term2_y = np.pad(diff_ez_x, pad_ez_x, mode="constant")
-    curl_ey = term1_y - term2_y  # Combine terms for Hy
-    
-    # Hz update from z-component: (∇×E)_z = ∂Ey/∂x - ∂Ex/∂y
-    diff_ey_x = np.diff(ey, axis=2) / resolution  # ∂Ey/∂x ≈ (Ey[k,j,i+1] - Ey[k,j,i]) / dx
-    pad_ey_x = [(0, 0)] * 3
-    pad_ey_x[2] = (1, 0)  # Pad axis 2 (x)
-    term1_z = np.pad(diff_ey_x, pad_ey_x, mode="constant")
-    
-    diff_ex_y = np.diff(ex, axis=1) / resolution  # ∂Ex/∂y ≈ (Ex[k,j+1,i] - Ex[k,j,i]) / dy
-    pad_ex_y = [(0, 0)] * 3
-    pad_ex_y[1] = (1, 0)  # Pad axis 1 (y)
-    term2_z = np.pad(diff_ex_y, pad_ex_y, mode="constant")
-    curl_ez = term1_z - term2_z  # Combine terms for Hz
-    
-    return (curl_ex, curl_ey, curl_ez)
+    return None
 
+def curl_h_to_e_2d(h_fields, resolution, e_shapes, plane='xy'):
+    """Compute curl of H-field for E update in 2D for arbitrary plane."""
+    # e_shapes is tuple of shapes for (Ex, Ey, Ez) to handle boundary padding
+    
+    if plane == 'xy':
+        # ∂/∂z = 0
+        Hx, Hy, Hz = h_fields
+        # Field shapes: Hx(ny, nx-1), Hy(ny-1, nx), Hz(ny-1, nx-1)
+        # E-field shapes: Ex(ny, nx-1), Ey(ny-1, nx), Ez(ny, nx)
+        
+        # Ex update: (∇×H)_x = ∂Hz/∂y - ∂Hy/∂z(0) = ∂Hz/∂y
+        # Ex(ny, nx-1), Hz(ny-1, nx-1)
+        # ∂Hz/∂y: Hz is (ny-1, nx-1), diff(axis=0) gives (ny-2, nx-1)
+        curl_ex = np.zeros(e_shapes[0])
+        dHz_dy = (Hz[1:, :] - Hz[:-1, :]) / resolution  # (ny-2, nx-1)
+        # Material region is [1:-1, :-1] which gives (ny-2, nx-1) from permittivity(ny, nx)
+        # So curl region should also be [1:-1, :-1]
+        # dHz_dy is (ny-2, nx-1), need to assign to curl_ex[1:-1, :-1] which expects (ny-2, nx-1)
+        # But curl_ex[1:-1, :-1] from curl_ex(ny, nx-1) is (ny-2, nx-2), not (ny-2, nx-1)!
+        # The issue: Ex is (ny, nx-1), so Ex[1:-1, :-1] is (ny-2, nx-2)
+        # I need to use Ex[1:-1, :] which is (ny-2, nx-1), and material[1:-1, :-1] which is also (ny-2, nx-1)
+        curl_ex[1:-1, :] = dHz_dy  # Assign to [1:-1, :] to get (ny-2, nx-1)
+        
+        # Ey update: (∇×H)_y = ∂Hx/∂z(0) - ∂Hz/∂x = -∂Hz/∂x
+        # Ey(ny-1, nx), Hz(ny-1, nx-1)
+        # -∂Hz/∂x: -diff(Hz, axis=1) gives (ny-1, nx-2)
+        # Ey update region is [:, 1:-1] -> (ny-1, nx-2)
+        curl_ey = np.zeros(e_shapes[1])
+        dHz_dx = (Hz[:, 1:] - Hz[:, :-1]) / resolution  # (ny-1, nx-2)
+        curl_ey[:, 1:-1] = -dHz_dx  # (ny-1, nx-2) matches Ey[:, 1:-1]
+        
+        # Ez update: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y
+        # Ez(ny, nx), Hx(ny, nx-1), Hy(ny-1, nx)
+        # Match original implementation exactly for backward compatibility
+        curl_ez = np.zeros(e_shapes[2])
+        # Original code computed these derivatives at interior Ez points
+        # Note: original had specific indexing that worked, matching it exactly
+        dHy_dx = (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / resolution  # Shape: (ny-2, nx-2)
+        dHx_dy = (Hx[1:-1, 1:] - Hx[1:-1, :-1]) / resolution  # Shape: (ny-2, nx-2)
+        curl_ez[1:-1, 1:-1] = dHy_dx - dHx_dy
+        
+        return curl_ex, curl_ey, curl_ez
 
-def curl_h_to_e_2d(hx, hy, resolution, target_shape):
-    """Compute curl of H-field for E update in 2D on staggered Yee grid: ∂E/∂t = ∇×H/(ε₀εᵣ)."""
-    # For 2D TM mode: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y (z-component drives Ez)
-    # On staggered Yee grid: Ez[i,j], Hx[i, j+1/2] with shape (Ny, Nx-1), Hy[i+1/2, j] with shape (Ny-1, Nx)
-    # Interior region excludes boundary points where sources/PML are applied
-    curl = np.zeros(target_shape)  # Initialize with zeros for boundary conditions
-    # Compute curl at interior Ez points [1:-1, 1:-1]
-    # ∂Hy/∂x: Hy is at (i+1/2, j), so we need Hy[i, j] - Hy[i-1, j] to get derivative at (i, j)
-    dHy_dx = (hy[1:, 1:-1] - hy[:-1, 1:-1]) / resolution  # Shape: (Ny-2, Nx-2)
-    # ∂Hx/∂y: Hx is at (i, j+1/2), so we need Hx[i, j] - Hx[i, j-1] to get derivative at (i, j)
-    dHx_dy = (hx[1:-1, 1:] - hx[1:-1, :-1]) / resolution  # Shape: (Ny-2, Nx-2)
-    curl[1:-1, 1:-1] = dHy_dx - dHx_dy
-    return (curl,)
+    elif plane == 'yz':
+        # ∂/∂x = 0
+        Hx, Hy, Hz = h_fields
+        # Ex ~ ∂Hz/∂y - ∂Hy/∂z
+        # Ey ~ ∂Hx/∂z
+        # Ez ~ -∂Hx/∂y
+        
+        # Ex (nz, ny). Hz(nz-1, ny). Hy(nz, ny-1).
+        curl_ex = np.zeros(e_shapes[0])
+        dHz_dy = (Hz[:, 1:] - Hz[:, :-1]) / resolution
+        dHy_dz = (Hy[1:, :] - Hy[:-1, :]) / resolution
+        # Pad to Ex interior
+        curl_ex[1:-1, 1:-1] = dHz_dy[1:-1, :] - dHy_dz[:, 1:-1] 
+        # Wait, indices are tricky.
+        # Ex is centered in y,z? No, Ex is tangential, usually on edges. 
+        # In 2D yz (TM-like for Ex), Ex is at nodes (nz, ny).
+        # Hz is at y+1/2 (ny-1). Hy is at z+1/2 (nz-1).
+        # ∂Hz/∂y -> (Hz[k, j] - Hz[k, j-1])/dy -> centered at j.
+        # ∂Hy/∂z -> (Hy[k, j] - Hy[k-1, j])/dz -> centered at k.
+        curl_ex[1:-1, 1:-1] = (Hz[1:-1, 1:] - Hz[1:-1, :-1])/resolution - (Hy[1:, 1:-1] - Hy[:-1, 1:-1])/resolution
+
+        # Ey ~ ∂Hx/∂z
+        # Ey (nz, ny-1). Hx (nz-1, ny-1).
+        # ∂Hx/∂z -> (Hx[k, j] - Hx[k-1, j])/dz -> centered at k.
+        curl_ey = np.zeros(e_shapes[1])
+        curl_ey[1:-1, :] = (Hx[1:, :] - Hx[:-1, :]) / resolution
+        
+        # Ez ~ -∂Hx/∂y
+        # Ez (nz-1, ny). Hx (nz-1, ny-1).
+        # -∂Hx/∂y -> -(Hx[k, j] - Hx[k, j-1])/dy -> centered at j.
+        curl_ez = np.zeros(e_shapes[2])
+        curl_ez[:, 1:-1] = -(Hx[:, 1:] - Hx[:, :-1]) / resolution
+        
+        return curl_ex, curl_ey, curl_ez
+        
+    elif plane == 'xz':
+        # ∂/∂y = 0
+        Hx, Hy, Hz = h_fields
+        # Ex ~ -∂Hz/∂y(0) + ∂Hy/∂z(0) - no wait, ∇×H
+        # (∇×H)_x = ∂Hz/∂y - ∂Hy/∂z = -∂Hy/∂z
+        # (∇×H)_y = ∂Hx/∂z - ∂Hz/∂x
+        # (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y(0) = ∂Hy/∂x
+        
+        # Ex ~ -∂Hy/∂z
+        # Ex (nz, nx-1). Hy (nz-1, nx-1).
+        curl_ex = np.zeros(e_shapes[0])
+        curl_ex[1:-1, :] = -(Hy[1:, :] - Hy[:-1, :]) / resolution
+        
+        # Ey ~ ∂Hx/∂z - ∂Hz/∂x
+        # Ey (nz, nx). Hx (nz-1, nx). Hz (nz, nx-1).
+        curl_ey = np.zeros(e_shapes[1])
+        dHx_dz = (Hx[1:, :] - Hx[:-1, :]) / resolution
+        dHz_dx = (Hz[:, 1:] - Hz[:, :-1]) / resolution
+        curl_ey[1:-1, 1:-1] = dHx_dz[:, 1:-1] - dHz_dx[1:-1, :]
+        
+        # Ez ~ ∂Hy/∂x
+        # Ez (nz-1, nx). Hy (nz-1, nx-1).
+        curl_ez = np.zeros(e_shapes[2])
+        curl_ez[:, 1:-1] = (Hy[:, 1:] - Hy[:, :-1]) / resolution
+        
+        return curl_ex, curl_ey, curl_ez
+
+    return None
+
+def material_slice_for_e_2d_component(permittivity, conductivity, component, plane):
+    """Extract material parameters for a specific E-component in 2D plane."""
+    # component: 'x', 'y', or 'z'
+    # plane: 'xy', 'yz', 'xz'
+    
+    # We need to slice based on where the component is defined in the grid
+    # To simplify, we'll take the "interior" valid region for update
+    
+    # 3D Shapes: Ex(z, y, x-1/2), Ey(z, y-1/2, x), Ez(z-1/2, y, x)
+    # 2D Slices must respect this relative staggering
+    
+    slices = [slice(None), slice(None), slice(None)] # [z, y, x]
+    
+    # Default to "exclude boundaries" (1:-1) for active dimensions
+    # and "select all" (slice(None)) or specific index for invariant dimension
+    
+    if plane == 'xy':
+        # Invariant z (axis 0 in 3D array if present, or implied)
+        # If arrays are 3D (nz, ny, nx): slice z=0 or middle?
+        # But permittivity is likely 2D (ny, nx) passed in?
+        # Fields.__init__ passes self.permittivity.
+        pass # Handle below
+        
+    # Helper to generate the 2D slice tuple for (dim1, dim2) array
+    def get_slice(s1, s2):
+        return (s1, s2)
+        
+    s_mid = slice(1, -1)
+    s_all = slice(None)
+    
+    if plane == 'xy':
+        # Grid (ny, nx). Component staggering:
+        # Ex (ny, nx-1) - staggered in x
+        # Ey (ny-1, nx) - staggered in y  
+        # Ez (ny, nx) - centered
+        
+        if component == 'x':
+            # Ex (ny, nx-1). Update region: Ex[1:-1, :] -> (ny-2, nx-1)
+            # Material at Ex[i, j] positions: use material[i, j] from permittivity[i, j]
+            # So material[1:-1, :-1] gives (ny-2, nx-1) from permittivity(ny, nx)
+            # Region [1:-1, :] is used for field/curl, material is pre-sliced to match
+            region = (s_mid, s_all)  # [1:-1, :] for field update
+        elif component == 'y':
+            # Ey (ny-1, nx). Update region: Ey[:, 1:-1] -> (ny-1, nx-2)
+            # Material at Ey[i, j] positions: use material[i, j] from permittivity[i, j]
+            # So material[:-1, 1:-1] gives (ny-1, nx-2) from permittivity(ny, nx)
+            # Region [:, 1:-1] is used for field/curl, material is pre-sliced to match
+            region = (s_all, s_mid)  # [:, 1:-1] for field update
+        elif component == 'z':
+            # Ez (ny, nx). Update region: Ez[1:-1, 1:-1] -> (ny-2, nx-2)
+            # Material needs: permittivity[1:-1, 1:-1] -> (ny-2, nx-2)
+            region = (s_mid, s_mid)
+            
+    elif plane == 'yz':
+        # Grid (nz, ny)
+        if component == 'x':
+            # Ex (nz, ny) - normal to plane
+            region = (s_mid, s_mid)
+        elif component == 'y':
+            # Ey (nz, ny-1) - in plane y
+            region = (s_all, s_mid) # Wait, Ey is staggered in y? In 3D Ey(z, y-1/2, x). 
+            # In yz: Ey(nz, ny-1). Update needs curl Hx (nz-1, ny-1) and Hz (nz-1, ny).
+            # Curl calculation produced (nz-2, ny-1) for Ex part?
+            # Let's trust standard interior logic: 
+            # If component is normal (Ex), fully interior [1:-1, 1:-1]
+            # If component is in plane (Ey, Ez):
+            # Ey: [1:-1, :] (interior z, full y-staggered?)
+            region = (s_mid, s_all) 
+        elif component == 'z':
+            # Ez (nz-1, ny)
+            region = (s_all, s_mid)
+
+    elif plane == 'xz':
+        # Grid (nz, nx)
+        if component == 'x':
+            # Ex (nz, nx-1)
+            region = (s_all, s_mid)
+        elif component == 'y':
+            # Ey (nz, nx) - normal
+            region = (s_mid, s_mid)
+        elif component == 'z':
+            # Ez (nz-1, nx)
+            region = (s_mid, s_all)
+
+    # Slice the material arrays to match the field component shape
+    # advance_e_field uses material directly (not indexed by region), so material must match field[region] shape
+    if plane == 'xy':
+        if component == 'x':
+            # Ex is (ny, nx-1), update region [1:-1, :] gives (ny-2, nx-1)
+            # Material at Ex positions: material[1:-1, :-1] -> (ny-2, nx-1)
+            eps = permittivity[1:-1, :-1]
+            sig = conductivity[1:-1, :-1]
+        elif component == 'y':
+            # Ey is (ny-1, nx), update region [:, 1:-1] gives (ny-1, nx-2)
+            # Material at Ey positions: material[:-1, 1:-1] -> (ny-1, nx-2)
+            eps = permittivity[:-1, 1:-1]
+            sig = conductivity[:-1, 1:-1]
+        else:  # component == 'z'
+            # Ez is (ny, nx), update region [1:-1, 1:-1] gives (ny-2, nx-2)
+            # Material: material[1:-1, 1:-1] -> (ny-2, nx-2)
+            eps = permittivity[region]
+            sig = conductivity[region]
+    else:
+        # For yz and xz planes, use standard slicing for now
+        eps = permittivity[region]
+        sig = conductivity[region]
+    
+    return eps, sig, region
+
+def magnetic_conductivity_terms_2d_full(conductivity, permeability, hx_shape, hy_shape, hz_shape, plane):
+    """Compute magnetic conductivity for all H-components in 2D."""
+    # sigma_m = sigma * mu * MU_0 / EPS_0
+    base_term = conductivity * permeability * MU_0 / EPS_0
+    
+    if plane == 'xy':
+        # Hx(ny, nx-1), Hy(ny-1, nx), Hz(ny-1, nx-1)
+        # conductivity is (ny, nx) - same as permittivity grid
+        # Hx is staggered in x -> slice x: conductivity[:, :-1]
+        sigma_m_hx = base_term[:, :-1]
+        # Hy is staggered in y -> slice y: conductivity[:-1, :]
+        sigma_m_hy = base_term[:-1, :]
+        # Hz is staggered in both -> slice both: conductivity[:-1, :-1]
+        sigma_m_hz = base_term[:-1, :-1]
+        
+    elif plane == 'yz':
+        # Hx(nz-1, ny-1), Hy(nz, ny-1), Hz(nz-1, ny)
+        # conductivity is (nz, ny)
+        sigma_m_hx = base_term[:-1, :-1]  # Staggered in both z and y
+        sigma_m_hy = base_term[:, :-1]  # Staggered in y
+        sigma_m_hz = base_term[:-1, :]  # Staggered in z
+        
+    elif plane == 'xz':
+        # Hx(nz, nx-1), Hy(nz-1, nx-1), Hz(nz-1, nx)
+        # conductivity is (nz, nx)
+        sigma_m_hx = base_term[:, :-1]  # Staggered in x
+        sigma_m_hy = base_term[:-1, :-1]  # Staggered in both z and x
+        sigma_m_hz = base_term[:-1, :]  # Staggered in z
+        
+    # Ensure shapes match exactly
+    sigma_m_hx = sigma_m_hx.reshape(hx_shape) if sigma_m_hx.shape != hx_shape else sigma_m_hx
+    sigma_m_hy = sigma_m_hy.reshape(hy_shape) if sigma_m_hy.shape != hy_shape else sigma_m_hy
+    sigma_m_hz = sigma_m_hz.reshape(hz_shape) if sigma_m_hz.shape != hz_shape else sigma_m_hz
+    
+    return sigma_m_hx, sigma_m_hy, sigma_m_hz
+
 
 
 def curl_h_to_e_3d(hx, hy, hz, resolution):

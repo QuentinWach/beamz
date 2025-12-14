@@ -16,58 +16,92 @@ class ModeSource:
         
         self._jz_profile = None
         self._my_profile = None
+        
+        # TE profiles
+        self._mz_profile = None
+        self._jy_profile = None
+        self._jx_profile = None
+        
         self._ez_indices = None
         self._h_indices = None
+        
+        # TE indices
+        self._hz_indices = None
+        self._e_indices = None # For Ex/Ey
+        
         self._h_component = None
+        self._e_component = None # For TE (Ex/Ey)
         self._neff = None
+        self._dt_physical = 0.0
         
     def initialize(self, permittivity, resolution):
         """Compute the mode and set up the source currents."""
         dx = dy = resolution
         ny, nx = permittivity.shape
         axis = "x" if self.direction in ("+x", "-x") else "y"
-        # For y propagation only: Forward (+) directions use j = -H_t, m = +E_t; reverse flips both
-        sign_map = {"+y": (-1.0, 1.0), "-y": (1.0, -1.0)}
-        h_sign, m_sign = sign_map.get(self.direction, (-1.0, 1.0))
+        self._dt_physical = 0.0
         
+        # 1. Setup indices and profiles
         if axis == "x":
-            x_ez_idx = int(np.clip(np.round(self.center[0] / dx - 0.5), 0, nx - 1))
-            x_ez_coord = (x_ez_idx + 0.5) * dx
-            y_ez_slice = slice(0, ny)
-            y_coords = (np.arange(ny) + 0.5) * dy
-            eps_profile = permittivity[:, x_ez_idx]
-            if self.direction == "+x": x_h_idx = max(0, x_ez_idx - 1)
-            else: x_h_idx = min(nx - 2, x_ez_idx)
-            self._ez_indices = (y_ez_slice, x_ez_idx)
-            self._h_indices = (y_ez_slice, x_h_idx)
-            self._h_component = "Hx"
-            h_coord = x_h_idx * dx
-            print(f"[ModeSource] Direction: {self.direction}, Ez column {x_ez_idx}, Hx column {x_h_idx}")
-        else:
-            y_ez_idx = int(np.clip(np.round(self.center[1] / dy - 0.5), 0, ny - 1))
-            y_ez_coord = (y_ez_idx + 0.5) * dy
-            x_ez_slice = slice(0, nx)
-            x_coords = (np.arange(nx) + 0.5) * dx
-            eps_profile = permittivity[y_ez_idx, :]
-            if self.direction == "+y": y_h_idx = max(0, y_ez_idx - 1)
-            else: y_h_idx = min(ny - 2, y_ez_idx)
-            self._ez_indices = (y_ez_idx, x_ez_slice)
-            # For y propagation: Following TFSF boundary pattern, need row offset like x propagation has column offset
-            # For +y: use row above (y_ez_idx - 1), for -y: use same row but bound to ny-2
-            # Use Hy (staggered in y) to create proper TFSF boundary, similar to how x propagation uses Hx offset
-            # #region agent log
-            import json
-            with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"fix7","hypothesisId":"F","location":"mode.py:54","message":"y propagation: using Hy with row offset for TFSF boundary","data":{"direction":self.direction,"y_ez_idx":int(y_ez_idx),"y_h_idx":int(y_h_idx),"ny":int(ny),"nx":int(nx)},"timestamp":int(__import__('time').time()*1000)})+"\n")
-            # #endregion
-            self._h_indices = (y_h_idx, x_ez_slice)
-            self._h_component = "Hy"
-            h_coord = (y_h_idx + 0.5) * dy
-            print(f"[ModeSource] Direction: {self.direction}, Ez row {y_ez_idx}, Hy row {y_h_idx}")
-        
+            center_idx = int(np.clip(np.round(self.center[0] / dx - 0.5), 0, nx - 1))
+            coord = (center_idx + 0.5) * dx
+            eps_profile = permittivity[:, center_idx]
+            
+            # TFSF Offset
+            if self.direction == "+x": offset_idx = max(0, center_idx - 1)
+            else: offset_idx = min(nx - 2, center_idx)
+            
+            if self.pol == "tm":
+                self._ez_indices = (slice(0, ny), center_idx)
+                self._h_indices = (slice(0, ny), offset_idx)
+                self._h_component = "Hx"
+                print(f"[ModeSource] TM x-prop: Ez col {center_idx}, Hx col {offset_idx}")
+                plot_coords = (np.arange(ny) + 0.5) * dy
+            else: # TE
+                # Hz (scalar) at center_idx, Ey (transverse) at offset_idx
+                # Hz grid is (ny-1, nx-1). Ey grid is (ny-1, nx).
+                # Choose Hz column so that Hz plane is one half-cell "upstream" of Ey plane.
+                if self.direction == "+x": hz_col = max(0, offset_idx - 1)
+                else: hz_col = min(nx - 2, offset_idx)
+                
+                self._hz_indices = (slice(0, ny-1), hz_col)
+                self._e_indices = (slice(0, ny-1), offset_idx)
+                self._e_component = "Ey"
+                print(f"[ModeSource] TE x-prop: Hz col {hz_col}, Ey col {offset_idx}")
+                plot_coords = (np.arange(ny-1) + 1.0) * dy # staggered y-coords
+                
+        else: # axis == "y"
+            center_idx = int(np.clip(np.round(self.center[1] / dy - 0.5), 0, ny - 1))
+            coord = (center_idx + 0.5) * dy
+            eps_profile = permittivity[center_idx, :]
+            
+            # TFSF Offset
+            if self.direction == "+y": offset_idx = max(0, center_idx - 1)
+            else: offset_idx = min(ny - 2, center_idx)
+            
+            if self.pol == "tm":
+                self._ez_indices = (center_idx, slice(0, nx))
+                self._h_indices = (offset_idx, slice(0, nx))
+                self._h_component = "Hy"
+                print(f"[ModeSource] TM y-prop: Ez row {center_idx}, Hy row {offset_idx}")
+                plot_coords = (np.arange(nx) + 0.5) * dx
+            else: # TE
+                # Hz (scalar) at center_idx, Ex (transverse) at offset_idx
+                # Hz grid is (ny-1, nx-1). Ex grid is (ny, nx-1).
+                # Choose Hz row so that Hz plane is one half-cell "upstream" of Ex plane.
+                if self.direction == "+y": hz_row = max(0, offset_idx - 1)
+                else: hz_row = min(ny - 2, offset_idx)
+                
+                self._hz_indices = (hz_row, slice(0, nx-1))
+                self._e_indices = (offset_idx, slice(0, nx-1))
+                self._e_component = "Ex"
+                print(f"[ModeSource] TE y-prop: Hz row {hz_row}, Ex row {offset_idx}")
+                plot_coords = (np.arange(nx-1) + 1.0) * dx # staggered x-coords
+
+        # 2. Solve Modes
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         dL = dy if axis == "x" else dx
-        neff_val, e_fields, h_fields, prop_axis = solve_modes(
+        neff_val, e_fields, h_fields, _ = solve_modes(
             eps=eps_profile,
             omega=omega,
             dL=dL,
@@ -76,135 +110,238 @@ class ModeSource:
             filter_pol=self.pol,
             return_fields=True
         )
-        
         self._neff = neff_val[0]
-        self._k = self._neff * 2 * np.pi / self.wavelength
         H_mode = h_fields[0]
         E_mode = e_fields[0]
         
-        if axis == "x":
-            # Original x propagation logic - extract fields exactly as original code
-            if self.pol == "te":
-                Hy_mode = np.squeeze(H_mode[1])  # Hy
-                Ez_mode = np.squeeze(E_mode[2])  # Ez
-                if np.max(np.abs(Hy_mode)) < 1e-9: Hy_mode = np.squeeze(H_mode[2])
-                if np.max(np.abs(Ez_mode)) < 1e-9: Ez_mode = np.squeeze(E_mode[1])
-            elif self.pol == "tm":
-                Hy_mode = np.squeeze(H_mode[2])  # Hz as Hy equivalent
-                Ez_mode = np.squeeze(E_mode[1])  # Ey as Ez equivalent
+        # 2.5. Compute physical time shift between E and H injection planes based on Yee-grid locations.
+        # Use dt_physical = (coord_E - coord_H) / v_g  (approx), with v ≈ c / neff.
+        # Positive dt_physical means H signal is sampled at a later time than E (H is upstream).
+        if self._neff is not None:
+            coord_e = 0.0
+            coord_h = 0.0
+            if axis == "x":
+                if self.pol == "tm":
+                    # Ez at x = (i + 0.5)dx, Hx at x = (i + 1.0)dx
+                    coord_e = (self._ez_indices[1] + 0.5) * dx
+                    coord_h = (self._h_indices[1] + 1.0) * dx
+                else:
+                    # Ey at x = (i + 0.5)dx, Hz at x = (i + 1.0)dx
+                    coord_e = (self._e_indices[1] + 0.5) * dx
+                    coord_h = (self._hz_indices[1] + 1.0) * dx
             else:
-                raise ValueError(f"Unknown polarization: {self.pol}")
-            
-            # Phase align as original
-            idx_max = np.argmax(np.abs(Hy_mode))
-            phase_ref = np.angle(Hy_mode[idx_max])
-            Hy_mode = Hy_mode * np.exp(-1j * phase_ref)
-            Ez_mode = Ez_mode * np.exp(-1j * phase_ref)
-            
-            Ez_mode_at_h = Ez_mode
-            h_t = Hy_mode
-            e_t = Ez_mode
-        else:
-            # Y propagation logic - use generalized extraction
-            hx_mode = np.squeeze(H_mode[1])
-            hy_mode = np.squeeze(H_mode[2]) if H_mode.shape[0] > 2 else hx_mode * 0.0
-            ez_mode = np.squeeze(E_mode[0])
-            ex_mode = np.squeeze(E_mode[1]) if E_mode.shape[0] > 1 else ez_mode * 0.0
-            ey_mode = np.squeeze(E_mode[2]) if E_mode.shape[0] > 2 else ez_mode * 0.0
-            
-            h_t = hx_mode if np.max(np.abs(hx_mode)) > 1e-12 else hy_mode
-            
-            if self.pol == "te":
-                e_t = ez_mode if np.max(np.abs(ez_mode)) > 1e-12 else ey_mode
-            elif self.pol == "tm":
-                e_t = ex_mode
-                if np.max(np.abs(e_t)) < 1e-12: e_t = ez_mode
-            else:
-                raise ValueError(f"Unknown polarization: {self.pol}")
-            
-            idx_max = np.argmax(np.abs(h_t))
-            phase_ref = np.angle(h_t[idx_max])
-            h_t = h_t * np.exp(-1j * phase_ref)
-            e_t = e_t * np.exp(-1j * phase_ref)
-            
-            Ez_mode_at_h = e_t
+                if self.pol == "tm":
+                    # Ez at y = (j + 0.5)dy, Hy at y = (j + 1.0)dy
+                    coord_e = (self._ez_indices[0] + 0.5) * dy
+                    coord_h = (self._h_indices[0] + 1.0) * dy
+                else:
+                    # Ex at y = (j + 0.5)dy, Hz at y = (j + 1.0)dy
+                    coord_e = (self._e_indices[0] + 0.5) * dy
+                    coord_h = (self._hz_indices[0] + 1.0) * dy
+            self._dt_physical = (coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
         
-        ETA_0 = np.sqrt(MU_0 / EPS_0)
-        Z_phys = ETA_0 / np.real(self._neff)
-        
+        # 3. Extract Fields & Profiles
         if axis == "x":
-            # Original x propagation impedance correction
-            norm_hy = np.max(np.abs(h_t))  # This is Hy_mode after phase alignment
-            norm_ez = np.max(np.abs(Ez_mode_at_h))
-            if norm_hy > 1e-12 and norm_ez > 1e-12:
-                current_Z = norm_ez / norm_hy
-                correction_factor = Z_phys / current_Z
-                print(f"[ModeSource] Correcting impedance: Z_sim={current_Z:.2f}, Z_phys={Z_phys:.2f}. Scaling M_y by {correction_factor:.4f}")
-                Ez_mode_at_h *= correction_factor
-        else:
-            # Y propagation impedance correction
-            norm_h = np.max(np.abs(h_t))
-            norm_e = np.max(np.abs(Ez_mode_at_h))
-            if norm_h > 1e-12 and norm_e > 1e-12:
-                current_Z = norm_e / norm_h
-                correction_factor = Z_phys / current_Z
-                print(f"[ModeSource] Correcting impedance: Z_sim={current_Z:.2f}, Z_phys={Z_phys:.2f}. Scaling M by {correction_factor:.4f}")
-                Ez_mode_at_h *= correction_factor
-        
-        # Apply signs - for x propagation, use original explicit flip logic
-        # For y propagation, use sign_map
-        if axis == "x":
-            # Original code: start with real parts, then flip
-            jz_profile = np.real(h_t).copy()
-            my_profile = np.real(Ez_mode_at_h).copy()
-            # #region agent log
-            import json
-            with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"direction_fix","hypothesisId":"A","location":"mode.py:160","message":"before sign flip","data":{"direction":self.direction,"jz_initial_sign":float(np.sign(jz_profile[0])) if len(jz_profile) > 0 else 0,"my_initial_sign":float(np.sign(my_profile[0])) if len(my_profile) > 0 else 0,"jz_initial_val":float(jz_profile[0]) if len(jz_profile) > 0 else 0,"my_initial_val":float(my_profile[0]) if len(my_profile) > 0 else 0},"timestamp":int(__import__('time').time()*1000)})+"\n")
-            # #endregion
-            # For +x: flip jz to align Jz and My (mode solver returns them opposite)
-            # For -x: flip only My to reverse direction (keep Jz same as initial to get opposite propagation)
-            if self.direction == "+x":
-                jz_profile = -jz_profile
-            elif self.direction == "-x":
-                my_profile = -my_profile
-            # #region agent log
-            import json
-            with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"direction_fix","hypothesisId":"A","location":"mode.py:169","message":"after sign flip","data":{"direction":self.direction,"jz_final_sign":float(np.sign(jz_profile[0])) if len(jz_profile) > 0 else 0,"my_final_sign":float(np.sign(my_profile[0])) if len(my_profile) > 0 else 0,"jz_final_val":float(jz_profile[0]) if len(jz_profile) > 0 else 0,"my_final_val":float(my_profile[0]) if len(my_profile) > 0 else 0},"timestamp":int(__import__('time').time()*1000)})+"\n")
-            # #endregion
-        else:
-            jz_profile = h_sign * np.real(h_t)
-            my_profile = m_sign * np.real(Ez_mode_at_h)
-        
-        if axis == "y":
-            # #region agent log
-            import json
-            with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"fix7","hypothesisId":"B","location":"mode.py:130","message":"y propagation: profile lengths for Hy grid","data":{"jz_profile_len":len(jz_profile),"my_profile_len":len(my_profile),"nx":int(nx)},"timestamp":int(__import__('time').time()*1000)})+"\n")
-            # #endregion
-            # Align magnetic current to Hy grid (full x row, ny-1 rows)
-            jz_profile = jz_profile[:nx]  # Ez uses full row (nx elements)
-            my_profile = my_profile[:nx]  # Hy uses full x row (nx elements)
-        
-        self._jz_profile = np.asarray(np.real(jz_profile), dtype=np.float64)
-        self._my_profile = np.asarray(np.real(my_profile), dtype=np.float64)
-        
-        if axis == "x":
-            print(f"[ModeSource] x={x_ez_coord/µm:.3f}µm, neff={self._neff:.4f}")
-            print(f"[ModeSource] J_z at Ez[:, {x_ez_idx}]")
-            print(f"[ModeSource] M at Hx[:, {self._h_indices[1]}] (x~{h_coord/µm:.3f}µm)")
-            plot_coords = y_coords
-        else:
-            print(f"[ModeSource] y={y_ez_coord/µm:.3f}µm, neff={self._neff:.4f}")
-            print(f"[ModeSource] J_z at Ez[{self._ez_indices[0]}, :]")
-            print(f"[ModeSource] M at Hy[{self._h_indices[0]}, :] (y~{h_coord/µm:.3f}µm)")
-            plot_coords = x_coords
-        
+            if self.pol == "tm":
+                # TM: Main components Ez, Hy.
+                # Mode solver returns (Ex, Ey, Ez, Hx, Hy, Hz).
+                # For 2D TM x-prop: Ez is E_mode[2] or E_mode[1] (depending on solver output mapping).
+                # Previous code: Ez_mode = E_mode[2] (if defined) or E_mode[1].
+                # Hy_mode = H_mode[1] or H_mode[2].
+                Hy_raw = np.squeeze(H_mode[1])
+                Ez_raw = np.squeeze(E_mode[2])
+                if np.max(np.abs(Hy_raw)) < 1e-9: Hy_raw = np.squeeze(H_mode[2])
+                if np.max(np.abs(Ez_raw)) < 1e-9: Ez_raw = np.squeeze(E_mode[1])
+                
+                # Phase align
+                idx_max = np.argmax(np.abs(Hy_raw))
+                phase_ref = np.angle(Hy_raw[idx_max])
+                Hy_profile = Hy_raw * np.exp(-1j * phase_ref)
+                Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
+                
+                # Impedance correction
+                ETA_0 = np.sqrt(MU_0 / EPS_0)
+                Z_phys = ETA_0 / np.real(self._neff)
+                norm_h, norm_e = np.max(np.abs(Hy_profile)), np.max(np.abs(Ez_profile))
+                if norm_h > 1e-12 and norm_e > 1e-12:
+                    corr = Z_phys / (norm_e / norm_h)
+                    Ez_profile *= corr
+                
+                # Physical Huygens currents for TM x-prop:
+                # Jz = ±Hy, My = ±Ez with sign given by direction (n = ±x).
+                dir_sign = 1.0 if self.direction == "+x" else -1.0
+                self._jz_profile = dir_sign * np.real(Hy_profile)
+                self._my_profile = dir_sign * np.real(Ez_profile)
+                
+                plot_vals = (self._jz_profile, self._my_profile)
+                
+            else: # TE
+                # TE: Main components Hz, Ey.
+                # The mode solver field ordering depends on its internal propagation axis mapping.
+                # For robust injection, pick the dominant components on this 1D cross-section.
+                h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
+                e_candidates = [np.squeeze(E_mode[i]) for i in range(3)]
+                h_scores = [float(np.max(np.abs(hc))) for hc in h_candidates]
+                e_scores = [float(np.max(np.abs(ec))) for ec in e_candidates]
+                Hz_raw = h_candidates[int(np.argmax(h_scores))]
+                Ey_raw = e_candidates[int(np.argmax(e_scores))]
+                
+                # Interpolate to staggered grid (ny-1)
+                # Raw profiles are length ny. We need length ny-1.
+                Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
+                Ey_staggered = 0.5 * (Ey_raw[:-1] + Ey_raw[1:])
+                
+                # Phase align
+                idx_max = np.argmax(np.abs(Hz_staggered))
+                phase_ref = np.angle(Hz_staggered[idx_max])
+                Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
+                Ey_profile = Ey_staggered * np.exp(-1j * phase_ref)
+                
+                # Impedance correction (Z = Ey/Hz ?)
+                # TE Impedance Z = E/H = Ey/Hz.
+                # Z_phys = ETA_0 / neff (approx).
+                ETA_0 = np.sqrt(MU_0 / EPS_0)
+                Z_phys = ETA_0 / np.real(self._neff)
+                norm_h, norm_e = np.max(np.abs(Hz_profile)), np.max(np.abs(Ey_profile))
+                if norm_h > 1e-12 and norm_e > 1e-12:
+                    corr = Z_phys / (norm_e / norm_h)
+                    Ey_profile *= corr
+
+                # Ensure propagation direction (use Poynting sign on the 1D cross-section).
+                # For TE x-prop, Sx ~ Re(Ey * conj(Hz)).
+                desired_sign = 1.0 if self.direction == "+x" else -1.0
+                power = float(np.sum(np.real(Ey_profile * np.conjugate(Hz_profile))))
+                if power * desired_sign < 0.0: Hz_profile = -Hz_profile
+                
+                # Physical Huygens currents for TE x-prop in Beamz sign convention.
+                # With Beamz's curl sign and our magnetic injection (-Mz), the sign pairing that launches +x is:
+                # +x: Jy = +Hz, Mz = +Ey
+                # -x: Jy = -Hz, Mz = -Ey
+                if self.direction == "+x":
+                    self._jy_profile = np.real(Hz_profile)
+                    self._mz_profile = np.real(Ey_profile)
+                else:
+                    self._jy_profile = -np.real(Hz_profile)
+                    self._mz_profile = -np.real(Ey_profile)
+                
+                plot_vals = (self._jy_profile, self._mz_profile) # J, M
+                
+        else: # axis == "y"
+            # Y-propagation
+            if self.pol == "tm":
+                # TM: Main components Ez, Hx.
+                # Mode solver uses propagation_axis=0 with ordering:
+                # E=(Ez, Ex, Ey), H=(Hz, Hx, Hy). For "tm", Ey dominates and pairs with Hx for power flux.
+                # We map solver Ey -> FDTD Ez and solver Hx -> transverse H for Jz.
+                Hx_raw = np.squeeze(H_mode[1])
+                Ez_raw = np.squeeze(E_mode[2])
+                if np.max(np.abs(Hx_raw)) < 1e-9: Hx_raw = np.squeeze(H_mode[2])
+                if np.max(np.abs(Ez_raw)) < 1e-9: Ez_raw = np.squeeze(E_mode[1])
+                
+                # TM y-prop: Jz = Hx (if n=y, J=y x Hx x = -Hx z? No y x x = -z. Jz = -Hx)
+                # M = -y x Ez z = -Ez x. Mx = -Ez.
+                
+                # Original code used generic extraction.
+                # h_t = hx_mode. e_t = ez_mode.
+                
+                # Phase align
+                idx_max = np.argmax(np.abs(Hx_raw))
+                phase_ref = np.angle(Hx_raw[idx_max])
+                Hx_profile = Hx_raw * np.exp(-1j * phase_ref)
+                Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
+                
+                # Impedance
+                ETA_0 = np.sqrt(MU_0 / EPS_0)
+                Z_phys = ETA_0 / np.real(self._neff)
+                norm_h, norm_e = np.max(np.abs(Hx_profile)), np.max(np.abs(Ez_profile))
+                if norm_h > 1e-12 and norm_e > 1e-12:
+                    corr = Z_phys / (norm_e / norm_h)
+                    Ez_profile *= corr
+                
+                # Signs (using sign_map)
+                # For +y: j = -H, m = +E?
+                # Original: jz = h_sign * real(h). my = m_sign * real(e).
+                # +y: h_sign=-1.0 (so Jz = -Hx). m_sign=1.0 (so Mx = Ez).
+                # Wait, original injected into "My" profile but mapped to "Hx" component?
+                # Ah, original code injects `_my_profile` into `_h_component`.
+                # If `_h_component` is "Hy" (transverse H), then `M` should be `My`?
+                # But for TM y-prop, H is Hx (transverse). E is Ez.
+                # `M` should be `Mx`. `J` should be `Jz`.
+                # Original code set `_h_component="Hy"` for y-prop TM?
+                # Line 64: `self._h_component = "Hy"`.
+                # But for TM y-prop, the transverse field is Hx.
+                # Why inject into Hy?
+                # Maybe because the legacy code swapped Hx/Hy?
+                # In legacy `fields.py`: `Hy` is `(ny-1, nx)`. `Hx` is `(ny, nx-1)`.
+                # For y-prop (constant y slice):
+                # We are at row `y_ez_idx`.
+                # `Hy` has rows `0..ny-2`.
+                # `Hx` has rows `0..ny-1`.
+                # So `Hx` fits the slice. `Hy` does not.
+                # So physically we want to inject into the component that fits the slice length `nx`.
+                # `Ez` is `nx`. `Hx` (legacy) is `nx-1`. `Hy` (legacy) is `nx`.
+                # So `Hy` (legacy) fits `Ez` length `nx`.
+                # So we inject into `Hy` (legacy).
+                # But physically `Hy` (legacy) is `Hx` (transverse).
+                # So it matches! We inject `Mx` into `Hy` (legacy/code).
+                
+                # Physical Huygens currents for TM y-prop (Beamz curl convention):
+                # Empirically, unidirectionality requires Mx to flip relative to Jz for ±y.
+                # +y: Jz = -Hx, Mx = +Ez
+                # -y: Jz = +Hx, Mx = -Ez
+                if self.direction == "+y":
+                    self._jz_profile = -np.real(Hx_profile)
+                    self._my_profile = np.real(Ez_profile)
+                else:
+                    self._jz_profile = np.real(Hx_profile)
+                    self._my_profile = -np.real(Ez_profile)
+                plot_vals = (self._jz_profile, self._my_profile)
+                
+            else: # TE y-prop
+                # TE: Main components Hz, Ex.
+                # Robustly pick dominant components on this 1D cross-section.
+                h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
+                e_candidates = [np.squeeze(E_mode[i]) for i in range(3)]
+                h_scores = [float(np.max(np.abs(hc))) for hc in h_candidates]
+                e_scores = [float(np.max(np.abs(ec))) for ec in e_candidates]
+                Hz_raw = h_candidates[int(np.argmax(h_scores))]
+                Ex_raw = e_candidates[int(np.argmax(e_scores))]
+                
+                # Interpolate to staggered (nx-1)
+                Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
+                Ex_staggered = 0.5 * (Ex_raw[:-1] + Ex_raw[1:])
+                
+                # Phase align
+                idx_max = np.argmax(np.abs(Hz_staggered))
+                phase_ref = np.angle(Hz_staggered[idx_max])
+                Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
+                Ex_profile = Ex_staggered * np.exp(-1j * phase_ref)
+                
+                # Impedance
+                ETA_0 = np.sqrt(MU_0 / EPS_0)
+                Z_phys = ETA_0 / np.real(self._neff)
+                norm_h, norm_e = np.max(np.abs(Hz_profile)), np.max(np.abs(Ex_profile))
+                if norm_h > 1e-12 and norm_e > 1e-12:
+                    corr = Z_phys / (norm_e / norm_h)
+                    Ex_profile *= corr
+                
+                # TE y-prop:
+                # J = n x H = y x (0,0,Hz) = (Hz, 0, 0). So Jx = Hz.
+                # M = -n x E = -y x (Ex,0,0) = -(-Ex z) = Ex z. So Mz = Ex.
+                
+                # Physical Huygens currents for TE y-prop:
+                # Jx = +Hz for +y, -Hz for -y. Mz = +Ex for +y, -Ex for -y.
+                dir_sign = 1.0 if self.direction == "+y" else -1.0
+                self._jx_profile = dir_sign * np.real(Hz_profile)
+                self._mz_profile = dir_sign * np.real(Ex_profile)
+                plot_vals = (self._jx_profile, self._mz_profile)
+
         if self.width < 2.0 * µm:
             print("[ModeSource] Note: Source injection extended to full transverse span.")
         
-        self._plot_mode_profile(plot_coords, self._jz_profile, self._my_profile)
+        self._plot_mode_profile(plot_coords, *plot_vals)
+
+
         
     def _enforce_propagation_direction(self, E, H, axis):
         """Ensure the mode propagates in the correct direction by checking Poynting vector."""
@@ -280,53 +417,61 @@ class ModeSource:
         """Inject source fields directly into the grid before the update step."""
         from beamz.const import EPS_0, MU_0
         
-        if self._jz_profile is None:
+        if self._jz_profile is None and self._mz_profile is None:
             permittivity = design.rasterize(resolution=resolution).permittivity
             self.initialize(permittivity, resolution)
         
-        # Simplified timing for TF/SF boundary condition
-        # Both J and M act at the same effective boundary location.
-        # J (driving E) is evaluated at t + 0.5*dt (half-step).
-        # M (driving H) is evaluated at t (integer step).
-        
-        # J_z (Electric current) centered at t + 0.5*dt
+        # Timing:
+        # E source (J) is evaluated at t + 0.5*dt. H source (M) is evaluated at a shifted time to match plane offset.
         signal_value_e = self._get_signal_value(t + 0.5 * dt, dt)
+        signal_value_h = self._get_signal_value(t + 0.5 * dt + self._dt_physical, dt)
         
-        # M_y (Magnetic current) centered at t
-        signal_value_h = self._get_signal_value(t, dt)
-        
-        # Inject J_z source into Ez field
-        # Update equation: ∂_t E_z = (1/ε)[curl H - J_z]
-        # Discrete update: E_z^(n+1) = E_z^n + (dt/ε) * [curl H - J_z]
-        # We inject -J_z contribution directly: E_z_new = E_z_old - (dt/ε) * J_z
-        
-        # Get permittivity at injection location
-        y_ez_slice, x_ez_idx = self._ez_indices
-        eps_at_source = fields.permittivity[self._ez_indices]
-        
-        jz_term = self._jz_profile * signal_value_e / resolution
-        # Note: epsilon is relative permittivity, so multiply by EPS_0
-        ez_injection = -jz_term * dt / (EPS_0 * eps_at_source)
-        
-        fields.Ez[self._ez_indices] += ez_injection
-        
-        if hasattr(fields, 'permeability'):
-            mu_at_source = fields.permeability[self._h_indices]
-        else:
-            mu_at_source = 1.0
+        if self.pol == "tm":
+            # TM Injection: Jz -> Ez, M -> Hx/Hy
+            # Inject J_z source into Ez field
+            eps_at_source = fields.permittivity[self._ez_indices]
+            jz_term = self._jz_profile * signal_value_e / resolution
+            ez_injection = -jz_term * dt / (EPS_0 * eps_at_source)
+            fields.Ez[self._ez_indices] += ez_injection
             
-        my_term = self._my_profile * signal_value_h / resolution
-        h_injection = +my_term * dt / (MU_0 * mu_at_source)
-        
-        # #region agent log
-        import json
-        with open('/Users/quentinwach/Code/beamz/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({"sessionId":"debug-session","runId":"fix7","hypothesisId":"F","location":"mode.py:259","message":"inject: injecting into H component","data":{"h_component":self._h_component,"h_indices":str(self._h_indices),"direction":self.direction,"jz_sign":float(np.sign(self._jz_profile[0])) if len(self._jz_profile) > 0 else 0,"my_sign":float(np.sign(self._my_profile[0])) if len(self._my_profile) > 0 else 0},"timestamp":int(__import__('time').time()*1000)})+"\n")
-        # #endregion
-        if self._h_component == "Hx":
-            fields.Hx[self._h_indices] += h_injection
-        else:
-            fields.Hy[self._h_indices] += h_injection
+            # Inject M source into H field
+            if hasattr(fields, 'permeability'):
+                mu_at_source = fields.permeability[self._h_indices]
+            else:
+                mu_at_source = 1.0
+                
+            my_term = self._my_profile * signal_value_h / resolution
+            # Magnetic current enters H update with opposite sign to curl(E): ∂H/∂t = -(curlE + M)/μ.
+            h_injection = -my_term * dt / (MU_0 * mu_at_source)
+            
+            if self._h_component == "Hx":
+                fields.Hx[self._h_indices] += h_injection
+            else:
+                fields.Hy[self._h_indices] += h_injection
+                
+        else: # TE
+            # TE Injection: J -> Ex/Ey, Mz -> Hz
+            # Inject J source into Ex/Ey field
+            eps_at_source = fields.permittivity[self._e_indices]
+            
+            if self._e_component == "Ex": j_profile = self._jx_profile
+            else: j_profile = self._jy_profile
+            
+            j_term = j_profile * signal_value_e / resolution
+            e_injection = -j_term * dt / (EPS_0 * eps_at_source)
+            
+            if self._e_component == "Ex": fields.Ex[self._e_indices] += e_injection
+            else: fields.Ey[self._e_indices] += e_injection
+            
+            # Inject Mz source into Hz field
+            if hasattr(fields, 'permeability'):
+                mu_at_source = fields.permeability[self._hz_indices]
+            else:
+                mu_at_source = 1.0
+                
+            mz_term = self._mz_profile * signal_value_h / resolution
+            hz_injection = -mz_term * dt / (MU_0 * mu_at_source)
+            fields.Hz[self._hz_indices] += hz_injection
         
         # Diagnostics: estimate Poynting ratio (first 50 steps)
         # try:
