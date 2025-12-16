@@ -10,7 +10,7 @@ WL = 1.55*µm
 N_CORE, N_CLAD = 2.25, 1.444
 DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=12)
 STEPS = 50
-MAT_PENALTY = 300.0 # Penalty weight for material usage
+MAT_PENALTY = 500.0 # Penalty weight for material usage
 
 # Design & Materials
 design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
@@ -58,51 +58,72 @@ for step in range(STEPS):
     grid.permittivity[:] = base_eps
     grid.permittivity[mask] = opt.eps_min + phys_density[mask] * (opt.eps_max - opt.eps_min)
     
-    # Forward Simulation
+    # Forward Simulation (only output monitor)
     src_fwd.grid = grid # Update grid ref
     
     # Setup monitors for input and output power measurement
-    input_monitor = Monitor(design=grid, start=(2.5*µm, H/2-WG_W*2), end=(2.5*µm, H/2+WG_W*2), 
+    # Place monitor immediately after source to measure actual injected power
+    # This accounts for soft source loading and back-reflection
+    monitor_input_flux = Monitor(design=grid, start=(2.5*µm, H/2-WG_W*2), end=(2.5*µm, H/2+WG_W*2), 
                            accumulate_power=True, record_fields=False)
-    output_monitor = Monitor(design=grid, start=(W/2-WG_W*2, H-2*µm), end=(W/2+WG_W*2, H-2*µm),
-                            accumulate_power=True, record_fields=False)
     
-    sim_fwd = Simulation(grid, [src_fwd], [PML(edges='all', thickness=1*µm)], time=time, resolution=DX)
-    fwd_ez_history = []
+    # Output monitor at top waveguide
+    output_monitor_fwd = Monitor(design=grid, start=(W/2-WG_W*2, H-2*µm), end=(W/2+WG_W*2, H-2*µm),
+                                 accumulate_power=True, record_fields=False)
+    
+    # Run forward simulation with output monitor
+    sim_fwd = Simulation(grid, [src_fwd, monitor_input_flux, output_monitor_fwd], 
+                        [PML(edges='all', thickness=1*µm)], time=time, resolution=DX)
     
     print(f"[{step+1}/{STEPS}] Forward Sim...", end="\r")
-    while sim_fwd.step():
-        if sim_fwd.current_step % 2 == 0: # Subsample for memory
-            fwd_ez_history.append(sim_fwd.fields.Ez.copy())
-        
-        # Record power at monitors
-        if input_monitor.should_record(sim_fwd.current_step):
-            input_monitor.record_fields(sim_fwd.fields.Ez, sim_fwd.fields.Hx, sim_fwd.fields.Hy, 
-                                       sim_fwd.t, DX, DX, sim_fwd.current_step)
-        if output_monitor.should_record(sim_fwd.current_step):
-            output_monitor.record_fields(sim_fwd.fields.Ez, sim_fwd.fields.Hx, sim_fwd.fields.Hy,
-                                        sim_fwd.t, DX, DX, sim_fwd.current_step)
+    results = sim_fwd.run(save_fields=['Ez'], field_subsample=2)
     
-    # Calculate transmission percentage
-    input_power = np.sum(input_monitor.power_history) if input_monitor.power_history else 1.0
-    output_power = np.sum(output_monitor.power_history) if output_monitor.power_history else 0.0
-    transmission_pct = (output_power / input_power * 100.0) if input_power > 0 else 0.0
+    # Extract field history
+    fwd_ez_history = results['fields']['Ez'] if results and 'fields' in results else []
     
-    # For objective, use transmission percentage scaled appropriately
-    obj_val = transmission_pct  # Use percentage directly as objective
+    # Calculate transmission normalizing by measured input flux
+    # Input flux includes forward wave + reflection. 
+    # For high transmission structures, reflection is low, so this is a good approximation of injected power.
+    measured_input_energy = np.sum(monitor_input_flux.power_history) * DT
+    measured_output_energy = np.sum(output_monitor_fwd.power_history) * DT
+    
+    # Avoid division by zero
+    if measured_input_energy <= 0: measured_input_energy = 1.0
+    
+    transmission_fwd = (measured_output_energy / measured_input_energy * 100.0)
+    
+    # Backward Simulation (with backward monitor at input location)
+    src_adj.grid = grid
+    
+    # Backward source monitor (near top source)
+    monitor_back_flux = Monitor(design=grid, start=(W/2-WG_W*2, H-2.5*µm), end=(W/2+WG_W*2, H-2.5*µm),
+                              accumulate_power=True, record_fields=False)
+    
+    # Backward monitor at original input location (left waveguide)
+    backward_monitor = Monitor(design=grid, start=(2.5*µm, H/2-WG_W*2), end=(2.5*µm, H/2+WG_W*2),
+                              accumulate_power=True, record_fields=False)
+    
+    sim_adj = Simulation(grid, [src_adj, monitor_back_flux, backward_monitor], 
+                        [PML(edges='all', thickness=1*µm)], time=time, resolution=DX)
+    
+    adj_results = sim_adj.run(save_fields=['Ez'], field_subsample=2)
+    adj_ez_history = adj_results['fields']['Ez'] if adj_results and 'fields' in adj_results else []
+    
+    # Calculate backward transmission normalizing by measured input flux
+    measured_input_energy_back = np.sum(monitor_back_flux.power_history) * DT
+    if measured_input_energy_back <= 0: measured_input_energy_back = 1.0
+    
+    output_energy_back = np.sum(backward_monitor.power_history) * DT
+    transmission_back = (output_energy_back / measured_input_energy_back * 100.0)
+    
+    # Average bidirectional transmission
+    transmission_pct = (transmission_fwd + transmission_back) / 2.0
+    
+    # For objective, use averaged transmission percentage
+    obj_val = transmission_pct
     
     opt.objective_history.append(obj_val)
     transmission_history.append(transmission_pct)
-    
-    # Adjoint Simulation
-    # print(f"[{step+1}/{STEPS}] Adjoint Sim... (Obj: {obj_val:.2e})", end="\r")
-    src_adj.grid = grid
-    sim_adj = Simulation(grid, [src_adj], [PML(edges='all', thickness=1*µm)], time=time, resolution=DX)
-    adj_ez_history = []
-    
-    while sim_adj.step():
-        if sim_adj.current_step % 2 == 0:
-            adj_ez_history.append(sim_adj.fields.Ez.copy())
             
     # Compute Gradient (overlap of fwd and adj fields)
     grad_eps = compute_overlap_gradient(fwd_ez_history, adj_ez_history)
@@ -136,7 +157,7 @@ for step in range(STEPS):
     # Calculate fraction for display
     mat_frac = np.mean(phys_density[mask])
     
-    print(f" Step {step+1}: Obj={total_obj:.2e} (Trans={transmission_pct:.1f}%) | Mat={mat_frac:.1%} | MaxUp={max_update:.2e}", end="\r")
+    print(f" Step {step+1}: Obj={total_obj:.2e} (Trans={transmission_pct:.1f}% | Fwd={transmission_fwd:.1f}% Bwd={transmission_back:.1f}%) | Mat={mat_frac:.1%} | MaxUp={max_update:.2e}", end="\r")
     
     # Viz
     if step % 5 == 0:
