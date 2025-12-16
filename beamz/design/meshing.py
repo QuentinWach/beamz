@@ -66,6 +66,11 @@ class RegularGrid(BaseMeshGrid):
             display_status("Warning: Using 2D RegularGrid for a 3D design. Use RegularGrid3D for proper 3D meshing.", 
                           "warning")
         
+        # Determine is_3d property for compatibility with Simulation class
+        self.is_3d = False
+        if design.is_3d and design.depth > 0:
+            self.is_3d = True
+            
         # Calculate 2D grid dimensions
         width, height = self.design.width, self.design.height
         grid_width = int(width / self.resolution)
@@ -85,6 +90,17 @@ class RegularGrid(BaseMeshGrid):
         self.dy = self.resolution
         self.width = self.design.width
         self.height = self.design.height
+    
+    def rasterize(self, resolution=None):
+        """Mock rasterize method to return self if resolution matches."""
+        if resolution is None or resolution == self.resolution:
+            return self
+        else:
+            raise ValueError("RegularGrid cannot re-rasterize itself with different resolution. Use Design.rasterize()")
+
+    def get_material_grids(self, resolution=None):
+        """Get the material property grids."""
+        return self.permittivity, self.conductivity, self.permeability
 
     def __rasterize__(self):
         """Painters algorithm to rasterize the design into a grid using super-sampling
