@@ -31,6 +31,9 @@ dependencies = [
     "scipy>=1.10.1",
     "rich>=13.9.4",
     "shapely>=2.0.6",
+    "jax>=0.4.0",
+    "jaxlib>=0.4.0",
+    "optax>=0.1.0",
     # "mkdocs>=1.5.0", # These seem like dev/docs dependencies, not core
     # "mkdocs-material>=9.0.0", # Moved to dev optional-dependencies
 ]

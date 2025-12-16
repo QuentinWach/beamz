@@ -6,7 +6,6 @@ import numpy as np
 from typing import Optional, Tuple
 from beamz.const import LIGHT_SPEED
 
-from .core import Optimizer
 from .autodiff import transform_density, compute_parameter_gradient_vjp
 
 class TopologyManager:
@@ -39,7 +38,22 @@ class TopologyManager:
     ):
         self.design = design
         self.mask = region_mask.astype(bool)
-        self.optimizer = Optimizer(method=optimizer, learning_rate=learning_rate)
+        
+        # Setup optimizer using optax (JAX-native)
+        try:
+            import optax
+        except ImportError:
+            raise ImportError("optax is required for optimization. Install with: pip install optax")
+        
+        if optimizer.lower() == "adam":
+            self.optax_optimizer = optax.adam(learning_rate=learning_rate)
+        elif optimizer.lower() == "sgd":
+            self.optax_optimizer = optax.sgd(learning_rate=learning_rate)
+        else:
+            raise ValueError(f"Unknown optimizer '{optimizer}'. Supported: 'adam', 'sgd'")
+        
+        # Initialize optimizer state (will be created on first use)
+        self._opt_state = None
         
         # Parameters
         self.filter_radius = filter_radius
@@ -134,8 +148,18 @@ class TopologyManager:
         grad_param = np.array(grad_param_jax)
         
         # Optimizer step (maximize objective -> ascent -> negative grad for minimizer)
-        # Assuming we want to MAXIMIZE the objective (e.g. overlap), we pass -grad
-        update = self.optimizer.step(-grad_param)
+        # Convert to JAX array for optax
+        import jax.numpy as jnp
+        grad_jax = jnp.array(-grad_param)  # Negative because we want to maximize
+        
+        # Initialize optimizer state on first call
+        if self._opt_state is None:
+            params_init = jnp.array(self.design_density)
+            self._opt_state = self.optax_optimizer.init(params_init)
+        
+        # Compute updates
+        updates, self._opt_state = self.optax_optimizer.update(grad_jax, self._opt_state)
+        update = np.array(updates)
         
         # Apply update
         self.design_density[self.mask] += update[self.mask]

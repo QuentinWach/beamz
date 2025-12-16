@@ -37,7 +37,10 @@ try:
             "gdspy>=1.6.0",
             "scipy>=1.13.0",
             "rich>=13.9.4",
-            "shapely>=2.0.6"
+            "shapely>=2.0.6",
+            "jax>=0.4.0",
+            "jaxlib>=0.4.0",
+            "optax>=0.1.0"
         ],
         extras_require={
             "dev": [
