@@ -160,7 +160,10 @@ def compute_overlap_gradient(forward_fields_history, adjoint_fields_history, fie
         # For complex fields (if frequency domain) it's different, but FDTD is time domain real fields.
         # If fields are complex (e.g. envelopes), use Re(E . E).
         # Assuming real fields here from FDTD.
-        grad += forward_fields_history[i] * adjoint_fields_history[i]
+        # FDTD Adjoint sensitivity requires convolution (time-reversal alignment)
+        # Forward field at t corresponds to Adjoint field at T-t
+        # So we pair fwd[i] with adj[n_steps - 1 - i]
+        grad += forward_fields_history[i] * adjoint_fields_history[n_steps - 1 - i]
         
     return grad
 
