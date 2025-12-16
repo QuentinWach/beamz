@@ -34,7 +34,8 @@ class TopologyManager:
         resolution: float = None,
         filter_type: str = 'morphological',  # 'blur' or 'morphological'
         morphology_operation: str = 'openclose',  # 'opening', 'closing', 'openclose'
-        morphology_smooth_tau: float = 0.05
+        morphology_smooth_tau: float = 0.05,
+        post_smooth_radius: int = 0
     ):
         self.design = design
         self.mask = region_mask.astype(bool)
@@ -67,6 +68,7 @@ class TopologyManager:
         self.filter_type = filter_type
         self.morphology_operation = morphology_operation
         self.morphology_smooth_tau = morphology_smooth_tau
+        self.post_smooth_radius = post_smooth_radius
         
         # Convert filter radius to cells
         self.filter_radius_cells = int(round(filter_radius / self.resolution)) if self.resolution else 0
@@ -103,7 +105,8 @@ class TopologyManager:
             filter_type=self.filter_type,
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
-            fixed_structure_mask=fixed_jax
+            fixed_structure_mask=fixed_jax,
+            post_smooth_radius=self.post_smooth_radius
         )
         return np.array(p_jax)
     
@@ -143,7 +146,8 @@ class TopologyManager:
             filter_type=self.filter_type,
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
-            fixed_structure_mask=fixed_jax
+            fixed_structure_mask=fixed_jax,
+            post_smooth_radius=self.post_smooth_radius
         )
         grad_param = np.array(grad_param_jax)
         

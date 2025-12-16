@@ -43,7 +43,8 @@ opt = TopologyManager(
     beta_schedule=(1.0, 20.0),
     filter_type='morphological',
     morphology_operation='openclose',
-    morphology_smooth_tau=0.1
+    morphology_smooth_tau=0.005,
+    post_smooth_radius=1
 )
 
 print(f"Starting Topology Optimization ({STEPS} steps)...")

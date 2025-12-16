@@ -126,10 +126,10 @@ def grayscale_closing(values, radius, tau=0.05):
     """Closing: Dilation followed by Erosion."""
     return grayscale_erosion(grayscale_dilation(values, radius, tau), radius, tau)
 
-@partial(jax.jit, static_argnames=['radius', 'operation'])
-def masked_morphological_filter(values, mask, radius, operation='openclose', tau=0.05, fixed_structure_mask=None):
+@partial(jax.jit, static_argnames=['radius', 'operation', 'post_smooth_radius'])
+def masked_morphological_filter(values, mask, radius, operation='openclose', tau=0.05, fixed_structure_mask=None, post_smooth_radius=0):
     """
-    Apply masked morphological filtering.
+    Apply masked morphological filtering with optional post-smoothing.
     
     Args:
         values: Density field
@@ -139,6 +139,7 @@ def masked_morphological_filter(values, mask, radius, operation='openclose', tau
         tau: Smoothness temperature for differentiable min/max
         fixed_structure_mask: Optional boolean mask of fixed solid structures (e.g. waveguides)
                               used to pad the filter input to prevent boundary erosion.
+        post_smooth_radius: Radius for optional post-morphology blur (0 to disable)
     """
     # Isolate design region values. 
     # For morphology, boundaries are important.
@@ -167,12 +168,17 @@ def masked_morphological_filter(values, mask, radius, operation='openclose', tau
         # Opening then Closing is a standard noise removal filter
         filtered = grayscale_closing(grayscale_opening(filtered, radius, tau), radius, tau)
     
+    # Post-smoothing: Apply a small blur to smooth edges after morphology
+    if post_smooth_radius > 0:
+        smoothed, _ = masked_box_blur(filtered, mask, post_smooth_radius)
+        filtered = smoothed
+    
     # Re-apply mask constraints
     # We only care about the result inside the design region
     return jnp.where(mask, filtered, 0.0)
 
-@partial(jax.jit, static_argnames=['radius', 'filter_type', 'morphology_operation'])
-def transform_density(density, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05, fixed_structure_mask=None):
+@partial(jax.jit, static_argnames=['radius', 'filter_type', 'morphology_operation', 'post_smooth_radius'])
+def transform_density(density, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05, fixed_structure_mask=None, post_smooth_radius=0):
     """
     Full density transform: Filter -> Project.
     Returns the physical density [0, 1].
@@ -181,10 +187,11 @@ def transform_density(density, mask, beta, eta, radius, filter_type='blur', morp
         filter_type: 'blur' or 'morphological'
         morphology_operation: 'opening', 'closing', 'openclose'
         fixed_structure_mask: Optional mask for fixed structures (morphological filter only)
+        post_smooth_radius: Optional blur after morphology
     """
     if filter_type == 'morphological':
         # Morphological filter
-        filtered = masked_morphological_filter(density, mask, radius, morphology_operation, morphology_tau, fixed_structure_mask)
+        filtered = masked_morphological_filter(density, mask, radius, morphology_operation, morphology_tau, fixed_structure_mask, post_smooth_radius)
     else:
         # Standard box blur
         filtered, _ = masked_box_blur(density, mask, radius)
@@ -192,15 +199,15 @@ def transform_density(density, mask, beta, eta, radius, filter_type='blur', morp
     projected = smoothed_heaviside(filtered, beta, eta)
     return jnp.where(mask, projected, 0.0)
 
-@partial(jax.jit, static_argnames=['radius', 'filter_type', 'morphology_operation'])
-def compute_parameter_gradient_vjp(density, grad_physical, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05, fixed_structure_mask=None):
+@partial(jax.jit, static_argnames=['radius', 'filter_type', 'morphology_operation', 'post_smooth_radius'])
+def compute_parameter_gradient_vjp(density, grad_physical, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05, fixed_structure_mask=None, post_smooth_radius=0):
     """
     Compute gradient w.r.t. design density using VJP.
     Supports both blur and morphological filters.
     """
     # Define a wrapper for the transform to differentiate
     def transform_wrapper(d):
-        return transform_density(d, mask, beta, eta, radius, filter_type, morphology_operation, morphology_tau, fixed_structure_mask)
+        return transform_density(d, mask, beta, eta, radius, filter_type, morphology_operation, morphology_tau, fixed_structure_mask, post_smooth_radius)
     
     # Compute VJP
     _, vjp_fun = jax.vjp(transform_wrapper, density)
