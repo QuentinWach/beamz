@@ -127,7 +127,7 @@ def grayscale_closing(values, radius, tau=0.05):
     return grayscale_erosion(grayscale_dilation(values, radius, tau), radius, tau)
 
 @partial(jax.jit, static_argnames=['radius', 'operation'])
-def masked_morphological_filter(values, mask, radius, operation='openclose', tau=0.05):
+def masked_morphological_filter(values, mask, radius, operation='openclose', tau=0.05, fixed_structure_mask=None):
     """
     Apply masked morphological filtering.
     
@@ -137,23 +137,23 @@ def masked_morphological_filter(values, mask, radius, operation='openclose', tau
         radius: Filter radius in cells
         operation: 'erosion', 'dilation', 'opening', 'closing', 'openclose' (opening then closing)
         tau: Smoothness temperature for differentiable min/max
+        fixed_structure_mask: Optional boolean mask of fixed solid structures (e.g. waveguides)
+                              used to pad the filter input to prevent boundary erosion.
     """
     # Isolate design region values. 
     # For morphology, boundaries are important.
-    # Dilation should expand into the void, but only within mask?
-    # Usually in topology optimization, we only care about the result INSIDE the mask.
-    # But filtering requires neighborhood.
-    # We pad with 0 (void) or 1 (solid) depending on operation to avoid boundary artifacts?
-    # Simpler: Just apply to whole array (assuming values outside mask are 0 or don't matter)
-    # and then re-apply mask.
     
-    # Ensure values outside mask don't interfere overly.
-    # If we assume 0 outside, erosion works fine (0 is min).
-    # Dilation might pull 0s from outside if we aren't careful? No, max pulls 1s.
-    # Let's trust values are 0 outside mask typically.
+    # Pad with fixed structures if provided
+    # Treat fixed structures as solid (1.0) to provide context for erosion/dilation
+    filter_input = values
+    if fixed_structure_mask is not None:
+        # We assume values is already density [0,1].
+        # We override fixed structure locations with 1.0
+        # NOTE: fixed_structure_mask should be a JAX array (tracer or concrete)
+        filter_input = jnp.where(fixed_structure_mask, 1.0, values)
     
-    # Apply filter
-    filtered = values
+    # Apply filter to the padded/context-aware field
+    filtered = filter_input
     
     if operation == 'erosion':
         filtered = grayscale_erosion(filtered, radius, tau)
@@ -168,10 +168,11 @@ def masked_morphological_filter(values, mask, radius, operation='openclose', tau
         filtered = grayscale_closing(grayscale_opening(filtered, radius, tau), radius, tau)
     
     # Re-apply mask constraints
+    # We only care about the result inside the design region
     return jnp.where(mask, filtered, 0.0)
 
 @partial(jax.jit, static_argnames=['radius', 'filter_type', 'morphology_operation'])
-def transform_density(density, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05):
+def transform_density(density, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05, fixed_structure_mask=None):
     """
     Full density transform: Filter -> Project.
     Returns the physical density [0, 1].
@@ -179,10 +180,11 @@ def transform_density(density, mask, beta, eta, radius, filter_type='blur', morp
     Args:
         filter_type: 'blur' or 'morphological'
         morphology_operation: 'opening', 'closing', 'openclose'
+        fixed_structure_mask: Optional mask for fixed structures (morphological filter only)
     """
     if filter_type == 'morphological':
         # Morphological filter
-        filtered = masked_morphological_filter(density, mask, radius, morphology_operation, morphology_tau)
+        filtered = masked_morphological_filter(density, mask, radius, morphology_operation, morphology_tau, fixed_structure_mask)
     else:
         # Standard box blur
         filtered, _ = masked_box_blur(density, mask, radius)
@@ -191,14 +193,14 @@ def transform_density(density, mask, beta, eta, radius, filter_type='blur', morp
     return jnp.where(mask, projected, 0.0)
 
 @partial(jax.jit, static_argnames=['radius', 'filter_type', 'morphology_operation'])
-def compute_parameter_gradient_vjp(density, grad_physical, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05):
+def compute_parameter_gradient_vjp(density, grad_physical, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05, fixed_structure_mask=None):
     """
     Compute gradient w.r.t. design density using VJP.
     Supports both blur and morphological filters.
     """
     # Define a wrapper for the transform to differentiate
     def transform_wrapper(d):
-        return transform_density(d, mask, beta, eta, radius, filter_type, morphology_operation, morphology_tau)
+        return transform_density(d, mask, beta, eta, radius, filter_type, morphology_operation, morphology_tau, fixed_structure_mask)
     
     # Compute VJP
     _, vjp_fun = jax.vjp(transform_wrapper, density)
