@@ -32,7 +32,10 @@ class TopologyManager:
         beta_schedule: tuple[float, float] = (1.0, 20.0),
         eps_min: float = 1.0,
         eps_max: float = 12.0,
-        resolution: float = None
+        resolution: float = None,
+        filter_type: str = 'morphological',  # 'blur' or 'morphological'
+        morphology_operation: str = 'openclose',  # 'opening', 'closing', 'openclose'
+        morphology_smooth_tau: float = 0.05
     ):
         self.design = design
         self.mask = region_mask.astype(bool)
@@ -45,6 +48,11 @@ class TopologyManager:
         self.eps_min = eps_min
         self.eps_max = eps_max
         self.resolution = resolution or getattr(design.rasterize(resolution=0.1), "dx") # Fallback resolution check?
+        
+        # Filter settings
+        self.filter_type = filter_type
+        self.morphology_operation = morphology_operation
+        self.morphology_smooth_tau = morphology_smooth_tau
         
         # Convert filter radius to cells
         self.filter_radius_cells = int(round(filter_radius / self.resolution)) if self.resolution else 0
@@ -70,7 +78,10 @@ class TopologyManager:
         
         p_jax = transform_density(
             d_jax, m_jax, 
-            beta, self.projection_eta, self.filter_radius_cells
+            beta, self.projection_eta, self.filter_radius_cells,
+            filter_type=self.filter_type,
+            morphology_operation=self.morphology_operation,
+            morphology_tau=self.morphology_smooth_tau
         )
         return np.array(p_jax)
     
@@ -109,7 +120,10 @@ class TopologyManager:
             jnp.array(self.mask),
             beta,
             self.projection_eta,
-            self.filter_radius_cells
+            self.filter_radius_cells,
+            filter_type=self.filter_type,
+            morphology_operation=self.morphology_operation,
+            morphology_tau=self.morphology_smooth_tau
         )
         grad_param = np.array(grad_param_jax)
         

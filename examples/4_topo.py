@@ -8,7 +8,7 @@ W = H = 15*µm
 WG_W = 0.5*µm
 WL = 1.55*µm
 N_CORE, N_CLAD = 2.25, 1.444
-DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=9)
+DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=15)
 STEPS = 50
 MAT_PENALTY = 0.0 # Penalty weight for material usage
 
@@ -37,10 +37,13 @@ opt = TopologyManager(
     region_mask=mask,
     resolution=DX,
     learning_rate=0.1,
-    filter_radius=0.28*µm,
+    filter_radius=0.2*µm,
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
-    beta_schedule=(1.0, 20.0)
+    beta_schedule=(1.0, 20.0),
+    filter_type='morphological',
+    morphology_operation='openclose',
+    morphology_smooth_tau=0.1
 )
 
 print(f"Starting Topology Optimization ({STEPS} steps)...")
