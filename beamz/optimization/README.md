@@ -22,8 +22,10 @@ A library of JAX-based differentiable operations used for density filtering and 
   - `grayscale_erosion`, `grayscale_dilation`: Differentiable grayscale morphology using smooth min/max approximations (LogSumExp).
   - `grayscale_opening`, `grayscale_closing`: Compound operations for noise removal and feature size control.
   - `masked_morphological_filter`: Applies filters with support for a "fixed structure mask" to prevent erosion at waveguide connections.
+- **Conic Filters**:
+  - `masked_conic_filter`: A filter with a linear decay kernel (cone), used for enforcing geometric constraints like minimum linewidth and spacing.
 - **Blurring**:
-  - `masked_box_blur`: Standard box blur implementation (alternative to morphology).
+  - `masked_box_blur`: Standard box blur implementation.
 - **Projection**:
   - `smoothed_heaviside`: A differentiable step function (using `tanh`) to binarize the density field.
 - **Backpropagation**:
@@ -32,9 +34,10 @@ A library of JAX-based differentiable operations used for density filtering and 
 ## Key Features
 
 1.  **Differentiable Morphology**: Unlike standard blurring, this module supports differentiable morphological operations (erosion, dilation, opening, closing). This allows for strict control over minimum feature sizes and avoids "gray" boundaries often seen with Gaussian blurs.
-2.  **Connectivity Preservation**: The filtering pipeline includes a mechanism to "pad" the design region with information from fixed structures (like input/output waveguides). This prevents the optimization from creating gaps or disconnecting the device from the external circuit.
-3.  **Beta-Continuation**: Supports a beta-schedule for the Heaviside projection, gradually increasing the sharpness of the binarization to avoid getting stuck in local minima while ensuring a final binary design.
-4.  **JAX Integration**: All heavy lifting for density transformation and gradient chain-rule calculation is handled efficiently by JAX. Uses `optax` for JAX-native optimizer implementations (Adam, SGD).
+2.  **Geometric Constraints**: The **conic filter** option provides a method to enforce minimum length scales (linewidth and spacing) by using a cone-shaped kernel, as described in topology optimization literature.
+3.  **Connectivity Preservation**: The filtering pipeline includes a mechanism to "pad" the design region with information from fixed structures (like input/output waveguides). This prevents the optimization from creating gaps or disconnecting the device from the external circuit.
+4.  **Beta-Continuation**: Supports a beta-schedule for the Heaviside projection, gradually increasing the sharpness of the binarization to avoid getting stuck in local minima while ensuring a final binary design.
+5.  **JAX Integration**: All heavy lifting for density transformation and gradient chain-rule calculation is handled efficiently by JAX. Uses `optax` for JAX-native optimizer implementations (Adam, SGD).
 
 ## Usage Example
 
@@ -49,9 +52,10 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    filter_type='morphological',
+    filter_type='conic', # Options: 'morphological', 'conic', 'blur'
     morphology_operation='openclose',
-    morphology_smooth_tau=0.05
+    morphology_smooth_tau=0.005,
+    post_smooth_radius=1 # Optional smoothing
 )
 
 # 3. Optimization Loop
@@ -67,4 +71,3 @@ for step in range(STEPS):
     # Update Parameters
     opt.apply_gradient(grad_eps, beta)
 ```
-

@@ -32,7 +32,7 @@ class TopologyManager:
         eps_min: float = 1.0,
         eps_max: float = 12.0,
         resolution: float = None,
-        filter_type: str = 'morphological',  # 'blur' or 'morphological'
+        filter_type: str = 'morphological',  # 'blur', 'morphological', or 'conic'
         morphology_operation: str = 'openclose',  # 'opening', 'closing', 'openclose'
         morphology_smooth_tau: float = 0.05,
         post_smooth_radius: int = 0

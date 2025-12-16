@@ -6,6 +6,64 @@ from jax.scipy.signal import convolve2d
 from functools import partial
 
 @partial(jax.jit, static_argnames=['radius'])
+def generate_conic_kernel(radius: int):
+    """
+    Generate a 2D conic kernel (linear decay).
+    w(r) = max(0, 1 - r/R)
+    """
+    radius = int(max(1, radius))
+    kernel_size = 2 * radius + 1
+    center = radius
+    
+    # Create coordinate grids
+    y, x = jnp.ogrid[-radius:radius+1, -radius:radius+1]
+    
+    # Calculate distance from center
+    dist = jnp.sqrt(x**2 + y**2)
+    
+    # Conic weights: linear decay, 0 outside radius
+    # We use radius + 0.5 to include the border pixels slightly or match Hammond's definition
+    # Hammond: w(r) = max(0, 1 - r/R). At r=R, weight is 0.
+    weights = jnp.maximum(0.0, 1.0 - dist / radius)
+    
+    # Normalize
+    weights = weights / jnp.sum(weights)
+    
+    return weights
+
+@partial(jax.jit, static_argnames=['radius'])
+def masked_conic_filter(values, mask, radius: int):
+    """
+    Apply a masked conic filter (linear decay).
+    Used for geometric constraints (minimum feature size).
+    """
+    radius = int(max(0, radius))
+    if radius <= 0:
+        return jnp.where(mask, values, 0.0), jnp.where(mask, 1.0, 1.0)
+    
+    masked_values = jnp.where(mask, values, 0.0)
+    float_mask = mask.astype(float)
+    
+    # Create conic kernel
+    kernel = generate_conic_kernel(radius)
+    
+    # Pad input
+    padded_values = jnp.pad(masked_values, radius, mode='edge')
+    padded_mask = jnp.pad(float_mask, radius, mode='constant', constant_values=0.0)
+    
+    # Convolve
+    weighted_sum = convolve2d(padded_values, kernel, mode='valid')
+    weights = convolve2d(padded_mask, kernel, mode='valid')
+    
+    # Avoid division by zero
+    weights = jnp.where(weights == 0.0, 1.0, weights)
+    
+    filtered = weighted_sum / weights
+    filtered = jnp.where(mask, filtered, 0.0)
+    
+    return filtered, weights
+
+@partial(jax.jit, static_argnames=['radius'])
 def masked_box_blur(values, mask, radius: int):
     """
     Apply a masked box blur using JAX convolutions.
@@ -184,7 +242,7 @@ def transform_density(density, mask, beta, eta, radius, filter_type='blur', morp
     Returns the physical density [0, 1].
     
     Args:
-        filter_type: 'blur' or 'morphological'
+        filter_type: 'blur', 'morphological', or 'conic'
         morphology_operation: 'opening', 'closing', 'openclose'
         fixed_structure_mask: Optional mask for fixed structures (morphological filter only)
         post_smooth_radius: Optional blur after morphology
@@ -192,6 +250,9 @@ def transform_density(density, mask, beta, eta, radius, filter_type='blur', morp
     if filter_type == 'morphological':
         # Morphological filter
         filtered = masked_morphological_filter(density, mask, radius, morphology_operation, morphology_tau, fixed_structure_mask, post_smooth_radius)
+    elif filter_type == 'conic':
+        # Conic filter (for geometric constraints)
+        filtered, _ = masked_conic_filter(density, mask, radius)
     else:
         # Standard box blur
         filtered, _ = masked_box_blur(density, mask, radius)
