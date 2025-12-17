@@ -186,12 +186,29 @@ def grayscale_closing(values, radius, tau=0.05):
 def masked_morphological_filter(values, mask, radius, operation='openclose', tau=0.05, fixed_structure_mask=None):
     """
     Apply masked morphological filtering.
+    
+    Args:
+        values: Density field
+        mask: Design region mask
+        radius: Filter radius in cells
+        operation: 'erosion', 'dilation', 'opening', 'closing', 'openclose' (opening then closing)
+        tau: Smoothness temperature for differentiable min/max
+        fixed_structure_mask: Optional boolean mask of fixed solid structures (e.g. waveguides)
+                              used to pad the filter input to prevent boundary erosion.
     """
+    # Isolate design region values. 
+    # For morphology, boundaries are important.
+    
     # Pad with fixed structures if provided
+    # Treat fixed structures as solid (1.0) to provide context for erosion/dilation
     filter_input = values
     if fixed_structure_mask is not None:
+        # We assume values is already density [0,1].
+        # We override fixed structure locations with 1.0
+        # NOTE: fixed_structure_mask should be a JAX array (tracer or concrete)
         filter_input = jnp.where(fixed_structure_mask, 1.0, values)
     
+    # Apply filter to the padded/context-aware field
     filtered = filter_input
     
     if operation == 'erosion':
@@ -203,110 +220,36 @@ def masked_morphological_filter(values, mask, radius, operation='openclose', tau
     elif operation == 'closing':
         filtered = grayscale_closing(filtered, radius, tau)
     elif operation == 'openclose':
+        # Opening then Closing is a standard noise removal filter
         filtered = grayscale_closing(grayscale_opening(filtered, radius, tau), radius, tau)
     
+    # Re-apply mask constraints
+    # We only care about the result inside the design region
     return jnp.where(mask, filtered, 0.0)
-
-# --- Hammond's Robust Transforms (Harmonic) ---
-
-@partial(jax.jit, static_argnames=['radius'])
-def harmonic_erosion(values, radius, alpha=1e-3):
-    """
-    Harmonic erosion filter: E_N(rho) = ((1/(rho+alpha)) * w)^(-1) - alpha
-    Approximates minimum in a neighborhood.
-    """
-    # Create uniform kernel
-    radius = int(max(1, radius))
-    kernel_size = 2 * radius + 1
-    y, x = jnp.ogrid[-radius:radius+1, -radius:radius+1]
-    mask = x**2 + y**2 <= radius**2
-    kernel = mask.astype(float)
-    kernel = kernel / jnp.sum(kernel)
-    
-    # Apply filter
-    inv_rho = 1.0 / (values + alpha)
-    padded = jnp.pad(inv_rho, radius, mode='edge')
-    filtered_inv = convolve2d(padded, kernel, mode='valid')
-    
-    return 1.0 / filtered_inv - alpha
-
-@partial(jax.jit, static_argnames=['radius'])
-def harmonic_dilation(values, radius, alpha=1e-3):
-    """
-    Harmonic dilation filter: D_N(rho) = 1 - ((1/(1-rho+alpha)) * w)^(-1) + alpha
-    Approximates maximum in a neighborhood.
-    """
-    # Dilation of rho is Erosion of (1-rho)
-    # D(rho) = 1 - E(1-rho)
-    inv_rho_comp = 1.0 - values
-    eroded_comp = harmonic_erosion(inv_rho_comp, radius, alpha)
-    return 1.0 - eroded_comp
-
-# --- Geometric Constraints ---
-
-@partial(jax.jit, static_argnames=['radius'])
-def constraint_min_linewidth(density, radius, threshold=0.5):
-    """
-    Minimum linewidth constraint proxy.
-    Penalizes features that vanish under opening (erosion -> dilation).
-    Loss = Sum( (density - Opening(density))^2 )
-    This forces density to be stable under opening, i.e., features >= radius.
-    """
-    # Using grayscale morphological operations
-    # We use a slightly stricter tau for constraint checking
-    opened = grayscale_opening(density, radius, tau=0.01)
-    
-    # We only care about positive differences (density > opened)
-    diff = jnp.maximum(0.0, density - opened)
-    
-    # Return L2 norm of violation
-    return jnp.sum(diff**2)
-
-@partial(jax.jit, static_argnames=['radius'])
-def constraint_min_spacing(density, radius, threshold=0.5):
-    """
-    Minimum spacing constraint proxy.
-    Penalizes gaps that close under closing (dilation -> erosion).
-    Loss = Sum( (Closing(density) - density)^2 )
-    This forces density to be stable under closing, i.e., gaps >= radius.
-    """
-    closed = grayscale_closing(density, radius, tau=0.01)
-    
-    # We only care about positive differences (closed > density)
-    diff = jnp.maximum(0.0, closed - density)
-    
-    return jnp.sum(diff**2)
-
-@partial(jax.jit, static_argnames=['radius'])
-def constraint_min_area(density, radius, threshold=0.5):
-    """
-    Minimum area constraint (remove islands).
-    Can be similar to linewidth constraint (opening removes small islands).
-    """
-    return constraint_min_linewidth(density, radius, threshold)
 
 @partial(jax.jit, static_argnames=['radius', 'filter_type', 'morphology_operation', 'post_smooth_radius'])
 def transform_density(density, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05, fixed_structure_mask=None, post_smooth_radius=0):
     """
     Full density transform: Filter -> Project.
     Returns the physical density [0, 1].
+    
+    Args:
+        filter_type: 'blur', 'morphological', or 'conic'
+        morphology_operation: 'opening', 'closing', 'openclose'
+        fixed_structure_mask: Optional mask for fixed structures (morphological filter only)
+        post_smooth_radius: Optional blur after morphology or filter
     """
     if filter_type == 'morphological':
+        # Morphological filter
         filtered = masked_morphological_filter(density, mask, radius, morphology_operation, morphology_tau, fixed_structure_mask)
     elif filter_type == 'conic':
+        # Conic filter (for geometric constraints)
         filtered, _ = masked_conic_filter(density, mask, radius)
-    elif filter_type == 'harmonic_erosion':
-        # Apply mask logic manually since harmonic functions don't support it directly yet
-        inp = jnp.where(mask, density, 0.0)
-        filtered = harmonic_erosion(inp, radius)
-        filtered = jnp.where(mask, filtered, 0.0)
-    elif filter_type == 'harmonic_dilation':
-        inp = jnp.where(mask, density, 0.0)
-        filtered = harmonic_dilation(inp, radius)
-        filtered = jnp.where(mask, filtered, 0.0)
     else:
+        # Standard box blur
         filtered, _ = masked_box_blur(density, mask, radius)
     
+    # Universal Post-Smoothing: Apply a small blur to smooth edges/artifacts
     if post_smooth_radius > 0:
         smoothed, _ = masked_box_blur(filtered, mask, post_smooth_radius)
         filtered = smoothed
@@ -318,10 +261,13 @@ def transform_density(density, mask, beta, eta, radius, filter_type='blur', morp
 def compute_parameter_gradient_vjp(density, grad_physical, mask, beta, eta, radius, filter_type='blur', morphology_operation='openclose', morphology_tau=0.05, fixed_structure_mask=None, post_smooth_radius=0):
     """
     Compute gradient w.r.t. design density using VJP.
+    Supports both blur and morphological filters.
     """
+    # Define a wrapper for the transform to differentiate
     def transform_wrapper(d):
         return transform_density(d, mask, beta, eta, radius, filter_type, morphology_operation, morphology_tau, fixed_structure_mask, post_smooth_radius)
     
+    # Compute VJP
     _, vjp_fun = jax.vjp(transform_wrapper, density)
     grad_density = vjp_fun(grad_physical)[0]
     
