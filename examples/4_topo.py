@@ -9,7 +9,7 @@ WG_W = 0.5*µm
 WL = 1.55*µm
 N_CORE, N_CLAD = 2.25, 1.444
 DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=15)
-STEPS = 50
+STEPS = 20
 MAT_PENALTY = 0.1      # Target core material fraction (0.0 to 1.0)
 PENALTY_STRENGTH = 200000 # Scaling factor for the penalty gradient
 
@@ -39,8 +39,8 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    learning_rate=0.05,
-    filter_radius=0.04*µm,       # Physical units: Radius of the conic filter
+    learning_rate=0.1,
+    filter_radius=0.05*µm,       # Physical units: Radius of the conic filter
     simple_smooth_radius=0.02*µm, # Physical units: Small blur to remove pixelation artifacts
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
@@ -184,41 +184,81 @@ print(f"Transmission plot saved to transmission_vs_step.png")
 plt.close()
 
 # --- 4. Final Verification & Visualization ---
-print("\n--- Running Final Verification Simulation ---")
+# We now perform a frequency sweep to verify broadband performance
+print("\n--- Running Final Frequency Sweep (1500-1600 nm) ---")
 
-# 1. Use extended time to ensure full pulse transmission
-# Previous time was 30*WL/LIGHT_SPEED. Let's use 60*WL/LIGHT_SPEED.
-time_final = np.arange(0, 60*WL/LIGHT_SPEED, DT)
-signal_final = ramped_cosine(time_final, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time_final[-1])
+wavelengths = np.linspace(1.2*µm, 1.8*µm, 12)
+sweep_transmission = []
 
-# 2. Update Sources and Monitors
-src_fwd = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal_final, direction="+x")
-if src_fwd._jz_profile is None: src_fwd.initialize(grid.permittivity, DX)
+# Use extended time to ensure full pulse transmission for all runs
+time_sweep = np.arange(0, 60*WL/LIGHT_SPEED, DT)
 
-monitor_input = Monitor(design=grid, start=(1.5*µm, H/2-WG_W*2), end=(1.5*µm, H/2+WG_W*2), accumulate_power=True)
-monitor_output = Monitor(design=grid, start=(W/2-WG_W*2, 1.5*µm), end=(W/2+WG_W*2, 1.5*µm), accumulate_power=True)
+for i, wl_val in enumerate(wavelengths):
+    print(f"Simulating Wavelength: {wl_val/µm:.3f} µm...", end="\r")
+    
+    # Create signal for this specific wavelength
+    signal_sweep = ramped_cosine(time_sweep, 1, LIGHT_SPEED/wl_val, ramp_duration=6*wl_val/LIGHT_SPEED, t_max=time_sweep[-1])
+    
+    # Create source
+    src_sweep = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=wl_val, pol="tm", signal=signal_sweep, direction="+x")
+    # Force re-initialization of mode profile for new wavelength
+    src_sweep._jz_profile = None 
+    src_sweep.initialize(grid.permittivity, DX)
+    
+    # Monitors
+    mon_in = Monitor(design=grid, start=(1.5*µm, H/2-WG_W*2), end=(1.5*µm, H/2+WG_W*2), accumulate_power=True)
+    mon_out = Monitor(design=grid, start=(W/2-WG_W*2, 1.5*µm), end=(W/2+WG_W*2, 1.5*µm), accumulate_power=True)
+    
+    # Simulation
+    sim_sweep = Simulation(grid, [src_sweep, mon_in, mon_out], 
+                           [PML(edges='all', thickness=1*µm)], time=time_sweep, resolution=DX)
+    
+    # Run (no field saving needed for sweep, faster)
+    sim_sweep.run(save_fields=[], field_subsample=10)
+    
+    # Calculate Transmission
+    in_E = np.sum(mon_in.power_history) * DT
+    out_E = np.sum(mon_out.power_history) * DT
+    trans = (np.abs(out_E) / np.abs(in_E) * 100.0) if np.abs(in_E) > 0 else 0.0
+    sweep_transmission.append(trans)
 
-# 3. Run Simulation
-sim_final = Simulation(grid, [src_fwd, monitor_input, monitor_output], 
-                       [PML(edges='all', thickness=1*µm)], time=time_final, resolution=DX)
+print(f"\nSweep Complete.")
 
-print("Running final simulation with full field capture...")
+# Plot Frequency Sweep
+plt.figure(figsize=(10, 6))
+plt.plot(wavelengths/µm, sweep_transmission, 'r-o', linewidth=2)
+plt.xlabel('Wavelength (µm)', fontsize=12)
+plt.ylabel('Transmission (%)', fontsize=12)
+plt.title('Transmission Spectrum', fontsize=14)
+plt.grid(True, alpha=0.3)
+plt.ylim(0, 100)
+plt.tight_layout()
+plt.savefig('transmission_spectrum.png', dpi=150)
+print(f"Spectrum plot saved to transmission_spectrum.png")
+
+# --- 5. Final Visualization (Center Wavelength) ---
+# Re-run simulation at center wavelength (1.55) to generate field plot
+print("\n--- Generating Final Field Plot (1.55 µm) ---")
+signal_final = ramped_cosine(time_sweep, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time_sweep[-1])
+src_final = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal_final, direction="+x")
+src_final.initialize(grid.permittivity, DX)
+
+mon_in_final = Monitor(design=grid, start=(1.5*µm, H/2-WG_W*2), end=(1.5*µm, H/2+WG_W*2), accumulate_power=True)
+mon_out_final = Monitor(design=grid, start=(W/2-WG_W*2, 1.5*µm), end=(W/2+WG_W*2, 1.5*µm), accumulate_power=True)
+
+sim_final = Simulation(grid, [src_final, mon_in_final, mon_out_final], [PML(edges='all', thickness=1*µm)], time=time_sweep, resolution=DX)
 results_final = sim_final.run(save_fields=['Ez', 'Hx', 'Hy'], field_subsample=1)
 
-# 4. Calculate Transmission
-input_E = np.sum(monitor_input.power_history) * DT
-output_E = np.sum(monitor_output.power_history) * DT
-trans_final = (np.abs(output_E) / np.abs(input_E) * 100.0) if np.abs(input_E) > 0 else 0.0
-print(f"Final Verified Transmission: {trans_final:.1f}%")
+# Calculate final transmission for title
+in_E = np.sum(mon_in_final.power_history) * DT
+out_E = np.sum(mon_out_final.power_history) * DT
+trans_final = (np.abs(out_E) / np.abs(in_E) * 100.0) if np.abs(in_E) > 0 else 0.0
 
-# 5. Calculate Energy Flow (Time-Integrated Poynting Vector)
 print("Calculating energy flow...")
 Ez_t = np.array(results_final['fields']['Ez'])
 Hx_t = np.array(results_final['fields']['Hx'])
 Hy_t = np.array(results_final['fields']['Hy'])
 
-# Handle grid staggering by cropping to common size
-# Ez(i,j), Hx(i, j+0.5), Hy(i+0.5, j)
 min_x = min(Ez_t.shape[1], Hx_t.shape[1], Hy_t.shape[1])
 min_y = min(Ez_t.shape[2], Hx_t.shape[2], Hy_t.shape[2])
 
@@ -226,30 +266,18 @@ Ez_c = Ez_t[:, :min_x, :min_y]
 Hx_c = Hx_t[:, :min_x, :min_y]
 Hy_c = Hy_t[:, :min_x, :min_y]
 
-# Poynting Vector S = E x H
-# For TM (Ez, Hx, Hy): Sx = -Ez * Hy, Sy = Ez * Hx
 Sx_t = -Ez_c * Hy_c
 Sy_t = Ez_c * Hx_c
-
-# Integrate magnitude of Poynting vector over time: Integral(|S|) dt
-# This shows the total energy density flow through each point
 S_mag_t = np.sqrt(Sx_t**2 + Sy_t**2)
 energy_flow = np.sum(S_mag_t, axis=0) * DT
 
-# 6. Plot
 plt.figure(figsize=(10, 8))
-# Plot Structure (Permittivity)
-# Crop permittivity to match field size
 perm_c = grid.permittivity[:min_x, :min_y]
-
 plt.imshow(perm_c.T, cmap='gray', origin='lower', alpha=0.2)
 plt.contour(perm_c.T, levels=[(N_CORE**2 + N_CLAD**2)/2], colors='white', linewidths=0.5, origin='lower')
-
-# Plot Energy Flow
-# Use 'hot' or 'inferno' for energy
 im = plt.imshow(energy_flow.T, cmap='inferno', origin='lower', alpha=0.9, interpolation='bicubic')
 plt.colorbar(im, label=r'Time-Integrated Energy Flow $\int |\mathbf{S}| dt$')
-plt.title(f'Final Energy Flow Map (T = {trans_final:.1f}%)')
+plt.title(f'Final Energy Flow Map (1.55 µm)')
 plt.xlabel('x (grid cells)')
 plt.ylabel('y (grid cells)')
 plt.tight_layout()
