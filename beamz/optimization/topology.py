@@ -8,6 +8,12 @@ from beamz.const import LIGHT_SPEED
 
 from .autodiff import transform_density, compute_parameter_gradient_vjp
 
+# Defer imports to avoid circular dependencies if any, 
+# or import at top level if safe. design shouldn't depend on optimization.
+from beamz.design.core import Design
+from beamz.design.materials import Material
+from beamz.design.meshing import RegularGrid
+
 class TopologyManager:
     """
     High-level manager for topology optimization.
@@ -27,16 +33,25 @@ class TopologyManager:
         optimizer: str = "Adam",
         learning_rate: float = 0.1,
         filter_radius: float = 0.0,
+        simple_smooth_radius: float = 0.0,
         projection_eta: float = 0.5,
         beta_schedule: tuple[float, float] = (1.0, 20.0),
         eps_min: float = 1.0,
         eps_max: float = 12.0,
         resolution: float = None,
-        filter_type: str = 'morphological',  # 'blur', 'morphological', or 'conic'
+        filter_type: str = 'conic',  # 'blur', 'morphological', or 'conic'
         morphology_operation: str = 'openclose',  # 'opening', 'closing', 'openclose'
-        morphology_smooth_tau: float = 0.05,
-        post_smooth_radius: int = 0
+        **kwargs
     ):
+        """
+        Args:
+            filter_radius: Primary filter radius in physical units (e.g. microns).
+                           For 'conic', this enforces minimum feature size.
+            simple_smooth_radius: Optional post-filter smoothing radius in physical units.
+                                  Use to remove grid artifacts (e.g. 0.02 * um).
+            filter_type: 'conic' (geometric constraints), 'morphological', or 'blur'.
+            morphology_operation: 'opening', 'closing', or 'openclose' (for morphological filter).
+        """
         self.design = design
         self.mask = region_mask.astype(bool)
         
@@ -58,6 +73,7 @@ class TopologyManager:
         
         # Parameters
         self.filter_radius = filter_radius
+        self.simple_smooth_radius = simple_smooth_radius
         self.projection_eta = projection_eta
         self.beta_start, self.beta_end = beta_schedule
         self.eps_min = eps_min
@@ -67,11 +83,11 @@ class TopologyManager:
         # Filter settings
         self.filter_type = filter_type
         self.morphology_operation = morphology_operation
-        self.morphology_smooth_tau = morphology_smooth_tau
-        self.post_smooth_radius = post_smooth_radius
+        self.morphology_smooth_tau = kwargs.get('morphology_smooth_tau', 0.01) # Default good value
         
         # Convert filter radius to cells
         self.filter_radius_cells = int(round(filter_radius / self.resolution)) if self.resolution else 0
+        self.smooth_radius_cells = int(round(simple_smooth_radius / self.resolution)) if self.resolution else 0
         
         # Initialize density parameters (0.5 inside mask)
         self.design_density = np.zeros_like(self.mask, dtype=float)
@@ -106,7 +122,7 @@ class TopologyManager:
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
             fixed_structure_mask=fixed_jax,
-            post_smooth_radius=self.post_smooth_radius
+            post_smooth_radius=self.smooth_radius_cells
         )
         return np.array(p_jax)
     
@@ -147,7 +163,7 @@ class TopologyManager:
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
             fixed_structure_mask=fixed_jax,
-            post_smooth_radius=self.post_smooth_radius
+            post_smooth_radius=self.smooth_radius_cells
         )
         grad_param = np.array(grad_param_jax)
         
@@ -189,20 +205,32 @@ def compute_overlap_gradient(forward_fields_history, adjoint_fields_history, fie
     return grad
 
 def create_optimization_mask(grid, region_structure):
-    """Helper to create a boolean mask from a structure on a grid."""
-    dx, dy = grid.dx, grid.dy
-    mask = np.zeros(grid.permittivity.shape, dtype=bool)
-    ys = (np.arange(mask.shape[0]) + 0.5) * dy
-    xs = (np.arange(mask.shape[1]) + 0.5) * dx
+    """
+    Helper to create a boolean mask from a structure on a grid.
+    Uses rasterization to ensure exact alignment with how structures are mapped to the grid.
+    """
+    # Create temp design to rasterize mask exactly as grid does
+    temp_design = Design(width=grid.width, height=grid.height, 
+                         material=Material(permittivity=1.0))
     
-    # Use bounding box for speed
-    minx, miny, _, maxx, maxy, _ = region_structure.get_bounding_box()
+    # Copy structure to avoid modifying original
+    if hasattr(region_structure, 'copy'):
+        struct_copy = region_structure.copy()
+    else:
+        # Fallback if no copy method, reuse (risky if material modified, but we set it)
+        struct_copy = region_structure
+        
+    # Set to a distinct permittivity to detect it
+    struct_copy.material = Material(permittivity=2.0)
+    temp_design.add(struct_copy)
     
-    # This simple rect check works for Rectangles. 
-    # For general polygons, we might need rasterization logic.
-    mask[(ys[:,None] >= miny) & (ys[:,None] <= maxy) & 
-         (xs[None,:] >= minx) & (xs[None,:] <= maxx)] = True
-         
+    # Rasterize
+    temp_grid = RegularGrid(temp_design, resolution=grid.dx)
+    
+    # Mask is where permittivity > background
+    # Use a safe threshold to include any partial fill
+    mask = temp_grid.permittivity > 1.001
+    
     return mask
 
 def get_fixed_structure_mask(grid, eps_min, eps_max, design_mask):

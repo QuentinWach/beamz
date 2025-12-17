@@ -53,9 +53,8 @@ opt = TopologyManager(
     region_mask=mask,
     resolution=DX,
     filter_type='conic', # Options: 'morphological', 'conic', 'blur'
-    morphology_operation='openclose',
-    morphology_smooth_tau=0.005,
-    post_smooth_radius=1 # Optional smoothing
+    filter_radius=0.15*µm,       # Physical units (e.g. microns)
+    simple_smooth_radius=0.03*µm # Optional smoothing (physical units)
 )
 
 # 3. Optimization Loop

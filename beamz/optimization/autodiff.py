@@ -22,8 +22,6 @@ def generate_conic_kernel(radius: int):
     dist = jnp.sqrt(x**2 + y**2)
     
     # Conic weights: linear decay, 0 outside radius
-    # We use radius + 0.5 to include the border pixels slightly or match Hammond's definition
-    # Hammond: w(r) = max(0, 1 - r/R). At r=R, weight is 0.
     weights = jnp.maximum(0.0, 1.0 - dist / radius)
     
     # Normalize
@@ -184,10 +182,10 @@ def grayscale_closing(values, radius, tau=0.05):
     """Closing: Dilation followed by Erosion."""
     return grayscale_erosion(grayscale_dilation(values, radius, tau), radius, tau)
 
-@partial(jax.jit, static_argnames=['radius', 'operation', 'post_smooth_radius'])
-def masked_morphological_filter(values, mask, radius, operation='openclose', tau=0.05, fixed_structure_mask=None, post_smooth_radius=0):
+@partial(jax.jit, static_argnames=['radius', 'operation'])
+def masked_morphological_filter(values, mask, radius, operation='openclose', tau=0.05, fixed_structure_mask=None):
     """
-    Apply masked morphological filtering with optional post-smoothing.
+    Apply masked morphological filtering.
     
     Args:
         values: Density field
@@ -197,7 +195,6 @@ def masked_morphological_filter(values, mask, radius, operation='openclose', tau
         tau: Smoothness temperature for differentiable min/max
         fixed_structure_mask: Optional boolean mask of fixed solid structures (e.g. waveguides)
                               used to pad the filter input to prevent boundary erosion.
-        post_smooth_radius: Radius for optional post-morphology blur (0 to disable)
     """
     # Isolate design region values. 
     # For morphology, boundaries are important.
@@ -226,11 +223,6 @@ def masked_morphological_filter(values, mask, radius, operation='openclose', tau
         # Opening then Closing is a standard noise removal filter
         filtered = grayscale_closing(grayscale_opening(filtered, radius, tau), radius, tau)
     
-    # Post-smoothing: Apply a small blur to smooth edges after morphology
-    if post_smooth_radius > 0:
-        smoothed, _ = masked_box_blur(filtered, mask, post_smooth_radius)
-        filtered = smoothed
-    
     # Re-apply mask constraints
     # We only care about the result inside the design region
     return jnp.where(mask, filtered, 0.0)
@@ -245,17 +237,22 @@ def transform_density(density, mask, beta, eta, radius, filter_type='blur', morp
         filter_type: 'blur', 'morphological', or 'conic'
         morphology_operation: 'opening', 'closing', 'openclose'
         fixed_structure_mask: Optional mask for fixed structures (morphological filter only)
-        post_smooth_radius: Optional blur after morphology
+        post_smooth_radius: Optional blur after morphology or filter
     """
     if filter_type == 'morphological':
         # Morphological filter
-        filtered = masked_morphological_filter(density, mask, radius, morphology_operation, morphology_tau, fixed_structure_mask, post_smooth_radius)
+        filtered = masked_morphological_filter(density, mask, radius, morphology_operation, morphology_tau, fixed_structure_mask)
     elif filter_type == 'conic':
         # Conic filter (for geometric constraints)
         filtered, _ = masked_conic_filter(density, mask, radius)
     else:
         # Standard box blur
         filtered, _ = masked_box_blur(density, mask, radius)
+    
+    # Universal Post-Smoothing: Apply a small blur to smooth edges/artifacts
+    if post_smooth_radius > 0:
+        smoothed, _ = masked_box_blur(filtered, mask, post_smooth_radius)
+        filtered = smoothed
         
     projected = smoothed_heaviside(filtered, beta, eta)
     return jnp.where(mask, projected, 0.0)

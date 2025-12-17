@@ -4,28 +4,30 @@ from beamz import *
 from beamz.optimization.topology import TopologyManager, compute_overlap_gradient, create_optimization_mask
 
 # --- 1. Simulation Setup ---
-W = H = 15*µm
+W = H = 7*µm
 WG_W = 0.5*µm
 WL = 1.55*µm
 N_CORE, N_CLAD = 2.25, 1.444
 DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=15)
 STEPS = 50
-MAT_PENALTY = 0.0 # Penalty weight for material usage
+MAT_PENALTY = 600 # Penalty weight for material usage
 
 # Design & Materials
 design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
-design += Rectangle(position=(0, H/2-WG_W/2), width=3.5*µm, height=WG_W, material=Material(permittivity=N_CORE**2))
-design += Rectangle(position=(W/2-WG_W/2, H), width=WG_W, height=-3.5*µm, material=Material(permittivity=N_CORE**2))
+design += Rectangle(position=(0, H/2-WG_W/2), width=W/2, height=WG_W, material=Material(permittivity=N_CORE**2))
+design += Rectangle(position=(W/2-WG_W/2, 0), width=WG_W, height=H/2, material=Material(permittivity=N_CORE**2))
 
 # Optimization Region (added as placeholder)
-opt_region = Rectangle(position=(W/2-4*µm, H/2-4*µm), width=8*µm, height=8*µm, material=Material(permittivity=N_CLAD**2))
+opt_region = Rectangle(position=(W/2-1.5*µm, H/2-1.5*µm), width=3*µm, height=3*µm, material=Material(permittivity=N_CORE**2))
 design += opt_region
+
+design.show()
 
 # Sources
 time = np.arange(0, 30*WL/LIGHT_SPEED, DT)
 signal = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time[-1])
 src_fwd = ModeSource(None, center=(2*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+x")
-src_adj = ModeSource(None, center=(W/2, H-2*µm), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="-y")
+src_adj = ModeSource(None, center=(W/2, 2*µm), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+y")
 
 # --- 2. Optimization Manager ---
 # Rasterize once to get grid and mask
@@ -37,14 +39,12 @@ opt = TopologyManager(
     region_mask=mask,
     resolution=DX,
     learning_rate=0.1,
-    filter_radius=0.15*µm,
+    filter_radius=0.15*µm,       # Physical units: Radius of the conic filter
+    simple_smooth_radius=0.03*µm, # Physical units: Small blur to remove pixelation artifacts
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
     beta_schedule=(1.0, 20.0),
-    filter_type='conic',
-    morphology_operation='openclose',
-    morphology_smooth_tau=0.005,
-    post_smooth_radius=1
+    filter_type='conic',         # Use conic filter for geometric constraints
 )
 
 print(f"Starting Topology Optimization ({STEPS} steps)...")
@@ -68,11 +68,11 @@ for step in range(STEPS):
     # Setup monitors for input and output power measurement
     # Place monitor immediately after source to measure actual injected power
     # This accounts for soft source loading and back-reflection
-    monitor_input_flux = Monitor(design=grid, start=(2.5*µm, H/2-WG_W*2), end=(2.5*µm, H/2+WG_W*2), 
+    monitor_input_flux = Monitor(design=grid, start=(2.1*µm, H/2-WG_W*2), end=(2.1*µm, H/2+WG_W*2), 
                            accumulate_power=True, record_fields=False)
     
     # Output monitor at top waveguide
-    output_monitor_fwd = Monitor(design=grid, start=(W/2-WG_W*2, H-2*µm), end=(W/2+WG_W*2, H-2*µm),
+    output_monitor_fwd = Monitor(design=grid, start=(W/2-WG_W*2, 2.1*µm), end=(W/2+WG_W*2, H-2.1*µm),
                                  accumulate_power=True, record_fields=False)
     
     # Run forward simulation with output monitor
