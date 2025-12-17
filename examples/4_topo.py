@@ -10,7 +10,8 @@ WL = 1.55*µm
 N_CORE, N_CLAD = 2.25, 1.444
 DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=15)
 STEPS = 50
-MAT_PENALTY = 1000 # Penalty weight for material usage
+MAT_PENALTY = 0.1      # Target core material fraction (0.0 to 1.0)
+PENALTY_STRENGTH = 200000 # Scaling factor for the penalty gradient
 
 # Design & Materials
 design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
@@ -38,9 +39,9 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    learning_rate=0.1,
-    filter_radius=0.10*µm,       # Physical units: Radius of the conic filter
-    simple_smooth_radius=0.03*µm, # Physical units: Small blur to remove pixelation artifacts
+    learning_rate=0.05,
+    filter_radius=0.04*µm,       # Physical units: Radius of the conic filter
+    simple_smooth_radius=0.02*µm, # Physical units: Small blur to remove pixelation artifacts
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
     beta_schedule=(1.0, 20.0),
@@ -134,19 +135,25 @@ for step in range(STEPS):
     
     # Measure Material Usage (Relative core material amount)
     # phys_density is 0 (cladding) to 1 (core)
-    # We sum this to get the total effective "area" of core material used
-    core_usage = np.sum(phys_density[mask])
+    current_density = np.mean(phys_density[mask])
     
-    # Apply Penalty
-    delta_eps = opt.eps_max - opt.eps_min
-    penalty_val = MAT_PENALTY * delta_eps * core_usage
+    # Quadratic Penalty: Strength * (current - target)^2
+    # We want to maximize Obj, so we subtract penalty.
+    # The gradient w.r.t. density is roughly proportional to (current - target).
+    # We apply this uniform gradient correction to all pixels in the mask.
     
-    grad_eps[mask] -= MAT_PENALTY
+    # Gradient contribution: push density towards target
+    # If current > target, we want to decrease density -> negative gradient contribution
+    # If current < target, we want to increase density -> positive gradient contribution
+    # grad_correction = -Strength * (current - target)
+    
+    grad_penalty = PENALTY_STRENGTH * (current_density - MAT_PENALTY)
+    grad_eps[mask] -= grad_penalty
 
-    # Total Objective (transmission percentage - penalty)
-    # Scale penalty to be comparable to transmission percentage
-    penalty_scaled = penalty_val / (delta_eps * np.sum(mask))  # Normalize penalty
-    total_obj = obj_val - penalty_scaled
+    # Total Objective for display (Transmission - Penalty term)
+    # Scaled for readability
+    penalty_val = PENALTY_STRENGTH * 0.5 * (current_density - MAT_PENALTY)**2
+    total_obj = obj_val - penalty_val
     
     # Step Optimizer
     max_update = opt.apply_gradient(grad_eps, beta)
