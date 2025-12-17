@@ -10,7 +10,7 @@ WL = 1.55*µm
 N_CORE, N_CLAD = 2.25, 1.444
 DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=15)
 STEPS = 50
-MAT_PENALTY = 600 # Penalty weight for material usage
+MAT_PENALTY = 1000 # Penalty weight for material usage
 
 # Design & Materials
 design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
@@ -21,13 +21,13 @@ design += Rectangle(position=(W/2-WG_W/2, 0), width=WG_W, height=H/2, material=M
 opt_region = Rectangle(position=(W/2-1.5*µm, H/2-1.5*µm), width=3*µm, height=3*µm, material=Material(permittivity=N_CORE**2))
 design += opt_region
 
-design.show()
+# design.show()
 
 # Sources
 time = np.arange(0, 30*WL/LIGHT_SPEED, DT)
 signal = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time[-1])
-src_fwd = ModeSource(None, center=(2*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+x")
-src_adj = ModeSource(None, center=(W/2, 2*µm), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+y")
+src_fwd = ModeSource(None, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+x")
+src_adj = ModeSource(None, center=(W/2, 1.0*µm), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+y")
 
 # --- 2. Optimization Manager ---
 # Rasterize once to get grid and mask
@@ -39,7 +39,7 @@ opt = TopologyManager(
     region_mask=mask,
     resolution=DX,
     learning_rate=0.1,
-    filter_radius=0.15*µm,       # Physical units: Radius of the conic filter
+    filter_radius=0.10*µm,       # Physical units: Radius of the conic filter
     simple_smooth_radius=0.03*µm, # Physical units: Small blur to remove pixelation artifacts
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
@@ -68,11 +68,11 @@ for step in range(STEPS):
     # Setup monitors for input and output power measurement
     # Place monitor immediately after source to measure actual injected power
     # This accounts for soft source loading and back-reflection
-    monitor_input_flux = Monitor(design=grid, start=(2.1*µm, H/2-WG_W*2), end=(2.1*µm, H/2+WG_W*2), 
+    monitor_input_flux = Monitor(design=grid, start=(1.5*µm, H/2-WG_W*2), end=(1.5*µm, H/2+WG_W*2), 
                            accumulate_power=True, record_fields=False)
     
-    # Output monitor at top waveguide
-    output_monitor_fwd = Monitor(design=grid, start=(W/2-WG_W*2, 2.1*µm), end=(W/2+WG_W*2, H-2.1*µm),
+    # Output monitor at output waveguide (bottom)
+    output_monitor_fwd = Monitor(design=grid, start=(W/2-WG_W*2, 1.5*µm), end=(W/2+WG_W*2, 1.5*µm),
                                  accumulate_power=True, record_fields=False)
     
     # Run forward simulation with output monitor
@@ -94,17 +94,17 @@ for step in range(STEPS):
     # Avoid division by zero
     if measured_input_energy <= 0: measured_input_energy = 1.0
     
-    transmission_fwd = (measured_output_energy / measured_input_energy * 100.0)
+    transmission_fwd = (np.abs(measured_output_energy) / np.abs(measured_input_energy) * 100.0)
     
     # Backward Simulation (with backward monitor at input location)
     src_adj.grid = grid
     
-    # Backward source monitor (near top source)
-    monitor_back_flux = Monitor(design=grid, start=(W/2-WG_W*2, H-2.5*µm), end=(W/2+WG_W*2, H-2.5*µm),
+    # Backward source monitor (just downstream of source)
+    monitor_back_flux = Monitor(design=grid, start=(W/2-WG_W*2, 1.5*µm), end=(W/2+WG_W*2, 1.5*µm),
                               accumulate_power=True, record_fields=False)
     
     # Backward monitor at original input location (left waveguide)
-    backward_monitor = Monitor(design=grid, start=(2.5*µm, H/2-WG_W*2), end=(2.5*µm, H/2+WG_W*2),
+    backward_monitor = Monitor(design=grid, start=(1.5*µm, H/2-WG_W*2), end=(1.5*µm, H/2+WG_W*2),
                               accumulate_power=True, record_fields=False)
     
     sim_adj = Simulation(grid, [src_adj, monitor_back_flux, backward_monitor], 
@@ -118,7 +118,7 @@ for step in range(STEPS):
     if measured_input_energy_back <= 0: measured_input_energy_back = 1.0
     
     output_energy_back = np.sum(backward_monitor.power_history) * DT
-    transmission_back = (output_energy_back / measured_input_energy_back * 100.0)
+    transmission_back = (np.abs(output_energy_back) / np.abs(measured_input_energy_back) * 100.0)
     
     # Average bidirectional transmission
     transmission_pct = (transmission_fwd + transmission_back) / 2.0
@@ -185,11 +185,11 @@ time_final = np.arange(0, 60*WL/LIGHT_SPEED, DT)
 signal_final = ramped_cosine(time_final, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time_final[-1])
 
 # 2. Update Sources and Monitors
-src_fwd = ModeSource(grid, center=(2*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal_final, direction="+x")
+src_fwd = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal_final, direction="+x")
 if src_fwd._jz_profile is None: src_fwd.initialize(grid.permittivity, DX)
 
-monitor_input = Monitor(design=grid, start=(2.5*µm, H/2-WG_W*2), end=(2.5*µm, H/2+WG_W*2), accumulate_power=True)
-monitor_output = Monitor(design=grid, start=(W/2-WG_W*2, H-2*µm), end=(W/2+WG_W*2, H-2*µm), accumulate_power=True)
+monitor_input = Monitor(design=grid, start=(1.5*µm, H/2-WG_W*2), end=(1.5*µm, H/2+WG_W*2), accumulate_power=True)
+monitor_output = Monitor(design=grid, start=(W/2-WG_W*2, 1.5*µm), end=(W/2+WG_W*2, 1.5*µm), accumulate_power=True)
 
 # 3. Run Simulation
 sim_final = Simulation(grid, [src_fwd, monitor_input, monitor_output], 
@@ -201,7 +201,7 @@ results_final = sim_final.run(save_fields=['Ez', 'Hx', 'Hy'], field_subsample=1)
 # 4. Calculate Transmission
 input_E = np.sum(monitor_input.power_history) * DT
 output_E = np.sum(monitor_output.power_history) * DT
-trans_final = (output_E / input_E * 100.0) if input_E > 0 else 0.0
+trans_final = (np.abs(output_E) / np.abs(input_E) * 100.0) if np.abs(input_E) > 0 else 0.0
 print(f"Final Verified Transmission: {trans_final:.1f}%")
 
 # 5. Calculate Energy Flow (Time-Integrated Poynting Vector)
