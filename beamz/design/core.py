@@ -30,8 +30,7 @@ class Design:
         material_groups, non_polygon_structures, structures_to_remove = {}, [], []
         
         for structure in self.structures:
-            
-            material = structure.material
+            material = getattr(structure, 'material', None)
             if not material:
                 non_polygon_structures.append(structure)
                 continue
@@ -154,7 +153,16 @@ class Design:
 
     def add(self, structure:type[Polygon]):
         """Add structure to the design and update 3D flag if needed."""
-        self.structures.append(structure)
+        from beamz.devices.monitors import Monitor
+        from beamz.devices.sources import ModeSource, GaussianSource
+        
+        if isinstance(structure, Monitor):
+            self.monitors.append(structure)
+        elif isinstance(structure, (ModeSource, GaussianSource)):
+            self.sources.append(structure)
+        else:
+            self.structures.append(structure)
+            
         if hasattr(structure, 'depth') and structure.depth != 0: self.is_3d = True
         if hasattr(structure, 'position') and len(structure.position) > 2 and structure.position[2] != 0: self.is_3d = True
         if hasattr(structure, 'vertices') and structure.vertices:

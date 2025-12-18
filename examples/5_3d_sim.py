@@ -18,7 +18,19 @@ time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=3*WL/LIGHT_SPEED, t_max=TIME/2)
 source = GaussianSource(position=(4*µm, 4*µm, 2*µm), width=WL/6, signal=signal)
 
+
+# Add a monitor for the middle x-y plane
+monitor = Monitor(
+    start=(0, 0, 2*µm), 
+    end=(8*µm, 8*µm, 2*µm), 
+    record_fields=True, 
+    live_update=True, 
+    record_interval=2
+)
+
 # Add PML boundaries to simulation (not design)
-sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
+sim = Simulation(design=design, devices=[source, monitor], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
+
+# The simulation will now automatically detect the monitor and use it for live animation
 sim.run(animate_live="Ez", animation_interval=1, clean_visualization=True)
 
