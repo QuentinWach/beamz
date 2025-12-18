@@ -56,8 +56,9 @@ class GaussianSource:
         """
         dx = dy = resolution
         
-        # Check dimensionality from fields
-        if fields.permittivity.ndim == 3:
+        # Check dimensionality from position length (more reliable than fields when meshing is 2D for 3D design)
+        position_len = len(self.position) if hasattr(self.position, '__len__') else 1
+        if position_len == 3:
             self._inject_3d(fields, t, dt, resolution)
         else:
             self._inject_2d(fields, t, dt, resolution)
