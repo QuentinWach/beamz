@@ -325,6 +325,39 @@ def magnetic_conductivity_terms_2d_full(conductivity, permeability, hx_shape, hy
 
 
 
+def curl_e_to_h_3d(ex, ey, ez, resolution):
+    """Compute curl of E-field for H update in 3D: ∂H/∂t = -∇×E/μ₀."""
+    # Full 3D curl: ∇×E = [(∂Ez/∂y - ∂Ey/∂z)x̂ + (∂Ex/∂z - ∂Ez/∂x)ŷ + (∂Ey/∂x - ∂Ex/∂y)ẑ]
+    # Field shapes: Ex(nz, ny, nx-1), Ey(nz, ny-1, nx), Ez(nz-1, ny, nx)
+    # H-field shapes: Hx(nz-1, ny-1, nx), Hy(nz-1, ny, nx-1), Hz(nz, ny-1, nx-1)
+    
+    # Hx update from x-component: (∇×E)_x = ∂Ez/∂y - ∂Ey/∂z
+    # Hx is at (z-1/2, y-1/2, x), need curl at that position
+    # Ez is at (z-1/2, y, x), ∂Ez/∂y -> diff along y axis: (nz-1, ny-1, nx)
+    # Ey is at (z, y-1/2, x), ∂Ey/∂z -> diff along z axis: (nz-1, ny-1, nx)
+    dEz_dy = (ez[:, 1:, :] - ez[:, :-1, :]) / resolution  # (nz-1, ny-1, nx)
+    dEy_dz = (ey[1:, :, :] - ey[:-1, :, :]) / resolution  # (nz-1, ny-1, nx)
+    curl_ex = dEz_dy - dEy_dz  # (nz-1, ny-1, nx) matches Hx shape
+    
+    # Hy update from y-component: (∇×E)_y = ∂Ex/∂z - ∂Ez/∂x
+    # Hy is at (z-1/2, y, x-1/2), need curl at that position
+    # Ex is at (z, y, x-1/2), ∂Ex/∂z -> diff along z axis: (nz-1, ny, nx-1)
+    # Ez is at (z-1/2, y, x), ∂Ez/∂x -> diff along x axis: (nz-1, ny, nx-1)
+    dEx_dz = (ex[1:, :, :] - ex[:-1, :, :]) / resolution  # (nz-1, ny, nx-1)
+    dEz_dx = (ez[:, :, 1:] - ez[:, :, :-1]) / resolution  # (nz-1, ny, nx-1)
+    curl_ey = dEx_dz - dEz_dx  # (nz-1, ny, nx-1) matches Hy shape
+    
+    # Hz update from z-component: (∇×E)_z = ∂Ey/∂x - ∂Ex/∂y
+    # Hz is at (z, y-1/2, x-1/2), need curl at that position
+    # Ey is at (z, y-1/2, x), ∂Ey/∂x -> diff along x axis: (nz, ny-1, nx-1)
+    # Ex is at (z, y, x-1/2), ∂Ex/∂y -> diff along y axis: (nz, ny-1, nx-1)
+    dEy_dx = (ey[:, :, 1:] - ey[:, :, :-1]) / resolution  # (nz, ny-1, nx-1)
+    dEx_dy = (ex[:, 1:, :] - ex[:, :-1, :]) / resolution  # (nz, ny-1, nx-1)
+    curl_ez = dEy_dx - dEx_dy  # (nz, ny-1, nx-1) matches Hz shape
+    
+    return (curl_ex, curl_ey, curl_ez)
+
+
 def curl_h_to_e_3d(hx, hy, hz, resolution):
     """Compute curl of H-field for E update in 3D: ∂E/∂t = ∇×H/(ε₀εᵣ)."""
     # Full 3D curl: ∇×H = [(∂Hz/∂y - ∂Hy/∂z)x̂ + (∂Hx/∂z - ∂Hz/∂x)ŷ + (∂Hy/∂x - ∂Hx/∂y)ẑ]

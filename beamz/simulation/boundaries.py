@@ -68,8 +68,11 @@ class PML(Boundary):
             eta = np.sqrt(MU_0 / (EPS_0 * 1.0))
             self.sigma_max = 0.8 * (self.m + 1) / (eta * resolution)
         
-        # Create graded profiles for each direction based on plane
-        pml_data = self._create_pml_profiles_2d(fields, design, resolution, dt, plane_2d)
+        # Create graded profiles for each direction based on dimensionality
+        if fields.permittivity.ndim == 3:
+            pml_data = self._create_pml_profiles_3d(fields, design, resolution, dt)
+        else:
+            pml_data = self._create_pml_profiles_2d(fields, design, resolution, dt, plane_2d)
         return pml_data
     
     def _create_pml_profiles_2d(self, fields, design, resolution, dt, plane_2d):
@@ -165,6 +168,82 @@ class PML(Boundary):
         
         # Create PML mask (True where any PML sigma is active)
         pml_mask = (profiles[f'sigma_{axis1}'] > 0) | (profiles[f'sigma_{axis2}'] > 0)
+        
+        result = {'mask': pml_mask}
+        result.update(profiles)
+        return result
+    
+    def _create_pml_profiles_3d(self, fields, design, resolution, dt):
+        """Create UPML stretched-coordinate profiles for 3D."""
+        shape = fields.permittivity.shape  # (nz, ny, nx)
+        nz, ny, nx = shape
+        depth, height, width = design.depth, design.height, design.width
+        
+        # Initialize profile arrays
+        profiles = {}
+        for axis in ['x', 'y', 'z']:
+            profiles[f'sigma_{axis}'] = np.zeros(shape)
+            profiles[f'kappa_{axis}'] = np.ones(shape)
+            profiles[f'alpha_{axis}'] = np.zeros(shape)
+        
+        # Create coordinate arrays
+        coords_x = np.linspace(0, width, nx)
+        coords_y = np.linspace(0, height, ny)
+        coords_z = np.linspace(0, depth, nz)
+        
+        edges = self._get_edges_for_dimensionality(True)
+        
+        for edge in edges:
+            if edge == 'left':  # Start of x axis
+                for i in range(nx):
+                    if coords_x[i] < self.thickness:
+                        dist = self.thickness - coords_x[i]
+                        profiles['sigma_x'][:, :, i] = self._sigma_profile(dist, self.thickness)
+                        profiles['kappa_x'][:, :, i] = self._kappa_profile(dist, self.thickness)
+                        profiles['alpha_x'][:, :, i] = self._alpha_profile(dist, self.thickness)
+                        
+            elif edge == 'right':  # End of x axis
+                for i in range(nx):
+                    if coords_x[i] > (width - self.thickness):
+                        dist = coords_x[i] - (width - self.thickness)
+                        profiles['sigma_x'][:, :, i] = self._sigma_profile(dist, self.thickness)
+                        profiles['kappa_x'][:, :, i] = self._kappa_profile(dist, self.thickness)
+                        profiles['alpha_x'][:, :, i] = self._alpha_profile(dist, self.thickness)
+                        
+            elif edge == 'bottom':  # Start of y axis
+                for j in range(ny):
+                    if coords_y[j] < self.thickness:
+                        dist = self.thickness - coords_y[j]
+                        profiles['sigma_y'][:, j, :] = self._sigma_profile(dist, self.thickness)
+                        profiles['kappa_y'][:, j, :] = self._kappa_profile(dist, self.thickness)
+                        profiles['alpha_y'][:, j, :] = self._alpha_profile(dist, self.thickness)
+                        
+            elif edge == 'top':  # End of y axis
+                for j in range(ny):
+                    if coords_y[j] > (height - self.thickness):
+                        dist = coords_y[j] - (height - self.thickness)
+                        profiles['sigma_y'][:, j, :] = self._sigma_profile(dist, self.thickness)
+                        profiles['kappa_y'][:, j, :] = self._kappa_profile(dist, self.thickness)
+                        profiles['alpha_y'][:, j, :] = self._alpha_profile(dist, self.thickness)
+                        
+            elif edge == 'front':  # Start of z axis
+                for k in range(nz):
+                    if coords_z[k] < self.thickness:
+                        dist = self.thickness - coords_z[k]
+                        profiles['sigma_z'][k, :, :] = self._sigma_profile(dist, self.thickness)
+                        profiles['kappa_z'][k, :, :] = self._kappa_profile(dist, self.thickness)
+                        profiles['alpha_z'][k, :, :] = self._alpha_profile(dist, self.thickness)
+                        
+            elif edge == 'back':  # End of z axis
+                for k in range(nz):
+                    if coords_z[k] > (depth - self.thickness):
+                        dist = coords_z[k] - (depth - self.thickness)
+                        profiles['sigma_z'][k, :, :] = self._sigma_profile(dist, self.thickness)
+                        profiles['kappa_z'][k, :, :] = self._kappa_profile(dist, self.thickness)
+                        profiles['alpha_z'][k, :, :] = self._alpha_profile(dist, self.thickness)
+        
+        # Create PML mask (True where any PML sigma is active)
+        pml_mask = (profiles['sigma_x'] > 0) | (profiles['sigma_y'] > 0) | (profiles['sigma_z'] > 0)
         
         result = {'mask': pml_mask}
         result.update(profiles)
