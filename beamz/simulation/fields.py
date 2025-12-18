@@ -36,19 +36,13 @@ class Fields:
             self._curl_e_to_h = ops.curl_e_to_h_3d
             self._curl_h_to_e = ops.curl_h_to_e_3d
             self._material_slice = ops.material_slice_for_e_3d
-            self.sigma_m_hx, self.sigma_m_hy, self.sigma_m_hz = ops.magnetic_conductivity_terms_3d(
-                self.conductivity, self.permeability, self.Hx.shape, self.Hy.shape, self.Hz.shape)
-            self.eps_x, self.sig_x, self.region_x = self._material_slice(self.permittivity, self.conductivity, orientation="x")
-            self.eps_y, self.sig_y, self.region_y = self._material_slice(self.permittivity, self.conductivity, orientation="y")
-            self.eps_z, self.sig_z, self.region_z = self._material_slice(self.permittivity, self.conductivity, orientation="z")
+            self._init_material_parameters_3d()
         else:
             dim1, dim2 = grid_shape
             self._init_fields_2d(dim1, dim2)
             self.update = self._update_2d
             self._curl_e_to_h = ops.curl_e_to_h_2d
             self._curl_h_to_e = ops.curl_h_to_e_2d
-            # Material slicing will be handled dynamically or initialized here based on plane
-            # Initial dummy initialization, will be properly set in set_pml_conductivity or init
             self._init_material_parameters_2d()
 
     def set_pml_conductivity(self, pml_data):
@@ -58,10 +52,29 @@ class Fields:
         
         # Recalculate material parameters with PML conductivity added
         if self.permittivity.ndim == 3: # 3D
-            # TODO: Implement 3D PML effective conductivity
-            pass
+            self._init_material_parameters_3d()
         else: # 2D
             self._init_material_parameters_2d()
+
+    def _init_material_parameters_3d(self):
+        """Initialize 3D material parameters including PML conductivity if present."""
+        base_sigma = self.conductivity
+        
+        if self.has_pml and hasattr(self, 'pml_data'):
+            sigma_pml = np.zeros_like(base_sigma)
+            if 'sigma_x' in self.pml_data: sigma_pml += self.pml_data['sigma_x']
+            if 'sigma_y' in self.pml_data: sigma_pml += self.pml_data['sigma_y']
+            if 'sigma_z' in self.pml_data: sigma_pml += self.pml_data['sigma_z']
+            total_sigma = base_sigma + sigma_pml
+        else:
+            total_sigma = base_sigma
+            
+        self.eps_x, self.sig_x, self.region_x = ops.material_slice_for_e_3d(self.permittivity, total_sigma, "x")
+        self.eps_y, self.sig_y, self.region_y = ops.material_slice_for_e_3d(self.permittivity, total_sigma, "y")
+        self.eps_z, self.sig_z, self.region_z = ops.material_slice_for_e_3d(self.permittivity, total_sigma, "z")
+        
+        self.sigma_m_hx, self.sigma_m_hy, self.sigma_m_hz = ops.magnetic_conductivity_terms_3d(
+            total_sigma, self.permeability, self.Hx.shape, self.Hy.shape, self.Hz.shape)
 
     def _init_material_parameters_2d(self):
         """Initialize 2D material parameters including PML conductivity if present."""
@@ -239,13 +252,43 @@ class Fields:
         self.Ey = ops.advance_e_field(self.Ey, curlH_y, self.sig_y, self.eps_y, dt, self.region_y)
         self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_z, self.eps_z, dt, self.region_z)
 
-    def _update_3d(self, dt):
+    def _update_3d(self, dt, source_j=None, source_m=None):
         """Execute one 3D FDTD time step: H from curl(E) via Faraday's law, then E from curl(H) via Ampere's law."""
+        # 1. Update H fields from E fields
         curlE_x, curlE_y, curlE_z = self._curl_e_to_h(self.Ex, self.Ey, self.Ez, self.resolution)
+        
+        # Inject magnetic sources (if any)
+        if source_m:
+            if 'Hx' in source_m:
+                val, indices = source_m['Hx']
+                curlE_x[indices] += val
+            if 'Hy' in source_m:
+                val, indices = source_m['Hy']
+                curlE_y[indices] += val
+            if 'Hz' in source_m:
+                val, indices = source_m['Hz']
+                curlE_z[indices] += val
+        
         self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_hx, dt)
         self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_hy, dt)
         self.Hz = ops.advance_h_field(self.Hz, curlE_z, self.sigma_m_hz, dt)
-        curlH_x, curlH_y, curlH_z = self._curl_h_to_e(self.Hx, self.Hy, self.Hz, self.resolution)
+        
+        # 2. Update E fields from H fields
+        curlH_x, curlH_y, curlH_z = self._curl_h_to_e(self.Hx, self.Hy, self.Hz, self.resolution, 
+                                                      ex_shape=self.Ex.shape, ey_shape=self.Ey.shape, ez_shape=self.Ez.shape)
+        
+        # Inject electric sources (if any)
+        if source_j:
+            if 'Ex' in source_j:
+                val, indices = source_j['Ex']
+                curlH_x[indices] += val
+            if 'Ey' in source_j:
+                val, indices = source_j['Ey']
+                curlH_y[indices] += val
+            if 'Ez' in source_j:
+                val, indices = source_j['Ez']
+                curlH_z[indices] += val
+        
         self.Ex = ops.advance_e_field(self.Ex, curlH_x, self.sig_x, self.eps_x, dt, self.region_x)
         self.Ey = ops.advance_e_field(self.Ey, curlH_y, self.sig_y, self.eps_y, dt, self.region_y)
         self.Ez = ops.advance_e_field(self.Ez, curlH_z, self.sig_z, self.eps_z, dt, self.region_z)
@@ -255,4 +298,4 @@ class Fields:
         if not self.permittivity.ndim == 3:  # 2D
             self._update_2d(dt, source_j=source_j, source_m=source_m)
         else:  # 3D
-            self._update_3d(dt)
+            self._update_3d(dt, source_j=source_j, source_m=source_m)

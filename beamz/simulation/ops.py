@@ -358,15 +358,69 @@ def curl_e_to_h_3d(ex, ey, ez, resolution):
     return (curl_ex, curl_ey, curl_ez)
 
 
-def curl_h_to_e_3d(hx, hy, hz, resolution):
+def curl_h_to_e_3d(hx, hy, hz, resolution, ex_shape=None, ey_shape=None, ez_shape=None):
     """Compute curl of H-field for E update in 3D: ∂E/∂t = ∇×H/(ε₀εᵣ)."""
     # Full 3D curl: ∇×H = [(∂Hz/∂y - ∂Hy/∂z)x̂ + (∂Hx/∂z - ∂Hz/∂x)ŷ + (∂Hy/∂x - ∂Hx/∂y)ẑ]
+    # Field shapes: Hx(nz-1, ny-1, nx), Hy(nz-1, ny, nx-1), Hz(nz, ny-1, nx-1)
+    # E-field shapes: Ex(nz, ny, nx-1), Ey(nz, ny-1, nx), Ez(nz-1, ny, nx)
+    
+    # Determine target shapes from E-field shapes if provided, otherwise infer from H shapes
+    if ex_shape is None:
+        # Infer: Hz is (nz, ny-1, nx-1), so Ex should be (nz, ny, nx-1)
+        ex_shape = (hz.shape[0], hz.shape[1] + 1, hz.shape[2])
+    if ey_shape is None:
+        # Infer: Hx is (nz-1, ny-1, nx), so Ey should be (nz, ny-1, nx)
+        ey_shape = (hx.shape[0] + 1, hx.shape[1], hx.shape[2])
+    if ez_shape is None:
+        # Infer: Hy is (nz-1, ny, nx-1), so Ez should be (nz-1, ny, nx)
+        ez_shape = (hy.shape[0], hy.shape[1], hy.shape[2] + 1)
+    
     # Ex update from x-component: (∇×H)_x = ∂Hz/∂y - ∂Hy/∂z
-    curl_hx = (hz[:, 1:, :] - hz[:, :-1, :]) / resolution - (hy[1:, :, :] - hy[:-1, :, :]) / resolution
+    # Ex is at (z, y, x-1/2), need curl at that position -> shape matches ex_shape
+    # Hz is at (z, y-1/2, x-1/2), shape (nz, ny-1, nx-1)
+    dHz_dy = np.zeros(ex_shape)
+    dHz_dy[:, 1:-1, :] = (hz[:, 1:, :] - hz[:, :-1, :]) / resolution  # Interior
+    dHz_dy[:, 0, :] = dHz_dy[:, 1, :] if ex_shape[1] > 2 else 0  # Boundary
+    dHz_dy[:, -1, :] = dHz_dy[:, -2, :] if ex_shape[1] > 2 else 0  # Boundary
+    
+    # Hy is at (z-1/2, y, x-1/2), shape (nz-1, ny, nx-1)
+    dHy_dz = np.zeros(ex_shape)
+    dHy_dz[1:-1, :, :] = (hy[1:, :, :] - hy[:-1, :, :]) / resolution  # Interior
+    dHy_dz[0, :, :] = dHy_dz[1, :, :] if ex_shape[0] > 2 else 0  # Boundary
+    dHy_dz[-1, :, :] = dHy_dz[-2, :, :] if ex_shape[0] > 2 else 0  # Boundary
+    
+    curl_hx = dHz_dy - dHy_dz  # Matches ex_shape
+    
     # Ey update from y-component: (∇×H)_y = ∂Hx/∂z - ∂Hz/∂x
-    curl_hy = (hx[1:, :, :] - hx[:-1, :, :]) / resolution - (hz[:, :, 1:] - hz[:, :, :-1]) / resolution
+    # Ey is at (z, y-1/2, x), need curl at that position -> shape matches ey_shape
+    dHx_dz = np.zeros(ey_shape)
+    dHx_dz[1:-1, :, :] = (hx[1:, :, :] - hx[:-1, :, :]) / resolution  # Interior
+    dHx_dz[0, :, :] = dHx_dz[1, :, :] if ey_shape[0] > 2 else 0  # Boundary
+    dHx_dz[-1, :, :] = dHx_dz[-2, :, :] if ey_shape[0] > 2 else 0  # Boundary
+    
+    # Hz is at (z, y-1/2, x-1/2), shape (nz, ny-1, nx-1)
+    dHz_dx = np.zeros(ey_shape)
+    dHz_dx[:, :, 1:-1] = (hz[:, :, 1:] - hz[:, :, :-1]) / resolution  # Interior
+    dHz_dx[:, :, 0] = dHz_dx[:, :, 1] if ey_shape[2] > 2 else 0  # Boundary
+    dHz_dx[:, :, -1] = dHz_dx[:, :, -2] if ey_shape[2] > 2 else 0  # Boundary
+    
+    curl_hy = dHx_dz - dHz_dx  # Matches ey_shape
+    
     # Ez update from z-component: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y
-    curl_hz = (hy[:, :, 1:] - hy[:, :, :-1]) / resolution - (hx[:, 1:, :] - hx[:, :-1, :]) / resolution
+    # Ez is at (z-1/2, y, x), need curl at that position -> shape matches ez_shape
+    dHy_dx = np.zeros(ez_shape)
+    dHy_dx[:, :, 1:-1] = (hy[:, :, 1:] - hy[:, :, :-1]) / resolution  # Interior
+    dHy_dx[:, :, 0] = dHy_dx[:, :, 1] if ez_shape[2] > 2 else 0  # Boundary
+    dHy_dx[:, :, -1] = dHy_dx[:, :, -2] if ez_shape[2] > 2 else 0  # Boundary
+    
+    # Hx is at (z-1/2, y-1/2, x), shape (nz-1, ny-1, nx)
+    dHx_dy = np.zeros(ez_shape)
+    dHx_dy[:, 1:-1, :] = (hx[:, 1:, :] - hx[:, :-1, :]) / resolution  # Interior
+    dHx_dy[:, 0, :] = dHx_dy[:, 1, :] if ez_shape[1] > 2 else 0  # Boundary
+    dHx_dy[:, -1, :] = dHx_dy[:, -2, :] if ez_shape[1] > 2 else 0  # Boundary
+    
+    curl_hz = dHy_dx - dHx_dy  # Matches ez_shape
+    
     return (curl_hx, curl_hy, curl_hz)
 
 
@@ -427,11 +481,19 @@ def material_slice_for_e_3d(permittivity, conductivity, orientation):
     """Extract material parameters at staggered Yee grid positions for E-field components in 3D."""
     # Each E-field component lives at different staggered positions on Yee grid:
     # Ex at (z, y, x-1/2), Ey at (z, y-1/2, x), Ez at (z-1/2, y, x)
-    # Slicing [1:-1] along an axis excludes boundaries for that dimension
-    if orientation == "x": region = (slice(1, -1), slice(1, -1), slice(None))  # Ex: interior in z,y; full x
-    elif orientation == "y": region = (slice(1, -1), slice(None), slice(1, -1))  # Ey: interior in z,x; full y
-    else: region = (slice(None), slice(1, -1), slice(1, -1))  # Ez: full z; interior in y,x
-    return permittivity[region], conductivity[region], region
+    # Slicing [1:-1] along an axis excludes boundaries for that dimension.
+    # We must slice the material grid to match the field component's staggered dimension.
+    if orientation == "x":
+        m_region = (slice(1, -1), slice(1, -1), slice(None, -1))  # Match Ex staggered x
+        f_region = (slice(1, -1), slice(1, -1), slice(None))
+    elif orientation == "y":
+        m_region = (slice(1, -1), slice(None, -1), slice(1, -1))  # Match Ey staggered y
+        f_region = (slice(1, -1), slice(None), slice(1, -1))
+    else: # orientation == "z"
+        m_region = (slice(None, -1), slice(1, -1), slice(1, -1))  # Match Ez staggered z
+        f_region = (slice(None), slice(1, -1), slice(1, -1))
+        
+    return permittivity[m_region], conductivity[m_region], f_region
 
 
 def update_e_field_upml_2d(Ez, Ez_x, Ez_y, Hx, Hy, pml_data, permittivity, conductivity, resolution, dt):
