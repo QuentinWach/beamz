@@ -164,10 +164,36 @@ for step in range(STEPS):
     print(f" Step {step+1}: Obj={total_obj:.2e} (Trans={transmission_pct:.1f}% | Fwd={transmission_fwd:.1f}% Bwd={transmission_back:.1f}%) | Mat={mat_frac:.1%} | MaxUp={max_update:.2e}", end="\r")
     
     # Viz
-    if step % 5 == 0:
-        plt.imsave(f"topo_opt_{step:03d}.png", grid.permittivity.T, cmap='gray', origin='lower')
+    plt.imsave(f"topo_opt_{step:03d}.png", grid.permittivity.T, cmap='gray', origin='lower')
 
 print(f"\nOptimization Complete. Final Transmission: {transmission_history[-1]:.1f}%")
+
+# Create movie from saved images
+print("Generating optimization movie...")
+try:
+    import imageio
+    import os
+    
+    images = [f"topo_opt_{s:03d}.png" for s in range(STEPS)]
+    # Filter existing
+    images = [img for img in images if os.path.exists(img)]
+    
+    if images:
+        frames = [imageio.imread(img) for img in images]
+        # Try to save as mp4
+        try:
+            imageio.mimsave('optimization.mp4', frames, fps=5)
+            print("Movie saved to optimization.mp4")
+        except Exception as e:
+            print(f"Could not save mp4: {e}")
+            print("Attempting GIF fallback...")
+            imageio.mimsave('optimization.gif', frames, fps=5)
+            print("Movie saved to optimization.gif")
+            
+except ImportError:
+    print("imageio not found, skipping movie generation.")
+except Exception as e:
+    print(f"Failed to generate movie: {e}")
 
 # Plot transmission vs step (as percentage)
 plt.figure(figsize=(10, 6))
