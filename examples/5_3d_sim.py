@@ -24,10 +24,6 @@ monitor = Monitor(
 design += monitor
 design.show()
 
-# Explicitly rasterize as 3D
-design.rasterize(DX, grid_type="3d")
-
-
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=3*WL/LIGHT_SPEED, t_max=TIME/2)
 source = GaussianSource(position=(2.3*µm, 2.3*µm, 1*µm), width=WL/6, signal=signal)
@@ -36,4 +32,4 @@ source = GaussianSource(position=(2.3*µm, 2.3*µm, 1*µm), width=WL/6, signal=s
 sim = Simulation(design=design, devices=[source, monitor], boundaries=[PML(edges='all', thickness=1.0*WL)], time=time_steps, resolution=DX)
 
 # The simulation will now automatically detect the monitor and use it for live animation
-sim.run(animate_live="Ez", animation_interval=5, clean_visualization=False)
+sim.run(animate_live="Hz", animation_interval=5, clean_visualization=True)
