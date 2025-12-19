@@ -448,10 +448,10 @@ def advance_h_field(field, curl, sigma_m, dt):
     # Faraday's law with magnetic loss: μ₀∂H/∂t = -∇×E - σ_m*H
     # Crank-Nicolson (implicit midpoint): H^(n+1) = [(1 - α)/(1 + α)]H^n - [Δt/μ₀/(1 + α)]∇×E^(n+1/2)
     # where α = σ_m*Δt/(2μ₀) ensures second-order accuracy and unconditional stability
-    denom = 1.0 + sigma_m * dt / (2.0 * MU_0)  # Denominator: 1 + α
-    factor = (1.0 - sigma_m * dt / (2.0 * MU_0)) / denom  # Coefficient for H^n: (1 - α)/(1 + α)
-    source = (dt / MU_0) / denom  # Coefficient for curl term: Δt/(μ₀(1 + α))
-    return factor * field - source * curl  # H^(n+1) = factor*H^n - source*∇×E
+    denom = 1.0 + sigma_m * (dt / (2.0 * MU_0))  # Denominator: 1 + α
+    field *= (1.0 - sigma_m * (dt / (2.0 * MU_0))) / denom  # Apply factor in-place
+    field -= (dt / MU_0) / denom * curl  # Apply source term in-place
+    return field
 
 
 def advance_e_field(field, curl, conductivity, permittivity, dt, region):
@@ -460,14 +460,15 @@ def advance_e_field(field, curl, conductivity, permittivity, dt, region):
     # Crank-Nicolson: E^(n+1) = [(1 - β)/(1 + β)]E^n + [Δt/(ε₀εᵣ)/(1 + β)]∇×H^(n+1/2)
     # where β = σΔt/(2ε₀εᵣ) for stability and second-order temporal accuracy
     # Note: conductivity and permittivity are already sliced to the interior region
-    updated = field.copy()  # Create copy for output (preserve boundary values)
-    current = field[region]  # Extract interior field values
-    curl_region = curl[region]  # Extract curl at interior points
-    denom = 1.0 + conductivity * dt / (2.0 * EPS_0 * permittivity)  # Denominator: 1 + β
-    factor = (1.0 - conductivity * dt / (2.0 * EPS_0 * permittivity)) / denom  # Coefficient for E^n: (1 - β)/(1 + β)
-    source = (dt / (EPS_0 * permittivity)) / denom  # Coefficient for curl term: Δt/(ε₀εᵣ(1 + β))
-    updated[region] = factor * current + source * curl_region  # E^(n+1) = factor*E^n + source*∇×H
-    return updated
+    denom = 1.0 + conductivity * (dt / (2.0 * EPS_0 * permittivity))  # Denominator: 1 + β
+    factor = (1.0 - conductivity * (dt / (2.0 * EPS_0 * permittivity))) / denom
+    source = (dt / (EPS_0 * permittivity)) / denom
+    
+    # In-place update of the interior region to avoid full array copying
+    field[region] *= factor
+    field[region] += source * curl[region]
+    
+    return field
 
 
 def material_slice_for_e_2d(permittivity, conductivity):

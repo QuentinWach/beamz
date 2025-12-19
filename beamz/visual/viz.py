@@ -167,7 +167,12 @@ def show_design_2d(design, unify_structures=True):
         tmp_design = design.copy()
         tmp_design.unify_polygons()
         structures_to_plot = tmp_design.structures
-    else: structures_to_plot = design.structures
+        sources_to_plot = tmp_design.sources
+        monitors_to_plot = tmp_design.monitors
+    else: 
+        structures_to_plot = design.structures
+        sources_to_plot = design.sources
+        monitors_to_plot = design.monitors
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_aspect('equal')
@@ -177,6 +182,16 @@ def show_design_2d(design, unify_structures=True):
             structure.add_to_plot(ax, edgecolor='red', linestyle='--', facecolor='none', alpha=0.5)
         else:
             structure.add_to_plot(ax)
+
+    # Add sources
+    for source in sources_to_plot:
+        if hasattr(source, 'add_to_plot'):
+            source.add_to_plot(ax)
+
+    # Add monitors
+    for monitor in monitors_to_plot:
+        if hasattr(monitor, 'add_to_plot'):
+            monitor.add_to_plot(ax)
 
     ax.set_title('Design Layout')
     ax.set_xlabel(f'X ({unit})')
@@ -234,18 +249,20 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
     material_colors = {}
     color_index = 0
 
+    # Add monitors
+    for monitor in design.monitors:
+        _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=design)
+
+    # Add sources
+    for source in design.sources:
+        if isinstance(source, ModeSource):
+            _add_mode_source_to_3d_plot(fig, source, scale, unit, design=design)
+        elif isinstance(source, GaussianSource):
+            _add_gaussian_source_to_3d_plot(fig, source, scale, unit)
+
+    # Add structures
     for structure in design.structures:
         if hasattr(structure, 'is_pml') and structure.is_pml:
-            continue
-
-        if isinstance(structure, Monitor):
-            _add_monitor_to_3d_plot(fig, structure, scale, unit)
-            continue
-        if isinstance(structure, ModeSource):
-            _add_mode_source_to_3d_plot(fig, structure, scale, unit)
-            continue
-        if isinstance(structure, GaussianSource):
-            _add_gaussian_source_to_3d_plot(fig, structure, scale, unit)
             continue
 
         struct_depth = getattr(structure, 'depth', default_depth)
@@ -1078,13 +1095,26 @@ def close_fdtd_figure(fdtd):
             fdtd.ax = None
             fdtd.im = None
 
-def _add_monitor_to_3d_plot(fig, monitor, scale, unit):
+def _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=None):
     try:
         import plotly.graph_objects as go
     except ImportError:
         return
+        
+    # Ensure monitor has vertices for 3D plot
+    if (not hasattr(monitor, 'vertices') or not monitor.vertices) and design is not None:
+        if hasattr(monitor, '_init_3d_monitor'):
+            # Try to initialize as 3D if not already
+            start = getattr(monitor, 'start', (0,0,0))
+            end = getattr(monitor, 'end', None)
+            normal = getattr(monitor, 'plane_normal', 'z')
+            pos = getattr(monitor, 'plane_position', 0)
+            size = getattr(monitor, 'size', None)
+            monitor._init_3d_monitor(start, end, normal, pos, size)
+            
     if not hasattr(monitor, 'vertices') or not monitor.vertices:
         return
+        
     vertices = monitor.vertices
     if len(vertices) < 3:
         return
@@ -1115,16 +1145,29 @@ def _add_monitor_to_3d_plot(fig, monitor, scale, unit):
     ))
 
 
-def _add_mode_source_to_3d_plot(fig, source, scale, unit):
+def _add_mode_source_to_3d_plot(fig, source, scale, unit, design=None):
     try:
         import plotly.graph_objects as go
     except ImportError:
         return
-    if hasattr(source, 'width') and hasattr(source, 'height') and hasattr(source, 'orientation'):
-        center = source.position
+        
+    # Determine vertices for the source plane
+    if hasattr(source, 'width') and (hasattr(source, 'height') or design is not None):
+        # Handle ModeSource with width and optional height
+        center = getattr(source, 'center', getattr(source, 'position', (0,0,0)))
+        # Ensure center is 3D
+        if len(center) == 2:
+            z_default = design.depth / 2 if design and design.depth else 0
+            center = (center[0], center[1], z_default)
+            
         width = source.width
-        height = source.height if source.height > 0 else source.wavelength * 0.5
-        orientation = getattr(source, 'orientation', 'yz')
+        default_height = design.depth if design and design.depth else source.width
+        height = getattr(source, 'height', default_height)
+        
+        # Use orientation or direction to determine plane
+        direction = getattr(source, 'direction', '+x')
+        orientation = getattr(source, 'orientation', 'yz' if direction in ['+x', '-x'] else 'xz' if direction in ['+y', '-y'] else 'xy')
+        
         if orientation == "yz":
             vertices = [
                 (center[0], center[1] - width/2, center[2] - height/2),
@@ -1146,12 +1189,16 @@ def _add_mode_source_to_3d_plot(fig, source, scale, unit):
                 (center[0] + width/2, center[1] + height/2, center[2]),
                 (center[0] - width/2, center[1] + height/2, center[2])
             ]
-    else:
+    elif hasattr(source, 'start') and hasattr(source, 'end'):
         start = source.start; end = source.end
+        # Ensure they are 3D
+        if len(start) == 2: start = (start[0], start[1], 0)
+        if len(end) == 2: end = (end[0], end[1], start[2])
+        
         line_vec = np.array([end[0] - start[0], end[1] - start[1], end[2] - start[2]])
         line_length = np.linalg.norm(line_vec)
         if line_length == 0:
-            center = start; plane_size = source.wavelength * 0.5
+            center = start; plane_size = getattr(source, 'wavelength', 1e-6) * 0.5
             vertices = [
                 (center[0] - plane_size/2, center[1] - plane_size/2, center[2]),
                 (center[0] + plane_size/2, center[1] - plane_size/2, center[2]),
@@ -1163,7 +1210,7 @@ def _add_mode_source_to_3d_plot(fig, source, scale, unit):
             temp_vec = np.array([0, 0, 1]) if abs(line_unit[2]) < 0.9 else np.array([1, 0, 0])
             perp1 = np.cross(line_unit, temp_vec); perp1 = perp1 / np.linalg.norm(perp1)
             perp2 = np.cross(line_unit, perp1); perp2 = perp2 / np.linalg.norm(perp2)
-            plane_size = max(line_length, source.wavelength * 0.5)
+            plane_size = max(line_length, getattr(source, 'wavelength', 1e-6) * 0.5)
             center = np.array([(start[0] + end[0])/2, (start[1] + end[1])/2, (start[2] + end[2])/2])
             vertices = [
                 center - perp1 * plane_size/2 - perp2 * plane_size/2,
@@ -1172,15 +1219,29 @@ def _add_mode_source_to_3d_plot(fig, source, scale, unit):
                 center - perp1 * plane_size/2 + perp2 * plane_size/2
             ]
             vertices = [(v[0], v[1], v[2]) for v in vertices]
+    else:
+        # Fallback for point sources or unknown types
+        center = getattr(source, 'position', getattr(source, 'center', (0,0,0)))
+        if len(center) == 2: center = (center[0], center[1], 0)
+        plane_size = getattr(source, 'wavelength', 1e-6) * 0.5
+        vertices = [
+            (center[0] - plane_size/2, center[1] - plane_size/2, center[2]),
+            (center[0] + plane_size/2, center[1] - plane_size/2, center[2]),
+            (center[0] + plane_size/2, center[1] + plane_size/2, center[2]),
+            (center[0] - plane_size/2, center[1] + plane_size/2, center[2])
+        ]
 
     x_coords = [v[0] for v in vertices]
     y_coords = [v[1] for v in vertices]
     z_coords = [v[2] for v in vertices]
     faces_i = [0, 0]; faces_j = [1, 2]; faces_k = [2, 3]
     hovertext = f"ModeSource"
-    hovertext += f"<br>Wavelength: {source.wavelength*scale*1e6:.0f} nm"
-    hovertext += f"<br>Direction: {source.direction}"
-    hovertext += f"<br>Modes: {source.num_modes}"
+    if hasattr(source, 'wavelength'):
+        hovertext += f"<br>Wavelength: {source.wavelength*scale*1e6:.0f} nm"
+    if hasattr(source, 'direction'):
+        hovertext += f"<br>Direction: {source.direction}"
+    if hasattr(source, 'num_modes'):
+        hovertext += f"<br>Modes: {source.num_modes}"
     if hasattr(source, 'effective_indices') and len(source.effective_indices) > 0:
         hovertext += f"<br>n_eff: {source.effective_indices[0].real:.3f}"
 

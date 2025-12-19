@@ -167,6 +167,7 @@ class Design:
         else:
             self.structures.append(structure)
             
+        if hasattr(structure, 'is_3d') and structure.is_3d: self.is_3d = True
         if hasattr(structure, 'depth') and structure.depth != 0: self.is_3d = True
         if hasattr(structure, 'position') and len(structure.position) > 2 and structure.position[2] != 0: self.is_3d = True
         if hasattr(structure, 'vertices') and structure.vertices:
@@ -262,6 +263,7 @@ class Design:
         new_design = Design(width=self.width, height=self.height, depth=self.depth, material=background_material)
         new_design.structures, new_design.sources, new_design.monitors = [], [], []
         
+        # Copy structures
         for structure in self.structures:
             if hasattr(structure, 'copy'):
                 copied_structure = structure.copy()
@@ -271,6 +273,24 @@ class Design:
                 new_design.structures.append(copied_structure)
             else:
                 new_design.structures.append(structure)
+        
+        # Copy sources
+        for source in self.sources:
+            if hasattr(source, 'copy'):
+                copied_source = source.copy()
+                if hasattr(copied_source, 'design'): copied_source.design = new_design
+                new_design.sources.append(copied_source)
+            else:
+                new_design.sources.append(source)
+                
+        # Copy monitors
+        for monitor in self.monitors:
+            if hasattr(monitor, 'copy'):
+                copied_monitor = monitor.copy()
+                if hasattr(copied_monitor, 'design'): copied_monitor.design = new_design
+                new_design.monitors.append(copied_monitor)
+            else:
+                new_design.monitors.append(monitor)
                 
         new_design.is_3d, new_design.depth, new_design.time = self.is_3d, self.depth, self.time
         new_design.layers = self.layers.copy() if hasattr(self, 'layers') else {}
