@@ -12,8 +12,8 @@ N_CORE = 3.48  # Silicon
 
 # Calculate optimal grid parameters
 # 3D simulations can be memory intensive, so we use a slightly lower resolution (8 points/WL)
-DX, DT = calc_optimal_fdtd_params(WL, N_CORE, dims=3, safety_factor=0.95, points_per_wavelength=8,
-                                 width=10*µm, height=4*µm, depth=2*µm)
+DX, DT = calc_optimal_fdtd_params(WL, N_CORE, dims=3, safety_factor=0.999,
+    points_per_wavelength=20, width=10*µm, height=4*µm, depth=2*µm)
 
 # 1. Create the Design
 # A 10µm long waveguide along X, 4µm wide, 2µm thick
@@ -42,15 +42,17 @@ source = ModeSource(
     center=(1.0*µm, 2.0*µm, 1.0*µm),
     width=3.0*µm,
     wavelength=WL,
-    pol="te",
+    pol="tm",
     signal=signal,
     direction="+x"
 )
+#source.show(field="Ez")
+#source.show(field="Hy")
 
 # 4. Add Monitors
 # XY plane monitor in the middle of the waveguide thickness
 monitor_xy = Monitor(
-    start=(0, 0, 1.0*µm),
+    start=(0, 0, 1.25*µm),
     size=(10*µm, 4*µm),
     plane_normal="z",
     name="xy_plane"
@@ -58,19 +60,19 @@ monitor_xy = Monitor(
 design += monitor_xy
 
 # YZ cross-section monitor near the end
-monitor_yz = Monitor(
-    start=(4.0*µm, 0, 0),
-    size=(4*µm, 2*µm),
-    plane_normal="x",
-    name="yz_cross"
-)
-design += monitor_yz
+#monitor_yz = Monitor(
+#    start=(4.0*µm, 0, 0),
+#    size=(4*µm, 2*µm),
+#    plane_normal="x",
+#    name="yz_cross"
+#)
+#design += monitor_yz
 
 # Show the 3D design
 design.show()
 
 # 5. Run the Simulation
-sim = Simulation(design=design, devices=[source], time=time_steps, resolution=DX)
+sim = Simulation(design=design, devices=[source, monitor_xy], time=time_steps, resolution=DX)
 
 # Run with live animation of the Hz field on the XY monitor
 sim.run(animate_live="Ez", animation_interval=10, clean_visualization=True)

@@ -57,10 +57,9 @@ class ModeSource:
             if self.direction == "+x": offset_idx = max(0, center_idx - 1)
             else: offset_idx = min(nx - 2, center_idx)
             
-            # For 3D, take a 1D slice along Z at the Y-center for the mode solver
+            # For 3D, take a 2D slice for the mode solver
             if is_3d:
-                y_idx = int(np.clip(np.round(self.center[1] / dy - 0.5), 0, ny - 1))
-                eps_profile = permittivity[:, y_idx, center_idx]
+                eps_profile = permittivity[:, :, center_idx]
                 z_slice_ez = slice(0, nz - 1)
                 z_slice_h = slice(0, nz - 1)
                 y_slice = slice(0, ny)
@@ -81,7 +80,8 @@ class ModeSource:
                 else:
                     self._h_component = "Hx" # In 2D xy, Hx is the transverse H for x-prop TM.
                 
-                plot_coords = (np.arange(len(eps_profile)) + 0.5) * (dz if is_3d else dy)
+                plot_len = len(eps_profile) - 1 if is_3d else len(eps_profile)
+                plot_coords = (np.arange(plot_len) + 0.5) * (dz if is_3d else dy)
             else: # TE
                 # Hz (scalar) at center_idx, Ey (transverse) at offset_idx
                 if self.direction == "+x": hz_col = max(0, offset_idx - 1)
@@ -98,7 +98,8 @@ class ModeSource:
                 if not is_3d: self._e_indices = self._e_indices[1:]
                 
                 self._e_component = "Ey"
-                plot_coords = (np.arange(len(eps_profile)-1) + 1.0) * (dz if is_3d else dy)
+                plot_len = len(eps_profile) if is_3d else len(eps_profile) - 1
+                plot_coords = (np.arange(plot_len) + (0.5 if is_3d else 1.0)) * (dz if is_3d else dy)
                 
         else: # axis == "y"
             center_idx = int(np.clip(np.round(self.center[1] / dy - 0.5), 0, ny - 1))
@@ -107,10 +108,9 @@ class ModeSource:
             if self.direction == "+y": offset_idx = max(0, center_idx - 1)
             else: offset_idx = min(ny - 2, center_idx)
             
-            # For 3D, take a 1D slice along Z at the X-center
+            # For 3D, take a 2D slice
             if is_3d:
-                x_idx = int(np.clip(np.round(self.center[0] / dx - 0.5), 0, nx - 1))
-                eps_profile = permittivity[:, center_idx, x_idx]
+                eps_profile = permittivity[:, center_idx, :]
                 z_slice_ez = slice(0, nz - 1)
                 z_slice_h = slice(0, nz - 1)
                 x_slice = slice(0, nx)
@@ -128,7 +128,8 @@ class ModeSource:
                 else:
                     self._h_component = "Hy" # In 2D xy, Hy is the transverse H for y-prop TM.
                 
-                plot_coords = (np.arange(len(eps_profile)) + 0.5) * (dz if is_3d else dx)
+                plot_len = len(eps_profile) - 1 if is_3d else len(eps_profile)
+                plot_coords = (np.arange(plot_len) + 0.5) * (dz if is_3d else dx)
             else: # TE
                 # Hz (scalar) at center_idx, Ex (transverse) at offset_idx
                 if self.direction == "+y": hz_row = max(0, offset_idx - 1)
@@ -144,7 +145,8 @@ class ModeSource:
                 if not is_3d: self._e_indices = self._e_indices[1:]
                 
                 self._e_component = "Ex"
-                plot_coords = (np.arange(len(eps_profile)-1) + 1.0) * (dz if is_3d else dx)
+                plot_len = len(eps_profile) if is_3d else len(eps_profile) - 1
+                plot_coords = (np.arange(plot_len) + (0.5 if is_3d else 1.0)) * (dz if is_3d else dx)
 
         # 2. Solve Modes
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
@@ -204,9 +206,18 @@ class ModeSource:
                 
                 # Phase align
                 idx_max = np.argmax(np.abs(Hy_raw))
-                phase_ref = np.angle(Hy_raw[idx_max])
+                phase_ref = np.angle(Hy_raw.flatten()[idx_max])
                 Hy_profile = Hy_raw * np.exp(-1j * phase_ref)
                 Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
+                
+                # Stagger if needed for 3D
+                if is_3d:
+                    # In 3D, for x-prop TM, Ez and Hy are both at z-1/2
+                    # Mode solver along Z gives profiles at integer z
+                    # Hy_profile is (nz, ny). We stagger along Z (axis 0).
+                    if Hy_profile.shape[0] > 1:
+                        Hy_profile = 0.5 * (Hy_profile[:-1, :] + Hy_profile[1:, :])
+                        Ez_profile = 0.5 * (Ez_profile[:-1, :] + Ez_profile[1:, :])
                 
                 # Impedance correction
                 ETA_0 = np.sqrt(MU_0 / EPS_0)
@@ -221,12 +232,7 @@ class ModeSource:
                 self._jz_profile = dir_sign * np.real(Hy_profile)
                 self._my_profile = dir_sign * np.real(Ez_profile)
                 
-                # Reshape for 3D broadcasting if needed
-                if is_3d:
-                    self._jz_profile = self._jz_profile[:, np.newaxis]
-                    self._my_profile = self._my_profile[:, np.newaxis]
-                
-                plot_vals = (self._jz_profile.flatten(), self._my_profile.flatten())
+                plot_vals = (self._jz_profile, self._my_profile)
                 
             else: # TE
                 h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
@@ -236,13 +242,23 @@ class ModeSource:
                 Hz_raw = h_candidates[int(np.argmax(h_scores))]
                 Ey_raw = e_candidates[int(np.argmax(e_scores))]
                 
-                Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
-                Ey_staggered = 0.5 * (Ey_raw[:-1] + Ey_raw[1:])
+                # Interpolate to staggered grid if needed
+                if is_3d:
+                    # In 3D, for x-prop TE, Ey and Hz are both at integer z
+                    # but they are at y-1/2.
+                    # Hz_raw is (nz, ny). We stagger along Y (axis 1).
+                    Hz_profile_raw = 0.5 * (Hz_raw[:, :-1] + Hz_raw[:, 1:])
+                    Ey_profile_raw = 0.5 * (Ey_raw[:, :-1] + Ey_raw[:, 1:])
+                else:
+                    # In 2D, Ey and Hz are at y-1/2, so we stagger from integer y
+                    Hz_profile_raw = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
+                    Ey_profile_raw = 0.5 * (Ey_raw[:-1] + Ey_raw[1:])
                 
-                idx_max = np.argmax(np.abs(Hz_staggered))
-                phase_ref = np.angle(Hz_staggered[idx_max])
-                Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
-                Ey_profile = Ey_staggered * np.exp(-1j * phase_ref)
+                # Phase align
+                idx_max = np.argmax(np.abs(Hz_profile_raw))
+                phase_ref = np.angle(Hz_profile_raw.flatten()[idx_max])
+                Hz_profile = Hz_profile_raw * np.exp(-1j * phase_ref)
+                Ey_profile = Ey_profile_raw * np.exp(-1j * phase_ref)
                 
                 ETA_0 = np.sqrt(MU_0 / EPS_0)
                 Z_phys = ETA_0 / np.real(self._neff)
@@ -258,11 +274,7 @@ class ModeSource:
                     self._jy_profile = -np.real(Hz_profile)
                     self._mz_profile = -np.real(Ey_profile)
                 
-                if is_3d:
-                    self._jy_profile = self._jy_profile[:, np.newaxis]
-                    self._mz_profile = self._mz_profile[:, np.newaxis]
-                    
-                plot_vals = (self._jy_profile.flatten(), self._mz_profile.flatten())
+                plot_vals = (self._jy_profile, self._mz_profile)
                 
         else: # axis == "y"
             if self.pol == "tm":
@@ -272,9 +284,17 @@ class ModeSource:
                 if np.max(np.abs(Ez_raw)) < 1e-9: Ez_raw = np.squeeze(E_mode[1])
                 
                 idx_max = np.argmax(np.abs(Hx_raw))
-                phase_ref = np.angle(Hx_raw[idx_max])
+                phase_ref = np.angle(Hx_raw.flatten()[idx_max])
                 Hx_profile = Hx_raw * np.exp(-1j * phase_ref)
                 Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
+                
+                # Stagger if needed for 3D
+                if is_3d:
+                    # In 3D, for y-prop TM, Ez and Hx are both at z-1/2
+                    # Hx_profile is (nz, nx). We stagger along Z (axis 0).
+                    if Hx_profile.shape[0] > 1:
+                        Hx_profile = 0.5 * (Hx_profile[:-1, :] + Hx_profile[1:, :])
+                        Ez_profile = 0.5 * (Ez_profile[:-1, :] + Ez_profile[1:, :])
                 
                 ETA_0 = np.sqrt(MU_0 / EPS_0)
                 Z_phys = ETA_0 / np.real(self._neff)
@@ -290,11 +310,7 @@ class ModeSource:
                     self._jz_profile = np.real(Hx_profile)
                     self._my_profile = -np.real(Ez_profile)
                 
-                if is_3d:
-                    self._jz_profile = self._jz_profile[:, np.newaxis]
-                    self._my_profile = self._my_profile[:, np.newaxis]
-                    
-                plot_vals = (self._jz_profile.flatten(), self._my_profile.flatten())
+                plot_vals = (self._jz_profile, self._my_profile)
                 
             else: # TE y-prop
                 h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
@@ -304,13 +320,23 @@ class ModeSource:
                 Hz_raw = h_candidates[int(np.argmax(h_scores))]
                 Ex_raw = e_candidates[int(np.argmax(e_scores))]
                 
-                Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
-                Ex_staggered = 0.5 * (Ex_raw[:-1] + Ex_raw[1:])
+                # Interpolate to staggered grid if needed
+                if is_3d:
+                    # In 3D, for y-prop TE, Ex and Hz are both at integer z
+                    # but they are at x-1/2.
+                    # Hz_raw is (nz, nx). We stagger along X (axis 1).
+                    Hz_profile_raw = 0.5 * (Hz_raw[:, :-1] + Hz_raw[:, 1:])
+                    Ex_profile_raw = 0.5 * (Ex_raw[:, :-1] + Ex_raw[:, 1:])
+                else:
+                    # In 2D, Ex and Hz are at x-1/2 (Wait, x-prop? No, y-prop. So staggered in X).
+                    # But solver was along X. So stagger X.
+                    Hz_profile_raw = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
+                    Ex_profile_raw = 0.5 * (Ex_raw[:-1] + Ex_raw[1:])
                 
-                idx_max = np.argmax(np.abs(Hz_staggered))
-                phase_ref = np.angle(Hz_staggered[idx_max])
-                Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
-                Ex_profile = Ex_staggered * np.exp(-1j * phase_ref)
+                idx_max = np.argmax(np.abs(Hz_profile_raw))
+                phase_ref = np.angle(Hz_profile_raw.flatten()[idx_max])
+                Hz_profile = Hz_profile_raw * np.exp(-1j * phase_ref)
+                Ex_profile = Ex_profile_raw * np.exp(-1j * phase_ref)
                 
                 ETA_0 = np.sqrt(MU_0 / EPS_0)
                 Z_phys = ETA_0 / np.real(self._neff)
@@ -323,11 +349,7 @@ class ModeSource:
                 self._jx_profile = dir_sign * np.real(Hz_profile)
                 self._mz_profile = dir_sign * np.real(Ex_profile)
                 
-                if is_3d:
-                    self._jx_profile = self._jx_profile[:, np.newaxis]
-                    self._mz_profile = self._mz_profile[:, np.newaxis]
-                    
-                plot_vals = (self._jx_profile.flatten(), self._mz_profile.flatten())
+                plot_vals = (self._jx_profile, self._mz_profile)
 
         if self.width < 2.0 * µm:
             print("[ModeSource] Note: Source injection extended to full transverse span.")
@@ -355,18 +377,113 @@ class ModeSource:
         phase = np.angle(field[idx_max])
         return field * np.exp(-1j * phase)
     
+    def show(self, field=None):
+        """Visualize the 2D mode profile (for 3D simulations) or 1D profile (for 2D).
+        
+        Args:
+            field (str, optional): Which field to show. 
+                For TM: 'Ez' (default) or 'Hy'/'Hx'
+                For TE: 'Ey'/'Ex' (default) or 'Hz'
+        """
+        import matplotlib.pyplot as plt
+        from beamz.const import µm
+        
+        if self._jz_profile is None and self._mz_profile is None:
+            if self.grid is not None and hasattr(self.grid, 'permittivity'):
+                # Try to auto-initialize if grid is available
+                # We need a resolution. Try to guess from grid or use a default.
+                res = getattr(self.grid, 'resolution', 0.05e-6)
+                self.initialize(self.grid.permittivity, res)
+            else:
+                print("[ModeSource] Source not initialized. Call Simulation or initialize manually.")
+                return
+
+        is_3d = self._jz_profile.ndim > 1 if self._jz_profile is not None else self._mz_profile.ndim > 1
+        
+        if self.pol == "tm":
+            main_field = "Ez" if field is None else field
+            if main_field in ["Ez", "Ez_profile"]:
+                profile = self._my_profile # My corresponds to Ez in TM injection
+                title = "Ez (transverse E)"
+            else:
+                profile = self._jz_profile # Jz corresponds to Hy/Hx
+                title = f"{self._h_component} (transverse H)"
+        else: # TE
+            main_field = self._e_component if field is None else field
+            if main_field in ["Ex", "Ey", "Ex_profile", "Ey_profile"]:
+                profile = self._mz_profile # Mz corresponds to Ey/Ex in TE injection
+                title = f"{self._e_component} (transverse E)"
+            else:
+                profile = self._jy_profile if hasattr(self, '_jy_profile') else self._jx_profile
+                title = "Hz (transverse H)"
+
+        # Strip any extra dimensions used for broadcasting
+        if profile.ndim > 2:
+            profile = np.squeeze(profile)
+        elif profile.ndim == 2 and (profile.shape[0] == 1 or profile.shape[1] == 1):
+            # Still 1D essentially
+            profile = np.squeeze(profile)
+
+        plt.figure(figsize=(8, 6))
+        if profile.ndim == 2:
+            # 2D visualization for 3D simulation
+            im = plt.imshow(np.abs(profile), origin='lower', cmap='magma', aspect='auto')
+            plt.colorbar(im, label='Absolute Amplitude')
+            plt.title(f"Mode Source 2D Profile: {title} (neff={self._neff:.4f})")
+            
+            # Label axes based on propagation direction
+            if self.direction in ["+x", "-x"]:
+                plt.xlabel("Y-axis")
+                plt.ylabel("Z-axis")
+            else:
+                plt.xlabel("X-axis")
+                plt.ylabel("Z-axis")
+        else:
+            # 1D visualization for 2D simulation
+            plt.plot(np.abs(profile), 'k-')
+            plt.title(f"Mode Source 1D Profile: {title} (neff={self._neff:.4f})")
+            plt.xlabel("Transverse Coordinate (cells)")
+            plt.ylabel("Absolute Amplitude")
+            plt.grid(True)
+            
+        plt.tight_layout()
+        plt.show()
+
     def _plot_mode_profile(self, coords, jz_profile, my_profile):
         """Plot the mode profile for debugging."""
         try:
             import matplotlib.pyplot as plt
+            from beamz.const import µm
+            
+            # If 2D (3D simulation), we handle it differently
+            if jz_profile.ndim > 1 or my_profile.ndim > 1:
+                # Just save a summary image for debugging
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                
+                # J profile
+                im1 = ax1.imshow(np.abs(jz_profile), origin='lower', cmap='magma', aspect='auto')
+                plt.colorbar(im1, ax=ax1)
+                ax1.set_title(f'Transverse H (J-current)')
+                
+                # M profile
+                im2 = ax2.imshow(np.abs(my_profile), origin='lower', cmap='magma', aspect='auto')
+                plt.colorbar(im2, ax=ax2)
+                ax2.set_title(f'Transverse E (M-current)')
+                
+                plt.tight_layout()
+                plt.savefig("mode_profile.png", dpi=150, bbox_inches='tight')
+                print(f"[ModeSource] 2D Mode profiles saved to mode_profile.png")
+                plt.close()
+                return
+
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
             
             # Plot J_z (H_y)
-            ax1.plot(coords/µm, np.real(jz_profile), 'b-', label='Real(J_z)')
-            ax1.plot(coords/µm, np.imag(jz_profile), 'b--', label='Imag(J_z)')
+            ax1.plot(coords/µm, np.real(jz_profile), 'b-', label='Real(J)')
+            ax1.plot(coords/µm, np.imag(jz_profile), 'b--', label='Imag(J)')
             ax1.set_xlabel('coord (µm)')
-            ax1.set_ylabel('J_z amplitude')
-            ax1.set_title(f'Electric Current J_z = H_y (neff={self._neff:.4f})')
+            ax1.set_ylabel('J amplitude')
+            ax1.set_title(f'J current (neff={self._neff:.4f})')
             ax1.legend()
             ax1.grid(True)
             
@@ -381,7 +498,7 @@ class ModeSource:
                 ax2.plot(plot_coords/µm, np.imag(my_profile), 'r--', label='Imag(M)')
             ax2.set_xlabel('coord (µm)')
             ax2.set_ylabel('M amplitude')
-            ax2.set_title(f'Magnetic Current M (dir={self.direction})')
+            ax2.set_title(f'M current (dir={self.direction})')
             ax2.legend()
             ax2.grid(True)
             
