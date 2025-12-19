@@ -250,17 +250,18 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
     color_index = 0
 
     # Add monitors
-    for monitor in design.monitors:
-        _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=design)
+    for idx, monitor in enumerate(design.monitors):
+        _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=design, index=idx)
 
     # Add sources
-    for source in design.sources:
+    for idx, source in enumerate(design.sources):
         if isinstance(source, ModeSource):
-            _add_mode_source_to_3d_plot(fig, source, scale, unit, design=design)
+            _add_mode_source_to_3d_plot(fig, source, scale, unit, design=design, index=idx)
         elif isinstance(source, GaussianSource):
-            _add_gaussian_source_to_3d_plot(fig, source, scale, unit)
+            _add_gaussian_source_to_3d_plot(fig, source, scale, unit, index=idx)
 
     # Add structures
+    structure_index = 0
     for structure in design.structures:
         if hasattr(structure, 'is_pml') and structure.is_pml:
             continue
@@ -318,19 +319,29 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
             if hasattr(structure.material, 'conductivity') and structure.material.conductivity != 0.0:
                 hovertext += f"<br>σ = {structure.material.conductivity:.2e} S/m"
 
+        # Create unique name for legend entry
+        structure_name = f"{structure.__class__.__name__} {structure_index + 1}"
+        if hasattr(structure, 'material') and structure.material and hasattr(structure.material, 'name'):
+            structure_name += f" ({structure.material.name})"
+        elif hasattr(structure, 'material') and structure.material and hasattr(structure.material, 'permittivity'):
+            structure_name += f" (εᵣ={structure.material.permittivity:.1f})"
+
         fig.add_trace(go.Mesh3d(
             x=x, y=y, z=z,
             i=i, j=j, k=k,
             color=face_color,
             opacity=opacity,
-            name=hovertext,
-            showscale=True,
+            name=structure_name,
+            showscale=False,
             hovertemplate=hovertext + "<extra></extra>",
             contour=dict(show=True, color="black", width=5),
             lighting=dict(ambient=0.5, diffuse=0.5, fresnel=0.0, specular=0.5, roughness=1.0),
             lightposition=dict(x=0, y=50, z=100),
-            flatshading=True
+            flatshading=True,
+            showlegend=True
         ))
+        
+        structure_index += 1
 
     scene = dict(
         xaxis=dict(
@@ -388,7 +399,7 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
             y=ground_y + ground_y,
             z=ground_z + [-default_depth*0.05]*4,
             i=[0, 0, 4, 4, 0, 1, 2, 3], j=[1, 3, 5, 7, 4, 5, 6, 7], k=[2, 2, 6, 6, 1, 2, 3, 0],
-            color='rgba(220,220,220,0.3)', name="Ground Plane", showlegend=False, hoverinfo='skip',
+            color='rgba(220,220,220,0.3)', name="Ground Plane", showlegend=True, hoverinfo='skip',
             lighting=dict(ambient=0.8, diffuse=0.2, fresnel=0.0, specular=0.0, roughness=1.0),
             flatshading=True, contour=dict(show=True, color="black", width=5)
         ))
@@ -1095,7 +1106,7 @@ def close_fdtd_figure(fdtd):
             fdtd.ax = None
             fdtd.im = None
 
-def _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=None):
+def _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=None, index=0):
     try:
         import plotly.graph_objects as go
     except ImportError:
@@ -1134,10 +1145,18 @@ def _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=None):
         hovertext += f"<br>Normal: {monitor.plane_normal}"
     if hasattr(monitor, 'plane_position'):
         hovertext += f"<br>Position: {monitor.plane_position*scale:.2f} {unit}"
+    
+    # Create unique name for legend
+    monitor_name = f"Monitor {index + 1}"
+    if hasattr(monitor, 'name') and monitor.name:
+        monitor_name += f" ({monitor.name})"
+    elif hasattr(monitor, 'plane_normal'):
+        monitor_name += f" ({monitor.plane_normal}-plane)"
+    
     fig.add_trace(go.Mesh3d(
         x=x_coords, y=y_coords, z=z_coords,
         i=faces_i, j=faces_j, k=faces_k,
-        color='rgba(255,255,0,0.6)', opacity=0.75, name="Monitor",
+        color='rgba(255,255,0,0.6)', opacity=0.75, name=monitor_name,
         hovertemplate=hovertext + "<extra></extra>",
         contour=dict(show=True, color="black", width=8),
         lighting=dict(ambient=0.8, diffuse=0.2, fresnel=0.0, specular=0.0, roughness=1.0),
@@ -1145,7 +1164,7 @@ def _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=None):
     ))
 
 
-def _add_mode_source_to_3d_plot(fig, source, scale, unit, design=None):
+def _add_mode_source_to_3d_plot(fig, source, scale, unit, design=None, index=0):
     try:
         import plotly.graph_objects as go
     except ImportError:
@@ -1245,10 +1264,15 @@ def _add_mode_source_to_3d_plot(fig, source, scale, unit, design=None):
     if hasattr(source, 'effective_indices') and len(source.effective_indices) > 0:
         hovertext += f"<br>n_eff: {source.effective_indices[0].real:.3f}"
 
+    # Create unique name for legend
+    source_name = f"ModeSource {index + 1}"
+    if hasattr(source, 'direction'):
+        source_name += f" ({source.direction})"
+
     fig.add_trace(go.Mesh3d(
         x=x_coords, y=y_coords, z=z_coords,
         i=faces_i, j=faces_j, k=faces_k,
-        color='rgba(220,20,60,0.6)', opacity=0.75, name="ModeSource",
+        color='rgba(220,20,60,0.6)', opacity=0.75, name=source_name,
         hovertemplate=hovertext + "<extra></extra>",
         contour=dict(show=True, color="darkred", width=8),
         lighting=dict(ambient=0.8, diffuse=0.2, fresnel=0.0, specular=0.0, roughness=1.0),
@@ -1297,7 +1321,7 @@ def _add_direction_arrow_to_3d_plot(fig, source, plane_vertices):
     ))
 
 
-def _add_gaussian_source_to_3d_plot(fig, source, scale, unit):
+def _add_gaussian_source_to_3d_plot(fig, source, scale, unit, index=0):
     try:
         import plotly.graph_objects as go
     except ImportError:
@@ -1312,10 +1336,14 @@ def _add_gaussian_source_to_3d_plot(fig, source, scale, unit):
     hovertext = f"GaussianSource"
     hovertext += f"<br>Position: ({position[0]*scale:.2f}, {position[1]*scale:.2f}, {position[2]*scale:.2f}) {unit}"
     hovertext += f"<br>Width: {source.width*scale:.2f} {unit}"
+    
+    # Create unique name for legend
+    source_name = f"GaussianSource {index + 1}"
+    
     fig.add_trace(go.Surface(
         x=x, y=y, z=z,
         colorscale=[[0, 'rgba(255,69,0,0.7)'], [1, 'rgba(255,69,0,0.7)']],
-        opacity=0.7, name="GaussianSource", hovertemplate=hovertext + "<extra></extra>",
+        opacity=0.7, name=source_name, hovertemplate=hovertext + "<extra></extra>",
         showscale=False, showlegend=True
     ))
 
