@@ -156,6 +156,10 @@ class Design:
         from beamz.devices.monitors import Monitor
         from beamz.devices.sources import ModeSource, GaussianSource
         
+        # Set back-reference to design if the structure supports it
+        if hasattr(structure, 'design'):
+            structure.design = self
+
         if isinstance(structure, Monitor):
             self.monitors.append(structure)
         elif isinstance(structure, (ModeSource, GaussianSource)):
@@ -215,7 +219,7 @@ class Design:
         
         return [epsilon, mu, sigma_base]
 
-    def rasterize(self, resolution:float, grid_type:str="regular", force_recompute:bool=False, **kwargs):
+    def rasterize(self, resolution:float, grid_type:str="auto", force_recompute:bool=False, **kwargs):
         """Rasterize the design into a mesh grid at specified resolution and cache it internally."""
         from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
         
@@ -234,7 +238,8 @@ class Design:
             else: return None
         elif isinstance(grid_type, type): 
             grid_cls = grid_type
- 
+        
+        # If we got here with grid_cls, use it
         if grid_cls is RegularGrid3D:
             resolution_xy, resolution_z = resolution, kwargs.pop("resolution_z", None)
             self._grid = grid_cls(self, resolution_xy=resolution_xy, resolution_z=resolution_z)
@@ -248,7 +253,7 @@ class Design:
     def get_material_grids(self, resolution):
         """Get cached rasterized material property arrays at specified resolution as references."""
         if not hasattr(self, '_grid') or not hasattr(self, '_grid_resolution') or self._grid_resolution != resolution:
-            self.rasterize(resolution)
+            self.rasterize(resolution, grid_type="auto")
         return (self._grid.permittivity, self._grid.conductivity, self._grid.permeability)
 
     def copy(self):

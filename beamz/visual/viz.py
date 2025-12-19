@@ -669,13 +669,34 @@ def animate_manual_field(field_array,
             abs_data = np.abs(data)
             if abs_data.size > 10:
                 vmax = np.percentile(abs_data, percentile)
+                # If percentile scaling is too aggressive (e.g. for localized sources), fall back to max
+                if vmax < 0.01 * np.max(abs_data):
+                    vmax = float(np.max(abs_data))
             else:
                 vmax = float(np.max(abs_data) or 1.0)
+            
             if not np.isfinite(vmax) or vmax <= 0:
-                vmax = float(np.max(abs_data) or 1.0)
+                vmax = 0.0 # Field is zero
+            
+            # If we are transitioning from zero or very small to something larger,
+            # or if the current vmax is much smaller than previous auto_scale,
+            # reset auto_scale to the current vmax immediately instead of smoothing
+            # This makes the visualization much more reactive to the start of a pulse.
             if 'auto_scale' in context:
-                vmax = (1.0 - smoothing) * context['auto_scale'] + smoothing * vmax
-            context['auto_scale'] = vmax
+                prev_vmax = context['auto_scale']
+                # If current field is 10x larger than previous scale, or previous scale was 'zero' (1.0 default)
+                if (vmax > 5.0 * prev_vmax) or (prev_vmax == 1.0 and vmax > 0):
+                    context['auto_scale'] = vmax
+                else:
+                    context['auto_scale'] = (1.0 - smoothing) * prev_vmax + smoothing * vmax
+            else:
+                # First frame: if field is zero, default to 1.0, otherwise use current vmax
+                context['auto_scale'] = vmax if vmax > 0 else 1.0
+            
+            vmax = context['auto_scale']
+            # Final fallback for visualization
+            if vmax <= 0: vmax = 1.0
+            
         vmin, vmax = -vmax, vmax
     else:
         vmin, vmax = axis_scale
