@@ -68,10 +68,26 @@ class Simulation:
         # Update fields (legacy sources passed, new sources already injected)
         self.fields.update(self.dt, source_j=source_j, source_m=source_m)
         
+        # Record monitor data (if monitors are in devices)
+        self._record_monitors()
+        
         # Update time and step counter
         self.t += self.dt
         self.current_step += 1
         return True
+    
+    def _record_monitors(self):
+        """Record data from Monitor devices during simulation."""
+        for device in self.devices:
+            if hasattr(device, 'should_record') and hasattr(device, 'record_fields'):
+                if device.should_record(self.current_step):
+                    if not self.is_3d:
+                        device.record_fields(self.fields.Ez, self.fields.Hx, self.fields.Hy,
+                                           self.t, self.resolution, self.resolution, self.current_step)
+                    else:
+                        device.record_fields(self.fields.Ex, self.fields.Ey, self.fields.Ez,
+                                           self.fields.Hx, self.fields.Hy, self.fields.Hz,
+                                           self.t, self.resolution, self.resolution, self.resolution, self.current_step)
 
     def _inject_sources(self):
         """Inject source fields directly into the simulation grid."""
@@ -93,7 +109,7 @@ class Simulation:
         return source_j, source_m
     
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1):
         """Run complete FDTD simulation with optional live field visualization.
         
         Args:
@@ -105,6 +121,13 @@ class Simulation:
             wavelength: Wavelength for scale bar calculation (if None, tries to extract from devices)
             line_color: Color for structure and PML boundary outlines (default: 'gray')
             line_opacity: Opacity/transparency of structure and PML boundary outlines (0.0 to 1.0, default: 0.5)
+            save_fields: List of field components to save ('Ez', 'Hx', etc.) or None to disable
+            field_subsample: Save fields every N steps (default: 1, save all steps)
+        
+        Returns:
+            dict with keys:
+                - 'fields': dict of field histories if save_fields was provided
+                - 'monitors': list of Monitor objects with recorded data
         """
         # Handle 3D simulations - require monitor for now (not implemented yet)
         if animate_live and self.is_3d:
@@ -126,9 +149,22 @@ class Simulation:
                     wavelength = device.wavelength
                     break
         
+        # Initialize field storage if requested
+        field_history = {}
+        if save_fields:
+            for field_name in save_fields:
+                field_history[field_name] = []
+        
         try:
             # Main simulation loop
             while self.step():
+                # Save field history if requested
+                # current_step is incremented in step(), so we check after increment
+                if save_fields and (self.current_step % field_subsample == 0):
+                    for field_name in save_fields:
+                        if hasattr(self.fields, field_name):
+                            field_history[field_name].append(getattr(self.fields, field_name).copy())
+                
                 # Update live animation if enabled
                 if animate_live and self.current_step % animation_interval == 0:
                     field_data = getattr(self.fields, animate_live)
@@ -148,3 +184,15 @@ class Simulation:
                 import matplotlib.pyplot as plt
                 plt.show(block=False)
                 print("Simulation complete. Close the plot window to continue.")
+        
+        # Collect monitor data
+        monitors = [device for device in self.devices if hasattr(device, 'power_history')]
+        
+        # Return results if requested
+        result = {}
+        if save_fields:
+            result['fields'] = field_history
+        if monitors:
+            result['monitors'] = monitors
+        
+        return result if result else None

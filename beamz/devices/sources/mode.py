@@ -393,8 +393,8 @@ class ModeSource:
             ax2.grid(True)
             
             plt.tight_layout()
-            plt.savefig('/tmp/mode_profile.png', dpi=150, bbox_inches='tight')
-            print(f"[ModeSource] Mode profile saved to /tmp/mode_profile.png")
+            plt.savefig("mode_profile.png", dpi=150, bbox_inches='tight')
+            print(f"[ModeSource] Mode profile saved to mode_profile.png")
             plt.close()
         except Exception as e:
             print(f"[ModeSource] Could not plot mode profile: {e}")
