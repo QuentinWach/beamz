@@ -444,7 +444,7 @@ def plot_fdtd_field(fdtd, field: str = "Ez", t: float = None, z_slice: int = Non
             source.add_to_plot(plt.gca())
     for monitor in fdtd.design.monitors:
         if hasattr(monitor, 'add_to_plot'):
-            monitor.add_to_plot(plt.gca())
+            monitor.add_to_plot(plt.gca(), edgecolor="black")
     plt.tight_layout()
     plt.show()
 
@@ -585,7 +585,7 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
     
     for monitor in fdtd.design.monitors:
         if hasattr(monitor, 'add_to_plot'):
-            monitor.add_to_plot(fdtd.ax)
+            monitor.add_to_plot(fdtd.ax, edgecolor="black")
 
     max_dim = max(fdtd.design.width, fdtd.design.height)
     if max_dim >= 1e-3: scale, unit = 1e3, 'mm'
@@ -749,7 +749,7 @@ def animate_manual_field(field_array,
             if show_monitors:
                 for monitor in getattr(design, 'monitors', []) or []:
                     if hasattr(monitor, 'add_to_plot'):
-                        monitor.add_to_plot(ax)
+                        monitor.add_to_plot(ax, edgecolor=line_color, alpha=line_opacity)
 
         # Draw PML boundaries if provided
         if boundaries:

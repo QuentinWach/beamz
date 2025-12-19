@@ -32,4 +32,4 @@ source = GaussianSource(position=(2*µm, 2*µm, 1*µm), width=WL/6, signal=signa
 sim = Simulation(design=design, devices=[source, monitor], boundaries=[PML(edges='all', thickness=1.0*WL)], time=time_steps, resolution=DX)
 
 # The simulation will now automatically detect the monitor and use it for live animation
-sim.run(animate_live="Ez", animation_interval=10, clean_visualization=True)
+sim.run(animate_live="Ez", animation_interval=1, clean_visualization=True)

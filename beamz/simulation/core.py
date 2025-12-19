@@ -135,7 +135,7 @@ class Simulation:
         if animate_live and self.is_3d:
             active_monitor = next((d for d in self.devices if isinstance(d, Monitor) and d.is_3d), None)
             if not active_monitor:
-                print("● Live animation for 3D simulations requires a Monitor (add one to devices)")
+                #print("● Live animation for 3D simulations requires a Monitor (add one to devices)")
                 animate_live = None
         
         # Initialize animation context if requested
@@ -144,7 +144,7 @@ class Simulation:
             # Validate field component exists
             available = self.fields.available_components()
             if animate_live not in available:
-                print(f"● Warning: Field '{animate_live}' not found. Available: {available}")
+                #print(f"● Warning: Field '{animate_live}' not found. Available: {available}")
                 animate_live = None
         
         # Extract wavelength from devices if not provided
@@ -176,7 +176,7 @@ class Simulation:
                         # Use monitor fields for 3D animation
                         if animate_live in active_monitor.fields and active_monitor.fields[animate_live]:
                             field_display = active_monitor.fields[animate_live][-1]
-                            print(f"● 3D Animation slice shape: {field_display.shape}")
+                            #print(f"● 3D Animation slice shape: {field_display.shape}")
                             # Use monitor's physical extent
                             extent = (active_monitor.start[0], active_monitor.start[0] + active_monitor.size[0],
                                       active_monitor.start[1], active_monitor.start[1] + active_monitor.size[1])
