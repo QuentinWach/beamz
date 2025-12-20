@@ -153,12 +153,28 @@ def create_github_release(version, token=None, message=None, draft=False):
 def build_package():
     """Build sdist and wheel distributions."""
     import shutil
+    # Check if build module is available
+    try:
+        import build
+    except ImportError:
+        print("Error: 'build' module not found. Install it with: pip install build")
+        sys.exit(1)
+        
     if os.path.exists("dist"): shutil.rmtree("dist")
     subprocess.run([sys.executable, "-m", "build"], check=True)
     print("Built package distributions in dist/")
 
 def upload_to_pypi(token=None, test_pypi=False):
     """Upload distributions to PyPI using twine."""
+    # Check if twine is available
+    import shutil
+    if not shutil.which("twine"):
+        try:
+            import twine
+        except ImportError:
+            print("Error: 'twine' not found. Install it with: pip install twine")
+            sys.exit(1)
+            
     cmd = [sys.executable, "-m", "twine", "upload"]
     if test_pypi: cmd.extend(["--repository", "testpypi"])
     if token: cmd.extend(["--username", "__token__", "--password", token])
