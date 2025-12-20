@@ -150,6 +150,23 @@ def create_github_release(version, token=None, message=None, draft=False):
         print(f"Error creating GitHub release: {e.code} - {error_body}")
         return False
 
+def build_package():
+    """Build sdist and wheel distributions."""
+    import shutil
+    if os.path.exists("dist"): shutil.rmtree("dist")
+    subprocess.run([sys.executable, "-m", "build"], check=True)
+    print("Built package distributions in dist/")
+
+def upload_to_pypi(token=None, test_pypi=False):
+    """Upload distributions to PyPI using twine."""
+    cmd = [sys.executable, "-m", "twine", "upload"]
+    if test_pypi: cmd.extend(["--repository", "testpypi"])
+    if token: cmd.extend(["--username", "__token__", "--password", token])
+    else: print("Note: No PyPI token provided, twine will prompt for credentials if not configured.")
+    cmd.append("dist/*")
+    subprocess.run(cmd, check=True)
+    print(f"Uploaded to {'Test' if test_pypi else ''}PyPI")
+
 def main():
     parser = argparse.ArgumentParser(
         description="Update version and create GitHub tag/release for beamz"
@@ -191,6 +208,20 @@ def main():
         "--skip-version-update",
         action="store_true",
         help="Skip updating version files (use existing version)"
+    )
+    parser.add_argument(
+        "--pypi",
+        action="store_true",
+        help="Build and upload to PyPI"
+    )
+    parser.add_argument(
+        "--test-pypi",
+        action="store_true",
+        help="Build and upload to TestPyPI"
+    )
+    parser.add_argument(
+        "--pypi-token",
+        help="PyPI API token"
     )
     
     args = parser.parse_args()
@@ -258,11 +289,19 @@ def main():
     else:
         print("\nTo create a GitHub release, set GITHUB_TOKEN environment variable or use --github-token")
     
+    # PyPI release
+    if args.pypi or args.test_pypi:
+        pypi_token = args.pypi_token or os.environ.get("PYPI_TOKEN")
+        build_package()
+        upload_to_pypi(pypi_token, test_pypi=args.test_pypi)
+    
     print(f"\n✓ Version {args.version} released successfully!")
     print(f"  - Version files updated")
     print(f"  - Git tag v{args.version} created")
     if not args.no_push:
         print(f"  - Tag pushed to remote")
+    if args.pypi or args.test_pypi:
+        print(f"  - Uploaded to {'Test' if args.test_pypi else ''}PyPI")
 
 if __name__ == "__main__":
     import os
