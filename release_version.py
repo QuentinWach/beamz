@@ -56,6 +56,16 @@ def update_version(version):
     
     return any(changes)
 
+def commit_version_changes(version):
+    """Commit the version changes to git."""
+    files_to_add = ["setup.py", "pyproject.toml", "beamz/__init__.py"]
+    for f in files_to_add:
+        if os.path.exists(f):
+            subprocess.run(["git", "add", f], check=True)
+    
+    subprocess.run(["git", "commit", "-m", f"Bump version to {version}"], check=True)
+    print(f"Committed version changes for v{version}")
+
 def validate_version(version):
     """Validate version string format (semantic versioning)."""
     pattern = r'^\d+\.\d+\.\d+(-[a-zA-Z0-9]+)?$'
@@ -105,12 +115,17 @@ def create_git_tag(version, message=None):
     return True
 
 def push_tag(version, remote="origin"):
-    """Push tag to remote repository."""
+    """Push commit and tag to remote repository."""
+    branch = get_current_branch()
+    subprocess.run(
+        ["git", "push", remote, branch],
+        check=True
+    )
     subprocess.run(
         ["git", "push", remote, f"v{version}"],
         check=True
     )
-    print(f"Pushed tag v{version} to {remote}")
+    print(f"Pushed commit and tag v{version} to {remote}")
 
 def create_github_release(version, token=None, message=None, draft=False):
     """Create a GitHub release using GitHub API."""
@@ -267,6 +282,9 @@ def main():
             if response.lower() != 'y':
                 print("Aborted.")
                 sys.exit(1)
+        else:
+            # Commit the changes so the tag points to the version bump commit
+            commit_version_changes(args.version)
     
     # Create git tag
     if args.force:
