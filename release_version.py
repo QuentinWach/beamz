@@ -128,11 +128,10 @@ def push_tag(version, remote="origin"):
     print(f"Pushed commit and tag v{version} to {remote}")
 
 def create_github_release(version, token=None, message=None, draft=False):
-    """Create a GitHub release using GitHub API."""
+    """Create a GitHub release and return the release data."""
     if token is None:
         print("GitHub token not provided. Skipping GitHub release creation.")
-        print("Set GITHUB_TOKEN environment variable or use --github-token flag.")
-        return False
+        return None
     
     if message is None:
         message = f"Release version {version}"
@@ -141,7 +140,7 @@ def create_github_release(version, token=None, message=None, draft=False):
     import urllib.request
     import urllib.error
     
-    repo = "QuentinWach/beamz"  # From setup.py
+    repo = "QuentinWach/beamz"
     url = f"https://api.github.com/repos/{repo}/releases"
     
     data = {
@@ -159,10 +158,35 @@ def create_github_release(version, token=None, message=None, draft=False):
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read())
             print(f"Created GitHub release: {result['html_url']}")
-            return True
+            return result
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
         print(f"Error creating GitHub release: {e.code} - {error_body}")
+        return None
+
+def upload_github_asset(upload_url, filepath, token):
+    """Upload a file as a GitHub release asset."""
+    import urllib.request
+    from pathlib import Path
+    
+    filepath = Path(filepath)
+    # GitHub's upload_url is a template: "https://.../assets{?name,label}"
+    url = upload_url.split('{')[0] + f"?name={filepath.name}"
+    
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read()
+        
+        req = urllib.request.Request(url, data=data)
+        req.add_header("Authorization", f"token {token}")
+        req.add_header("Content-Type", "application/octet-stream")
+        req.add_header("Content-Length", len(data))
+        
+        with urllib.request.urlopen(req) as response:
+            print(f"Uploaded asset: {filepath.name}")
+            return True
+    except Exception as e:
+        print(f"Error uploading asset {filepath.name}: {e}")
         return False
 
 def build_package():
@@ -318,16 +342,30 @@ def main():
     
     # Create GitHub release
     token = args.github_token or os.environ.get("GITHUB_TOKEN")
+    release_info = None
     if token:
-        create_github_release(args.version, token, args.message, args.draft)
+        release_info = create_github_release(args.version, token, args.message, args.draft)
     else:
         print("\nTo create a GitHub release, set GITHUB_TOKEN environment variable or use --github-token")
     
-    # PyPI release
-    if args.pypi or args.test_pypi:
-        pypi_token = args.pypi_token or os.environ.get("PYPI_TOKEN")
-        build_package()
-        upload_to_pypi(pypi_token, test_pypi=args.test_pypi)
+    # PyPI release and/or GitHub Assets
+    if args.pypi or args.test_pypi or (release_info and token):
+        # We need the build for PyPI or for attaching to GitHub release
+        if not os.path.exists("dist") or args.pypi or args.test_pypi:
+            build_package()
+        
+        # Upload to PyPI if requested
+        if args.pypi or args.test_pypi:
+            pypi_token = args.pypi_token or os.environ.get("PYPI_TOKEN")
+            upload_to_pypi(pypi_token, test_pypi=args.test_pypi)
+            
+        # Upload assets to GitHub release if we have one
+        if release_info and token:
+            print("Uploading assets to GitHub release...")
+            dist_path = Path("dist")
+            for asset_file in dist_path.glob("*"):
+                if asset_file.is_file():
+                    upload_github_asset(release_info["upload_url"], asset_file, token)
     
     print(f"\n✓ Version {args.version} released successfully!")
     print(f"  - Version files updated")
