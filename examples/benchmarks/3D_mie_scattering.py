@@ -96,7 +96,7 @@ def run_mie_benchmark():
     power_total = np.array(monitor.power_history)
     
     # 2. Incident Field Run (without sphere)
-    design_inc = Design(X, Y, Z, material=Material(N_CLAD**2), pml_size=WL)
+    design_inc = Design(X, Y, Z, material=Material(N_CLAD**2))
     monitor_inc = Monitor(start=(X/2-1.5*µm, Y/2-1.5*µm, monitor_pos_z), 
                          end=(X/2+1.5*µm, Y/2+1.5*µm, monitor_pos_z), 
                          accumulate_power=True)
