@@ -528,8 +528,7 @@ class ModeSource:
         from beamz.const import EPS_0, MU_0
         
         if self._jz_profile is None and self._mz_profile is None:
-            permittivity = design.rasterize(resolution=resolution).permittivity
-            self.initialize(permittivity, resolution)
+            self.initialize(fields.permittivity, resolution)
         
         # Timing:
         # E source (J) is evaluated at t + 0.5*dt. H source (M) is evaluated at a shifted time to match plane offset.

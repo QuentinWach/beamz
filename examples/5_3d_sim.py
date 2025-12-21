@@ -9,7 +9,7 @@ DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=3, safety_factor
                                  width=4*µm, height=4*µm, depth=2*µm)
 
 # Create the 3D design
-design = Design(4*µm, 4*µm, 2*µm, material=Material(N_CLAD**2))
+design = Design(4*µm, 4*µm, 4*µm, material=Material(N_CLAD**2))
 # Ensure the rectangle is smaller than the design to see interaction
 design += Rectangle(position=(0*µm, 0*µm, 0.5*µm), width=2*µm, height=2*µm, depth=1*µm, material=Material(N_CORE**2))
 
@@ -26,10 +26,10 @@ design.show()
 
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=3*WL/LIGHT_SPEED, t_max=TIME/2)
-source = GaussianSource(position=(2.3*µm, 2.3*µm, 1*µm), width=WL/6, signal=signal)
+source = GaussianSource(position=(2.5*µm, 3*µm, 1.2*µm), width=WL/6, signal=signal)
 
 # Add PML boundaries to simulation (not design)
 sim = Simulation(design=design, devices=[source, monitor], boundaries=[PML(edges='all', thickness=1.0*WL)], time=time_steps, resolution=DX)
 
 # The simulation will now automatically detect the monitor and use it for live animation
-sim.run(animate_live="Hz", animation_interval=5, clean_visualization=True)
+sim.run(animate_live="Hy", animation_interval=2, clean_visualization=False)
