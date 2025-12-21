@@ -2,6 +2,7 @@ import numpy as np
 from beamz.const import *
 from beamz.design.core import Design
 from beamz.devices.core import Device
+from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.fields import Fields
 from beamz.simulation.boundaries import Boundary, PML
 from beamz.visual.viz import animate_manual_field, close_fdtd_figure
@@ -129,17 +130,21 @@ class Simulation:
                 - 'fields': dict of field histories if save_fields was provided
                 - 'monitors': list of Monitor objects with recorded data
         """
-        # Handle 3D simulations - require monitor for now (not implemented yet)
+        # Handle 3D simulations - use monitor slice if available
+        active_monitor = None
         if animate_live and self.is_3d:
-            print("Live animation for 3D simulations requires a monitor (not yet implemented)")
-            animate_live = None
+            active_monitor = next((d for d in self.devices if isinstance(d, Monitor) and d.is_3d), None)
+            if not active_monitor:
+                #print("● Live animation for 3D simulations requires a Monitor (add one to devices)")
+                animate_live = None
         
         # Initialize animation context if requested
         viz_context = None
         if animate_live:
             # Validate field component exists
-            if animate_live not in self.fields.available_components():
-                print(f"Warning: Field '{animate_live}' not found. Available: {self.fields.available_components()}")
+            available = self.fields.available_components()
+            if animate_live not in available:
+                #print(f"● Warning: Field '{animate_live}' not found. Available: {available}")
                 animate_live = None
         
         # Extract wavelength from devices if not provided
@@ -167,10 +172,24 @@ class Simulation:
                 
                 # Update live animation if enabled
                 if animate_live and self.current_step % animation_interval == 0:
-                    field_data = getattr(self.fields, animate_live)
+                    if self.is_3d and active_monitor:
+                        # Use monitor fields for 3D animation
+                        if animate_live in active_monitor.fields and active_monitor.fields[animate_live]:
+                            field_display = active_monitor.fields[animate_live][-1]
+                            #print(f"● 3D Animation slice shape: {field_display.shape}")
+                            # Use monitor's physical extent
+                            extent = (active_monitor.start[0], active_monitor.start[0] + active_monitor.size[0],
+                                      active_monitor.start[1], active_monitor.start[1] + active_monitor.size[1])
+                        else:
+                            continue
+                    else:
+                        # Standard 2D animation
+                        field_display = getattr(self.fields, animate_live)
+                        extent = (0, self.design.width, 0, self.design.height)
+
                     # Convert to V/µm for display
-                    field_display = field_data * 1e-6 if 'E' in animate_live else field_data
-                    extent = (0, self.design.width, 0, self.design.height)
+                    field_display = field_display * 1e-6 if 'E' in animate_live else field_display
+                    
                     title = f'{animate_live} at t = {self.t:.2e} s (step {self.current_step}/{self.num_steps})'
                     viz_context = animate_manual_field(field_display, context=viz_context, extent=extent, 
                                                       title=title, units='V/µm' if 'E' in animate_live else 'A/m',

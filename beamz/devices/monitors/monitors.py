@@ -221,15 +221,18 @@ class Monitor():
     
     def get_grid_slice_3d(self, dx, dy, dz, field_shape):
         """Get grid slice for 3D plane monitor.
-        Assumes simulation arrays are ordered as (z, y, x). Uses design extents to derive base grid sizes
-        to avoid off-by-one issues due to Yee staggering.
+        Assumes simulation arrays are ordered as (z, y, x).
         Returns indices in (y_slice, x_slice, fixed_index) order, where fixed_index corresponds to the
         axis normal to the plane.
         """
-        # Derive base grid counts from design dimensions and resolutions
-        base_nx = max(1, int(round((getattr(self.design, 'width', 0.0)) / dx)))
-        base_ny = max(1, int(round((getattr(self.design, 'height', 0.0)) / dy)))
-        base_nz = max(1, int(round((getattr(self.design, 'depth', 0.0) or 0.0) / dz)))
+        # Derive base grid counts from either design or field_shape
+        if self.design:
+            base_nx = max(1, int(round((getattr(self.design, 'width', 0.0)) / dx)))
+            base_ny = max(1, int(round((getattr(self.design, 'height', 0.0)) / dy)))
+            base_nz = max(1, int(round((getattr(self.design, 'depth', 0.0) or 0.0) / dz)))
+        else:
+            # Fallback to field_shape if design is not available
+            base_nz, base_ny, base_nx = field_shape
 
         if self.plane_normal == 'z':
             # xy plane at fixed z
@@ -366,6 +369,8 @@ class Monitor():
         Hy_slice = slice_field(Hy)
         Hz_slice = slice_field(Hz)
 
+        #print(f"● Monitor shapes: Ex={Ex_slice.shape}, Ey={Ey_slice.shape}, Ez={Ez_slice.shape}, Hx={Hx_slice.shape}, Hy={Hy_slice.shape}, Hz={Hz_slice.shape}")
+
         # Align to common overlapping region to account for Yee staggering
         min_y = min(Ex_slice.shape[0], Ey_slice.shape[0], Ez_slice.shape[0],
                     Hx_slice.shape[0], Hy_slice.shape[0], Hz_slice.shape[0])
@@ -377,6 +382,10 @@ class Monitor():
         Hx_slice = Hx_slice[:min_y, :min_x]
         Hy_slice = Hy_slice[:min_y, :min_x]
         Hz_slice = Hz_slice[:min_y, :min_x]
+        
+        # print(f"● Monitor record step {step}: Ez_slice max={np.max(np.abs(Ez_slice)):.2e}")
+        #print(f"● Monitor record step {step}: Ez_slice max={np.max(np.abs(Ez_slice)):.2e}")
+        
         if self.should_record_fields:
             self.fields['Ex'].append(Ex_slice)
             self.fields['Ey'].append(Ey_slice)
@@ -588,11 +597,13 @@ class Monitor():
         else:
             self.power_timestamps = list(range(len(self.power_history)))
     
-    def add_to_plot(self, ax, facecolor="navy", edgecolor="navy", alpha=1, linestyle="-"):
+    def add_to_plot(self, ax, facecolor="none", edgecolor="navy", alpha=1, linestyle="-"):
         """Add monitor visualization to 2D plot."""
         if self.monitor_type == "line":
+            # For line monitors, use edgecolor if facecolor is none
+            color = edgecolor if facecolor == "none" else facecolor
             ax.plot((self.start[0], self.end[0]), (self.start[1], self.end[1]), 
-                   lw=4, color=facecolor, label='Monitor', alpha=alpha)
+                   lw=4, color=color, label='Monitor', alpha=alpha)
             ax.plot((self.start[0], self.end[0]), (self.start[1], self.end[1]), 
                    lw=1, color=edgecolor, linestyle=linestyle)
         else:
@@ -602,7 +613,7 @@ class Monitor():
                 rect = MatplotlibRectangle(
                     (self.start[0], self.start[1]),
                     self.size[0], self.size[1],
-                    fill=True, facecolor=facecolor, alpha=alpha*0.3,
+                    fill=(facecolor != "none"), facecolor=facecolor, alpha=alpha*0.3,
                     edgecolor=edgecolor, linestyle=linestyle, linewidth=2)
                 ax.add_patch(rect)
                 ax.text(self.position[0], self.position[1], 'Monitor\n(3D plane)',
@@ -833,6 +844,8 @@ class Monitor():
         }
 
     def __str__(self):
+        if not self.fields['t']:
+            return f"Monitor: {self.monitor_type} ({'3D' if self.is_3d else '2D'}), 0 records"
         stats = self.get_field_statistics()
         return f"Monitor: {stats['monitor_type']} ({'3D' if stats['is_3d'] else '2D'}), {stats['total_records']} records"
     

@@ -325,15 +325,65 @@ def magnetic_conductivity_terms_2d_full(conductivity, permeability, hx_shape, hy
 
 
 
-def curl_h_to_e_3d(hx, hy, hz, resolution):
+def curl_e_to_h_3d(ex, ey, ez, resolution):
+    """Compute curl of E-field for H update in 3D: ∂H/∂t = -∇×E/μ₀."""
+    # Full 3D curl: ∇×E = [(∂Ez/∂y - ∂Ey/∂z)x̂ + (∂Ex/∂z - ∂Ez/∂x)ŷ + (∂Ey/∂x - ∂Ex/∂y)ẑ]
+    # Field shapes: Ex(nz, ny, nx-1), Ey(nz, ny-1, nx), Ez(nz-1, ny, nx)
+    # H-field shapes: Hx(nz-1, ny-1, nx), Hy(nz-1, ny, nx-1), Hz(nz, ny-1, nx-1)
+    
+    # Hx update from x-component: (∇×E)_x = ∂Ez/∂y - ∂Ey/∂z
+    # Hx is at (z-1/2, y-1/2, x), need curl at that position
+    # Ez is at (z-1/2, y, x), ∂Ez/∂y -> diff along y axis: (nz-1, ny-1, nx)
+    # Ey is at (z, y-1/2, x), ∂Ey/∂z -> diff along z axis: (nz-1, ny-1, nx)
+    dEz_dy = (ez[:, 1:, :] - ez[:, :-1, :]) / resolution  # (nz-1, ny-1, nx)
+    dEy_dz = (ey[1:, :, :] - ey[:-1, :, :]) / resolution  # (nz-1, ny-1, nx)
+    curl_ex = dEz_dy - dEy_dz  # (nz-1, ny-1, nx) matches Hx shape
+    
+    # Hy update from y-component: (∇×E)_y = ∂Ex/∂z - ∂Ez/∂x
+    # Hy is at (z-1/2, y, x-1/2), need curl at that position
+    # Ex is at (z, y, x-1/2), ∂Ex/∂z -> diff along z axis: (nz-1, ny, nx-1)
+    # Ez is at (z-1/2, y, x), ∂Ez/∂x -> diff along x axis: (nz-1, ny, nx-1)
+    dEx_dz = (ex[1:, :, :] - ex[:-1, :, :]) / resolution  # (nz-1, ny, nx-1)
+    dEz_dx = (ez[:, :, 1:] - ez[:, :, :-1]) / resolution  # (nz-1, ny, nx-1)
+    curl_ey = dEx_dz - dEz_dx  # (nz-1, ny, nx-1) matches Hy shape
+    
+    # Hz update from z-component: (∇×E)_z = ∂Ey/∂x - ∂Ex/∂y
+    # Hz is at (z, y-1/2, x-1/2), need curl at that position
+    # Ey is at (z, y-1/2, x), ∂Ey/∂x -> diff along x axis: (nz, ny-1, nx-1)
+    # Ex is at (z, y, x-1/2), ∂Ex/∂y -> diff along y axis: (nz, ny-1, nx-1)
+    dEy_dx = (ey[:, :, 1:] - ey[:, :, :-1]) / resolution  # (nz, ny-1, nx-1)
+    dEx_dy = (ex[:, 1:, :] - ex[:, :-1, :]) / resolution  # (nz, ny-1, nx-1)
+    curl_ez = dEy_dx - dEx_dy  # (nz, ny-1, nx-1) matches Hz shape
+    
+    return (curl_ex, curl_ey, curl_ez)
+
+
+def curl_h_to_e_3d(hx, hy, hz, resolution, ex_shape=None, ey_shape=None, ez_shape=None):
     """Compute curl of H-field for E update in 3D: ∂E/∂t = ∇×H/(ε₀εᵣ)."""
     # Full 3D curl: ∇×H = [(∂Hz/∂y - ∂Hy/∂z)x̂ + (∂Hx/∂z - ∂Hz/∂x)ŷ + (∂Hy/∂x - ∂Hx/∂y)ẑ]
-    # Ex update from x-component: (∇×H)_x = ∂Hz/∂y - ∂Hy/∂z
-    curl_hx = (hz[:, 1:, :] - hz[:, :-1, :]) / resolution - (hy[1:, :, :] - hy[:-1, :, :]) / resolution
-    # Ey update from y-component: (∇×H)_y = ∂Hx/∂z - ∂Hz/∂x
-    curl_hy = (hx[1:, :, :] - hx[:-1, :, :]) / resolution - (hz[:, :, 1:] - hz[:, :, :-1]) / resolution
-    # Ez update from z-component: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y
-    curl_hz = (hy[:, :, 1:] - hy[:, :, :-1]) / resolution - (hx[:, 1:, :] - hx[:, :-1, :]) / resolution
+    # Field shapes: Hx(nz-1, ny-1, nx), Hy(nz-1, ny, nx-1), Hz(nz, ny-1, nx-1)
+    # E-field shapes: Ex(nz, ny, nx-1), Ey(nz, ny-1, nx), Ez(nz-1, ny, nx)
+    
+    # Determine target shapes from E-field shapes if provided
+    if ex_shape is None: ex_shape = (hz.shape[0], hz.shape[1] + 1, hz.shape[2])
+    if ey_shape is None: ey_shape = (hx.shape[0] + 1, hx.shape[1], hx.shape[2])
+    if ez_shape is None: ez_shape = (hy.shape[0], hy.shape[1], hy.shape[2] + 1)
+    
+    # Ex update: (∇×H)_x = ∂Hz/∂y - ∂Hy/∂z
+    curl_hx = np.zeros(ex_shape)
+    curl_hx[:, 1:-1, :] = (hz[:, 1:, :] - hz[:, :-1, :]) / resolution
+    curl_hx[1:-1, :, :] -= (hy[1:, :, :] - hy[:-1, :, :]) / resolution
+    
+    # Ey update: (∇×H)_y = ∂Hx/∂z - ∂Hz/∂x
+    curl_hy = np.zeros(ey_shape)
+    curl_hy[1:-1, :, :] = (hx[1:, :, :] - hx[:-1, :, :]) / resolution
+    curl_hy[:, :, 1:-1] -= (hz[:, :, 1:] - hz[:, :, :-1]) / resolution
+    
+    # Ez update: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y
+    curl_hz = np.zeros(ez_shape)
+    curl_hz[:, :, 1:-1] = (hy[:, :, 1:] - hy[:, :, :-1]) / resolution
+    curl_hz[:, 1:-1, :] -= (hx[:, 1:, :] - hx[:, :-1, :]) / resolution
+    
     return (curl_hx, curl_hy, curl_hz)
 
 
@@ -361,10 +411,10 @@ def advance_h_field(field, curl, sigma_m, dt):
     # Faraday's law with magnetic loss: μ₀∂H/∂t = -∇×E - σ_m*H
     # Crank-Nicolson (implicit midpoint): H^(n+1) = [(1 - α)/(1 + α)]H^n - [Δt/μ₀/(1 + α)]∇×E^(n+1/2)
     # where α = σ_m*Δt/(2μ₀) ensures second-order accuracy and unconditional stability
-    denom = 1.0 + sigma_m * dt / (2.0 * MU_0)  # Denominator: 1 + α
-    factor = (1.0 - sigma_m * dt / (2.0 * MU_0)) / denom  # Coefficient for H^n: (1 - α)/(1 + α)
-    source = (dt / MU_0) / denom  # Coefficient for curl term: Δt/(μ₀(1 + α))
-    return factor * field - source * curl  # H^(n+1) = factor*H^n - source*∇×E
+    denom = 1.0 + sigma_m * (dt / (2.0 * MU_0))  # Denominator: 1 + α
+    field *= (1.0 - sigma_m * (dt / (2.0 * MU_0))) / denom  # Apply factor in-place
+    field -= (dt / MU_0) / denom * curl  # Apply source term in-place
+    return field
 
 
 def advance_e_field(field, curl, conductivity, permittivity, dt, region):
@@ -373,14 +423,15 @@ def advance_e_field(field, curl, conductivity, permittivity, dt, region):
     # Crank-Nicolson: E^(n+1) = [(1 - β)/(1 + β)]E^n + [Δt/(ε₀εᵣ)/(1 + β)]∇×H^(n+1/2)
     # where β = σΔt/(2ε₀εᵣ) for stability and second-order temporal accuracy
     # Note: conductivity and permittivity are already sliced to the interior region
-    updated = field.copy()  # Create copy for output (preserve boundary values)
-    current = field[region]  # Extract interior field values
-    curl_region = curl[region]  # Extract curl at interior points
-    denom = 1.0 + conductivity * dt / (2.0 * EPS_0 * permittivity)  # Denominator: 1 + β
-    factor = (1.0 - conductivity * dt / (2.0 * EPS_0 * permittivity)) / denom  # Coefficient for E^n: (1 - β)/(1 + β)
-    source = (dt / (EPS_0 * permittivity)) / denom  # Coefficient for curl term: Δt/(ε₀εᵣ(1 + β))
-    updated[region] = factor * current + source * curl_region  # E^(n+1) = factor*E^n + source*∇×H
-    return updated
+    denom = 1.0 + conductivity * (dt / (2.0 * EPS_0 * permittivity))  # Denominator: 1 + β
+    factor = (1.0 - conductivity * (dt / (2.0 * EPS_0 * permittivity))) / denom
+    source = (dt / (EPS_0 * permittivity)) / denom
+    
+    # In-place update of the interior region to avoid full array copying
+    field[region] *= factor
+    field[region] += source * curl[region]
+    
+    return field
 
 
 def material_slice_for_e_2d(permittivity, conductivity):
@@ -394,11 +445,19 @@ def material_slice_for_e_3d(permittivity, conductivity, orientation):
     """Extract material parameters at staggered Yee grid positions for E-field components in 3D."""
     # Each E-field component lives at different staggered positions on Yee grid:
     # Ex at (z, y, x-1/2), Ey at (z, y-1/2, x), Ez at (z-1/2, y, x)
-    # Slicing [1:-1] along an axis excludes boundaries for that dimension
-    if orientation == "x": region = (slice(1, -1), slice(1, -1), slice(None))  # Ex: interior in z,y; full x
-    elif orientation == "y": region = (slice(1, -1), slice(None), slice(1, -1))  # Ey: interior in z,x; full y
-    else: region = (slice(None), slice(1, -1), slice(1, -1))  # Ez: full z; interior in y,x
-    return permittivity[region], conductivity[region], region
+    # Slicing [1:-1] along an axis excludes boundaries for that dimension.
+    # We must slice the material grid to match the field component's staggered dimension.
+    if orientation == "x":
+        m_region = (slice(1, -1), slice(1, -1), slice(None, -1))  # Match Ex staggered x
+        f_region = (slice(1, -1), slice(1, -1), slice(None))
+    elif orientation == "y":
+        m_region = (slice(1, -1), slice(None, -1), slice(1, -1))  # Match Ey staggered y
+        f_region = (slice(1, -1), slice(None), slice(1, -1))
+    else: # orientation == "z"
+        m_region = (slice(None, -1), slice(1, -1), slice(1, -1))  # Match Ez staggered z
+        f_region = (slice(None), slice(1, -1), slice(1, -1))
+        
+    return permittivity[m_region], conductivity[m_region], f_region
 
 
 def update_e_field_upml_2d(Ez, Ez_x, Ez_y, Hx, Hy, pml_data, permittivity, conductivity, resolution, dt):

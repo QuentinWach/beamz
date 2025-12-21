@@ -126,17 +126,25 @@ def solve_modes(
     omega: float,
     dL: float,
     npml: int = 0,
-    m: int = 2,
+    m: int = 1,
     direction: Literal["+x", "-x", "+y", "-y", "+z", "-z"] = "+x",
     filter_pol: Union[Literal["te", "tm"], None] = None,
     return_fields: bool = False,
     propagation_axis: Union[Literal["+x", "-x", "+y", "-y", "+z", "-z"], None] = None,
     target_neff: Union[float, None] = None,
 ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
-    if eps.ndim != 1: raise ValueError("solve_modes expects a 1D permittivity array")
+    if eps.ndim not in [1, 2]: raise ValueError("solve_modes expects a 1D or 2D permittivity array")
 
     freq = omega / (2 * np.pi)
-    inv_eps = (1.0 / np.asarray(eps, dtype=np.complex128)).reshape(1, eps.size, 1)
+    
+    # Reshape eps to 3D for compute_mode (axis, trans1, trans2)
+    # compute_mode expects (prop_axis, trans1, trans2) where prop_axis is singleton
+    if eps.ndim == 1:
+        inv_eps = (1.0 / np.asarray(eps, dtype=np.complex128)).reshape(1, eps.size, 1)
+    else:
+        # eps is (trans1, trans2). We add the propagation axis at 0.
+        inv_eps = (1.0 / np.asarray(eps, dtype=np.complex128))[np.newaxis, :, :]
+    
     direction_flag = "+" if direction.startswith("+") else "-"
     axis_hint = propagation_axis if propagation_axis is not None else direction
 
