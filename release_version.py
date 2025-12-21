@@ -127,104 +127,9 @@ def push_tag(version, remote="origin"):
     )
     print(f"Pushed commit and tag v{version} to {remote}")
 
-def create_github_release(version, token=None, message=None, draft=False):
-    """Create a GitHub release and return the release data."""
-    if token is None:
-        print("GitHub token not provided. Skipping GitHub release creation.")
-        return None
-    
-    if message is None:
-        message = f"Release version {version}"
-    
-    import json
-    import urllib.request
-    import urllib.error
-    
-    repo = "QuentinWach/beamz"
-    url = f"https://api.github.com/repos/{repo}/releases"
-    
-    data = {
-        "tag_name": f"v{version}",
-        "name": f"v{version}",
-        "body": message,
-        "draft": draft
-    }
-    
-    req = urllib.request.Request(url, data=json.dumps(data).encode())
-    req.add_header("Authorization", f"token {token}")
-    req.add_header("Content-Type", "application/json")
-    
-    try:
-        with urllib.request.urlopen(req) as response:
-            result = json.loads(response.read())
-            print(f"Created GitHub release: {result['html_url']}")
-            return result
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode()
-        print(f"Error creating GitHub release: {e.code} - {error_body}")
-        return None
-
-def upload_github_asset(upload_url, filepath, token):
-    """Upload a file as a GitHub release asset."""
-    import urllib.request
-    from pathlib import Path
-    
-    filepath = Path(filepath)
-    # GitHub's upload_url is a template: "https://.../assets{?name,label}"
-    url = upload_url.split('{')[0] + f"?name={filepath.name}"
-    
-    try:
-        with open(filepath, 'rb') as f:
-            data = f.read()
-        
-        req = urllib.request.Request(url, data=data)
-        req.add_header("Authorization", f"token {token}")
-        req.add_header("Content-Type", "application/octet-stream")
-        req.add_header("Content-Length", len(data))
-        
-        with urllib.request.urlopen(req) as response:
-            print(f"Uploaded asset: {filepath.name}")
-            return True
-    except Exception as e:
-        print(f"Error uploading asset {filepath.name}: {e}")
-        return False
-
-def build_package():
-    """Build sdist and wheel distributions."""
-    import shutil
-    # Check if build module is available
-    try:
-        import build
-    except ImportError:
-        print("Error: 'build' module not found. Install it with: pip install build")
-        sys.exit(1)
-        
-    if os.path.exists("dist"): shutil.rmtree("dist")
-    subprocess.run([sys.executable, "-m", "build"], check=True)
-    print("Built package distributions in dist/")
-
-def upload_to_pypi(token=None, test_pypi=False):
-    """Upload distributions to PyPI using twine."""
-    # Check if twine is available
-    import shutil
-    if not shutil.which("twine"):
-        try:
-            import twine
-        except ImportError:
-            print("Error: 'twine' not found. Install it with: pip install twine")
-            sys.exit(1)
-            
-    cmd = [sys.executable, "-m", "twine", "upload"]
-    if test_pypi: cmd.extend(["--repository", "testpypi"])
-    if token: cmd.extend(["--username", "__token__", "--password", token])
-    else: print("Note: No PyPI token provided, twine will prompt for credentials if not configured.")
-    cmd.append("dist/*")
-    subprocess.run(cmd, check=True)
-    print(f"Uploaded to {'Test' if test_pypi else ''}PyPI")
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Update version and create GitHub tag/release for beamz"
+        description="Update version and create/push git tag for beamz (triggers CI/CD release)"
     )
     parser.add_argument(
         "version",
@@ -236,23 +141,9 @@ def main():
         help="Release message (default: 'Release version X.Y.Z')"
     )
     parser.add_argument(
-        "--tag-only",
-        action="store_true",
-        help="Only create git tag, don't push or create GitHub release"
-    )
-    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Don't push tag to remote"
-    )
-    parser.add_argument(
-        "--github-token",
-        help="GitHub personal access token for creating releases"
-    )
-    parser.add_argument(
-        "--draft",
-        action="store_true",
-        help="Create draft GitHub release"
     )
     parser.add_argument(
         "--force",
@@ -263,20 +154,6 @@ def main():
         "--skip-version-update",
         action="store_true",
         help="Skip updating version files (use existing version)"
-    )
-    parser.add_argument(
-        "--pypi",
-        action="store_true",
-        help="Build and upload to PyPI"
-    )
-    parser.add_argument(
-        "--test-pypi",
-        action="store_true",
-        help="Build and upload to TestPyPI"
-    )
-    parser.add_argument(
-        "--pypi-token",
-        help="PyPI API token"
     )
     
     args = parser.parse_args()
@@ -328,10 +205,6 @@ def main():
             sys.exit(1)
         create_git_tag(args.version, args.message)
     
-    if args.tag_only:
-        print("Tag-only mode: skipping push and GitHub release")
-        return
-    
     # Push tag
     if not args.no_push:
         try:
@@ -340,42 +213,12 @@ def main():
             print(f"Error pushing tag: {e}")
             sys.exit(1)
     
-    # Create GitHub release
-    token = args.github_token or os.environ.get("GITHUB_TOKEN")
-    release_info = None
-    if token:
-        release_info = create_github_release(args.version, token, args.message, args.draft)
-    else:
-        print("\nTo create a GitHub release, set GITHUB_TOKEN environment variable or use --github-token")
-    
-    # PyPI release and/or GitHub Assets
-    if args.pypi or args.test_pypi or (release_info and token):
-        # We need the build for PyPI or for attaching to GitHub release
-        if not os.path.exists("dist") or args.pypi or args.test_pypi:
-            build_package()
-        
-        # Upload to PyPI if requested
-        if args.pypi or args.test_pypi:
-            pypi_token = args.pypi_token or os.environ.get("PYPI_TOKEN")
-            upload_to_pypi(pypi_token, test_pypi=args.test_pypi)
-            
-        # Upload assets to GitHub release if we have one
-        if release_info and token:
-            print("Uploading assets to GitHub release...")
-            dist_path = Path("dist")
-            for asset_file in dist_path.glob("*"):
-                if asset_file.is_file():
-                    upload_github_asset(release_info["upload_url"], asset_file, token)
-    
-    print(f"\n✓ Version {args.version} released successfully!")
-    print(f"  - Version files updated")
+    print(f"\n✓ Version {args.version} prepared successfully!")
+    print(f"  - Version files updated & committed")
     print(f"  - Git tag v{args.version} created")
     if not args.no_push:
-        print(f"  - Tag pushed to remote")
-    if args.pypi or args.test_pypi:
-        print(f"  - Uploaded to {'Test' if args.test_pypi else ''}PyPI")
+        print(f"  - Tag pushed to remote (CI/CD release triggered)")
 
 if __name__ == "__main__":
-    import os
     main()
 
