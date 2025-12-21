@@ -75,6 +75,32 @@ class PML(Boundary):
             pml_data = self._create_pml_profiles_2d(fields, design, resolution, dt, plane_2d)
         return pml_data
     
+    def get_conductivity(self, x, y, z=0, dx=1e-6, dt=1e-15, eps_avg=1.0, width=0, height=0, depth=0):
+        """Calculate PML conductivity at a specific point (x,y,z)."""
+        if self.sigma_max is None:
+            # eta = sqrt(mu0 / (eps0 * eps_r))
+            eta = np.sqrt(MU_0 / (EPS_0 * eps_avg))
+            s_max = 0.8 * (self.m + 1) / (eta * dx)
+        else:
+            s_max = self.sigma_max
+            
+        sigma = 0.0
+        is_3d = depth > 0
+        edges = self._get_edges_for_dimensionality(is_3d)
+        
+        for edge in edges:
+            dist = -1.0
+            if edge == 'left' and x < self.thickness: dist = self.thickness - x
+            elif edge == 'right' and x > (width - self.thickness): dist = x - (width - self.thickness)
+            elif edge == 'bottom' and y < self.thickness: dist = self.thickness - y
+            elif edge == 'top' and y > (height - self.thickness): dist = y - (height - self.thickness)
+            elif edge == 'front' and z < self.thickness: dist = self.thickness - z
+            elif edge == 'back' and z > (depth - self.thickness): dist = z - (depth - self.thickness)
+            
+            if dist > 0:
+                sigma += s_max * (dist / self.thickness) ** self.m
+        return sigma
+
     def _create_pml_profiles_2d(self, fields, design, resolution, dt, plane_2d):
         """Create UPML stretched-coordinate profiles for 2D plane."""
         # Grid shape from material grid (same as field shape for collocated/main grid)

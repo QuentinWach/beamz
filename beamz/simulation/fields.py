@@ -65,7 +65,8 @@ class Fields:
             if 'sigma_x' in self.pml_data: sigma_pml += self.pml_data['sigma_x']
             if 'sigma_y' in self.pml_data: sigma_pml += self.pml_data['sigma_y']
             if 'sigma_z' in self.pml_data: sigma_pml += self.pml_data['sigma_z']
-            total_sigma = base_sigma + sigma_pml
+            # Use maximum to avoid double-counting if meshing.py already added it
+            total_sigma = np.maximum(base_sigma, sigma_pml)
         else:
             total_sigma = base_sigma
             

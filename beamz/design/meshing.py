@@ -716,20 +716,25 @@ class RegularGrid3D(BaseMeshGrid):
     
     def _process_3d_pml(self, permittivity, permeability, conductivity, 
                        x_centers, y_centers, z_centers, dt_estimate):
-        """Process 3D PML boundaries."""
+        """Process 3D PML boundaries and add conductivity to the grid."""
         if not hasattr(self.design, 'boundaries') or not self.design.boundaries: return
         
         with create_rich_progress() as progress:
             task = progress.add_task("Processing 3D PML boundaries...", total=len(self.design.boundaries))
             
             for boundary in self.design.boundaries:
-                # For now, apply 2D PML to all z-layers (can be enhanced for true 3D PML)
+                # Add PML conductivity to the global 3D conductivity grid for all 6 faces
                 for k, z in enumerate(z_centers):
                     for i, y in enumerate(y_centers):
                         for j, x in enumerate(x_centers):
-                            # Add PML conductivity
-                            pml_conductivity = boundary.get_conductivity(x, y, dx=self.resolution_xy, dt=dt_estimate,
-                                                                        eps_avg=permittivity[k, i, j])
+                            # Calculate PML conductivity at this point (x,y,z)
+                            pml_conductivity = boundary.get_conductivity(x, y, z, 
+                                                                        dx=self.resolution_xy, 
+                                                                        dt=dt_estimate,
+                                                                        eps_avg=permittivity[k, i, j],
+                                                                        width=self.design.width,
+                                                                        height=self.design.height,
+                                                                        depth=self.design.depth)
                             if pml_conductivity > 0: conductivity[k, i, j] += pml_conductivity
                 
                 progress.update(task, advance=1)
