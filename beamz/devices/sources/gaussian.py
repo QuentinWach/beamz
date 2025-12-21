@@ -44,20 +44,12 @@ class GaussianSource:
             return 0.0
 
     def inject(self, fields, t, dt, current_step, resolution, design):
-        """Inject source fields directly into the simulation grid before the FDTD update step.
-        
-        Args:
-            fields: The Fields object containing E and H arrays
-            t: Current simulation time
-            dt: Time step size
-            current_step: Current time step index
-            resolution: Spatial resolution (dx, dy)
-            design: The simulation Design object
-        """
+        """Inject source fields directly into the simulation grid before the FDTD update step."""
         dx = dy = resolution
         
-        # Check dimensionality from fields
-        if fields.permittivity.ndim == 3:
+        # Check dimensionality from position length (more reliable than fields when meshing is 2D for 3D design)
+        position_len = len(self.position) if hasattr(self.position, '__len__') else 1
+        if position_len == 3:
             self._inject_3d(fields, t, dt, resolution)
         else:
             self._inject_2d(fields, t, dt, resolution)
@@ -132,6 +124,7 @@ class GaussianSource:
         
         # Inject
         fields.Ez[self._grid_indices] += injection
+        print(f"● Injected Ez sum: {np.sum(np.abs(injection)):.2e}")
 
     def _inject_3d(self, fields, t, dt, resolution):
         """Inject into 3D grid (Ez component, could be expanded)."""

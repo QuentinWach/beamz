@@ -167,7 +167,12 @@ def show_design_2d(design, unify_structures=True):
         tmp_design = design.copy()
         tmp_design.unify_polygons()
         structures_to_plot = tmp_design.structures
-    else: structures_to_plot = design.structures
+        sources_to_plot = tmp_design.sources
+        monitors_to_plot = tmp_design.monitors
+    else: 
+        structures_to_plot = design.structures
+        sources_to_plot = design.sources
+        monitors_to_plot = design.monitors
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_aspect('equal')
@@ -177,6 +182,16 @@ def show_design_2d(design, unify_structures=True):
             structure.add_to_plot(ax, edgecolor='red', linestyle='--', facecolor='none', alpha=0.5)
         else:
             structure.add_to_plot(ax)
+
+    # Add sources
+    for source in sources_to_plot:
+        if hasattr(source, 'add_to_plot'):
+            source.add_to_plot(ax)
+
+    # Add monitors
+    for monitor in monitors_to_plot:
+        if hasattr(monitor, 'add_to_plot'):
+            monitor.add_to_plot(ax)
 
     ax.set_title('Design Layout')
     ax.set_xlabel(f'X ({unit})')
@@ -234,18 +249,21 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
     material_colors = {}
     color_index = 0
 
+    # Add monitors
+    for idx, monitor in enumerate(design.monitors):
+        _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=design, index=idx)
+
+    # Add sources
+    for idx, source in enumerate(design.sources):
+        if isinstance(source, ModeSource):
+            _add_mode_source_to_3d_plot(fig, source, scale, unit, design=design, index=idx)
+        elif isinstance(source, GaussianSource):
+            _add_gaussian_source_to_3d_plot(fig, source, scale, unit, index=idx)
+
+    # Add structures
+    structure_index = 0
     for structure in design.structures:
         if hasattr(structure, 'is_pml') and structure.is_pml:
-            continue
-
-        if isinstance(structure, Monitor):
-            _add_monitor_to_3d_plot(fig, structure, scale, unit)
-            continue
-        if isinstance(structure, ModeSource):
-            _add_mode_source_to_3d_plot(fig, structure, scale, unit)
-            continue
-        if isinstance(structure, GaussianSource):
-            _add_gaussian_source_to_3d_plot(fig, structure, scale, unit)
             continue
 
         struct_depth = getattr(structure, 'depth', default_depth)
@@ -301,19 +319,29 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
             if hasattr(structure.material, 'conductivity') and structure.material.conductivity != 0.0:
                 hovertext += f"<br>σ = {structure.material.conductivity:.2e} S/m"
 
+        # Create unique name for legend entry
+        structure_name = f"{structure.__class__.__name__} {structure_index + 1}"
+        if hasattr(structure, 'material') and structure.material and hasattr(structure.material, 'name'):
+            structure_name += f" ({structure.material.name})"
+        elif hasattr(structure, 'material') and structure.material and hasattr(structure.material, 'permittivity'):
+            structure_name += f" (εᵣ={structure.material.permittivity:.1f})"
+
         fig.add_trace(go.Mesh3d(
             x=x, y=y, z=z,
             i=i, j=j, k=k,
             color=face_color,
             opacity=opacity,
-            name=hovertext,
-            showscale=True,
+            name=structure_name,
+            showscale=False,
             hovertemplate=hovertext + "<extra></extra>",
             contour=dict(show=True, color="black", width=5),
             lighting=dict(ambient=0.5, diffuse=0.5, fresnel=0.0, specular=0.5, roughness=1.0),
             lightposition=dict(x=0, y=50, z=100),
-            flatshading=True
+            flatshading=True,
+            showlegend=True
         ))
+        
+        structure_index += 1
 
     scene = dict(
         xaxis=dict(
@@ -371,7 +399,7 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
             y=ground_y + ground_y,
             z=ground_z + [-default_depth*0.05]*4,
             i=[0, 0, 4, 4, 0, 1, 2, 3], j=[1, 3, 5, 7, 4, 5, 6, 7], k=[2, 2, 6, 6, 1, 2, 3, 0],
-            color='rgba(220,220,220,0.3)', name="Ground Plane", showlegend=False, hoverinfo='skip',
+            color='rgba(220,220,220,0.3)', name="Ground Plane", showlegend=True, hoverinfo='skip',
             lighting=dict(ambient=0.8, diffuse=0.2, fresnel=0.0, specular=0.0, roughness=1.0),
             flatshading=True, contour=dict(show=True, color="black", width=5)
         ))
@@ -444,7 +472,7 @@ def plot_fdtd_field(fdtd, field: str = "Ez", t: float = None, z_slice: int = Non
             source.add_to_plot(plt.gca())
     for monitor in fdtd.design.monitors:
         if hasattr(monitor, 'add_to_plot'):
-            monitor.add_to_plot(plt.gca())
+            monitor.add_to_plot(plt.gca(), edgecolor="black")
     plt.tight_layout()
     plt.show()
 
@@ -585,7 +613,7 @@ def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slic
     
     for monitor in fdtd.design.monitors:
         if hasattr(monitor, 'add_to_plot'):
-            monitor.add_to_plot(fdtd.ax)
+            monitor.add_to_plot(fdtd.ax, edgecolor="black")
 
     max_dim = max(fdtd.design.width, fdtd.design.height)
     if max_dim >= 1e-3: scale, unit = 1e3, 'mm'
@@ -669,13 +697,34 @@ def animate_manual_field(field_array,
             abs_data = np.abs(data)
             if abs_data.size > 10:
                 vmax = np.percentile(abs_data, percentile)
+                # If percentile scaling is too aggressive (e.g. for localized sources), fall back to max
+                if vmax < 0.01 * np.max(abs_data):
+                    vmax = float(np.max(abs_data))
             else:
                 vmax = float(np.max(abs_data) or 1.0)
+            
             if not np.isfinite(vmax) or vmax <= 0:
-                vmax = float(np.max(abs_data) or 1.0)
+                vmax = 0.0 # Field is zero
+            
+            # If we are transitioning from zero or very small to something larger,
+            # or if the current vmax is much smaller than previous auto_scale,
+            # reset auto_scale to the current vmax immediately instead of smoothing
+            # This makes the visualization much more reactive to the start of a pulse.
             if 'auto_scale' in context:
-                vmax = (1.0 - smoothing) * context['auto_scale'] + smoothing * vmax
-            context['auto_scale'] = vmax
+                prev_vmax = context['auto_scale']
+                # If current field is 10x larger than previous scale, or previous scale was 'zero' (1.0 default)
+                if (vmax > 5.0 * prev_vmax) or (prev_vmax == 1.0 and vmax > 0):
+                    context['auto_scale'] = vmax
+                else:
+                    context['auto_scale'] = (1.0 - smoothing) * prev_vmax + smoothing * vmax
+            else:
+                # First frame: if field is zero, default to 1.0, otherwise use current vmax
+                context['auto_scale'] = vmax if vmax > 0 else 1.0
+            
+            vmax = context['auto_scale']
+            # Final fallback for visualization
+            if vmax <= 0: vmax = 1.0
+            
         vmin, vmax = -vmax, vmax
     else:
         vmin, vmax = axis_scale
@@ -728,7 +777,7 @@ def animate_manual_field(field_array,
             if show_monitors:
                 for monitor in getattr(design, 'monitors', []) or []:
                     if hasattr(monitor, 'add_to_plot'):
-                        monitor.add_to_plot(ax)
+                        monitor.add_to_plot(ax, edgecolor=line_color, alpha=line_opacity)
 
         # Draw PML boundaries if provided
         if boundaries:
@@ -1057,13 +1106,26 @@ def close_fdtd_figure(fdtd):
             fdtd.ax = None
             fdtd.im = None
 
-def _add_monitor_to_3d_plot(fig, monitor, scale, unit):
+def _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=None, index=0):
     try:
         import plotly.graph_objects as go
     except ImportError:
         return
+        
+    # Ensure monitor has vertices for 3D plot
+    if (not hasattr(monitor, 'vertices') or not monitor.vertices) and design is not None:
+        if hasattr(monitor, '_init_3d_monitor'):
+            # Try to initialize as 3D if not already
+            start = getattr(monitor, 'start', (0,0,0))
+            end = getattr(monitor, 'end', None)
+            normal = getattr(monitor, 'plane_normal', 'z')
+            pos = getattr(monitor, 'plane_position', 0)
+            size = getattr(monitor, 'size', None)
+            monitor._init_3d_monitor(start, end, normal, pos, size)
+            
     if not hasattr(monitor, 'vertices') or not monitor.vertices:
         return
+        
     vertices = monitor.vertices
     if len(vertices) < 3:
         return
@@ -1083,10 +1145,18 @@ def _add_monitor_to_3d_plot(fig, monitor, scale, unit):
         hovertext += f"<br>Normal: {monitor.plane_normal}"
     if hasattr(monitor, 'plane_position'):
         hovertext += f"<br>Position: {monitor.plane_position*scale:.2f} {unit}"
+    
+    # Create unique name for legend
+    monitor_name = f"Monitor {index + 1}"
+    if hasattr(monitor, 'name') and monitor.name:
+        monitor_name += f" ({monitor.name})"
+    elif hasattr(monitor, 'plane_normal'):
+        monitor_name += f" ({monitor.plane_normal}-plane)"
+    
     fig.add_trace(go.Mesh3d(
         x=x_coords, y=y_coords, z=z_coords,
         i=faces_i, j=faces_j, k=faces_k,
-        color='rgba(255,255,0,0.6)', opacity=0.75, name="Monitor",
+        color='rgba(255,255,0,0.6)', opacity=0.75, name=monitor_name,
         hovertemplate=hovertext + "<extra></extra>",
         contour=dict(show=True, color="black", width=8),
         lighting=dict(ambient=0.8, diffuse=0.2, fresnel=0.0, specular=0.0, roughness=1.0),
@@ -1094,16 +1164,29 @@ def _add_monitor_to_3d_plot(fig, monitor, scale, unit):
     ))
 
 
-def _add_mode_source_to_3d_plot(fig, source, scale, unit):
+def _add_mode_source_to_3d_plot(fig, source, scale, unit, design=None, index=0):
     try:
         import plotly.graph_objects as go
     except ImportError:
         return
-    if hasattr(source, 'width') and hasattr(source, 'height') and hasattr(source, 'orientation'):
-        center = source.position
+        
+    # Determine vertices for the source plane
+    if hasattr(source, 'width') and (hasattr(source, 'height') or design is not None):
+        # Handle ModeSource with width and optional height
+        center = getattr(source, 'center', getattr(source, 'position', (0,0,0)))
+        # Ensure center is 3D
+        if len(center) == 2:
+            z_default = design.depth / 2 if design and design.depth else 0
+            center = (center[0], center[1], z_default)
+            
         width = source.width
-        height = source.height if source.height > 0 else source.wavelength * 0.5
-        orientation = getattr(source, 'orientation', 'yz')
+        default_height = design.depth if design and design.depth else source.width
+        height = getattr(source, 'height', default_height)
+        
+        # Use orientation or direction to determine plane
+        direction = getattr(source, 'direction', '+x')
+        orientation = getattr(source, 'orientation', 'yz' if direction in ['+x', '-x'] else 'xz' if direction in ['+y', '-y'] else 'xy')
+        
         if orientation == "yz":
             vertices = [
                 (center[0], center[1] - width/2, center[2] - height/2),
@@ -1125,12 +1208,16 @@ def _add_mode_source_to_3d_plot(fig, source, scale, unit):
                 (center[0] + width/2, center[1] + height/2, center[2]),
                 (center[0] - width/2, center[1] + height/2, center[2])
             ]
-    else:
+    elif hasattr(source, 'start') and hasattr(source, 'end'):
         start = source.start; end = source.end
+        # Ensure they are 3D
+        if len(start) == 2: start = (start[0], start[1], 0)
+        if len(end) == 2: end = (end[0], end[1], start[2])
+        
         line_vec = np.array([end[0] - start[0], end[1] - start[1], end[2] - start[2]])
         line_length = np.linalg.norm(line_vec)
         if line_length == 0:
-            center = start; plane_size = source.wavelength * 0.5
+            center = start; plane_size = getattr(source, 'wavelength', 1e-6) * 0.5
             vertices = [
                 (center[0] - plane_size/2, center[1] - plane_size/2, center[2]),
                 (center[0] + plane_size/2, center[1] - plane_size/2, center[2]),
@@ -1142,7 +1229,7 @@ def _add_mode_source_to_3d_plot(fig, source, scale, unit):
             temp_vec = np.array([0, 0, 1]) if abs(line_unit[2]) < 0.9 else np.array([1, 0, 0])
             perp1 = np.cross(line_unit, temp_vec); perp1 = perp1 / np.linalg.norm(perp1)
             perp2 = np.cross(line_unit, perp1); perp2 = perp2 / np.linalg.norm(perp2)
-            plane_size = max(line_length, source.wavelength * 0.5)
+            plane_size = max(line_length, getattr(source, 'wavelength', 1e-6) * 0.5)
             center = np.array([(start[0] + end[0])/2, (start[1] + end[1])/2, (start[2] + end[2])/2])
             vertices = [
                 center - perp1 * plane_size/2 - perp2 * plane_size/2,
@@ -1151,22 +1238,41 @@ def _add_mode_source_to_3d_plot(fig, source, scale, unit):
                 center - perp1 * plane_size/2 + perp2 * plane_size/2
             ]
             vertices = [(v[0], v[1], v[2]) for v in vertices]
+    else:
+        # Fallback for point sources or unknown types
+        center = getattr(source, 'position', getattr(source, 'center', (0,0,0)))
+        if len(center) == 2: center = (center[0], center[1], 0)
+        plane_size = getattr(source, 'wavelength', 1e-6) * 0.5
+        vertices = [
+            (center[0] - plane_size/2, center[1] - plane_size/2, center[2]),
+            (center[0] + plane_size/2, center[1] - plane_size/2, center[2]),
+            (center[0] + plane_size/2, center[1] + plane_size/2, center[2]),
+            (center[0] - plane_size/2, center[1] + plane_size/2, center[2])
+        ]
 
     x_coords = [v[0] for v in vertices]
     y_coords = [v[1] for v in vertices]
     z_coords = [v[2] for v in vertices]
     faces_i = [0, 0]; faces_j = [1, 2]; faces_k = [2, 3]
     hovertext = f"ModeSource"
-    hovertext += f"<br>Wavelength: {source.wavelength*scale*1e6:.0f} nm"
-    hovertext += f"<br>Direction: {source.direction}"
-    hovertext += f"<br>Modes: {source.num_modes}"
+    if hasattr(source, 'wavelength'):
+        hovertext += f"<br>Wavelength: {source.wavelength*scale*1e6:.0f} nm"
+    if hasattr(source, 'direction'):
+        hovertext += f"<br>Direction: {source.direction}"
+    if hasattr(source, 'num_modes'):
+        hovertext += f"<br>Modes: {source.num_modes}"
     if hasattr(source, 'effective_indices') and len(source.effective_indices) > 0:
         hovertext += f"<br>n_eff: {source.effective_indices[0].real:.3f}"
+
+    # Create unique name for legend
+    source_name = f"ModeSource {index + 1}"
+    if hasattr(source, 'direction'):
+        source_name += f" ({source.direction})"
 
     fig.add_trace(go.Mesh3d(
         x=x_coords, y=y_coords, z=z_coords,
         i=faces_i, j=faces_j, k=faces_k,
-        color='rgba(220,20,60,0.6)', opacity=0.75, name="ModeSource",
+        color='rgba(220,20,60,0.6)', opacity=0.75, name=source_name,
         hovertemplate=hovertext + "<extra></extra>",
         contour=dict(show=True, color="darkred", width=8),
         lighting=dict(ambient=0.8, diffuse=0.2, fresnel=0.0, specular=0.0, roughness=1.0),
@@ -1215,7 +1321,7 @@ def _add_direction_arrow_to_3d_plot(fig, source, plane_vertices):
     ))
 
 
-def _add_gaussian_source_to_3d_plot(fig, source, scale, unit):
+def _add_gaussian_source_to_3d_plot(fig, source, scale, unit, index=0):
     try:
         import plotly.graph_objects as go
     except ImportError:
@@ -1230,10 +1336,14 @@ def _add_gaussian_source_to_3d_plot(fig, source, scale, unit):
     hovertext = f"GaussianSource"
     hovertext += f"<br>Position: ({position[0]*scale:.2f}, {position[1]*scale:.2f}, {position[2]*scale:.2f}) {unit}"
     hovertext += f"<br>Width: {source.width*scale:.2f} {unit}"
+    
+    # Create unique name for legend
+    source_name = f"GaussianSource {index + 1}"
+    
     fig.add_trace(go.Surface(
         x=x, y=y, z=z,
         colorscale=[[0, 'rgba(255,69,0,0.7)'], [1, 'rgba(255,69,0,0.7)']],
-        opacity=0.7, name="GaussianSource", hovertemplate=hovertext + "<extra></extra>",
+        opacity=0.7, name=source_name, hovertemplate=hovertext + "<extra></extra>",
         showscale=False, showlegend=True
     ))
 

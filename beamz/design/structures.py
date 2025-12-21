@@ -173,6 +173,10 @@ class Polygon:
         min_x, max_x = min(x_coords), max(x_coords)
         min_y, max_y = min(y_coords), max(y_coords)
         min_z, max_z = min(z_coords), max(z_coords)
+        
+        # Expand Z-range by depth if present
+        max_z = max(max_z, min_z + getattr(self, 'depth', 0))
+        
         return (min_x, min_y, min_z, max_x, max_y, max_z)
         
     def _point_in_polygon_single_path(self, x, y, path_vertices):
@@ -196,7 +200,11 @@ class Polygon:
         return inside
 
     def point_in_polygon(self, x, y, z=None):
-        if z is not None and (z < self.z or z > self.z + self.depth): return False
+        # 3D containment check if z is provided
+        if z is not None and hasattr(self, 'depth') and self.depth > 0:
+            if not (self.z <= z <= self.z + self.depth):
+                return False
+
         exterior_path = self.vertices
         interior_paths = self.interiors
         if not exterior_path: return False

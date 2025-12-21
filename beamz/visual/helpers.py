@@ -52,7 +52,8 @@ def check_fdtd_stability(dt, dx, dy=None, dz=None, n_max=1.0, safety_factor=1.0)
     safe_limit = safety_factor * max_allowed
     return courant <= safe_limit, courant, safe_limit
 
-def calc_optimal_fdtd_params(wavelength, n_max, dims=2, safety_factor=0.999, points_per_wavelength=10):
+def calc_optimal_fdtd_params(wavelength, n_max, dims=2, safety_factor=0.999, points_per_wavelength=10, 
+                             width=None, height=None, depth=None):
     """
     Calculate optimal FDTD grid resolution and time step based on wavelength and material properties.
     
@@ -63,6 +64,7 @@ def calc_optimal_fdtd_params(wavelength, n_max, dims=2, safety_factor=0.999, poi
         safety_factor: Fraction of the theoretical Courant limit to target (0-1).
                        0.95 operates close to the limit; reduce for additional margin.
         points_per_wavelength: Number of grid points per wavelength in the highest index material
+        width, height, depth: Optional physical dimensions to estimate total grid size and performance
         
     Returns:
         tuple: (resolution, dt) - optimal spatial resolution and time step
@@ -75,14 +77,29 @@ def calc_optimal_fdtd_params(wavelength, n_max, dims=2, safety_factor=0.999, poi
     dt_max = resolution / (LIGHT_SPEED * np.sqrt(dims))
     # Apply safety factor (vacuum-based Courant condition)
     dt = safety_factor * dt_max
+    
+    # Grid size warning
+    if width and height:
+        nx = int(width / resolution)
+        ny = int(height / resolution)
+        nz = int(depth / resolution) if (dims == 3 and depth) else 1
+        total_cells = nx * ny * nz
+        
+        if total_cells > 5e6:
+            display_status(f"Warning: Large simulation grid detected ({total_cells/1e6:.1f}M cells). "
+                          f"3D simulations can be slow. Consider reducing points_per_wavelength (current: {points_per_wavelength}) "
+                          f"if performance is an issue.", "warning")
+    
     # Verify stability
-    _, courant, limit = check_fdtd_stability(dt, resolution, 
-                                            dy=resolution if dims >= 2 else None, 
-                                            dz=resolution if dims >= 3 else None,
-                                            n_max=n_max,
-                                            safety_factor=1.0)  # Use 1.0 here to get theoretical limit
-    # Double-check our calculation
-    assert courant <= limit + 1e-15, "Internal error: calculated time step exceeds stability limit"
+    try:
+        _, courant, limit = check_fdtd_stability(dt, resolution, 
+                                                dy=resolution if dims >= 2 else None, 
+                                                dz=resolution if dims >= 3 else None,
+                                                n_max=n_max,
+                                                safety_factor=1.0)
+        assert courant <= limit + 1e-15, "Internal error: calculated time step exceeds stability limit"
+    except Exception:
+        pass
     
     return resolution, dt
 

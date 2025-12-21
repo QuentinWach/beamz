@@ -30,8 +30,7 @@ class Design:
         material_groups, non_polygon_structures, structures_to_remove = {}, [], []
         
         for structure in self.structures:
-            
-            material = structure.material
+            material = getattr(structure, 'material', None)
             if not material:
                 non_polygon_structures.append(structure)
                 continue
@@ -154,7 +153,21 @@ class Design:
 
     def add(self, structure:type[Polygon]):
         """Add structure to the design and update 3D flag if needed."""
-        self.structures.append(structure)
+        from beamz.devices.monitors import Monitor
+        from beamz.devices.sources import ModeSource, GaussianSource
+        
+        # Set back-reference to design if the structure supports it
+        if hasattr(structure, 'design'):
+            structure.design = self
+
+        if isinstance(structure, Monitor):
+            self.monitors.append(structure)
+        elif isinstance(structure, (ModeSource, GaussianSource)):
+            self.sources.append(structure)
+        else:
+            self.structures.append(structure)
+            
+        if hasattr(structure, 'is_3d') and structure.is_3d: self.is_3d = True
         if hasattr(structure, 'depth') and structure.depth != 0: self.is_3d = True
         if hasattr(structure, 'position') and len(structure.position) > 2 and structure.position[2] != 0: self.is_3d = True
         if hasattr(structure, 'vertices') and structure.vertices:
@@ -207,7 +220,7 @@ class Design:
         
         return [epsilon, mu, sigma_base]
 
-    def rasterize(self, resolution:float, grid_type:str="regular", force_recompute:bool=False, **kwargs):
+    def rasterize(self, resolution:float, grid_type:str="auto", force_recompute:bool=False, **kwargs):
         """Rasterize the design into a mesh grid at specified resolution and cache it internally."""
         from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
         
@@ -226,7 +239,8 @@ class Design:
             else: return None
         elif isinstance(grid_type, type): 
             grid_cls = grid_type
- 
+        
+        # If we got here with grid_cls, use it
         if grid_cls is RegularGrid3D:
             resolution_xy, resolution_z = resolution, kwargs.pop("resolution_z", None)
             self._grid = grid_cls(self, resolution_xy=resolution_xy, resolution_z=resolution_z)
@@ -240,7 +254,7 @@ class Design:
     def get_material_grids(self, resolution):
         """Get cached rasterized material property arrays at specified resolution as references."""
         if not hasattr(self, '_grid') or not hasattr(self, '_grid_resolution') or self._grid_resolution != resolution:
-            self.rasterize(resolution)
+            self.rasterize(resolution, grid_type="auto")
         return (self._grid.permittivity, self._grid.conductivity, self._grid.permeability)
 
     def copy(self):
@@ -249,6 +263,7 @@ class Design:
         new_design = Design(width=self.width, height=self.height, depth=self.depth, material=background_material)
         new_design.structures, new_design.sources, new_design.monitors = [], [], []
         
+        # Copy structures
         for structure in self.structures:
             if hasattr(structure, 'copy'):
                 copied_structure = structure.copy()
@@ -258,6 +273,24 @@ class Design:
                 new_design.structures.append(copied_structure)
             else:
                 new_design.structures.append(structure)
+        
+        # Copy sources
+        for source in self.sources:
+            if hasattr(source, 'copy'):
+                copied_source = source.copy()
+                if hasattr(copied_source, 'design'): copied_source.design = new_design
+                new_design.sources.append(copied_source)
+            else:
+                new_design.sources.append(source)
+                
+        # Copy monitors
+        for monitor in self.monitors:
+            if hasattr(monitor, 'copy'):
+                copied_monitor = monitor.copy()
+                if hasattr(copied_monitor, 'design'): copied_monitor.design = new_design
+                new_design.monitors.append(copied_monitor)
+            else:
+                new_design.monitors.append(monitor)
                 
         new_design.is_3d, new_design.depth, new_design.time = self.is_3d, self.depth, self.time
         new_design.layers = self.layers.copy() if hasattr(self, 'layers') else {}
