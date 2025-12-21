@@ -196,14 +196,13 @@ class Polygon:
         return inside
 
     def point_in_polygon(self, x, y, z=None):
+        if z is not None and (z < self.z or z > self.z + self.depth): return False
         exterior_path = self.vertices
         interior_paths = self.interiors
         if not exterior_path: return False
-        if not self._point_in_polygon_single_path(x, y, exterior_path):
-            return False
+        if not self._point_in_polygon_single_path(x, y, exterior_path): return False
         for interior_path_pts in interior_paths:
-            if interior_path_pts and self._point_in_polygon_single_path(x, y, interior_path_pts):
-                return False
+            if interior_path_pts and self._point_in_polygon_single_path(x, y, interior_path_pts): return False
         return True
 
 class Rectangle(Polygon):
@@ -452,3 +451,23 @@ class Taper(Polygon):
                           self.length, self.material, self.color, self.optimize, self.depth, self.z)
         new_taper.vertices = [(x, y, z) for x, y, z in self.vertices]
         return new_taper
+
+class Sphere(Polygon):
+    def __init__(self, position=(0,0,0), radius=1, material=None, color=None, optimize=False):
+        """Create a 3D sphere at position (x,y,z) with specified radius."""
+        if len(position) == 2: position = (position[0], position[1], 0.0)
+        super().__init__(vertices=[], material=material, color=color, optimize=optimize, depth=2*radius, z=position[2]-radius)
+        self.position = position
+        self.radius = radius
+
+    def get_bounding_box(self):
+        x, y, z = self.position
+        r = self.radius
+        return (x - r, y - r, z - r, x + r, y + r, z + r)
+
+    def point_in_polygon(self, x, y, z=0):
+        cx, cy, cz = self.position
+        return (x - cx)**2 + (y - cy)**2 + (z - cz)**2 <= self.radius**2
+
+    def copy(self):
+        return Sphere(self.position, self.radius, self.material, self.color, self.optimize)
