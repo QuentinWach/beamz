@@ -112,13 +112,34 @@ class Monitor():
                 end = (end[0], end[1], start[2])  # Same z as start
             self.end = end
             
-            # Calculate plane properties from the two points
-            self.size = (abs(end[0] - start[0]), abs(end[1] - start[1]))
-            self.plane_position = start[2]  # Use z-coordinate of start point
-            self.plane_normal = 'z'  # Default to xy plane
+            # Auto-detect plane normal if not explicitly provided
+            if plane_normal is None:
+                dx = abs(end[0] - start[0])
+                dy = abs(end[1] - start[1])
+                dz = abs(end[2] - start[2])
+                
+                # The normal is the axis with the smallest (ideally zero) extent
+                dims = [dx, dy, dz]
+                min_dim_idx = np.argmin(dims)
+                if min_dim_idx == 0: self.plane_normal = 'x'
+                elif min_dim_idx == 1: self.plane_normal = 'y'
+                else: self.plane_normal = 'z'
+            else:
+                self.plane_normal = plane_normal
+
+            # Set size and position based on detected/provided normal
+            if self.plane_normal == 'x':
+                self.size = (abs(end[1] - start[1]), abs(end[2] - start[2]))
+                self.plane_position = start[0]
+            elif self.plane_normal == 'y':
+                self.size = (abs(end[0] - start[0]), abs(end[2] - start[2]))
+                self.plane_position = start[1]
+            else: # z
+                self.size = (abs(end[0] - start[0]), abs(end[1] - start[1]))
+                self.plane_position = start[2]
             
-            # Ensure start is the bottom-left corner
-            self.start = (min(start[0], end[0]), min(start[1], end[1]), start[2])
+            # Ensure start is the bottom-left corner of the ROI
+            self.start = (min(start[0], end[0]), min(start[1], end[1]), min(start[2], end[2]))
             
         else:
             # Monitor defined by plane normal and position (legacy mode)
@@ -221,9 +242,8 @@ class Monitor():
     
     def get_grid_slice_3d(self, dx, dy, dz, field_shape):
         """Get grid slice for 3D plane monitor.
-        Assumes simulation arrays are ordered as (z, y, x).
-        Returns indices in (y_slice, x_slice, fixed_index) order, where fixed_index corresponds to the
-        axis normal to the plane.
+        Returns (z_idx, y_idx, x_idx) consistent with simulation array order (z, y, x).
+        One of these will be an integer, the other two will be slice objects.
         """
         # Derive base grid counts from either design or field_shape
         if self.design:
@@ -231,49 +251,33 @@ class Monitor():
             base_ny = max(1, int(round((getattr(self.design, 'height', 0.0)) / dy)))
             base_nz = max(1, int(round((getattr(self.design, 'depth', 0.0) or 0.0) / dz)))
         else:
-            # Fallback to field_shape if design is not available
             base_nz, base_ny, base_nx = field_shape
 
         if self.plane_normal == 'z':
             # xy plane at fixed z
             z_idx = int(round(self.plane_position / dz))
-            z_idx = max(0, min(z_idx, base_nz - 1))
             x_start = int(round(self.start[0] / dx))
             x_end = int(round((self.start[0] + self.size[0]) / dx))
             y_start = int(round(self.start[1] / dy))
             y_end = int(round((self.start[1] + self.size[1]) / dy))
-            x_start = max(0, min(x_start, base_nx - 1))
-            x_end = max(0, min(x_end, base_nx))
-            y_start = max(0, min(y_start, base_ny - 1))
-            y_end = max(0, min(y_end, base_ny))
-            return slice(y_start, y_end), slice(x_start, x_end), z_idx
+            return z_idx, slice(y_start, y_end), slice(x_start, x_end)
 
         elif self.plane_normal == 'y':
             # xz plane at fixed y
             y_idx = int(round(self.plane_position / dy))
-            y_idx = max(0, min(y_idx, base_ny - 1))
             x_start = int(round(self.start[0] / dx))
             x_end = int(round((self.start[0] + self.size[0]) / dx))
             z_start = int(round(self.start[2] / dz))
             z_end = int(round((self.start[2] + self.size[1]) / dz))
-            x_start = max(0, min(x_start, base_nx - 1))
-            x_end = max(0, min(x_end, base_nx))
-            z_start = max(0, min(z_start, base_nz - 1))
-            z_end = max(0, min(z_end, base_nz))
-            return y_idx, slice(x_start, x_end), slice(z_start, z_end)
+            return slice(z_start, z_end), y_idx, slice(x_start, x_end)
         else:  # x normal
             # yz plane at fixed x
             x_idx = int(round(self.plane_position / dx))
-            x_idx = max(0, min(x_idx, base_nx - 1))
             y_start = int(round(self.start[1] / dy))
             y_end = int(round((self.start[1] + self.size[0]) / dy))
             z_start = int(round(self.start[2] / dz))
             z_end = int(round((self.start[2] + self.size[1]) / dz))
-            y_start = max(0, min(y_start, base_ny - 1))
-            y_end = max(0, min(y_end, base_ny))
-            z_start = max(0, min(z_start, base_nz - 1))
-            z_end = max(0, min(z_end, base_nz))
-            return slice(y_start, y_end), x_idx, slice(z_start, z_end)
+            return slice(z_start, z_end), slice(y_start, y_end), x_idx
     
     def should_record(self, step):
         """Check if this step should be recorded based on interval."""
@@ -320,47 +324,24 @@ class Monitor():
     def record_fields_3d(self, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy, dz, step=0):
         """Record 3D field data from plane slice."""
         if not self.should_record(step): return
-        # Get the appropriate slice for this monitor
-        field_shape = Ex.shape  # (nz, ny, nx or nx-1)
-        slice_indices = self.get_grid_slice_3d(dx, dy, dz, field_shape)
-        # Compute effective indices per field to respect individual shapes (z,y,x order)
+        
         def slice_field(arr):
-            # Arrays are ordered (z, y, x)
-            if isinstance(slice_indices[2], int):
-                # Plane normal is z: slice fixed z index, take y/x ranges
-                z_idx = min(max(0, slice_indices[2]), arr.shape[0]-1)
-                y_start = slice_indices[0].start or 0
-                y_stop = slice_indices[0].stop or arr.shape[1]
-                x_start = slice_indices[1].start or 0
-                x_stop = slice_indices[1].stop or arr.shape[2]
-                y_start = max(0, min(y_start, arr.shape[1]-1))
-                y_stop = max(y_start, min(y_stop, arr.shape[1]))
-                x_start = max(0, min(x_start, arr.shape[2]-1))
-                x_stop = max(x_start, min(x_stop, arr.shape[2]))
-                return arr[z_idx, y_start:y_stop, x_start:x_stop].copy()
-            else:
-                # Other planes: (y_slice, x_slice, fixed_index) with fixed along y or x
-                a0, a1, a2 = arr.shape
-                s0, s1, fixed = slice_indices
-                if isinstance(fixed, int):
-                    if self.plane_normal == 'y':
-                        # fixed y index
-                        fixed_eff = max(0, min(fixed, a1-1))
-                        x_start = s1.start or 0; x_stop = s1.stop or a2
-                        z_start = s0.start or 0; z_stop = s0.stop or a0
-                        x_start = max(0, min(x_start, a2-1)); x_stop = max(x_start, min(x_stop, a2))
-                        z_start = max(0, min(z_start, a0-1)); z_stop = max(z_start, min(z_stop, a0))
-                        return arr[z_start:z_stop, fixed_eff, x_start:x_stop].copy()
-                    else:
-                        # fixed x index
-                        fixed_eff = max(0, min(fixed, a2-1))
-                        y_start = s0.start or 0; y_stop = s0.stop or a1
-                        z_start = s1.start or 0; z_stop = s1.stop or a0
-                        y_start = max(0, min(y_start, a1-1)); y_stop = max(y_start, min(y_stop, a1))
-                        z_start = max(0, min(z_start, a0-1)); z_stop = max(z_start, min(z_stop, a0))
-                        return arr[z_start:z_stop, y_start:y_stop, fixed_eff].copy()
-                # Fallback: return a copy
-                return arr.copy()
+            # Returns (z_slice, y_slice, x_slice) consistent with (z, y, x) order
+            z_idx, y_idx, x_idx = self.get_grid_slice_3d(dx, dy, dz, arr.shape)
+            
+            nz, ny, nx = arr.shape
+            
+            # Helper to clamp indices to the actual array shape (handles Yee staggering)
+            def clamp(idx, limit):
+                if isinstance(idx, int):
+                    return min(max(0, idx), limit - 1)
+                else:
+                    start = max(0, min(idx.start if idx.start is not None else 0, limit - 1))
+                    stop = max(start, min(idx.stop if idx.stop is not None else limit, limit))
+                    return slice(start, stop)
+            
+            # Extract and copy the 2D slice
+            return arr[clamp(z_idx, nz), clamp(y_idx, ny), clamp(x_idx, nx)].copy()
 
         Ex_slice = slice_field(Ex)
         Ey_slice = slice_field(Ey)
@@ -369,19 +350,18 @@ class Monitor():
         Hy_slice = slice_field(Hy)
         Hz_slice = slice_field(Hz)
 
-        #print(f"● Monitor shapes: Ex={Ex_slice.shape}, Ey={Ey_slice.shape}, Ez={Ez_slice.shape}, Hx={Hx_slice.shape}, Hy={Hy_slice.shape}, Hz={Hz_slice.shape}")
-
-        # Align to common overlapping region to account for Yee staggering
-        min_y = min(Ex_slice.shape[0], Ey_slice.shape[0], Ez_slice.shape[0],
-                    Hx_slice.shape[0], Hy_slice.shape[0], Hz_slice.shape[0])
-        min_x = min(Ex_slice.shape[1], Ey_slice.shape[1], Ez_slice.shape[1],
-                    Hx_slice.shape[1], Hy_slice.shape[1], Hz_slice.shape[1])
-        Ex_slice = Ex_slice[:min_y, :min_x]
-        Ey_slice = Ey_slice[:min_y, :min_x]
-        Ez_slice = Ez_slice[:min_y, :min_x]
-        Hx_slice = Hx_slice[:min_y, :min_x]
-        Hy_slice = Hy_slice[:min_y, :min_x]
-        Hz_slice = Hz_slice[:min_y, :min_x]
+        # Align to common overlapping region to account for Yee staggering differences between components
+        min_dim0 = min(Ex_slice.shape[0], Ey_slice.shape[0], Ez_slice.shape[0],
+                       Hx_slice.shape[0], Hy_slice.shape[0], Hz_slice.shape[0])
+        min_dim1 = min(Ex_slice.shape[1], Ey_slice.shape[1], Ez_slice.shape[1],
+                       Hx_slice.shape[1], Hy_slice.shape[1], Hz_slice.shape[1])
+        
+        Ex_slice = Ex_slice[:min_dim0, :min_dim1]
+        Ey_slice = Ey_slice[:min_dim0, :min_dim1]
+        Ez_slice = Ez_slice[:min_dim0, :min_dim1]
+        Hx_slice = Hx_slice[:min_dim0, :min_dim1]
+        Hy_slice = Hy_slice[:min_dim0, :min_dim1]
+        Hz_slice = Hz_slice[:min_dim0, :min_dim1]
         
         # print(f"● Monitor record step {step}: Ez_slice max={np.max(np.abs(Ez_slice)):.2e}")
         #print(f"● Monitor record step {step}: Ez_slice max={np.max(np.abs(Ez_slice)):.2e}")
