@@ -116,6 +116,8 @@ class ModeSource:
         H_mode = h_fields[0]  # Shape: (3, nz, ny) or (3, ny)
 
         # 3. Extract all 6 components
+        # Note: Mode solver output order depends on propagation axis
+        # For 1D/2D eps with propagation_axis=0: E=[Ez, Ex, Ey], H=[Hz, Hx, Hy]
         Ex_raw = np.squeeze(E_mode[0])
         Ey_raw = np.squeeze(E_mode[1])
         Ez_raw = np.squeeze(E_mode[2])
@@ -150,9 +152,9 @@ class ModeSource:
             )
         else:
             # Fall back to 2D injection (legacy code path)
+            # Pass raw E_mode and H_mode for proper index-based extraction
             self._setup_2d_injection(
-                Ex_aligned, Ey_aligned, Ez_aligned,
-                Hx_aligned, Hy_aligned, Hz_aligned,
+                E_mode, H_mode,
                 center_idx, offset_idx, axis, ny, nx, resolution
             )
 
@@ -345,9 +347,16 @@ class ModeSource:
             self._jz_profile = self._Hz_profile
             self._my_profile = self._Ez_profile
 
-    def _setup_2d_injection(self, Ex, Ey, Ez, Hx, Hy, Hz,
+    def _setup_2d_injection(self, E_mode, H_mode,
                             center_idx, offset_idx, axis, ny, nx, resolution):
-        """Legacy 2D injection setup (dominant component only)."""
+        """Legacy 2D injection setup using original index-based extraction.
+
+        The mode solver returns fields in a specific order based on propagation axis.
+        For 2D (1D eps profile), the output uses propagation_axis=0, giving:
+        E_mode = [Ez, Ex, Ey], H_mode = [Hz, Hx, Hy] in tidy3d convention.
+
+        We use index-based extraction with fallback to handle different mode types.
+        """
         dir_sign = 1.0 if self.direction.startswith("+") else -1.0
         ETA_0 = np.sqrt(MU_0 / EPS_0)
         Z_phys = ETA_0 / max(np.real(self._neff), 1e-6)
@@ -359,16 +368,30 @@ class ModeSource:
                 self._h_indices = (y_slice, offset_idx)
                 self._h_component = "Hx"
 
-                Hx_profile = np.real(Hx)
-                Ez_profile = np.real(Ez)
+                # Extract using indices with fallback (original logic)
+                # For TM x-prop: use H_mode[1] and E_mode[2]
+                Hy_raw = np.squeeze(H_mode[1])
+                Ez_raw = np.squeeze(E_mode[2])
+                if np.max(np.abs(Hy_raw)) < 1e-9:
+                    Hy_raw = np.squeeze(H_mode[2])
+                if np.max(np.abs(Ez_raw)) < 1e-9:
+                    Ez_raw = np.squeeze(E_mode[1])
 
-                norm_h, norm_e = np.max(np.abs(Hx_profile)), np.max(np.abs(Ez_profile))
+                # Phase align
+                idx_max = np.argmax(np.abs(Hy_raw))
+                phase_ref = np.angle(Hy_raw.flatten()[idx_max])
+                Hy_profile = Hy_raw * np.exp(-1j * phase_ref)
+                Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
+
+                # Impedance correction
+                norm_h, norm_e = np.max(np.abs(Hy_profile)), np.max(np.abs(Ez_profile))
                 if norm_h > 1e-12 and norm_e > 1e-12:
                     corr = Z_phys / (norm_e / norm_h)
                     Ez_profile = Ez_profile * corr
 
-                self._jz_profile = dir_sign * Hx_profile
-                self._my_profile = dir_sign * Ez_profile
+                self._jz_profile = dir_sign * np.real(Hy_profile)
+                self._my_profile = dir_sign * np.real(Ez_profile)
+
             else:  # TE
                 hz_col = max(0, offset_idx - 1) if self.direction == "+x" else min(nx - 2, offset_idx)
                 ny_eff = ny - 1
@@ -377,16 +400,37 @@ class ModeSource:
                 self._e_indices = (slice(0, ny_eff), offset_idx)
                 self._e_component = "Ey"
 
-                Hz_staggered = 0.5 * (Hz[:-1] + Hz[1:])
-                Ey_staggered = 0.5 * (Ey[:-1] + Ey[1:])
+                # Extract with fallback
+                h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
+                e_candidates = [np.squeeze(E_mode[i]) for i in range(3)]
+                h_scores = [float(np.max(np.abs(hc))) for hc in h_candidates]
+                e_scores = [float(np.max(np.abs(ec))) for ec in e_candidates]
+                Hz_raw = h_candidates[int(np.argmax(h_scores))]
+                Ey_raw = e_candidates[int(np.argmax(e_scores))]
 
-                norm_h, norm_e = np.max(np.abs(Hz_staggered)), np.max(np.abs(Ey_staggered))
+                # Stagger to Yee grid positions
+                Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
+                Ey_staggered = 0.5 * (Ey_raw[:-1] + Ey_raw[1:])
+
+                # Phase align
+                idx_max = np.argmax(np.abs(Hz_staggered))
+                phase_ref = np.angle(Hz_staggered.flatten()[idx_max])
+                Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
+                Ey_profile = Ey_staggered * np.exp(-1j * phase_ref)
+
+                # Impedance correction
+                norm_h, norm_e = np.max(np.abs(Hz_profile)), np.max(np.abs(Ey_profile))
                 if norm_h > 1e-12 and norm_e > 1e-12:
                     corr = Z_phys / (norm_e / norm_h)
-                    Ey_staggered = Ey_staggered * corr
+                    Ey_profile = Ey_profile * corr
 
-                self._jy_profile = dir_sign * np.real(Hz_staggered)
-                self._mz_profile = dir_sign * np.real(Ey_staggered)
+                if self.direction == "+x":
+                    self._jy_profile = np.real(Hz_profile)
+                    self._mz_profile = np.real(Ey_profile)
+                else:
+                    self._jy_profile = -np.real(Hz_profile)
+                    self._mz_profile = -np.real(Ey_profile)
+
         else:  # axis == "y"
             x_slice = slice(0, nx)
             if self.pol == "tm":
@@ -394,21 +438,34 @@ class ModeSource:
                 self._h_indices = (offset_idx, x_slice)
                 self._h_component = "Hy"
 
-                Hy_profile = np.real(Hy)
-                Ez_profile = np.real(Ez)
+                # Extract using indices with fallback
+                Hx_raw = np.squeeze(H_mode[1])
+                Ez_raw = np.squeeze(E_mode[2])
+                if np.max(np.abs(Hx_raw)) < 1e-9:
+                    Hx_raw = np.squeeze(H_mode[2])
+                if np.max(np.abs(Ez_raw)) < 1e-9:
+                    Ez_raw = np.squeeze(E_mode[1])
 
-                norm_h, norm_e = np.max(np.abs(Hy_profile)), np.max(np.abs(Ez_profile))
+                # Phase align
+                idx_max = np.argmax(np.abs(Hx_raw))
+                phase_ref = np.angle(Hx_raw.flatten()[idx_max])
+                Hx_profile = Hx_raw * np.exp(-1j * phase_ref)
+                Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
+
+                # Impedance correction
+                norm_h, norm_e = np.max(np.abs(Hx_profile)), np.max(np.abs(Ez_profile))
                 if norm_h > 1e-12 and norm_e > 1e-12:
                     corr = Z_phys / (norm_e / norm_h)
                     Ez_profile = Ez_profile * corr
 
                 if self.direction == "+y":
-                    self._jz_profile = -np.real(Hy_profile)
+                    self._jz_profile = -np.real(Hx_profile)
                     self._my_profile = np.real(Ez_profile)
                 else:
-                    self._jz_profile = np.real(Hy_profile)
+                    self._jz_profile = np.real(Hx_profile)
                     self._my_profile = -np.real(Ez_profile)
-            else:  # TE
+
+            else:  # TE y-prop
                 hz_row = max(0, offset_idx - 1) if self.direction == "+y" else min(ny - 2, offset_idx)
                 nx_eff = nx - 1
 
@@ -416,16 +473,32 @@ class ModeSource:
                 self._e_indices = (offset_idx, slice(0, nx_eff))
                 self._e_component = "Ex"
 
-                Hz_staggered = 0.5 * (Hz[:-1] + Hz[1:])
-                Ex_staggered = 0.5 * (Ex[:-1] + Ex[1:])
+                # Extract with fallback
+                h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
+                e_candidates = [np.squeeze(E_mode[i]) for i in range(3)]
+                h_scores = [float(np.max(np.abs(hc))) for hc in h_candidates]
+                e_scores = [float(np.max(np.abs(ec))) for ec in e_candidates]
+                Hz_raw = h_candidates[int(np.argmax(h_scores))]
+                Ex_raw = e_candidates[int(np.argmax(e_scores))]
 
-                norm_h, norm_e = np.max(np.abs(Hz_staggered)), np.max(np.abs(Ex_staggered))
+                # Stagger
+                Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
+                Ex_staggered = 0.5 * (Ex_raw[:-1] + Ex_raw[1:])
+
+                # Phase align
+                idx_max = np.argmax(np.abs(Hz_staggered))
+                phase_ref = np.angle(Hz_staggered.flatten()[idx_max])
+                Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
+                Ex_profile = Ex_staggered * np.exp(-1j * phase_ref)
+
+                # Impedance correction
+                norm_h, norm_e = np.max(np.abs(Hz_profile)), np.max(np.abs(Ex_profile))
                 if norm_h > 1e-12 and norm_e > 1e-12:
                     corr = Z_phys / (norm_e / norm_h)
-                    Ex_staggered = Ex_staggered * corr
+                    Ex_profile = Ex_profile * corr
 
-                self._jx_profile = dir_sign * np.real(Hz_staggered)
-                self._mz_profile = dir_sign * np.real(Ex_staggered)
+                self._jx_profile = dir_sign * np.real(Hz_profile)
+                self._mz_profile = dir_sign * np.real(Ex_profile)
 
     def _compute_dt_physical(self, axis, is_3d, dx, dy):
         """Compute physical time shift between E and H injection planes."""
