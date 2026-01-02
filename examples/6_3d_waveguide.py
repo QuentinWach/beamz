@@ -14,7 +14,7 @@ N_CORE = 3.48  # Silicon
 # Calculate optimal grid parameters
 # 3D simulations can be memory intensive, so we use a slightly lower resolution (8 points/WL)
 DX, DT = calc_optimal_fdtd_params(WL, N_CORE, dims=3, safety_factor=0.999,
-    points_per_wavelength=14, width=6.5*µm, height=6.5*µm, depth=4*µm)
+    points_per_wavelength=9, width=6.5*µm, height=6.5*µm, depth=4*µm)
 
 # 1. Create the Design
 # A 10µm long waveguide along X, 4µm wide, 2µm thick
