@@ -27,7 +27,7 @@ waveguide = Rectangle(
     material=Material(N_CORE**2)
 )
 design += waveguide
-design.show()
+#design.show()
 
 # 3. Add a Mode Source
 # Define the signal
@@ -63,10 +63,11 @@ monitor_xy = Monitor(
     name="xy_plane"
 )
 design += monitor_xy
+design.show()
 
 # 5. Run the Simulation
-sim = Simulation(design=design, devices=[source, monitor_xy], time=time_steps, resolution=DX)
+#sim = Simulation(design=design, devices=[source, monitor_xy], time=time_steps, resolution=DX)
 
 # Run with live animation of the Ez field on the XY monitor
-sim.run(animate_live="Ez", animation_interval=5, clean_visualization=True)
+#sim.run(animate_live="Ez", animation_interval=5, clean_visualization=True)
 

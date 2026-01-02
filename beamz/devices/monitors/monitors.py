@@ -145,7 +145,19 @@ class Monitor():
             # Monitor defined by plane normal and position (legacy mode)
             self.end = None
             self.plane_normal = plane_normal or 'z'  # Default to xy plane
-            self.plane_position = plane_position
+            
+            # Extract plane_position from start if not explicitly provided
+            if plane_position == 0 and start is not None and len(start) >= 3:
+                if self.plane_normal == 'z':
+                    self.plane_position = start[2]
+                elif self.plane_normal == 'y':
+                    self.plane_position = start[1]
+                elif self.plane_normal == 'x':
+                    self.plane_position = start[0]
+                else:
+                    self.plane_position = plane_position
+            else:
+                self.plane_position = plane_position
             
             # Determine plane dimensions
             if size is None:

@@ -160,8 +160,44 @@ class GaussianSource:
 
         signal_val = self._get_signal_value(t + 0.5 * dt, dt)
         eps_region = fields.permittivity[self._grid_indices]
-        
+
         term = self._spatial_profile_ez * signal_val
         injection = -term * dt / (EPS_0 * eps_region)
-        
+
         fields.Ez[self._grid_indices] += injection
+
+    def add_to_plot(self, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"):
+        """Add source visualization to 2D matplotlib plot.
+
+        Draws a circle at the source position with radius proportional to the width.
+        """
+        from matplotlib.patches import Circle
+
+        # Get position (2D or 3D)
+        if len(self.position) >= 2:
+            x_pos, y_pos = self.position[0], self.position[1]
+        else:
+            x_pos, y_pos = self.position[0], 0
+
+        # Draw circle with radius = width (standard deviation)
+        circle = Circle(
+            (x_pos, y_pos),
+            radius=self.width,
+            facecolor='none',
+            edgecolor=edgecolor,
+            linewidth=2,
+            alpha=alpha,
+            linestyle=linestyle,
+            label='GaussianSource'
+        )
+        ax.add_patch(circle)
+
+        # Draw a small filled circle at center
+        center_dot = Circle(
+            (x_pos, y_pos),
+            radius=self.width * 0.1,
+            facecolor=edgecolor,
+            edgecolor='none',
+            alpha=alpha
+        )
+        ax.add_patch(center_dot)

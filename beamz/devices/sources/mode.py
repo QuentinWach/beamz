@@ -888,3 +888,72 @@ class ModeSource:
                 mz_term = self._mz_profile * signal_h / resolution
                 hz_injection = -mz_term * dt / (MU_0 * mu_at_source)
                 fields.Hz[self._hz_indices] += hz_injection
+
+    def add_to_plot(self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"):
+        """Add source visualization to 2D matplotlib plot.
+
+        Draws a line at the source position perpendicular to the propagation direction.
+        For x-propagation: vertical line at x position
+        For y-propagation: horizontal line at y position
+        """
+        from matplotlib.patches import FancyArrowPatch
+
+        # Get center position
+        center = self.center if isinstance(self.center, (tuple, list)) else (self.center, 0)
+        if len(center) == 3:
+            # 3D center - project to 2D based on direction
+            if self.direction in ["+x", "-x"]:
+                x_pos = center[0]
+                y_pos = center[1]
+            else:
+                x_pos = center[0]
+                y_pos = center[1]
+        else:
+            x_pos, y_pos = center[0], center[1]
+
+        # Get transverse extent from width or grid
+        half_width = self.width / 2 if self.width else 0.5e-6
+
+        # Determine line endpoints based on propagation direction
+        if self.direction in ["+x", "-x"]:
+            # Vertical line at x position
+            y_start = y_pos - half_width
+            y_end = y_pos + half_width
+            line_x = [x_pos, x_pos]
+            line_y = [y_start, y_end]
+            # Arrow direction
+            arrow_dx = 0.3e-6 if self.direction == "+x" else -0.3e-6
+            arrow_dy = 0
+        else:  # +y or -y
+            # Horizontal line at y position
+            x_start = x_pos - half_width
+            x_end = x_pos + half_width
+            line_x = [x_start, x_end]
+            line_y = [y_pos, y_pos]
+            # Arrow direction
+            arrow_dx = 0
+            arrow_dy = 0.3e-6 if self.direction == "+y" else -0.3e-6
+
+        # Draw the source line (thick colored line)
+        ax.plot(line_x, line_y, color=edgecolor, linewidth=3, alpha=alpha,
+                solid_capstyle='round', label='ModeSource')
+
+        # Draw direction arrow from center
+        arrow_length = self.wavelength * 0.5 if hasattr(self, 'wavelength') else 0.5e-6
+        if self.direction in ["+x", "-x"]:
+            arrow_dx = arrow_length if self.direction == "+x" else -arrow_length
+            arrow_dy = 0
+        else:
+            arrow_dx = 0
+            arrow_dy = arrow_length if self.direction == "+y" else -arrow_length
+
+        arrow = FancyArrowPatch(
+            (x_pos, y_pos),
+            (x_pos + arrow_dx, y_pos + arrow_dy),
+            arrowstyle='-|>',
+            mutation_scale=10,
+            color=edgecolor,
+            linewidth=2,
+            alpha=alpha
+        )
+        ax.add_patch(arrow)
