@@ -68,5 +68,5 @@ design += monitor_xy
 sim = Simulation(design=design, devices=[source, monitor_xy], time=time_steps, resolution=DX)
 
 # Run with live animation of the Ez field on the XY monitor
-sim.run(animate_live="Ey", animation_interval=5, clean_visualization=True)
+sim.run(animate_live="Ez", animation_interval=5, clean_visualization=True)
 
