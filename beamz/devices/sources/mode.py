@@ -38,13 +38,17 @@ class ModeSource:
         """Compute the mode and set up the source currents."""
         dx = dy = resolution
         is_3d = (permittivity.ndim == 3)
+        self._resolution = resolution  # Store for plotting
+        self._is_3d = is_3d  # Store for plotting
         
         if is_3d:
             nz, ny, nx = permittivity.shape
             dz = resolution
+            self._grid_shape = (nz, ny, nx)  # Store for plotting
         else:
             ny, nx = permittivity.shape
             nz = 1
+            self._grid_shape = (ny, nx)
             
         axis = "x" if self.direction in ("+x", "-x") else "y"
         self._dt_physical = 0.0
@@ -60,11 +64,13 @@ class ModeSource:
             # For 3D, take a 2D slice for the mode solver
             if is_3d:
                 eps_profile = permittivity[:, :, center_idx]
+                self._eps_profile_2d = eps_profile  # Store for plotting
                 z_slice_ez = slice(0, nz - 1)
                 z_slice_h = slice(0, nz - 1)
                 y_slice = slice(0, ny)
             else:
                 eps_profile = permittivity[:, center_idx]
+                self._eps_profile_2d = None  # Not needed for 1D plots
                 z_slice_ez = z_slice_h = None # Not used in 2D indexing
                 y_slice = slice(0, ny)
 
@@ -111,11 +117,13 @@ class ModeSource:
             # For 3D, take a 2D slice
             if is_3d:
                 eps_profile = permittivity[:, center_idx, :]
+                self._eps_profile_2d = eps_profile  # Store for plotting
                 z_slice_ez = slice(0, nz - 1)
                 z_slice_h = slice(0, nz - 1)
                 x_slice = slice(0, nx)
             else:
                 eps_profile = permittivity[center_idx, :]
+                self._eps_profile_2d = None  # Not needed for 1D plots
                 z_slice_ez = z_slice_h = None
                 x_slice = slice(0, nx)
 
@@ -458,22 +466,81 @@ class ModeSource:
             
             # If 2D (3D simulation), we handle it differently
             if jz_profile.ndim > 1 or my_profile.ndim > 1:
+                # Determine which plane we're showing based on propagation direction
+                axis = "x" if self.direction in ("+x", "-x") else "y"
+                res = getattr(self, '_resolution', 0.05e-6)  # Default 50nm if not set
+                
+                if axis == "x":
+                    plane_label = "YZ cross-section (propagation: ±X)"
+                    y_label, z_label = "Y (µm)", "Z (µm)"
+                    # For x-prop, eps_profile was permittivity[:, :, center_idx] -> shape (nz, ny)
+                    # So jz_profile shape is (nz, ny) -> rows are Z, cols are Y
+                    # Z coordinates: Ez is at z+0.5, so use (i+0.5)*res
+                    z_coords = (np.arange(jz_profile.shape[0]) + 0.5) * res / µm
+                    y_coords = np.arange(jz_profile.shape[1]) * res / µm
+                else:  # axis == "y"
+                    plane_label = "XZ cross-section (propagation: ±Y)"
+                    y_label, z_label = "X (µm)", "Z (µm)"
+                    # For y-prop, eps_profile was permittivity[:, center_idx, :] -> shape (nz, nx)
+                    # So jz_profile shape is (nz, nx) -> rows are Z, cols are X
+                    z_coords = (np.arange(jz_profile.shape[0]) + 0.5) * res / µm
+                    y_coords = np.arange(jz_profile.shape[1]) * res / µm
+                
+                # Create meshgrid for proper axis labels
+                Y, Z = np.meshgrid(y_coords, z_coords)
+                
                 # Just save a summary image for debugging
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
                 
-                # J profile
-                im1 = ax1.imshow(np.abs(jz_profile), origin='lower', cmap='magma', aspect='auto')
-                plt.colorbar(im1, ax=ax1)
-                ax1.set_title(f'Transverse H (J-current)')
+                # Determine field component names
+                if self.pol == "tm":
+                    h_comp = self._h_component if hasattr(self, '_h_component') else "Hy/Hx"
+                    e_comp = "Ez"
+                else:
+                    h_comp = "Hz"
+                    e_comp = self._e_component if hasattr(self, '_e_component') else "Ey/Ex"
                 
-                # M profile
-                im2 = ax2.imshow(np.abs(my_profile), origin='lower', cmap='magma', aspect='auto')
-                plt.colorbar(im2, ax=ax2)
-                ax2.set_title(f'Transverse E (M-current)')
+                # Overlay permittivity profile to show waveguide boundaries
+                eps_overlay = None
+                if hasattr(self, '_eps_profile_2d') and self._eps_profile_2d is not None:
+                    # Reshape eps_profile to match field profile shape
+                    if self._eps_profile_2d.shape == jz_profile.shape:
+                        eps_overlay = self._eps_profile_2d
+                    elif self._eps_profile_2d.shape[0] == jz_profile.shape[0] + 1:
+                        # Staggered grid - take average
+                        eps_overlay = 0.5 * (self._eps_profile_2d[:-1, :] + self._eps_profile_2d[1:, :])
+                    else:
+                        eps_overlay = self._eps_profile_2d[:jz_profile.shape[0], :jz_profile.shape[1]]
+                
+                # J profile (H field)
+                im1 = ax1.contourf(Y, Z, np.abs(jz_profile), levels=20, cmap='magma', origin='lower')
+                if eps_overlay is not None:
+                    # Overlay waveguide boundaries (high permittivity regions)
+                    ax1.contour(Y, Z, np.sqrt(eps_overlay), levels=10, colors='cyan', linewidths=1.5, alpha=0.6, linestyles='--')
+                plt.colorbar(im1, ax=ax1, label='Amplitude')
+                ax1.set_xlabel(y_label)
+                ax1.set_ylabel(z_label)
+                ax1.set_title(f'{h_comp} Field Profile\n{plane_label}\n(neff={self._neff:.4f})')
+                ax1.set_aspect('equal')
+                ax1.grid(True, alpha=0.3)
+                
+                # M profile (E field)
+                im2 = ax2.contourf(Y, Z, np.abs(my_profile), levels=20, cmap='magma', origin='lower')
+                if eps_overlay is not None:
+                    # Overlay waveguide boundaries
+                    ax2.contour(Y, Z, np.sqrt(eps_overlay), levels=10, colors='cyan', linewidths=1.5, alpha=0.6, linestyles='--')
+                plt.colorbar(im2, ax=ax2, label='Amplitude')
+                ax2.set_xlabel(y_label)
+                ax2.set_ylabel(z_label)
+                ax2.set_title(f'{e_comp} Field Profile\n{plane_label}\n(neff={self._neff:.4f})')
+                ax2.set_aspect('equal')
+                ax2.grid(True, alpha=0.3)
                 
                 plt.tight_layout()
                 plt.savefig("mode_profile.png", dpi=150, bbox_inches='tight')
                 print(f"[ModeSource] 2D Mode profiles saved to mode_profile.png")
+                print(f"[ModeSource] Showing {plane_label}")
+                print(f"[ModeSource] Profile shape: {jz_profile.shape} (Z × {y_label.split()[0]})")
                 plt.close()
                 return
 

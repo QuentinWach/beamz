@@ -38,12 +38,16 @@ signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp
 # We need to rasterize first to get the grid for ModeSource if we use it directly
 grid = design.rasterize(resolution=DX)
 
+# Source position: X should be inside waveguide, Y and Z at waveguide center
+# Waveguide: Y=[1.75, 2.25] (center=2.0µm), Z=[1.0, 1.22] (center=1.11µm)
+# Source width should be comparable to waveguide dimensions to capture the mode
+# Using 0.8µm (slightly larger than waveguide height 0.5µm) to capture mode field
 source = ModeSource(
     grid=grid,
-    center=(1.0*µm, 2.0*µm, 1.0*µm),
-    width=3.0*µm,
+    center=(1.0*µm, 2.0*µm, 1.11*µm),  # Z at waveguide center
+    width=0.8*µm,  # Closer to waveguide height (0.5µm) to better capture mode
     wavelength=WL,
-    pol="tm",
+    pol="te",
     signal=signal,
     direction="+x"
 )
@@ -64,5 +68,5 @@ design += monitor_xy
 sim = Simulation(design=design, devices=[source, monitor_xy], time=time_steps, resolution=DX)
 
 # Run with live animation of the Ez field on the XY monitor
-sim.run(animate_live="Ez", animation_interval=5, clean_visualization=True)
+sim.run(animate_live="Ey", animation_interval=5, clean_visualization=True)
 
