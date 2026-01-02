@@ -172,7 +172,8 @@ class ModeSource:
                 if self.pol == "tm":
                     # Ez at x = (i + 0.5)dx, Hx at x = (i + 1.0)dx
                     idx_e = self._ez_indices[2] if is_3d else self._ez_indices[1]
-                    idx_h = self._h_indices[2] if is_3d else self._h_indices[1]
+                    # For both 2D and 3D, the integer x-index is at position [2] in _h_indices
+                    idx_h = self._h_indices[2]
                     coord_e = (idx_e + 0.5) * dx
                     coord_h = (idx_h + 1.0) * dx
                 else:
