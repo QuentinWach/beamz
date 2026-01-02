@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beamz"
-version = "0.1.13" # Match setup.py
+version = "0.1.14" # Match setup.py
 authors = [
     { name = "Quentin Wach", email = "quentin.wach+beamz@gmail.com" },
 ]
