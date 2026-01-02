@@ -18,16 +18,16 @@ DX, DT = calc_optimal_fdtd_params(WL, N_CORE, dims=3, safety_factor=0.999,
 # 1. Create the Design
 # A 10µm long waveguide along X, 4µm wide, 2µm thick
 design = Design(width=4*µm, height=4*µm, depth=2*µm, material=Material(N_AIR**2))
-design += Rectangle(position=(0, 0, 0), width=10*µm, height=4*µm, depth=1*µm, material=Material(N_CLAD**2))
+design += Rectangle(position=(0, 0, 0), width=4*µm, height=4*µm, depth=1*µm, material=Material(N_CLAD**2))
 waveguide = Rectangle(
     position=(0, 1.75*µm, 1*µm), 
-    width=10*µm, 
+    width=4*µm, 
     height=0.5*µm, 
     depth=0.22*µm, 
     material=Material(N_CORE**2)
 )
 design += waveguide
-#design.show()
+design.show()
 
 # 3. Add a Mode Source
 # Define the signal
@@ -58,7 +58,7 @@ source = ModeSource(
 # XY plane monitor in the middle of the waveguide thickness
 monitor_xy = Monitor(
     start=(0, 0, 1.11*µm),
-    size=(10*µm, 4*µm),
+    size=(4*µm, 4*µm),
     plane_normal="z",
     name="xy_plane"
 )
@@ -66,8 +66,8 @@ design += monitor_xy
 design.show()
 
 # 5. Run the Simulation
-#sim = Simulation(design=design, devices=[source, monitor_xy], time=time_steps, resolution=DX)
+sim = Simulation(design=design, devices=[source, monitor_xy], time=time_steps, resolution=DX)
 
 # Run with live animation of the Ez field on the XY monitor
-#sim.run(animate_live="Ez", animation_interval=5, clean_visualization=True)
+sim.run(animate_live="Ez", animation_interval=5, clean_visualization=True)
 
