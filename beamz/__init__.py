@@ -13,7 +13,7 @@ from beamz.design.core import Design
 from beamz.design.materials import Material, CustomMaterial
 from beamz.design.structures import (
     Rectangle, Circle, Ring, 
-    CircularBend, Polygon, Taper
+    CircularBend, Polygon, Taper, Sphere
 )
 from beamz.devices.sources import ModeSource, GaussianSource
 from beamz.devices.monitors import Monitor
@@ -64,6 +64,7 @@ _exports = {
     'CircularBend': CircularBend, 
     'Polygon': Polygon,
     'Taper': Taper,
+    'Sphere': Sphere,
     
     # Sources
     'ModeSource': ModeSource,

@@ -4,7 +4,7 @@ from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
 from beamz.const import µm
 from beamz.design.materials import Material
-from beamz.design.structures import Polygon, Rectangle, Circle, Ring, CircularBend, Taper
+from beamz.design.structures import Polygon, Rectangle, Circle, Ring, CircularBend, Taper, Sphere
 
 
 class Design:
