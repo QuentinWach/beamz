@@ -153,6 +153,23 @@ def show_design(design, unify_structures=True):
     else: show_design_2d(design, unify_structures)
 
 
+def _get_deterministic_color(index):
+    """Get deterministic color: first from const.py, then deterministic generated colors."""
+    from beamz.const import BLUE, RED, GREEN, ORANGE, PURPLE
+    import colorsys
+    
+    predefined_colors = [BLUE, RED, GREEN, ORANGE, PURPLE]
+    
+    if index < len(predefined_colors):
+        return predefined_colors[index]
+    
+    # For indices beyond predefined colors, use deterministic color generation
+    saturation, value = 0.6, 0.7
+    # Generate hue deterministically based on index (golden ratio for good distribution)
+    hue = (index * 0.618034) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
+    return '#{:02x}{:02x}{:02x}'.format(int(r * 255), int(g * 255), int(b * 255))
+
 def show_design_2d(design, unify_structures=True):
     """Display the design using 2D matplotlib visualization."""
     import matplotlib.pyplot as plt
@@ -177,11 +194,28 @@ def show_design_2d(design, unify_structures=True):
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_aspect('equal')
 
+    # Assign deterministic colors based on material (group by material, then by order)
+    material_colors = {}
+    color_index = 0
     for structure in structures_to_plot:
         if hasattr(structure, 'is_pml') and structure.is_pml:
             structure.add_to_plot(ax, edgecolor='red', linestyle='--', facecolor='none', alpha=0.5)
         else:
-            structure.add_to_plot(ax)
+            # Determine color based on material
+            material_key = None
+            if hasattr(structure, 'material') and structure.material:
+                material_key = (
+                    getattr(structure.material, 'permittivity', 1.0),
+                    getattr(structure.material, 'permeability', 1.0),
+                    getattr(structure.material, 'conductivity', 0.0)
+                )
+            
+            if material_key not in material_colors:
+                material_colors[material_key] = _get_deterministic_color(color_index)
+                color_index += 1
+            
+            # Use deterministic color (override structure's random color)
+            structure.add_to_plot(ax, facecolor=material_colors[material_key])
 
     # Add sources
     for source in sources_to_plot:
@@ -238,11 +272,6 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
     fig = go.Figure()
     default_depth = design.depth if design.depth else min(design.width, design.height) * 0.1
 
-    modern_colors = [
-        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
-    ]
-
     from beamz.devices.sources import ModeSource, GaussianSource
     from beamz.devices.monitors import Monitor
 
@@ -291,7 +320,7 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
             if hasattr(structure, 'color') and structure.color and structure.color != 'none':
                 material_colors[material_key] = structure.color
             else:
-                material_colors[material_key] = modern_colors[color_index % len(modern_colors)]
+                material_colors[material_key] = _get_deterministic_color(color_index)
                 color_index += 1
 
         color = material_colors[material_key]
