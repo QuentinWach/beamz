@@ -2234,11 +2234,106 @@ class JupyterAnimator:
         mpl.rcParams['animation.embed_limit'] = 200  # 200 MB limit
 
         try:
-            # Return as HTML5 video
-            return HTML(anim.to_jshtml())
+            # Convert to HTML5 video
+            html_content = anim.to_jshtml()
+            size_bytes = len(html_content.encode('utf-8'))
+            size_mb = size_bytes / (1024 * 1024)
+            print(f"Animation size: {size_mb:.1f} MB ({len(self.frames)} frames)")
+            return HTML(html_content)
         finally:
             # Restore original limit
             mpl.rcParams['animation.embed_limit'] = old_limit
+
+    def get_video(self, filename='animation.mp4', fps=30, dpi=150):
+        """Create an MP4 video and display it in Jupyter notebook.
+
+        Args:
+            filename: Output filename for the MP4 video
+            fps: Frames per second for the video
+            dpi: Resolution (dots per inch) for video frames
+
+        Returns:
+            IPython.display.Video: Playable video widget
+        """
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation, FFMpegWriter
+        from IPython.display import Video
+        import os
+
+        if not self.frames:
+            print("No frames stored. Enable store_frames=True.")
+            return None
+
+        # Determine color scale from all frames
+        if self.axis_scale is not None:
+            vmin, vmax = self.axis_scale
+        else:
+            vmax = self._global_vmax if self._global_vmax > 0 else 1.0
+            vmin = -vmax
+
+        # Setup figure
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        # Get colormap
+        if self.cmap == 'twilight_zero':
+            try:
+                actual_cmap = plt.get_cmap('twilight_zero')
+            except ValueError:
+                actual_cmap = get_twilight_zero_cmap()
+        else:
+            actual_cmap = self.cmap
+
+        # Initial frame
+        im = ax.imshow(self.frames[0], origin='lower', cmap=actual_cmap,
+                       vmin=vmin, vmax=vmax,
+                       extent=self.metadata.get('extent'),
+                       interpolation=self.interpolation)
+
+        title = None
+        if self.clean_visualization:
+            ax.set_axis_off()
+            plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+        else:
+            plt.colorbar(im, ax=ax,
+                         label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
+            title = ax.set_title('')
+            plt.tight_layout()
+
+        # Add static overlays
+        self._add_overlays(ax, self.metadata.get('design'),
+                           self.metadata.get('boundaries'),
+                           self.metadata.get('plane_2d', 'xy'))
+
+        def update(frame_idx):
+            im.set_data(self.frames[frame_idx])
+            if title is not None and self.times:
+                t, step, num_steps = self.times[frame_idx]
+                field_name = self.metadata.get('field_name', 'Field')
+                title.set_text(f'{field_name} at t = {t:.2e} s (step {step}/{num_steps})')
+            return [im] if title is None else [im, title]
+
+        anim = FuncAnimation(fig, update, frames=len(self.frames),
+                             interval=1000/fps, blit=True)
+
+        # Save as MP4
+        print(f"Rendering {len(self.frames)} frames to {filename}...")
+        try:
+            writer = FFMpegWriter(fps=fps, metadata={'title': 'BEAMZ Simulation'})
+            anim.save(filename, writer=writer, dpi=dpi)
+            plt.close(fig)
+
+            # Get file size
+            size_bytes = os.path.getsize(filename)
+            size_mb = size_bytes / (1024 * 1024)
+            print(f"Video saved: {filename} ({size_mb:.1f} MB)")
+
+            # Return video widget for Jupyter
+            return Video(filename, embed=True)
+        except Exception as e:
+            plt.close(fig)
+            print(f"Error creating video: {e}")
+            print("Make sure ffmpeg is installed: conda install ffmpeg")
+            return None
 
     def get_widget(self):
         """Create an interactive slider widget for frame-by-frame scrubbing.
