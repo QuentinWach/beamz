@@ -6,7 +6,7 @@ WL = 1.55*µm
 TIME = 120*WL/LIGHT_SPEED
 X, Y = 20*µm, 19*µm
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
-DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=8)
+DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=20)
 RING_RADIUS, WG_WIDTH = 6*µm, 0.5*µm #0.565*µm
 
 # Create the design
@@ -44,7 +44,10 @@ sim = Simulation(
     resolution=DX
 )
 sim.run(animate_live="Ez", 
-    animation_interval=2,
-    axis_scale=[-1.5e-4, 1.5e-4],
+    animation_interval=15,
+    axis_scale=[-0.9e-4, 0.9e-4],
+    #axis_scale=None,
     cmap="twilight_zero", 
-    clean_visualization=False)
+    clean_visualization=True,
+    save_video="resring.mp4",
+    video_fps=40)
