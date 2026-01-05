@@ -41,6 +41,28 @@ def _register_custom_colormaps():
 # Register on import
 _register_custom_colormaps()
 
+def is_jupyter_environment():
+    """Detect if code is running in a Jupyter notebook/lab environment.
+
+    Returns:
+        bool: True if running in Jupyter, False otherwise
+    """
+    try:
+        from IPython import get_ipython
+        shell = get_ipython()
+        if shell is None:
+            return False
+        shell_name = shell.__class__.__name__
+        # ZMQInteractiveShell is used by Jupyter notebook/lab
+        if shell_name == 'ZMQInteractiveShell':
+            return True
+        # Check for Google Colab
+        if 'google.colab' in str(shell.__class__):
+            return True
+        return False
+    except (ImportError, NameError):
+        return False
+
 def draw_polygon(ax, polygon, facecolor=None, edgecolor="black", alpha=None, linestyle=None):
     """Draw a polygon (with possible holes) on a Matplotlib axis.
     Projects 3D vertices to 2D for plotting.
@@ -1904,6 +1926,399 @@ class VideoRecorder:
 
         ax.text((x_start + x_end) / 2, label_y, label_text,
                ha='center', va='top', color='white', fontsize=10)
+
+
+class JupyterAnimator:
+    """Handles live animation and replay for Jupyter notebooks.
+
+    Provides two modes:
+    1. Live mode: Updates cell output during simulation using clear_output + display
+    2. Replay mode: Returns an interactive animation widget after simulation
+
+    Usage:
+        animator = JupyterAnimator(...)
+        # During simulation loop:
+        animator.update(field_array, t, step, num_steps)
+        # After simulation:
+        animation = animator.get_animation()  # Returns playable HTML5 video
+        widget = animator.get_widget()        # Returns interactive slider
+    """
+
+    def __init__(self,
+                 cmap='twilight_zero',
+                 axis_scale=None,
+                 clean_visualization=False,
+                 wavelength=None,
+                 line_color='gray',
+                 line_opacity=0.5,
+                 interpolation='bicubic',
+                 live_display=True,
+                 store_frames=True,
+                 display_interval=0.05):
+        """Initialize the Jupyter animator.
+
+        Args:
+            cmap: Matplotlib colormap name
+            axis_scale: Fixed (vmin, vmax) or None for auto-scaling
+            clean_visualization: Hide axes/colorbar if True
+            wavelength: For scale bar calculation
+            line_color: Structure outline color
+            line_opacity: Structure outline opacity
+            interpolation: imshow interpolation method
+            live_display: Show frames during simulation
+            store_frames: Store frames for post-simulation replay
+            display_interval: Minimum seconds between live display updates
+        """
+        self.cmap = cmap
+        self.axis_scale = axis_scale
+        self.clean_visualization = clean_visualization
+        self.wavelength = wavelength
+        self.line_color = line_color
+        self.line_opacity = line_opacity
+        self.interpolation = interpolation
+        self.live_display = live_display
+        self.store_frames = store_frames
+        self.display_interval = display_interval
+
+        # Frame storage
+        self.frames = []
+        self.times = []
+        self.metadata = {}
+
+        # Auto-scaling state
+        self._global_vmax = 0.0
+
+        # Timing for throttled display
+        self._last_display_time = 0
+
+        # Persistent figure elements for live display (reused across frames)
+        self._fig = None
+        self._ax = None
+        self._im = None
+        self._cbar = None
+        self._title = None
+
+    def update(self, field_array, t, step, num_steps,
+               field_name='Ez', units='V/µm', extent=None,
+               design=None, boundaries=None, plane_2d='xy'):
+        """Add a frame and optionally display it live.
+
+        Args:
+            field_array: 2D numpy array of field values
+            t: Current simulation time
+            step: Current step number
+            num_steps: Total number of steps
+            field_name: Name of field component ('Ez', 'Hx', etc.)
+            units: Unit string for colorbar label
+            extent: Matplotlib extent tuple (xmin, xmax, ymin, ymax)
+            design: Design object for structure overlays
+            boundaries: List of boundary objects for overlays
+            plane_2d: Simulation plane ('xy', 'yz', 'xz')
+        """
+        import time
+
+        frame_data = np.asarray(field_array, dtype=float).copy()
+
+        # Store frame if enabled
+        if self.store_frames:
+            self.frames.append(frame_data)
+            self.times.append((t, step, num_steps))
+
+            # Store metadata on first frame
+            if len(self.frames) == 1:
+                self.metadata = {
+                    'field_name': field_name,
+                    'units': units,
+                    'extent': extent,
+                    'design': design,
+                    'boundaries': boundaries,
+                    'plane_2d': plane_2d
+                }
+
+        # Track global max for auto-scaling
+        if self.axis_scale is None:
+            abs_data = np.abs(frame_data)
+            if abs_data.size > 10:
+                frame_max = np.percentile(abs_data, 99)
+            else:
+                frame_max = float(np.max(abs_data) or 1.0)
+            if frame_max > self._global_vmax:
+                self._global_vmax = frame_max
+
+        # Live display with throttling
+        if self.live_display:
+            current_time = time.time()
+            if current_time - self._last_display_time >= self.display_interval:
+                self._display_frame(frame_data, t, step, num_steps,
+                                    field_name, units, extent, design,
+                                    boundaries, plane_2d)
+                self._last_display_time = current_time
+
+    def _display_frame(self, frame_data, t, step, num_steps,
+                       field_name, units, extent, design,
+                       boundaries, plane_2d):
+        """Display a single frame in Jupyter, reusing a persistent figure."""
+        import matplotlib.pyplot as plt
+        from IPython.display import clear_output, display
+
+        # Determine color scale
+        if self.axis_scale is not None:
+            vmin, vmax = self.axis_scale
+        else:
+            vmax = self._global_vmax if self._global_vmax > 0 else 1.0
+            vmin = -vmax
+
+        # Get colormap
+        if self.cmap == 'twilight_zero':
+            try:
+                actual_cmap = plt.get_cmap('twilight_zero')
+            except ValueError:
+                actual_cmap = get_twilight_zero_cmap()
+        else:
+            actual_cmap = self.cmap
+
+        # First frame: create the figure and all elements
+        if self._fig is None:
+            self._fig, self._ax = plt.subplots(figsize=(10, 8))
+
+            self._im = self._ax.imshow(frame_data, origin='lower', cmap=actual_cmap,
+                                        vmin=vmin, vmax=vmax, extent=extent,
+                                        interpolation=self.interpolation)
+
+            if not self.clean_visualization:
+                self._cbar = plt.colorbar(self._im, ax=self._ax, label=f'{field_name} ({units})')
+                self._title = self._ax.set_title(f'{field_name} at t = {t:.2e} s (step {step}/{num_steps})')
+            else:
+                self._ax.set_axis_off()
+                self._title = None
+
+            # Add structure overlays (static, only done once)
+            self._add_overlays(self._ax, design, boundaries, plane_2d)
+
+            plt.tight_layout()
+
+        else:
+            # Subsequent frames: just update the data
+            self._im.set_data(frame_data)
+            self._im.set_clim(vmin, vmax)
+
+            if self._title is not None:
+                self._title.set_text(f'{field_name} at t = {t:.2e} s (step {step}/{num_steps})')
+
+            if self._cbar is not None:
+                self._cbar.mappable.set_clim(vmin, vmax)
+
+        # Clear previous output and display updated figure
+        clear_output(wait=True)
+        display(self._fig)
+
+    def finalize(self):
+        """Close the live display figure after simulation completes."""
+        import matplotlib.pyplot as plt
+        if self._fig is not None:
+            plt.close(self._fig)
+            self._fig = None
+            self._ax = None
+            self._im = None
+            self._cbar = None
+            self._title = None
+
+    def _add_overlays(self, ax, design, boundaries, plane_2d):
+        """Add structure, source, monitor, and boundary overlays."""
+        if design is not None:
+            try:
+                tmp_design = design.copy()
+                tmp_design.unify_polygons()
+                overlay_structures = tmp_design.structures
+            except Exception:
+                overlay_structures = getattr(design, 'structures', [])
+
+            for structure in overlay_structures or []:
+                if hasattr(structure, 'is_pml') and structure.is_pml:
+                    structure.add_to_plot(ax, edgecolor=self.line_color,
+                                          linestyle='--', facecolor='none',
+                                          alpha=self.line_opacity)
+                elif hasattr(structure, 'vertices'):
+                    structure.add_to_plot(ax, facecolor="none",
+                                          edgecolor=self.line_color,
+                                          linestyle='-', alpha=self.line_opacity)
+
+            for source in getattr(design, 'sources', []) or []:
+                if hasattr(source, 'add_to_plot'):
+                    source.add_to_plot(ax)
+
+            for monitor in getattr(design, 'monitors', []) or []:
+                if hasattr(monitor, 'add_to_plot'):
+                    monitor.add_to_plot(ax, edgecolor=self.line_color,
+                                        alpha=self.line_opacity)
+
+        if boundaries:
+            for boundary in boundaries:
+                draw_boundary(ax, boundary, design, edgecolor=self.line_color,
+                              linestyle=':', alpha=self.line_opacity)
+
+    def get_animation(self, fps=30):
+        """Create an HTML5 video animation from stored frames.
+
+        Args:
+            fps: Frames per second for the animation
+
+        Returns:
+            IPython.display.HTML: Playable HTML5 video animation
+        """
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+        from IPython.display import HTML
+
+        if not self.frames:
+            print("No frames stored. Enable store_frames=True.")
+            return None
+
+        # Determine color scale from all frames
+        if self.axis_scale is not None:
+            vmin, vmax = self.axis_scale
+        else:
+            vmax = self._global_vmax if self._global_vmax > 0 else 1.0
+            vmin = -vmax
+
+        # Setup figure
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        # Get colormap
+        if self.cmap == 'twilight_zero':
+            try:
+                actual_cmap = plt.get_cmap('twilight_zero')
+            except ValueError:
+                actual_cmap = get_twilight_zero_cmap()
+        else:
+            actual_cmap = self.cmap
+
+        # Initial frame
+        im = ax.imshow(self.frames[0], origin='lower', cmap=actual_cmap,
+                       vmin=vmin, vmax=vmax,
+                       extent=self.metadata.get('extent'),
+                       interpolation=self.interpolation)
+
+        if not self.clean_visualization:
+            plt.colorbar(im, ax=ax,
+                         label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
+
+        # Add static overlays
+        self._add_overlays(ax, self.metadata.get('design'),
+                           self.metadata.get('boundaries'),
+                           self.metadata.get('plane_2d', 'xy'))
+
+        title = ax.set_title('')
+
+        def update(frame_idx):
+            im.set_data(self.frames[frame_idx])
+            if not self.clean_visualization and self.times:
+                t, step, num_steps = self.times[frame_idx]
+                field_name = self.metadata.get('field_name', 'Field')
+                title.set_text(f'{field_name} at t = {t:.2e} s (step {step}/{num_steps})')
+            return [im, title]
+
+        anim = FuncAnimation(fig, update, frames=len(self.frames),
+                             interval=1000/fps, blit=True)
+
+        plt.close(fig)
+
+        # Return as HTML5 video
+        return HTML(anim.to_jshtml())
+
+    def get_widget(self):
+        """Create an interactive slider widget for frame-by-frame scrubbing.
+
+        Returns:
+            ipywidgets Output widget with interactive slider
+        """
+        import matplotlib.pyplot as plt
+        from IPython.display import display, clear_output
+
+        if not self.frames:
+            print("No frames stored. Enable store_frames=True.")
+            return None
+
+        # Determine color scale
+        if self.axis_scale is not None:
+            vmin, vmax = self.axis_scale
+        else:
+            vmax = self._global_vmax if self._global_vmax > 0 else 1.0
+            vmin = -vmax
+
+        # Get colormap
+        if self.cmap == 'twilight_zero':
+            try:
+                actual_cmap = plt.get_cmap('twilight_zero')
+            except ValueError:
+                actual_cmap = get_twilight_zero_cmap()
+        else:
+            actual_cmap = self.cmap
+
+        try:
+            import ipywidgets as widgets
+        except ImportError:
+            print("ipywidgets not installed. Use get_animation() instead or install with: pip install ipywidgets")
+            return None
+
+        output = widgets.Output()
+
+        def show_frame(frame=0):
+            with output:
+                clear_output(wait=True)
+                fig, ax = plt.subplots(figsize=(10, 8))
+
+                im = ax.imshow(self.frames[frame], origin='lower', cmap=actual_cmap,
+                               vmin=vmin, vmax=vmax,
+                               extent=self.metadata.get('extent'),
+                               interpolation=self.interpolation)
+
+                if not self.clean_visualization:
+                    plt.colorbar(im, ax=ax,
+                                 label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
+                    if self.times:
+                        t, step, num_steps = self.times[frame]
+                        field_name = self.metadata.get('field_name', 'Field')
+                        ax.set_title(f'{field_name} at t = {t:.2e} s (step {step}/{num_steps})')
+                else:
+                    ax.set_axis_off()
+
+                self._add_overlays(ax, self.metadata.get('design'),
+                                   self.metadata.get('boundaries'),
+                                   self.metadata.get('plane_2d', 'xy'))
+
+                plt.tight_layout()
+                plt.show()
+
+        # Create slider
+        slider = widgets.IntSlider(
+            value=0,
+            min=0,
+            max=len(self.frames) - 1,
+            step=1,
+            description='Frame:',
+            continuous_update=False
+        )
+
+        # Play button
+        play = widgets.Play(
+            value=0,
+            min=0,
+            max=len(self.frames) - 1,
+            step=1,
+            interval=100,
+            description="Play"
+        )
+
+        widgets.jslink((play, 'value'), (slider, 'value'))
+
+        # Connect slider to display function
+        widgets.interactive_output(show_frame, {'frame': slider})
+
+        # Show initial frame
+        show_frame(0)
+
+        return widgets.VBox([widgets.HBox([play, slider]), output])
 
 
 def draw_boundary(ax, boundary, design, edgecolor="red", linestyle='--', alpha=0.5):

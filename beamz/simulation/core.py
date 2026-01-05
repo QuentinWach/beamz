@@ -110,7 +110,7 @@ class Simulation:
         return source_j, source_m
     
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None, interpolation='bicubic'):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None, interpolation='bicubic', jupyter_live=None, store_animation=True):
         """Run complete FDTD simulation with optional live field visualization.
 
         Args:
@@ -129,11 +129,14 @@ class Simulation:
             video_dpi: Resolution (dots per inch) for video frames (default: 150)
             video_field: Field component to record for video ('Ez', 'Hx', etc.), defaults to animate_live if set
             interpolation: Interpolation method for field display ('nearest', 'bilinear', 'bicubic', etc.)
+            jupyter_live: Override Jupyter environment detection (None=auto, True=Jupyter, False=script)
+            store_animation: Store animation frames for replay in Jupyter (default: True)
 
         Returns:
             dict with keys:
                 - 'fields': dict of field histories if save_fields was provided
                 - 'monitors': list of Monitor objects with recorded data
+                - 'animation': JupyterAnimator object if running in Jupyter with animate_live
         """
         # Handle 3D simulations - use monitor slice if available
         active_monitor = None
@@ -158,6 +161,24 @@ class Simulation:
                 if hasattr(device, 'wavelength'):
                     wavelength = device.wavelength
                     break
+
+        # Detect Jupyter environment and initialize animator if needed
+        from beamz.visual.viz import is_jupyter_environment, JupyterAnimator
+        use_jupyter = jupyter_live if jupyter_live is not None else is_jupyter_environment()
+
+        jupyter_animator = None
+        if animate_live and use_jupyter:
+            jupyter_animator = JupyterAnimator(
+                cmap=cmap,
+                axis_scale=axis_scale,
+                clean_visualization=clean_visualization,
+                wavelength=wavelength,
+                line_color=line_color,
+                line_opacity=line_opacity,
+                interpolation=interpolation,
+                live_display=True,
+                store_frames=store_animation
+            )
 
         # Initialize video recorder if requested
         video_recorder = None
@@ -239,33 +260,55 @@ class Simulation:
 
                     # Convert to V/µm for display
                     field_display = field_display * 1e-6 if 'E' in animate_live else field_display
-                    
-                    title = f'{animate_live} at t = {self.t:.2e} s (step {self.current_step}/{self.num_steps})'
-                    viz_context = animate_manual_field(field_display, context=viz_context, extent=extent,
-                                                      title=title, units='V/µm' if 'E' in animate_live else 'A/m',
-                                                      design=self.design, boundaries=self.boundaries, pause=0.001,
-                                                      axis_scale=axis_scale, cmap=cmap, clean_visualization=clean_visualization,
-                                                      wavelength=wavelength, line_color=line_color, line_opacity=line_opacity,
-                                                      plane_2d=self.plane_2d, interpolation=interpolation)
+
+                    if use_jupyter and jupyter_animator:
+                        # Use Jupyter animator for notebook display
+                        jupyter_animator.update(
+                            field_display,
+                            t=self.t,
+                            step=self.current_step,
+                            num_steps=self.num_steps,
+                            field_name=animate_live,
+                            units='V/µm' if 'E' in animate_live else 'A/m',
+                            extent=extent,
+                            design=self.design,
+                            boundaries=self.boundaries,
+                            plane_2d=self.plane_2d
+                        )
+                    else:
+                        # Use script-based matplotlib animation
+                        title = f'{animate_live} at t = {self.t:.2e} s (step {self.current_step}/{self.num_steps})'
+                        viz_context = animate_manual_field(field_display, context=viz_context, extent=extent,
+                                                          title=title, units='V/µm' if 'E' in animate_live else 'A/m',
+                                                          design=self.design, boundaries=self.boundaries, pause=0.001,
+                                                          axis_scale=axis_scale, cmap=cmap, clean_visualization=clean_visualization,
+                                                          wavelength=wavelength, line_color=line_color, line_opacity=line_opacity,
+                                                          plane_2d=self.plane_2d, interpolation=interpolation)
         finally:
             # Save video if recorder was used
             if video_recorder:
                 video_recorder.save()
 
-            # Cleanup: keep the final frame visible
-            if viz_context and viz_context.get('fig'):
+            # Cleanup Jupyter animator figure
+            if jupyter_animator:
+                jupyter_animator.finalize()
+
+            # Cleanup: keep the final frame visible (script mode only)
+            if not use_jupyter and viz_context and viz_context.get('fig'):
                 import matplotlib.pyplot as plt
                 plt.show(block=False)
                 print("Simulation complete. Close the plot window to continue.")
-        
+
         # Collect monitor data
         monitors = [device for device in self.devices if hasattr(device, 'power_history')]
-        
-        # Return results if requested
+
+        # Return results
         result = {}
         if save_fields:
             result['fields'] = field_history
         if monitors:
             result['monitors'] = monitors
-        
+        if jupyter_animator and jupyter_animator.frames:
+            result['animation'] = jupyter_animator
+
         return result if result else None

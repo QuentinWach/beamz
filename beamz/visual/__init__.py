@@ -13,7 +13,9 @@ from beamz.visual.viz import (
     plot_fdtd_power,
     close_fdtd_figure,
     animate_manual_field,
-    VideoRecorder
+    VideoRecorder,
+    JupyterAnimator,
+    is_jupyter_environment
 )
 
 from beamz.visual.helpers import (
@@ -39,6 +41,8 @@ __all__ = [
     'close_fdtd_figure',
     'animate_manual_field',
     'VideoRecorder',
+    'JupyterAnimator',
+    'is_jupyter_environment',
     'display_status',
     'display_header',
     'display_parameters',
