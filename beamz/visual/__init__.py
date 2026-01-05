@@ -3,7 +3,7 @@ Visual module for BEAMZ - Contains visualization and UI helpers.
 """
 
 from beamz.visual.viz import (
-    draw_polygon, 
+    draw_polygon,
     show_design,
     show_design_2d,
     show_design_3d,
@@ -12,7 +12,8 @@ from beamz.visual.viz import (
     save_fdtd_animation,
     plot_fdtd_power,
     close_fdtd_figure,
-    animate_manual_field
+    animate_manual_field,
+    VideoRecorder
 )
 
 from beamz.visual.helpers import (
@@ -29,7 +30,7 @@ from beamz.visual.helpers import (
 __all__ = [
     'draw_polygon',
     'show_design',
-    'show_design_2d', 
+    'show_design_2d',
     'show_design_3d',
     'plot_fdtd_field',
     'animate_fdtd_live',
@@ -37,6 +38,7 @@ __all__ = [
     'plot_fdtd_power',
     'close_fdtd_figure',
     'animate_manual_field',
+    'VideoRecorder',
     'display_status',
     'display_header',
     'display_parameters',

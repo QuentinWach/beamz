@@ -5,7 +5,7 @@ from beamz.devices.core import Device
 from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.fields import Fields
 from beamz.simulation.boundaries import Boundary, PML
-from beamz.visual.viz import animate_manual_field, close_fdtd_figure
+from beamz.visual.viz import animate_manual_field, close_fdtd_figure, VideoRecorder
 
 class Simulation:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
@@ -110,9 +110,9 @@ class Simulation:
         return source_j, source_m
     
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None):
         """Run complete FDTD simulation with optional live field visualization.
-        
+
         Args:
             animate_live: Field component to animate ('Ez', 'Hx', 'Hy', 'Ex', 'Ey', etc.) or None to disable
             animation_interval: Update visualization every N steps (higher = faster but less smooth)
@@ -124,7 +124,11 @@ class Simulation:
             line_opacity: Opacity/transparency of structure and PML boundary outlines (0.0 to 1.0, default: 0.5)
             save_fields: List of field components to save ('Ez', 'Hx', etc.) or None to disable
             field_subsample: Save fields every N steps (default: 1, save all steps)
-        
+            save_video: Path to save MP4 video (e.g., 'simulation.mp4') or None to disable
+            video_fps: Frames per second for the video (default: 30)
+            video_dpi: Resolution (dots per inch) for video frames (default: 150)
+            video_field: Field component to record for video ('Ez', 'Hx', etc.), defaults to animate_live if set
+
         Returns:
             dict with keys:
                 - 'fields': dict of field histories if save_fields was provided
@@ -153,7 +157,30 @@ class Simulation:
                 if hasattr(device, 'wavelength'):
                     wavelength = device.wavelength
                     break
-        
+
+        # Initialize video recorder if requested
+        video_recorder = None
+        if save_video:
+            # Determine which field to record for video
+            record_field = video_field if video_field else (animate_live if animate_live else 'Ez')
+            # Validate field component exists
+            available = self.fields.available_components()
+            if record_field not in available:
+                print(f"Warning: Field '{record_field}' not found for video. Available: {available}")
+                record_field = available[0] if available else None
+            if record_field:
+                video_recorder = VideoRecorder(
+                    filename=save_video,
+                    fps=video_fps,
+                    dpi=video_dpi,
+                    cmap=cmap,
+                    axis_scale=axis_scale,
+                    clean_visualization=clean_visualization,
+                    wavelength=wavelength,
+                    line_color=line_color,
+                    line_opacity=line_opacity
+                )
+
         # Initialize field storage if requested
         field_history = {}
         if save_fields:
@@ -169,7 +196,28 @@ class Simulation:
                     for field_name in save_fields:
                         if hasattr(self.fields, field_name):
                             field_history[field_name].append(getattr(self.fields, field_name).copy())
-                
+
+                # Record video frame if enabled
+                if video_recorder and self.current_step % animation_interval == 0:
+                    record_field = video_field if video_field else (animate_live if animate_live else 'Ez')
+                    if hasattr(self.fields, record_field):
+                        field_display = getattr(self.fields, record_field)
+                        # Convert to V/µm for E-fields
+                        field_display = field_display * 1e-6 if 'E' in record_field else field_display
+                        extent = (0, self.design.width, 0, self.design.height)
+                        video_recorder.add_frame(
+                            field_display,
+                            t=self.t,
+                            step=self.current_step,
+                            num_steps=self.num_steps,
+                            field_name=record_field,
+                            units='V/µm' if 'E' in record_field else 'A/m',
+                            extent=extent,
+                            design=self.design,
+                            boundaries=self.boundaries,
+                            plane_2d=self.plane_2d
+                        )
+
                 # Update live animation if enabled
                 if animate_live and self.current_step % animation_interval == 0:
                     if self.is_3d and active_monitor:
@@ -198,6 +246,10 @@ class Simulation:
                                                       wavelength=wavelength, line_color=line_color, line_opacity=line_opacity,
                                                       plane_2d=self.plane_2d)
         finally:
+            # Save video if recorder was used
+            if video_recorder:
+                video_recorder.save()
+
             # Cleanup: keep the final frame visible
             if viz_context and viz_context.get('fig'):
                 import matplotlib.pyplot as plt

@@ -45,6 +45,8 @@ sim = Simulation(
 )
 sim.run(animate_live="Ez", 
     animation_interval=2,
-    axis_scale=[-1.5e-4, 1.5e-4],
+    axis_scale=[-1.1e-4, 1.1e-4],
+    #axis_scale=None,
     cmap="twilight_zero", 
-    clean_visualization=False)
+    clean_visualization=True,
+    save_video="resring.mp4")
