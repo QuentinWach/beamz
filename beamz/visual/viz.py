@@ -2087,6 +2087,7 @@ class JupyterAnimator:
                 fig_height = 8
                 fig_width = fig_height * aspect_ratio
                 self._fig = plt.figure(figsize=(fig_width, fig_height))
+                self._fig.patch.set_facecolor('none')  # Transparent background
                 # Create axes that fills the entire figure
                 self._ax = self._fig.add_axes([0, 0, 1, 1])
             else:
@@ -2149,6 +2150,16 @@ class JupyterAnimator:
                 overlay_structures = getattr(design, 'structures', [])
 
             for structure in overlay_structures or []:
+                # Skip the background structure (first structure that spans full design)
+                if hasattr(structure, 'vertices') and structure.vertices:
+                    vertices = np.array(structure.vertices)
+                    min_x, max_x = vertices[:, 0].min(), vertices[:, 0].max()
+                    min_y, max_y = vertices[:, 1].min(), vertices[:, 1].max()
+                    # Check if structure spans the full design dimensions
+                    if (abs(min_x) < 1e-10 and abs(min_y) < 1e-10 and
+                        abs(max_x - design.width) < 1e-10 and abs(max_y - design.height) < 1e-10):
+                        continue  # Skip background structure
+
                 if hasattr(structure, 'is_pml') and structure.is_pml:
                     structure.add_to_plot(ax, edgecolor=self.line_color,
                                           linestyle='--', facecolor='none',
@@ -2265,6 +2276,7 @@ class JupyterAnimator:
             fig_height = 8
             fig_width = fig_height * aspect_ratio
             fig = plt.figure(figsize=(fig_width, fig_height))
+            fig.patch.set_facecolor('none')  # Transparent background
             ax = fig.add_axes([0, 0, 1, 1])
         else:
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -2368,6 +2380,7 @@ class JupyterAnimator:
             fig_height = 8
             fig_width = fig_height * aspect_ratio
             fig = plt.figure(figsize=(fig_width, fig_height))
+            fig.patch.set_facecolor('black')  # Black background (MP4 doesn't support transparency)
             ax = fig.add_axes([0, 0, 1, 1])
         else:
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -2421,7 +2434,7 @@ class JupyterAnimator:
         print(f"Rendering {len(self.frames)} frames to {filename}...")
         try:
             writer = FFMpegWriter(fps=fps, metadata={'title': 'BEAMZ Simulation'})
-            anim.save(filename, writer=writer, dpi=dpi)
+            anim.save(filename, writer=writer, dpi=dpi, savefig_kwargs={'facecolor': 'black'})
             plt.close(fig)
 
             # Get file size
