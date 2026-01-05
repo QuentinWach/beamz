@@ -164,9 +164,6 @@ class ModeSource:
         if self.width < 2.0 * µm:
             print("[ModeSource] Note: Source injection extended to full transverse span.")
 
-        # Plot mode profiles
-        self._plot_mode_profile_3d() if is_3d else self._plot_mode_profile_2d()
-
     def _setup_3d_injection(self, Ex, Ey, Ez, Hx, Hy, Hz,
                             center_idx, offset_idx, axis, nz, ny, nx, resolution):
         """Set up full 6-component injection for 3D simulations.
