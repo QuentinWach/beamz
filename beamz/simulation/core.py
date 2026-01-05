@@ -110,7 +110,7 @@ class Simulation:
         return source_j, source_m
     
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None, interpolation='bicubic'):
         """Run complete FDTD simulation with optional live field visualization.
 
         Args:
@@ -128,6 +128,7 @@ class Simulation:
             video_fps: Frames per second for the video (default: 30)
             video_dpi: Resolution (dots per inch) for video frames (default: 150)
             video_field: Field component to record for video ('Ez', 'Hx', etc.), defaults to animate_live if set
+            interpolation: Interpolation method for field display ('nearest', 'bilinear', 'bicubic', etc.)
 
         Returns:
             dict with keys:
@@ -178,7 +179,8 @@ class Simulation:
                     clean_visualization=clean_visualization,
                     wavelength=wavelength,
                     line_color=line_color,
-                    line_opacity=line_opacity
+                    line_opacity=line_opacity,
+                    interpolation=interpolation
                 )
 
         # Initialize field storage if requested
@@ -239,12 +241,12 @@ class Simulation:
                     field_display = field_display * 1e-6 if 'E' in animate_live else field_display
                     
                     title = f'{animate_live} at t = {self.t:.2e} s (step {self.current_step}/{self.num_steps})'
-                    viz_context = animate_manual_field(field_display, context=viz_context, extent=extent, 
+                    viz_context = animate_manual_field(field_display, context=viz_context, extent=extent,
                                                       title=title, units='V/µm' if 'E' in animate_live else 'A/m',
                                                       design=self.design, boundaries=self.boundaries, pause=0.001,
                                                       axis_scale=axis_scale, cmap=cmap, clean_visualization=clean_visualization,
                                                       wavelength=wavelength, line_color=line_color, line_opacity=line_opacity,
-                                                      plane_2d=self.plane_2d)
+                                                      plane_2d=self.plane_2d, interpolation=interpolation)
         finally:
             # Save video if recorder was used
             if video_recorder:

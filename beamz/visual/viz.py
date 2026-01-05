@@ -679,7 +679,8 @@ def animate_manual_field(field_array,
                          wavelength=None,
                          line_color='gray',
                          line_opacity=0.5,
-                         plane_2d='xy'):
+                         plane_2d='xy',
+                         interpolation='bicubic'):
     """Create or update a live Matplotlib view of a 2D field array.
 
     Args:
@@ -704,6 +705,7 @@ def animate_manual_field(field_array,
         line_color: Color for structure and PML boundary outlines (default: 'gray').
         line_opacity: Opacity/transparency of structure and PML boundary outlines (0.0 to 1.0, default: 0.5).
         plane_2d: Plane of simulation ('xy', 'yz', 'xz') to determine axis labels.
+        interpolation: Interpolation method for imshow ('nearest', 'bilinear', 'bicubic', etc.).
 
     Returns:
         context dict containing references to the Matplotlib objects for reuse.
@@ -770,9 +772,9 @@ def animate_manual_field(field_array,
             actual_cmap = cmap
         
         if extent is not None:
-            im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax, extent=extent)
+            im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax, extent=extent, interpolation=interpolation)
         else:
-            im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax)
+            im = ax.imshow(data, origin='lower', cmap=actual_cmap, vmin=vmin, vmax=vmax, interpolation=interpolation)
         
         # Determine field name from title if possible, or generic
         field_name = "Field"
@@ -1615,7 +1617,8 @@ class VideoRecorder:
 
     def __init__(self, filename='simulation.mp4', fps=30, dpi=150,
                  cmap='twilight_zero', axis_scale=None, clean_visualization=False,
-                 wavelength=None, line_color='gray', line_opacity=0.5):
+                 wavelength=None, line_color='gray', line_opacity=0.5,
+                 interpolation='bicubic'):
         """Initialize the video recorder.
 
         Args:
@@ -1628,6 +1631,7 @@ class VideoRecorder:
             wavelength: Wavelength for scale bar calculation
             line_color: Color for structure outlines
             line_opacity: Opacity for structure outlines
+            interpolation: Interpolation method for imshow ('nearest', 'bilinear', 'bicubic', etc.)
         """
         self.filename = filename
         self.fps = fps
@@ -1638,6 +1642,7 @@ class VideoRecorder:
         self.wavelength = wavelength
         self.line_color = line_color
         self.line_opacity = line_opacity
+        self.interpolation = interpolation
 
         self.frames = []
         self.times = []
@@ -1761,7 +1766,8 @@ class VideoRecorder:
 
                     # Draw field
                     im = ax.imshow(frame_data, origin='lower', cmap=actual_cmap,
-                                   vmin=vmin, vmax=vmax, extent=self.extent, aspect='equal')
+                                   vmin=vmin, vmax=vmax, extent=self.extent, aspect='equal',
+                                   interpolation=self.interpolation)
 
                     # Add colorbar and title if not clean
                     if not self.clean_visualization:
