@@ -2079,23 +2079,38 @@ class JupyterAnimator:
 
         # First frame: create the figure and all elements
         if self._fig is None:
-            self._fig, self._ax = plt.subplots(figsize=(10, 8))
+            # Calculate figure size based on data aspect ratio for clean visualization
+            if self.clean_visualization and extent:
+                data_width = extent[1] - extent[0]
+                data_height = extent[3] - extent[2]
+                aspect_ratio = data_width / data_height
+                fig_height = 8
+                fig_width = fig_height * aspect_ratio
+                self._fig = plt.figure(figsize=(fig_width, fig_height))
+                # Create axes that fills the entire figure
+                self._ax = self._fig.add_axes([0, 0, 1, 1])
+            else:
+                self._fig, self._ax = plt.subplots(figsize=(10, 8))
 
             self._im = self._ax.imshow(frame_data, origin='lower', cmap=actual_cmap,
                                         vmin=vmin, vmax=vmax, extent=extent,
                                         interpolation=self.interpolation)
 
-            if not self.clean_visualization:
+            if self.clean_visualization:
+                self._ax.set_axis_off()
+                self._ax.set_frame_on(False)
+                self._title = None
+            else:
                 self._cbar = plt.colorbar(self._im, ax=self._ax, label=f'{field_name} ({units})')
                 self._title = self._ax.set_title(f'{field_name} at t = {t:.2e} s (step {step}/{num_steps})')
-            else:
-                self._ax.set_axis_off()
-                self._title = None
+                plt.tight_layout()
 
             # Add structure overlays (static, only done once)
             self._add_overlays(self._ax, design, boundaries, plane_2d)
 
-            plt.tight_layout()
+            # Add scale bar for clean visualization
+            if self.clean_visualization:
+                self._add_scale_bar(self._ax, design)
 
         else:
             # Subsequent frames: just update the data
@@ -2157,6 +2172,66 @@ class JupyterAnimator:
                 draw_boundary(ax, boundary, design, edgecolor=self.line_color,
                               linestyle=':', alpha=self.line_opacity)
 
+    def _add_scale_bar(self, ax, design):
+        """Add scale bar to the plot for clean visualization mode."""
+        if design is None:
+            return
+
+        max_dim = max(design.width, design.height)
+        scale_factor, unit = get_si_scale_and_label(max_dim)
+
+        # Calculate scale bar length: 2 * wavelength rounded to nearest integer µm
+        if self.wavelength is not None:
+            wavelength_um = self.wavelength * 1e6
+            scale_bar_length_um = np.round(2 * wavelength_um)
+            scale_bar_length = scale_bar_length_um * 1e-6
+        else:
+            # Fallback: use design-based calculation
+            min_dim = min(design.width, design.height)
+            scale_bar_length_physical = min_dim * 0.18
+
+            if scale_bar_length_physical > 0:
+                order = 10 ** np.floor(np.log10(scale_bar_length_physical))
+                normalized = scale_bar_length_physical / order
+                if normalized <= 1.25:
+                    nice_value = 1 * order
+                elif normalized <= 2.5:
+                    nice_value = 2 * order
+                elif normalized <= 6:
+                    nice_value = 5 * order
+                else:
+                    nice_value = 10 * order
+                scale_bar_length = nice_value
+            else:
+                scale_bar_length = min_dim * 0.15
+
+        # Position in bottom-right corner with some margin
+        margin_x = design.width * 0.1
+        margin_y = design.height * 0.1
+        x_start = design.width - scale_bar_length - margin_x
+        x_end = design.width - margin_x
+        y_pos = margin_y
+
+        # Draw scale bar line
+        ax.plot([x_start, x_end], [y_pos, y_pos], 'w', linewidth=3, solid_capstyle="butt")
+
+        # Add text label below the bar
+        label_y = y_pos - design.height * 0.02
+        if self.wavelength is not None:
+            scale_bar_length_display_um = scale_bar_length * 1e6
+            label_text = f'{int(scale_bar_length_display_um)} µm'
+        else:
+            scale_bar_length_display = scale_bar_length * scale_factor
+            if scale_bar_length_display >= 1:
+                label_text = f'{scale_bar_length_display:.0f} {unit}'
+            elif scale_bar_length_display >= 0.1:
+                label_text = f'{scale_bar_length_display:.1f} {unit}'
+            else:
+                label_text = f'{scale_bar_length_display:.2f} {unit}'
+
+        ax.text((x_start + x_end) / 2, label_y, label_text,
+                ha='center', va='top', color='white', fontsize=14)
+
     def get_animation(self, fps=30):
         """Create an HTML5 video animation from stored frames.
 
@@ -2189,7 +2264,8 @@ class JupyterAnimator:
             aspect_ratio = data_width / data_height
             fig_height = 8
             fig_width = fig_height * aspect_ratio
-            fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+            fig = plt.figure(figsize=(fig_width, fig_height))
+            ax = fig.add_axes([0, 0, 1, 1])
         else:
             fig, ax = plt.subplots(figsize=(10, 8))
 
@@ -2210,9 +2286,8 @@ class JupyterAnimator:
 
         title = None
         if self.clean_visualization:
-            # Hide axes and remove all padding for clean visualization
             ax.set_axis_off()
-            fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+            ax.set_frame_on(False)
         else:
             plt.colorbar(im, ax=ax,
                          label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
@@ -2223,6 +2298,10 @@ class JupyterAnimator:
         self._add_overlays(ax, self.metadata.get('design'),
                            self.metadata.get('boundaries'),
                            self.metadata.get('plane_2d', 'xy'))
+
+        # Add scale bar for clean visualization
+        if self.clean_visualization:
+            self._add_scale_bar(ax, self.metadata.get('design'))
 
         def update(frame_idx):
             im.set_data(self.frames[frame_idx])
@@ -2288,7 +2367,8 @@ class JupyterAnimator:
             aspect_ratio = data_width / data_height
             fig_height = 8
             fig_width = fig_height * aspect_ratio
-            fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+            fig = plt.figure(figsize=(fig_width, fig_height))
+            ax = fig.add_axes([0, 0, 1, 1])
         else:
             fig, ax = plt.subplots(figsize=(10, 8))
 
@@ -2310,7 +2390,7 @@ class JupyterAnimator:
         title = None
         if self.clean_visualization:
             ax.set_axis_off()
-            fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+            ax.set_frame_on(False)
         else:
             plt.colorbar(im, ax=ax,
                          label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
@@ -2321,6 +2401,10 @@ class JupyterAnimator:
         self._add_overlays(ax, self.metadata.get('design'),
                            self.metadata.get('boundaries'),
                            self.metadata.get('plane_2d', 'xy'))
+
+        # Add scale bar for clean visualization
+        if self.clean_visualization:
+            self._add_scale_bar(ax, self.metadata.get('design'))
 
         def update(frame_idx):
             im.set_data(self.frames[frame_idx])
