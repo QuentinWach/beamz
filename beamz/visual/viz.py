@@ -2199,24 +2199,29 @@ class JupyterAnimator:
                        extent=self.metadata.get('extent'),
                        interpolation=self.interpolation)
 
-        if not self.clean_visualization:
+        title = None
+        if self.clean_visualization:
+            # Hide axes and remove all padding for clean visualization
+            ax.set_axis_off()
+            plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+        else:
             plt.colorbar(im, ax=ax,
                          label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
+            title = ax.set_title('')
+            plt.tight_layout()
 
         # Add static overlays
         self._add_overlays(ax, self.metadata.get('design'),
                            self.metadata.get('boundaries'),
                            self.metadata.get('plane_2d', 'xy'))
 
-        title = ax.set_title('')
-
         def update(frame_idx):
             im.set_data(self.frames[frame_idx])
-            if not self.clean_visualization and self.times:
+            if title is not None and self.times:
                 t, step, num_steps = self.times[frame_idx]
                 field_name = self.metadata.get('field_name', 'Field')
                 title.set_text(f'{field_name} at t = {t:.2e} s (step {step}/{num_steps})')
-            return [im, title]
+            return [im] if title is None else [im, title]
 
         anim = FuncAnimation(fig, update, frames=len(self.frames),
                              interval=1000/fps, blit=True)
@@ -2273,21 +2278,23 @@ class JupyterAnimator:
                                extent=self.metadata.get('extent'),
                                interpolation=self.interpolation)
 
-                if not self.clean_visualization:
+                if self.clean_visualization:
+                    # Hide axes and remove all padding for clean visualization
+                    ax.set_axis_off()
+                    plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+                else:
                     plt.colorbar(im, ax=ax,
                                  label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
                     if self.times:
                         t, step, num_steps = self.times[frame]
                         field_name = self.metadata.get('field_name', 'Field')
                         ax.set_title(f'{field_name} at t = {t:.2e} s (step {step}/{num_steps})')
-                else:
-                    ax.set_axis_off()
+                    plt.tight_layout()
 
                 self._add_overlays(ax, self.metadata.get('design'),
                                    self.metadata.get('boundaries'),
                                    self.metadata.get('plane_2d', 'xy'))
 
-                plt.tight_layout()
                 plt.show()
 
         # Create slider
