@@ -2228,8 +2228,17 @@ class JupyterAnimator:
 
         plt.close(fig)
 
-        # Return as HTML5 video
-        return HTML(anim.to_jshtml())
+        # Increase embed limit for larger animations (default is ~20MB)
+        import matplotlib as mpl
+        old_limit = mpl.rcParams.get('animation.embed_limit', 20)
+        mpl.rcParams['animation.embed_limit'] = 200  # 200 MB limit
+
+        try:
+            # Return as HTML5 video
+            return HTML(anim.to_jshtml())
+        finally:
+            # Restore original limit
+            mpl.rcParams['animation.embed_limit'] = old_limit
 
     def get_widget(self):
         """Create an interactive slider widget for frame-by-frame scrubbing.
