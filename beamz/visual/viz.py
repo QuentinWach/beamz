@@ -1692,8 +1692,12 @@ class VideoRecorder:
     def save(self):
         """Render all frames and save as MP4 video."""
         import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation, FFMpegWriter
+        from matplotlib.animation import FFMpegWriter
         import numpy as np
+
+        # Store current backend and switch to Agg for video rendering
+        original_backend = plt.get_backend()
+        plt.switch_backend('Agg')
 
         if len(self.frames) == 0:
             print("No frames to save.")
@@ -1706,7 +1710,7 @@ class VideoRecorder:
             vmax = self._global_vmax if self._global_vmax > 0 else 1.0
             vmin = -vmax
 
-        # Setup figure
+        # Setup figure - ensure dimensions are divisible by 2 for video encoding
         grid_height, grid_width = self.frames[0].shape
         aspect_ratio = grid_width / grid_height
         base_size = 6
@@ -1716,15 +1720,18 @@ class VideoRecorder:
                 figsize = (base_size * aspect_ratio, base_size)
             else:
                 figsize = (base_size, base_size / aspect_ratio)
-            fig = plt.figure(figsize=figsize, frameon=False)
-            ax = fig.add_axes([0, 0, 1, 1])
-            ax.set_axis_off()
         else:
             if aspect_ratio > 1:
                 figsize = (base_size * aspect_ratio * 1.2, base_size)
             else:
                 figsize = (base_size * 1.2, base_size / aspect_ratio)
-            fig, ax = plt.subplots(figsize=figsize)
+
+        # Ensure pixel dimensions are even (required by libx264)
+        fig_width_px = int(figsize[0] * self.dpi)
+        fig_height_px = int(figsize[1] * self.dpi)
+        fig_width_px = fig_width_px + (fig_width_px % 2)
+        fig_height_px = fig_height_px + (fig_height_px % 2)
+        figsize = (fig_width_px / self.dpi, fig_height_px / self.dpi)
 
         # Get colormap
         if self.cmap == 'twilight_zero':
@@ -1735,97 +1742,104 @@ class VideoRecorder:
         else:
             actual_cmap = self.cmap
 
-        # Create initial image
-        im = ax.imshow(self.frames[0], origin='lower', cmap=actual_cmap,
-                       vmin=vmin, vmax=vmax, extent=self.extent, aspect='equal')
+        # Setup FFmpeg writer
+        writer = FFMpegWriter(fps=self.fps, bitrate=5000)
 
-        # Add colorbar if not clean visualization
-        if not self.clean_visualization:
-            cbar = plt.colorbar(im, ax=ax, orientation='vertical',
-                               label=f'{self.field_name} ({self.units})')
-            t, step, num_steps = self.times[0]
-            title = ax.set_title(f'{self.field_name} at t = {t:.2e} s (step {step}/{num_steps})')
-        else:
-            title = None
+        # Create figure
+        fig = plt.figure(figsize=figsize)
 
-        # Add structure overlays
-        if self.design is not None:
-            try:
-                tmp_design = self.design.copy()
-                tmp_design.unify_polygons()
-                overlay_structures = tmp_design.structures
-            except Exception:
-                overlay_structures = getattr(self.design, 'structures', [])
-
-            for structure in overlay_structures or []:
-                if hasattr(structure, 'is_pml') and structure.is_pml:
-                    structure.add_to_plot(ax, edgecolor=self.line_color, linestyle='--',
-                                         facecolor='none', alpha=self.line_opacity)
-                elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
-                    structure.add_to_plot(ax, facecolor="none", edgecolor=self.line_color,
-                                         linestyle='-', alpha=self.line_opacity)
-
-            # Add sources
-            for source in getattr(self.design, 'sources', []) or []:
-                if hasattr(source, 'add_to_plot'):
-                    source.add_to_plot(ax)
-
-            # Add monitors
-            for monitor in getattr(self.design, 'monitors', []) or []:
-                if hasattr(monitor, 'add_to_plot'):
-                    monitor.add_to_plot(ax, edgecolor=self.line_color, alpha=self.line_opacity)
-
-        # Draw PML boundaries
-        if self.boundaries:
-            for boundary in self.boundaries:
-                draw_boundary(ax, boundary, self.design, edgecolor=self.line_color,
-                            linestyle=':', alpha=self.line_opacity)
-
-        # Add axis labels if not clean
-        if self.design is not None and not self.clean_visualization:
-            max_dim = max(self.design.width, self.design.height)
-            scale, unit = get_si_scale_and_label(max_dim)
-
-            xlabel, ylabel = 'X', 'Y'
-            if self.plane_2d == 'yz':
-                xlabel, ylabel = 'Y', 'Z'
-            elif self.plane_2d == 'xz':
-                xlabel, ylabel = 'X', 'Z'
-
-            ax.set_xlabel(f'{xlabel} ({unit})')
-            ax.set_ylabel(f'{ylabel} ({unit})')
-            ax.xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
-            ax.yaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
-
-        # Add scale bar for clean visualization
-        if self.clean_visualization and self.design is not None:
-            self._add_scale_bar(ax)
-
-        if not self.clean_visualization:
-            plt.tight_layout()
-
-        # Animation update function
-        def update(frame_idx):
-            im.set_data(self.frames[frame_idx])
-            if title is not None:
-                t, step, num_steps = self.times[frame_idx]
-                title.set_text(f'{self.field_name} at t = {t:.2e} s (step {step}/{num_steps})')
-                return [im, title]
-            return [im]
-
-        # Create animation
-        ani = FuncAnimation(fig, update, frames=len(self.frames), blit=True)
-
-        # Save to file
         try:
-            writer = FFMpegWriter(fps=self.fps, bitrate=5000)
-            ani.save(self.filename, writer=writer, dpi=self.dpi)
+            with writer.saving(fig, self.filename, dpi=self.dpi):
+                for frame_idx, (frame_data, time_info) in enumerate(zip(self.frames, self.times)):
+                    fig.clear()
+
+                    if self.clean_visualization:
+                        ax = fig.add_axes([0, 0, 1, 1])
+                        ax.set_axis_off()
+                    else:
+                        ax = fig.add_subplot(111)
+
+                    # Draw field
+                    im = ax.imshow(frame_data, origin='lower', cmap=actual_cmap,
+                                   vmin=vmin, vmax=vmax, extent=self.extent, aspect='equal')
+
+                    # Add colorbar and title if not clean
+                    if not self.clean_visualization:
+                        plt.colorbar(im, ax=ax, orientation='vertical',
+                                    label=f'{self.field_name} ({self.units})')
+                        t, step, num_steps = time_info
+                        ax.set_title(f'{self.field_name} at t = {t:.2e} s (step {step}/{num_steps})')
+
+                    # Add structure overlays
+                    if self.design is not None:
+                        try:
+                            tmp_design = self.design.copy()
+                            tmp_design.unify_polygons()
+                            overlay_structures = tmp_design.structures
+                        except Exception:
+                            overlay_structures = getattr(self.design, 'structures', [])
+
+                        for structure in overlay_structures or []:
+                            if hasattr(structure, 'is_pml') and structure.is_pml:
+                                structure.add_to_plot(ax, edgecolor=self.line_color, linestyle='--',
+                                                     facecolor='none', alpha=self.line_opacity)
+                            elif hasattr(structure, 'vertices') and getattr(structure, 'vertices', None):
+                                structure.add_to_plot(ax, facecolor="none", edgecolor=self.line_color,
+                                                     linestyle='-', alpha=self.line_opacity)
+
+                        # Add sources
+                        for source in getattr(self.design, 'sources', []) or []:
+                            if hasattr(source, 'add_to_plot'):
+                                source.add_to_plot(ax)
+
+                        # Add monitors
+                        for monitor in getattr(self.design, 'monitors', []) or []:
+                            if hasattr(monitor, 'add_to_plot'):
+                                monitor.add_to_plot(ax, edgecolor=self.line_color, alpha=self.line_opacity)
+
+                    # Draw PML boundaries
+                    if self.boundaries:
+                        for boundary in self.boundaries:
+                            draw_boundary(ax, boundary, self.design, edgecolor=self.line_color,
+                                        linestyle=':', alpha=self.line_opacity)
+
+                    # Add axis labels if not clean
+                    if self.design is not None and not self.clean_visualization:
+                        max_dim = max(self.design.width, self.design.height)
+                        scale, unit = get_si_scale_and_label(max_dim)
+
+                        xlabel, ylabel = 'X', 'Y'
+                        if self.plane_2d == 'yz':
+                            xlabel, ylabel = 'Y', 'Z'
+                        elif self.plane_2d == 'xz':
+                            xlabel, ylabel = 'X', 'Z'
+
+                        ax.set_xlabel(f'{xlabel} ({unit})')
+                        ax.set_ylabel(f'{ylabel} ({unit})')
+                        ax.xaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
+                        ax.yaxis.set_major_formatter(lambda x, pos: f'{x*scale:.1f}')
+
+                    # Add scale bar for clean visualization
+                    if self.clean_visualization and self.design is not None:
+                        self._add_scale_bar(ax)
+
+                    if not self.clean_visualization:
+                        fig.tight_layout()
+
+                    # Write frame
+                    writer.grab_frame()
+
             print(f"Video saved to {self.filename} ({len(self.frames)} frames at {self.fps} fps)")
         except Exception as e:
             print(f"Error saving video: {e}")
             print("Make sure FFmpeg is installed on your system.")
         finally:
             plt.close(fig)
+            # Restore original backend
+            try:
+                plt.switch_backend(original_backend)
+            except Exception:
+                pass
 
     def _add_scale_bar(self, ax):
         """Add a scale bar to clean visualization."""
