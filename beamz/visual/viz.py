@@ -2181,8 +2181,17 @@ class JupyterAnimator:
             vmax = self._global_vmax if self._global_vmax > 0 else 1.0
             vmin = -vmax
 
-        # Setup figure
-        fig, ax = plt.subplots(figsize=(10, 8))
+        # Calculate figure size based on data aspect ratio for clean visualization
+        extent = self.metadata.get('extent')
+        if self.clean_visualization and extent:
+            data_width = extent[1] - extent[0]
+            data_height = extent[3] - extent[2]
+            aspect_ratio = data_width / data_height
+            fig_height = 8
+            fig_width = fig_height * aspect_ratio
+            fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        else:
+            fig, ax = plt.subplots(figsize=(10, 8))
 
         # Get colormap
         if self.cmap == 'twilight_zero':
@@ -2196,14 +2205,14 @@ class JupyterAnimator:
         # Initial frame
         im = ax.imshow(self.frames[0], origin='lower', cmap=actual_cmap,
                        vmin=vmin, vmax=vmax,
-                       extent=self.metadata.get('extent'),
+                       extent=extent,
                        interpolation=self.interpolation)
 
         title = None
         if self.clean_visualization:
             # Hide axes and remove all padding for clean visualization
             ax.set_axis_off()
-            plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
         else:
             plt.colorbar(im, ax=ax,
                          label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
@@ -2271,8 +2280,17 @@ class JupyterAnimator:
             vmax = self._global_vmax if self._global_vmax > 0 else 1.0
             vmin = -vmax
 
-        # Setup figure
-        fig, ax = plt.subplots(figsize=(10, 8))
+        # Calculate figure size based on data aspect ratio for clean visualization
+        extent = self.metadata.get('extent')
+        if self.clean_visualization and extent:
+            data_width = extent[1] - extent[0]
+            data_height = extent[3] - extent[2]
+            aspect_ratio = data_width / data_height
+            fig_height = 8
+            fig_width = fig_height * aspect_ratio
+            fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        else:
+            fig, ax = plt.subplots(figsize=(10, 8))
 
         # Get colormap
         if self.cmap == 'twilight_zero':
@@ -2286,13 +2304,13 @@ class JupyterAnimator:
         # Initial frame
         im = ax.imshow(self.frames[0], origin='lower', cmap=actual_cmap,
                        vmin=vmin, vmax=vmax,
-                       extent=self.metadata.get('extent'),
+                       extent=extent,
                        interpolation=self.interpolation)
 
         title = None
         if self.clean_visualization:
             ax.set_axis_off()
-            plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
         else:
             plt.colorbar(im, ax=ax,
                          label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})")
