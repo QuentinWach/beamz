@@ -141,3 +141,51 @@ def dielectric_interface_domain():
         'dx': dx,
         'dt': dt,
     }
+
+
+@pytest.fixture
+def waveguide_domain():
+    """Slab waveguide domain for ModeSource tests.
+
+    Horizontal waveguide: core n=2.0, cladding n=1.0
+    Core width: 0.5 wavelengths (single-mode regime)
+    """
+    wavelength = TEST_WAVELENGTH
+    n_core = 2.0
+    n_clad = 1.0
+    core_width = 0.5 * wavelength
+
+    domain_width = 15 * wavelength
+    domain_height = 6 * wavelength
+
+    dx, dt = calc_optimal_fdtd_params(
+        wavelength, n_core, dims=2,
+        safety_factor=0.95, points_per_wavelength=15
+    )
+
+    # Background is cladding
+    design = Design(
+        width=domain_width,
+        height=domain_height,
+        material=Material(permittivity=n_clad**2)
+    )
+
+    # Add waveguide core (horizontal stripe in center)
+    design += Rectangle(
+        position=(domain_width/2, domain_height/2),
+        width=domain_width,
+        height=core_width,
+        material=Material(permittivity=n_core**2)
+    )
+
+    return {
+        'design': design,
+        'wavelength': wavelength,
+        'domain_width': domain_width,
+        'domain_height': domain_height,
+        'core_width': core_width,
+        'n_core': n_core,
+        'n_clad': n_clad,
+        'dx': dx,
+        'dt': dt,
+    }
