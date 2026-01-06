@@ -46,7 +46,7 @@ grid = design.rasterize(resolution=DX)
 source = ModeSource(
     grid=grid,
     center=(1*WL, 3.25*µm, 2.11*µm),  # Z at waveguide center
-    width=0.8*µm,  # Closer to waveguide height (0.5µm) to better capture mode
+    width=6.5*µm,  # Closer to waveguide height (0.5µm) to better capture mode
     wavelength=WL,
     pol="te",
     signal=signal,
