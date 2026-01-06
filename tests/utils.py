@@ -771,3 +771,161 @@ def measure_resonance_frequency(field_history, time_array, freq_range=None):
     peak_idx = np.argmax(masked_spectrum)
 
     return freqs[peak_idx]
+
+
+# =============================================================================
+# Quantitative Validation Helpers
+# =============================================================================
+def compute_field_error_L2(field1, field2, dx):
+    """Compute L2 error between two field arrays.
+
+    L2_error = sqrt(integral((f1 - f2)^2 dA)) / sqrt(integral(f2^2 dA))
+
+    Handles different array shapes by interpolating to common grid.
+
+    Args:
+        field1: First field array (2D)
+        field2: Second field array (2D, reference)
+        dx: Grid spacing for field1
+
+    Returns:
+        Relative L2 error (dimensionless)
+    """
+    from scipy.ndimage import zoom
+
+    f1 = np.asarray(field1)
+    f2 = np.asarray(field2)
+
+    # If shapes differ, interpolate f1 to f2's grid
+    if f1.shape != f2.shape:
+        zoom_factors = [f2.shape[i] / f1.shape[i] for i in range(f1.ndim)]
+        f1 = zoom(f1, zoom_factors, order=1)
+
+    # Compute L2 norm of difference
+    diff_norm = np.sqrt(np.sum((f1 - f2)**2))
+    ref_norm = np.sqrt(np.sum(f2**2))
+
+    if ref_norm < 1e-30:
+        return 0.0 if diff_norm < 1e-30 else np.inf
+
+    return diff_norm / ref_norm
+
+
+def fit_exponential_decay(data, time, start_fraction=0.0, end_fraction=0.8):
+    """Fit exponential decay A * exp(-t/tau) to data.
+
+    Args:
+        data: 1D array of values (e.g., field envelope)
+        time: 1D array of time values
+        start_fraction: Fraction of data to skip at start (0-1)
+        end_fraction: Fraction of data to use (0-1)
+
+    Returns:
+        Tuple (tau, amplitude, r_squared) or (None, None, None) if fit fails
+    """
+    data = np.asarray(data).flatten()
+    time = np.asarray(time).flatten()
+
+    n = len(data)
+    start_idx = int(start_fraction * n)
+    end_idx = int(end_fraction * n)
+
+    if end_idx - start_idx < 5:
+        return None, None, None
+
+    t_fit = time[start_idx:end_idx] - time[start_idx]
+    d_fit = data[start_idx:end_idx]
+
+    # Filter positive values only
+    valid = d_fit > 1e-20
+    if np.sum(valid) < 5:
+        return None, None, None
+
+    t_fit = t_fit[valid]
+    d_fit = d_fit[valid]
+
+    try:
+        # Linear fit to log(data)
+        log_d = np.log(d_fit)
+        coeffs = np.polyfit(t_fit, log_d, 1)
+        slope = coeffs[0]
+        intercept = coeffs[1]
+
+        tau = -1.0 / slope if slope < 0 else None
+        amplitude = np.exp(intercept)
+
+        # Compute R²
+        fitted = intercept + slope * t_fit
+        ss_res = np.sum((log_d - fitted)**2)
+        ss_tot = np.sum((log_d - np.mean(log_d))**2)
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+
+        return tau, amplitude, r_squared
+    except (ValueError, np.linalg.LinAlgError):
+        return None, None, None
+
+
+def compute_box_flux_2d_from_fields(Ez_phasors, Hy_phasors, Hx_phasors, dx, box_indices):
+    """Compute net Poynting flux through a 2D rectangular box from phasor fields.
+
+    For 2D TM polarization, S = -Re(Ez × H*):
+    - Sx = -Re(Ez * Hy*) for x-directed flux
+    - Sy = Re(Ez * Hx*) for y-directed flux
+
+    Args:
+        Ez_phasors: Complex Ez field phasor (ny, nx)
+        Hy_phasors: Complex Hy field phasor (ny, nx)
+        Hx_phasors: Complex Hx field phasor (ny, nx)
+        dx: Grid spacing
+        box_indices: Dict with 'x_min', 'x_max', 'y_min', 'y_max' grid indices
+
+    Returns:
+        Net outward power flux through box (positive = power leaving box)
+    """
+    x_min = box_indices['x_min']
+    x_max = box_indices['x_max']
+    y_min = box_indices['y_min']
+    y_max = box_indices['y_max']
+
+    # Right face (+x): integrate -Re(Ez * Hy*) over y
+    flux_right = -0.5 * np.sum(np.real(
+        Ez_phasors[y_min:y_max, x_max] * np.conj(Hy_phasors[y_min:y_max, x_max])
+    )) * dx
+
+    # Left face (-x): integrate +Re(Ez * Hy*) over y (outward normal is -x)
+    flux_left = 0.5 * np.sum(np.real(
+        Ez_phasors[y_min:y_max, x_min] * np.conj(Hy_phasors[y_min:y_max, x_min])
+    )) * dx
+
+    # Top face (+y): integrate Re(Ez * Hx*) over x
+    flux_top = 0.5 * np.sum(np.real(
+        Ez_phasors[y_max, x_min:x_max] * np.conj(Hx_phasors[y_max, x_min:x_max])
+    )) * dx
+
+    # Bottom face (-y): integrate -Re(Ez * Hx*) over x (outward normal is -y)
+    flux_bottom = -0.5 * np.sum(np.real(
+        Ez_phasors[y_min, x_min:x_max] * np.conj(Hx_phasors[y_min, x_min:x_max])
+    )) * dx
+
+    return flux_right + flux_left + flux_top + flux_bottom
+
+
+def interpolate_field_to_grid(field, source_shape, target_shape):
+    """Interpolate field array to different grid resolution.
+
+    Args:
+        field: Source field array
+        source_shape: Original shape tuple
+        target_shape: Desired shape tuple
+
+    Returns:
+        Interpolated field array
+    """
+    from scipy.ndimage import zoom
+
+    field = np.asarray(field)
+    if field.shape == target_shape:
+        return field
+
+    zoom_factors = [target_shape[i] / field.shape[i] for i in range(field.ndim)]
+    return zoom(field, zoom_factors, order=3)
