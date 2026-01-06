@@ -935,7 +935,7 @@ class ModeSource:
                     j_term = self._Hx_profile  # J_x from H_x (cross product)
                     j_term = self._match_shape(j_term, target_shape)
                     if j_term is not None:
-                        fields.Ex[self._Ex_indices] += -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                        fields.Ex = fields.Ex.at[self._Ex_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
             except Exception:
                 pass
 
@@ -948,7 +948,7 @@ class ModeSource:
                 j_term = self._match_shape(j_term, target_shape)
                 if j_term is not None:
                     eps = fields.permittivity[self._Ey_indices]
-                    fields.Ey[self._Ey_indices] += -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                    fields.Ey = fields.Ey.at[self._Ey_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
             except Exception:
                 pass
 
@@ -961,7 +961,7 @@ class ModeSource:
                 j_term = self._match_shape(j_term, target_shape)
                 if j_term is not None:
                     eps = fields.permittivity[self._Ez_indices]
-                    fields.Ez[self._Ez_indices] += -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                    fields.Ez = fields.Ez.at[self._Ez_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
             except Exception:
                 pass
 
@@ -975,7 +975,7 @@ class ModeSource:
                 if m_term is not None:
                     mu = getattr(fields, 'permeability', None)
                     mu_val = mu[self._Hx_indices] if mu is not None else 1.0
-                    fields.Hx[self._Hx_indices] += -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    fields.Hx = fields.Hx.at[self._Hx_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
             except Exception:
                 pass
 
@@ -989,7 +989,7 @@ class ModeSource:
                 if m_term is not None:
                     mu = getattr(fields, 'permeability', None)
                     mu_val = mu[self._Hy_indices] if mu is not None else 1.0
-                    fields.Hy[self._Hy_indices] += -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    fields.Hy = fields.Hy.at[self._Hy_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
             except Exception:
                 pass
 
@@ -1003,7 +1003,7 @@ class ModeSource:
                 if m_term is not None:
                     mu = getattr(fields, 'permeability', None)
                     mu_val = mu[self._Hz_indices] if mu is not None else 1.0
-                    fields.Hz[self._Hz_indices] += -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    fields.Hz = fields.Hz.at[self._Hz_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
             except Exception:
                 pass
 
@@ -1041,7 +1041,7 @@ class ModeSource:
                 eps_at_source = fields.permittivity[self._ez_indices]
                 jz_term = self._jz_profile * signal_e / resolution
                 ez_injection = -jz_term * dt / (EPS_0 * eps_at_source)
-                fields.Ez[self._ez_indices] += ez_injection
+                fields.Ez = fields.Ez.at[self._ez_indices].add(ez_injection)
 
             if self._h_indices is not None and self._my_profile is not None:
                 mu_val = getattr(fields, 'permeability', None)
@@ -1050,9 +1050,9 @@ class ModeSource:
                 h_injection = -my_term * dt / (MU_0 * mu_at_source)
 
                 if self._h_component == "Hx":
-                    fields.Hx[self._h_indices] += h_injection
+                    fields.Hx = fields.Hx.at[self._h_indices].add(h_injection)
                 else:
-                    fields.Hy[self._h_indices] += h_injection
+                    fields.Hy = fields.Hy.at[self._h_indices].add(h_injection)
         else:  # TE
             # TE Injection: Jx/Jy -> Ex/Ey, Mz -> Hz
             if self._e_indices is not None:
@@ -1063,16 +1063,16 @@ class ModeSource:
                     e_injection = -j_term * dt / (EPS_0 * eps_at_source)
 
                     if self._e_component == "Ex":
-                        fields.Ex[self._e_indices] += e_injection
+                        fields.Ex = fields.Ex.at[self._e_indices].add(e_injection)
                     else:
-                        fields.Ey[self._e_indices] += e_injection
+                        fields.Ey = fields.Ey.at[self._e_indices].add(e_injection)
 
             if self._hz_indices is not None and self._mz_profile is not None:
                 mu_val = getattr(fields, 'permeability', None)
                 mu_at_source = mu_val[self._hz_indices] if mu_val is not None else 1.0
                 mz_term = self._mz_profile * signal_h / resolution
                 hz_injection = -mz_term * dt / (MU_0 * mu_at_source)
-                fields.Hz[self._hz_indices] += hz_injection
+                fields.Hz = fields.Hz.at[self._hz_indices].add(hz_injection)
 
     def add_to_plot(self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"):
         """Add source visualization to 2D matplotlib plot.

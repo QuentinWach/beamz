@@ -1,4 +1,5 @@
 import numpy as np
+import jax.numpy as jnp
 from beamz.const import EPS_0
 
 class GaussianSource:
@@ -122,9 +123,8 @@ class GaussianSource:
         term = self._spatial_profile_ez * signal_val
         injection = -term * dt / (EPS_0 * eps_region)
         
-        # Inject
-        fields.Ez[self._grid_indices] += injection
-        print(f"● Injected Ez sum: {np.sum(np.abs(injection)):.2e}")
+        # Inject using JAX functional update
+        fields.Ez = fields.Ez.at[self._grid_indices].add(injection)
 
     def _inject_3d(self, fields, t, dt, resolution):
         """Inject into 3D grid (Ez component, could be expanded)."""
@@ -164,7 +164,8 @@ class GaussianSource:
         term = self._spatial_profile_ez * signal_val
         injection = -term * dt / (EPS_0 * eps_region)
 
-        fields.Ez[self._grid_indices] += injection
+        # Inject using JAX functional update
+        fields.Ez = fields.Ez.at[self._grid_indices].add(injection)
 
     def add_to_plot(self, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"):
         """Add source visualization to 2D matplotlib plot.
