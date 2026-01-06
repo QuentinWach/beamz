@@ -827,7 +827,8 @@ class ModeSource:
                 profile_squeezed = np.squeeze(profile)
 
                 if profile_squeezed.ndim == 2:
-                    im = ax.imshow(np.abs(profile_squeezed), origin='lower', cmap='magma', aspect='auto')
+                    # Use aspect='equal' to ensure grid cells are square (not stretched)
+                    im = ax.imshow(np.abs(profile_squeezed), origin='lower', cmap='magma', aspect='equal')
                     plt.colorbar(im, ax=ax, label='Amplitude')
                 else:
                     ax.plot(np.abs(profile_squeezed), 'b-')
