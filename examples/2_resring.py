@@ -28,7 +28,7 @@ signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, phas
 source = ModeSource(
     grid=grid,
     center=(WL*2, WL*2+WG_WIDTH/2),
-    width=WG_WIDTH * 1.2,  # Slightly wider than waveguide to capture mode tails
+    width=WG_WIDTH * 3.5,  # Slightly wider than waveguide to capture mode tails
     wavelength=WL,
     pol="tm",
     signal=signal,

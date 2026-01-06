@@ -325,8 +325,8 @@ class Monitor():
             self.fields['t'].append(t)
         
         if self.accumulate_power:
-            self._calculate_power_2d(Ez_values, Hx_values, Hy_values, t)
-        
+            self._calculate_power_2d(Ez_values, Hx_values, Hy_values, t, dx, dy)
+
         self.last_record_step = step
         self._manage_memory()
         
@@ -388,8 +388,8 @@ class Monitor():
             self.fields['t'].append(t)
         
         if self.accumulate_power:
-            self._calculate_power_3d(Ex_slice, Ey_slice, Ez_slice, Hx_slice, Hy_slice, Hz_slice, t)
-        
+            self._calculate_power_3d(Ex_slice, Ey_slice, Ez_slice, Hx_slice, Hy_slice, Hz_slice, t, dx, dy)
+
         self.last_record_step = step
         self._manage_memory()
         
@@ -405,17 +405,22 @@ class Monitor():
             # 2D: Ez, Hx, Hy, t, dx, dy, step
             self.record_fields_2d(*args, **kwargs)
     
-    def _calculate_power_2d(self, Ez_values, Hx_values, Hy_values, t):
-        """Calculate Poynting vector and power for 2D fields."""
+    def _calculate_power_2d(self, Ez_values, Hx_values, Hy_values, t, dx, dy):
+        """Calculate Poynting vector and power for 2D fields.
+
+        Power is computed as the integral of the Poynting vector magnitude
+        over the monitor line, properly normalized by grid cell area.
+        """
         Ez_array = np.array(Ez_values)
         Hx_array = np.array(Hx_values)
         Hy_array = np.array(Hy_values)
-        # Poynting vector S = E × H
+        # Poynting vector S = E × H (units: W/m²)
         Sx = -Ez_array * Hy_array
         Sy = Ez_array * Hx_array
-        # Power magnitude
+        # Power magnitude per grid point
         power_mag = np.sqrt(Sx**2 + Sy**2)
-        total_power = np.sum(power_mag)
+        # Total power = integral over monitor area (multiply by cell area for proper units)
+        total_power = np.sum(power_mag) * dx * dy
         if self.power_accumulated is None:
             self.power_accumulated = power_mag
         else:
@@ -424,15 +429,20 @@ class Monitor():
         self.power_timestamps.append(float(t))
         self.power_accumulation_count += 1
 
-    def _calculate_power_3d(self, Ex, Ey, Ez, Hx, Hy, Hz, t):
-        """Calculate Poynting vector and power for 3D fields."""
-        # Poynting vector S = E × H
+    def _calculate_power_3d(self, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy):
+        """Calculate Poynting vector and power for 3D fields.
+
+        Power is computed as the integral of the Poynting vector magnitude
+        over the monitor plane, properly normalized by grid cell area.
+        """
+        # Poynting vector S = E × H (units: W/m²)
         Sx = Ey * Hz - Ez * Hy
         Sy = Ez * Hx - Ex * Hz
         Sz = Ex * Hy - Ey * Hx
-        # Power magnitude
+        # Power magnitude per grid point
         power_mag = np.sqrt(Sx**2 + Sy**2 + Sz**2)
-        total_power = np.sum(power_mag)
+        # Total power = integral over monitor area (multiply by cell area for proper units)
+        total_power = np.sum(power_mag) * dx * dy
         if self.power_accumulated is None: self.power_accumulated = power_mag.copy()
         else: self.power_accumulated += power_mag
         self.power_history.append(total_power)

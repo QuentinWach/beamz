@@ -9,10 +9,11 @@ class ModeSource:
     mode injection, accounting for proper Yee grid staggering.
     """
 
-    def __init__(self, grid, center, width, wavelength, pol, signal, direction="+x"):
+    def __init__(self, grid, center, width, wavelength, pol, signal, direction="+x", height=None):
         self.grid = grid
         self.center = center if isinstance(center, (tuple, list)) else (center, grid.height / 2)
         self.width = width
+        self.height = height  # For 3D: constrains z-direction; None for 2D, defaults to width for 3D
         self.wavelength = wavelength
         self.pol = pol
         self.signal = signal
@@ -61,10 +62,15 @@ class ModeSource:
             nz, ny, nx = permittivity.shape
             dz = resolution
             self._grid_shape = (nz, ny, nx)
+            # For 3D, default height to width if not specified
+            if self.height is None:
+                self.height = self.width
         else:
             ny, nx = permittivity.shape
             nz = 1
             self._grid_shape = (ny, nx)
+            # For 2D, height should be None
+            self.height = None
 
         axis = "x" if self.direction in ("+x", "-x") else "y"
         self._dt_physical = 0.0
@@ -231,18 +237,34 @@ class ModeSource:
             nz_hz = Hz_staggered.shape[0]
             ny_hz = Hz_staggered.shape[1]
 
-            # Indices: (z_slice, y_slice, x_index)
-            # Ex at offset (longitudinal)
-            self._Ex_indices = (slice(0, min(nz_ex, nz)), slice(0, min(ny_ex, ny)), offset_idx)
-            # Ey, Ez at center (transverse E)
-            self._Ey_indices = (slice(0, min(nz_ey, nz)), slice(0, min(ny_ey, ny-1)), center_idx)
-            self._Ez_indices = (slice(0, min(nz_ez, nz-1)), slice(0, min(ny_ez, ny)), center_idx)
+            # Calculate y-bounds from width parameter to constrain injection region
+            center_y_idx = int(round(self.center[1] / resolution))
+            half_width_idx = int(round((self.width / 2) / resolution))
+            y_start = max(0, center_y_idx - half_width_idx)
+            y_end = min(ny, center_y_idx + half_width_idx)
+            self._y_start = y_start
+            self._y_end = y_end
 
-            # Hx at center (longitudinal)
-            self._Hx_indices = (slice(0, min(nz_hx, nz-1)), slice(0, min(ny_hx, ny-1)), center_idx)
-            # Hy, Hz at offset (transverse H)
-            self._Hy_indices = (slice(0, min(nz_hy, nz-1)), slice(0, min(ny_hy, ny)), offset_idx)
-            self._Hz_indices = (slice(0, min(nz_hz, nz)), slice(0, min(ny_hz, ny-1)), offset_idx)
+            # Calculate z-bounds from height parameter to constrain injection region (for 3D)
+            center_z_idx = int(round(self.center[2] / resolution)) if len(self.center) > 2 else nz // 2
+            half_height_idx = int(round((self.height / 2) / resolution))
+            z_start = max(0, center_z_idx - half_height_idx)
+            z_end = min(nz, center_z_idx + half_height_idx)
+            self._z_start = z_start
+            self._z_end = z_end
+
+            # Indices: (z_slice, y_slice, x_index) - constrained to width and height regions
+            # Ex at offset (longitudinal)
+            self._Ex_indices = (slice(z_start, min(z_end, nz_ex, nz)), slice(y_start, min(y_end, ny_ex, ny)), offset_idx)
+            # Ey, Ez at center (transverse E)
+            self._Ey_indices = (slice(z_start, min(z_end, nz_ey, nz)), slice(y_start, min(y_end, ny_ey, ny-1)), center_idx)
+            self._Ez_indices = (slice(z_start, min(z_end, nz_ez, nz-1)), slice(y_start, min(y_end, ny_ez, ny)), center_idx)
+
+            # Hx at center (longitudinal) - constrained to width and height regions
+            self._Hx_indices = (slice(z_start, min(z_end, nz_hx, nz-1)), slice(y_start, min(y_end, ny_hx, ny-1)), center_idx)
+            # Hy, Hz at offset (transverse H) - constrained to width and height regions
+            self._Hy_indices = (slice(z_start, min(z_end, nz_hy, nz-1)), slice(y_start, min(y_end, ny_hy, ny)), offset_idx)
+            self._Hz_indices = (slice(z_start, min(z_end, nz_hz, nz)), slice(y_start, min(y_end, ny_hz, ny-1)), offset_idx)
 
             # Store profiles with direction sign and impedance correction
             # J = n × H (electric current from H)
@@ -259,14 +281,54 @@ class ModeSource:
                 Ez_staggered = Ez_staggered * corr
                 Ex_staggered = Ex_staggered * corr
 
+            # Crop profiles to width (y) and height (z) regions and apply smooth window
+            profile_z_start = z_start
+            profile_z_end = min(z_end, Ex_staggered.shape[0])
+            profile_y_start = y_start
+            profile_y_end = min(y_end, Ex_staggered.shape[1])
+            height_cells = profile_z_end - profile_z_start
+            width_cells = profile_y_end - profile_y_start
+
+            # Create 2D Tukey window for smooth edges in both z and y directions
+            from scipy.signal.windows import tukey
+            if height_cells > 2:
+                window_z = tukey(height_cells, alpha=0.3)
+            else:
+                window_z = np.ones(max(1, height_cells))
+            
+            if width_cells > 2:
+                window_y = tukey(width_cells, alpha=0.3)
+            else:
+                window_y = np.ones(max(1, width_cells))
+            
+            # Create 2D window by outer product
+            window_2d = window_z[:, np.newaxis] * window_y[np.newaxis, :]
+
+            # Crop and window each profile
+            def crop_and_window_2d(profile, z_s, z_e, y_s, y_e, window):
+                # Crop in both z and y directions
+                cropped = profile[z_s:z_e, y_s:y_e]
+                # Match window shape to cropped profile
+                if cropped.shape == window.shape:
+                    return cropped * window
+                elif cropped.size > 0:
+                    # Window might be slightly different size due to shape mismatches
+                    # Crop or pad window to match cropped profile
+                    z_min = min(cropped.shape[0], window.shape[0])
+                    y_min = min(cropped.shape[1], window.shape[1])
+                    window_cropped = window[:z_min, :y_min]
+                    cropped_matched = cropped[:z_min, :y_min]
+                    return cropped_matched * window_cropped
+                return cropped
+
             # Store profiles (real part for time-domain injection)
             # Sign convention for TFSF: J_i = dir_sign * H_j, M_i = dir_sign * E_j
-            self._Ex_profile = dir_sign * np.real(Ex_staggered)
-            self._Ey_profile = dir_sign * np.real(Ey_staggered)
-            self._Ez_profile = dir_sign * np.real(Ez_staggered)
-            self._Hx_profile = dir_sign * np.real(Hx_staggered)
-            self._Hy_profile = dir_sign * np.real(Hy_staggered)
-            self._Hz_profile = dir_sign * np.real(Hz_staggered)
+            self._Ex_profile = dir_sign * np.real(crop_and_window_2d(Ex_staggered, profile_z_start, profile_z_end, profile_y_start, profile_y_end, window_2d))
+            self._Ey_profile = dir_sign * np.real(crop_and_window_2d(Ey_staggered, profile_z_start, min(profile_z_end, Ey_staggered.shape[0]), profile_y_start, min(profile_y_end, Ey_staggered.shape[1]), window_2d))
+            self._Ez_profile = dir_sign * np.real(crop_and_window_2d(Ez_staggered, profile_z_start, min(profile_z_end, Ez_staggered.shape[0]), profile_y_start, min(profile_y_end, Ez_staggered.shape[1]), window_2d))
+            self._Hx_profile = dir_sign * np.real(crop_and_window_2d(Hx_staggered, profile_z_start, min(profile_z_end, Hx_staggered.shape[0]), profile_y_start, min(profile_y_end, Hx_staggered.shape[1]), window_2d))
+            self._Hy_profile = dir_sign * np.real(crop_and_window_2d(Hy_staggered, profile_z_start, min(profile_z_end, Hy_staggered.shape[0]), profile_y_start, min(profile_y_end, Hy_staggered.shape[1]), window_2d))
+            self._Hz_profile = dir_sign * np.real(crop_and_window_2d(Hz_staggered, profile_z_start, min(profile_z_end, Hz_staggered.shape[0]), profile_y_start, min(profile_y_end, Hz_staggered.shape[1]), window_2d))
 
             # Legacy compatibility
             self._h_component = "Hy"
@@ -313,14 +375,30 @@ class ModeSource:
             nx_grid = self._grid_shape[2]
             nz_grid = self._grid_shape[0]
 
-            # Indices: (z_slice, y_index, x_slice)
-            self._Ex_indices = (slice(0, min(nz_ex, nz_grid)), center_idx, slice(0, min(nx_ex, nx_grid-1)))
-            self._Ey_indices = (slice(0, min(nz_ey, nz_grid)), offset_idx, slice(0, min(nx_ey, nx_grid)))
-            self._Ez_indices = (slice(0, min(nz_ez, nz_grid-1)), center_idx, slice(0, min(nx_ez, nx_grid)))
+            # Calculate x-bounds from width parameter (for y-propagation, x is transverse)
+            center_x_idx = int(round(self.center[0] / resolution))
+            half_width_idx = int(round((self.width / 2) / resolution))
+            x_start = max(0, center_x_idx - half_width_idx)
+            x_end = min(nx_grid, center_x_idx + half_width_idx)
+            self._x_start = x_start
+            self._x_end = x_end
 
-            self._Hx_indices = (slice(0, min(nz_hx, nz_grid-1)), center_idx, slice(0, min(nx_hx, nx_grid)))
-            self._Hy_indices = (slice(0, min(nz_hy, nz_grid-1)), center_idx, slice(0, min(nx_hy, nx_grid-1)))
-            self._Hz_indices = (slice(0, min(nz_hz, nz_grid)), offset_idx, slice(0, min(nx_hz, nx_grid-1)))
+            # Calculate z-bounds from height parameter to constrain injection region (for 3D)
+            center_z_idx = int(round(self.center[2] / resolution)) if len(self.center) > 2 else nz_grid // 2
+            half_height_idx = int(round((self.height / 2) / resolution))
+            z_start = max(0, center_z_idx - half_height_idx)
+            z_end = min(nz_grid, center_z_idx + half_height_idx)
+            self._z_start = z_start
+            self._z_end = z_end
+
+            # Indices: (z_slice, y_index, x_slice) - constrained to width and height regions
+            self._Ex_indices = (slice(z_start, min(z_end, nz_ex, nz_grid)), center_idx, slice(x_start, min(x_end, nx_ex, nx_grid-1)))
+            self._Ey_indices = (slice(z_start, min(z_end, nz_ey, nz_grid)), offset_idx, slice(x_start, min(x_end, nx_ey, nx_grid)))
+            self._Ez_indices = (slice(z_start, min(z_end, nz_ez, nz_grid-1)), center_idx, slice(x_start, min(x_end, nx_ez, nx_grid)))
+
+            self._Hx_indices = (slice(z_start, min(z_end, nz_hx, nz_grid-1)), center_idx, slice(x_start, min(x_end, nx_hx, nx_grid)))
+            self._Hy_indices = (slice(z_start, min(z_end, nz_hy, nz_grid-1)), center_idx, slice(x_start, min(x_end, nx_hy, nx_grid-1)))
+            self._Hz_indices = (slice(z_start, min(z_end, nz_hz, nz_grid)), offset_idx, slice(x_start, min(x_end, nx_hz, nx_grid-1)))
 
             # Impedance correction
             norm_E = max(np.max(np.abs(Ex_staggered)), np.max(np.abs(Ez_staggered)), 1e-12)
@@ -332,12 +410,51 @@ class ModeSource:
                 Ey_staggered = Ey_staggered * corr
                 Ez_staggered = Ez_staggered * corr
 
-            self._Ex_profile = dir_sign * np.real(Ex_staggered)
-            self._Ey_profile = dir_sign * np.real(Ey_staggered)
-            self._Ez_profile = dir_sign * np.real(Ez_staggered)
-            self._Hx_profile = dir_sign * np.real(Hx_staggered)
-            self._Hy_profile = dir_sign * np.real(Hy_staggered)
-            self._Hz_profile = dir_sign * np.real(Hz_staggered)
+            # Crop profiles to width (x) and height (z) regions and apply smooth window
+            profile_z_start = z_start
+            profile_z_end = min(z_end, Ex_staggered.shape[0])
+            profile_x_start = x_start
+            profile_x_end = min(x_end, Ex_staggered.shape[1])
+            height_cells = profile_z_end - profile_z_start
+            width_cells = profile_x_end - profile_x_start
+
+            # Create 2D Tukey window for smooth edges in both z and x directions
+            from scipy.signal.windows import tukey
+            if height_cells > 2:
+                window_z = tukey(height_cells, alpha=0.3)
+            else:
+                window_z = np.ones(max(1, height_cells))
+            
+            if width_cells > 2:
+                window_x = tukey(width_cells, alpha=0.3)
+            else:
+                window_x = np.ones(max(1, width_cells))
+            
+            # Create 2D window by outer product
+            window_2d = window_z[:, np.newaxis] * window_x[np.newaxis, :]
+
+            def crop_and_window_2d(profile, z_s, z_e, x_s, x_e, window):
+                # Crop in both z and x directions
+                cropped = profile[z_s:z_e, x_s:x_e]
+                # Match window shape to cropped profile
+                if cropped.shape == window.shape:
+                    return cropped * window
+                elif cropped.size > 0:
+                    # Window might be slightly different size due to shape mismatches
+                    # Crop or pad window to match cropped profile
+                    z_min = min(cropped.shape[0], window.shape[0])
+                    x_min = min(cropped.shape[1], window.shape[1])
+                    window_cropped = window[:z_min, :x_min]
+                    cropped_matched = cropped[:z_min, :x_min]
+                    return cropped_matched * window_cropped
+                return cropped
+
+            self._Ex_profile = dir_sign * np.real(crop_and_window_2d(Ex_staggered, profile_z_start, profile_z_end, profile_x_start, profile_x_end, window_2d))
+            self._Ey_profile = dir_sign * np.real(crop_and_window_2d(Ey_staggered, profile_z_start, min(profile_z_end, Ey_staggered.shape[0]), profile_x_start, min(profile_x_end, Ey_staggered.shape[1]), window_2d))
+            self._Ez_profile = dir_sign * np.real(crop_and_window_2d(Ez_staggered, profile_z_start, min(profile_z_end, Ez_staggered.shape[0]), profile_x_start, min(profile_x_end, Ez_staggered.shape[1]), window_2d))
+            self._Hx_profile = dir_sign * np.real(crop_and_window_2d(Hx_staggered, profile_z_start, min(profile_z_end, Hx_staggered.shape[0]), profile_x_start, min(profile_x_end, Hx_staggered.shape[1]), window_2d))
+            self._Hy_profile = dir_sign * np.real(crop_and_window_2d(Hy_staggered, profile_z_start, min(profile_z_end, Hy_staggered.shape[0]), profile_x_start, min(profile_x_end, Hy_staggered.shape[1]), window_2d))
+            self._Hz_profile = dir_sign * np.real(crop_and_window_2d(Hz_staggered, profile_z_start, min(profile_z_end, Hz_staggered.shape[0]), profile_x_start, min(profile_x_end, Hz_staggered.shape[1]), window_2d))
 
             self._h_component = "Hx"
             self._e_component = "Ex"
@@ -359,7 +476,15 @@ class ModeSource:
         Z_phys = ETA_0 / max(np.real(self._neff), 1e-6)
 
         if axis == "x":
-            y_slice = slice(0, ny)
+            # Calculate y-bounds from width parameter (for x-propagation, y is transverse)
+            center_y_idx = int(round(self.center[1] / resolution))
+            half_width_idx = int(round((self.width / 2) / resolution))
+            y_start = max(0, center_y_idx - half_width_idx)
+            y_end = min(ny, center_y_idx + half_width_idx)
+            y_slice = slice(y_start, y_end)
+            self._y_start = y_start
+            self._y_end = y_end
+
             if self.pol == "tm":
                 self._ez_indices = (y_slice, center_idx)
                 self._h_indices = (y_slice, offset_idx)
@@ -386,15 +511,29 @@ class ModeSource:
                     corr = Z_phys / (norm_e / norm_h)
                     Ez_profile = Ez_profile * corr
 
-                self._jz_profile = dir_sign * np.real(Hy_profile)
-                self._my_profile = dir_sign * np.real(Ez_profile)
+                # Crop to width region and apply smooth window
+                width_cells = y_end - y_start
+                if width_cells > 2:
+                    from scipy.signal.windows import tukey
+                    window = tukey(width_cells, alpha=0.3)
+                else:
+                    window = np.ones(max(1, width_cells))
+
+                Hy_cropped = np.real(Hy_profile)[y_start:y_end]
+                Ez_cropped = np.real(Ez_profile)[y_start:y_end]
+                if len(Hy_cropped) == len(window):
+                    Hy_cropped = Hy_cropped * window
+                    Ez_cropped = Ez_cropped * window
+
+                self._jz_profile = dir_sign * Hy_cropped
+                self._my_profile = dir_sign * Ez_cropped
 
             else:  # TE
                 hz_col = max(0, offset_idx - 1) if self.direction == "+x" else min(nx - 2, offset_idx)
-                ny_eff = ny - 1
+                ny_eff = min(ny - 1, y_end - y_start)
 
-                self._hz_indices = (slice(0, ny_eff), hz_col)
-                self._e_indices = (slice(0, ny_eff), offset_idx)
+                self._hz_indices = (slice(y_start, min(y_end, ny-1)), hz_col)
+                self._e_indices = (slice(y_start, min(y_end, ny-1)), offset_idx)
                 self._e_component = "Ey"
 
                 # Extract with fallback
@@ -421,15 +560,37 @@ class ModeSource:
                     corr = Z_phys / (norm_e / norm_h)
                     Ey_profile = Ey_profile * corr
 
-                if self.direction == "+x":
-                    self._jy_profile = np.real(Hz_profile)
-                    self._mz_profile = np.real(Ey_profile)
+                # Crop to width region and apply smooth window
+                width_cells = min(y_end, len(Hz_profile)) - y_start
+                if width_cells > 2:
+                    from scipy.signal.windows import tukey
+                    window = tukey(width_cells, alpha=0.3)
                 else:
-                    self._jy_profile = -np.real(Hz_profile)
-                    self._mz_profile = -np.real(Ey_profile)
+                    window = np.ones(max(1, width_cells))
+
+                Hz_cropped = np.real(Hz_profile)[y_start:min(y_end, len(Hz_profile))]
+                Ey_cropped = np.real(Ey_profile)[y_start:min(y_end, len(Ey_profile))]
+                if len(Hz_cropped) == len(window):
+                    Hz_cropped = Hz_cropped * window
+                    Ey_cropped = Ey_cropped * window
+
+                if self.direction == "+x":
+                    self._jy_profile = Hz_cropped
+                    self._mz_profile = Ey_cropped
+                else:
+                    self._jy_profile = -Hz_cropped
+                    self._mz_profile = -Ey_cropped
 
         else:  # axis == "y"
-            x_slice = slice(0, nx)
+            # Calculate x-bounds from width parameter (for y-propagation, x is transverse)
+            center_x_idx = int(round(self.center[0] / resolution))
+            half_width_idx = int(round((self.width / 2) / resolution))
+            x_start = max(0, center_x_idx - half_width_idx)
+            x_end = min(nx, center_x_idx + half_width_idx)
+            x_slice = slice(x_start, x_end)
+            self._x_start = x_start
+            self._x_end = x_end
+
             if self.pol == "tm":
                 self._ez_indices = (center_idx, x_slice)
                 self._h_indices = (offset_idx, x_slice)
@@ -455,19 +616,33 @@ class ModeSource:
                     corr = Z_phys / (norm_e / norm_h)
                     Ez_profile = Ez_profile * corr
 
-                if self.direction == "+y":
-                    self._jz_profile = -np.real(Hx_profile)
-                    self._my_profile = np.real(Ez_profile)
+                # Crop to width region and apply smooth window
+                width_cells = x_end - x_start
+                if width_cells > 2:
+                    from scipy.signal.windows import tukey
+                    window = tukey(width_cells, alpha=0.3)
                 else:
-                    self._jz_profile = np.real(Hx_profile)
-                    self._my_profile = -np.real(Ez_profile)
+                    window = np.ones(max(1, width_cells))
+
+                Hx_cropped = np.real(Hx_profile)[x_start:x_end]
+                Ez_cropped = np.real(Ez_profile)[x_start:x_end]
+                if len(Hx_cropped) == len(window):
+                    Hx_cropped = Hx_cropped * window
+                    Ez_cropped = Ez_cropped * window
+
+                if self.direction == "+y":
+                    self._jz_profile = -Hx_cropped
+                    self._my_profile = Ez_cropped
+                else:
+                    self._jz_profile = Hx_cropped
+                    self._my_profile = -Ez_cropped
 
             else:  # TE y-prop
                 hz_row = max(0, offset_idx - 1) if self.direction == "+y" else min(ny - 2, offset_idx)
-                nx_eff = nx - 1
+                nx_eff = min(nx - 1, x_end - x_start)
 
-                self._hz_indices = (hz_row, slice(0, nx_eff))
-                self._e_indices = (offset_idx, slice(0, nx_eff))
+                self._hz_indices = (hz_row, slice(x_start, min(x_end, nx-1)))
+                self._e_indices = (offset_idx, slice(x_start, min(x_end, nx-1)))
                 self._e_component = "Ex"
 
                 # Extract with fallback
@@ -494,8 +669,22 @@ class ModeSource:
                     corr = Z_phys / (norm_e / norm_h)
                     Ex_profile = Ex_profile * corr
 
-                self._jx_profile = dir_sign * np.real(Hz_profile)
-                self._mz_profile = dir_sign * np.real(Ex_profile)
+                # Crop to width region and apply smooth window
+                width_cells = min(x_end, len(Hz_profile)) - x_start
+                if width_cells > 2:
+                    from scipy.signal.windows import tukey
+                    window = tukey(width_cells, alpha=0.3)
+                else:
+                    window = np.ones(max(1, width_cells))
+
+                Hz_cropped = np.real(Hz_profile)[x_start:min(x_end, len(Hz_profile))]
+                Ex_cropped = np.real(Ex_profile)[x_start:min(x_end, len(Ex_profile))]
+                if len(Hz_cropped) == len(window):
+                    Hz_cropped = Hz_cropped * window
+                    Ex_cropped = Ex_cropped * window
+
+                self._jx_profile = dir_sign * Hz_cropped
+                self._mz_profile = dir_sign * Ex_cropped
 
     def _compute_dt_physical(self, axis, is_3d, dx, dy):
         """Compute physical time shift between E and H injection planes."""
@@ -638,7 +827,8 @@ class ModeSource:
                 profile_squeezed = np.squeeze(profile)
 
                 if profile_squeezed.ndim == 2:
-                    im = ax.imshow(np.abs(profile_squeezed), origin='lower', cmap='magma', aspect='auto')
+                    # Use aspect='equal' to ensure grid cells are square (not stretched)
+                    im = ax.imshow(np.abs(profile_squeezed), origin='lower', cmap='magma', aspect='equal')
                     plt.colorbar(im, ax=ax, label='Amplitude')
                 else:
                     ax.plot(np.abs(profile_squeezed), 'b-')

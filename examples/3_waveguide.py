@@ -31,11 +31,11 @@ signal = ramped_cosine(
 source = ModeSource(
     grid=grid,
     center=(design.width/2, design.height/2),
-    width=WG_WIDTH * 1.2, # Slightly wider than waveguide to capture mode tails, but not so wide to hit PML/boundaries
+    width=WG_WIDTH * 3.5, # Slightly wider than waveguide to capture mode tails, but not so wide to hit PML/boundaries
     wavelength=WL,
     pol="tm",
     signal=signal,
-    direction="+x",
+    direction="-x",
 )
 
 # Run the simulation
