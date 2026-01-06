@@ -1,5 +1,7 @@
 """Shared utility functions for BeamZ FDTD physics validation tests."""
 import numpy as np
+from scipy.special import jv, yv
+from scipy.optimize import brentq
 from beamz import LIGHT_SPEED, EPS_0, um
 
 # =============================================================================
@@ -198,3 +200,574 @@ def analytical_cavity_frequency(m, L, n=1.0):
         Resonance frequency (Hz)
     """
     return m * LIGHT_SPEED / (2 * n * L)
+
+
+# =============================================================================
+# Mie Theory - 3D Sphere
+# =============================================================================
+def _riccati_bessel_psi(n, z):
+    """Riccati-Bessel function ψ_n(z) = z * j_n(z)."""
+    return z * np.sqrt(np.pi / (2 * z)) * jv(n + 0.5, z)
+
+
+def _riccati_bessel_zeta(n, z):
+    """Riccati-Bessel function ζ_n(z) = z * h_n^(1)(z)."""
+    psi = _riccati_bessel_psi(n, z)
+    chi = -z * np.sqrt(np.pi / (2 * z)) * yv(n + 0.5, z)
+    return psi + 1j * chi
+
+
+def _riccati_bessel_psi_prime(n, z):
+    """Derivative of Riccati-Bessel ψ_n(z)."""
+    return (n + 1) * np.sqrt(np.pi / (2 * z)) * jv(n + 0.5, z) \
+           - z * np.sqrt(np.pi / (2 * z)) * jv(n + 1.5, z)
+
+
+def _riccati_bessel_zeta_prime(n, z):
+    """Derivative of Riccati-Bessel ζ_n(z)."""
+    j_term = ((n + 1) * jv(n + 0.5, z) - z * jv(n + 1.5, z)) * np.sqrt(np.pi / (2 * z))
+    y_term = ((n + 1) * yv(n + 0.5, z) - z * yv(n + 1.5, z)) * np.sqrt(np.pi / (2 * z))
+    return j_term + 1j * y_term
+
+
+def mie_coefficients_3d(x, m, n_max):
+    """Compute Mie scattering coefficients a_n and b_n for a sphere.
+
+    Args:
+        x: Size parameter x = k * radius = 2π * n_medium * radius / wavelength
+        m: Relative refractive index m = n_sphere / n_medium
+        n_max: Maximum multipole order
+
+    Returns:
+        Tuple (a_n, b_n) arrays of complex coefficients
+    """
+    an, bn = [], []
+    for n in range(1, n_max + 1):
+        psi_x = _riccati_bessel_psi(n, x)
+        psi_mx = _riccati_bessel_psi(n, m * x)
+        zeta_x = _riccati_bessel_zeta(n, x)
+
+        psi_x_prime = _riccati_bessel_psi_prime(n, x)
+        psi_mx_prime = _riccati_bessel_psi_prime(n, m * x)
+        zeta_x_prime = _riccati_bessel_zeta_prime(n, x)
+
+        # Mie coefficients (Bohren & Huffman conventions)
+        an_num = m * psi_mx * psi_x_prime - psi_x * psi_mx_prime
+        an_den = m * psi_mx * zeta_x_prime - zeta_x * psi_mx_prime
+        an.append(an_num / an_den)
+
+        bn_num = psi_mx * psi_x_prime - m * psi_x * psi_mx_prime
+        bn_den = psi_mx * zeta_x_prime - m * zeta_x * psi_mx_prime
+        bn.append(bn_num / bn_den)
+
+    return np.array(an), np.array(bn)
+
+
+def mie_qext_3d(radius, wavelength, n_sphere, n_medium=1.0):
+    """Compute extinction efficiency Q_ext for a dielectric sphere.
+
+    Q_ext = C_ext / (π * r²) where C_ext is the extinction cross section.
+
+    Args:
+        radius: Sphere radius (same units as wavelength)
+        wavelength: Free-space wavelength
+        n_sphere: Refractive index of sphere
+        n_medium: Refractive index of surrounding medium
+
+    Returns:
+        Extinction efficiency Q_ext (dimensionless)
+    """
+    k = 2 * np.pi * n_medium / wavelength
+    m = n_sphere / n_medium
+    x = k * radius
+
+    # Number of terms (Wiscombe criterion)
+    n_max = int(round(x + 4 * x**(1/3) + 2))
+    n_max = max(n_max, 3)
+
+    an, bn = mie_coefficients_3d(x, m, n_max)
+    n_arr = np.arange(1, n_max + 1)
+
+    return (2 / x**2) * np.sum((2 * n_arr + 1) * np.real(an + bn))
+
+
+def mie_qsca_3d(radius, wavelength, n_sphere, n_medium=1.0):
+    """Compute scattering efficiency Q_sca for a dielectric sphere.
+
+    Args:
+        radius: Sphere radius
+        wavelength: Free-space wavelength
+        n_sphere: Refractive index of sphere
+        n_medium: Refractive index of surrounding medium
+
+    Returns:
+        Scattering efficiency Q_sca (dimensionless)
+    """
+    k = 2 * np.pi * n_medium / wavelength
+    m = n_sphere / n_medium
+    x = k * radius
+
+    n_max = int(round(x + 4 * x**(1/3) + 2))
+    n_max = max(n_max, 3)
+
+    an, bn = mie_coefficients_3d(x, m, n_max)
+    n_arr = np.arange(1, n_max + 1)
+
+    return (2 / x**2) * np.sum((2 * n_arr + 1) * (np.abs(an)**2 + np.abs(bn)**2))
+
+
+# =============================================================================
+# Mie Theory - 2D Cylinder (TM polarization)
+# =============================================================================
+def mie_coefficients_2d(x, m, n_max):
+    """Compute Mie scattering coefficients for 2D cylinder (TM polarization).
+
+    For TM polarization (E parallel to cylinder axis), the scattering
+    coefficients b_n are computed using Bessel functions.
+
+    Args:
+        x: Size parameter x = k * radius
+        m: Relative refractive index m = n_cyl / n_medium
+        n_max: Maximum multipole order
+
+    Returns:
+        Array of complex coefficients b_n for n = 0, 1, ..., n_max
+    """
+    bn = []
+    mx = m * x
+
+    for n in range(n_max + 1):
+        # TM coefficients (Ez polarization)
+        # b_n = [m*J_n(mx)*J'_n(x) - J_n(x)*J'_n(mx)] / [m*J_n(mx)*H'_n(x) - H_n(x)*J'_n(mx)]
+        jn_x = jv(n, x)
+        jn_mx = jv(n, mx)
+
+        # Derivatives using recurrence: J'_n(z) = J_{n-1}(z) - n/z * J_n(z)
+        if n == 0:
+            jn_x_prime = -jv(1, x)
+            jn_mx_prime = -jv(1, mx)
+        else:
+            jn_x_prime = jv(n - 1, x) - n / x * jn_x
+            jn_mx_prime = jv(n - 1, mx) - n / mx * jn_mx
+
+        # Hankel function H_n^(1) = J_n + i*Y_n
+        hn_x = jn_x + 1j * yv(n, x)
+        yn_x = yv(n, x)
+        if n == 0:
+            yn_x_prime = -yv(1, x)
+        else:
+            yn_x_prime = yv(n - 1, x) - n / x * yn_x
+        hn_x_prime = jn_x_prime + 1j * yn_x_prime
+
+        num = m * jn_mx * jn_x_prime - jn_x * jn_mx_prime
+        den = m * jn_mx * hn_x_prime - hn_x * jn_mx_prime
+
+        bn.append(num / den)
+
+    return np.array(bn)
+
+
+def mie_qext_2d(radius, wavelength, n_cylinder, n_medium=1.0):
+    """Compute extinction efficiency Q_ext for 2D dielectric cylinder.
+
+    For a 2D cylinder, Q_ext = C_ext / (2r) where C_ext is the extinction
+    width (cross section per unit length).
+
+    Q_ext = (2/x) * Re[b_0 + 2*sum_{n=1}^{n_max} b_n]
+
+    Args:
+        radius: Cylinder radius (same units as wavelength)
+        wavelength: Free-space wavelength
+        n_cylinder: Refractive index of cylinder
+        n_medium: Refractive index of surrounding medium
+
+    Returns:
+        Extinction efficiency Q_ext (dimensionless)
+    """
+    k = 2 * np.pi * n_medium / wavelength
+    m = n_cylinder / n_medium
+    x = k * radius
+
+    # Number of terms
+    n_max = int(round(x + 4 * x**(1/3) + 10))
+    n_max = max(n_max, 5)
+
+    bn = mie_coefficients_2d(x, m, n_max)
+
+    # Q_ext = (2/x) * Re[b_0 + 2*sum(b_n for n>=1)]
+    return (2 / x) * np.real(bn[0] + 2 * np.sum(bn[1:]))
+
+
+def mie_qsca_2d(radius, wavelength, n_cylinder, n_medium=1.0):
+    """Compute scattering efficiency Q_sca for 2D dielectric cylinder.
+
+    Q_sca = (2/x) * [|b_0|^2 + 2*sum_{n=1}^{n_max} |b_n|^2]
+
+    Args:
+        radius: Cylinder radius
+        wavelength: Free-space wavelength
+        n_cylinder: Refractive index of cylinder
+        n_medium: Refractive index of surrounding medium
+
+    Returns:
+        Scattering efficiency Q_sca (dimensionless)
+    """
+    k = 2 * np.pi * n_medium / wavelength
+    m = n_cylinder / n_medium
+    x = k * radius
+
+    n_max = int(round(x + 4 * x**(1/3) + 10))
+    n_max = max(n_max, 5)
+
+    bn = mie_coefficients_2d(x, m, n_max)
+
+    return (2 / x) * (np.abs(bn[0])**2 + 2 * np.sum(np.abs(bn[1:])**2))
+
+
+# =============================================================================
+# Waveguide Dispersion Relations
+# =============================================================================
+def slab_waveguide_neff_te(n_core, n_clad, width, wavelength, mode=0):
+    """Solve for effective index of symmetric slab waveguide (TE modes).
+
+    Solves the transcendental equation:
+    tan(k_t * d/2) = γ / k_t
+
+    where:
+    - k_t = k_0 * sqrt(n_core² - n_eff²)  (transverse wavevector in core)
+    - γ = k_0 * sqrt(n_eff² - n_clad²)    (decay constant in cladding)
+    - k_0 = 2π / λ
+
+    Args:
+        n_core: Core refractive index
+        n_clad: Cladding refractive index
+        width: Core width (same units as wavelength)
+        wavelength: Free-space wavelength
+        mode: Mode number (0 = fundamental)
+
+    Returns:
+        Effective index n_eff, or None if mode doesn't exist
+    """
+    k0 = 2 * np.pi / wavelength
+    d = width
+
+    # Normalized frequency V
+    V = k0 * d / 2 * np.sqrt(n_core**2 - n_clad**2)
+
+    # Mode cutoff: V must be large enough
+    if V < mode * np.pi / 2:
+        return None
+
+    def dispersion_eq(neff):
+        if neff <= n_clad or neff >= n_core:
+            return 1e10
+        kt = k0 * np.sqrt(n_core**2 - neff**2)
+        gamma = k0 * np.sqrt(neff**2 - n_clad**2)
+        # TE: tan(kt*d/2) = gamma/kt
+        lhs = np.tan(kt * d / 2)
+        rhs = gamma / kt
+        return lhs - rhs
+
+    # Search in valid range
+    n_min = n_clad + 1e-10
+    n_max = n_core - 1e-10
+
+    # For mode m, solution is near a particular branch
+    # Estimate starting point
+    neff_guess = np.sqrt((n_core**2 + n_clad**2) / 2)
+
+    # Use bisection with careful bracketing
+    try:
+        # Find bracket by scanning
+        n_points = np.linspace(n_min, n_max, 200)
+        vals = [dispersion_eq(n) for n in n_points]
+
+        # Find zero crossings
+        crossings = []
+        for i in range(len(vals) - 1):
+            if vals[i] * vals[i + 1] < 0:
+                crossings.append((n_points[i], n_points[i + 1]))
+
+        if mode >= len(crossings):
+            return None
+
+        # Get the mode-th crossing (counting from highest neff)
+        crossings = sorted(crossings, key=lambda x: -x[0])
+        bracket = crossings[mode]
+
+        neff = brentq(dispersion_eq, bracket[0], bracket[1])
+        return neff
+    except (ValueError, IndexError):
+        return None
+
+
+def slab_waveguide_neff_tm(n_core, n_clad, width, wavelength, mode=0):
+    """Solve for effective index of symmetric slab waveguide (TM modes).
+
+    Solves the transcendental equation:
+    tan(k_t * d/2) = (n_core² / n_clad²) * γ / k_t
+
+    Args:
+        n_core: Core refractive index
+        n_clad: Cladding refractive index
+        width: Core width (same units as wavelength)
+        wavelength: Free-space wavelength
+        mode: Mode number (0 = fundamental)
+
+    Returns:
+        Effective index n_eff, or None if mode doesn't exist
+    """
+    k0 = 2 * np.pi / wavelength
+    d = width
+
+    V = k0 * d / 2 * np.sqrt(n_core**2 - n_clad**2)
+    if V < mode * np.pi / 2:
+        return None
+
+    def dispersion_eq(neff):
+        if neff <= n_clad or neff >= n_core:
+            return 1e10
+        kt = k0 * np.sqrt(n_core**2 - neff**2)
+        gamma = k0 * np.sqrt(neff**2 - n_clad**2)
+        # TM: tan(kt*d/2) = (n_core/n_clad)² * gamma/kt
+        lhs = np.tan(kt * d / 2)
+        rhs = (n_core / n_clad)**2 * gamma / kt
+        return lhs - rhs
+
+    n_min = n_clad + 1e-10
+    n_max = n_core - 1e-10
+
+    try:
+        n_points = np.linspace(n_min, n_max, 200)
+        vals = [dispersion_eq(n) for n in n_points]
+
+        crossings = []
+        for i in range(len(vals) - 1):
+            if vals[i] * vals[i + 1] < 0:
+                crossings.append((n_points[i], n_points[i + 1]))
+
+        if mode >= len(crossings):
+            return None
+
+        crossings = sorted(crossings, key=lambda x: -x[0])
+        bracket = crossings[mode]
+
+        neff = brentq(dispersion_eq, bracket[0], bracket[1])
+        return neff
+    except (ValueError, IndexError):
+        return None
+
+
+# =============================================================================
+# Fabry-Pérot Cavity Functions
+# =============================================================================
+def fabry_perot_fsr(L, n=1.0):
+    """Free spectral range of Fabry-Pérot cavity.
+
+    FSR = c / (2 * n * L)
+
+    Args:
+        L: Cavity length
+        n: Refractive index inside cavity
+
+    Returns:
+        Free spectral range (Hz)
+    """
+    return LIGHT_SPEED / (2 * n * L)
+
+
+def fabry_perot_finesse(R1, R2):
+    """Finesse of Fabry-Pérot cavity from mirror reflectivities.
+
+    F = π * sqrt(R1*R2) / (1 - sqrt(R1*R2))
+
+    Args:
+        R1, R2: Power reflectivity of mirrors
+
+    Returns:
+        Finesse (dimensionless)
+    """
+    r = np.sqrt(R1 * R2)
+    return np.pi * r / (1 - r)
+
+
+def fabry_perot_q_factor(L, n, R1, R2):
+    """Q-factor of Fabry-Pérot cavity.
+
+    Q = F * m where F is finesse and m is mode number.
+    For fundamental mode at resonance: Q ≈ 2πnL / (λ * (1-R))
+
+    Args:
+        L: Cavity length
+        n: Refractive index inside cavity
+        R1, R2: Mirror reflectivities
+
+    Returns:
+        Q-factor for fundamental mode
+    """
+    F = fabry_perot_finesse(R1, R2)
+    # At resonance, m ~ 2nL/λ, so Q ~ F * 2nL/λ
+    # But we can estimate Q directly from photon lifetime
+    r = np.sqrt(R1 * R2)
+    tau_rt = 2 * n * L / LIGHT_SPEED  # round-trip time
+    # Amplitude decays by r per round trip, so intensity by r²
+    # Energy decay: E(t) = E0 * exp(-t/τ) where τ = -τ_rt / (2*ln(r))
+    if r >= 1:
+        return np.inf
+    tau = -tau_rt / (2 * np.log(r))
+    omega = 2 * np.pi * LIGHT_SPEED / (2 * n * L)  # fundamental
+    return omega * tau / 2
+
+
+# =============================================================================
+# DFT and Measurement Helpers
+# =============================================================================
+def compute_dft_field(field_history, time_array, frequency):
+    """Compute single-frequency DFT of time-domain field data.
+
+    Extracts the complex phasor at the target frequency using DFT.
+
+    Args:
+        field_history: Array of field snapshots, shape (n_times, ...) or list
+        time_array: 1D array of time values
+        frequency: Target frequency (Hz)
+
+    Returns:
+        Complex phasor array with shape (...), same as field spatial shape
+    """
+    field_arr = np.asarray(field_history)
+    time_arr = np.asarray(time_array)
+
+    # Reshape time array for broadcasting
+    # field_arr: (n_times, ny, nx) or (n_times, nz, ny, nx)
+    n_times = field_arr.shape[0]
+    time_shape = [n_times] + [1] * (field_arr.ndim - 1)
+    time_broadcast = time_arr.reshape(time_shape)
+
+    # DFT at single frequency
+    dt = time_arr[1] - time_arr[0] if len(time_arr) > 1 else 1.0
+    phasor = np.sum(field_arr * np.exp(-2j * np.pi * frequency * time_broadcast), axis=0) * dt
+
+    return phasor
+
+
+def compute_poynting_flux_phasor_2d(Ez_phasor, Hy_phasor, dx, direction='x'):
+    """Compute time-averaged Poynting flux from frequency-domain phasors.
+
+    S_avg = 0.5 * Re(E × H*)
+
+    For 2D TM (Ez, Hx, Hy):
+    - Sx = -0.5 * Re(Ez * Hy*)  (power in +x)
+    - Sy = 0.5 * Re(Ez * Hx*)   (power in +y)
+
+    Args:
+        Ez_phasor: Complex Ez field phasor (2D array)
+        Hy_phasor: Complex Hy field phasor (2D array)
+        dx: Grid spacing
+        direction: 'x' for x-directed flux
+
+    Returns:
+        Time-averaged power flux (integrated over line)
+    """
+    if direction == 'x':
+        # Sx = -0.5 * Re(Ez * Hy*)
+        flux_density = -0.5 * np.real(Ez_phasor * np.conj(Hy_phasor))
+    else:
+        raise ValueError("Only 'x' direction implemented for 2D")
+
+    return np.sum(flux_density) * dx
+
+
+def measure_ringdown_q_factor(field_history, time_array, center_freq):
+    """Extract Q-factor from cavity ringdown measurement.
+
+    Fits exponential decay to field envelope after source stops.
+    Q = ω * τ / 2 where τ is the energy decay time constant.
+
+    Args:
+        field_history: List/array of field values at a point over time
+        time_array: Time values
+        center_freq: Approximate resonance frequency
+
+    Returns:
+        Tuple (Q_factor, decay_time) or (None, None) if fit fails
+    """
+    field_arr = np.asarray(field_history).flatten()
+    time_arr = np.asarray(time_array)
+
+    # Compute envelope using Hilbert transform
+    from scipy.signal import hilbert
+    analytic = hilbert(np.real(field_arr))
+    envelope = np.abs(analytic)
+
+    # Find peak and fit decay after it
+    peak_idx = np.argmax(envelope)
+    if peak_idx >= len(envelope) - 10:
+        return None, None
+
+    # Use data after peak
+    t_decay = time_arr[peak_idx:] - time_arr[peak_idx]
+    env_decay = envelope[peak_idx:]
+
+    # Filter to significant values
+    threshold = 0.01 * envelope[peak_idx]
+    valid = env_decay > threshold
+    if np.sum(valid) < 5:
+        return None, None
+
+    t_fit = t_decay[valid]
+    env_fit = env_decay[valid]
+
+    # Linear fit to log(envelope) for exponential decay
+    try:
+        log_env = np.log(env_fit)
+        coeffs = np.polyfit(t_fit, log_env, 1)
+        decay_rate = -coeffs[0]  # Amplitude decay rate
+        tau = 1 / decay_rate  # Amplitude decay time
+
+        # Q = ω * τ_energy / 2 = ω * (τ_amplitude / 2) / 2 = ω * τ_amplitude / 4
+        # Actually: energy ~ |E|² ~ envelope², so τ_energy = τ_amplitude / 2
+        # Q = ω * τ_energy / 2 = ω * τ_amplitude / 4
+        omega = 2 * np.pi * center_freq
+        Q = omega * tau / 2  # Since we measure amplitude, not energy
+
+        return Q, tau
+    except (ValueError, np.linalg.LinAlgError):
+        return None, None
+
+
+def measure_resonance_frequency(field_history, time_array, freq_range=None):
+    """Find resonance frequency from FFT of field time series.
+
+    Args:
+        field_history: Field values at a point over time
+        time_array: Time values
+        freq_range: Optional (f_min, f_max) to search within
+
+    Returns:
+        Peak frequency (Hz)
+    """
+    field_arr = np.asarray(field_history).flatten()
+    time_arr = np.asarray(time_array)
+
+    dt = time_arr[1] - time_arr[0]
+    n = len(field_arr)
+
+    # FFT
+    spectrum = np.abs(np.fft.rfft(field_arr))
+    freqs = np.fft.rfftfreq(n, dt)
+
+    # Apply frequency range filter
+    if freq_range is not None:
+        mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
+        if not np.any(mask):
+            mask = np.ones_like(freqs, dtype=bool)
+    else:
+        mask = freqs > 0  # Exclude DC
+
+    # Find peak
+    masked_spectrum = spectrum.copy()
+    masked_spectrum[~mask] = 0
+    peak_idx = np.argmax(masked_spectrum)
+
+    return freqs[peak_idx]
