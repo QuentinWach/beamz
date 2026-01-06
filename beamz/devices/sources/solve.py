@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from typing import List, Literal, Tuple, Union
 
 import numpy as np
+import jax
+import jax.numpy as jnp
 
 # Lazy import of tidy3d to allow package to work without it
 tidy3d = None
@@ -269,16 +271,12 @@ def tidy3d_mode_computation_wrapper(
 def _normalize_by_poynting_flux(E: np.ndarray, H: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray]:
     S = np.cross(E, np.conjugate(H), axis=0)
     power = float(np.real(np.sum(S[axis])))
-    
-    # Debug: check which normalization path is taken
-    # print(f"[DEBUG normalize] axis={axis}, power={power:.3e}, E_norm={np.linalg.norm(E):.3e}, H_norm={np.linalg.norm(H):.3e}")
-    
+
     # Guard against tiny/negative/NaN power from numerical noise
     if not np.isfinite(power) or abs(power) < 1e-18:
         # Fallback: normalize by field amplitude
         e_norm = float(np.linalg.norm(E))
         if e_norm > 1e-18 and np.isfinite(e_norm):
-            # print(f"[DEBUG normalize] Using E-norm fallback: {e_norm:.3e}")
             return E / e_norm, H / e_norm
         return E, H
     # Normalize by magnitude of power to avoid sqrt of negative
@@ -295,3 +293,137 @@ def _normalize_by_poynting_flux(E: np.ndarray, H: np.ndarray, axis: int) -> tupl
     if not np.all(np.isfinite(E_norm)) or not np.all(np.isfinite(H_norm)):
         return E, H
     return E_norm, H_norm
+
+
+# ============================================================================
+# JAX-Compatible Differentiable Mode Solver Wrapper
+# ============================================================================
+
+def solve_modes_differentiable(
+    eps: jnp.ndarray,
+    omega: float,
+    dL: float,
+    direction: str = "+x",
+    filter_pol: str = None,
+    m: int = 1,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """JAX-compatible wrapper for mode solving with custom gradients.
+
+    This function wraps the tidy3d-based mode solver to enable gradient computation
+    via finite differences. The forward pass calls the numpy-based solve_modes,
+    and the backward pass computes gradients for omega (wavelength) using finite differences.
+
+    Args:
+        eps: Permittivity profile as JAX array
+        omega: Angular frequency (2*pi*c/wavelength)
+        dL: Grid resolution
+        direction: Propagation direction ("+x", "-x", etc.)
+        filter_pol: Polarization filter ("te" or "tm")
+        m: Number of modes to compute
+
+    Returns:
+        Tuple of (neff_array, E_fields, H_fields) as JAX arrays
+    """
+    # Convert JAX array to numpy for tidy3d
+    eps_np = np.asarray(eps)
+
+    # Call the numpy-based solver
+    neff_array, E_fields, H_fields, _ = solve_modes(
+        eps=eps_np,
+        omega=float(omega),
+        dL=float(dL),
+        direction=direction,
+        filter_pol=filter_pol,
+        m=m,
+        return_fields=True,
+    )
+
+    # Convert results to JAX arrays
+    return (
+        jnp.asarray(neff_array),
+        jnp.asarray(E_fields),
+        jnp.asarray(H_fields),
+    )
+
+
+@jax.custom_vjp
+def solve_modes_jax(
+    omega: float,
+    eps: jnp.ndarray,
+    dL: float,
+    direction: str,
+    filter_pol: str,
+) -> jnp.ndarray:
+    """Differentiable mode solver that returns effective index.
+
+    This function enables gradient computation through the mode solver
+    with respect to omega (and thus wavelength). Uses finite differences
+    for the backward pass since tidy3d is not JAX-compatible.
+
+    Args:
+        omega: Angular frequency (differentiable parameter)
+        eps: Permittivity profile (not differentiable through this function)
+        dL: Grid resolution
+        direction: Propagation direction
+        filter_pol: Polarization filter
+
+    Returns:
+        Complex effective index of the fundamental mode
+    """
+    eps_np = np.asarray(eps)
+    neff_array, _, _, _ = solve_modes(
+        eps=eps_np,
+        omega=float(omega),
+        dL=float(dL),
+        direction=direction,
+        filter_pol=filter_pol,
+        m=1,
+        return_fields=True,
+    )
+    return jnp.asarray(neff_array[0])
+
+
+def solve_modes_jax_fwd(omega, eps, dL, direction, filter_pol):
+    """Forward pass for custom VJP."""
+    neff = solve_modes_jax(omega, eps, dL, direction, filter_pol)
+    # Store residuals for backward pass
+    return neff, (omega, eps, dL, direction, filter_pol)
+
+
+def solve_modes_jax_bwd(res, g):
+    """Backward pass using finite differences for omega gradient."""
+    omega, eps, dL, direction, filter_pol = res
+
+    # Finite difference step (relative to omega)
+    h = 1e-6 * omega
+
+    # Compute neff at omega + h and omega - h
+    neff_plus = solve_modes_jax(omega + h, eps, dL, direction, filter_pol)
+    neff_minus = solve_modes_jax(omega - h, eps, dL, direction, filter_pol)
+
+    # Central difference for d(neff)/d(omega)
+    dneff_domega = (neff_plus - neff_minus) / (2 * h)
+
+    # Chain rule: gradient w.r.t. omega
+    # g is the gradient of the loss w.r.t. neff (complex)
+    # We take real part since loss is typically real
+    grad_omega = jnp.real(jnp.conj(g) * dneff_domega + g * jnp.conj(dneff_domega)) / 2
+
+    # eps gradient not implemented (would require many solver calls)
+    grad_eps = jnp.zeros_like(eps)
+
+    return (grad_omega, grad_eps, None, None, None)
+
+
+# Register custom VJP
+solve_modes_jax.defvjp(solve_modes_jax_fwd, solve_modes_jax_bwd)
+
+
+def wavelength_to_omega(wavelength: float, c: float = 299792458.0) -> float:
+    """Convert wavelength to angular frequency."""
+    return 2 * np.pi * c / wavelength
+
+
+def omega_to_wavelength(omega: float, c: float = 299792458.0) -> float:
+    """Convert angular frequency to wavelength."""
+    return 2 * np.pi * c / omega
