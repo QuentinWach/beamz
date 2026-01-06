@@ -14,7 +14,7 @@ N_CORE = 3.48  # Silicon
 # Calculate optimal grid parameters
 # 3D simulations can be memory intensive, so we use a slightly lower resolution (8 points/WL)
 DX, DT = calc_optimal_fdtd_params(WL, N_CORE, dims=3, safety_factor=0.999,
-    points_per_wavelength=9, width=6.5*µm, height=6.5*µm, depth=4*µm)
+    points_per_wavelength=10, width=6.5*µm, height=6.5*µm, depth=4*µm)
 
 # 1. Create the Design
 # A 10µm long waveguide along X, 4µm wide, 2µm thick
@@ -46,14 +46,21 @@ grid = design.rasterize(resolution=DX)
 source = ModeSource(
     grid=grid,
     center=(1*WL, 3.25*µm, 2.11*µm),  # Z at waveguide center
-    width=6.5*µm,  # Closer to waveguide height (0.5µm) to better capture mode
+    width=1.5*µm,  # Closer to waveguide height (0.5µm) to better capture mode
+    height=0.8*µm,
     wavelength=WL,
     pol="te",
     signal=signal,
     direction="+x"
 )
-#source.show(field="Ez")
-#source.show(field="Hy")
+
+# Initialize the source to compute mode profiles
+source.initialize(grid.permittivity, DX)
+
+# Plot and save all mode field components (Ex, Ey, Ez, Hx, Hy, Hz)
+print("Plotting all mode field components...")
+source._plot_mode_profile_3d()
+print("Mode profile figure saved to mode_profile.png")
 
 # 4. Add Monitors
 # XY plane monitor in the middle of the waveguide thickness
