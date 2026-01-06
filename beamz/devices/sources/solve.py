@@ -4,8 +4,25 @@ from types import SimpleNamespace
 from typing import List, Literal, Tuple, Union
 
 import numpy as np
-import tidy3d
-from tidy3d.components.mode.solver import compute_modes as _compute_modes
+
+# Lazy import of tidy3d to allow package to work without it
+tidy3d = None
+_compute_modes = None
+
+def _ensure_tidy3d():
+    """Lazily import tidy3d when needed."""
+    global tidy3d, _compute_modes
+    if tidy3d is None:
+        try:
+            import tidy3d as _tidy3d
+            from tidy3d.components.mode.solver import compute_modes as _cm
+            tidy3d = _tidy3d
+            _compute_modes = _cm
+        except ImportError:
+            raise ImportError(
+                "tidy3d is required for mode solving. "
+                "Install it with: pip install tidy3d"
+            )
 
 ModeTupleType = namedtuple("Mode", ["neff", "Ex", "Ey", "Ez", "Hx", "Hy", "Hz"])
 """A named tuple containing the mode fields and effective index."""
@@ -56,6 +73,7 @@ def compute_mode(
     filter_pol: Union[Literal["te", "tm"], None] = None,
     target_neff: Union[float, None] = None,
 ) -> tuple[np.ndarray, np.ndarray, complex, int]:
+    _ensure_tidy3d()  # Lazy import tidy3d
     inv_permittivities = np.asarray(inv_permittivities, dtype=np.complex128)
     if inv_permittivities.ndim == 1: inv_permittivities = inv_permittivities[np.newaxis, :, np.newaxis]
     elif inv_permittivities.ndim == 2: inv_permittivities = inv_permittivities[np.newaxis, :, :]
@@ -203,6 +221,7 @@ def tidy3d_mode_computation_wrapper(
     num_modes: int = 10,
     precision: Literal["single", "double"] = "double",
 ) -> List[ModeTupleType]:
+    _ensure_tidy3d()  # Lazy import tidy3d
     mode_spec = SimpleNamespace(
         num_modes=num_modes,
         target_neff=target_neff,

@@ -60,6 +60,8 @@ gpu = [
 test = [ # Adding a 'test' extra that includes pytest and pytest-cov for convenience
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+    "pytest-randomly>=3.0.0",
+    "tidy3d>=2.0.0",  # Required for ModeSource mode solving
 ]
 
 
