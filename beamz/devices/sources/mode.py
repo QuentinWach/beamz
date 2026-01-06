@@ -167,8 +167,6 @@ class ModeSource:
         # Compute physical time shift
         self._compute_dt_physical(axis, is_3d, dx, dy)
 
-        if self.width < 2.0 * µm:
-            print("[ModeSource] Note: Source injection extended to full transverse span.")
 
     def _setup_3d_injection(self, Ex, Ey, Ez, Hx, Hy, Hz,
                             center_idx, offset_idx, axis, nz, ny, nx, resolution):
