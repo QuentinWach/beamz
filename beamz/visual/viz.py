@@ -1730,6 +1730,50 @@ class VideoRecorder:
             print("No frames to save.")
             return
 
+        # Handle 3D fields by extracting 2D slice
+        # Check if first frame is 3D
+        first_frame = np.asarray(self.frames[0])
+        if first_frame.ndim == 3:
+            # Extract middle slice based on plane_2d setting
+            plane_2d = getattr(self, 'plane_2d', 'xy')
+            if plane_2d == 'xy':
+                # Extract middle z-slice: frame[z_mid, :, :]
+                z_mid = first_frame.shape[0] // 2
+                first_frame = first_frame[z_mid, :, :]
+            elif plane_2d == 'xz':
+                # Extract middle y-slice: frame[:, y_mid, :]
+                y_mid = first_frame.shape[1] // 2
+                first_frame = first_frame[:, y_mid, :]
+            elif plane_2d == 'yz':
+                # Extract middle x-slice: frame[:, :, x_mid]
+                x_mid = first_frame.shape[2] // 2
+                first_frame = first_frame[:, :, x_mid]
+            else:
+                # Default to middle z-slice for xy plane
+                z_mid = first_frame.shape[0] // 2
+                first_frame = first_frame[z_mid, :, :]
+            
+            # Convert all frames to 2D slices
+            converted_frames = []
+            for frame in self.frames:
+                frame_arr = np.asarray(frame)
+                if frame_arr.ndim == 3:
+                    if plane_2d == 'xy':
+                        z_mid = frame_arr.shape[0] // 2
+                        converted_frames.append(frame_arr[z_mid, :, :])
+                    elif plane_2d == 'xz':
+                        y_mid = frame_arr.shape[1] // 2
+                        converted_frames.append(frame_arr[:, y_mid, :])
+                    elif plane_2d == 'yz':
+                        x_mid = frame_arr.shape[2] // 2
+                        converted_frames.append(frame_arr[:, :, x_mid])
+                    else:
+                        z_mid = frame_arr.shape[0] // 2
+                        converted_frames.append(frame_arr[z_mid, :, :])
+                else:
+                    converted_frames.append(frame_arr)
+            self.frames = converted_frames
+
         # Determine color scale
         if self.axis_scale is not None:
             vmin, vmax = self.axis_scale
@@ -1738,7 +1782,7 @@ class VideoRecorder:
             vmin = -vmax
 
         # Setup figure - ensure dimensions are divisible by 2 for video encoding
-        grid_height, grid_width = self.frames[0].shape
+        grid_height, grid_width = first_frame.shape
         aspect_ratio = grid_width / grid_height
         base_size = 6
 
