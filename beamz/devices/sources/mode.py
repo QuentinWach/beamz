@@ -1,5 +1,7 @@
 import numpy as np
+import jax.numpy as jnp
 from beamz.devices.sources.solve import solve_modes
+from beamz.devices.sources.jax_utils import jax_tukey_window, differentiable_phase_alignment
 from beamz.const import µm, LIGHT_SPEED, EPS_0, MU_0
 
 class ModeSource:
@@ -121,33 +123,36 @@ class ModeSource:
         E_mode = e_fields[0]  # Shape: (3, nz, ny) or (3, ny)
         H_mode = h_fields[0]  # Shape: (3, nz, ny) or (3, ny)
 
-        # 3. Extract all 6 components
+        # 3. Extract all 6 components and convert to JAX arrays
         # Note: Mode solver output order depends on propagation axis
         # For 1D/2D eps with propagation_axis=0: E=[Ez, Ex, Ey], H=[Hz, Hx, Hy]
-        Ex_raw = np.squeeze(E_mode[0])
-        Ey_raw = np.squeeze(E_mode[1])
-        Ez_raw = np.squeeze(E_mode[2])
-        Hx_raw = np.squeeze(H_mode[0])
-        Hy_raw = np.squeeze(H_mode[1])
-        Hz_raw = np.squeeze(H_mode[2])
+        Ex_raw = jnp.asarray(jnp.squeeze(E_mode[0]))
+        Ey_raw = jnp.asarray(jnp.squeeze(E_mode[1]))
+        Ez_raw = jnp.asarray(jnp.squeeze(E_mode[2]))
+        Hx_raw = jnp.asarray(jnp.squeeze(H_mode[0]))
+        Hy_raw = jnp.asarray(jnp.squeeze(H_mode[1]))
+        Hz_raw = jnp.asarray(jnp.squeeze(H_mode[2]))
 
-        # 4. Phase align all components to dominant field
+        # 4. Phase align all components to dominant field (JAX-compatible)
         if self.pol == "tm":
-            ref_field = Ez_raw if np.max(np.abs(Ez_raw)) > np.max(np.abs(Ey_raw)) else Ey_raw
+            ref_field = jnp.where(
+                jnp.max(jnp.abs(Ez_raw)) > jnp.max(jnp.abs(Ey_raw)),
+                Ez_raw, Ey_raw
+            )
         else:
             ref_field = Ey_raw if axis == "x" else Ex_raw
-            if np.max(np.abs(ref_field)) < 1e-9:
-                ref_field = Ez_raw
+            ref_field = jnp.where(jnp.max(jnp.abs(ref_field)) < 1e-9, Ez_raw, ref_field)
 
-        idx_max = np.argmax(np.abs(ref_field))
-        phase_ref = np.angle(ref_field.flatten()[idx_max])
+        # Use JAX argmax and angle for phase alignment
+        idx_max = jnp.argmax(jnp.abs(ref_field))
+        phase_ref = jnp.angle(ref_field.flatten()[idx_max])
 
-        Ex_aligned = Ex_raw * np.exp(-1j * phase_ref)
-        Ey_aligned = Ey_raw * np.exp(-1j * phase_ref)
-        Ez_aligned = Ez_raw * np.exp(-1j * phase_ref)
-        Hx_aligned = Hx_raw * np.exp(-1j * phase_ref)
-        Hy_aligned = Hy_raw * np.exp(-1j * phase_ref)
-        Hz_aligned = Hz_raw * np.exp(-1j * phase_ref)
+        Ex_aligned = Ex_raw * jnp.exp(-1j * phase_ref)
+        Ey_aligned = Ey_raw * jnp.exp(-1j * phase_ref)
+        Ez_aligned = Ez_raw * jnp.exp(-1j * phase_ref)
+        Hx_aligned = Hx_raw * jnp.exp(-1j * phase_ref)
+        Hy_aligned = Hy_raw * jnp.exp(-1j * phase_ref)
+        Hz_aligned = Hz_raw * jnp.exp(-1j * phase_ref)
 
         # 5. Apply Yee grid staggering and set up indices for 3D
         if is_3d:
@@ -269,15 +274,16 @@ class ModeSource:
             # M = -n × E (magnetic current from E)
             # For +x propagation, n = +x_hat
 
-            # Apply impedance correction to E fields
-            norm_E = max(np.max(np.abs(Ey_staggered)), np.max(np.abs(Ez_staggered)), 1e-12)
-            norm_H = max(np.max(np.abs(Hy_staggered)), np.max(np.abs(Hz_staggered)), 1e-12)
-            if norm_E > 1e-12 and norm_H > 1e-12:
-                current_Z = norm_E / norm_H
-                corr = Z_phys / current_Z
-                Ey_staggered = Ey_staggered * corr
-                Ez_staggered = Ez_staggered * corr
-                Ex_staggered = Ex_staggered * corr
+            # Apply impedance correction to E fields (JAX-compatible)
+            norm_E = jnp.maximum(jnp.max(jnp.abs(Ey_staggered)),
+                                 jnp.maximum(jnp.max(jnp.abs(Ez_staggered)), 1e-12))
+            norm_H = jnp.maximum(jnp.max(jnp.abs(Hy_staggered)),
+                                 jnp.maximum(jnp.max(jnp.abs(Hz_staggered)), 1e-12))
+            current_Z = norm_E / norm_H
+            corr = jnp.where((norm_E > 1e-12) & (norm_H > 1e-12), Z_phys / current_Z, 1.0)
+            Ey_staggered = Ey_staggered * corr
+            Ez_staggered = Ez_staggered * corr
+            Ex_staggered = Ex_staggered * corr
 
             # Crop profiles to width (y) and height (z) regions and apply smooth window
             profile_z_start = z_start
@@ -287,20 +293,19 @@ class ModeSource:
             height_cells = profile_z_end - profile_z_start
             width_cells = profile_y_end - profile_y_start
 
-            # Create 2D Tukey window for smooth edges in both z and y directions
-            from scipy.signal.windows import tukey
+            # Create 2D Tukey window for smooth edges in both z and y directions (JAX)
             if height_cells > 2:
-                window_z = tukey(height_cells, alpha=0.3)
+                window_z = jax_tukey_window(height_cells, alpha=0.3)
             else:
-                window_z = np.ones(max(1, height_cells))
-            
+                window_z = jnp.ones(max(1, height_cells))
+
             if width_cells > 2:
-                window_y = tukey(width_cells, alpha=0.3)
+                window_y = jax_tukey_window(width_cells, alpha=0.3)
             else:
-                window_y = np.ones(max(1, width_cells))
-            
-            # Create 2D window by outer product
-            window_2d = window_z[:, np.newaxis] * window_y[np.newaxis, :]
+                window_y = jnp.ones(max(1, width_cells))
+
+            # Create 2D window by outer product (JAX)
+            window_2d = window_z[:, jnp.newaxis] * window_y[jnp.newaxis, :]
 
             # Crop and window each profile
             def crop_and_window_2d(profile, z_s, z_e, y_s, y_e, window):
@@ -935,7 +940,7 @@ class ModeSource:
                     j_term = self._Hx_profile  # J_x from H_x (cross product)
                     j_term = self._match_shape(j_term, target_shape)
                     if j_term is not None:
-                        fields.Ex[self._Ex_indices] += -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                        fields.Ex = fields.Ex.at[self._Ex_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
             except Exception:
                 pass
 
@@ -948,7 +953,7 @@ class ModeSource:
                 j_term = self._match_shape(j_term, target_shape)
                 if j_term is not None:
                     eps = fields.permittivity[self._Ey_indices]
-                    fields.Ey[self._Ey_indices] += -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                    fields.Ey = fields.Ey.at[self._Ey_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
             except Exception:
                 pass
 
@@ -961,7 +966,7 @@ class ModeSource:
                 j_term = self._match_shape(j_term, target_shape)
                 if j_term is not None:
                     eps = fields.permittivity[self._Ez_indices]
-                    fields.Ez[self._Ez_indices] += -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                    fields.Ez = fields.Ez.at[self._Ez_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
             except Exception:
                 pass
 
@@ -975,7 +980,7 @@ class ModeSource:
                 if m_term is not None:
                     mu = getattr(fields, 'permeability', None)
                     mu_val = mu[self._Hx_indices] if mu is not None else 1.0
-                    fields.Hx[self._Hx_indices] += -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    fields.Hx = fields.Hx.at[self._Hx_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
             except Exception:
                 pass
 
@@ -989,7 +994,7 @@ class ModeSource:
                 if m_term is not None:
                     mu = getattr(fields, 'permeability', None)
                     mu_val = mu[self._Hy_indices] if mu is not None else 1.0
-                    fields.Hy[self._Hy_indices] += -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    fields.Hy = fields.Hy.at[self._Hy_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
             except Exception:
                 pass
 
@@ -1003,7 +1008,7 @@ class ModeSource:
                 if m_term is not None:
                     mu = getattr(fields, 'permeability', None)
                     mu_val = mu[self._Hz_indices] if mu is not None else 1.0
-                    fields.Hz[self._Hz_indices] += -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    fields.Hz = fields.Hz.at[self._Hz_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
             except Exception:
                 pass
 
@@ -1041,7 +1046,7 @@ class ModeSource:
                 eps_at_source = fields.permittivity[self._ez_indices]
                 jz_term = self._jz_profile * signal_e / resolution
                 ez_injection = -jz_term * dt / (EPS_0 * eps_at_source)
-                fields.Ez[self._ez_indices] += ez_injection
+                fields.Ez = fields.Ez.at[self._ez_indices].add(ez_injection)
 
             if self._h_indices is not None and self._my_profile is not None:
                 mu_val = getattr(fields, 'permeability', None)
@@ -1050,9 +1055,9 @@ class ModeSource:
                 h_injection = -my_term * dt / (MU_0 * mu_at_source)
 
                 if self._h_component == "Hx":
-                    fields.Hx[self._h_indices] += h_injection
+                    fields.Hx = fields.Hx.at[self._h_indices].add(h_injection)
                 else:
-                    fields.Hy[self._h_indices] += h_injection
+                    fields.Hy = fields.Hy.at[self._h_indices].add(h_injection)
         else:  # TE
             # TE Injection: Jx/Jy -> Ex/Ey, Mz -> Hz
             if self._e_indices is not None:
@@ -1063,16 +1068,16 @@ class ModeSource:
                     e_injection = -j_term * dt / (EPS_0 * eps_at_source)
 
                     if self._e_component == "Ex":
-                        fields.Ex[self._e_indices] += e_injection
+                        fields.Ex = fields.Ex.at[self._e_indices].add(e_injection)
                     else:
-                        fields.Ey[self._e_indices] += e_injection
+                        fields.Ey = fields.Ey.at[self._e_indices].add(e_injection)
 
             if self._hz_indices is not None and self._mz_profile is not None:
                 mu_val = getattr(fields, 'permeability', None)
                 mu_at_source = mu_val[self._hz_indices] if mu_val is not None else 1.0
                 mz_term = self._mz_profile * signal_h / resolution
                 hz_injection = -mz_term * dt / (MU_0 * mu_at_source)
-                fields.Hz[self._hz_indices] += hz_injection
+                fields.Hz = fields.Hz.at[self._hz_indices].add(hz_injection)
 
     def add_to_plot(self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"):
         """Add source visualization to 2D matplotlib plot.

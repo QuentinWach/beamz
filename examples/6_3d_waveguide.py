@@ -78,5 +78,4 @@ sim = Simulation(design=design, devices=[source, monitor_xy],
 boundaries=[PML(edges='all', thickness=0.75*WL)], time=time_steps, resolution=DX)
 
 # Run with live animation of the Ez field on the XY monitor
-sim.run(animate_live="Ez", animation_interval=5, clean_visualization=True)
-
+results = sim.run(animate_live="Hy", animation_interval=5, clean_visualization=True, save_video="3d_waveguide.mp4")

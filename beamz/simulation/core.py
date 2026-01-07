@@ -1,10 +1,14 @@
 import numpy as np
+import jax
+import jax.numpy as jnp
+from functools import partial
 from beamz.const import *
 from beamz.design.core import Design
 from beamz.devices.core import Device
 from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.fields import Fields
 from beamz.simulation.boundaries import Boundary, PML
+from beamz.simulation.ops import advance_e_field, advance_h_field
 from beamz.visual.viz import animate_manual_field, close_fdtd_figure, VideoRecorder
 
 class Simulation:
@@ -108,7 +112,258 @@ class Simulation:
                 if m: source_m.update(m)
         
         return source_j, source_m
-    
+
+    def _create_jit_step_2d(self):
+        """Create a JIT-compiled 2D FDTD step function for maximum performance.
+
+        Returns a pure function that takes field arrays and returns updated field arrays.
+        """
+        # Extract static parameters for JIT compilation
+        resolution = self.resolution
+        dt = self.dt
+        plane_2d = self.plane_2d
+
+        # Material parameters (static for the simulation)
+        eps_x, sig_x, region_x = self.fields.eps_x, self.fields.sig_x, self.fields.region_x
+        eps_y, sig_y, region_y = self.fields.eps_y, self.fields.sig_y, self.fields.region_y
+        eps_z, sig_z, region_z = self.fields.eps_z, self.fields.sig_z, self.fields.region_z
+        sigma_m_hx = self.fields.sigma_m_hx
+        sigma_m_hy = self.fields.sigma_m_hy
+        sigma_m_hz = self.fields.sigma_m_hz
+
+        # Import curl operations
+        from beamz.simulation.ops import curl_e_to_h_2d, curl_h_to_e_2d
+
+        @jax.jit
+        def step_2d(Ex, Ey, Ez, Hx, Hy, Hz):
+            """Pure JIT-compiled FDTD step (no sources)."""
+            # 1. Update H fields from E fields
+            curlE_x, curlE_y, curlE_z = curl_e_to_h_2d((Ex, Ey, Ez), resolution, plane=plane_2d)
+
+            Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+            Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+            Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+
+            # 2. Update E fields from H fields
+            curlH_x, curlH_y, curlH_z = curl_h_to_e_2d(
+                (Hx_new, Hy_new, Hz_new), resolution,
+                (Ex.shape, Ey.shape, Ez.shape), plane=plane_2d
+            )
+
+            Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
+            Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
+            Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
+
+            return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
+
+        return step_2d
+
+    def _create_jit_step_3d(self):
+        """Create a JIT-compiled 3D FDTD step function for maximum performance."""
+        resolution = self.resolution
+        dt = self.dt
+
+        eps_x, sig_x, region_x = self.fields.eps_x, self.fields.sig_x, self.fields.region_x
+        eps_y, sig_y, region_y = self.fields.eps_y, self.fields.sig_y, self.fields.region_y
+        eps_z, sig_z, region_z = self.fields.eps_z, self.fields.sig_z, self.fields.region_z
+        sigma_m_hx = self.fields.sigma_m_hx
+        sigma_m_hy = self.fields.sigma_m_hy
+        sigma_m_hz = self.fields.sigma_m_hz
+
+        from beamz.simulation.ops import curl_e_to_h_3d, curl_h_to_e_3d
+
+        @jax.jit
+        def step_3d(Ex, Ey, Ez, Hx, Hy, Hz):
+            """Pure JIT-compiled 3D FDTD step (no sources)."""
+            # 1. Update H fields from E fields
+            curlE_x, curlE_y, curlE_z = curl_e_to_h_3d(Ex, Ey, Ez, resolution)
+
+            Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+            Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+            Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+
+            # 2. Update E fields from H fields
+            curlH_x, curlH_y, curlH_z = curl_h_to_e_3d(
+                Hx_new, Hy_new, Hz_new, resolution,
+                ex_shape=Ex.shape, ey_shape=Ey.shape, ez_shape=Ez.shape
+            )
+
+            Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
+            Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
+            Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
+
+            return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
+
+        return step_3d
+
+    def run_fast(self, num_steps=None, record_interval=None, record_fields=None, progress=True):
+        """Run FDTD simulation with JIT-compiled loop for maximum performance.
+
+        This method uses JAX's jax.lax.fori_loop for efficient time-stepping with full JIT compilation.
+        Sources are injected at each step (not JIT-compiled), but the field update is fully optimized.
+
+        Args:
+            num_steps: Number of steps to run (default: remaining steps)
+            record_interval: Record fields every N steps (default: None, don't record)
+            record_fields: List of field names to record (default: ['Ez'])
+            progress: Show progress bar (default: True)
+
+        Returns:
+            dict with:
+                - 'fields': dict of recorded field arrays if record_interval was set
+                - 'monitors': list of Monitor objects with recorded data
+        """
+        if num_steps is None:
+            num_steps = self.num_steps - self.current_step
+
+        if record_fields is None:
+            record_fields = ['Ez']
+
+        # Create JIT-compiled step function
+        jit_step = self._create_jit_step_2d() if not self.is_3d else self._create_jit_step_3d()
+
+        # Warm up JIT (compile on first call)
+        if progress:
+            print("● JIT compiling FDTD kernel...", end=" ", flush=True)
+
+        # Run one step to trigger compilation
+        Ex, Ey, Ez, Hx, Hy, Hz = jit_step(
+            self.fields.Ex, self.fields.Ey, self.fields.Ez,
+            self.fields.Hx, self.fields.Hy, self.fields.Hz
+        )
+        # Block until compilation is done
+        Ex.block_until_ready()
+
+        if progress:
+            print("done!")
+
+        # Initialize field history storage
+        field_history = {name: [] for name in record_fields}
+
+        # Main simulation loop with JIT-compiled steps
+        try:
+            for step_idx in range(num_steps):
+                # Inject source fields (Python, not JIT-compiled)
+                self._inject_sources()
+
+                # Execute JIT-compiled field update
+                self.fields.Ex, self.fields.Ey, self.fields.Ez, \
+                self.fields.Hx, self.fields.Hy, self.fields.Hz = jit_step(
+                    self.fields.Ex, self.fields.Ey, self.fields.Ez,
+                    self.fields.Hx, self.fields.Hy, self.fields.Hz
+                )
+
+                # Record monitor data
+                self._record_monitors()
+
+                # Update time and step counter
+                self.t += self.dt
+                self.current_step += 1
+
+                # Record fields if requested
+                if record_interval and self.current_step % record_interval == 0:
+                    for field_name in record_fields:
+                        if hasattr(self.fields, field_name):
+                            field_history[field_name].append(
+                                np.array(getattr(self.fields, field_name))
+                            )
+
+                # Show progress
+                if progress and (step_idx + 1) % max(1, num_steps // 20) == 0:
+                    pct = 100 * (step_idx + 1) / num_steps
+                    print(f"\r● Progress: {pct:.0f}% ({step_idx + 1}/{num_steps} steps)", end="", flush=True)
+
+            if progress:
+                print()  # Newline after progress
+
+        except KeyboardInterrupt:
+            if progress:
+                print(f"\n● Simulation interrupted at step {self.current_step}")
+
+        # Collect monitor data
+        monitors = [device for device in self.devices if hasattr(device, 'power_history')]
+
+        # Convert field history to numpy arrays
+        for name in field_history:
+            if field_history[name]:
+                field_history[name] = np.stack(field_history[name])
+
+        result = {}
+        if record_interval:
+            result['fields'] = field_history
+        if monitors:
+            result['monitors'] = monitors
+
+        return result if result else None
+
+    def run_jit_scan(self, num_steps=None, progress=True):
+        """Run FDTD simulation using jax.lax.scan for maximum performance.
+
+        This method is optimized for simulations WITHOUT sources or with sources
+        that can be pre-computed. It JIT-compiles the entire time loop.
+
+        For simulations WITH time-dependent sources, use run_fast() instead.
+
+        Args:
+            num_steps: Number of steps to run (default: remaining steps)
+            progress: Show compilation status (default: True)
+
+        Returns:
+            dict with final field state
+        """
+        if num_steps is None:
+            num_steps = self.num_steps - self.current_step
+
+        # Check if sources are present
+        has_sources = any(hasattr(d, 'inject') or hasattr(d, 'get_source_terms')
+                         for d in self.devices)
+        if has_sources:
+            print("● Warning: Sources detected. Using run_fast() instead for source injection support.")
+            return self.run_fast(num_steps=num_steps, progress=progress)
+
+        # Create pure FDTD step function for scan
+        jit_step = self._create_jit_step_2d() if not self.is_3d else self._create_jit_step_3d()
+
+        @jax.jit
+        def scan_body(carry, _):
+            Ex, Ey, Ez, Hx, Hy, Hz = carry
+            Ex, Ey, Ez, Hx, Hy, Hz = jit_step(Ex, Ey, Ez, Hx, Hy, Hz)
+            return (Ex, Ey, Ez, Hx, Hy, Hz), None
+
+        if progress:
+            print(f"● JIT compiling {num_steps}-step FDTD loop with jax.lax.scan...", end=" ", flush=True)
+
+        # Pack initial state
+        init_state = (
+            self.fields.Ex, self.fields.Ey, self.fields.Ez,
+            self.fields.Hx, self.fields.Hy, self.fields.Hz
+        )
+
+        # Run scan
+        final_state, _ = jax.lax.scan(scan_body, init_state, None, length=num_steps)
+
+        # Unpack final state
+        self.fields.Ex, self.fields.Ey, self.fields.Ez, \
+        self.fields.Hx, self.fields.Hy, self.fields.Hz = final_state
+
+        # Block until done
+        self.fields.Ez.block_until_ready()
+
+        if progress:
+            print("done!")
+
+        # Update time tracking
+        self.t += num_steps * self.dt
+        self.current_step += num_steps
+
+        return {
+            'Ex': np.array(self.fields.Ex),
+            'Ey': np.array(self.fields.Ey),
+            'Ez': np.array(self.fields.Ez),
+            'Hx': np.array(self.fields.Hx),
+            'Hy': np.array(self.fields.Hy),
+            'Hz': np.array(self.fields.Hz),
+        }
 
     def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None, interpolation='bicubic', jupyter_live=None, store_animation=True):
         """Run complete FDTD simulation with optional live field visualization.
