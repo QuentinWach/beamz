@@ -216,14 +216,1039 @@ class CustomMaterial:
         )
 
 
-# ================================
+# =============================================================================
+# ADVANCED DISPERSIVE MATERIAL MODELS
+# =============================================================================
+#
+# These classes implement frequency-dependent material models for accurate
+# electromagnetic simulations across a range of frequencies/wavelengths.
+#
+# For FDTD simulations, dispersive materials are typically handled using
+# auxiliary differential equations (ADE) or recursive convolution methods.
+# These classes provide the material parameters needed for such implementations.
+#
+# =============================================================================
 
-# PoleResidue: A dispersive medium described by the pole-residue pair model.
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
 
-# Lorentz: A dispersive medium described by the Lorentz model.
+try:
+    from beamz.const import LIGHT_SPEED, EPS_0
+except ImportError:
+    LIGHT_SPEED = 299792458.0
+    EPS_0 = 8.85e-12
 
-# Sellmeier: A dispersive medium described by the Sellmeier model.
 
-# Drude: A dispersive medium described by the Drude model.
+class SellmeierMaterial:
+    """
+    Dispersive medium described by the Sellmeier equation.
 
-# Debye: A dispersive medium described by the Debye model.
+    The Sellmeier equation models the wavelength-dependent refractive index
+    of transparent dielectric materials:
+
+        n²(λ) = 1 + Σᵢ (Bᵢ * λ²) / (λ² - Cᵢ)
+
+    where λ is wavelength, Bᵢ are dimensionless coefficients, and Cᵢ are
+    wavelength-squared constants (resonance wavelengths squared).
+
+    This model is accurate for wavelengths far from material resonances
+    (i.e., in the transparent region).
+
+    Args:
+        B_coeffs: List of B coefficients (dimensionless)
+        C_coeffs: List of C coefficients in m² (wavelength² of resonances)
+        name: Optional material name
+
+    Example:
+        # Fused silica (SiO2) Sellmeier coefficients
+        sio2 = SellmeierMaterial(
+            B_coeffs=[0.6961663, 0.4079426, 0.8974794],
+            C_coeffs=[0.0684043e-12, 0.1162414e-12, 9.896161e-12],
+            name="SiO2"
+        )
+        n = sio2.get_refractive_index(1.55e-6)  # n at 1550nm
+    """
+
+    def __init__(self, B_coeffs, C_coeffs, name="SellmeierMaterial"):
+        if len(B_coeffs) != len(C_coeffs):
+            raise ValueError("B_coeffs and C_coeffs must have same length")
+
+        self.B_coeffs = np.array(B_coeffs)
+        self.C_coeffs = np.array(C_coeffs)
+        self.name = name
+        self.num_poles = len(B_coeffs)
+
+    def get_refractive_index(self, wavelength):
+        """
+        Calculate refractive index at given wavelength.
+
+        Args:
+            wavelength: Wavelength in meters (scalar or array)
+
+        Returns:
+            Refractive index n (real part)
+        """
+        wavelength = np.atleast_1d(wavelength)
+        wl_sq = wavelength**2
+
+        n_sq = np.ones_like(wl_sq)
+        for B, C in zip(self.B_coeffs, self.C_coeffs):
+            n_sq = n_sq + B * wl_sq / (wl_sq - C)
+
+        return np.sqrt(n_sq).squeeze()
+
+    def get_permittivity(self, wavelength):
+        """
+        Calculate relative permittivity at given wavelength.
+
+        Args:
+            wavelength: Wavelength in meters
+
+        Returns:
+            Relative permittivity ε_r
+        """
+        n = self.get_refractive_index(wavelength)
+        return n**2
+
+    def get_group_index(self, wavelength, delta=1e-9):
+        """
+        Calculate group index n_g = n - λ(dn/dλ).
+
+        Args:
+            wavelength: Wavelength in meters
+            delta: Wavelength step for numerical derivative
+
+        Returns:
+            Group index n_g
+        """
+        n = self.get_refractive_index(wavelength)
+        n_plus = self.get_refractive_index(wavelength + delta)
+        n_minus = self.get_refractive_index(wavelength - delta)
+        dn_dlambda = (n_plus - n_minus) / (2 * delta)
+        return n - wavelength * dn_dlambda
+
+    def get_dispersion(self, wavelength, delta=1e-9):
+        """
+        Calculate group velocity dispersion D = -(λ/c)(d²n/dλ²) in ps/(nm·km).
+
+        Args:
+            wavelength: Wavelength in meters
+            delta: Wavelength step for numerical derivative
+
+        Returns:
+            Dispersion D in ps/(nm·km)
+        """
+        n_plus = self.get_refractive_index(wavelength + delta)
+        n = self.get_refractive_index(wavelength)
+        n_minus = self.get_refractive_index(wavelength - delta)
+        d2n_dlambda2 = (n_plus - 2*n + n_minus) / delta**2
+
+        # Convert to ps/(nm·km)
+        D = -(wavelength / LIGHT_SPEED) * d2n_dlambda2
+        D = D * 1e12 * 1e-9 * 1e3  # s/m² -> ps/(nm·km)
+        return D
+
+    def to_material(self, wavelength):
+        """
+        Convert to a simple Material at specified wavelength.
+
+        Args:
+            wavelength: Wavelength in meters
+
+        Returns:
+            Material instance with permittivity at this wavelength
+        """
+        eps = self.get_permittivity(wavelength)
+        return Material(permittivity=eps, permeability=1.0, conductivity=0.0)
+
+    def __repr__(self):
+        return f"SellmeierMaterial(name='{self.name}', poles={self.num_poles})"
+
+
+class DrudeMaterial:
+    """
+    Dispersive medium described by the Drude model for free electrons.
+
+    The Drude model describes the optical response of metals and
+    heavily-doped semiconductors with free carriers:
+
+        ε(ω) = ε_∞ - ωₚ² / (ω² + iγω)
+
+    where:
+        ε_∞ = high-frequency permittivity (background)
+        ωₚ = plasma frequency (rad/s)
+        γ = collision frequency / damping rate (rad/s)
+        ω = angular frequency (rad/s)
+
+    Args:
+        plasma_freq: Plasma frequency ωₚ in rad/s
+        collision_freq: Collision/damping frequency γ in rad/s
+        eps_inf: High-frequency permittivity (default 1.0)
+        name: Optional material name
+
+    Example:
+        # Gold at optical frequencies
+        gold = DrudeMaterial(
+            plasma_freq=1.37e16,
+            collision_freq=4.05e13,
+            name="Gold"
+        )
+        eps = gold.get_permittivity(wavelength=1.55e-6)
+    """
+
+    def __init__(self, plasma_freq, collision_freq, eps_inf=1.0, name="DrudeMaterial"):
+        self.plasma_freq = plasma_freq  # ωₚ
+        self.collision_freq = collision_freq  # γ
+        self.eps_inf = eps_inf  # ε_∞
+        self.name = name
+
+        # Derived quantities
+        self.plasma_wavelength = 2 * np.pi * LIGHT_SPEED / plasma_freq
+
+    @classmethod
+    def from_dc_conductivity(cls, dc_conductivity, eps_inf=1.0,
+                             collision_freq=None, name="DrudeMaterial"):
+        """
+        Create DrudeMaterial from DC conductivity.
+
+        For metals, σ_DC = ε₀ * ωₚ² / γ
+
+        Args:
+            dc_conductivity: DC conductivity in S/m
+            eps_inf: High-frequency permittivity
+            collision_freq: If known, collision frequency in rad/s
+            name: Material name
+        """
+        if collision_freq is None:
+            # Typical collision frequency for metals
+            collision_freq = 1e14  # rad/s
+
+        # ωₚ² = σ_DC * γ / ε₀
+        plasma_freq_sq = dc_conductivity * collision_freq / EPS_0
+        plasma_freq = np.sqrt(plasma_freq_sq)
+
+        return cls(plasma_freq, collision_freq, eps_inf, name)
+
+    def get_permittivity(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex permittivity at given wavelength/frequency.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex relative permittivity ε_r
+        """
+        if omega is None:
+            if wavelength is not None:
+                omega = 2 * np.pi * LIGHT_SPEED / wavelength
+            elif frequency is not None:
+                omega = 2 * np.pi * frequency
+            else:
+                raise ValueError("Must specify wavelength, frequency, or omega")
+
+        omega = np.atleast_1d(omega)
+
+        # Drude model: ε(ω) = ε_∞ - ωₚ² / (ω² + iγω)
+        eps = self.eps_inf - self.plasma_freq**2 / (omega**2 + 1j * self.collision_freq * omega)
+
+        return eps.squeeze()
+
+    def get_refractive_index(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex refractive index n + ik.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex refractive index
+        """
+        eps = self.get_permittivity(wavelength, frequency, omega)
+        return np.sqrt(eps)
+
+    def get_conductivity(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate effective conductivity σ = ω * ε₀ * ε''
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Effective conductivity in S/m
+        """
+        if omega is None:
+            if wavelength is not None:
+                omega = 2 * np.pi * LIGHT_SPEED / wavelength
+            elif frequency is not None:
+                omega = 2 * np.pi * frequency
+
+        eps = self.get_permittivity(omega=omega)
+        return omega * EPS_0 * np.abs(eps.imag)
+
+    def get_skin_depth(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate skin depth δ = λ / (2π * k).
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Skin depth in meters
+        """
+        if wavelength is None and omega is not None:
+            wavelength = 2 * np.pi * LIGHT_SPEED / omega
+        elif wavelength is None and frequency is not None:
+            wavelength = LIGHT_SPEED / frequency
+
+        n_complex = self.get_refractive_index(wavelength=wavelength)
+        k = np.abs(n_complex.imag)
+        return wavelength / (2 * np.pi * k)
+
+    def to_material(self, wavelength):
+        """
+        Convert to a simple Material at specified wavelength.
+
+        The loss is represented as conductivity for FDTD compatibility.
+
+        Args:
+            wavelength: Wavelength in meters
+
+        Returns:
+            Material instance
+        """
+        eps = self.get_permittivity(wavelength=wavelength)
+        omega = 2 * np.pi * LIGHT_SPEED / wavelength
+        conductivity = omega * EPS_0 * np.abs(eps.imag)
+        return Material(permittivity=eps.real, permeability=1.0, conductivity=conductivity)
+
+    def __repr__(self):
+        return f"DrudeMaterial(name='{self.name}', ωₚ={self.plasma_freq:.2e}, γ={self.collision_freq:.2e})"
+
+
+class LorentzMaterial:
+    """
+    Dispersive medium described by the Lorentz oscillator model.
+
+    The Lorentz model describes bound electron oscillations and is
+    used for dielectrics near absorption resonances:
+
+        ε(ω) = ε_∞ + Σⱼ (Δεⱼ * ω₀ⱼ²) / (ω₀ⱼ² - ω² - iγⱼω)
+
+    where:
+        ε_∞ = high-frequency permittivity
+        Δεⱼ = oscillator strength (dimensionless)
+        ω₀ⱼ = resonance frequency (rad/s)
+        γⱼ = damping rate (rad/s)
+
+    Args:
+        resonances: List of (delta_eps, omega_0, gamma) tuples or
+                   list of dicts with keys 'delta_eps', 'omega_0', 'gamma'
+        eps_inf: High-frequency permittivity (default 1.0)
+        name: Optional material name
+
+    Example:
+        # Single Lorentz oscillator
+        mat = LorentzMaterial(
+            resonances=[(1.0, 5e15, 1e14)],  # (Δε, ω₀, γ)
+            eps_inf=2.0,
+            name="Lorentz Example"
+        )
+
+        # Multiple oscillators
+        mat = LorentzMaterial(
+            resonances=[
+                {'delta_eps': 1.0, 'omega_0': 5e15, 'gamma': 1e14},
+                {'delta_eps': 0.5, 'omega_0': 8e15, 'gamma': 2e14},
+            ],
+            eps_inf=1.0
+        )
+    """
+
+    def __init__(self, resonances, eps_inf=1.0, name="LorentzMaterial"):
+        self.eps_inf = eps_inf
+        self.name = name
+
+        # Parse resonances into uniform format
+        self.resonances = []
+        for res in resonances:
+            if isinstance(res, dict):
+                self.resonances.append({
+                    'delta_eps': res['delta_eps'],
+                    'omega_0': res['omega_0'],
+                    'gamma': res['gamma']
+                })
+            else:
+                # Assume tuple (delta_eps, omega_0, gamma)
+                self.resonances.append({
+                    'delta_eps': res[0],
+                    'omega_0': res[1],
+                    'gamma': res[2]
+                })
+
+        self.num_poles = len(self.resonances)
+
+    @classmethod
+    def from_wavelength(cls, resonances_wavelength, eps_inf=1.0, name="LorentzMaterial"):
+        """
+        Create LorentzMaterial with resonances specified by wavelength.
+
+        Args:
+            resonances_wavelength: List of (delta_eps, wavelength, linewidth) tuples
+                                  wavelength and linewidth in meters
+            eps_inf: High-frequency permittivity
+            name: Material name
+        """
+        resonances = []
+        for res in resonances_wavelength:
+            delta_eps, wavelength, linewidth = res[0], res[1], res[2]
+            omega_0 = 2 * np.pi * LIGHT_SPEED / wavelength
+            gamma = 2 * np.pi * LIGHT_SPEED * linewidth / wavelength**2
+            resonances.append((delta_eps, omega_0, gamma))
+
+        return cls(resonances, eps_inf, name)
+
+    def get_permittivity(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex permittivity at given wavelength/frequency.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex relative permittivity ε_r
+        """
+        if omega is None:
+            if wavelength is not None:
+                omega = 2 * np.pi * LIGHT_SPEED / wavelength
+            elif frequency is not None:
+                omega = 2 * np.pi * frequency
+            else:
+                raise ValueError("Must specify wavelength, frequency, or omega")
+
+        omega = np.atleast_1d(omega)
+
+        eps = np.full_like(omega, self.eps_inf, dtype=complex)
+
+        for res in self.resonances:
+            delta_eps = res['delta_eps']
+            omega_0 = res['omega_0']
+            gamma = res['gamma']
+
+            # Lorentz term: Δε * ω₀² / (ω₀² - ω² - iγω)
+            eps = eps + delta_eps * omega_0**2 / (omega_0**2 - omega**2 - 1j * gamma * omega)
+
+        return eps.squeeze()
+
+    def get_refractive_index(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex refractive index.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex refractive index n + ik
+        """
+        eps = self.get_permittivity(wavelength, frequency, omega)
+        return np.sqrt(eps)
+
+    def get_absorption_coefficient(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate absorption coefficient α = 4πk/λ.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Absorption coefficient in 1/m
+        """
+        if wavelength is None:
+            if omega is not None:
+                wavelength = 2 * np.pi * LIGHT_SPEED / omega
+            elif frequency is not None:
+                wavelength = LIGHT_SPEED / frequency
+
+        n_complex = self.get_refractive_index(wavelength=wavelength)
+        k = np.abs(n_complex.imag)
+        return 4 * np.pi * k / wavelength
+
+    def to_material(self, wavelength):
+        """
+        Convert to a simple Material at specified wavelength.
+
+        Args:
+            wavelength: Wavelength in meters
+
+        Returns:
+            Material instance
+        """
+        eps = self.get_permittivity(wavelength=wavelength)
+        omega = 2 * np.pi * LIGHT_SPEED / wavelength
+        conductivity = omega * EPS_0 * np.abs(eps.imag)
+        return Material(permittivity=eps.real, permeability=1.0, conductivity=conductivity)
+
+    def __repr__(self):
+        return f"LorentzMaterial(name='{self.name}', poles={self.num_poles})"
+
+
+class DebyeMaterial:
+    """
+    Dispersive medium described by the Debye relaxation model.
+
+    The Debye model describes dielectric relaxation in polar materials
+    and is commonly used for biological tissues and water at RF/microwave:
+
+        ε(ω) = ε_∞ + Σⱼ Δεⱼ / (1 + iωτⱼ)
+
+    where:
+        ε_∞ = high-frequency (optical) permittivity
+        Δεⱼ = relaxation strength (εₛ - ε_∞ for single pole)
+        τⱼ = relaxation time constant (s)
+
+    Args:
+        relaxations: List of (delta_eps, tau) tuples or
+                    list of dicts with keys 'delta_eps', 'tau'
+        eps_inf: High-frequency permittivity (default 1.0)
+        conductivity: Optional DC conductivity in S/m (for ionic conduction)
+        name: Optional material name
+
+    Example:
+        # Water at microwave frequencies (single Debye pole)
+        water = DebyeMaterial(
+            relaxations=[(77.0, 8.27e-12)],  # (Δε, τ)
+            eps_inf=4.9,
+            name="Water (microwave)"
+        )
+
+        # Biological tissue (multiple poles)
+        tissue = DebyeMaterial(
+            relaxations=[
+                {'delta_eps': 50.0, 'tau': 7.96e-12},
+                {'delta_eps': 3000.0, 'tau': 1.59e-7},
+            ],
+            eps_inf=4.0,
+            conductivity=0.7
+        )
+    """
+
+    def __init__(self, relaxations, eps_inf=1.0, conductivity=0.0, name="DebyeMaterial"):
+        self.eps_inf = eps_inf
+        self.dc_conductivity = conductivity
+        self.name = name
+
+        # Parse relaxations into uniform format
+        self.relaxations = []
+        for rel in relaxations:
+            if isinstance(rel, dict):
+                self.relaxations.append({
+                    'delta_eps': rel['delta_eps'],
+                    'tau': rel['tau']
+                })
+            else:
+                # Assume tuple (delta_eps, tau)
+                self.relaxations.append({
+                    'delta_eps': rel[0],
+                    'tau': rel[1]
+                })
+
+        self.num_poles = len(self.relaxations)
+
+        # Calculate static permittivity
+        self.eps_static = eps_inf + sum(r['delta_eps'] for r in self.relaxations)
+
+    def get_permittivity(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex permittivity at given wavelength/frequency.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex relative permittivity ε_r
+        """
+        if omega is None:
+            if wavelength is not None:
+                omega = 2 * np.pi * LIGHT_SPEED / wavelength
+            elif frequency is not None:
+                omega = 2 * np.pi * frequency
+            else:
+                raise ValueError("Must specify wavelength, frequency, or omega")
+
+        omega = np.atleast_1d(omega)
+
+        eps = np.full_like(omega, self.eps_inf, dtype=complex)
+
+        # Add Debye relaxation poles
+        for rel in self.relaxations:
+            delta_eps = rel['delta_eps']
+            tau = rel['tau']
+
+            # Debye term: Δε / (1 + iωτ)
+            eps = eps + delta_eps / (1 + 1j * omega * tau)
+
+        # Add ionic conductivity contribution: -iσ/(ωε₀)
+        if self.dc_conductivity > 0:
+            eps = eps - 1j * self.dc_conductivity / (omega * EPS_0)
+
+        return eps.squeeze()
+
+    def get_refractive_index(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex refractive index.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex refractive index n + ik
+        """
+        eps = self.get_permittivity(wavelength, frequency, omega)
+        return np.sqrt(eps)
+
+    def get_loss_tangent(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate loss tangent tan(δ) = ε''/ε'.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Loss tangent (dimensionless)
+        """
+        eps = self.get_permittivity(wavelength, frequency, omega)
+        return -eps.imag / eps.real
+
+    def to_material(self, frequency):
+        """
+        Convert to a simple Material at specified frequency.
+
+        Args:
+            frequency: Frequency in Hz
+
+        Returns:
+            Material instance
+        """
+        eps = self.get_permittivity(frequency=frequency)
+        omega = 2 * np.pi * frequency
+        conductivity = omega * EPS_0 * np.abs(eps.imag)
+        return Material(permittivity=eps.real, permeability=1.0, conductivity=conductivity)
+
+    def __repr__(self):
+        return f"DebyeMaterial(name='{self.name}', poles={self.num_poles}, ε_s={self.eps_static:.1f})"
+
+
+class PoleResidueMaterial:
+    """
+    General dispersive medium described by pole-residue pairs.
+
+    The pole-residue model is a general representation of dispersive
+    materials that can represent Drude, Lorentz, Debye, and other
+    models in a unified framework:
+
+        ε(ω) = ε_∞ + Σⱼ (cⱼ/(iω - aⱼ) + cⱼ*/(iω - aⱼ*))
+
+    where aⱼ are complex poles and cⱼ are complex residues.
+    Poles come in conjugate pairs for physical (real) permittivity.
+
+    This model is particularly useful for:
+    - Fitting experimental optical data
+    - Converting between different dispersion models
+    - Interfacing with ADE-FDTD implementations
+
+    Args:
+        poles: List of complex poles aⱼ (rad/s)
+        residues: List of complex residues cⱼ
+        eps_inf: High-frequency permittivity (default 1.0)
+        name: Optional material name
+
+    Note:
+        Poles and residues should be specified as conjugate pairs
+        or as just one of each pair (the conjugate will be added automatically).
+
+    Example:
+        # Equivalent to single Drude pole
+        drude_pole = -1e14  # -γ (pure real = Drude)
+        drude_residue = 1e32 / (2j)  # ωₚ²/(2i)
+        mat = PoleResidueMaterial(
+            poles=[drude_pole],
+            residues=[drude_residue],
+            name="Drude-like"
+        )
+    """
+
+    def __init__(self, poles, residues, eps_inf=1.0, name="PoleResidueMaterial"):
+        if len(poles) != len(residues):
+            raise ValueError("poles and residues must have same length")
+
+        self.poles = np.array(poles, dtype=complex)
+        self.residues = np.array(residues, dtype=complex)
+        self.eps_inf = eps_inf
+        self.name = name
+        self.num_poles = len(poles)
+
+    @classmethod
+    def from_drude(cls, plasma_freq, collision_freq, eps_inf=1.0, name="DrudePR"):
+        """
+        Create PoleResidueMaterial equivalent to Drude model.
+
+        Args:
+            plasma_freq: Plasma frequency ωₚ (rad/s)
+            collision_freq: Collision frequency γ (rad/s)
+            eps_inf: High-frequency permittivity
+            name: Material name
+        """
+        # Drude: ε = ε_∞ - ωₚ²/(ω² + iγω) = ε_∞ + ωₚ²/(iω(iω + γ))
+        # In pole-residue form with pole at a = -γ:
+        # ε = ε_∞ + c/(iω - a) + c*/(iω - a*) where a = -γ (real)
+        # For Drude: c = ωₚ²/2
+        pole = -collision_freq  # Real pole
+        residue = plasma_freq**2 / 2
+
+        return cls([pole], [residue], eps_inf, name)
+
+    @classmethod
+    def from_lorentz(cls, delta_eps, omega_0, gamma, eps_inf=1.0, name="LorentzPR"):
+        """
+        Create PoleResidueMaterial equivalent to single Lorentz oscillator.
+
+        Args:
+            delta_eps: Oscillator strength
+            omega_0: Resonance frequency (rad/s)
+            gamma: Damping rate (rad/s)
+            eps_inf: High-frequency permittivity
+            name: Material name
+        """
+        # Lorentz: ε = ε_∞ + Δε·ω₀²/(ω₀² - ω² - iγω)
+        # Poles are at: iω = -γ/2 ± sqrt((γ/2)² - ω₀²)
+        # For underdamped (γ < 2ω₀): poles at -γ/2 ± i·sqrt(ω₀² - (γ/2)²)
+
+        gamma_half = gamma / 2
+        omega_d = np.sqrt(omega_0**2 - gamma_half**2) if omega_0 > gamma_half else 0
+
+        if omega_d > 0:
+            # Underdamped: complex conjugate poles
+            pole = -gamma_half + 1j * omega_d
+            residue = delta_eps * omega_0**2 / (2j * omega_d)
+        else:
+            # Overdamped: two real poles (simplified)
+            pole = -gamma_half + np.sqrt(gamma_half**2 - omega_0**2)
+            residue = delta_eps * omega_0**2 / 2
+
+        return cls([pole], [residue], eps_inf, name)
+
+    @classmethod
+    def from_debye(cls, delta_eps, tau, eps_inf=1.0, name="DebyePR"):
+        """
+        Create PoleResidueMaterial equivalent to single Debye pole.
+
+        Args:
+            delta_eps: Relaxation strength
+            tau: Relaxation time (s)
+            eps_inf: High-frequency permittivity
+            name: Material name
+        """
+        # Debye: ε = ε_∞ + Δε/(1 + iωτ)
+        # Rewrite: Δε/(1 + iωτ) = Δε·(−1/τ)/(iω − (−1/τ))
+        # Pole at a = -1/τ (real), residue c = -Δε/τ
+
+        pole = -1 / tau
+        residue = -delta_eps / tau
+
+        return cls([pole], [residue], eps_inf, name)
+
+    def get_permittivity(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex permittivity at given wavelength/frequency.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex relative permittivity ε_r
+        """
+        if omega is None:
+            if wavelength is not None:
+                omega = 2 * np.pi * LIGHT_SPEED / wavelength
+            elif frequency is not None:
+                omega = 2 * np.pi * frequency
+            else:
+                raise ValueError("Must specify wavelength, frequency, or omega")
+
+        omega = np.atleast_1d(omega)
+
+        eps = np.full_like(omega, self.eps_inf, dtype=complex)
+
+        for pole, residue in zip(self.poles, self.residues):
+            # Add pole contribution and its conjugate
+            eps = eps + residue / (1j * omega - pole)
+            eps = eps + np.conj(residue) / (1j * omega - np.conj(pole))
+
+        return eps.squeeze()
+
+    def get_refractive_index(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex refractive index.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex refractive index n + ik
+        """
+        eps = self.get_permittivity(wavelength, frequency, omega)
+        return np.sqrt(eps)
+
+    def to_material(self, wavelength):
+        """
+        Convert to a simple Material at specified wavelength.
+
+        Args:
+            wavelength: Wavelength in meters
+
+        Returns:
+            Material instance
+        """
+        eps = self.get_permittivity(wavelength=wavelength)
+        omega = 2 * np.pi * LIGHT_SPEED / wavelength
+        conductivity = omega * EPS_0 * np.abs(eps.imag)
+        return Material(permittivity=eps.real, permeability=1.0, conductivity=conductivity)
+
+    def get_poles_residues(self):
+        """
+        Get all poles and residues including conjugates.
+
+        Returns:
+            Tuple of (poles, residues) including conjugate pairs
+        """
+        all_poles = []
+        all_residues = []
+
+        for pole, residue in zip(self.poles, self.residues):
+            all_poles.extend([pole, np.conj(pole)])
+            all_residues.extend([residue, np.conj(residue)])
+
+        return np.array(all_poles), np.array(all_residues)
+
+    def __repr__(self):
+        return f"PoleResidueMaterial(name='{self.name}', poles={self.num_poles})"
+
+
+class DrudeLorentzMaterial:
+    """
+    Combined Drude-Lorentz model for metals with interband transitions.
+
+    This model combines free electron (Drude) response with bound
+    electron (Lorentz) oscillators, commonly used for noble metals
+    where interband transitions are significant:
+
+        ε(ω) = ε_∞ - ωₚ²/(ω² + iγω) + Σⱼ (Δεⱼ·ω₀ⱼ²)/(ω₀ⱼ² - ω² - iγⱼω)
+
+    Args:
+        plasma_freq: Plasma frequency ωₚ (rad/s) for Drude term
+        drude_gamma: Collision frequency γ (rad/s) for Drude term
+        lorentz_poles: List of Lorentz (delta_eps, omega_0, gamma) tuples
+        eps_inf: High-frequency permittivity (default 1.0)
+        name: Optional material name
+
+    Example:
+        # Gold with interband transitions
+        gold = DrudeLorentzMaterial(
+            plasma_freq=1.37e16,
+            drude_gamma=1.0e14,
+            lorentz_poles=[
+                (0.27, 3.87e15, 7.0e14),   # First interband
+                (0.10, 4.70e15, 2.0e15),   # Second interband
+            ],
+            eps_inf=1.0,
+            name="Gold (DL)"
+        )
+    """
+
+    def __init__(self, plasma_freq, drude_gamma, lorentz_poles=None,
+                 eps_inf=1.0, name="DrudeLorentzMaterial"):
+        self.plasma_freq = plasma_freq
+        self.drude_gamma = drude_gamma
+        self.eps_inf = eps_inf
+        self.name = name
+
+        # Parse Lorentz poles
+        self.lorentz_poles = []
+        if lorentz_poles:
+            for pole in lorentz_poles:
+                if isinstance(pole, dict):
+                    self.lorentz_poles.append(pole)
+                else:
+                    self.lorentz_poles.append({
+                        'delta_eps': pole[0],
+                        'omega_0': pole[1],
+                        'gamma': pole[2]
+                    })
+
+        self.num_lorentz_poles = len(self.lorentz_poles)
+
+    def get_permittivity(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex permittivity at given wavelength/frequency.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex relative permittivity ε_r
+        """
+        if omega is None:
+            if wavelength is not None:
+                omega = 2 * np.pi * LIGHT_SPEED / wavelength
+            elif frequency is not None:
+                omega = 2 * np.pi * frequency
+            else:
+                raise ValueError("Must specify wavelength, frequency, or omega")
+
+        omega = np.atleast_1d(omega)
+
+        # Start with high-frequency permittivity
+        eps = np.full_like(omega, self.eps_inf, dtype=complex)
+
+        # Add Drude term
+        eps = eps - self.plasma_freq**2 / (omega**2 + 1j * self.drude_gamma * omega)
+
+        # Add Lorentz terms
+        for pole in self.lorentz_poles:
+            delta_eps = pole['delta_eps']
+            omega_0 = pole['omega_0']
+            gamma = pole['gamma']
+
+            eps = eps + delta_eps * omega_0**2 / (omega_0**2 - omega**2 - 1j * gamma * omega)
+
+        return eps.squeeze()
+
+    def get_refractive_index(self, wavelength=None, frequency=None, omega=None):
+        """
+        Calculate complex refractive index.
+
+        Args:
+            wavelength: Wavelength in meters
+            frequency: Frequency in Hz
+            omega: Angular frequency in rad/s
+
+        Returns:
+            Complex refractive index n + ik
+        """
+        eps = self.get_permittivity(wavelength, frequency, omega)
+        return np.sqrt(eps)
+
+    def to_material(self, wavelength):
+        """
+        Convert to a simple Material at specified wavelength.
+
+        Args:
+            wavelength: Wavelength in meters
+
+        Returns:
+            Material instance
+        """
+        eps = self.get_permittivity(wavelength=wavelength)
+        omega = 2 * np.pi * LIGHT_SPEED / wavelength
+        conductivity = omega * EPS_0 * np.abs(eps.imag)
+        return Material(permittivity=eps.real, permeability=1.0, conductivity=conductivity)
+
+    def __repr__(self):
+        return f"DrudeLorentzMaterial(name='{self.name}', Lorentz poles={self.num_lorentz_poles})"
+
+
+# =============================================================================
+# PREDEFINED DISPERSIVE MATERIALS
+# =============================================================================
+
+# Fused Silica (SiO2) Sellmeier model (Malitson 1965)
+# C values are resonance wavelengths squared: λ² in m²
+SiO2_Sellmeier = SellmeierMaterial(
+    B_coeffs=[0.6961663, 0.4079426, 0.8974794],
+    C_coeffs=[(0.0684043e-6)**2, (0.1162414e-6)**2, (9.896161e-6)**2],
+    name="SiO2 (Sellmeier)"
+)
+
+# BK7 Glass Sellmeier model (Schott catalog)
+# C values are resonance wavelengths squared: λ² in m²
+BK7_Sellmeier = SellmeierMaterial(
+    B_coeffs=[1.03961212, 0.231792344, 1.01046945],
+    C_coeffs=[(0.0776142e-6)**2, (0.141569e-6)**2, (10.176e-6)**2],
+    name="BK7 (Sellmeier)"
+)
+
+# Gold Drude model (simple)
+Gold_Drude = DrudeMaterial(
+    plasma_freq=1.37e16,
+    collision_freq=4.05e13,
+    name="Gold (Drude)"
+)
+
+# Silver Drude model
+Silver_Drude = DrudeMaterial(
+    plasma_freq=1.37e16,
+    collision_freq=2.73e13,
+    name="Silver (Drude)"
+)
+
+# Aluminum Drude model
+Aluminum_Drude = DrudeMaterial(
+    plasma_freq=2.24e16,
+    collision_freq=1.22e14,
+    name="Aluminum (Drude)"
+)
+
+# Copper Drude model
+Copper_Drude = DrudeMaterial(
+    plasma_freq=1.12e16,
+    collision_freq=1.38e14,
+    name="Copper (Drude)"
+)
+
+# Water (microwave Debye model)
+Water_Debye = DebyeMaterial(
+    relaxations=[(77.0, 8.27e-12)],
+    eps_inf=4.9,
+    name="Water (Debye)"
+)
+
+# Gold with interband transitions (Drude-Lorentz)
+Gold_DrudeLorentz = DrudeLorentzMaterial(
+    plasma_freq=1.37e16,
+    drude_gamma=1.0e14,
+    lorentz_poles=[
+        (0.27, 3.87e15, 7.0e14),
+        (0.10, 4.70e15, 2.0e15),
+    ],
+    eps_inf=1.0,
+    name="Gold (Drude-Lorentz)"
+)
