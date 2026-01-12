@@ -10,6 +10,7 @@ from beamz.simulation.fields import Fields
 from beamz.simulation.boundaries import Boundary, PML
 from beamz.simulation.ops import advance_e_field, advance_h_field
 from beamz.visual.viz import animate_manual_field, close_fdtd_figure, VideoRecorder
+from beamz.visual.vdb import VDBExporter
 
 class Simulation:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
@@ -365,7 +366,7 @@ class Simulation:
             'Hz': np.array(self.fields.Hz),
         }
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None, interpolation='bicubic', jupyter_live=None, store_animation=True):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None, interpolation='bicubic', jupyter_live=None, store_animation=True, save_vdb=None, vdb_fields=None, vdb_interval=None, vdb_normalize=True):
         """Run complete FDTD simulation with optional live field visualization.
 
         Args:
@@ -386,12 +387,19 @@ class Simulation:
             interpolation: Interpolation method for field display ('nearest', 'bilinear', 'bicubic', etc.)
             jupyter_live: Override Jupyter environment detection (None=auto, True=Jupyter, False=script)
             store_animation: Store animation frames for replay in Jupyter (default: True)
+            save_vdb: Directory to save VDB files for 3D visualization in Blender (e.g., 'vdb_output')
+                      Only works for 3D simulations. Set to None to disable (default: None)
+            vdb_fields: List of field names to export to VDB (default: ['Ez'])
+                        Available: 'Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz'
+            vdb_interval: Export VDB every N steps (default: same as animation_interval)
+            vdb_normalize: Normalize VDB field values to [-1, 1] for Blender compatibility (default: True)
 
         Returns:
             dict with keys:
                 - 'fields': dict of field histories if save_fields was provided
                 - 'monitors': list of Monitor objects with recorded data
                 - 'animation': JupyterAnimator object if running in Jupyter with animate_live
+                - 'vdb_files': list of VDB file paths if save_vdb was provided
         """
         # Handle 3D simulations - use monitor slice if available
         active_monitor = None
@@ -459,6 +467,21 @@ class Simulation:
                     interpolation=interpolation
                 )
 
+        # Initialize VDB exporter if requested (3D simulations only)
+        vdb_exporter = None
+        if save_vdb:
+            if not self.is_3d:
+                print("Warning: VDB export is only available for 3D simulations. Skipping VDB export.")
+            else:
+                vdb_export_fields = vdb_fields if vdb_fields else ['Ez']
+                vdb_export_interval = vdb_interval if vdb_interval else animation_interval
+                vdb_exporter = VDBExporter(
+                    output_dir=save_vdb,
+                    fields=vdb_export_fields,
+                    interval=vdb_export_interval,
+                    normalize=vdb_normalize
+                )
+
         # Initialize field storage if requested
         field_history = {}
         if save_fields:
@@ -495,6 +518,10 @@ class Simulation:
                             boundaries=self.boundaries,
                             plane_2d=self.plane_2d
                         )
+
+                # Export VDB frame if enabled (3D only)
+                if vdb_exporter and vdb_exporter.should_export(self.current_step):
+                    vdb_exporter.add_frame(self.fields, self.current_step, self.t, self.resolution)
 
                 # Update live animation if enabled
                 if animate_live and self.current_step % animation_interval == 0:
@@ -544,6 +571,11 @@ class Simulation:
             if video_recorder:
                 video_recorder.save()
 
+            # Save VDB files if exporter was used
+            vdb_files = []
+            if vdb_exporter:
+                vdb_files = vdb_exporter.save()
+
             # Cleanup Jupyter animator figure
             if jupyter_animator:
                 jupyter_animator.finalize()
@@ -565,5 +597,7 @@ class Simulation:
             result['monitors'] = monitors
         if jupyter_animator and jupyter_animator.frames:
             result['animation'] = jupyter_animator
+        if vdb_files:
+            result['vdb_files'] = vdb_files
 
         return result if result else None

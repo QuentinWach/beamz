@@ -17,6 +17,7 @@ from beamz.visual.viz import (
     JupyterAnimator,
     is_jupyter_environment
 )
+from beamz.visual.vdb import VDBExporter
 
 from beamz.visual.helpers import (
     display_status,
@@ -43,6 +44,7 @@ __all__ = [
     'VideoRecorder',
     'JupyterAnimator',
     'is_jupyter_environment',
+    'VDBExporter',
     'display_status',
     'display_header',
     'display_parameters',

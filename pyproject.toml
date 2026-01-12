@@ -63,6 +63,9 @@ test = [ # Adding a 'test' extra that includes pytest and pytest-cov for conveni
     "pytest-randomly>=3.0.0",
     "tidy3d>=2.0.0",  # Required for ModeSource mode solving
 ]
+vdb = [  # Optional VDB export for 3D volumetric visualization in Blender
+    "pyopenvdb>=9.0.0",
+]
 
 
 [tool.black]
