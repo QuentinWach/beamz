@@ -366,7 +366,7 @@ class Simulation:
             'Hz': np.array(self.fields.Hz),
         }
 
-    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None, interpolation='bicubic', jupyter_live=None, store_animation=True, save_vdb=None, vdb_fields=None, vdb_interval=None, vdb_normalize=True):
+    def run(self, animate_live=None, animation_interval=10, axis_scale=None, cmap='twilight_zero', clean_visualization=False, wavelength=None, line_color='gray', line_opacity=0.5, save_fields=None, field_subsample=1, save_video=None, video_fps=30, video_dpi=150, video_field=None, interpolation='bicubic', jupyter_live=None, store_animation=True, save_vdb=None, vdb_fields=None, vdb_interval=None, vdb_normalize=True, vdb_log_scale=None, vdb_log_epsilon=None):
         """Run complete FDTD simulation with optional live field visualization.
 
         Args:
@@ -389,10 +389,14 @@ class Simulation:
             store_animation: Store animation frames for replay in Jupyter (default: True)
             save_vdb: Directory to save VDB files for 3D visualization in Blender (e.g., 'vdb_output')
                       Only works for 3D simulations. Set to None to disable (default: None)
-            vdb_fields: List of field names to export to VDB (default: ['Ez'])
-                        Available: 'Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz'
+            vdb_fields: List of field names to export to VDB (default: ['|E|'])
+                        Available: 'Ex', 'Ey', 'Ez', 'Hx', 'Hy', 'Hz', '|E|', '|H|'
+                        Magnitude fields (|E|, |H|) show wave structure better in Blender
             vdb_interval: Export VDB every N steps (default: same as animation_interval)
-            vdb_normalize: Normalize VDB field values to [-1, 1] for Blender compatibility (default: True)
+            vdb_normalize: Normalize VDB field values for Blender compatibility (default: True)
+            vdb_log_scale: Apply logarithmic transform for dynamic range compression (default: None)
+                          None = auto-enable for magnitude fields, True/False = force on/off
+            vdb_log_epsilon: Floor value for log transform (default: None = auto-compute)
 
         Returns:
             dict with keys:
@@ -473,13 +477,15 @@ class Simulation:
             if not self.is_3d:
                 print("Warning: VDB export is only available for 3D simulations. Skipping VDB export.")
             else:
-                vdb_export_fields = vdb_fields if vdb_fields else ['Ez']
+                vdb_export_fields = vdb_fields if vdb_fields else ['|E|']
                 vdb_export_interval = vdb_interval if vdb_interval else animation_interval
                 vdb_exporter = VDBExporter(
                     output_dir=save_vdb,
                     fields=vdb_export_fields,
                     interval=vdb_export_interval,
-                    normalize=vdb_normalize
+                    normalize=vdb_normalize,
+                    vdb_log_scale=vdb_log_scale,
+                    vdb_log_epsilon=vdb_log_epsilon
                 )
 
         # Initialize field storage if requested

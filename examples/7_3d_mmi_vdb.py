@@ -38,8 +38,20 @@ Layer Stack (Z-direction):
 
 VDB Export for Blender:
 -----------------------
-This simulation exports VDB (OpenVDB) volume files that can be imported into Blender
-for high-quality 3D visualization and rendering.
+This simulation exports electric field magnitude |E| with logarithmic scaling for
+optimal Blender visualization. The VDB (OpenVDB) volume files can be imported into
+Blender for high-quality 3D visualization and rendering.
+
+Field Magnitude vs Components:
+By default, the simulation exports |E| = √(Ex² + Ey² + Ez²) which shows wave structure
+clearly in Blender's volume renderer. Individual components (Ex, Ey, Ez) have signed
+values (±) that appear as uniform blobs in Blender because volume density expects
+positive values. The magnitude field is always positive and reveals interference patterns.
+
+Logarithmic Scaling:
+Electromagnetic fields have huge dynamic ranges (10+ orders of magnitude). Log scaling
+compresses this to make weak and strong features visible simultaneously in Blender.
+This is automatically enabled for magnitude fields.
 
 Installation:
 Before running this example, install the VDB export dependencies:
@@ -55,12 +67,21 @@ To import into Blender:
 3. Navigate to the vdb_mmi_splitter/ directory
 4. Select all frame files (Shift+A or Ctrl+A) for animation sequence
 5. Click "Import OpenVDB"
-6. In the Shader Editor, add a Volume Scatter node and connect the density
+6. In Shader Editor:
+   - Add Volume Scatter node
+   - Connect 'E_mag' attribute to Scatter density
+   - Increase density scale (try 5.0-20.0)
+   - Switch to Rendered viewport (Z key → Rendered)
 
 For animation:
 - The imported volumes will have frame numbers
 - Set your timeline to match the number of frames
 - The volumes will automatically animate
+
+Legacy Compatibility:
+To export individual components (old behavior), use:
+  vdb_fields=['Ey']  # Or 'Ex', 'Ez', etc.
+However, magnitude fields provide much better visualization in Blender.
 
 Performance:
 -----------
@@ -242,11 +263,13 @@ print(f"This will take approximately 5-15 minutes on a MacBook Air.")
 print(f"VDB files will be saved to: vdb_mmi_splitter/")
 
 # Run simulation with VDB export
+# New default exports |E| magnitude field with automatic log scaling for best Blender visualization
 results = sim.run(
     animate_live="Ey",                 # Live animation of dominant TE field
     animation_interval=10,             # Update every 10 steps for performance
     save_vdb="vdb_mmi_splitter",       # Output directory for VDB files
-    vdb_fields=['Ey'],                 # Export only dominant TE field component
+    # vdb_fields=['|E|'] is the new default - magnitude field with auto log scaling
+    # For old behavior, use: vdb_fields=['Ey'] (component field, no log scaling)
     vdb_interval=10,                   # Export every 10 steps (~60 frames)
     vdb_normalize=True,                # Normalize for Blender visualization
     clean_visualization=True
