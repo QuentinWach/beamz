@@ -74,13 +74,17 @@ class VDBExporter:
         self._vdb_available = None
 
     def _check_vdb_available(self):
-        """Check if pyopenvdb is installed and available."""
+        """Check if pyopenvdb/openvdb is installed and available."""
         if self._vdb_available is None:
             try:
                 import pyopenvdb
                 self._vdb_available = True
             except ImportError:
-                self._vdb_available = False
+                try:
+                    import openvdb
+                    self._vdb_available = True
+                except ImportError:
+                    self._vdb_available = False
         return self._vdb_available
 
     def should_export(self, step):
@@ -174,9 +178,12 @@ class VDBExporter:
             voxel_size: Size of each voxel
 
         Returns:
-            pyopenvdb.FloatGrid
+            pyopenvdb.FloatGrid or openvdb.FloatGrid
         """
-        import pyopenvdb as vdb
+        try:
+            import pyopenvdb as vdb
+        except ImportError:
+            import openvdb as vdb
 
         # Create grid with proper voxel size transform
         grid = vdb.FloatGrid()
@@ -184,7 +191,15 @@ class VDBExporter:
 
         # Set the voxel size transform
         # OpenVDB uses a 4x4 transformation matrix
-        grid.transform = vdb.createLinearTransform(voxelSize=voxel_size)
+        # The conda-forge openvdb expects a scalar float, not a tuple
+        voxel_size_float = float(voxel_size) if isinstance(voxel_size, (int, float)) else float(voxel_size[0])
+
+        # Scale voxel size to micrometers for better Blender visualization
+        # Physical simulations use meters (e.g., 1e-7 m), but openvdb requires voxel_size > ~1e-6
+        # Converting to µm makes the values reasonable (e.g., 0.1 µm) for Blender
+        voxel_size_um = voxel_size_float * 1e6  # Convert meters to micrometers
+
+        grid.transform = vdb.createLinearTransform(voxelSize=voxel_size_um)
 
         # Copy data to grid
         # OpenVDB expects (x, y, z) indexing, numpy uses (z, y, x)
@@ -207,7 +222,7 @@ class VDBExporter:
             List of saved file paths
         """
         if not self._check_vdb_available():
-            print("Error: pyopenvdb is not installed. Install it with:")
+            print("Error: openvdb is not installed. Install it with:")
             print("  pip install pyopenvdb")
             print("Or on conda: conda install -c conda-forge openvdb")
             return []
@@ -216,7 +231,10 @@ class VDBExporter:
             print("No frames to save.")
             return []
 
-        import pyopenvdb as vdb
+        try:
+            import pyopenvdb as vdb
+        except ImportError:
+            import openvdb as vdb
 
         # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
@@ -291,11 +309,15 @@ class VDBExporter:
             Path to saved file or None if failed
         """
         if not self._check_vdb_available():
-            print("Error: pyopenvdb is not installed. Install it with:")
+            print("Error: openvdb is not installed. Install it with:")
             print("  pip install pyopenvdb")
+            print("Or on conda: conda install -c conda-forge openvdb")
             return None
 
-        import pyopenvdb as vdb
+        try:
+            import pyopenvdb as vdb
+        except ImportError:
+            import openvdb as vdb
 
         voxel_size = float(resolution) if resolution else (self.voxel_size or 1.0)
 

@@ -64,7 +64,10 @@ test = [ # Adding a 'test' extra that includes pytest and pytest-cov for conveni
     "tidy3d>=2.0.0",  # Required for ModeSource mode solving
 ]
 vdb = [  # Optional VDB export for 3D volumetric visualization in Blender
-    "pyopenvdb>=9.0.0",
+    # Note: pyopenvdb>=9.0.0 may not be available on all platforms (e.g., Python 3.13/ARM64)
+    # In such cases, install via conda: conda install -c conda-forge openvdb
+    # The code supports both pyopenvdb (pip) and openvdb (conda-forge)
+    "pyopenvdb>=9.0.0; platform_machine != 'arm64' or python_version < '3.13'",
 ]
 
 
