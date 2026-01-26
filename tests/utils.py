@@ -1,8 +1,10 @@
 """Shared utility functions for BeamZ FDTD physics validation tests."""
+
 import numpy as np
-from scipy.special import jv, yv
 from scipy.optimize import brentq
-from beamz import LIGHT_SPEED, EPS_0, um
+from scipy.special import jv, yv
+
+from beamz import EPS_0, LIGHT_SPEED, um
 
 # =============================================================================
 # Constants
@@ -146,7 +148,7 @@ def compute_poynting_flux_2d(Ez, Hx, Hy, dx):
     return np.sum(power_density) * dx * dx
 
 
-def compute_directional_flux_2d(Ez, Hx, Hy, dx, direction='x'):
+def compute_directional_flux_2d(Ez, Hx, Hy, dx, direction="x"):
     """Compute directional Poynting flux along a line.
 
     Args:
@@ -157,7 +159,7 @@ def compute_directional_flux_2d(Ez, Hx, Hy, dx, direction='x'):
     Returns:
         Directional flux (can be positive or negative)
     """
-    if direction == 'x':
+    if direction == "x":
         # Sx = -Ez * Hy (power flowing in +x direction)
         return -np.sum(Ez * Hy) * dx
     else:
@@ -219,8 +221,9 @@ def _riccati_bessel_zeta(n, z):
 
 def _riccati_bessel_psi_prime(n, z):
     """Derivative of Riccati-Bessel ψ_n(z)."""
-    return (n + 1) * np.sqrt(np.pi / (2 * z)) * jv(n + 0.5, z) \
-           - z * np.sqrt(np.pi / (2 * z)) * jv(n + 1.5, z)
+    return (n + 1) * np.sqrt(np.pi / (2 * z)) * jv(n + 0.5, z) - z * np.sqrt(
+        np.pi / (2 * z)
+    ) * jv(n + 1.5, z)
 
 
 def _riccati_bessel_zeta_prime(n, z):
@@ -282,7 +285,7 @@ def mie_qext_3d(radius, wavelength, n_sphere, n_medium=1.0):
     x = k * radius
 
     # Number of terms (Wiscombe criterion)
-    n_max = int(round(x + 4 * x**(1/3) + 2))
+    n_max = int(round(x + 4 * x ** (1 / 3) + 2))
     n_max = max(n_max, 3)
 
     an, bn = mie_coefficients_3d(x, m, n_max)
@@ -307,13 +310,13 @@ def mie_qsca_3d(radius, wavelength, n_sphere, n_medium=1.0):
     m = n_sphere / n_medium
     x = k * radius
 
-    n_max = int(round(x + 4 * x**(1/3) + 2))
+    n_max = int(round(x + 4 * x ** (1 / 3) + 2))
     n_max = max(n_max, 3)
 
     an, bn = mie_coefficients_3d(x, m, n_max)
     n_arr = np.arange(1, n_max + 1)
 
-    return (2 / x**2) * np.sum((2 * n_arr + 1) * (np.abs(an)**2 + np.abs(bn)**2))
+    return (2 / x**2) * np.sum((2 * n_arr + 1) * (np.abs(an) ** 2 + np.abs(bn) ** 2))
 
 
 # =============================================================================
@@ -389,7 +392,7 @@ def mie_qext_2d(radius, wavelength, n_cylinder, n_medium=1.0):
     x = k * radius
 
     # Number of terms
-    n_max = int(round(x + 4 * x**(1/3) + 10))
+    n_max = int(round(x + 4 * x ** (1 / 3) + 10))
     n_max = max(n_max, 5)
 
     bn = mie_coefficients_2d(x, m, n_max)
@@ -416,12 +419,12 @@ def mie_qsca_2d(radius, wavelength, n_cylinder, n_medium=1.0):
     m = n_cylinder / n_medium
     x = k * radius
 
-    n_max = int(round(x + 4 * x**(1/3) + 10))
+    n_max = int(round(x + 4 * x ** (1 / 3) + 10))
     n_max = max(n_max, 5)
 
     bn = mie_coefficients_2d(x, m, n_max)
 
-    return (2 / x) * (np.abs(bn[0])**2 + 2 * np.sum(np.abs(bn[1:])**2))
+    return (2 / x) * (np.abs(bn[0]) ** 2 + 2 * np.sum(np.abs(bn[1:]) ** 2))
 
 
 # =============================================================================
@@ -531,7 +534,7 @@ def slab_waveguide_neff_tm(n_core, n_clad, width, wavelength, mode=0):
         gamma = k0 * np.sqrt(neff**2 - n_clad**2)
         # TM: tan(kt*d/2) = (n_core/n_clad)² * gamma/kt
         lhs = np.tan(kt * d / 2)
-        rhs = (n_core / n_clad)**2 * gamma / kt
+        rhs = (n_core / n_clad) ** 2 * gamma / kt
         return lhs - rhs
 
     n_min = n_clad + 1e-10
@@ -646,12 +649,15 @@ def compute_dft_field(field_history, time_array, frequency):
 
     # DFT at single frequency
     dt = time_arr[1] - time_arr[0] if len(time_arr) > 1 else 1.0
-    phasor = np.sum(field_arr * np.exp(-2j * np.pi * frequency * time_broadcast), axis=0) * dt
+    phasor = (
+        np.sum(field_arr * np.exp(-2j * np.pi * frequency * time_broadcast), axis=0)
+        * dt
+    )
 
     return phasor
 
 
-def compute_poynting_flux_phasor_2d(Ez_phasor, Hy_phasor, dx, direction='x'):
+def compute_poynting_flux_phasor_2d(Ez_phasor, Hy_phasor, dx, direction="x"):
     """Compute time-averaged Poynting flux from frequency-domain phasors.
 
     S_avg = 0.5 * Re(E × H*)
@@ -669,7 +675,7 @@ def compute_poynting_flux_phasor_2d(Ez_phasor, Hy_phasor, dx, direction='x'):
     Returns:
         Time-averaged power flux (integrated over line)
     """
-    if direction == 'x':
+    if direction == "x":
         # Sx = -0.5 * Re(Ez * Hy*)
         flux_density = -0.5 * np.real(Ez_phasor * np.conj(Hy_phasor))
     else:
@@ -697,6 +703,7 @@ def measure_ringdown_q_factor(field_history, time_array, center_freq):
 
     # Compute envelope using Hilbert transform
     from scipy.signal import hilbert
+
     analytic = hilbert(np.real(field_arr))
     envelope = np.abs(analytic)
 
@@ -802,7 +809,7 @@ def compute_field_error_L2(field1, field2, dx):
         f1 = zoom(f1, zoom_factors, order=1)
 
     # Compute L2 norm of difference
-    diff_norm = np.sqrt(np.sum((f1 - f2)**2))
+    diff_norm = np.sqrt(np.sum((f1 - f2) ** 2))
     ref_norm = np.sqrt(np.sum(f2**2))
 
     if ref_norm < 1e-30:
@@ -856,8 +863,8 @@ def fit_exponential_decay(data, time, start_fraction=0.0, end_fraction=0.8):
 
         # Compute R²
         fitted = intercept + slope * t_fit
-        ss_res = np.sum((log_d - fitted)**2)
-        ss_tot = np.sum((log_d - np.mean(log_d))**2)
+        ss_res = np.sum((log_d - fitted) ** 2)
+        ss_tot = np.sum((log_d - np.mean(log_d)) ** 2)
         r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
         return tau, amplitude, r_squared
@@ -865,7 +872,9 @@ def fit_exponential_decay(data, time, start_fraction=0.0, end_fraction=0.8):
         return None, None, None
 
 
-def compute_box_flux_2d_from_fields(Ez_phasors, Hy_phasors, Hx_phasors, dx, box_indices):
+def compute_box_flux_2d_from_fields(
+    Ez_phasors, Hy_phasors, Hx_phasors, dx, box_indices
+):
     """Compute net Poynting flux through a 2D rectangular box from phasor fields.
 
     For 2D TM polarization, S = -Re(Ez × H*):
@@ -882,30 +891,54 @@ def compute_box_flux_2d_from_fields(Ez_phasors, Hy_phasors, Hx_phasors, dx, box_
     Returns:
         Net outward power flux through box (positive = power leaving box)
     """
-    x_min = box_indices['x_min']
-    x_max = box_indices['x_max']
-    y_min = box_indices['y_min']
-    y_max = box_indices['y_max']
+    x_min = box_indices["x_min"]
+    x_max = box_indices["x_max"]
+    y_min = box_indices["y_min"]
+    y_max = box_indices["y_max"]
 
     # Right face (+x): integrate -Re(Ez * Hy*) over y
-    flux_right = -0.5 * np.sum(np.real(
-        Ez_phasors[y_min:y_max, x_max] * np.conj(Hy_phasors[y_min:y_max, x_max])
-    )) * dx
+    flux_right = (
+        -0.5
+        * np.sum(
+            np.real(
+                Ez_phasors[y_min:y_max, x_max] * np.conj(Hy_phasors[y_min:y_max, x_max])
+            )
+        )
+        * dx
+    )
 
     # Left face (-x): integrate +Re(Ez * Hy*) over y (outward normal is -x)
-    flux_left = 0.5 * np.sum(np.real(
-        Ez_phasors[y_min:y_max, x_min] * np.conj(Hy_phasors[y_min:y_max, x_min])
-    )) * dx
+    flux_left = (
+        0.5
+        * np.sum(
+            np.real(
+                Ez_phasors[y_min:y_max, x_min] * np.conj(Hy_phasors[y_min:y_max, x_min])
+            )
+        )
+        * dx
+    )
 
     # Top face (+y): integrate Re(Ez * Hx*) over x
-    flux_top = 0.5 * np.sum(np.real(
-        Ez_phasors[y_max, x_min:x_max] * np.conj(Hx_phasors[y_max, x_min:x_max])
-    )) * dx
+    flux_top = (
+        0.5
+        * np.sum(
+            np.real(
+                Ez_phasors[y_max, x_min:x_max] * np.conj(Hx_phasors[y_max, x_min:x_max])
+            )
+        )
+        * dx
+    )
 
     # Bottom face (-y): integrate -Re(Ez * Hx*) over x (outward normal is -y)
-    flux_bottom = -0.5 * np.sum(np.real(
-        Ez_phasors[y_min, x_min:x_max] * np.conj(Hx_phasors[y_min, x_min:x_max])
-    )) * dx
+    flux_bottom = (
+        -0.5
+        * np.sum(
+            np.real(
+                Ez_phasors[y_min, x_min:x_max] * np.conj(Hx_phasors[y_min, x_min:x_max])
+            )
+        )
+        * dx
+    )
 
     return flux_right + flux_left + flux_top + flux_bottom
 

@@ -1,5 +1,6 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
+
 from beamz.const import EPS_0
 
 
@@ -46,13 +47,16 @@ class GaussianSource:
             idx_high_safe = jnp.clip(idx_high, 0, signal_len - 1)
 
             # Interpolate
-            interp_val = (1.0 - frac) * signal_arr[idx_low_safe] + frac * signal_arr[idx_high_safe]
+            interp_val = (1.0 - frac) * signal_arr[idx_low_safe] + frac * signal_arr[
+                idx_high_safe
+            ]
 
             # Return 0 if out of range (except at last valid index)
             in_range = (idx_low >= 0) & (idx_low < signal_len - 1)
-            at_end = (idx_low == signal_len - 1)
-            return jnp.where(in_range, interp_val,
-                            jnp.where(at_end, signal_arr[idx_low_safe], 0.0))
+            at_end = idx_low == signal_len - 1
+            return jnp.where(
+                in_range, interp_val, jnp.where(at_end, signal_arr[idx_low_safe], 0.0)
+            )
         # Handle list signal (convert to JAX)
         elif isinstance(self.signal, list):
             self.signal = jnp.asarray(self.signal)
@@ -66,14 +70,14 @@ class GaussianSource:
     def inject(self, fields, t, dt, current_step, resolution, design):
         """Inject source fields directly into the simulation grid before the FDTD update step."""
         dx = dy = resolution
-        
+
         # Check dimensionality from position length (more reliable than fields when meshing is 2D for 3D design)
-        position_len = len(self.position) if hasattr(self.position, '__len__') else 1
+        position_len = len(self.position) if hasattr(self.position, "__len__") else 1
         if position_len == 3:
             self._inject_3d(fields, t, dt, resolution)
         else:
             self._inject_2d(fields, t, dt, resolution)
-            
+
     def _inject_2d(self, fields, t, dt, resolution):
         """Inject into 2D grid (Ez component)."""
         ny, nx = fields.Ez.shape
@@ -102,28 +106,28 @@ class GaussianSource:
             x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
             y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
 
-            X, Y = jnp.meshgrid(x_coords, y_coords, indexing='xy')
+            X, Y = jnp.meshgrid(x_coords, y_coords, indexing="xy")
 
             # Compute Gaussian using JAX (differentiable w.r.t. position and width)
-            dist_sq = (X - x0)**2 + (Y - y0)**2
+            dist_sq = (X - x0) ** 2 + (Y - y0) ** 2
             profile = jnp.exp(-dist_sq / (2 * self.width**2))
             self._spatial_profile_ez = profile
 
         # Get signal value
         # Inject at t + 0.5 dt because Ez is updated at n+1 from n
-        # Soft source: J_z is added. 
+        # Soft source: J_z is added.
         # Ez_new = Ez_old + ... - dt/eps * J_z
         # We want to add to Ez.
         # Typically soft source adds to E directly or J term.
         # ModeSource adds: fields.Ez += injection
         # injection = -jz * dt / (eps * eps0)
         # Here we treat GaussianSource as a J_z source.
-        
+
         signal_val = self._get_signal_value(t + 0.5 * dt, dt)
-        
+
         # Get permittivity in the region
         eps_region = fields.permittivity[self._grid_indices]
-        
+
         # Calculate injection term
         # J(x, t) = Profile(x) * s(t)
         # Update: E += -J * dt / (eps * eps0)
@@ -132,10 +136,10 @@ class GaussianSource:
         # Let's just add it as a "forcing function" to E.
         # If we want E ~ Signal, we might just add Profile * Signal * Scaling
         # Let's follow ModeSource physics: inject current J.
-        
+
         term = self._spatial_profile_ez * signal_val
         injection = -term * dt / (EPS_0 * eps_region)
-        
+
         # Inject using JAX functional update
         fields.Ez = fields.Ez.at[self._grid_indices].add(injection)
 
@@ -159,17 +163,21 @@ class GaussianSource:
             y_start, y_end = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
             z_start, z_end = max(0, cz - radius_grid), min(nz, cz + radius_grid + 1)
 
-            self._grid_indices = (slice(z_start, z_end), slice(y_start, y_end), slice(x_start, x_end))
+            self._grid_indices = (
+                slice(z_start, z_end),
+                slice(y_start, y_end),
+                slice(x_start, x_end),
+            )
 
             # Generate coordinate grids using JAX
             x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
             y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
             z_coords = (jnp.arange(z_start, z_end) + 0.5) * resolution
 
-            Z, Y, X = jnp.meshgrid(z_coords, y_coords, x_coords, indexing='ij')
+            Z, Y, X = jnp.meshgrid(z_coords, y_coords, x_coords, indexing="ij")
 
             # Compute Gaussian using JAX (differentiable w.r.t. position and width)
-            dist_sq = (X - x0)**2 + (Y - y0)**2 + (Z - z0)**2
+            dist_sq = (X - x0) ** 2 + (Y - y0) ** 2 + (Z - z0) ** 2
             self._spatial_profile_ez = jnp.exp(-dist_sq / (2 * self.width**2))
 
         signal_val = self._get_signal_value(t + 0.5 * dt, dt)
@@ -181,7 +189,9 @@ class GaussianSource:
         # Inject using JAX functional update
         fields.Ez = fields.Ez.at[self._grid_indices].add(injection)
 
-    def add_to_plot(self, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"):
+    def add_to_plot(
+        self, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"
+    ):
         """Add source visualization to 2D matplotlib plot.
 
         Draws a circle at the source position with radius proportional to the width.
@@ -198,12 +208,12 @@ class GaussianSource:
         circle = Circle(
             (x_pos, y_pos),
             radius=self.width,
-            facecolor='none',
+            facecolor="none",
             edgecolor=edgecolor,
             linewidth=2,
             alpha=alpha,
             linestyle=linestyle,
-            label='GaussianSource'
+            label="GaussianSource",
         )
         ax.add_patch(circle)
 
@@ -212,7 +222,7 @@ class GaussianSource:
             (x_pos, y_pos),
             radius=self.width * 0.1,
             facecolor=edgecolor,
-            edgecolor='none',
-            alpha=alpha
+            edgecolor="none",
+            alpha=alpha,
         )
         ax.add_patch(center_dot)

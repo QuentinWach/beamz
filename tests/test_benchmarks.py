@@ -5,17 +5,29 @@ Tests verify:
 2. Cavity resonance frequency
 3. Grid convergence (2nd order accuracy)
 """
-import pytest
-import numpy as np
-from beamz import (
-    Design, Material, Rectangle, Simulation, PML, Monitor,
-    GaussianSource, LIGHT_SPEED, EPS_0, um,
-    calc_optimal_fdtd_params, ramped_cosine
-)
 
+import numpy as np
+import pytest
+
+from beamz import (
+    EPS_0,
+    LIGHT_SPEED,
+    PML,
+    Design,
+    GaussianSource,
+    Material,
+    Monitor,
+    Rectangle,
+    Simulation,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    um,
+)
 from tests.utils import (
-    TEST_WAVELENGTH, compute_field_energy,
-    analytical_cavity_frequency, analytical_dipole_power_2d
+    TEST_WAVELENGTH,
+    analytical_cavity_frequency,
+    analytical_dipole_power_2d,
+    compute_field_energy,
 )
 
 
@@ -32,14 +44,11 @@ class TestDipoleRadiation:
         domain_size = 8 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, 1.0, dims=2,
-            safety_factor=0.95, points_per_wavelength=12
+            wavelength, 1.0, dims=2, safety_factor=0.95, points_per_wavelength=12
         )
 
         design = Design(
-            width=domain_size,
-            height=domain_size,
-            material=Material(permittivity=1.0)
+            width=domain_size, height=domain_size, material=Material(permittivity=1.0)
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -50,30 +59,30 @@ class TestDipoleRadiation:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.4
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.4,
         )
 
         # Source at center
         source = GaussianSource(
-            position=(domain_size/2, domain_size/2),
-            width=wavelength/6,
-            signal=signal
+            position=(domain_size / 2, domain_size / 2),
+            width=wavelength / 6,
+            signal=signal,
         )
 
         sim = Simulation(
             design=design,
             devices=[source],
-            boundaries=[PML(thickness=1.2*wavelength)],
+            boundaries=[PML(thickness=1.2 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=20)
+        result = sim.run(save_fields=["Ez"], field_subsample=20)
 
         # Get snapshot during active emission
-        mid_idx = len(result['fields']['Ez']) // 2
-        field = result['fields']['Ez'][mid_idx]
+        mid_idx = len(result["fields"]["Ez"]) // 2
+        field = result["fields"]["Ez"][mid_idx]
 
         ny, nx = field.shape
         center_y, center_x = ny // 2, nx // 2
@@ -91,9 +100,9 @@ class TestDipoleRadiation:
         # All quadrants should have comparable energy (within factor of 3)
         if total > 0:
             fractions = [e / total for e in quadrant_energies]
-            assert min(fractions) > 0.1, (
-                f"Quadrant fractions {fractions} show non-omnidirectional emission"
-            )
+            assert (
+                min(fractions) > 0.1
+            ), f"Quadrant fractions {fractions} show non-omnidirectional emission"
 
     def test_dipole_power_scales_with_amplitude(self):
         """Radiated power should scale as amplitude squared.
@@ -104,14 +113,11 @@ class TestDipoleRadiation:
         domain_size = 6 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, 1.0, dims=2,
-            safety_factor=0.95, points_per_wavelength=10
+            wavelength, 1.0, dims=2, safety_factor=0.95, points_per_wavelength=10
         )
 
         design = Design(
-            width=domain_size,
-            height=domain_size,
-            material=Material(permittivity=1.0)
+            width=domain_size, height=domain_size, material=Material(permittivity=1.0)
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -126,27 +132,27 @@ class TestDipoleRadiation:
                 time,
                 amplitude=amp,
                 frequency=frequency,
-                ramp_duration=2/frequency,
-                t_max=t_total * 0.4
+                ramp_duration=2 / frequency,
+                t_max=t_total * 0.4,
             )
 
             source = GaussianSource(
-                position=(domain_size/2, domain_size/2),
-                width=wavelength/6,
-                signal=signal
+                position=(domain_size / 2, domain_size / 2),
+                width=wavelength / 6,
+                signal=signal,
             )
 
             sim = Simulation(
                 design=design,
                 devices=[source],
-                boundaries=[PML(thickness=1.2*wavelength)],
+                boundaries=[PML(thickness=1.2 * wavelength)],
                 time=time,
-                resolution=dx
+                resolution=dx,
             )
 
-            result = sim.run(save_fields=['Ez'], field_subsample=15)
+            result = sim.run(save_fields=["Ez"], field_subsample=15)
 
-            energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
             peak_energies.append(max(energies))
 
         # Energy should scale as amplitude^2
@@ -175,15 +181,14 @@ class TestCavityResonance:
         domain_height = 3 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, 1.0, dims=2,
-            safety_factor=0.95, points_per_wavelength=15
+            wavelength, 1.0, dims=2, safety_factor=0.95, points_per_wavelength=15
         )
 
         # Create cavity with perfect conductors (high permittivity walls)
         design = Design(
-            width=cavity_length + 2*wavelength,  # Extra for PML
+            width=cavity_length + 2 * wavelength,  # Extra for PML
             height=domain_height,
-            material=Material(permittivity=1.0)
+            material=Material(permittivity=1.0),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -195,14 +200,14 @@ class TestCavityResonance:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.3
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.3,
         )
 
         source = GaussianSource(
-            position=(wavelength + cavity_length/2, domain_height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(wavelength + cavity_length / 2, domain_height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -210,13 +215,13 @@ class TestCavityResonance:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=25)
+        result = sim.run(save_fields=["Ez"], field_subsample=25)
 
         # Check that field energy exists
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
         peak_energy = max(energies)
         assert peak_energy > 0, "Should have field energy in cavity"
 
@@ -231,13 +236,13 @@ class TestCavityResonance:
         # First mode (m=1)
         f1 = analytical_cavity_frequency(m=1, L=L, n=n)
         expected = LIGHT_SPEED / (2 * L)
-        assert abs(f1 - expected) / expected < 1e-10, (
-            f"f1={f1:.3e} vs expected {expected:.3e}"
-        )
+        assert (
+            abs(f1 - expected) / expected < 1e-10
+        ), f"f1={f1:.3e} vs expected {expected:.3e}"
 
         # Second mode (m=2)
         f2 = analytical_cavity_frequency(m=2, L=L, n=n)
-        assert abs(f2 - 2*f1) / (2*f1) < 1e-10, "f2 should be 2*f1"
+        assert abs(f2 - 2 * f1) / (2 * f1) < 1e-10, "f2 should be 2*f1"
 
         # In dielectric
         n_glass = 1.5
@@ -258,7 +263,7 @@ class TestGridConvergence:
         domain_size = 5 * wavelength
 
         # Two resolutions: coarse and fine
-        resolutions = [wavelength/8, wavelength/12]
+        resolutions = [wavelength / 8, wavelength / 12]
         peak_energies = []
 
         for ppw in [8, 12]:
@@ -268,7 +273,7 @@ class TestGridConvergence:
             design = Design(
                 width=domain_size,
                 height=domain_size,
-                material=Material(permittivity=1.0)
+                material=Material(permittivity=1.0),
             )
 
             frequency = LIGHT_SPEED / wavelength
@@ -279,14 +284,14 @@ class TestGridConvergence:
                 time,
                 amplitude=1.0,
                 frequency=frequency,
-                ramp_duration=2/frequency,
-                t_max=t_total * 0.4
+                ramp_duration=2 / frequency,
+                t_max=t_total * 0.4,
             )
 
             source = GaussianSource(
-                position=(domain_size/2, domain_size/2),
-                width=wavelength/6,
-                signal=signal
+                position=(domain_size / 2, domain_size / 2),
+                width=wavelength / 6,
+                signal=signal,
             )
 
             sim = Simulation(
@@ -294,12 +299,12 @@ class TestGridConvergence:
                 devices=[source],
                 boundaries=[PML(thickness=wavelength)],
                 time=time,
-                resolution=dx
+                resolution=dx,
             )
 
-            result = sim.run(save_fields=['Ez'], field_subsample=20)
+            result = sim.run(save_fields=["Ez"], field_subsample=20)
 
-            energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
             peak_energies.append(max(energies))
 
         # Both should give reasonable results (no numerical instability)
@@ -327,9 +332,7 @@ class TestGridConvergence:
         dt = dx / (LIGHT_SPEED * np.sqrt(2)) * 0.95
 
         design = Design(
-            width=domain_size,
-            height=domain_size,
-            material=Material(permittivity=1.0)
+            width=domain_size, height=domain_size, material=Material(permittivity=1.0)
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -340,14 +343,14 @@ class TestGridConvergence:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.5
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.5,
         )
 
         source = GaussianSource(
-            position=(domain_size/2, domain_size/2),
-            width=wavelength/6,
-            signal=signal
+            position=(domain_size / 2, domain_size / 2),
+            width=wavelength / 6,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -355,17 +358,17 @@ class TestGridConvergence:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=30)
+        result = sim.run(save_fields=["Ez"], field_subsample=30)
 
         # Check for stability: no NaN or Inf values
-        for Ez in result['fields']['Ez']:
+        for Ez in result["fields"]["Ez"]:
             assert np.all(np.isfinite(Ez)), "Field contains NaN or Inf (instability)"
 
         # Check energy doesn't explode compared to peak
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
         peak_energy = max(energies)
         final_energy = energies[-1]
 
@@ -381,7 +384,7 @@ class TestGridConvergence:
         )
 
         # Peak field amplitude should be bounded
-        max_field = max(np.max(np.abs(Ez)) for Ez in result['fields']['Ez'])
+        max_field = max(np.max(np.abs(Ez)) for Ez in result["fields"]["Ez"])
         assert max_field < 1e6, f"Max field {max_field:.2e} is unreasonably large"
 
 
@@ -403,20 +406,19 @@ class TestWaveguideGroupVelocity:
         domain_height = 4 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, n_core, dims=2,
-            safety_factor=0.95, points_per_wavelength=12
+            wavelength, n_core, dims=2, safety_factor=0.95, points_per_wavelength=12
         )
 
         design = Design(
             width=domain_width,
             height=domain_height,
-            material=Material(permittivity=n_clad**2)
+            material=Material(permittivity=n_clad**2),
         )
         design += Rectangle(
-            position=(domain_width/2, domain_height/2),
+            position=(domain_width / 2, domain_height / 2),
             width=domain_width,
             height=core_width,
-            material=Material(permittivity=n_core**2)
+            material=Material(permittivity=n_core**2),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -427,30 +429,30 @@ class TestWaveguideGroupVelocity:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=3/frequency,
-            t_max=t_total * 0.4
+            ramp_duration=3 / frequency,
+            t_max=t_total * 0.4,
         )
 
         # Use GaussianSource for simplicity (centered on waveguide)
         source = GaussianSource(
-            position=(wavelength * 2, domain_height/2),
+            position=(wavelength * 2, domain_height / 2),
             width=core_width / 2,
-            signal=signal
+            signal=signal,
         )
 
         sim = Simulation(
             design=design,
             devices=[source],
-            boundaries=[PML(thickness=1.2*wavelength)],
+            boundaries=[PML(thickness=1.2 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=25)
+        result = sim.run(save_fields=["Ez"], field_subsample=25)
 
         # Check that field propagates rightward
-        mid_field = result['fields']['Ez'][len(result['fields']['Ez'])//2]
-        late_field = result['fields']['Ez'][-1]
+        mid_field = result["fields"]["Ez"][len(result["fields"]["Ez"]) // 2]
+        late_field = result["fields"]["Ez"][-1]
 
         ny, nx = mid_field.shape
         source_x = int(wavelength * 2 / dx)
@@ -463,6 +465,6 @@ class TestWaveguideGroupVelocity:
         total = mid_right_energy + mid_left_energy
         if total > 1e-30:
             right_frac = mid_right_energy / total
-            assert right_frac > 0.5, (
-                f"Only {right_frac*100:.1f}% energy downstream at midpoint"
-            )
+            assert (
+                right_frac > 0.5
+            ), f"Only {right_frac*100:.1f}% energy downstream at midpoint"

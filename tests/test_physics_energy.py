@@ -5,13 +5,23 @@ Tests verify:
 2. Total EM energy is conserved in lossless systems
 3. Source power injection matches expectations
 """
-import pytest
-import numpy as np
-from beamz import (
-    Design, Material, Simulation, PML, GaussianSource,
-    LIGHT_SPEED, EPS_0, MU_0, um, calc_optimal_fdtd_params, ramped_cosine
-)
 
+import numpy as np
+import pytest
+
+from beamz import (
+    EPS_0,
+    LIGHT_SPEED,
+    MU_0,
+    PML,
+    Design,
+    GaussianSource,
+    Material,
+    Simulation,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    um,
+)
 from tests.utils import TEST_WAVELENGTH, compute_field_energy
 
 
@@ -26,10 +36,10 @@ class TestEnergyConservation:
 
         Method: Track total field energy, verify monotonic decay after source.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 20 / frequency
@@ -40,14 +50,14 @@ class TestEnergyConservation:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.25
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.25,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -55,13 +65,13 @@ class TestEnergyConservation:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=10)
+        result = sim.run(save_fields=["Ez"], field_subsample=10)
 
         # Compute energy at each snapshot
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         # After source stops (~35% with ramp), energy should decay
         source_stop_idx = int(len(energies) * 0.4)
@@ -71,8 +81,8 @@ class TestEnergyConservation:
         max_growth = 1.03  # Allow 3% fluctuation
         growth_violations = 0
         for i in range(1, len(post_source)):
-            if post_source[i-1] > 1e-30:
-                ratio = post_source[i] / post_source[i-1]
+            if post_source[i - 1] > 1e-30:
+                ratio = post_source[i] / post_source[i - 1]
                 if ratio > max_growth:
                     growth_violations += 1
 
@@ -87,10 +97,10 @@ class TestEnergyConservation:
 
         Physics: With PML boundaries, all energy eventually leaves the domain.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 25 / frequency
@@ -101,27 +111,27 @@ class TestEnergyConservation:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.15
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.15,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
             design=design,
             devices=[source],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=15)
+        result = sim.run(save_fields=["Ez"], field_subsample=15)
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         peak_energy = max(energies)
         final_energy = energies[-1]
@@ -138,10 +148,10 @@ class TestEnergyConservation:
 
         Physics: Energy flows away from the source in all directions.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 10 / frequency
@@ -151,15 +161,15 @@ class TestEnergyConservation:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.5
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.5,
         )
 
         # Source at center
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -167,16 +177,16 @@ class TestEnergyConservation:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez', 'Hx', 'Hy'], field_subsample=20)
+        result = sim.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=20)
 
         # Get a snapshot during active emission
-        mid_idx = len(result['fields']['Ez']) // 2
-        Ez = result['fields']['Ez'][mid_idx]
-        Hx = result['fields']['Hx'][mid_idx]
-        Hy = result['fields']['Hy'][mid_idx]
+        mid_idx = len(result["fields"]["Ez"]) // 2
+        Ez = result["fields"]["Ez"][mid_idx]
+        Hx = result["fields"]["Hx"][mid_idx]
+        Hy = result["fields"]["Hy"][mid_idx]
 
         # Compute Poynting vector components
         # Note: H fields may have different shapes due to Yee staggering
@@ -202,10 +212,10 @@ class TestEnergyConservation:
 
         Physics: Active source increases total EM energy.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 8 / frequency
@@ -215,14 +225,14 @@ class TestEnergyConservation:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.8
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.8,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -230,20 +240,20 @@ class TestEnergyConservation:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=10)
+        result = sim.run(save_fields=["Ez"], field_subsample=10)
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         # Energy should increase from zero
         initial_energy = energies[0]
         peak_energy = max(energies)
 
-        assert peak_energy > initial_energy, (
-            "Source should inject energy. Peak energy not greater than initial."
-        )
+        assert (
+            peak_energy > initial_energy
+        ), "Source should inject energy. Peak energy not greater than initial."
         assert peak_energy > 0, "Peak energy should be positive"
 
     def test_energy_in_dielectric(self, dielectric_domain):
@@ -252,11 +262,11 @@ class TestEnergyConservation:
         Physics: U = (1/2) * ε₀ * ε_r * E²
         Higher ε means more energy for same field amplitude.
         """
-        design = dielectric_domain['design']
-        wavelength = dielectric_domain['wavelength']
-        dx = dielectric_domain['dx']
-        dt = dielectric_domain['dt']
-        n = dielectric_domain['n']
+        design = dielectric_domain["design"]
+        wavelength = dielectric_domain["wavelength"]
+        dx = dielectric_domain["dx"]
+        dt = dielectric_domain["dt"]
+        n = dielectric_domain["n"]
         eps_r = n**2
 
         frequency = LIGHT_SPEED / wavelength
@@ -267,14 +277,14 @@ class TestEnergyConservation:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.5
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.5,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/(4*n),
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / (4 * n),
+            signal=signal,
         )
 
         sim = Simulation(
@@ -282,27 +292,25 @@ class TestEnergyConservation:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=20)
+        result = sim.run(save_fields=["Ez"], field_subsample=20)
 
         # Compute energy with correct permittivity
         energies_correct = [
-            compute_field_energy(Ez, dx, eps=eps_r)
-            for Ez in result['fields']['Ez']
+            compute_field_energy(Ez, dx, eps=eps_r) for Ez in result["fields"]["Ez"]
         ]
 
         # Compare to energy computed with vacuum permittivity
         energies_vacuum = [
-            compute_field_energy(Ez, dx, eps=1.0)
-            for Ez in result['fields']['Ez']
+            compute_field_energy(Ez, dx, eps=1.0) for Ez in result["fields"]["Ez"]
         ]
 
         # Correct energy should be eps_r times vacuum energy
         peak_idx = np.argmax(energies_correct)
         ratio = energies_correct[peak_idx] / energies_vacuum[peak_idx]
 
-        assert abs(ratio - eps_r) / eps_r < 0.01, (
-            f"Energy ratio {ratio:.2f} should be ε_r = {eps_r:.2f}"
-        )
+        assert (
+            abs(ratio - eps_r) / eps_r < 0.01
+        ), f"Energy ratio {ratio:.2f} should be ε_r = {eps_r:.2f}"

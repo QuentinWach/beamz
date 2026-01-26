@@ -4,11 +4,21 @@ Tests verify:
 1. Phase velocity equals c in vacuum
 2. No spurious energy growth (stability)
 """
-import pytest
+
 import numpy as np
+import pytest
+
 from beamz import (
-    Design, Material, Simulation, PML, GaussianSource,
-    LIGHT_SPEED, EPS_0, um, calc_optimal_fdtd_params, ramped_cosine
+    EPS_0,
+    LIGHT_SPEED,
+    PML,
+    Design,
+    GaussianSource,
+    Material,
+    Simulation,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    um,
 )
 
 # Import utilities
@@ -27,10 +37,10 @@ class TestFreeSpacePropagation:
 
         Tolerance: 5% (accounts for numerical dispersion at 10 ppw)
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         n_periods = 12
@@ -42,15 +52,15 @@ class TestFreeSpacePropagation:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.5
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.5,
         )
 
         # Source on left side
         source = GaussianSource(
-            position=(2*wavelength, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(2 * wavelength, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -58,23 +68,22 @@ class TestFreeSpacePropagation:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
         # Save field snapshots for velocity measurement
         subsample = 10
-        result = sim.run(save_fields=['Ez'], field_subsample=subsample)
+        result = sim.run(save_fields=["Ez"], field_subsample=subsample)
 
         # Estimate phase velocity from wavefront tracking
         dt_snapshot = dt * subsample
         v_measured = estimate_phase_velocity(
-            result['fields']['Ez'],
-            dx,
-            dt_snapshot,
-            threshold=0.2
+            result["fields"]["Ez"], dx, dt_snapshot, threshold=0.2
         )
 
-        assert v_measured is not None, "Could not measure phase velocity - insufficient wavefront data"
+        assert (
+            v_measured is not None
+        ), "Could not measure phase velocity - insufficient wavefront data"
 
         # Check within 5% of c
         error = abs(v_measured - LIGHT_SPEED) / LIGHT_SPEED
@@ -95,10 +104,10 @@ class TestFreeSpacePropagation:
         - CFL condition violations
         - PML instabilities
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         n_periods = 15
@@ -110,14 +119,14 @@ class TestFreeSpacePropagation:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.3
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.3,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -125,15 +134,15 @@ class TestFreeSpacePropagation:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
         # Save snapshots to track energy
         subsample = 20
-        result = sim.run(save_fields=['Ez'], field_subsample=subsample)
+        result = sim.run(save_fields=["Ez"], field_subsample=subsample)
 
         # Compute energy at each snapshot
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         # After source stops (~40% mark with ramp), check for growth
         source_stop_idx = int(len(energies) * 0.45)
@@ -142,8 +151,8 @@ class TestFreeSpacePropagation:
         # Check no significant growth (allow 2% fluctuation for numerical noise)
         max_growth_ratio = 1.02
         for i in range(1, len(post_source_energies)):
-            if post_source_energies[i-1] > 1e-30:  # Skip near-zero values
-                ratio = post_source_energies[i] / post_source_energies[i-1]
+            if post_source_energies[i - 1] > 1e-30:  # Skip near-zero values
+                ratio = post_source_energies[i] / post_source_energies[i - 1]
                 assert ratio < max_growth_ratio, (
                     f"Energy grew by {(ratio-1)*100:.1f}% at step {source_stop_idx + i}. "
                     "This indicates numerical instability."
@@ -155,10 +164,10 @@ class TestFreeSpacePropagation:
         A more stringent stability check - max field should never exceed
         a reasonable multiple of the source amplitude.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         n_periods = 10
@@ -170,14 +179,14 @@ class TestFreeSpacePropagation:
             time,
             amplitude=source_amplitude,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.6
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.6,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -185,17 +194,17 @@ class TestFreeSpacePropagation:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=50)
+        result = sim.run(save_fields=["Ez"], field_subsample=50)
 
         # Max field should not exceed some reasonable bound
         # The injected current creates E-field proportional to J*dt/eps
         # We allow up to 1000x as field builds up, but this catches explosive growth
         max_reasonable_field = 1e10  # Absolute bound to catch blowup
 
-        for i, Ez in enumerate(result['fields']['Ez']):
+        for i, Ez in enumerate(result["fields"]["Ez"]):
             max_field = np.max(np.abs(Ez))
             assert max_field < max_reasonable_field, (
                 f"Field exploded at snapshot {i}: max = {max_field:.2e}. "

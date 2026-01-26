@@ -3,13 +3,14 @@ from collections import namedtuple
 from types import SimpleNamespace
 from typing import List, Literal, Tuple, Union
 
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 # Lazy import of tidy3d to allow package to work without it
 tidy3d = None
 _compute_modes = None
+
 
 def _ensure_tidy3d():
     """Lazily import tidy3d when needed."""
@@ -18,6 +19,7 @@ def _ensure_tidy3d():
         try:
             import tidy3d as _tidy3d
             from tidy3d.components.mode.solver import compute_modes as _cm
+
             tidy3d = _tidy3d
             _compute_modes = _cm
         except ImportError:
@@ -26,8 +28,10 @@ def _ensure_tidy3d():
                 "Install it with: pip install tidy3d"
             )
 
+
 ModeTupleType = namedtuple("Mode", ["neff", "Ex", "Ey", "Ez", "Hx", "Hy", "Hz"])
 """A named tuple containing the mode fields and effective index."""
+
 
 def compute_mode_polarization_fraction(
     mode: ModeTupleType,
@@ -38,12 +42,16 @@ def compute_mode_polarization_fraction(
     E1 = E_fields[tangential_axes[0]]
     E2 = E_fields[tangential_axes[1]]
 
-    if pol == "te": numerator = np.sum(np.abs(E1) ** 2)
-    elif pol == "tm": numerator = np.sum(np.abs(E2) ** 2)
-    else: raise ValueError(f"pol must be 'te' or 'tm', but got {pol}")
+    if pol == "te":
+        numerator = np.sum(np.abs(E1) ** 2)
+    elif pol == "tm":
+        numerator = np.sum(np.abs(E2) ** 2)
+    else:
+        raise ValueError(f"pol must be 'te' or 'tm', but got {pol}")
 
     denominator = np.sum(np.abs(E1) ** 2 + np.abs(E2) ** 2) + 1e-18
     return numerator / denominator
+
 
 def sort_modes(
     modes: list[ModeTupleType],
@@ -60,10 +68,15 @@ def sort_modes(
     matching = [m for m in modes if is_matching(m)]
     non_matching = [m for m in modes if not is_matching(m)]
 
-    matching_sorted = sorted(matching, key=lambda m: float(np.real(m.neff)), reverse=True)
-    non_matching_sorted = sorted(non_matching, key=lambda m: float(np.real(m.neff)), reverse=True)
+    matching_sorted = sorted(
+        matching, key=lambda m: float(np.real(m.neff)), reverse=True
+    )
+    non_matching_sorted = sorted(
+        non_matching, key=lambda m: float(np.real(m.neff)), reverse=True
+    )
 
     return matching_sorted + non_matching_sorted
+
 
 def compute_mode(
     frequency: float,
@@ -77,34 +90,55 @@ def compute_mode(
 ) -> tuple[np.ndarray, np.ndarray, complex, int]:
     _ensure_tidy3d()  # Lazy import tidy3d
     inv_permittivities = np.asarray(inv_permittivities, dtype=np.complex128)
-    if inv_permittivities.ndim == 1: inv_permittivities = inv_permittivities[np.newaxis, :, np.newaxis]
-    elif inv_permittivities.ndim == 2: inv_permittivities = inv_permittivities[np.newaxis, :, :]
-    elif inv_permittivities.ndim > 3: raise ValueError(f"Invalid shape of inv_permittivities: {inv_permittivities.shape}")
+    if inv_permittivities.ndim == 1:
+        inv_permittivities = inv_permittivities[np.newaxis, :, np.newaxis]
+    elif inv_permittivities.ndim == 2:
+        inv_permittivities = inv_permittivities[np.newaxis, :, :]
+    elif inv_permittivities.ndim > 3:
+        raise ValueError(
+            f"Invalid shape of inv_permittivities: {inv_permittivities.shape}"
+        )
 
     if isinstance(inv_permeabilities, np.ndarray):
         inv_permeabilities = np.asarray(inv_permeabilities, dtype=np.complex128)
-        if inv_permeabilities.ndim == 1: inv_permeabilities = inv_permeabilities[np.newaxis, :, np.newaxis]
-        elif inv_permeabilities.ndim == 2: inv_permeabilities = inv_permeabilities[np.newaxis, :, :]
-        elif inv_permeabilities.ndim > 3: raise ValueError(f"Invalid shape of inv_permeabilities: {inv_permeabilities.shape}")
+        if inv_permeabilities.ndim == 1:
+            inv_permeabilities = inv_permeabilities[np.newaxis, :, np.newaxis]
+        elif inv_permeabilities.ndim == 2:
+            inv_permeabilities = inv_permeabilities[np.newaxis, :, :]
+        elif inv_permeabilities.ndim > 3:
+            raise ValueError(
+                f"Invalid shape of inv_permeabilities: {inv_permeabilities.shape}"
+            )
     else:
         inv_permeabilities = np.asarray(inv_permeabilities, dtype=np.complex128)
 
-    singleton_axes = [idx for idx, size in enumerate(inv_permittivities.shape) if size == 1]
-    if not singleton_axes: raise ValueError("At least one singleton dimension is required to denote the propagation axis")
+    singleton_axes = [
+        idx for idx, size in enumerate(inv_permittivities.shape) if size == 1
+    ]
+    if not singleton_axes:
+        raise ValueError(
+            "At least one singleton dimension is required to denote the propagation axis"
+        )
     propagation_axis = singleton_axes[0]
 
     cross_axes = [ax for ax in range(inv_permittivities.ndim) if ax != propagation_axis]
-    if not cross_axes: raise ValueError("Need at least one transverse axis for mode computation")
+    if not cross_axes:
+        raise ValueError("Need at least one transverse axis for mode computation")
 
     permittivities = 1 / inv_permittivities
-    coords = [np.arange(permittivities.shape[dim] + 1) * resolution / 1e-6 for dim in cross_axes]
+    coords = [
+        np.arange(permittivities.shape[dim] + 1) * resolution / 1e-6
+        for dim in cross_axes
+    ]
     permittivity_squeezed = np.take(permittivities, indices=0, axis=propagation_axis)
-    if permittivity_squeezed.ndim == 1: permittivity_squeezed = permittivity_squeezed[:, np.newaxis]
+    if permittivity_squeezed.ndim == 1:
+        permittivity_squeezed = permittivity_squeezed[:, np.newaxis]
 
     if inv_permeabilities.ndim == inv_permittivities.ndim:
         permeability = 1 / inv_permeabilities
         permeability_squeezed = np.take(permeability, indices=0, axis=propagation_axis)
-        if permeability_squeezed.ndim == 1: permeability_squeezed = permeability_squeezed[:, np.newaxis]
+        if permeability_squeezed.ndim == 1:
+            permeability_squeezed = permeability_squeezed[:, np.newaxis]
     else:
         permeability_squeezed = 1 / inv_permeabilities.item()
 
@@ -121,7 +155,10 @@ def compute_mode(
     )
     tangential_axes = tangential_axes_map.get(propagation_axis, (0, 1))
     modes = sort_modes(modes, filter_pol, tangential_axes)
-    if mode_index >= len(modes): raise ValueError(f"Requested mode index {mode_index}, but only {len(modes)} modes available")
+    if mode_index >= len(modes):
+        raise ValueError(
+            f"Requested mode index {mode_index}, but only {len(modes)} modes available"
+        )
 
     mode = modes[mode_index]
 
@@ -152,11 +189,14 @@ def solve_modes(
     return_fields: bool = False,
     propagation_axis: Union[Literal["+x", "-x", "+y", "-y", "+z", "-z"], None] = None,
     target_neff: Union[float, None] = None,
-) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
-    if eps.ndim not in [1, 2]: raise ValueError("solve_modes expects a 1D or 2D permittivity array")
+) -> Union[
+    Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, np.ndarray, int]
+]:
+    if eps.ndim not in [1, 2]:
+        raise ValueError("solve_modes expects a 1D or 2D permittivity array")
 
     freq = omega / (2 * np.pi)
-    
+
     # Reshape eps to 3D for compute_mode (axis, trans1, trans2)
     # compute_mode expects (prop_axis, trans1, trans2) where prop_axis is singleton
     if eps.ndim == 1:
@@ -164,7 +204,7 @@ def solve_modes(
     else:
         # eps is (trans1, trans2). We add the propagation axis at 0.
         inv_eps = (1.0 / np.asarray(eps, dtype=np.complex128))[np.newaxis, :, :]
-    
+
     direction_flag = "+" if direction.startswith("+") else "-"
     axis_hint = propagation_axis if propagation_axis is not None else direction
 
@@ -193,7 +233,8 @@ def solve_modes(
             component_norms = [np.linalg.norm(np.squeeze(E_full[i])) for i in range(3)]
             component_idx = int(np.argmax(component_norms))
             field_line = np.squeeze(E_full[component_idx])
-            if field_line.ndim > 1: field_line = field_line[:, 0]
+            if field_line.ndim > 1:
+                field_line = field_line[:, 0]
             max_amp = np.max(np.abs(field_line)) or 1.0
             mode_vectors.append(field_line / max_amp)
 
@@ -207,9 +248,11 @@ def solve_modes(
             prop_axis,
         )
 
-    if not mode_vectors: return neff_array, np.zeros((eps.size, 0), dtype=np.complex128)
+    if not mode_vectors:
+        return neff_array, np.zeros((eps.size, 0), dtype=np.complex128)
 
     return neff_array, np.column_stack(mode_vectors)
+
 
 def tidy3d_mode_computation_wrapper(
     frequency: float,
@@ -239,8 +282,10 @@ def tidy3d_mode_computation_wrapper(
     od = np.zeros_like(permittivity_cross_section)
     eps_cross = [permittivity_cross_section if i in {0, 4, 8} else od for i in range(9)]
     mu_cross = None
-    if permeability_cross_section is not None: 
-        mu_cross = [permeability_cross_section if i in {0, 4, 8} else od for i in range(9)]
+    if permeability_cross_section is not None:
+        mu_cross = [
+            permeability_cross_section if i in {0, 4, 8} else od for i in range(9)
+        ]
 
     EH, neffs, _ = _compute_modes(
         eps_cross=eps_cross,
@@ -253,7 +298,10 @@ def tidy3d_mode_computation_wrapper(
     )
     (Ex, Ey, Ez), (Hx, Hy, Hz) = EH.squeeze()
 
-    if num_modes == 1: return [ModeTupleType(Ex=Ex, Ey=Ey, Ez=Ez, Hx=Hx, Hy=Hy, Hz=Hz, neff=complex(neffs))]
+    if num_modes == 1:
+        return [
+            ModeTupleType(Ex=Ex, Ey=Ey, Ez=Ez, Hx=Hx, Hy=Hy, Hz=Hz, neff=complex(neffs))
+        ]
 
     return [
         ModeTupleType(
@@ -268,7 +316,10 @@ def tidy3d_mode_computation_wrapper(
         for i in range(min(num_modes, Ex.shape[-1]))
     ]
 
-def _normalize_by_poynting_flux(E: np.ndarray, H: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray]:
+
+def _normalize_by_poynting_flux(
+    E: np.ndarray, H: np.ndarray, axis: int
+) -> tuple[np.ndarray, np.ndarray]:
     S = np.cross(E, np.conjugate(H), axis=0)
     power = float(np.real(np.sum(S[axis])))
 
@@ -298,6 +349,7 @@ def _normalize_by_poynting_flux(E: np.ndarray, H: np.ndarray, axis: int) -> tupl
 # ============================================================================
 # JAX-Compatible Differentiable Mode Solver Wrapper
 # ============================================================================
+
 
 def solve_modes_differentiable(
     eps: jnp.ndarray,
