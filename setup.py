@@ -11,7 +11,7 @@ try:
 
     setup(
         name="beamz",
-        version="0.1.18",
+        version="0.1.19",
         author="Quentin Wach",
         author_email="quentin.wach+beamz@gmail.com",
         description="EM package to create inverse / generative designs for your photonic devices with ease and efficiency.",
