@@ -4,11 +4,21 @@ Tests verify:
 1. PML absorbs outgoing waves with minimal reflection
 2. Energy decays monotonically after source stops
 """
-import pytest
+
 import numpy as np
+import pytest
+
 from beamz import (
-    Design, Material, Simulation, PML, GaussianSource,
-    LIGHT_SPEED, EPS_0, um, calc_optimal_fdtd_params, ramped_cosine
+    EPS_0,
+    LIGHT_SPEED,
+    PML,
+    Design,
+    GaussianSource,
+    Material,
+    Simulation,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    um,
 )
 
 # Import utilities
@@ -30,10 +40,10 @@ class TestPMLAbsorption:
 
         Tolerance: Reflection ratio < 10%
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         n_periods = 20
@@ -45,15 +55,15 @@ class TestPMLAbsorption:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.3  # Source stops at 30%
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.3,  # Source stops at 30%
         )
 
         # Source at center
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         # Thicker PML for better absorption
@@ -64,13 +74,13 @@ class TestPMLAbsorption:
             devices=[source],
             boundaries=[PML(thickness=pml_thickness)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=20)
+        result = sim.run(save_fields=["Ez"], field_subsample=20)
 
         # Compute energy at each snapshot
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         # Find peak energy (during excitation)
         peak_energy = max(energies)
@@ -97,10 +107,10 @@ class TestPMLAbsorption:
 
         Tolerance: Energy ratio < 1.02 between consecutive measurements
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         n_periods = 15
@@ -112,14 +122,14 @@ class TestPMLAbsorption:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.25
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.25,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -127,12 +137,12 @@ class TestPMLAbsorption:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=10)
+        result = sim.run(save_fields=["Ez"], field_subsample=10)
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         # After source stops (~35% accounting for ramp), check monotonic decay
         source_stop_idx = int(len(energies) * 0.4)
@@ -142,8 +152,8 @@ class TestPMLAbsorption:
         max_ratio = 1.02
         growth_count = 0
         for i in range(1, len(post_source)):
-            if post_source[i-1] > 1e-30:  # Skip near-zero
-                ratio = post_source[i] / post_source[i-1]
+            if post_source[i - 1] > 1e-30:  # Skip near-zero
+                ratio = post_source[i] / post_source[i - 1]
                 if ratio > max_ratio:
                     growth_count += 1
                     assert growth_count < 3, (
@@ -159,10 +169,10 @@ class TestPMLAbsorption:
         by checking that absorption improves (or doesn't degrade)
         with thickness.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 15 / frequency
@@ -172,14 +182,14 @@ class TestPMLAbsorption:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.3
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.3,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         pml_thickness = pml_layers_wl * wavelength
@@ -189,12 +199,12 @@ class TestPMLAbsorption:
             devices=[source],
             boundaries=[PML(thickness=pml_thickness)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=20)
+        result = sim.run(save_fields=["Ez"], field_subsample=20)
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         peak_energy = max(energies)
         late_energy = np.mean(energies[-3:]) if len(energies) >= 3 else energies[-1]
@@ -212,10 +222,10 @@ class TestPMLAbsorption:
         Some PML implementations can be unstable, especially at corners
         or with certain parameter choices.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 30 / frequency  # Long simulation to catch late instabilities
@@ -225,14 +235,14 @@ class TestPMLAbsorption:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.2
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.2,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -240,23 +250,23 @@ class TestPMLAbsorption:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=100)
+        result = sim.run(save_fields=["Ez"], field_subsample=100)
 
         # Check for field explosion
         max_reasonable = 1e10
-        for i, Ez in enumerate(result['fields']['Ez']):
+        for i, Ez in enumerate(result["fields"]["Ez"]):
             max_field = np.max(np.abs(Ez))
-            assert max_field < max_reasonable, (
-                f"PML instability detected at snapshot {i}: max={max_field:.2e}"
-            )
+            assert (
+                max_field < max_reasonable
+            ), f"PML instability detected at snapshot {i}: max={max_field:.2e}"
 
         # Check that energy eventually decays (not stuck at high level)
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
         if energies[0] > 1e-30:
             decay_ratio = energies[-1] / max(energies)
-            assert decay_ratio < 0.5, (
-                f"Energy not decaying with PML: final/peak = {decay_ratio:.2f}"
-            )
+            assert (
+                decay_ratio < 0.5
+            ), f"Energy not decaying with PML: final/peak = {decay_ratio:.2f}"

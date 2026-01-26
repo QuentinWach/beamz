@@ -26,6 +26,7 @@ wip/
 venv/
 env/
 ENV/
+.venv/
 
 # IDE
 .idea/

@@ -1,27 +1,27 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "beamz"
-version = "0.1.18" # Match setup.py
+version = "0.1.18"
+dynamic = []
 authors = [
     { name = "Quentin Wach", email = "quentin.wach+beamz@gmail.com" },
 ]
 description = "EM package to create inverse / generative designs for your photonic devices with ease and efficiency."
 readme = "README.md"
-requires-python = ">=3.8"
-license = { file = "LICENSE" } # Assuming LICENSE file exists at the root
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
 keywords = ["electromagnetics", "photonics", "inverse design", "generative design", "simulation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
@@ -67,7 +67,7 @@ test = [ # Adding a 'test' extra that includes pytest and pytest-cov for conveni
 
 [tool.black]
 line-length = 88
-target-version = ['py38']
+target-version = ['py310', 'py311', 'py312']
 include = '\.pyi?$'
 
 [tool.isort]
@@ -78,3 +78,22 @@ multi_line_output = 3
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --cov=beamz --cov-report=term-missing"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-randomly>=3.0.0",
+    "black>=22.0.0",
+    "isort>=5.0.0",
+    "flake8>=4.0.0",
+    "myst-parser>=2.0.0",
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+    "tidy3d>=2.0.0",
+    "twine>=4.0.0",
+    "build>=1.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["beamz"]

@@ -1,8 +1,13 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
+
+from beamz.const import EPS_0, LIGHT_SPEED, MU_0, µm
+from beamz.devices.sources.jax_utils import (
+    differentiable_phase_alignment,
+    jax_tukey_window,
+)
 from beamz.devices.sources.solve import solve_modes
-from beamz.devices.sources.jax_utils import jax_tukey_window, differentiable_phase_alignment
-from beamz.const import µm, LIGHT_SPEED, EPS_0, MU_0
+
 
 class ModeSource:
     """Huygens mode source on Yee grid supporting ±x/±y propagation.
@@ -11,9 +16,13 @@ class ModeSource:
     mode injection, accounting for proper Yee grid staggering.
     """
 
-    def __init__(self, grid, center, width, wavelength, pol, signal, direction="+x", height=None):
+    def __init__(
+        self, grid, center, width, wavelength, pol, signal, direction="+x", height=None
+    ):
         self.grid = grid
-        self.center = center if isinstance(center, (tuple, list)) else (center, grid.height / 2)
+        self.center = (
+            center if isinstance(center, (tuple, list)) else (center, grid.height / 2)
+        )
         self.width = width
         self.height = height  # For 3D: constrains z-direction; None for 2D, defaults to width for 3D
         self.wavelength = wavelength
@@ -56,7 +65,7 @@ class ModeSource:
     def initialize(self, permittivity, resolution):
         """Compute the mode and set up the source currents for all 6 components in 3D."""
         dx = dy = resolution
-        is_3d = (permittivity.ndim == 3)
+        is_3d = permittivity.ndim == 3
         self._resolution = resolution
         self._is_3d = is_3d
 
@@ -117,7 +126,7 @@ class ModeSource:
             m=1,
             direction=self.direction,
             filter_pol=self.pol,
-            return_fields=True
+            return_fields=True,
         )
         self._neff = neff_val[0]
         E_mode = e_fields[0]  # Shape: (3, nz, ny) or (3, ny)
@@ -136,8 +145,7 @@ class ModeSource:
         # 4. Phase align all components to dominant field (JAX-compatible)
         if self.pol == "tm":
             ref_field = jnp.where(
-                jnp.max(jnp.abs(Ez_raw)) > jnp.max(jnp.abs(Ey_raw)),
-                Ez_raw, Ey_raw
+                jnp.max(jnp.abs(Ez_raw)) > jnp.max(jnp.abs(Ey_raw)), Ez_raw, Ey_raw
             )
         else:
             ref_field = Ey_raw if axis == "x" else Ex_raw
@@ -157,24 +165,46 @@ class ModeSource:
         # 5. Apply Yee grid staggering and set up indices for 3D
         if is_3d:
             self._setup_3d_injection(
-                Ex_aligned, Ey_aligned, Ez_aligned,
-                Hx_aligned, Hy_aligned, Hz_aligned,
-                center_idx, offset_idx, axis, nz, ny, nx, resolution
+                Ex_aligned,
+                Ey_aligned,
+                Ez_aligned,
+                Hx_aligned,
+                Hy_aligned,
+                Hz_aligned,
+                center_idx,
+                offset_idx,
+                axis,
+                nz,
+                ny,
+                nx,
+                resolution,
             )
         else:
             # Fall back to 2D injection (legacy code path)
             # Pass raw E_mode and H_mode for proper index-based extraction
             self._setup_2d_injection(
-                E_mode, H_mode,
-                center_idx, offset_idx, axis, ny, nx, resolution
+                E_mode, H_mode, center_idx, offset_idx, axis, ny, nx, resolution
             )
 
         # Compute physical time shift
         self._compute_dt_physical(axis, is_3d, dx, dy)
 
-
-    def _setup_3d_injection(self, Ex, Ey, Ez, Hx, Hy, Hz,
-                            center_idx, offset_idx, axis, nz, ny, nx, resolution):
+    def _setup_3d_injection(
+        self,
+        Ex,
+        Ey,
+        Ez,
+        Hx,
+        Hy,
+        Hz,
+        center_idx,
+        offset_idx,
+        axis,
+        nz,
+        ny,
+        nx,
+        resolution,
+    ):
         """Set up full 6-component injection for 3D simulations.
 
         Yee grid positions (for x-propagation, injection plane perpendicular to x):
@@ -249,7 +279,11 @@ class ModeSource:
             self._y_end = y_end
 
             # Calculate z-bounds from height parameter to constrain injection region (for 3D)
-            center_z_idx = int(round(self.center[2] / resolution)) if len(self.center) > 2 else nz // 2
+            center_z_idx = (
+                int(round(self.center[2] / resolution))
+                if len(self.center) > 2
+                else nz // 2
+            )
             half_height_idx = int(round((self.height / 2) / resolution))
             z_start = max(0, center_z_idx - half_height_idx)
             z_end = min(nz, center_z_idx + half_height_idx)
@@ -258,16 +292,40 @@ class ModeSource:
 
             # Indices: (z_slice, y_slice, x_index) - constrained to width and height regions
             # Ex at offset (longitudinal)
-            self._Ex_indices = (slice(z_start, min(z_end, nz_ex, nz)), slice(y_start, min(y_end, ny_ex, ny)), offset_idx)
+            self._Ex_indices = (
+                slice(z_start, min(z_end, nz_ex, nz)),
+                slice(y_start, min(y_end, ny_ex, ny)),
+                offset_idx,
+            )
             # Ey, Ez at center (transverse E)
-            self._Ey_indices = (slice(z_start, min(z_end, nz_ey, nz)), slice(y_start, min(y_end, ny_ey, ny-1)), center_idx)
-            self._Ez_indices = (slice(z_start, min(z_end, nz_ez, nz-1)), slice(y_start, min(y_end, ny_ez, ny)), center_idx)
+            self._Ey_indices = (
+                slice(z_start, min(z_end, nz_ey, nz)),
+                slice(y_start, min(y_end, ny_ey, ny - 1)),
+                center_idx,
+            )
+            self._Ez_indices = (
+                slice(z_start, min(z_end, nz_ez, nz - 1)),
+                slice(y_start, min(y_end, ny_ez, ny)),
+                center_idx,
+            )
 
             # Hx at center (longitudinal) - constrained to width and height regions
-            self._Hx_indices = (slice(z_start, min(z_end, nz_hx, nz-1)), slice(y_start, min(y_end, ny_hx, ny-1)), center_idx)
+            self._Hx_indices = (
+                slice(z_start, min(z_end, nz_hx, nz - 1)),
+                slice(y_start, min(y_end, ny_hx, ny - 1)),
+                center_idx,
+            )
             # Hy, Hz at offset (transverse H) - constrained to width and height regions
-            self._Hy_indices = (slice(z_start, min(z_end, nz_hy, nz-1)), slice(y_start, min(y_end, ny_hy, ny)), offset_idx)
-            self._Hz_indices = (slice(z_start, min(z_end, nz_hz, nz)), slice(y_start, min(y_end, ny_hz, ny-1)), offset_idx)
+            self._Hy_indices = (
+                slice(z_start, min(z_end, nz_hy, nz - 1)),
+                slice(y_start, min(y_end, ny_hy, ny)),
+                offset_idx,
+            )
+            self._Hz_indices = (
+                slice(z_start, min(z_end, nz_hz, nz)),
+                slice(y_start, min(y_end, ny_hz, ny - 1)),
+                offset_idx,
+            )
 
             # Store profiles with direction sign and impedance correction
             # J = n × H (electric current from H)
@@ -275,12 +333,18 @@ class ModeSource:
             # For +x propagation, n = +x_hat
 
             # Apply impedance correction to E fields (JAX-compatible)
-            norm_E = jnp.maximum(jnp.max(jnp.abs(Ey_staggered)),
-                                 jnp.maximum(jnp.max(jnp.abs(Ez_staggered)), 1e-12))
-            norm_H = jnp.maximum(jnp.max(jnp.abs(Hy_staggered)),
-                                 jnp.maximum(jnp.max(jnp.abs(Hz_staggered)), 1e-12))
+            norm_E = jnp.maximum(
+                jnp.max(jnp.abs(Ey_staggered)),
+                jnp.maximum(jnp.max(jnp.abs(Ez_staggered)), 1e-12),
+            )
+            norm_H = jnp.maximum(
+                jnp.max(jnp.abs(Hy_staggered)),
+                jnp.maximum(jnp.max(jnp.abs(Hz_staggered)), 1e-12),
+            )
             current_Z = norm_E / norm_H
-            corr = jnp.where((norm_E > 1e-12) & (norm_H > 1e-12), Z_phys / current_Z, 1.0)
+            corr = jnp.where(
+                (norm_E > 1e-12) & (norm_H > 1e-12), Z_phys / current_Z, 1.0
+            )
             Ey_staggered = Ey_staggered * corr
             Ez_staggered = Ez_staggered * corr
             Ex_staggered = Ex_staggered * corr
@@ -326,12 +390,66 @@ class ModeSource:
 
             # Store profiles (real part for time-domain injection)
             # Sign convention for TFSF: J_i = dir_sign * H_j, M_i = dir_sign * E_j
-            self._Ex_profile = dir_sign * np.real(crop_and_window_2d(Ex_staggered, profile_z_start, profile_z_end, profile_y_start, profile_y_end, window_2d))
-            self._Ey_profile = dir_sign * np.real(crop_and_window_2d(Ey_staggered, profile_z_start, min(profile_z_end, Ey_staggered.shape[0]), profile_y_start, min(profile_y_end, Ey_staggered.shape[1]), window_2d))
-            self._Ez_profile = dir_sign * np.real(crop_and_window_2d(Ez_staggered, profile_z_start, min(profile_z_end, Ez_staggered.shape[0]), profile_y_start, min(profile_y_end, Ez_staggered.shape[1]), window_2d))
-            self._Hx_profile = dir_sign * np.real(crop_and_window_2d(Hx_staggered, profile_z_start, min(profile_z_end, Hx_staggered.shape[0]), profile_y_start, min(profile_y_end, Hx_staggered.shape[1]), window_2d))
-            self._Hy_profile = dir_sign * np.real(crop_and_window_2d(Hy_staggered, profile_z_start, min(profile_z_end, Hy_staggered.shape[0]), profile_y_start, min(profile_y_end, Hy_staggered.shape[1]), window_2d))
-            self._Hz_profile = dir_sign * np.real(crop_and_window_2d(Hz_staggered, profile_z_start, min(profile_z_end, Hz_staggered.shape[0]), profile_y_start, min(profile_y_end, Hz_staggered.shape[1]), window_2d))
+            self._Ex_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Ex_staggered,
+                    profile_z_start,
+                    profile_z_end,
+                    profile_y_start,
+                    profile_y_end,
+                    window_2d,
+                )
+            )
+            self._Ey_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Ey_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Ey_staggered.shape[0]),
+                    profile_y_start,
+                    min(profile_y_end, Ey_staggered.shape[1]),
+                    window_2d,
+                )
+            )
+            self._Ez_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Ez_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Ez_staggered.shape[0]),
+                    profile_y_start,
+                    min(profile_y_end, Ez_staggered.shape[1]),
+                    window_2d,
+                )
+            )
+            self._Hx_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Hx_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Hx_staggered.shape[0]),
+                    profile_y_start,
+                    min(profile_y_end, Hx_staggered.shape[1]),
+                    window_2d,
+                )
+            )
+            self._Hy_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Hy_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Hy_staggered.shape[0]),
+                    profile_y_start,
+                    min(profile_y_end, Hy_staggered.shape[1]),
+                    window_2d,
+                )
+            )
+            self._Hz_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Hz_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Hz_staggered.shape[0]),
+                    profile_y_start,
+                    min(profile_y_end, Hz_staggered.shape[1]),
+                    window_2d,
+                )
+            )
 
             # Legacy compatibility
             self._h_component = "Hy"
@@ -387,7 +505,11 @@ class ModeSource:
             self._x_end = x_end
 
             # Calculate z-bounds from height parameter to constrain injection region (for 3D)
-            center_z_idx = int(round(self.center[2] / resolution)) if len(self.center) > 2 else nz_grid // 2
+            center_z_idx = (
+                int(round(self.center[2] / resolution))
+                if len(self.center) > 2
+                else nz_grid // 2
+            )
             half_height_idx = int(round((self.height / 2) / resolution))
             z_start = max(0, center_z_idx - half_height_idx)
             z_end = min(nz_grid, center_z_idx + half_height_idx)
@@ -395,17 +517,45 @@ class ModeSource:
             self._z_end = z_end
 
             # Indices: (z_slice, y_index, x_slice) - constrained to width and height regions
-            self._Ex_indices = (slice(z_start, min(z_end, nz_ex, nz_grid)), center_idx, slice(x_start, min(x_end, nx_ex, nx_grid-1)))
-            self._Ey_indices = (slice(z_start, min(z_end, nz_ey, nz_grid)), offset_idx, slice(x_start, min(x_end, nx_ey, nx_grid)))
-            self._Ez_indices = (slice(z_start, min(z_end, nz_ez, nz_grid-1)), center_idx, slice(x_start, min(x_end, nx_ez, nx_grid)))
+            self._Ex_indices = (
+                slice(z_start, min(z_end, nz_ex, nz_grid)),
+                center_idx,
+                slice(x_start, min(x_end, nx_ex, nx_grid - 1)),
+            )
+            self._Ey_indices = (
+                slice(z_start, min(z_end, nz_ey, nz_grid)),
+                offset_idx,
+                slice(x_start, min(x_end, nx_ey, nx_grid)),
+            )
+            self._Ez_indices = (
+                slice(z_start, min(z_end, nz_ez, nz_grid - 1)),
+                center_idx,
+                slice(x_start, min(x_end, nx_ez, nx_grid)),
+            )
 
-            self._Hx_indices = (slice(z_start, min(z_end, nz_hx, nz_grid-1)), center_idx, slice(x_start, min(x_end, nx_hx, nx_grid)))
-            self._Hy_indices = (slice(z_start, min(z_end, nz_hy, nz_grid-1)), center_idx, slice(x_start, min(x_end, nx_hy, nx_grid-1)))
-            self._Hz_indices = (slice(z_start, min(z_end, nz_hz, nz_grid)), offset_idx, slice(x_start, min(x_end, nx_hz, nx_grid-1)))
+            self._Hx_indices = (
+                slice(z_start, min(z_end, nz_hx, nz_grid - 1)),
+                center_idx,
+                slice(x_start, min(x_end, nx_hx, nx_grid)),
+            )
+            self._Hy_indices = (
+                slice(z_start, min(z_end, nz_hy, nz_grid - 1)),
+                center_idx,
+                slice(x_start, min(x_end, nx_hy, nx_grid - 1)),
+            )
+            self._Hz_indices = (
+                slice(z_start, min(z_end, nz_hz, nz_grid)),
+                offset_idx,
+                slice(x_start, min(x_end, nx_hz, nx_grid - 1)),
+            )
 
             # Impedance correction
-            norm_E = max(np.max(np.abs(Ex_staggered)), np.max(np.abs(Ez_staggered)), 1e-12)
-            norm_H = max(np.max(np.abs(Hx_staggered)), np.max(np.abs(Hz_staggered)), 1e-12)
+            norm_E = max(
+                np.max(np.abs(Ex_staggered)), np.max(np.abs(Ez_staggered)), 1e-12
+            )
+            norm_H = max(
+                np.max(np.abs(Hx_staggered)), np.max(np.abs(Hz_staggered)), 1e-12
+            )
             if norm_E > 1e-12 and norm_H > 1e-12:
                 current_Z = norm_E / norm_H
                 corr = Z_phys / current_Z
@@ -423,16 +573,17 @@ class ModeSource:
 
             # Create 2D Tukey window for smooth edges in both z and x directions
             from scipy.signal.windows import tukey
+
             if height_cells > 2:
                 window_z = tukey(height_cells, alpha=0.3)
             else:
                 window_z = np.ones(max(1, height_cells))
-            
+
             if width_cells > 2:
                 window_x = tukey(width_cells, alpha=0.3)
             else:
                 window_x = np.ones(max(1, width_cells))
-            
+
             # Create 2D window by outer product
             window_2d = window_z[:, np.newaxis] * window_x[np.newaxis, :]
 
@@ -452,20 +603,75 @@ class ModeSource:
                     return cropped_matched * window_cropped
                 return cropped
 
-            self._Ex_profile = dir_sign * np.real(crop_and_window_2d(Ex_staggered, profile_z_start, profile_z_end, profile_x_start, profile_x_end, window_2d))
-            self._Ey_profile = dir_sign * np.real(crop_and_window_2d(Ey_staggered, profile_z_start, min(profile_z_end, Ey_staggered.shape[0]), profile_x_start, min(profile_x_end, Ey_staggered.shape[1]), window_2d))
-            self._Ez_profile = dir_sign * np.real(crop_and_window_2d(Ez_staggered, profile_z_start, min(profile_z_end, Ez_staggered.shape[0]), profile_x_start, min(profile_x_end, Ez_staggered.shape[1]), window_2d))
-            self._Hx_profile = dir_sign * np.real(crop_and_window_2d(Hx_staggered, profile_z_start, min(profile_z_end, Hx_staggered.shape[0]), profile_x_start, min(profile_x_end, Hx_staggered.shape[1]), window_2d))
-            self._Hy_profile = dir_sign * np.real(crop_and_window_2d(Hy_staggered, profile_z_start, min(profile_z_end, Hy_staggered.shape[0]), profile_x_start, min(profile_x_end, Hy_staggered.shape[1]), window_2d))
-            self._Hz_profile = dir_sign * np.real(crop_and_window_2d(Hz_staggered, profile_z_start, min(profile_z_end, Hz_staggered.shape[0]), profile_x_start, min(profile_x_end, Hz_staggered.shape[1]), window_2d))
+            self._Ex_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Ex_staggered,
+                    profile_z_start,
+                    profile_z_end,
+                    profile_x_start,
+                    profile_x_end,
+                    window_2d,
+                )
+            )
+            self._Ey_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Ey_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Ey_staggered.shape[0]),
+                    profile_x_start,
+                    min(profile_x_end, Ey_staggered.shape[1]),
+                    window_2d,
+                )
+            )
+            self._Ez_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Ez_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Ez_staggered.shape[0]),
+                    profile_x_start,
+                    min(profile_x_end, Ez_staggered.shape[1]),
+                    window_2d,
+                )
+            )
+            self._Hx_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Hx_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Hx_staggered.shape[0]),
+                    profile_x_start,
+                    min(profile_x_end, Hx_staggered.shape[1]),
+                    window_2d,
+                )
+            )
+            self._Hy_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Hy_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Hy_staggered.shape[0]),
+                    profile_x_start,
+                    min(profile_x_end, Hy_staggered.shape[1]),
+                    window_2d,
+                )
+            )
+            self._Hz_profile = dir_sign * np.real(
+                crop_and_window_2d(
+                    Hz_staggered,
+                    profile_z_start,
+                    min(profile_z_end, Hz_staggered.shape[0]),
+                    profile_x_start,
+                    min(profile_x_end, Hz_staggered.shape[1]),
+                    window_2d,
+                )
+            )
 
             self._h_component = "Hx"
             self._e_component = "Ex"
             self._jz_profile = self._Hz_profile
             self._my_profile = self._Ez_profile
 
-    def _setup_2d_injection(self, E_mode, H_mode,
-                            center_idx, offset_idx, axis, ny, nx, resolution):
+    def _setup_2d_injection(
+        self, E_mode, H_mode, center_idx, offset_idx, axis, ny, nx, resolution
+    ):
         """Legacy 2D injection setup using original index-based extraction.
 
         The mode solver returns fields in a specific order based on propagation axis.
@@ -518,6 +724,7 @@ class ModeSource:
                 width_cells = y_end - y_start
                 if width_cells > 2:
                     from scipy.signal.windows import tukey
+
                     window = tukey(width_cells, alpha=0.3)
                 else:
                     window = np.ones(max(1, width_cells))
@@ -532,11 +739,15 @@ class ModeSource:
                 self._my_profile = dir_sign * Ez_cropped
 
             else:  # TE
-                hz_col = max(0, offset_idx - 1) if self.direction == "+x" else min(nx - 2, offset_idx)
+                hz_col = (
+                    max(0, offset_idx - 1)
+                    if self.direction == "+x"
+                    else min(nx - 2, offset_idx)
+                )
                 ny_eff = min(ny - 1, y_end - y_start)
 
-                self._hz_indices = (slice(y_start, min(y_end, ny-1)), hz_col)
-                self._e_indices = (slice(y_start, min(y_end, ny-1)), offset_idx)
+                self._hz_indices = (slice(y_start, min(y_end, ny - 1)), hz_col)
+                self._e_indices = (slice(y_start, min(y_end, ny - 1)), offset_idx)
                 self._e_component = "Ey"
 
                 # Extract with fallback
@@ -567,12 +778,13 @@ class ModeSource:
                 width_cells = min(y_end, len(Hz_profile)) - y_start
                 if width_cells > 2:
                     from scipy.signal.windows import tukey
+
                     window = tukey(width_cells, alpha=0.3)
                 else:
                     window = np.ones(max(1, width_cells))
 
-                Hz_cropped = np.real(Hz_profile)[y_start:min(y_end, len(Hz_profile))]
-                Ey_cropped = np.real(Ey_profile)[y_start:min(y_end, len(Ey_profile))]
+                Hz_cropped = np.real(Hz_profile)[y_start : min(y_end, len(Hz_profile))]
+                Ey_cropped = np.real(Ey_profile)[y_start : min(y_end, len(Ey_profile))]
                 if len(Hz_cropped) == len(window):
                     Hz_cropped = Hz_cropped * window
                     Ey_cropped = Ey_cropped * window
@@ -623,6 +835,7 @@ class ModeSource:
                 width_cells = x_end - x_start
                 if width_cells > 2:
                     from scipy.signal.windows import tukey
+
                     window = tukey(width_cells, alpha=0.3)
                 else:
                     window = np.ones(max(1, width_cells))
@@ -641,11 +854,15 @@ class ModeSource:
                     self._my_profile = -Ez_cropped
 
             else:  # TE y-prop
-                hz_row = max(0, offset_idx - 1) if self.direction == "+y" else min(ny - 2, offset_idx)
+                hz_row = (
+                    max(0, offset_idx - 1)
+                    if self.direction == "+y"
+                    else min(ny - 2, offset_idx)
+                )
                 nx_eff = min(nx - 1, x_end - x_start)
 
-                self._hz_indices = (hz_row, slice(x_start, min(x_end, nx-1)))
-                self._e_indices = (offset_idx, slice(x_start, min(x_end, nx-1)))
+                self._hz_indices = (hz_row, slice(x_start, min(x_end, nx - 1)))
+                self._e_indices = (offset_idx, slice(x_start, min(x_end, nx - 1)))
                 self._e_component = "Ex"
 
                 # Extract with fallback
@@ -676,12 +893,13 @@ class ModeSource:
                 width_cells = min(x_end, len(Hz_profile)) - x_start
                 if width_cells > 2:
                     from scipy.signal.windows import tukey
+
                     window = tukey(width_cells, alpha=0.3)
                 else:
                     window = np.ones(max(1, width_cells))
 
-                Hz_cropped = np.real(Hz_profile)[x_start:min(x_end, len(Hz_profile))]
-                Ex_cropped = np.real(Ex_profile)[x_start:min(x_end, len(Ex_profile))]
+                Hz_cropped = np.real(Hz_profile)[x_start : min(x_end, len(Hz_profile))]
+                Ex_cropped = np.real(Ex_profile)[x_start : min(x_end, len(Ex_profile))]
                 if len(Hz_cropped) == len(window):
                     Hz_cropped = Hz_cropped * window
                     Ex_cropped = Ex_cropped * window
@@ -738,7 +956,9 @@ class ModeSource:
                     coord_e = (idx_e + 0.5) * dy
                     coord_h = (idx_h + 1.0) * dy
 
-        self._dt_physical = (coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
+        self._dt_physical = (
+            (coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
+        )
 
     def _enforce_propagation_direction(self, E, H, axis):
         """Ensure the mode propagates in the correct direction by checking Poynting vector."""
@@ -760,11 +980,13 @@ class ModeSource:
         import matplotlib.pyplot as plt
 
         if self._Ez_profile is None and self._jz_profile is None:
-            if self.grid is not None and hasattr(self.grid, 'permittivity'):
-                res = getattr(self.grid, 'resolution', 0.05e-6)
+            if self.grid is not None and hasattr(self.grid, "permittivity"):
+                res = getattr(self.grid, "resolution", 0.05e-6)
                 self.initialize(self.grid.permittivity, res)
             else:
-                print("[ModeSource] Source not initialized. Call Simulation or initialize manually.")
+                print(
+                    "[ModeSource] Source not initialized. Call Simulation or initialize manually."
+                )
                 return
 
         # Use 3D profiles if available
@@ -782,8 +1004,10 @@ class ModeSource:
 
         plt.figure(figsize=(8, 6))
         if profile.ndim == 2:
-            im = plt.imshow(np.abs(profile), origin='lower', cmap='magma', aspect='auto')
-            plt.colorbar(im, label='Absolute Amplitude')
+            im = plt.imshow(
+                np.abs(profile), origin="lower", cmap="magma", aspect="auto"
+            )
+            plt.colorbar(im, label="Absolute Amplitude")
             plt.title(f"Mode Source 2D Profile: {title} (neff={self._neff:.4f})")
             if self.direction in ["+x", "-x"]:
                 plt.xlabel("Y-axis")
@@ -792,7 +1016,7 @@ class ModeSource:
                 plt.xlabel("X-axis")
                 plt.ylabel("Z-axis")
         else:
-            plt.plot(np.abs(profile), 'k-')
+            plt.plot(np.abs(profile), "k-")
             plt.title(f"Mode Source 1D Profile: {title} (neff={self._neff:.4f})")
             plt.xlabel("Transverse Coordinate (cells)")
             plt.ylabel("Absolute Amplitude")
@@ -807,12 +1031,12 @@ class ModeSource:
             import matplotlib.pyplot as plt
 
             profiles = {
-                'Ex': self._Ex_profile,
-                'Ey': self._Ey_profile,
-                'Ez': self._Ez_profile,
-                'Hx': self._Hx_profile,
-                'Hy': self._Hy_profile,
-                'Hz': self._Hz_profile,
+                "Ex": self._Ex_profile,
+                "Ey": self._Ey_profile,
+                "Ez": self._Ez_profile,
+                "Hx": self._Hx_profile,
+                "Hy": self._Hy_profile,
+                "Hz": self._Hz_profile,
             }
 
             # Filter out None profiles
@@ -831,18 +1055,25 @@ class ModeSource:
 
                 if profile_squeezed.ndim == 2:
                     # Use aspect='equal' to ensure grid cells are square (not stretched)
-                    im = ax.imshow(np.abs(profile_squeezed), origin='lower', cmap='magma', aspect='equal')
-                    plt.colorbar(im, ax=ax, label='Amplitude')
+                    im = ax.imshow(
+                        np.abs(profile_squeezed),
+                        origin="lower",
+                        cmap="magma",
+                        aspect="equal",
+                    )
+                    plt.colorbar(im, ax=ax, label="Amplitude")
                 else:
-                    ax.plot(np.abs(profile_squeezed), 'b-')
+                    ax.plot(np.abs(profile_squeezed), "b-")
 
-                ax.set_title(f'{name} (max={np.max(np.abs(profile_squeezed)):.2e})')
-                ax.set_xlabel('Y' if self.direction in ['+x', '-x'] else 'X')
-                ax.set_ylabel('Z')
+                ax.set_title(f"{name} (max={np.max(np.abs(profile_squeezed)):.2e})")
+                ax.set_xlabel("Y" if self.direction in ["+x", "-x"] else "X")
+                ax.set_ylabel("Z")
 
-            plt.suptitle(f'3D Mode Profiles (neff={self._neff:.4f}, dir={self.direction}, pol={self.pol})')
+            plt.suptitle(
+                f"3D Mode Profiles (neff={self._neff:.4f}, dir={self.direction}, pol={self.pol})"
+            )
             plt.tight_layout()
-            plt.savefig("mode_profile.png", dpi=150, bbox_inches='tight')
+            plt.savefig("mode_profile.png", dpi=150, bbox_inches="tight")
             print(f"[ModeSource] 3D mode profiles saved to mode_profile.png")
             plt.close()
         except Exception as e:
@@ -859,7 +1090,11 @@ class ModeSource:
                 j_label = "Jz (from H)"
                 m_label = "My (from Ez)"
             else:
-                j_profile = self._jy_profile if self._jy_profile is not None else self._jx_profile
+                j_profile = (
+                    self._jy_profile
+                    if self._jy_profile is not None
+                    else self._jx_profile
+                )
                 m_profile = self._mz_profile
                 j_label = "Jy/Jx (from Hz)"
                 m_label = "Mz (from E)"
@@ -869,20 +1104,20 @@ class ModeSource:
 
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
-            ax1.plot(np.abs(np.squeeze(j_profile)), 'b-')
-            ax1.set_xlabel('Transverse coord')
-            ax1.set_ylabel('Amplitude')
-            ax1.set_title(f'{j_label} (neff={self._neff:.4f})')
+            ax1.plot(np.abs(np.squeeze(j_profile)), "b-")
+            ax1.set_xlabel("Transverse coord")
+            ax1.set_ylabel("Amplitude")
+            ax1.set_title(f"{j_label} (neff={self._neff:.4f})")
             ax1.grid(True)
 
-            ax2.plot(np.abs(np.squeeze(m_profile)), 'r-')
-            ax2.set_xlabel('Transverse coord')
-            ax2.set_ylabel('Amplitude')
-            ax2.set_title(f'{m_label} (dir={self.direction})')
+            ax2.plot(np.abs(np.squeeze(m_profile)), "r-")
+            ax2.set_xlabel("Transverse coord")
+            ax2.set_ylabel("Amplitude")
+            ax2.set_title(f"{m_label} (dir={self.direction})")
             ax2.grid(True)
 
             plt.tight_layout()
-            plt.savefig("mode_profile.png", dpi=150, bbox_inches='tight')
+            plt.savefig("mode_profile.png", dpi=150, bbox_inches="tight")
             print(f"[ModeSource] Mode profile saved to mode_profile.png")
             plt.close()
         except Exception as e:
@@ -940,7 +1175,9 @@ class ModeSource:
                     j_term = self._Hx_profile  # J_x from H_x (cross product)
                     j_term = self._match_shape(j_term, target_shape)
                     if j_term is not None:
-                        fields.Ex = fields.Ex.at[self._Ex_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
+                        fields.Ex = fields.Ex.at[self._Ex_indices].add(
+                            -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                        )
             except Exception:
                 pass
 
@@ -953,7 +1190,9 @@ class ModeSource:
                 j_term = self._match_shape(j_term, target_shape)
                 if j_term is not None:
                     eps = fields.permittivity[self._Ey_indices]
-                    fields.Ey = fields.Ey.at[self._Ey_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
+                    fields.Ey = fields.Ey.at[self._Ey_indices].add(
+                        -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                    )
             except Exception:
                 pass
 
@@ -966,7 +1205,9 @@ class ModeSource:
                 j_term = self._match_shape(j_term, target_shape)
                 if j_term is not None:
                     eps = fields.permittivity[self._Ez_indices]
-                    fields.Ez = fields.Ez.at[self._Ez_indices].add(-j_term * signal_e * dt / (EPS_0 * eps * resolution))
+                    fields.Ez = fields.Ez.at[self._Ez_indices].add(
+                        -j_term * signal_e * dt / (EPS_0 * eps * resolution)
+                    )
             except Exception:
                 pass
 
@@ -978,9 +1219,11 @@ class ModeSource:
                 m_term = self._Ex_profile
                 m_term = self._match_shape(m_term, target_shape)
                 if m_term is not None:
-                    mu = getattr(fields, 'permeability', None)
+                    mu = getattr(fields, "permeability", None)
                     mu_val = mu[self._Hx_indices] if mu is not None else 1.0
-                    fields.Hx = fields.Hx.at[self._Hx_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
+                    fields.Hx = fields.Hx.at[self._Hx_indices].add(
+                        -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    )
             except Exception:
                 pass
 
@@ -992,9 +1235,11 @@ class ModeSource:
                 m_term = self._Ez_profile
                 m_term = self._match_shape(m_term, target_shape)
                 if m_term is not None:
-                    mu = getattr(fields, 'permeability', None)
+                    mu = getattr(fields, "permeability", None)
                     mu_val = mu[self._Hy_indices] if mu is not None else 1.0
-                    fields.Hy = fields.Hy.at[self._Hy_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
+                    fields.Hy = fields.Hy.at[self._Hy_indices].add(
+                        -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    )
             except Exception:
                 pass
 
@@ -1006,9 +1251,11 @@ class ModeSource:
                 m_term = self._Ey_profile
                 m_term = self._match_shape(m_term, target_shape)
                 if m_term is not None:
-                    mu = getattr(fields, 'permeability', None)
+                    mu = getattr(fields, "permeability", None)
                     mu_val = mu[self._Hz_indices] if mu is not None else 1.0
-                    fields.Hz = fields.Hz.at[self._Hz_indices].add(-m_term * signal_h * dt / (MU_0 * mu_val * resolution))
+                    fields.Hz = fields.Hz.at[self._Hz_indices].add(
+                        -m_term * signal_h * dt / (MU_0 * mu_val * resolution)
+                    )
             except Exception:
                 pass
 
@@ -1024,7 +1271,10 @@ class ModeSource:
 
         # Try to trim or pad
         if profile.ndim == len(target_shape):
-            slices = tuple(slice(0, min(profile.shape[i], target_shape[i])) for i in range(profile.ndim))
+            slices = tuple(
+                slice(0, min(profile.shape[i], target_shape[i]))
+                for i in range(profile.ndim)
+            )
             trimmed = profile[slices]
 
             if trimmed.shape == target_shape:
@@ -1032,7 +1282,9 @@ class ModeSource:
 
             # Pad if needed
             result = np.zeros(target_shape, dtype=profile.dtype)
-            slices_result = tuple(slice(0, trimmed.shape[i]) for i in range(trimmed.ndim))
+            slices_result = tuple(
+                slice(0, trimmed.shape[i]) for i in range(trimmed.ndim)
+            )
             result[slices_result] = trimmed
             return result
 
@@ -1049,7 +1301,7 @@ class ModeSource:
                 fields.Ez = fields.Ez.at[self._ez_indices].add(ez_injection)
 
             if self._h_indices is not None and self._my_profile is not None:
-                mu_val = getattr(fields, 'permeability', None)
+                mu_val = getattr(fields, "permeability", None)
                 mu_at_source = mu_val[self._h_indices] if mu_val is not None else 1.0
                 my_term = self._my_profile * signal_h / resolution
                 h_injection = -my_term * dt / (MU_0 * mu_at_source)
@@ -1061,7 +1313,9 @@ class ModeSource:
         else:  # TE
             # TE Injection: Jx/Jy -> Ex/Ey, Mz -> Hz
             if self._e_indices is not None:
-                j_profile = self._jx_profile if self._e_component == "Ex" else self._jy_profile
+                j_profile = (
+                    self._jx_profile if self._e_component == "Ex" else self._jy_profile
+                )
                 if j_profile is not None:
                     eps_at_source = fields.permittivity[self._e_indices]
                     j_term = j_profile * signal_e / resolution
@@ -1073,13 +1327,15 @@ class ModeSource:
                         fields.Ey = fields.Ey.at[self._e_indices].add(e_injection)
 
             if self._hz_indices is not None and self._mz_profile is not None:
-                mu_val = getattr(fields, 'permeability', None)
+                mu_val = getattr(fields, "permeability", None)
                 mu_at_source = mu_val[self._hz_indices] if mu_val is not None else 1.0
                 mz_term = self._mz_profile * signal_h / resolution
                 hz_injection = -mz_term * dt / (MU_0 * mu_at_source)
                 fields.Hz = fields.Hz.at[self._hz_indices].add(hz_injection)
 
-    def add_to_plot(self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"):
+    def add_to_plot(
+        self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"
+    ):
         """Add source visualization to 2D matplotlib plot.
 
         Draws a line at the source position perpendicular to the propagation direction.
@@ -1089,7 +1345,9 @@ class ModeSource:
         from matplotlib.patches import FancyArrowPatch
 
         # Get center position
-        center = self.center if isinstance(self.center, (tuple, list)) else (self.center, 0)
+        center = (
+            self.center if isinstance(self.center, (tuple, list)) else (self.center, 0)
+        )
         if len(center) == 3:
             # 3D center - project to 2D based on direction
             if self.direction in ["+x", "-x"]:
@@ -1125,11 +1383,18 @@ class ModeSource:
             arrow_dy = 0.3e-6 if self.direction == "+y" else -0.3e-6
 
         # Draw the source line (thick colored line)
-        ax.plot(line_x, line_y, color=edgecolor, linewidth=3, alpha=alpha,
-                solid_capstyle='round', label='ModeSource')
+        ax.plot(
+            line_x,
+            line_y,
+            color=edgecolor,
+            linewidth=3,
+            alpha=alpha,
+            solid_capstyle="round",
+            label="ModeSource",
+        )
 
         # Draw direction arrow from center
-        arrow_length = self.wavelength * 0.5 if hasattr(self, 'wavelength') else 0.5e-6
+        arrow_length = self.wavelength * 0.5 if hasattr(self, "wavelength") else 0.5e-6
         if self.direction in ["+x", "-x"]:
             arrow_dx = arrow_length if self.direction == "+x" else -arrow_length
             arrow_dy = 0
@@ -1140,10 +1405,10 @@ class ModeSource:
         arrow = FancyArrowPatch(
             (x_pos, y_pos),
             (x_pos + arrow_dx, y_pos + arrow_dy),
-            arrowstyle='-|>',
+            arrowstyle="-|>",
             mutation_scale=10,
             color=edgecolor,
             linewidth=2,
-            alpha=alpha
+            alpha=alpha,
         )
         ax.add_patch(arrow)

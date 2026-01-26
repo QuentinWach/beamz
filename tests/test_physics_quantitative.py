@@ -10,19 +10,35 @@ Tests cover:
 4. Mie scattering efficiency (2D cylinder)
 5. Fabry-Perot Q-factor from ringdown
 """
-import pytest
-import numpy as np
-from beamz import (
-    Design, Material, Rectangle, Circle, Simulation, PML, Monitor,
-    GaussianSource, ModeSource, LIGHT_SPEED, EPS_0, MU_0, um,
-    calc_optimal_fdtd_params, ramped_cosine
-)
 
+import numpy as np
+import pytest
+
+from beamz import (
+    EPS_0,
+    LIGHT_SPEED,
+    MU_0,
+    PML,
+    Circle,
+    Design,
+    GaussianSource,
+    Material,
+    ModeSource,
+    Monitor,
+    Rectangle,
+    Simulation,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    um,
+)
 from tests.utils import (
-    TEST_WAVELENGTH, compute_field_energy,
-    analytical_fresnel_r, analytical_fresnel_t,
-    slab_waveguide_neff_te, compute_field_error_L2,
-    fit_exponential_decay
+    TEST_WAVELENGTH,
+    analytical_fresnel_r,
+    analytical_fresnel_t,
+    compute_field_energy,
+    compute_field_error_L2,
+    fit_exponential_decay,
+    slab_waveguide_neff_te,
 )
 
 
@@ -43,8 +59,8 @@ class TestFresnelQuantitative:
         For TM mode: S_x = -E_z * H_y
         """
         # Extract region of interest
-        Ez_region = Ez_snapshot[:, x_range[0]:x_range[1]]
-        Hy_region = Hy_snapshot[:, x_range[0]:x_range[1]]
+        Ez_region = Ez_snapshot[:, x_range[0] : x_range[1]]
+        Hy_region = Hy_snapshot[:, x_range[0] : x_range[1]]
 
         # Directional flux (not magnitude!)
         Sx = -Ez_region * Hy_region
@@ -73,8 +89,7 @@ class TestFresnelQuantitative:
         interface_x = domain_width * 0.5
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, n2, dims=2,
-            safety_factor=0.95, points_per_wavelength=12
+            wavelength, n2, dims=2, safety_factor=0.95, points_per_wavelength=12
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -85,21 +100,21 @@ class TestFresnelQuantitative:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.2
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.2,
         )
 
         # --- Reference simulation: no interface (all vacuum) ---
         design_ref = Design(
             width=domain_width,
             height=domain_height,
-            material=Material(permittivity=n1**2)
+            material=Material(permittivity=n1**2),
         )
 
         source_ref = GaussianSource(
-            position=(domain_width*0.15, domain_height/2),
+            position=(domain_width * 0.15, domain_height / 2),
             width=wavelength * 1.5,
-            signal=signal.copy()
+            signal=signal.copy(),
         )
 
         # Monitor at same position where we'll measure transmission
@@ -107,15 +122,15 @@ class TestFresnelQuantitative:
         mon_ref = Monitor(
             start=(trans_x, wavelength),
             end=(trans_x, domain_height - wavelength),
-            accumulate_power=True
+            accumulate_power=True,
         )
 
         sim_ref = Simulation(
             design=design_ref,
             devices=[source_ref, mon_ref],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
         sim_ref.run()
@@ -125,33 +140,33 @@ class TestFresnelQuantitative:
         design_full = Design(
             width=domain_width,
             height=domain_height,
-            material=Material(permittivity=n1**2)
+            material=Material(permittivity=n1**2),
         )
         design_full += Rectangle(
-            position=(interface_x + domain_width/4, domain_height/2),
-            width=domain_width/2,
+            position=(interface_x + domain_width / 4, domain_height / 2),
+            width=domain_width / 2,
             height=domain_height,
-            material=Material(permittivity=n2**2)
+            material=Material(permittivity=n2**2),
         )
 
         source_full = GaussianSource(
-            position=(domain_width*0.15, domain_height/2),
+            position=(domain_width * 0.15, domain_height / 2),
             width=wavelength * 1.5,
-            signal=signal.copy()
+            signal=signal.copy(),
         )
 
         mon_trans = Monitor(
             start=(trans_x, wavelength),
             end=(trans_x, domain_height - wavelength),
-            accumulate_power=True
+            accumulate_power=True,
         )
 
         sim_full = Simulation(
             design=design_full,
             devices=[source_full, mon_trans],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
         sim_full.run()
@@ -164,7 +179,11 @@ class TestFresnelQuantitative:
         T_analytical = analytical_fresnel_t(n1, n2)
 
         # Relative error
-        T_error = abs(T_measured - T_analytical) / T_analytical if T_analytical > 0 else abs(T_measured)
+        T_error = (
+            abs(T_measured - T_analytical) / T_analytical
+            if T_analytical > 0
+            else abs(T_measured)
+        )
 
         # Checks
         assert T_measured > 0.5, f"T={T_measured:.3f} too low for n2={n2}"
@@ -190,20 +209,19 @@ class TestFresnelQuantitative:
         interface_x = domain_width * 0.5
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, n2, dims=2,
-            safety_factor=0.95, points_per_wavelength=12
+            wavelength, n2, dims=2, safety_factor=0.95, points_per_wavelength=12
         )
 
         design = Design(
             width=domain_width,
             height=domain_height,
-            material=Material(permittivity=n1**2)
+            material=Material(permittivity=n1**2),
         )
         design += Rectangle(
-            position=(interface_x + domain_width/4, domain_height/2),
-            width=domain_width/2,
+            position=(interface_x + domain_width / 4, domain_height / 2),
+            width=domain_width / 2,
             height=domain_height,
-            material=Material(permittivity=n2**2)
+            material=Material(permittivity=n2**2),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -211,28 +229,31 @@ class TestFresnelQuantitative:
         time = np.arange(0, t_total, dt)
 
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=2/frequency, t_max=t_total*0.2
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.2,
         )
 
         source = GaussianSource(
-            position=(domain_width*0.15, domain_height/2),
-            width=wavelength*1.5,
-            signal=signal
+            position=(domain_width * 0.15, domain_height / 2),
+            width=wavelength * 1.5,
+            signal=signal,
         )
 
         sim = Simulation(
             design=design,
             devices=[source],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=20)
+        result = sim.run(save_fields=["Ez"], field_subsample=20)
 
         # Get field snapshot after wave has passed through interface
-        final_field = result['fields']['Ez'][-1]
+        final_field = result["fields"]["Ez"][-1]
         ny, nx = final_field.shape
 
         # Compute energy in vacuum region (left) vs dielectric region (right)
@@ -249,9 +270,9 @@ class TestFresnelQuantitative:
         E_dielectric = compute_field_energy(dielectric_field, dx, eps=n2**2)
 
         # Both regions should have non-zero energy
-        assert E_vacuum > 0 or E_dielectric > 0, (
-            "Should have field energy in at least one region"
-        )
+        assert (
+            E_vacuum > 0 or E_dielectric > 0
+        ), "Should have field energy in at least one region"
 
         # Total energy should be finite
         E_total = E_vacuum + E_dielectric
@@ -284,9 +305,9 @@ class TestModeSourceAccuracy:
 
         if neff is not None:
             # neff should be between cladding and core indices
-            assert n_clad < neff < n_core, (
-                f"neff={neff:.4f} outside valid range ({n_clad}, {n_core})"
-            )
+            assert (
+                n_clad < neff < n_core
+            ), f"neff={neff:.4f} outside valid range ({n_clad}, {n_core})"
 
             # V-number determines approximate number of modes
             # V = (pi * d / lambda) * sqrt(n_core^2 - n_clad^2)
@@ -316,9 +337,7 @@ class TestModeSourceAccuracy:
         # neff should increase monotonically with width
         assert len(neffs) >= 2, "Should find modes for multiple widths"
         for i in range(1, len(neffs)):
-            assert neffs[i] >= neffs[i-1], (
-                f"neff should increase with width: {neffs}"
-            )
+            assert neffs[i] >= neffs[i - 1], f"neff should increase with width: {neffs}"
 
     def test_neff_decreases_with_wavelength(self):
         """neff should decrease as wavelength increases (mode less confined).
@@ -340,56 +359,59 @@ class TestModeSourceAccuracy:
         # neff should decrease with wavelength
         assert len(neffs) >= 2, "Should find modes for multiple wavelengths"
         for i in range(1, len(neffs)):
-            assert neffs[i] <= neffs[i-1], (
-                f"neff should decrease with wavelength: {neffs}"
-            )
+            assert (
+                neffs[i] <= neffs[i - 1]
+            ), f"neff should decrease with wavelength: {neffs}"
 
     def test_waveguide_mode_propagates(self, waveguide_domain):
         """Verify mode-like excitation propagates through waveguide.
 
         Uses Gaussian source positioned in waveguide core to test propagation.
         """
-        design = waveguide_domain['design']
-        wavelength = waveguide_domain['wavelength']
-        domain_width = waveguide_domain['domain_width']
-        domain_height = waveguide_domain['domain_height']
-        dx = waveguide_domain['dx']
-        dt = waveguide_domain['dt']
-        core_width = waveguide_domain['core_width']
+        design = waveguide_domain["design"]
+        wavelength = waveguide_domain["wavelength"]
+        domain_width = waveguide_domain["domain_width"]
+        domain_height = waveguide_domain["domain_height"]
+        dx = waveguide_domain["dx"]
+        dt = waveguide_domain["dt"]
+        core_width = waveguide_domain["core_width"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 15 / frequency
         time = np.arange(0, t_total, dt)
 
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=2/frequency, t_max=t_total*0.4
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.4,
         )
 
         # Gaussian source centered in waveguide core
         source = GaussianSource(
-            position=(wavelength * 2, domain_height/2),
+            position=(wavelength * 2, domain_height / 2),
             width=core_width * 0.6,  # Narrower than core for good coupling
-            signal=signal
+            signal=signal,
         )
 
         sim = Simulation(
             design=design,
             devices=[source],
-            boundaries=[PML(thickness=1.2*wavelength)],
+            boundaries=[PML(thickness=1.2 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=25)
+        result = sim.run(save_fields=["Ez"], field_subsample=25)
 
         # Check field propagates through waveguide
-        final_field = result['fields']['Ez'][-1]
+        final_field = result["fields"]["Ez"][-1]
         ny, nx = final_field.shape
 
         # Core region should have significant field
-        core_y_start = int((domain_height/2 - core_width) / dx)
-        core_y_end = int((domain_height/2 + core_width) / dx)
+        core_y_start = int((domain_height / 2 - core_width) / dx)
+        core_y_end = int((domain_height / 2 + core_width) / dx)
         core_field = final_field[core_y_start:core_y_end, :]
 
         # Field should be present in downstream region
@@ -398,9 +420,7 @@ class TestModeSourceAccuracy:
 
         max_downstream = np.max(np.abs(downstream_field))
 
-        assert max_downstream > 1e-10, (
-            "Field should propagate through waveguide"
-        )
+        assert max_downstream > 1e-10, "Field should propagate through waveguide"
 
 
 # =============================================================================
@@ -440,18 +460,21 @@ class TestGridConvergenceQuantitative:
             design = Design(
                 width=domain_size,
                 height=domain_size,
-                material=Material(permittivity=1.0)
+                material=Material(permittivity=1.0),
             )
 
             signal = ramped_cosine(
-                time, amplitude=1.0, frequency=frequency,
-                ramp_duration=2/frequency, t_max=t_final*0.4
+                time,
+                amplitude=1.0,
+                frequency=frequency,
+                ramp_duration=2 / frequency,
+                t_max=t_final * 0.4,
             )
 
             source = GaussianSource(
-                position=(domain_size/2, domain_size/2),
-                width=wavelength/4,
-                signal=signal
+                position=(domain_size / 2, domain_size / 2),
+                width=wavelength / 4,
+                signal=signal,
             )
 
             sim = Simulation(
@@ -459,13 +482,15 @@ class TestGridConvergenceQuantitative:
                 devices=[source],
                 boundaries=[PML(thickness=wavelength)],
                 time=time,
-                resolution=dx
+                resolution=dx,
             )
 
-            result = sim.run(save_fields=['Ez'], field_subsample=max(1, len(time)//20))
+            result = sim.run(
+                save_fields=["Ez"], field_subsample=max(1, len(time) // 20)
+            )
 
             # Compute peak field energy across all snapshots
-            energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
             return max(energies), dx
 
         # Run at different resolutions
@@ -519,7 +544,9 @@ class TestGridConvergenceQuantitative:
         else:
             # Fallback: just check energy converges
             # Finer grids should give more consistent results
-            energy_spread = (max(peak_energies) - min(peak_energies)) / min(peak_energies)
+            energy_spread = (max(peak_energies) - min(peak_energies)) / min(
+                peak_energies
+            )
             assert energy_spread < 0.3, (
                 f"Peak energies vary by {energy_spread*100:.1f}%, "
                 "should converge with grid refinement."
@@ -548,18 +575,21 @@ class TestGridConvergenceQuantitative:
             design = Design(
                 width=domain_size,
                 height=domain_size,
-                material=Material(permittivity=1.0)
+                material=Material(permittivity=1.0),
             )
 
             signal = ramped_cosine(
-                time, amplitude=1.0, frequency=frequency,
-                ramp_duration=2/frequency, t_max=t_final*0.4
+                time,
+                amplitude=1.0,
+                frequency=frequency,
+                ramp_duration=2 / frequency,
+                t_max=t_final * 0.4,
             )
 
             source = GaussianSource(
-                position=(domain_size/2, domain_size/2),
-                width=wavelength/6,
-                signal=signal
+                position=(domain_size / 2, domain_size / 2),
+                width=wavelength / 6,
+                signal=signal,
             )
 
             sim = Simulation(
@@ -567,21 +597,25 @@ class TestGridConvergenceQuantitative:
                 devices=[source],
                 boundaries=[PML(thickness=wavelength)],
                 time=time,
-                resolution=dx
+                resolution=dx,
             )
 
-            result = sim.run(save_fields=['Ez'], field_subsample=20)
+            result = sim.run(save_fields=["Ez"], field_subsample=20)
 
-            energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
             peak_energies.append(max(energies))
 
         # All simulations should give stable, finite results
-        assert all(np.isfinite(e) for e in peak_energies), "All energies should be finite"
+        assert all(
+            np.isfinite(e) for e in peak_energies
+        ), "All energies should be finite"
         assert all(e > 0 for e in peak_energies), "All energies should be positive"
 
         # Results should be similar (within 40% - allowing for grid effects)
         if peak_energies[0] > 0:
-            max_deviation = max(abs(e - peak_energies[-1])/peak_energies[-1] for e in peak_energies)
+            max_deviation = max(
+                abs(e - peak_energies[-1]) / peak_energies[-1] for e in peak_energies
+            )
             assert max_deviation < 0.5, (
                 f"Peak energies vary too much: {peak_energies}. "
                 "Different grids should give similar physics."
@@ -611,20 +645,19 @@ class TestMieScattering2D:
         domain_size = 10 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, n_cyl, dims=2,
-            safety_factor=0.95, points_per_wavelength=15
+            wavelength, n_cyl, dims=2, safety_factor=0.95, points_per_wavelength=15
         )
 
         # Create domain with cylinder at center
         design = Design(
             width=domain_size,
             height=domain_size,
-            material=Material(permittivity=n_med**2)
+            material=Material(permittivity=n_med**2),
         )
         design += Circle(
-            position=(domain_size/2, domain_size/2),
+            position=(domain_size / 2, domain_size / 2),
             radius=radius,
-            material=Material(permittivity=n_cyl**2)
+            material=Material(permittivity=n_cyl**2),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -632,39 +665,42 @@ class TestMieScattering2D:
         time = np.arange(0, t_total, dt)
 
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=3/frequency, t_max=t_total*0.4
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=3 / frequency,
+            t_max=t_total * 0.4,
         )
 
         # Plane-wave-like source from left
         source = GaussianSource(
-            position=(domain_size*0.15, domain_size/2),
-            width=wavelength*2,
-            signal=signal
+            position=(domain_size * 0.15, domain_size / 2),
+            width=wavelength * 2,
+            signal=signal,
         )
 
         sim = Simulation(
             design=design,
             devices=[source],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=20)
+        result = sim.run(save_fields=["Ez"], field_subsample=20)
 
         # Check for scattering: field should exist in shadow region
-        final_field = result['fields']['Ez'][-1]
+        final_field = result["fields"]["Ez"][-1]
         ny, nx = final_field.shape
 
         # Shadow region: behind the cylinder
-        shadow_region = final_field[ny//2-10:ny//2+10, 3*nx//4:]
+        shadow_region = final_field[ny // 2 - 10 : ny // 2 + 10, 3 * nx // 4 :]
 
         # Should have some field due to diffraction around cylinder
         shadow_max = np.max(np.abs(shadow_region))
 
         # Forward region: in front of cylinder
-        forward_region = final_field[ny//2-10:ny//2+10, :nx//4]
+        forward_region = final_field[ny // 2 - 10 : ny // 2 + 10, : nx // 4]
         forward_max = np.max(np.abs(forward_region))
 
         # Scattering creates field redistribution
@@ -688,27 +724,26 @@ class TestMieScattering2D:
         domain_size = 12 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, n_cyl, dims=2,
-            safety_factor=0.95, points_per_wavelength=12
+            wavelength, n_cyl, dims=2, safety_factor=0.95, points_per_wavelength=12
         )
 
         # Reference simulation: no cylinder (just incident field)
         design_ref = Design(
             width=domain_size,
             height=domain_size,
-            material=Material(permittivity=n_med**2)
+            material=Material(permittivity=n_med**2),
         )
 
         # Full simulation: with cylinder
         design_full = Design(
             width=domain_size,
             height=domain_size,
-            material=Material(permittivity=n_med**2)
+            material=Material(permittivity=n_med**2),
         )
         design_full += Circle(
-            position=(domain_size/2, domain_size/2),
+            position=(domain_size / 2, domain_size / 2),
             radius=radius,
-            material=Material(permittivity=n_cyl**2)
+            material=Material(permittivity=n_cyl**2),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -716,65 +751,75 @@ class TestMieScattering2D:
         time = np.arange(0, t_total, dt)
 
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=3/frequency, t_max=t_total*0.3
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=3 / frequency,
+            t_max=t_total * 0.3,
         )
 
         source_ref = GaussianSource(
-            position=(domain_size*0.15, domain_size/2),
-            width=wavelength*2,
-            signal=signal
+            position=(domain_size * 0.15, domain_size / 2),
+            width=wavelength * 2,
+            signal=signal,
         )
         source_full = GaussianSource(
-            position=(domain_size*0.15, domain_size/2),
-            width=wavelength*2,
-            signal=signal.copy()
+            position=(domain_size * 0.15, domain_size / 2),
+            width=wavelength * 2,
+            signal=signal.copy(),
         )
 
         # Run reference
         sim_ref = Simulation(
             design=design_ref,
             devices=[source_ref],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
-        result_ref = sim_ref.run(save_fields=['Ez'], field_subsample=30)
+        result_ref = sim_ref.run(save_fields=["Ez"], field_subsample=30)
 
         # Run with scatterer
         sim_full = Simulation(
             design=design_full,
             devices=[source_full],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
-        result_full = sim_full.run(save_fields=['Ez'], field_subsample=30)
+        result_full = sim_full.run(save_fields=["Ez"], field_subsample=30)
 
         # Compute scattered field = total - incident
-        Ez_total = result_full['fields']['Ez'][-1]
-        Ez_inc = result_ref['fields']['Ez'][-1]
+        Ez_total = result_full["fields"]["Ez"][-1]
+        Ez_inc = result_ref["fields"]["Ez"][-1]
 
         # Handle shape mismatch (shouldn't happen but be safe)
-        min_shape = (min(Ez_total.shape[0], Ez_inc.shape[0]),
-                     min(Ez_total.shape[1], Ez_inc.shape[1]))
-        Ez_scat = Ez_total[:min_shape[0], :min_shape[1]] - Ez_inc[:min_shape[0], :min_shape[1]]
+        min_shape = (
+            min(Ez_total.shape[0], Ez_inc.shape[0]),
+            min(Ez_total.shape[1], Ez_inc.shape[1]),
+        )
+        Ez_scat = (
+            Ez_total[: min_shape[0], : min_shape[1]]
+            - Ez_inc[: min_shape[0], : min_shape[1]]
+        )
 
         # Scattered field energy
         scattered_energy = compute_field_energy(Ez_scat, dx)
-        incident_energy = compute_field_energy(Ez_inc[:min_shape[0], :min_shape[1]], dx)
+        incident_energy = compute_field_energy(
+            Ez_inc[: min_shape[0], : min_shape[1]], dx
+        )
 
         # Scattering efficiency (rough measure)
         if incident_energy > 1e-30:
             efficiency_proxy = scattered_energy / incident_energy
 
             # Should see measurable scattering (not zero, not enormous)
-            assert efficiency_proxy > 0.001, (
-                f"Scattering efficiency {efficiency_proxy:.4f} too low"
-            )
-            assert efficiency_proxy < 10, (
-                f"Scattering efficiency {efficiency_proxy:.4f} unreasonably high"
-            )
+            assert (
+                efficiency_proxy > 0.001
+            ), f"Scattering efficiency {efficiency_proxy:.4f} too low"
+            assert (
+                efficiency_proxy < 10
+            ), f"Scattering efficiency {efficiency_proxy:.4f} unreasonably high"
 
 
 # =============================================================================
@@ -801,14 +846,13 @@ class TestFabryPerotQuantitative:
         n_material = 1.0
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, 1.0, dims=2,
-            safety_factor=0.95, points_per_wavelength=15
+            wavelength, 1.0, dims=2, safety_factor=0.95, points_per_wavelength=15
         )
 
         design = Design(
             width=domain_width,
             height=domain_height,
-            material=Material(permittivity=n_material**2)
+            material=Material(permittivity=n_material**2),
         )
 
         # Resonance frequency of cavity
@@ -821,36 +865,39 @@ class TestFabryPerotQuantitative:
 
         # Short excitation pulse
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=3/frequency, t_max=t_total*0.15
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=3 / frequency,
+            t_max=t_total * 0.15,
         )
 
         # Source in cavity region
         source = GaussianSource(
-            position=(domain_width/2, domain_height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(domain_width / 2, domain_height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         # Monitor at center to track field
         mon_center = Monitor(
-            start=(domain_width/2, domain_height/2 - wavelength/4),
-            end=(domain_width/2, domain_height/2 + wavelength/4),
-            accumulate_power=True
+            start=(domain_width / 2, domain_height / 2 - wavelength / 4),
+            end=(domain_width / 2, domain_height / 2 + wavelength / 4),
+            accumulate_power=True,
         )
 
         sim = Simulation(
             design=design,
             devices=[source, mon_center],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=5)
+        result = sim.run(save_fields=["Ez"], field_subsample=5)
 
         # Get field energy over time
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         # Find peak (after ramp-up)
         peak_idx = np.argmax(energies)
@@ -883,14 +930,13 @@ class TestFabryPerotQuantitative:
         domain_height = 5 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, 1.0, dims=2,
-            safety_factor=0.95, points_per_wavelength=12
+            wavelength, 1.0, dims=2, safety_factor=0.95, points_per_wavelength=12
         )
 
         design = Design(
             width=domain_width,
             height=domain_height,
-            material=Material(permittivity=1.0)
+            material=Material(permittivity=1.0),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -899,28 +945,33 @@ class TestFabryPerotQuantitative:
 
         # Pulse to excite cavity
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=2/frequency, t_max=t_total*0.1
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.1,
         )
 
         source = GaussianSource(
-            position=(domain_width/2, domain_height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(domain_width / 2, domain_height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
             design=design,
             devices=[source],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=3)
+        result = sim.run(save_fields=["Ez"], field_subsample=3)
 
         # Compute energy envelope
-        energies = np.array([compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']])
+        energies = np.array(
+            [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        )
 
         # Time array for energy samples
         subsample = 3
@@ -939,8 +990,7 @@ class TestFabryPerotQuantitative:
 
             # Fit exponential: E(t) = E0 * exp(-t/tau)
             tau, amplitude, r_squared = fit_exponential_decay(
-                decay_energies, decay_times,
-                start_fraction=0.0, end_fraction=1.0
+                decay_energies, decay_times, start_fraction=0.0, end_fraction=1.0
             )
 
             if tau is not None and tau > 0:
@@ -951,7 +1001,9 @@ class TestFabryPerotQuantitative:
                 # For open cavity with PML, Q should be low (few to tens)
                 # This is just an order of magnitude check
                 assert Q_measured > 1, f"Q={Q_measured:.1f} too low"
-                assert Q_measured < 1000, f"Q={Q_measured:.1f} unreasonably high for open cavity"
+                assert (
+                    Q_measured < 1000
+                ), f"Q={Q_measured:.1f} unreasonably high for open cavity"
             else:
                 # If fit failed, at least verify energy decays
                 assert energies[-1] < energies[peak_idx], "Energy should decay"
@@ -969,10 +1021,10 @@ class TestEnergyConservationQuantitative:
 
         Method: Track peak energy, verify it doesn't grow unbounded.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 15 / frequency
@@ -980,14 +1032,17 @@ class TestEnergyConservationQuantitative:
 
         # Short pulse
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=2/frequency, t_max=t_total*0.2
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.2,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -995,20 +1050,24 @@ class TestEnergyConservationQuantitative:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=10)
+        result = sim.run(save_fields=["Ez"], field_subsample=10)
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         # After source stops (~25% of simulation), energy should only decay
         source_stop_idx = int(len(energies) * 0.3)
         post_source_energies = energies[source_stop_idx:]
-        peak_post = max(post_source_energies[:len(post_source_energies)//3]) if post_source_energies else 0
+        peak_post = (
+            max(post_source_energies[: len(post_source_energies) // 3])
+            if post_source_energies
+            else 0
+        )
 
         # Check no energy creation
-        for i, e in enumerate(post_source_energies[len(post_source_energies)//3:]):
+        for i, e in enumerate(post_source_energies[len(post_source_energies) // 3 :]):
             if peak_post > 1e-30:
                 growth = e / peak_post
                 assert growth < 1.2, (
@@ -1021,37 +1080,40 @@ class TestEnergyConservationQuantitative:
 
         Target: Final energy < 10% of peak after sufficient time.
         """
-        design = vacuum_domain_small['design']
-        wavelength = vacuum_domain_small['wavelength']
-        dx = vacuum_domain_small['dx']
-        dt = vacuum_domain_small['dt']
+        design = vacuum_domain_small["design"]
+        wavelength = vacuum_domain_small["wavelength"]
+        dx = vacuum_domain_small["dx"]
+        dt = vacuum_domain_small["dt"]
 
         frequency = LIGHT_SPEED / wavelength
         t_total = 25 / frequency
         time = np.arange(0, t_total, dt)
 
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=2/frequency, t_max=t_total*0.1
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.1,
         )
 
         source = GaussianSource(
-            position=(design.width/2, design.height/2),
-            width=wavelength/4,
-            signal=signal
+            position=(design.width / 2, design.height / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
             design=design,
             devices=[source],
-            boundaries=[PML(thickness=1.5*wavelength)],
+            boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=15)
+        result = sim.run(save_fields=["Ez"], field_subsample=15)
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result['fields']['Ez']]
+        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
 
         peak_energy = max(energies)
         final_energy = energies[-1]
@@ -1092,8 +1154,7 @@ class TestPhysics3D:
         domain_size = 4 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, n_medium, dims=3,
-            safety_factor=0.9, points_per_wavelength=8
+            wavelength, n_medium, dims=3, safety_factor=0.9, points_per_wavelength=8
         )
 
         # 3D design with depth
@@ -1101,7 +1162,7 @@ class TestPhysics3D:
             width=domain_size,
             height=domain_size,
             depth=domain_size,
-            material=Material(permittivity=n_medium**2)
+            material=Material(permittivity=n_medium**2),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -1109,15 +1170,18 @@ class TestPhysics3D:
         time = np.arange(0, t_total, dt)
 
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=2/frequency, t_max=t_total*0.3
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.3,
         )
 
         # Source at center
         source = GaussianSource(
-            position=(domain_size/2, domain_size/2, domain_size/2),
-            width=wavelength/4,
-            signal=signal
+            position=(domain_size / 2, domain_size / 2, domain_size / 2),
+            width=wavelength / 4,
+            signal=signal,
         )
 
         sim = Simulation(
@@ -1125,19 +1189,19 @@ class TestPhysics3D:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
-        result = sim.run(save_fields=['Ez'], field_subsample=30)
+        result = sim.run(save_fields=["Ez"], field_subsample=30)
 
         # Check for stability: all values should be finite
-        for field_snapshot in result['fields']['Ez']:
-            assert np.all(np.isfinite(field_snapshot)), (
-                "3D simulation produced NaN/Inf - numerical instability"
-            )
+        for field_snapshot in result["fields"]["Ez"]:
+            assert np.all(
+                np.isfinite(field_snapshot)
+            ), "3D simulation produced NaN/Inf - numerical instability"
 
         # Check field has reasonable magnitude
-        max_field = max(np.max(np.abs(Ez)) for Ez in result['fields']['Ez'])
+        max_field = max(np.max(np.abs(Ez)) for Ez in result["fields"]["Ez"])
         assert max_field > 0, "Should have non-zero field"
         assert max_field < 1e6, f"Max field {max_field:.2e} is unreasonably large"
 
@@ -1156,8 +1220,7 @@ class TestPhysics3D:
         domain_size = 5 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, n_sphere, dims=3,
-            safety_factor=0.9, points_per_wavelength=8
+            wavelength, n_sphere, dims=3, safety_factor=0.9, points_per_wavelength=8
         )
 
         # Reference: no sphere
@@ -1165,7 +1228,7 @@ class TestPhysics3D:
             width=domain_size,
             height=domain_size,
             depth=domain_size,
-            material=Material(permittivity=n_medium**2)
+            material=Material(permittivity=n_medium**2),
         )
 
         # With sphere
@@ -1173,12 +1236,12 @@ class TestPhysics3D:
             width=domain_size,
             height=domain_size,
             depth=domain_size,
-            material=Material(permittivity=n_medium**2)
+            material=Material(permittivity=n_medium**2),
         )
         design_full += Sphere(
-            position=(domain_size/2, domain_size/2, domain_size/2),
+            position=(domain_size / 2, domain_size / 2, domain_size / 2),
             radius=radius,
-            material=Material(permittivity=n_sphere**2)
+            material=Material(permittivity=n_sphere**2),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -1186,21 +1249,24 @@ class TestPhysics3D:
         time = np.arange(0, t_total, dt)
 
         signal = ramped_cosine(
-            time, amplitude=1.0, frequency=frequency,
-            ramp_duration=2/frequency, t_max=t_total*0.25
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.25,
         )
 
         # Sources
         source_ref = GaussianSource(
-            position=(wavelength, domain_size/2, domain_size/2),
-            width=wavelength/3,
-            signal=signal.copy()
+            position=(wavelength, domain_size / 2, domain_size / 2),
+            width=wavelength / 3,
+            signal=signal.copy(),
         )
 
         source_full = GaussianSource(
-            position=(wavelength, domain_size/2, domain_size/2),
-            width=wavelength/3,
-            signal=signal.copy()
+            position=(wavelength, domain_size / 2, domain_size / 2),
+            width=wavelength / 3,
+            signal=signal.copy(),
         )
 
         # Run reference
@@ -1209,9 +1275,9 @@ class TestPhysics3D:
             devices=[source_ref],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
-        result_ref = sim_ref.run(save_fields=['Ez'], field_subsample=40)
+        result_ref = sim_ref.run(save_fields=["Ez"], field_subsample=40)
 
         # Run with sphere
         sim_full = Simulation(
@@ -1219,17 +1285,20 @@ class TestPhysics3D:
             devices=[source_full],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
-        result_full = sim_full.run(save_fields=['Ez'], field_subsample=40)
+        result_full = sim_full.run(save_fields=["Ez"], field_subsample=40)
 
         # Compare final snapshots
-        Ez_ref = result_ref['fields']['Ez'][-1]
-        Ez_full = result_full['fields']['Ez'][-1]
+        Ez_ref = result_ref["fields"]["Ez"][-1]
+        Ez_full = result_full["fields"]["Ez"][-1]
 
         # Scattered field (total - incident)
         min_shape = tuple(min(a, b) for a, b in zip(Ez_ref.shape, Ez_full.shape))
-        Ez_scat = Ez_full[:min_shape[0], :min_shape[1]] - Ez_ref[:min_shape[0], :min_shape[1]]
+        Ez_scat = (
+            Ez_full[: min_shape[0], : min_shape[1]]
+            - Ez_ref[: min_shape[0], : min_shape[1]]
+        )
 
         # There should be scattered field (difference between with/without sphere)
         max_scattered = np.max(np.abs(Ez_scat))
