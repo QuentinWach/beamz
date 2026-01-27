@@ -261,7 +261,9 @@ def transform_density(
         # Conic filter (for geometric constraints)
         filtered, _ = masked_conic_filter(density, mask, radius, fixed_structure_mask)
     else:
-        raise ValueError(f"Unknown filter_type: {filter_type}. Use 'conic' or 'morphological'.")
+        raise ValueError(
+            f"Unknown filter_type: {filter_type}. Use 'conic' or 'morphological'."
+        )
 
     # Project
     # Note: Filters already apply hard masking, so no additional masking needed
