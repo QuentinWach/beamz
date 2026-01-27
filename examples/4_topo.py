@@ -40,8 +40,7 @@ opt = TopologyManager(
     region_mask=mask,
     resolution=DX,
     learning_rate=0.1,
-    filter_radius=0.2*µm,       # Physical units: Radius of the conic filter
-    simple_smooth_radius=0.1*µm, # Physical units: Small blur to remove pixelation artifacts
+    filter_radius=0.25*µm,       # Physical units: Controls minimum feature size AND boundary smoothness
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
     beta_schedule=(1.0, 20.0),
@@ -83,8 +82,8 @@ for step in range(STEPS):
     print(f"[{step+1}/{STEPS}] Forward Sim...", end="\r")
     results = sim_fwd.run(save_fields=['Ez'], field_subsample=2)
     
-    # Extract field history
-    fwd_ez_history = results['fields']['Ez'] if results and 'fields' in results else []
+    # Extract field history and ensure NumPy arrays
+    fwd_ez_history = [np.array(field) for field in results['fields']['Ez']] if results and 'fields' in results else []
     
     # Calculate transmission normalizing by measured input flux
     # Input flux includes forward wave + reflection. 
@@ -112,7 +111,7 @@ for step in range(STEPS):
                         [PML(edges='all', thickness=1*µm)], time=time, resolution=DX)
     
     adj_results = sim_adj.run(save_fields=['Ez'], field_subsample=2)
-    adj_ez_history = adj_results['fields']['Ez'] if adj_results and 'fields' in adj_results else []
+    adj_ez_history = [np.array(field) for field in adj_results['fields']['Ez']] if adj_results and 'fields' in adj_results else []
     
     # Calculate backward transmission normalizing by measured input flux
     measured_input_energy_back = np.sum(monitor_back_flux.power_history) * DT
@@ -132,21 +131,24 @@ for step in range(STEPS):
             
     # Compute Gradient (overlap of fwd and adj fields)
     grad_eps = compute_overlap_gradient(fwd_ez_history, adj_ez_history)
-    
+
+    # Ensure grad_eps is a NumPy array (not JAX array)
+    grad_eps = np.array(grad_eps)
+
     # Measure Material Usage (Relative core material amount)
     # phys_density is 0 (cladding) to 1 (core)
     current_density = np.mean(phys_density[mask])
-    
+
     # Quadratic Penalty: Strength * (current - target)^2
     # We want to maximize Obj, so we subtract penalty.
     # The gradient w.r.t. density is roughly proportional to (current - target).
     # We apply this uniform gradient correction to all pixels in the mask.
-    
+
     # Gradient contribution: push density towards target
     # If current > target, we want to decrease density -> negative gradient contribution
     # If current < target, we want to increase density -> positive gradient contribution
     # grad_correction = -Strength * (current - target)
-    
+
     grad_penalty = PENALTY_STRENGTH * (current_density - MAT_PENALTY)
     grad_eps[mask] -= grad_penalty
 

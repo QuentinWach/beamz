@@ -32,72 +32,58 @@ def generate_conic_kernel(radius: int):
     return weights
 
 
+@partial(jax.jit, static_argnames=["transition_width"])
+def create_soft_mask(hard_mask, transition_width: int = 3):
+    """
+    Create soft mask with gradient boundary transition.
+    Uses Gaussian-like blur to create smooth tapering from inside (1.0) to outside (0.0).
+
+    Args:
+        hard_mask: Boolean mask defining the optimization region
+        transition_width: Width of the transition zone in cells (default: 3)
+
+    Returns:
+        Soft mask with values from 0.0 to 1.0, with smooth gradients at boundaries
+    """
+    mask_float = hard_mask.astype(float)
+
+    # Smooth the boundary with Gaussian-like blur
+    kernel_size = 2 * transition_width + 1
+    kernel = jnp.ones((kernel_size, kernel_size)) / (kernel_size ** 2)
+
+    smoothed = convolve2d(mask_float, kernel, mode='same')
+    return smoothed  # Returns values 0.0 to 1.0 with smooth gradients
+
+
 @partial(jax.jit, static_argnames=["radius"])
 def masked_conic_filter(values, mask, radius: int):
     """
-    Apply a masked conic filter (linear decay).
-    Used for geometric constraints (minimum feature size).
+    Apply conic filter with soft boundary blending.
+    Uses smooth mask transitions to prevent sharp edges at optimization region boundaries.
     """
     radius = int(max(0, radius))
     if radius <= 0:
         return jnp.where(mask, values, 0.0), jnp.where(mask, 1.0, 1.0)
 
-    masked_values = jnp.where(mask, values, 0.0)
-    float_mask = mask.astype(float)
+    # Create soft mask for smooth boundaries
+    soft_mask = create_soft_mask(mask, transition_width=max(2, radius // 3))
 
-    # Create conic kernel
+    # DON'T pre-mask values - let filter see full context
     kernel = generate_conic_kernel(radius)
 
-    # Pad input
-    padded_values = jnp.pad(masked_values, radius, mode="edge")
-    padded_mask = jnp.pad(float_mask, radius, mode="constant", constant_values=0.0)
+    # Pad with edge values for continuity
+    padded_values = jnp.pad(values, radius, mode="edge")
+    padded_soft_mask = jnp.pad(soft_mask, radius, mode="edge")
 
     # Convolve
     weighted_sum = convolve2d(padded_values, kernel, mode="valid")
-    weights = convolve2d(padded_mask, kernel, mode="valid")
+    weights_sum = convolve2d(padded_soft_mask, kernel, mode="valid")
+    weights_sum = jnp.where(weights_sum < 1e-6, 1.0, weights_sum)
 
-    # Avoid division by zero
-    weights = jnp.where(weights == 0.0, 1.0, weights)
+    filtered = weighted_sum / weights_sum
 
-    filtered = weighted_sum / weights
-    filtered = jnp.where(mask, filtered, 0.0)
-
-    return filtered, weights
-
-
-@partial(jax.jit, static_argnames=["radius"])
-def masked_box_blur(values, mask, radius: int):
-    """
-    Apply a masked box blur using JAX convolutions.
-    """
-    radius = int(max(0, radius))
-    if radius <= 0:
-        return jnp.where(mask, values, 0.0), jnp.where(mask, 1.0, 1.0)
-
-    masked_values = jnp.where(mask, values, 0.0)
-    float_mask = mask.astype(float)
-
-    # Create box kernel
-    kernel_size = 2 * radius + 1
-    kernel = jnp.ones((kernel_size, kernel_size))
-
-    # Pad input to handle edges manually to match numpy 'edge' padding behavior roughly
-    # For simplicity and efficiency in JAX, we use standard padding
-    padded_values = jnp.pad(masked_values, radius, mode="edge")
-    padded_mask = jnp.pad(float_mask, radius, mode="constant", constant_values=0.0)
-
-    # Convolve
-    weighted_sum = convolve2d(padded_values, kernel, mode="valid")
-    weights = convolve2d(padded_mask, kernel, mode="valid")
-
-    # Avoid division by zero
-    weights = jnp.where(weights == 0.0, 1.0, weights)
-
-    blurred = weighted_sum / weights
-    blurred = jnp.where(mask, blurred, 0.0)
-    weights = jnp.where(mask, weights, 1.0)
-
-    return blurred, weights
+    # Apply soft mask (smooth blending instead of hard cutoff)
+    return filtered * soft_mask, weights_sum
 
 
 @jax.jit
@@ -246,9 +232,10 @@ def masked_morphological_filter(
             grayscale_opening(filtered, radius, tau), radius, tau
         )
 
-    # Re-apply mask constraints
-    # We only care about the result inside the design region
-    return jnp.where(mask, filtered, 0.0)
+    # Re-apply mask constraints with soft boundary
+    # Create soft mask for smooth transitions
+    soft_mask = create_soft_mask(mask, transition_width=max(2, radius // 3))
+    return filtered * soft_mask
 
 
 @partial(
@@ -257,7 +244,6 @@ def masked_morphological_filter(
         "radius",
         "filter_type",
         "morphology_operation",
-        "post_smooth_radius",
     ],
 )
 def transform_density(
@@ -266,24 +252,25 @@ def transform_density(
     beta,
     eta,
     radius,
-    filter_type="blur",
+    filter_type="conic",
     morphology_operation="openclose",
     morphology_tau=0.05,
     fixed_structure_mask=None,
-    post_smooth_radius=0,
 ):
     """
     Full density transform: Filter -> Project.
-    Returns the physical density [0, 1].
+    Returns the physical density [0, 1] with soft boundary blending.
 
     Args:
-        filter_type: 'blur', 'morphological', or 'conic'
+        filter_type: 'morphological' or 'conic' (recommended)
         morphology_operation: 'opening', 'closing', 'openclose'
         fixed_structure_mask: Optional mask for fixed structures (morphological filter only)
-        post_smooth_radius: Optional blur after morphology or filter
     """
+    # Create soft mask once for final application
+    soft_mask = create_soft_mask(mask, transition_width=max(2, radius // 3))
+
+    # Apply filter (already returns soft-masked result)
     if filter_type == "morphological":
-        # Morphological filter
         filtered = masked_morphological_filter(
             density,
             mask,
@@ -296,16 +283,13 @@ def transform_density(
         # Conic filter (for geometric constraints)
         filtered, _ = masked_conic_filter(density, mask, radius)
     else:
-        # Standard box blur
-        filtered, _ = masked_box_blur(density, mask, radius)
+        raise ValueError(f"Unknown filter_type: {filter_type}. Use 'conic' or 'morphological'.")
 
-    # Universal Post-Smoothing: Apply a small blur to smooth edges/artifacts
-    if post_smooth_radius > 0:
-        smoothed, _ = masked_box_blur(filtered, mask, post_smooth_radius)
-        filtered = smoothed
-
+    # Project
     projected = smoothed_heaviside(filtered, beta, eta)
-    return jnp.where(mask, projected, 0.0)
+
+    # Final soft mask application (ensure boundaries stay smooth)
+    return projected * soft_mask
 
 
 @partial(
@@ -314,7 +298,6 @@ def transform_density(
         "radius",
         "filter_type",
         "morphology_operation",
-        "post_smooth_radius",
     ],
 )
 def compute_parameter_gradient_vjp(
@@ -324,15 +307,14 @@ def compute_parameter_gradient_vjp(
     beta,
     eta,
     radius,
-    filter_type="blur",
+    filter_type="conic",
     morphology_operation="openclose",
     morphology_tau=0.05,
     fixed_structure_mask=None,
-    post_smooth_radius=0,
 ):
     """
     Compute gradient w.r.t. design density using VJP.
-    Supports both blur and morphological filters.
+    Supports both morphological and conic filters with soft boundary blending.
     """
 
     # Define a wrapper for the transform to differentiate
@@ -347,7 +329,6 @@ def compute_parameter_gradient_vjp(
             morphology_operation,
             morphology_tau,
             fixed_structure_mask,
-            post_smooth_radius,
         )
 
     # Compute VJP
