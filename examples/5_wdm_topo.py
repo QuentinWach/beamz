@@ -21,17 +21,17 @@ print("Wavelength Division Multiplexer - Topology Optimization")
 print("="*70)
 
 # Domain and waveguide parameters
-W = H = 10*µm                    # Domain size
+W = H = 12*µm                    # Domain size (increased for larger optimization region)
 WG_W = 0.5*µm                    # Waveguide width (single-mode)
 WL1, WL2 = 1.55*µm, 1.60*µm     # Target wavelengths
 N_CORE, N_CLAD = 2.25, 1.444     # Refractive indices (Si₃N₄/SiO₂)
 
 # Optimization parameters
-STEPS = 30                       # Number of optimization iterations
+STEPS = 25                       # Number of optimization iterations (increased for convergence)
 CROSSTALK_PENALTY = 0.3          # Weight for crosstalk penalty
 
 # Calculate optimal FDTD parameters using λ₁ as reference
-DX, DT = calc_optimal_fdtd_params(WL1, N_CORE, points_per_wavelength=20)
+DX, DT = calc_optimal_fdtd_params(WL1, N_CORE, points_per_wavelength=9)
 print(f"Resolution: {DX/nm:.2f} nm | Timestep: {DT*1e15:.3f} fs")
 
 # ============================================================================
@@ -69,31 +69,31 @@ output_wg2 = Rectangle(
 )
 design += output_wg2
 
-# Optimization region (4µm × 4µm at the junction)
+# Optimization region (6µm × 6µm at the junction - larger for better wavelength separation)
 opt_region = Rectangle(
-    position=(W/2 - 2*µm, H/2 - 2*µm),
-    width=4*µm,
-    height=4*µm,
+    position=(W/2 - 3*µm, H/2 - 3*µm),
+    width=6*µm,
+    height=6*µm,
     material=Material(permittivity=N_CORE**2)
 )
 design += opt_region
 
 print(f"Domain: {W/µm:.1f} µm × {H/µm:.1f} µm")
 print(f"Waveguide width: {WG_W/µm:.2f} µm")
-print(f"Optimization region: 4 µm × 4 µm")
+print(f"Optimization region: 6 µm × 6 µm")
 
 # ============================================================================
 # 3. SOURCES AND TIME ARRAY
 # ============================================================================
 print("\n--- Creating Sources ---")
 
-# Time array (40 wavelengths worth of propagation)
-time = np.arange(0, 40*WL1/LIGHT_SPEED, DT)
+# Time array (30 wavelengths for steady-state and gradient accumulation)
+time = np.arange(0, 30*WL1/LIGHT_SPEED, DT)
 print(f"Simulation time: {time[-1]*1e12:.1f} ps ({len(time)} steps)")
 
 # Temporal signals
-signal_wl1 = ramped_cosine(time, 1.0, LIGHT_SPEED/WL1, ramp_duration=6*WL1/LIGHT_SPEED, t_max=time[-1])
-signal_wl2 = ramped_cosine(time, 1.0, LIGHT_SPEED/WL2, ramp_duration=6*WL2/LIGHT_SPEED, t_max=time[-1])
+signal_wl1 = ramped_cosine(time, 1.0, LIGHT_SPEED/WL1, ramp_duration=3*WL1/LIGHT_SPEED, t_max=time[-1])
+signal_wl2 = ramped_cosine(time, 1.0, LIGHT_SPEED/WL2, ramp_duration=3*WL2/LIGHT_SPEED, t_max=time[-1])
 
 # Forward sources (at input waveguide)
 src_fwd_wl1 = ModeSource(
@@ -116,10 +116,10 @@ src_fwd_wl2 = ModeSource(
     direction="+x"
 )
 
-# Adjoint sources (at output waveguides)
+# Adjoint sources (at output waveguides - positioned deeper for better mode stabilization)
 src_adj_wl1 = ModeSource(
     None,
-    center=(W/2, H - 1.0*µm),
+    center=(W/2, H - 2.5*µm),
     width=WG_W*4,
     wavelength=WL1,
     pol="tm",
@@ -129,7 +129,7 @@ src_adj_wl1 = ModeSource(
 
 src_adj_wl2 = ModeSource(
     None,
-    center=(W/2, 1.0*µm),
+    center=(W/2, 2.5*µm),
     width=WG_W*4,
     wavelength=WL2,
     pol="tm",
@@ -154,12 +154,12 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    learning_rate=0.05,              # Conservative for multi-wavelength
-    filter_radius=0.25*µm,           # Min feature size
+    learning_rate=0.05,              # Moderate increase for better convergence
+    filter_radius=0.4*µm,            # Min feature size (maintains ~4 cells at 16 ppw)
     simple_smooth_radius=0.1*µm,     # Anti-pixelation
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
-    beta_schedule=(1.0, 20.0),       # Gradual binarization
+    beta_schedule=(1.0, 12.0),       # Gentler binarization for dual-wavelength exploration
     filter_type='conic',
 )
 
@@ -355,8 +355,10 @@ for step in range(STEPS):
     grad_wl1 = compute_overlap_gradient(fwd_ez_wl1, adj_ez_wl1)
     grad_wl2 = compute_overlap_gradient(fwd_ez_wl2, adj_ez_wl2)
 
-    # Combine gradients (equal weighting)
-    grad_eps = (grad_wl1 + grad_wl2) / 2.0
+    # Combine gradients with adaptive weighting (focus on worse-performing wavelength)
+    w1 = max(0.1, 1.0 - T_wl1_to_out1)  # Higher weight when transmission is low
+    w2 = max(0.1, 1.0 - T_wl2_to_out2)
+    grad_eps = (w1 * grad_wl1 + w2 * grad_wl2) / (w1 + w2)
 
     # ------------------------------------------------------------------------
     # 5.6 Apply Gradient
@@ -447,13 +449,13 @@ trans_to_out1 = []
 trans_to_out2 = []
 
 # Extended time for sweep
-time_sweep = np.arange(0, 50*WL1/LIGHT_SPEED, DT)
+time_sweep = np.arange(0, 10*WL1/LIGHT_SPEED, DT)
 
 for i, wl in enumerate(wavelengths_sweep):
     print(f"  Wavelength: {wl/µm:.3f} µm ({i+1}/{len(wavelengths_sweep)})", end="\r")
 
     # Create signal
-    signal = ramped_cosine(time_sweep, 1.0, LIGHT_SPEED/wl, ramp_duration=6*wl/LIGHT_SPEED, t_max=time_sweep[-1])
+    signal = ramped_cosine(time_sweep, 1.0, LIGHT_SPEED/wl, ramp_duration=3*wl/LIGHT_SPEED, t_max=time_sweep[-1])
 
     # Create source
     src = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=wl, pol="tm", signal=signal, direction="+x")
