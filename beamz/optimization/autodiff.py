@@ -32,31 +32,73 @@ def generate_conic_kernel(radius: int):
     return weights
 
 
-@partial(jax.jit, static_argnames=["transition_width"])
-def create_soft_mask(hard_mask, transition_width: int = 3):
+@partial(jax.jit, static_argnames=["radius"])
+def dilate_mask(mask, radius: int):
     """
-    Create soft mask with gradient boundary transition.
-    Uses Gaussian-like blur to create smooth tapering from inside (1.0) to outside (0.0).
+    Dilate a binary mask using a disk structuring element.
+    Used to extend fixed structure protection zones.
 
     Args:
-        hard_mask: Boolean mask defining the optimization region
-        transition_width: Width of the transition zone in cells (default: 3)
+        mask: Boolean mask to dilate
+        radius: Dilation radius in grid cells
 
     Returns:
-        Soft mask with values from 0.0 to 1.0, with smooth gradients at boundaries
+        Dilated mask (boolean)
+    """
+    if radius <= 0:
+        return mask
+
+    mask_float = mask.astype(float)
+
+    # Create circular kernel
+    kernel_size = 2 * radius + 1
+    center = radius
+    y, x = jnp.ogrid[-radius:radius+1, -radius:radius+1]
+    dist = jnp.sqrt(x**2 + y**2)
+    kernel = (dist <= radius).astype(float)
+
+    # Convolve and threshold
+    dilated = convolve2d(mask_float, kernel, mode='same')
+    return dilated > 0.01  # Threshold to get boolean mask
+
+
+@partial(jax.jit, static_argnames=["transition_width", "protection_radius"])
+def create_soft_mask(hard_mask, transition_width: int = 3,
+                     fixed_structure_mask=None, protection_radius: int = 0):
+    """
+    Create soft mask with gradient boundary transition.
+    Protects boundaries near fixed structures from feathering.
+
+    Args:
+        hard_mask: Boolean optimization region mask
+        transition_width: Tapering width in cells (default: 3)
+        fixed_structure_mask: Optional boolean mask of fixed structures
+        protection_radius: How far to protect around fixed structures (default: 0)
+
+    Returns:
+        Soft mask with values 0.0 to 1.0, but 1.0 near fixed structures
     """
     mask_float = hard_mask.astype(float)
 
-    # Smooth the boundary with Gaussian-like blur
+    # Standard soft mask (applies to all boundaries)
     kernel_size = 2 * transition_width + 1
     kernel = jnp.ones((kernel_size, kernel_size)) / (kernel_size ** 2)
-
     smoothed = convolve2d(mask_float, kernel, mode='same')
-    return smoothed  # Returns values 0.0 to 1.0 with smooth gradients
+
+    # Protect boundaries near fixed structures
+    if fixed_structure_mask is not None and protection_radius > 0:
+        # Dilate fixed structures to extend protection into optimization region
+        protected_region = dilate_mask(fixed_structure_mask, protection_radius)
+
+        # Where protected, override with full density (1.0)
+        # This prevents feathering at waveguide connections
+        smoothed = jnp.where(protected_region, 1.0, smoothed)
+
+    return smoothed
 
 
 @partial(jax.jit, static_argnames=["radius"])
-def masked_conic_filter(values, mask, radius: int):
+def masked_conic_filter(values, mask, radius: int, fixed_structure_mask=None):
     """
     Apply conic filter with soft boundary blending.
     Uses smooth mask transitions to prevent sharp edges at optimization region boundaries.
@@ -65,14 +107,29 @@ def masked_conic_filter(values, mask, radius: int):
     if radius <= 0:
         return jnp.where(mask, values, 0.0), jnp.where(mask, 1.0, 1.0)
 
-    # Create soft mask for smooth boundaries
-    soft_mask = create_soft_mask(mask, transition_width=max(2, radius // 3))
+    # Create soft mask for smooth boundaries with protection
+    protection_radius_val = max(2, radius // 3)
+    soft_mask = create_soft_mask(mask, transition_width=protection_radius_val,
+                                  fixed_structure_mask=fixed_structure_mask,
+                                  protection_radius=protection_radius_val)
+
+    # Identify protected regions (dilated fixed structures)
+    # These regions should maintain full density to ensure seamless connections
+    protected_region = None
+    if fixed_structure_mask is not None and protection_radius_val > 0:
+        protected_region = dilate_mask(fixed_structure_mask, protection_radius_val)
+
+    # Add fixed structure context to prevent boundary erosion
+    # Treat fixed structures as solid (1.0) to provide proper context for filtering
+    filter_input = values
+    if fixed_structure_mask is not None:
+        filter_input = jnp.where(fixed_structure_mask, 1.0, values)
 
     # DON'T pre-mask values - let filter see full context
     kernel = generate_conic_kernel(radius)
 
     # Pad with edge values for continuity
-    padded_values = jnp.pad(values, radius, mode="edge")
+    padded_values = jnp.pad(filter_input, radius, mode="edge")
     padded_soft_mask = jnp.pad(soft_mask, radius, mode="edge")
 
     # Convolve
@@ -81,6 +138,11 @@ def masked_conic_filter(values, mask, radius: int):
     weights_sum = jnp.where(weights_sum < 1e-6, 1.0, weights_sum)
 
     filtered = weighted_sum / weights_sum
+
+    # At protected regions, use full density (1.0) to ensure seamless waveguide connections
+    # This overrides the filtered result to prevent gaps at connection points
+    if protected_region is not None:
+        filtered = jnp.where(protected_region & mask, 1.0, filtered)
 
     # Apply soft mask (smooth blending instead of hard cutoff)
     return filtered * soft_mask, weights_sum
@@ -234,7 +296,9 @@ def masked_morphological_filter(
 
     # Re-apply mask constraints with soft boundary
     # Create soft mask for smooth transitions
-    soft_mask = create_soft_mask(mask, transition_width=max(2, radius // 3))
+    soft_mask = create_soft_mask(mask, transition_width=max(2, radius // 3),
+                                  fixed_structure_mask=fixed_structure_mask,
+                                  protection_radius=max(2, radius // 3))
     return filtered * soft_mask
 
 
@@ -264,12 +328,9 @@ def transform_density(
     Args:
         filter_type: 'morphological' or 'conic' (recommended)
         morphology_operation: 'opening', 'closing', 'openclose'
-        fixed_structure_mask: Optional mask for fixed structures (morphological filter only)
+        fixed_structure_mask: Optional mask for fixed structures
     """
-    # Create soft mask once for final application
-    soft_mask = create_soft_mask(mask, transition_width=max(2, radius // 3))
-
-    # Apply filter (already returns soft-masked result)
+    # Apply filter (already returns soft-masked result with protection)
     if filter_type == "morphological":
         filtered = masked_morphological_filter(
             density,
@@ -281,15 +342,15 @@ def transform_density(
         )
     elif filter_type == "conic":
         # Conic filter (for geometric constraints)
-        filtered, _ = masked_conic_filter(density, mask, radius)
+        filtered, _ = masked_conic_filter(density, mask, radius, fixed_structure_mask)
     else:
         raise ValueError(f"Unknown filter_type: {filter_type}. Use 'conic' or 'morphological'.")
 
     # Project
+    # Note: Filters already apply soft masking with protection, so no additional masking needed
     projected = smoothed_heaviside(filtered, beta, eta)
 
-    # Final soft mask application (ensure boundaries stay smooth)
-    return projected * soft_mask
+    return projected
 
 
 @partial(
