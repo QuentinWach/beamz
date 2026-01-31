@@ -1,6 +1,85 @@
 import gdspy
+import numpy as np
 
 from beamz.visual.helpers import display_status
+
+
+def export_grid_gds(
+    grid,
+    output_file,
+    threshold=None,
+    n_core=None,
+    n_clad=None,
+    dx=None,
+    layer=0,
+    cell_name="main",
+):
+    """Export a rasterized permittivity grid to a GDS file using contour extraction.
+
+    Accepts either a RegularGrid object (uses .permittivity and .dx) or a raw
+    numpy array (requires the ``dx`` parameter).
+
+    Args:
+        grid: A RegularGrid instance or a 2D numpy array of permittivity values.
+        output_file (str): Path for the output GDS file.
+        threshold (float, optional): Permittivity threshold for contour extraction.
+            If not given, computed from n_core/n_clad or from array min/max.
+        n_core (float, optional): Core refractive index (used for threshold calculation).
+        n_clad (float, optional): Cladding refractive index (used for threshold and padding).
+        dx (float, optional): Grid spacing in metres. Required when ``grid`` is a numpy array.
+        layer (int): GDS layer number (default 0).
+        cell_name (str): GDS cell name (default "main").
+
+    Returns:
+        int: Number of polygons written.
+    """
+    import matplotlib.pyplot as plt
+
+    # Accept either a RegularGrid or a raw numpy array
+    if hasattr(grid, "permittivity") and hasattr(grid, "dx"):
+        eps = np.asarray(grid.permittivity)
+        dx = grid.dx
+    else:
+        eps = np.asarray(grid)
+        if dx is None:
+            raise ValueError("dx is required when grid is a raw numpy array")
+
+    # Determine threshold
+    if threshold is None:
+        if n_core is not None and n_clad is not None:
+            threshold = (n_core**2 + n_clad**2) / 2
+        else:
+            threshold = (float(eps.max()) + float(eps.min())) / 2
+
+    # Determine cladding value for padding
+    if n_clad is not None:
+        pad_value = n_clad**2
+    else:
+        pad_value = float(eps.min())
+
+    # Pad the grid with cladding so contours close at boundaries
+    eps_padded = np.full((eps.shape[0] + 2, eps.shape[1] + 2), pad_value)
+    eps_padded[1:-1, 1:-1] = eps
+
+    # Extract contours
+    fig_temp, ax_temp = plt.subplots()
+    cs = ax_temp.contour(eps_padded.T, levels=[threshold])
+    plt.close(fig_temp)
+
+    # Write GDS
+    lib = gdspy.GdsLibrary(unit=1e-6, precision=1e-9)
+    cell = lib.new_cell(cell_name)
+
+    n_polys = 0
+    for seg in cs.allsegs[0]:
+        # Offset by -1 for padding, then convert grid coords to microns
+        verts_um = [((x - 1) * dx * 1e6, (y - 1) * dx * 1e6) for x, y in seg]
+        if len(verts_um) >= 3:
+            cell.add(gdspy.Polygon(verts_um, layer=layer))
+            n_polys += 1
+
+    lib.write_gds(output_file)
+    return n_polys
 
 
 def import_gds(gds_file: str, default_depth=1e-6):
@@ -75,7 +154,7 @@ def import_gds(gds_file: str, default_depth=1e-6):
     return design
 
 
-def export_gds(self, output_file):
+def export_gds(design, output_file):
     """Export a BEAMZ design (including only the structures, not sources or monitors) to a GDS file.
 
     For 3D designs, structures with the same material that touch (in 3D) will be placed in the same layer.
@@ -95,13 +174,13 @@ def export_gds(self, output_file):
     lib = gdspy.GdsLibrary(unit=1e-6, precision=1e-9)
     cell = lib.new_cell("main")
     # First, we unify the polygons given their material and if they touch
-    self.unify_polygons()
+    design.unify_polygons()
     # Scale factor to convert from meters to microns
     scale = 1e6  # 1 meter = 1e6 microns
 
     # Group structures by material properties
     material_groups = {}
-    for structure in self.structures:
+    for structure in design.structures:
         # Skip PML visualizations, sources, monitors
         if hasattr(structure, "is_pml") and structure.is_pml:
             continue
@@ -177,5 +256,5 @@ def export_gds(self, output_file):
             f"Layer {layer_num}: εᵣ={material_key[0]:.1f}, μᵣ={material_key[1]:.1f}, σ={material_key[2]:.2e} S/m"
         )
     display_status(
-        f"Created design with size: {self.width:.2e} x {self.height:.2e} x {self.depth:.2e} m"
+        f"Created design with size: {design.width:.2e} x {design.height:.2e} x {design.depth:.2e} m"
     )

@@ -301,27 +301,5 @@ np.savez('topo_bend_data.npz',
 print("Design data saved to topo_bend_data.npz")
 
 print("\n--- Exporting Optimized Design to GDS ---")
-import gdspy
-
-# Pad the permittivity grid with cladding so contours close at boundaries
-# (waveguides that touch the grid edge would produce open contour paths otherwise)
-eps = grid.permittivity
-eps_padded = np.full((eps.shape[0] + 2, eps.shape[1] + 2), N_CLAD**2)
-eps_padded[1:-1, 1:-1] = eps
-
-eps_threshold = (N_CORE**2 + N_CLAD**2) / 2
-fig_temp, ax_temp = plt.subplots()
-cs = ax_temp.contour(eps_padded.T, levels=[eps_threshold])
-plt.close(fig_temp)
-
-lib = gdspy.GdsLibrary(unit=1e-6, precision=1e-9)
-cell = lib.new_cell("main")
-
-for seg in cs.allsegs[0]:
-    # Offset by -1 for padding, then convert grid coords to microns
-    verts_um = [((x - 1) * DX * 1e6, (y - 1) * DX * 1e6) for x, y in seg]
-    if len(verts_um) >= 3:
-        cell.add(gdspy.Polygon(verts_um, layer=0))
-
-lib.write_gds('topo_bend.gds')
-print(f"GDS file saved to topo_bend.gds ({len(cell.polygons)} polygons)")
+n_polys = grid.export_gds('topo_bend.gds', n_core=N_CORE, n_clad=N_CLAD)
+print(f"GDS file saved to topo_bend.gds ({n_polys} polygons)")

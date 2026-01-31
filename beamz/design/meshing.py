@@ -755,6 +755,22 @@ class RegularGrid(BaseMeshGrid):
         else:
             print("Grid not rasterized yet.")
 
+    def export_gds(
+        self, output_file, threshold=None, n_core=None, n_clad=None, layer=0, cell_name="main"
+    ):
+        """Export the rasterized permittivity grid to a GDS file using contour extraction."""
+        from beamz.design.io import export_grid_gds
+
+        return export_grid_gds(
+            self,
+            output_file,
+            threshold=threshold,
+            n_core=n_core,
+            n_clad=n_clad,
+            layer=layer,
+            cell_name=cell_name,
+        )
+
 
 class RegularGrid3D(BaseMeshGrid):
     """3D Regular grid meshing for 3D designs."""

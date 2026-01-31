@@ -436,3 +436,9 @@ class Design:
         from beamz.visual.viz import show_design
 
         show_design(self, **kwargs)
+
+    def export_gds(self, output_file):
+        """Export this design to a GDS file."""
+        from beamz.design.io import export_gds
+
+        return export_gds(self, output_file)

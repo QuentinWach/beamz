@@ -3,6 +3,7 @@ Design module for BEAMZ - Contains components for designing photonic structures.
 """
 
 from beamz.design.core import Design
+from beamz.design.io import export_gds, export_grid_gds, import_gds
 from beamz.design.materials import CustomMaterial, Material
 from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
 from beamz.design.structures import (
@@ -27,4 +28,7 @@ __all__ = [
     "RegularGrid",
     "RegularGrid3D",
     "create_mesh",
+    "import_gds",
+    "export_gds",
+    "export_grid_gds",
 ]

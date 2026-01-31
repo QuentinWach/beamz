@@ -17,6 +17,7 @@ from beamz.const import (
 
 # Import design-related classes and functions
 from beamz.design.core import Design
+from beamz.design.io import export_gds, export_grid_gds, import_gds
 from beamz.design.materials import CustomMaterial, Material
 
 # Import simulation-related classes and functions
@@ -75,6 +76,10 @@ _exports = {
     # Materials
     "Material": Material,
     "CustomMaterial": CustomMaterial,
+    # GDS I/O
+    "import_gds": import_gds,
+    "export_gds": export_gds,
+    "export_grid_gds": export_grid_gds,
     # Structures
     "Design": Design,
     "Rectangle": Rectangle,
