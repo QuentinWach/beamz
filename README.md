@@ -16,12 +16,12 @@ pip install beamz
 
 <table>
   <tr>
-    <td style="vertical-align:top; padding-right:20px;">
-      <img src="docs/assets/4_topo.png" alt="Example topology optimization result" width="350" style="border-radius: 15px;"/>
-    </td>
     <td style="vertical-align:top;">
       Design your first gradient-optimized 90°-bend topology in under 5 min with
       <code>python examples/4_topology.py</code>. <span>This design predicts a high broadband transmission of &gt;98% from 1300&nbsp;nm to 1800&nbsp;nm.</span>
+    </td>
+    <td style="vertical-align:top; padding-left: 5px;">
+      <img src="docs/assets/4_topo.png" alt="Example topology optimization result" width="350" style="border-radius: 15px;"/>
     </td>
   </tr>
 </table>
