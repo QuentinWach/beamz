@@ -35,7 +35,7 @@ def gaussian_pulse(t, amplitude, center, width, frequency, phase):
     )
 
 
-def plot_signal(signals, t):
+def plot_signal(signals, t, save_path=None):
     """Create a single signal or a list of signals on the same plot."""
     # Convert time to seconds
     t_seconds = t
@@ -73,4 +73,7 @@ def plot_signal(signals, t):
     ax.set_ylabel("Amplitude")
     ax.set_title("Signal")
     plt.tight_layout()
-    plt.show()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=150)
+    else:
+        plt.show()

@@ -5,13 +5,13 @@ from beamz.optimization.topology import TopologyManager, compute_overlap_gradien
 
 # --- 1. Simulation Setup ---
 W = H = 7*µm
-WG_W = 0.5*µm
+WG_W = 0.55*µm
 WL = 1.55*µm
-N_CORE, N_CLAD = 2.25, 1.444
-DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=20)
-STEPS = 20
-MAT_PENALTY = 0.1      # Target core material fraction (0.0 to 1.0)
-PENALTY_STRENGTH = 0 # Scaling factor for the penalty gradient
+N_CORE, N_CLAD = 2.25, 1.444 # Si3N4, SiO2
+DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=20) # reduce to 9 for faster simulation
+STEPS = 50 # reduce to 40 for faster optimization
+MAT_PENALTY = 0.3      # Target core material fraction (0.0 to 1.0)
+PENALTY_STRENGTH = 1 # Scaling factor for the penalty gradient
 
 # Design & Materials
 design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
@@ -25,8 +25,11 @@ design += opt_region
 # design.show()
 
 # Sources
-time = np.arange(0, 30*WL/LIGHT_SPEED, DT)
-signal = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time[-1])
+time = np.arange(0, 15*WL/LIGHT_SPEED, DT)
+signal = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=3.5*WL/LIGHT_SPEED, t_max=time[-1]/2)
+
+from beamz.devices.sources.signals import plot_signal
+plot_signal(signal, time, save_path='signal.png')
 src_fwd = ModeSource(None, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+x")
 src_adj = ModeSource(None, center=(W/2, 1.0*µm), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+y")
 
@@ -39,12 +42,12 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    learning_rate=0.1,
-    filter_radius=0.25*µm,       # Physical units: Controls minimum feature size AND boundary smoothness
+    learning_rate=0.015,
+    filter_radius=0.3*µm,       # Physical units: Controls minimum feature size AND boundary smoothness
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
     beta_schedule=(1.0, 20.0),
-    filter_type='conic',         # Use conic filter for geometric constraints
+    filter_type="conic",         # Use conic filter for geometric constraints
 )
 
 print(f"Starting Topology Optimization ({STEPS} steps)...")
@@ -193,13 +196,13 @@ wavelengths = np.linspace(1.2*µm, 1.8*µm, 12)
 sweep_transmission = []
 
 # Use extended time to ensure full pulse transmission for all runs
-time_sweep = np.arange(0, 60*WL/LIGHT_SPEED, DT)
+time_sweep = np.arange(0, 15*WL/LIGHT_SPEED, DT)
 
 for i, wl_val in enumerate(wavelengths):
     print(f"Simulating Wavelength: {wl_val/µm:.3f} µm...", end="\r")
     
     # Create signal for this specific wavelength
-    signal_sweep = ramped_cosine(time_sweep, 1, LIGHT_SPEED/wl_val, ramp_duration=6*wl_val/LIGHT_SPEED, t_max=time_sweep[-1])
+    signal_sweep = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=3.5*WL/LIGHT_SPEED, t_max=time[-1]/2)
     
     # Create source
     src_sweep = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=wl_val, pol="tm", signal=signal_sweep, direction="+x")
@@ -241,7 +244,7 @@ print(f"Spectrum plot saved to transmission_spectrum.png")
 # --- 5. Final Visualization (Center Wavelength) ---
 # Re-run simulation at center wavelength (1.55) to generate field plot
 print("\n--- Generating Final Field Plot (1.55 µm) ---")
-signal_final = ramped_cosine(time_sweep, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time_sweep[-1])
+signal_final = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=3.5*WL/LIGHT_SPEED, t_max=time[-1]/2)
 src_final = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal_final, direction="+x")
 src_final.initialize(grid.permittivity, DX)
 
