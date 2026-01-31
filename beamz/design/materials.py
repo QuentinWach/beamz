@@ -61,6 +61,15 @@ class CustomMaterial:
         self.permeability_grid = permeability_grid
         self.conductivity_grid = conductivity_grid
 
+        # Validate bounds if grid is provided
+        if bounds is not None:
+            if len(bounds) != 2:
+                raise ValueError(f"bounds must be ((x_min, x_max), (y_min, y_max)), got {bounds}")
+            if bounds[0][0] >= bounds[0][1]:
+                raise ValueError(f"Invalid x bounds: x_min={bounds[0][0]} >= x_max={bounds[0][1]}")
+            if bounds[1][0] >= bounds[1][1]:
+                raise ValueError(f"Invalid y bounds: y_min={bounds[1][0]} >= y_max={bounds[1][1]}")
+
         # Spatial bounds for grid interpolation
         self.bounds = bounds
         self.interpolation = interpolation

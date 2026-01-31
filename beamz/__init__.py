@@ -36,7 +36,12 @@ from beamz.devices.sources.mode import solve_modes
 from beamz.devices.sources.signals import plot_signal, ramped_cosine
 
 # from beamz.optimization.optimizers import Optimizer  # TODO: Re-enable when optimizers module is created
-from beamz.optimization.topology import compute_overlap_gradient
+from beamz.optimization.topology import (
+    TopologyManager,
+    compute_overlap_gradient,
+    create_optimization_mask,
+)
+from beamz.optimization.autodiff import transform_density
 from beamz.simulation.boundaries import ABC, PML, Boundary, PeriodicBoundary
 from beamz.simulation.core import Simulation
 
@@ -104,7 +109,10 @@ _exports = {
     "PeriodicBoundary": PeriodicBoundary,
     # Optimization
     # 'Optimizer': Optimizer,  # TODO: Re-enable when optimizers module is created
+    "TopologyManager": TopologyManager,
     "compute_overlap_gradient": compute_overlap_gradient,
+    "create_optimization_mask": create_optimization_mask,
+    "transform_density": transform_density,
     # UI helpers
     "display_header": display_header,
     "display_status": display_status,
