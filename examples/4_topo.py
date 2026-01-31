@@ -8,8 +8,8 @@ W = H = 7*µm
 WG_W = 0.55*µm
 WL = 1.55*µm
 N_CORE, N_CLAD = 2.25, 1.444 # Si3N4, SiO2
-DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=20) # reduce to 9 for faster simulation
-STEPS = 50 # reduce to 40 for faster optimization
+DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=9) # reduce to 9 for faster simulation
+STEPS = 35 # reduce to 40 for faster optimization
 MAT_PENALTY = 0.3      # Target core material fraction (0.0 to 1.0)
 PENALTY_STRENGTH = 1 # Scaling factor for the penalty gradient
 
@@ -21,7 +21,6 @@ design += Rectangle(position=(W/2-WG_W/2, 0), width=WG_W, height=H/2, material=M
 # Optimization Region (added as placeholder)
 opt_region = Rectangle(position=(W/2-1.5*µm, H/2-1.5*µm), width=3*µm, height=3*µm, material=Material(permittivity=N_CORE**2))
 design += opt_region
-
 # design.show()
 
 # Sources
@@ -288,3 +287,41 @@ plt.ylabel('y (grid cells)')
 plt.tight_layout()
 plt.savefig('final_energy_flow.png', dpi=150)
 print("Energy flow map saved to final_energy_flow.png")
+
+# --- 6. Save Design Data & Export as GDS ---
+
+# Save the final permittivity grid as a numpy array for later use
+np.savez('topo_bend_data.npz',
+         permittivity=grid.permittivity,
+         dx=DX,
+         width=W,
+         height=H,
+         n_core=N_CORE,
+         n_clad=N_CLAD)
+print("Design data saved to topo_bend_data.npz")
+
+print("\n--- Exporting Optimized Design to GDS ---")
+from beamz.design.io import export_gds
+
+# Build export design with original waveguide structures
+export_design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
+export_design += Rectangle(position=(0, H/2-WG_W/2), width=W/2, height=WG_W,
+                           material=Material(permittivity=N_CORE**2))
+export_design += Rectangle(position=(W/2-WG_W/2, 0), width=WG_W, height=H/2,
+                           material=Material(permittivity=N_CORE**2))
+
+# Extract optimized region geometry from the permittivity grid as contour polygons
+eps_threshold = (N_CORE**2 + N_CLAD**2) / 2
+fig_temp, ax_temp = plt.subplots()
+cs = ax_temp.contour(grid.permittivity.T, levels=[eps_threshold])
+plt.close(fig_temp)
+
+for seg in cs.allsegs[0]:
+    # Convert grid coordinates to physical coordinates (meters)
+    physical_verts = [(x * DX, y * DX) for x, y in seg]
+    if len(physical_verts) >= 3:
+        export_design += Polygon(vertices=physical_verts,
+                                 material=Material(permittivity=N_CORE**2))
+
+export_gds(export_design, 'topo_bend.gds')
+print("GDS file saved to topo_bend.gds")
