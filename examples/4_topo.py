@@ -301,27 +301,27 @@ np.savez('topo_bend_data.npz',
 print("Design data saved to topo_bend_data.npz")
 
 print("\n--- Exporting Optimized Design to GDS ---")
-from beamz.design.io import export_gds
+import gdspy
 
-# Build export design with original waveguide structures
-export_design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
-export_design += Rectangle(position=(0, H/2-WG_W/2), width=W/2, height=WG_W,
-                           material=Material(permittivity=N_CORE**2))
-export_design += Rectangle(position=(W/2-WG_W/2, 0), width=WG_W, height=H/2,
-                           material=Material(permittivity=N_CORE**2))
+# Pad the permittivity grid with cladding so contours close at boundaries
+# (waveguides that touch the grid edge would produce open contour paths otherwise)
+eps = grid.permittivity
+eps_padded = np.full((eps.shape[0] + 2, eps.shape[1] + 2), N_CLAD**2)
+eps_padded[1:-1, 1:-1] = eps
 
-# Extract optimized region geometry from the permittivity grid as contour polygons
 eps_threshold = (N_CORE**2 + N_CLAD**2) / 2
 fig_temp, ax_temp = plt.subplots()
-cs = ax_temp.contour(grid.permittivity.T, levels=[eps_threshold])
+cs = ax_temp.contour(eps_padded.T, levels=[eps_threshold])
 plt.close(fig_temp)
 
-for seg in cs.allsegs[0]:
-    # Convert grid coordinates to physical coordinates (meters)
-    physical_verts = [(x * DX, y * DX) for x, y in seg]
-    if len(physical_verts) >= 3:
-        export_design += Polygon(vertices=physical_verts,
-                                 material=Material(permittivity=N_CORE**2))
+lib = gdspy.GdsLibrary(unit=1e-6, precision=1e-9)
+cell = lib.new_cell("main")
 
-export_gds(export_design, 'topo_bend.gds')
-print("GDS file saved to topo_bend.gds")
+for seg in cs.allsegs[0]:
+    # Offset by -1 for padding, then convert grid coords to microns
+    verts_um = [((x - 1) * DX * 1e6, (y - 1) * DX * 1e6) for x, y in seg]
+    if len(verts_um) >= 3:
+        cell.add(gdspy.Polygon(verts_um, layer=0))
+
+lib.write_gds('topo_bend.gds')
+print(f"GDS file saved to topo_bend.gds ({len(cell.polygons)} polygons)")
