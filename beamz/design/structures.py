@@ -338,6 +338,14 @@ class Rectangle(Polygon):
         optimize=False,
         z=None,
     ):
+        # Validate dimensions
+        if width <= 0:
+            raise ValueError(f"width must be positive, got {width}")
+        if height <= 0:
+            raise ValueError(f"height must be positive, got {height}")
+        if depth < 0:
+            raise ValueError(f"depth must be non-negative, got {depth}")
+
         if z is not None:
             if len(position) == 2:
                 position = (position[0], position[1], z)
@@ -437,6 +445,12 @@ class Circle(Polygon):
         depth=0,
         z=0,
     ):
+        # Validate dimensions
+        if radius <= 0:
+            raise ValueError(f"radius must be positive, got {radius}")
+        if depth < 0:
+            raise ValueError(f"depth must be non-negative, got {depth}")
+
         if len(position) == 2:
             position = (position[0], position[1], 0.0)
         elif len(position) == 3:
@@ -516,6 +530,16 @@ class Ring(Polygon):
         depth=0,
         z=None,
     ):
+        # Validate dimensions
+        if inner_radius <= 0:
+            raise ValueError(f"inner_radius must be positive, got {inner_radius}")
+        if outer_radius <= inner_radius:
+            raise ValueError(
+                f"outer_radius ({outer_radius}) must be greater than inner_radius ({inner_radius})"
+            )
+        if depth < 0:
+            raise ValueError(f"depth must be non-negative, got {depth}")
+
         if z is not None:
             if len(position) == 2:
                 position = (position[0], position[1], z)
@@ -831,6 +855,10 @@ class Sphere(Polygon):
         self, position=(0, 0, 0), radius=1, material=None, color=None, optimize=False
     ):
         """Create a 3D sphere at position (x,y,z) with specified radius."""
+        # Validate dimensions
+        if radius <= 0:
+            raise ValueError(f"radius must be positive, got {radius}")
+
         if len(position) == 2:
             position = (position[0], position[1], 0.0)
         super().__init__(

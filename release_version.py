@@ -29,23 +29,15 @@ def update_version_in_file(filepath, version, pattern, replacement_template):
 def update_version(version):
     """Update version in all relevant files."""
     changes = []
-    
-    # Update setup.py
-    changes.append(update_version_in_file(
-        "setup.py",
-        version,
-        r'version="[^"]+"',
-        'version="{version}"'
-    ))
-    
-    # Update pyproject.toml
+
+    # Update pyproject.toml (primary source of truth)
     changes.append(update_version_in_file(
         "pyproject.toml",
         version,
         r'version = "[^"]+"',
         'version = "{version}"'
     ))
-    
+
     # Update beamz/__init__.py
     changes.append(update_version_in_file(
         "beamz/__init__.py",
@@ -53,16 +45,16 @@ def update_version(version):
         r'__version__ = "[^"]+"',
         '__version__ = "{version}"'
     ))
-    
+
     return any(changes)
 
 def commit_version_changes(version):
     """Commit the version changes to git."""
-    files_to_add = ["setup.py", "pyproject.toml", "beamz/__init__.py"]
+    files_to_add = ["pyproject.toml", "beamz/__init__.py"]
     for f in files_to_add:
         if os.path.exists(f):
             subprocess.run(["git", "add", f], check=True)
-    
+
     subprocess.run(["git", "commit", "-m", f"Bump version to {version}"], check=True)
     print(f"Committed version changes for v{version}")
 

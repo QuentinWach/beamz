@@ -132,7 +132,7 @@ class Fields:
                 if "sigma_z" in self.pml_data:
                     sigma_pml = sigma_pml + self.pml_data["sigma_z"]
 
-            total_sigma = base_sigma + sigma_pml
+            total_sigma = jnp.maximum(base_sigma, sigma_pml)
         else:
             total_sigma = base_sigma
 
@@ -363,7 +363,7 @@ class Fields:
 
     def update(self, dt, source_j=None, source_m=None):
         """Execute one FDTD time step with optional source injection."""
-        if not self.permittivity.ndim == 3:  # 2D
+        if self.permittivity.ndim == 2:  # 2D
             self._update_2d(dt, source_j=source_j, source_m=source_m)
         else:  # 3D
             self._update_3d(dt, source_j=source_j, source_m=source_m)
