@@ -22,11 +22,74 @@ def _ensure_tidy3d():
 
             tidy3d = _tidy3d
             _compute_modes = _cm
+
+            # Monkey-patch tidy3d derivatives to avoid scipy FutureWarning:
+            # "Input has data type int64, but the output has been cast to float64"
+            _apply_tidy3d_diags_patch()
         except ImportError:
             raise ImportError(
                 "tidy3d is required for mode solving. "
                 "Install it with: pip install tidy3d"
             )
+
+
+def _apply_tidy3d_diags_patch():
+    """Patch tidy3d's derivatives to use float diagonals in sp.diags (avoids scipy FutureWarning)."""
+    import scipy.sparse as sp
+    import tidy3d.components.mode.derivatives as _deriv
+
+    def _make_dxf(dls, shape, pmc):
+        Nx, Ny = shape
+        if Nx == 1:
+            return sp.csr_matrix((Ny, Ny))
+        dxf = sp.csr_matrix(sp.diags([-1.0, 1.0], [0, 1], shape=(Nx, Nx)))
+        if not pmc:
+            dxf[0, 0] = 0.0
+        dxf = sp.diags(1 / dls).dot(dxf)
+        dxf = sp.kron(dxf, sp.eye(Ny))
+        return dxf
+
+    def _make_dxb(dls, shape, pmc):
+        Nx, Ny = shape
+        if Nx == 1:
+            return sp.csr_matrix((Ny, Ny))
+        dxb = sp.csr_matrix(sp.diags([1.0, -1.0], [0, -1], shape=(Nx, Nx)))
+        if pmc:
+            dxb[0, 0] = 2.0
+        else:
+            dxb[0, 0] = 0.0
+        dxb = sp.diags(1 / dls).dot(dxb)
+        dxb = sp.kron(dxb, sp.eye(Ny))
+        return dxb
+
+    def _make_dyf(dls, shape, pmc):
+        Nx, Ny = shape
+        if Ny == 1:
+            return sp.csr_matrix((Nx, Nx))
+        dyf = sp.csr_matrix(sp.diags([-1.0, 1.0], [0, 1], shape=(Ny, Ny)))
+        if not pmc:
+            dyf[0, 0] = 0.0
+        dyf = sp.diags(1 / dls).dot(dyf)
+        dyf = sp.kron(sp.eye(Nx), dyf)
+        return dyf
+
+    def _make_dyb(dls, shape, pmc):
+        Nx, Ny = shape
+        if Ny == 1:
+            return sp.csr_matrix((Nx, Nx))
+        dyb = sp.csr_matrix(sp.diags([1.0, -1.0], [0, -1], shape=(Ny, Ny)))
+        if pmc:
+            dyb[0, 0] = 2.0
+        else:
+            dyb[0, 0] = 0.0
+        dyb = sp.diags(1 / dls).dot(dyb)
+        dyb = sp.kron(sp.eye(Nx), dyb)
+        return dyb
+
+    _deriv.make_dxf = _make_dxf
+    _deriv.make_dxb = _make_dxb
+    _deriv.make_dyf = _make_dyf
+    _deriv.make_dyb = _make_dyb
 
 
 ModeTupleType = namedtuple("Mode", ["neff", "Ex", "Ey", "Ez", "Hx", "Hy", "Hz"])

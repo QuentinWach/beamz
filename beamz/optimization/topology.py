@@ -36,23 +36,21 @@ class TopologyManager:
         optimizer: str = "Adam",
         learning_rate: float = 0.1,
         filter_radius: float = 0.0,
-        simple_smooth_radius: float = 0.0,
         projection_eta: float = 0.5,
         beta_schedule: tuple[float, float] = (1.0, 20.0),
         eps_min: float = 1.0,
         eps_max: float = 12.0,
         resolution: float = None,
-        filter_type: str = "conic",  # 'blur', 'morphological', or 'conic'
+        filter_type: str = "conic",  # 'conic' or 'morphological'
         morphology_operation: str = "openclose",  # 'opening', 'closing', 'openclose'
         **kwargs,
     ):
         """
         Args:
-            filter_radius: Primary filter radius in physical units (e.g. microns).
-                           For 'conic', this enforces minimum feature size.
-            simple_smooth_radius: Optional post-filter smoothing radius in physical units.
-                                  Use to remove grid artifacts (e.g. 0.02 * um).
-            filter_type: 'conic' (geometric constraints), 'morphological', or 'blur'.
+            filter_radius: Filter radius in physical units (e.g. microns).
+                           Controls minimum feature size AND boundary smoothness.
+                           Recommended: 0.25-0.35 µm for smooth, rounded structures.
+            filter_type: 'conic' (recommended, geometric constraints) or 'morphological'.
             morphology_operation: 'opening', 'closing', or 'openclose' (for morphological filter).
         """
         self.design = design
@@ -80,7 +78,6 @@ class TopologyManager:
 
         # Parameters
         self.filter_radius = filter_radius
-        self.simple_smooth_radius = simple_smooth_radius
         self.projection_eta = projection_eta
         self.beta_start, self.beta_end = beta_schedule
         self.eps_min = eps_min
@@ -99,9 +96,6 @@ class TopologyManager:
         # Convert filter radius to cells
         self.filter_radius_cells = (
             int(round(filter_radius / self.resolution)) if self.resolution else 0
-        )
-        self.smooth_radius_cells = (
-            int(round(simple_smooth_radius / self.resolution)) if self.resolution else 0
         )
 
         # Initialize density parameters (0.5 inside mask)
@@ -146,7 +140,6 @@ class TopologyManager:
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
             fixed_structure_mask=fixed_jax,
-            post_smooth_radius=self.smooth_radius_cells,
         )
         return np.array(p_jax)
 
@@ -190,7 +183,6 @@ class TopologyManager:
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
             fixed_structure_mask=fixed_jax,
-            post_smooth_radius=self.smooth_radius_cells,
         )
         grad_param = np.array(grad_param_jax)
 
