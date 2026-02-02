@@ -1,7 +1,7 @@
 """
 WDM Demultiplexer — Topology Optimization Example
 ===================================================
-Optimizes a compact device that splits 1300 nm and 1500 nm light from a single
+Optimizes a compact device that splits 1400 nm and 1600 nm light from a single
 input waveguide into two separate output waveguides using the adjoint method
 with streaming (memory-efficient) gradient computation.
 
@@ -10,12 +10,12 @@ Device layout (not to scale):
         ┌──────────────────────────────────┐
         │           PML border             │
         │  ┌────────────────────────────┐  │
-        │  │                   ┌──── out1 (1300 nm)
+        │  │                   ┌──── out1 (1400 nm)
         │  │   ┌────────────┐ │        │  │
   in ───┼──┼───┤ design     ├─┤        │  │
         │  │   │ region     │ │        │  │
         │  │   └────────────┘ │        │  │
-        │  │                   └──── out2 (1500 nm)
+        │  │                   └──── out2 (1600 nm)
         │  └────────────────────────────┘  │
         │           PML border             │
         └──────────────────────────────────┘
@@ -32,25 +32,26 @@ from beamz.optimization.topology import (
 )
 
 # ── 1. Parameters ────────────────────────────────────────────────────────────
-W = 10 * µm                # Domain width
-H = 6 * µm                 # Domain height
+W = 8 * µm                 # Domain width
+H = 5.5 * µm               # Domain height
 WG_W = 0.5 * µm            # Waveguide width
-WL_1 = 1.30 * µm           # Channel 1 wavelength
-WL_2 = 1.50 * µm           # Channel 2 wavelength
+WL_1 = 1.40 * µm           # Channel 1 wavelength
+WL_2 = 1.60 * µm           # Channel 2 wavelength
 N_CORE = 2.0               # Si3N4 refractive index
 N_CLAD = 1.444             # SiO2 refractive index
 PML_THICK = 1.0 * µm       # PML thickness
 
 # Use the shorter wavelength for resolution (stricter Nyquist)
-DX, DT = calc_optimal_fdtd_params(WL_1, N_CORE, points_per_wavelength=20)
-STEPS = 50                  # Optimization steps (reduce for faster testing)
-MAT_PENALTY = 0.3           # Target core material fraction
-PENALTY_STRENGTH = 1.0      # Penalty gradient scaling
+DX, DT = calc_optimal_fdtd_params(WL_1, N_CORE, points_per_wavelength=9)
+STEPS = 80                  # Optimization steps (reduce for faster testing)
+XTALK_WEIGHT = 0.5          # Cross-talk suppression weight in adjoint
 FIELD_SUB = 2               # Field subsampling factor
+MAT_PENALTY = 0.3           # Target core material fraction (0.0 to 1.0)
+PENALTY_STRENGTH = 1.0      # Scaling factor for the penalty gradient
 
 # Output waveguide vertical positions
-OUT1_Y = H / 2 + 1.0 * µm  # Upper output (1300 nm)
-OUT2_Y = H / 2 - 1.0 * µm  # Lower output (1500 nm)
+OUT1_Y = H / 2 + 0.9 * µm  # Upper output (1400 nm)
+OUT2_Y = H / 2 - 0.9 * µm  # Lower output (1600 nm)
 
 # ── 2. Design ────────────────────────────────────────────────────────────────
 clad_mat = Material(permittivity=N_CLAD**2)
@@ -61,39 +62,39 @@ design = Design(width=W, height=H, material=clad_mat)
 # Input waveguide (left side, vertically centred)
 design += Rectangle(
     position=(0, H / 2 - WG_W / 2),
-    width=W / 2 - 1.5 * µm,
+    width=W / 2 - 2.0 * µm,
     height=WG_W,
     material=core_mat,
 )
 
-# Output waveguide 1 — upper right (1300 nm channel)
+# Output waveguide 1 — upper right (1400 nm channel)
 design += Rectangle(
-    position=(W / 2 + 1.5 * µm, OUT1_Y - WG_W / 2),
-    width=W / 2 - 1.5 * µm,
+    position=(W / 2 + 2.0 * µm, OUT1_Y - WG_W / 2),
+    width=W / 2 - 2.0 * µm,
     height=WG_W,
     material=core_mat,
 )
 
-# Output waveguide 2 — lower right (1500 nm channel)
+# Output waveguide 2 — lower right (1600 nm channel)
 design += Rectangle(
-    position=(W / 2 + 1.5 * µm, OUT2_Y - WG_W / 2),
-    width=W / 2 - 1.5 * µm,
+    position=(W / 2 + 2.0 * µm, OUT2_Y - WG_W / 2),
+    width=W / 2 - 2.0 * µm,
     height=WG_W,
     material=core_mat,
 )
 
 # Optimization (design) region
 opt_region = Rectangle(
-    position=(W / 2 - 1.5 * µm, H / 2 - 2.0 * µm),
-    width=3.0 * µm,
-    height=4.0 * µm,
+    position=(W / 2 - 2.0 * µm, H / 2 - 1.5 * µm),
+    width=4.0 * µm,
+    height=3.0 * µm,
     material=core_mat,
 )
 design += opt_region
 
 # ── 3. Sources & monitors helpers ────────────────────────────────────────────
 # Simulation time — use longest wavelength for period estimate
-sim_duration = 15 * WL_2 / LIGHT_SPEED
+sim_duration = 30 * WL_2 / LIGHT_SPEED
 time_arr = np.arange(0, sim_duration, DT)
 
 
@@ -102,7 +103,7 @@ def _make_signal(wl):
     return ramped_cosine(
         time_arr, 1.0, LIGHT_SPEED / wl,
         ramp_duration=3.5 * wl / LIGHT_SPEED,
-        t_max=time_arr[-1] / 2,
+        t_max=time_arr[-1] / 2.5,
     )
 
 
@@ -114,19 +115,21 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    learning_rate=0.015,
-    filter_radius=0.3 * µm,
+    learning_rate=0.02,
+    filter_radius=0.1 * µm,
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
-    beta_schedule=(1.0, 20.0),
+    beta_schedule=(1.0, 16.0),
     filter_type="conic",
 )
 
 base_eps = grid.permittivity.copy()
 
 # History tracking
-trans_history_1300 = []
-trans_history_1500 = []
+trans_history_1400 = []
+trans_history_1600 = []
+xtalk_history_1400 = []
+xtalk_history_1600 = []
 
 print(f"WDM Demux Optimization — {STEPS} steps, grid {grid.permittivity.shape}")
 print(f"  Channel 1: {WL_1/µm:.2f} µm → upper output")
@@ -139,7 +142,7 @@ for step in range(STEPS):
     grid.permittivity[:] = base_eps
     grid.permittivity[mask] = opt.eps_min + phys_density[mask] * (opt.eps_max - opt.eps_min)
 
-    # ── Channel 1: 1300 nm ──────────────────────────────────────────────────
+    # ── Channel 1: 1400 nm ──────────────────────────────────────────────────
     sig_1 = _make_signal(WL_1)
 
     # Forward source: +x from left input
@@ -161,36 +164,48 @@ for step in range(STEPS):
         end=(W - 1.5 * µm, OUT1_Y + WG_W * 2),
         accumulate_power=True, record_fields=False,
     )
+    mon_xtalk_1 = Monitor(
+        design=grid,
+        start=(W - 1.5 * µm, OUT2_Y - WG_W * 2),
+        end=(W - 1.5 * µm, OUT2_Y + WG_W * 2),
+        accumulate_power=True, record_fields=False,
+    )
 
     # Forward sim
     sim_fwd_1 = Simulation(
-        grid, [src_fwd_1, mon_in_1, mon_out1_1],
+        grid, [src_fwd_1, mon_in_1, mon_out1_1, mon_xtalk_1],
         [PML(edges='all', thickness=PML_THICK)],
         time=time_arr, resolution=DX,
     )
     res_fwd_1 = sim_fwd_1.run(save_fields=['Ez'], field_subsample=FIELD_SUB)
-    fwd_ez_1300 = [np.array(f) for f in res_fwd_1['fields']['Ez']]
+    fwd_ez_1400 = [np.array(f) for f in res_fwd_1['fields']['Ez']]
 
     in_energy_1 = np.abs(np.sum(mon_in_1.power_history) * DT)
     out_energy_1 = np.abs(np.sum(mon_out1_1.power_history) * DT)
     trans_1 = (out_energy_1 / in_energy_1 * 100.0) if in_energy_1 > 0 else 0.0
+    xtalk_energy_1 = np.abs(np.sum(mon_xtalk_1.power_history) * DT)
+    xtalk_1 = (xtalk_energy_1 / in_energy_1 * 100.0) if in_energy_1 > 0 else 0.0
 
-    # Adjoint source: -x from upper-right output
+    # Adjoint: maximize correct output (OUT1), suppress wrong output (OUT2)
     src_adj_1 = ModeSource(
         grid, center=(W - 1.0 * µm, OUT1_Y), width=WG_W * 4,
         wavelength=WL_1, pol="tm", signal=sig_1, direction="-x",
     )
+    src_adj_1_xtalk = ModeSource(
+        grid, center=(W - 1.0 * µm, OUT2_Y), width=WG_W * 4,
+        wavelength=WL_1, pol="tm", signal=-XTALK_WEIGHT * sig_1, direction="-x",
+    )
     sim_adj_1 = Simulation(
-        grid, [src_adj_1],
+        grid, [src_adj_1, src_adj_1_xtalk],
         [PML(edges='all', thickness=PML_THICK)],
         time=time_arr, resolution=DX,
     )
-    grad_1300 = run_adjoint_and_compute_gradient(
-        sim_adj_1, fwd_ez_1300, field_component='Ez', field_subsample=FIELD_SUB,
+    grad_1400 = run_adjoint_and_compute_gradient(
+        sim_adj_1, fwd_ez_1400, field_component='Ez', field_subsample=FIELD_SUB,
     )
-    assert len(fwd_ez_1300) == 0, "forward history should be emptied"
+    assert len(fwd_ez_1400) == 0, "forward history should be emptied"
 
-    # ── Channel 2: 1500 nm ──────────────────────────────────────────────────
+    # ── Channel 2: 1600 nm ──────────────────────────────────────────────────
     sig_2 = _make_signal(WL_2)
 
     src_fwd_2 = ModeSource(
@@ -209,54 +224,81 @@ for step in range(STEPS):
         end=(W - 1.5 * µm, OUT2_Y + WG_W * 2),
         accumulate_power=True, record_fields=False,
     )
+    mon_xtalk_2 = Monitor(
+        design=grid,
+        start=(W - 1.5 * µm, OUT1_Y - WG_W * 2),
+        end=(W - 1.5 * µm, OUT1_Y + WG_W * 2),
+        accumulate_power=True, record_fields=False,
+    )
 
     sim_fwd_2 = Simulation(
-        grid, [src_fwd_2, mon_in_2, mon_out2_2],
+        grid, [src_fwd_2, mon_in_2, mon_out2_2, mon_xtalk_2],
         [PML(edges='all', thickness=PML_THICK)],
         time=time_arr, resolution=DX,
     )
     res_fwd_2 = sim_fwd_2.run(save_fields=['Ez'], field_subsample=FIELD_SUB)
-    fwd_ez_1500 = [np.array(f) for f in res_fwd_2['fields']['Ez']]
+    fwd_ez_1600 = [np.array(f) for f in res_fwd_2['fields']['Ez']]
 
     in_energy_2 = np.abs(np.sum(mon_in_2.power_history) * DT)
     out_energy_2 = np.abs(np.sum(mon_out2_2.power_history) * DT)
     trans_2 = (out_energy_2 / in_energy_2 * 100.0) if in_energy_2 > 0 else 0.0
+    xtalk_energy_2 = np.abs(np.sum(mon_xtalk_2.power_history) * DT)
+    xtalk_2 = (xtalk_energy_2 / in_energy_2 * 100.0) if in_energy_2 > 0 else 0.0
 
-    # Adjoint source: -x from lower-right output
+    # Adjoint: maximize correct output (OUT2), suppress wrong output (OUT1)
     src_adj_2 = ModeSource(
         grid, center=(W - 1.0 * µm, OUT2_Y), width=WG_W * 4,
         wavelength=WL_2, pol="tm", signal=sig_2, direction="-x",
     )
+    src_adj_2_xtalk = ModeSource(
+        grid, center=(W - 1.0 * µm, OUT1_Y), width=WG_W * 4,
+        wavelength=WL_2, pol="tm", signal=-XTALK_WEIGHT * sig_2, direction="-x",
+    )
     sim_adj_2 = Simulation(
-        grid, [src_adj_2],
+        grid, [src_adj_2, src_adj_2_xtalk],
         [PML(edges='all', thickness=PML_THICK)],
         time=time_arr, resolution=DX,
     )
-    grad_1500 = run_adjoint_and_compute_gradient(
-        sim_adj_2, fwd_ez_1500, field_component='Ez', field_subsample=FIELD_SUB,
+    grad_1600 = run_adjoint_and_compute_gradient(
+        sim_adj_2, fwd_ez_1600, field_component='Ez', field_subsample=FIELD_SUB,
     )
-    assert len(fwd_ez_1500) == 0, "forward history should be emptied"
+    assert len(fwd_ez_1600) == 0, "forward history should be emptied"
 
     # ── Combine gradients ───────────────────────────────────────────────────
-    grad_total = np.array(grad_1300) + np.array(grad_1500)
+    # Normalize each channel's gradient so both contribute equally in
+    # magnitude; the adjoint overlap scale varies with wavelength.
+    g1 = np.array(grad_1400, dtype=float)
+    g2 = np.array(grad_1600, dtype=float)
+    g1_max = np.max(np.abs(g1))
+    g2_max = np.max(np.abs(g2))
+    if g1_max > 0:
+        g1 /= g1_max
+    if g2_max > 0:
+        g2 /= g2_max
 
-    # Material penalty
-    current_density = np.mean(phys_density[mask])
-    grad_penalty = PENALTY_STRENGTH * (current_density - MAT_PENALTY)
-    grad_total[mask] -= grad_penalty
+    # Adaptive weighting: the worse-performing channel gets more gradient
+    # weight so both channels are pushed toward 100% together.
+    deficit_1 = max(100.0 - trans_1, 1.0)
+    deficit_2 = max(100.0 - trans_2, 1.0)
+    w1 = deficit_1 / (deficit_1 + deficit_2)
+    w2 = deficit_2 / (deficit_1 + deficit_2)
+    grad_total = w1 * g1 + w2 * g2
 
     # Step optimiser
     max_update = opt.apply_gradient(grad_total, beta)
 
     # Track
-    trans_history_1300.append(trans_1)
-    trans_history_1500.append(trans_2)
+    trans_history_1400.append(trans_1)
+    trans_history_1600.append(trans_2)
+    xtalk_history_1400.append(xtalk_1)
+    xtalk_history_1600.append(xtalk_2)
 
     mat_frac = np.mean(phys_density[mask])
     print(
         f" Step {step+1}/{STEPS}: "
-        f"T1300={trans_1:.1f}%  T1500={trans_2:.1f}%  "
-        f"Mat={mat_frac:.1%}  MaxUp={max_update:.2e}"
+        f"T1400={trans_1:.1f}%  T1600={trans_2:.1f}%  "
+        f"X1400={xtalk_1:.1f}%  X1600={xtalk_2:.1f}%  "
+        f"Mat={mat_frac:.1%}"
     )
 
     # Periodic permittivity snapshot
@@ -267,17 +309,19 @@ for step in range(STEPS):
         )
 
 print(f"\nOptimization complete.")
-print(f"  Final T(1300 nm) = {trans_history_1300[-1]:.1f}%")
-print(f"  Final T(1500 nm) = {trans_history_1500[-1]:.1f}%")
+print(f"  Final T(1400 nm) = {trans_history_1400[-1]:.1f}%  (cross-talk {xtalk_history_1400[-1]:.1f}%)")
+print(f"  Final T(1600 nm) = {trans_history_1600[-1]:.1f}%  (cross-talk {xtalk_history_1600[-1]:.1f}%)")
 
 # ── 6. Transmission vs step plot ─────────────────────────────────────────────
 plt.figure(figsize=(10, 6))
 steps_arr = np.arange(1, STEPS + 1)
-plt.plot(steps_arr, trans_history_1300, 'b-o', markersize=3, label='1300 nm (upper)')
-plt.plot(steps_arr, trans_history_1500, 'r-s', markersize=3, label='1500 nm (lower)')
+plt.plot(steps_arr, trans_history_1400, 'b-o', markersize=3, label='1400 nm → upper (T)')
+plt.plot(steps_arr, trans_history_1600, 'r-s', markersize=3, label='1600 nm → lower (T)')
+plt.plot(steps_arr, xtalk_history_1400, 'b--', markersize=2, alpha=0.5, label='1400 nm → lower (xtalk)')
+plt.plot(steps_arr, xtalk_history_1600, 'r--', markersize=2, alpha=0.5, label='1600 nm → upper (xtalk)')
 plt.xlabel('Optimization Step')
 plt.ylabel('Transmission (%)')
-plt.title('WDM Demux — Transmission vs Optimization Step')
+plt.title('WDM Demux — Transmission & Cross-talk vs Optimization Step')
 plt.ylim(0, 100)
 plt.legend()
 plt.grid(True, alpha=0.3)
@@ -287,12 +331,12 @@ print("Saved demux_transmission_vs_step.png")
 plt.close()
 
 # ── 7. Wavelength sweep ─────────────────────────────────────────────────────
-print("\n--- Wavelength Sweep (1200–1600 nm) ---")
-wavelengths = np.linspace(1.2 * µm, 1.6 * µm, 15)
-sweep_trans_out1 = []   # upper output (target: 1300 nm)
-sweep_trans_out2 = []   # lower output (target: 1500 nm)
+print("\n--- Wavelength Sweep (1300–1700 nm) ---")
+wavelengths = np.linspace(1.3 * µm, 1.7 * µm, 15)
+sweep_trans_out1 = []   # upper output (target: 1400 nm)
+sweep_trans_out2 = []   # lower output (target: 1600 nm)
 
-time_sweep = np.arange(0, 15 * WL_2 / LIGHT_SPEED, DT)
+time_sweep = np.arange(0, 20 * WL_2 / LIGHT_SPEED, DT)
 
 for i, wl in enumerate(wavelengths):
     print(f"  {wl/µm:.3f} µm ...", end="\r")
@@ -346,8 +390,8 @@ print("\nSweep complete.")
 
 # Spectrum plot
 plt.figure(figsize=(10, 6))
-plt.plot(wavelengths / µm, sweep_trans_out1, 'b-o', linewidth=2, label='Upper output (1300 nm target)')
-plt.plot(wavelengths / µm, sweep_trans_out2, 'r-s', linewidth=2, label='Lower output (1500 nm target)')
+plt.plot(wavelengths / µm, sweep_trans_out1, 'b-o', linewidth=2, label='Upper output (1400 nm target)')
+plt.plot(wavelengths / µm, sweep_trans_out2, 'r-s', linewidth=2, label='Lower output (1600 nm target)')
 plt.axvline(WL_1 / µm, color='blue', linestyle='--', alpha=0.4)
 plt.axvline(WL_2 / µm, color='red', linestyle='--', alpha=0.4)
 plt.xlabel('Wavelength (µm)')
@@ -362,7 +406,7 @@ print("Saved demux_spectrum.png")
 plt.close()
 
 # ── 8. Energy flow maps at design wavelengths ────────────────────────────────
-for wl_label, wl_val in [("1300nm", WL_1), ("1500nm", WL_2)]:
+for wl_label, wl_val in [("1400nm", WL_1), ("1600nm", WL_2)]:
     print(f"\n--- Energy flow map at {wl_label} ---")
     sig_ef = ramped_cosine(
         time_sweep, 1.0, LIGHT_SPEED / wl_val,
