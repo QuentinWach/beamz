@@ -30,30 +30,49 @@ params = ThermalParams(
     tol=1e-6,
 )
 
+def substrate_and_air_sink_mask(x, y, z):
+    # Bottom substrate sink and top air sink above the heater
+    return (0.0 <= y <= 2.5e-6) or (7.1e-6 <= y <= H)
+
 eps_r, temperature = apply_static_thermal(
     design,
     resolution=0.1e-6,
     params=params,
     heater_mask=heater_mask,
     heater_power=8e12,
+    fixed_temp_mask=substrate_and_air_sink_mask,
+    fixed_temp_value=300.0,
 )
 
-plt.figure(figsize=(7, 3.2))
-plt.imshow(
+# Compute heat flux for visualization (2D)
+dx = 0.1e-6
+grad_y, grad_x = np.gradient(temperature, dx, dx)
+k_grid, _, _, _, _ = design.get_thermal_grids(dx)
+qx = -k_grid * grad_x
+qy = -k_grid * grad_y
+qmag = np.sqrt(qx**2 + qy**2)
+qmag = np.nan_to_num(qmag)
+q_lo, q_hi = np.percentile(qmag, [5, 95])
+q_norm = np.clip((qmag - q_lo) / max(q_hi - q_lo, 1e-12), 0.0, 1.0)
+
+fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12, 3.5))
+extent = (0, W * 1e6, 0, H * 1e6)
+
+im0 = ax0.imshow(
     temperature,
     origin="lower",
-    extent=(0, W * 1e6, 0, H * 1e6),
+    extent=extent,
     cmap="inferno",
 )
-plt.colorbar(label="Temperature (K)")
-plt.title("Heated Chip Cross-Section (Static Solve)")
-plt.xlabel("X (µm)")
-plt.ylabel("Y (µm)")
+fig.colorbar(im0, ax=ax0, label="Temperature (K)")
+ax0.set_title("Heated Chip Cross-Section (Static Solve)")
+ax0.set_xlabel("X (µm)")
+ax0.set_ylabel("Y (µm)")
 
 # Draw structure outlines for clarity
-ax = plt.gca()
+ax = ax0
 outline_color = "white"
-outline_alpha = 0.3
+outline_alpha = 0.5
 structures = [
     (0, 0.0, W, 2.5e-6),     # substrate
     (0, 2.5e-6, W, 2.0e-6),  # silicon
@@ -69,6 +88,45 @@ for x, y, w, h in structures:
             fill=False,
             edgecolor=outline_color,
             linewidth=1.2,
+            alpha=outline_alpha,
+        )
+    )
+
+im1 = ax1.imshow(
+    q_norm,
+    origin="lower",
+    extent=extent,
+    cmap="magma",
+)
+fig.colorbar(im1, ax=ax1, label="Normalized |Heat Flux|")
+ax1.set_title("Heat Flux Magnitude + Direction")
+ax1.set_xlabel("X (µm)")
+ax1.set_ylabel("Y (µm)")
+
+# Quiver for flux direction (subsample for clarity)
+step = 12
+yy, xx = np.mgrid[0:qmag.shape[0]:step, 0:qmag.shape[1]:step]
+ax1.quiver(
+    (xx + 0.5) * dx * 1e6,
+    (yy + 0.5) * dx * 1e6,
+    qx[yy, xx],
+    qy[yy, xx],
+    color="white",
+    alpha=0.6,
+    scale=5e4,
+    width=0.0025,
+)
+
+# Draw structure outlines on flux plot too
+for x, y, w, h in structures:
+    ax1.add_patch(
+        PlotRectangle(
+            (x * 1e6, y * 1e6),
+            w * 1e6,
+            h * 1e6,
+            fill=False,
+            edgecolor=outline_color,
+            linewidth=1.0,
             alpha=outline_alpha,
         )
     )

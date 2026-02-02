@@ -199,10 +199,19 @@ class ThermoPhysics:
 
 
 class StaticThermalSolve:
-    def __init__(self, params: ThermalParams, heater_mask=None, heater_power=0.0):
+    def __init__(
+        self,
+        params: ThermalParams,
+        heater_mask=None,
+        heater_power=0.0,
+        fixed_temp_mask=None,
+        fixed_temp_value=None,
+    ):
         self.params = params
         self.heater_mask = heater_mask
         self.heater_power = heater_power
+        self.fixed_temp_mask = fixed_temp_mask
+        self.fixed_temp_value = fixed_temp_value
 
     def solve(self, design, resolution):
         thermal_grids = design.get_thermal_grids(resolution)
@@ -215,13 +224,19 @@ class StaticThermalSolve:
         T0_grid = self._apply_default(np.asarray(T0_grid), self.params.T0)
 
         Q = self._build_heat_source(design, resolution, k_grid.shape)
+        fixed_mask = self._build_mask(design, resolution, k_grid.shape, self.fixed_temp_mask)
+        fixed_value = self.fixed_temp_value
         T = np.array(T0_grid, dtype=float)
+        if fixed_mask is not None and fixed_value is not None:
+            T = np.where(fixed_mask, fixed_value, T)
 
         max_iters = int(self.params.max_iters)
         tol = float(self.params.tol)
 
         for _ in range(max_iters):
             T_new = self._steady_state_step(T, k_grid, Q, resolution)
+            if fixed_mask is not None and fixed_value is not None:
+                T_new = np.where(fixed_mask, fixed_value, T_new)
             delta = np.max(np.abs(T_new - T))
             T = T_new
             if delta < tol:
@@ -242,8 +257,13 @@ class StaticThermalSolve:
     def _build_heat_source(self, design, resolution, shape):
         if self.heater_mask is None:
             return np.zeros(shape)
+        mask = self._build_mask(design, resolution, shape, self.heater_mask)
+        return self.heater_power * mask
 
-        if callable(self.heater_mask):
+    def _build_mask(self, design, resolution, shape, mask_def):
+        if mask_def is None:
+            return None
+        if callable(mask_def):
             if len(shape) == 2:
                 ny, nx = shape
                 x_centers = (np.arange(nx) + 0.5) * resolution
@@ -251,7 +271,7 @@ class StaticThermalSolve:
                 mask = np.zeros(shape, dtype=bool)
                 for i, y in enumerate(y_centers):
                     for j, x in enumerate(x_centers):
-                        mask[i, j] = bool(self.heater_mask(x, y, 0.0))
+                        mask[i, j] = bool(mask_def(x, y, 0.0))
             else:
                 nz, ny, nx = shape
                 x_centers = (np.arange(nx) + 0.5) * resolution
@@ -261,15 +281,14 @@ class StaticThermalSolve:
                 for k, z in enumerate(z_centers):
                     for i, y in enumerate(y_centers):
                         for j, x in enumerate(x_centers):
-                            mask[k, i, j] = bool(self.heater_mask(x, y, z))
+                            mask[k, i, j] = bool(mask_def(x, y, z))
         else:
-            mask = np.asarray(self.heater_mask).astype(bool)
+            mask = np.asarray(mask_def).astype(bool)
             if mask.shape != shape:
                 raise ValueError(
-                    f"Heater mask shape {mask.shape} does not match grid shape {shape}"
+                    f"Mask shape {mask.shape} does not match grid shape {shape}"
                 )
-
-        return self.heater_power * mask
+        return mask
 
     def _steady_state_step(self, T, k_grid, Q, dx):
         if T.ndim == 2:
@@ -300,8 +319,20 @@ class StaticThermalSolve:
         raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
 
 
-def apply_static_thermal(design, resolution, params, heater_mask, heater_power):
+def apply_static_thermal(
+    design,
+    resolution,
+    params,
+    heater_mask,
+    heater_power,
+    fixed_temp_mask=None,
+    fixed_temp_value=None,
+):
     solver = StaticThermalSolve(
-        params=params, heater_mask=heater_mask, heater_power=heater_power
+        params=params,
+        heater_mask=heater_mask,
+        heater_power=heater_power,
+        fixed_temp_mask=fixed_temp_mask,
+        fixed_temp_value=fixed_temp_value,
     )
     return solver.solve(design, resolution)
