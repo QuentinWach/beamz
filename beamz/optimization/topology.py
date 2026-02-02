@@ -228,6 +228,45 @@ def compute_overlap_gradient(
     return grad
 
 
+def run_adjoint_and_compute_gradient(adjoint_sim, forward_field_history,
+                                     field_component='Ez', field_subsample=1):
+    """
+    Memory-efficient streaming gradient computation.
+
+    Steps through the adjoint simulation while consuming the forward field history
+    in reverse order. Peak memory drops from 2N to N field snapshots since we never
+    store the adjoint history — we consume forward snapshots as we go.
+
+    Args:
+        adjoint_sim: A Simulation object (not yet run) for the adjoint problem.
+        forward_field_history: A list of 2D numpy arrays from the forward simulation,
+                               ordered chronologically. This list is emptied during
+                               computation (memory freed progressively).
+        field_component: Which field component to use (default: 'Ez').
+        field_subsample: Must match the field_subsample used during the forward run.
+                         Only accumulates gradient at steps divisible by this value.
+
+    Returns:
+        grad: 2D numpy array — the gradient of the overlap integral w.r.t. epsilon.
+    """
+    grad = np.zeros_like(forward_field_history[0], dtype=float)
+
+    while adjoint_sim.step():
+        # Only accumulate at subsampled steps
+        if adjoint_sim.current_step % field_subsample == 0:
+            if not forward_field_history:
+                break
+            # Pop last element (O(1)) — gives the time-reversed forward snapshot
+            fwd_snapshot = forward_field_history.pop()
+            adj_field = np.array(getattr(adjoint_sim.fields, field_component))
+            grad += fwd_snapshot * adj_field
+
+    # Drain any remaining forward snapshots (should be empty for matched step counts)
+    forward_field_history.clear()
+
+    return grad
+
+
 def create_optimization_mask(grid, region_structure):
     """
     Helper to create a boolean mask from a structure on a grid.

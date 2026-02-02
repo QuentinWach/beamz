@@ -40,6 +40,7 @@ from beamz.optimization.topology import (
     TopologyManager,
     compute_overlap_gradient,
     create_optimization_mask,
+    run_adjoint_and_compute_gradient,
 )
 from beamz.optimization.autodiff import transform_density
 from beamz.simulation.boundaries import ABC, PML, Boundary, PeriodicBoundary
@@ -112,6 +113,7 @@ _exports = {
     "TopologyManager": TopologyManager,
     "compute_overlap_gradient": compute_overlap_gradient,
     "create_optimization_mask": create_optimization_mask,
+    "run_adjoint_and_compute_gradient": run_adjoint_and_compute_gradient,
     "transform_density": transform_density,
     # UI helpers
     "display_header": display_header,
