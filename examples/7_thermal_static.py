@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle as PlotRectangle
 
 from beamz import Design, Material, Rectangle, ThermalParams, apply_static_thermal
 
@@ -48,5 +49,29 @@ plt.colorbar(label="Temperature (K)")
 plt.title("Heated Chip Cross-Section (Static Solve)")
 plt.xlabel("X (µm)")
 plt.ylabel("Y (µm)")
+
+# Draw structure outlines for clarity
+ax = plt.gca()
+outline_color = "white"
+outline_alpha = 0.3
+structures = [
+    (0, 0.0, W, 2.5e-6),     # substrate
+    (0, 2.5e-6, W, 2.0e-6),  # silicon
+    (0, 4.5e-6, W, 2.5e-6),  # oxide
+    (7e-6, 6.7e-6, 6e-6, 0.4e-6),  # heater
+]
+for x, y, w, h in structures:
+    ax.add_patch(
+        PlotRectangle(
+            (x * 1e6, y * 1e6),
+            w * 1e6,
+            h * 1e6,
+            fill=False,
+            edgecolor=outline_color,
+            linewidth=1.2,
+            alpha=outline_alpha,
+        )
+    )
+
 plt.tight_layout()
 plt.show()
