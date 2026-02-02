@@ -58,8 +58,8 @@ for i in range(qmag.shape[0]):
     if 0.0 <= y <= 2.5e-6 or 7.1e-6 <= y <= H:
         sink_mask[i, :] = True
 solid_mask = (k_grid > 0) & (~sink_mask)
-qmag_masked = np.ma.masked_where(~solid_mask, qmag)
-q_vis = np.ma.log10(1.0 + qmag_masked)
+qmag_solid = np.where(solid_mask, qmag, 0.0)
+q_vis = np.log10(1.0 + qmag_solid)
 
 fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12, 3.5))
 extent = (0, W * 1e6, 0, H * 1e6)
@@ -104,25 +104,25 @@ im1 = ax1.imshow(
     extent=extent,
     cmap="magma",
 )
-im1.cmap.set_bad(color=(0, 0, 0, 0))
 fig.colorbar(im1, ax=ax1, label="log10(1 + |Heat Flux|)")
 ax1.set_title("Heat Flux Magnitude + Direction")
 ax1.set_xlabel("X (µm)")
 ax1.set_ylabel("Y (µm)")
 
-# Quiver for flux direction (subsample for clarity)
-step = 12
-yy, xx = np.mgrid[0:qmag.shape[0]:step, 0:qmag.shape[1]:step]
-mask_sub = solid_mask[yy, xx]
-ax1.quiver(
-    (xx + 0.5)[mask_sub] * dx * 1e6,
-    (yy + 0.5)[mask_sub] * dx * 1e6,
-    qx[yy, xx][mask_sub],
-    qy[yy, xx][mask_sub],
+# Streamlines for flux direction (mask air/sink regions)
+U = np.where(solid_mask, qx, np.nan)
+V = np.where(solid_mask, qy, np.nan)
+y = (np.arange(qmag.shape[0]) + 0.5) * dx * 1e6
+x = (np.arange(qmag.shape[1]) + 0.5) * dx * 1e6
+ax1.streamplot(
+    x,
+    y,
+    U,
+    V,
     color="white",
-    alpha=0.6,
-    scale=5e4,
-    width=0.0025,
+    linewidth=1.0,
+    density=1.1,
+    arrowsize=0.8,
 )
 
 # Draw structure outlines on flux plot too
