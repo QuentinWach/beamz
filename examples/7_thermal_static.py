@@ -61,7 +61,7 @@ solid_mask = (k_grid > 0) & (~sink_mask)
 qmag_solid = np.where(solid_mask, qmag, 0.0)
 q_vis = np.log10(1.0 + qmag_solid)
 
-fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12, 3.5))
+fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(7, 6.4))
 extent = (0, W * 1e6, 0, H * 1e6)
 
 im0 = ax0.imshow(
