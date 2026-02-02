@@ -63,3 +63,34 @@ sim = Simulation(
 
 sim.run()
 ```
+
+## Static Pre-Solve (Heater Mask)
+
+You can solve the steady-state heat equation before running EM to precompute
+temperature gradients and update permittivity.
+
+```python
+import numpy as np
+
+from beamz import (
+    Design,
+    Material,
+    Rectangle,
+    apply_static_thermal,
+    ThermalParams,
+)
+
+W, H = 12e-6, 5e-6
+design = Design(width=W, height=H, material=Material(permittivity=1.0))
+
+heater = Material(permittivity=1.0, conductivity=1.0, k=80.0, rho=5000.0, cp=300.0)
+design += Rectangle(position=(3e-6, 3.4e-6), width=6e-6, height=0.4e-6, material=heater)
+
+def heater_mask(x, y, z):
+    return 3e-6 <= x <= 9e-6 and 3.4e-6 <= y <= 3.8e-6
+
+params = ThermalParams(thermal_dt=1e-13, tau_avg=1e-13, steady_state=True)
+eps_r, temperature = apply_static_thermal(
+    design, resolution=0.1e-6, params=params, heater_mask=heater_mask, heater_power=5e12
+)
+```

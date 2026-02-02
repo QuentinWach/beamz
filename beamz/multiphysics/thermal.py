@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import jax.numpy as jnp
+import numpy as np
 
 
 @dataclass
@@ -12,6 +13,9 @@ class ThermalParams:
     cp: float = 0.0
     dn_dT: float = 0.0
     T0: float = 300.0
+    steady_state: bool = False
+    max_iters: int = 5000
+    tol: float = 1e-6
 
 
 def _laplacian_neumann(field, dx, dy=None, dz=None):
@@ -192,3 +196,110 @@ class ThermoPhysics:
             if comp is not None:
                 E2 = E2 + comp * comp
         return E2
+
+
+class StaticThermalSolve:
+    def __init__(self, params: ThermalParams, heater_mask=None, heater_power=0.0):
+        self.params = params
+        self.heater_mask = heater_mask
+        self.heater_power = heater_power
+
+    def solve(self, design, resolution):
+        thermal_grids = design.get_thermal_grids(resolution)
+        if thermal_grids is None:
+            raise ValueError("Thermal grids not available on design.")
+
+        k_grid, rho_grid, cp_grid, dn_dT_grid, T0_grid = thermal_grids
+        k_grid = self._apply_default(np.asarray(k_grid), self.params.k)
+        dn_dT_grid = self._apply_default(np.asarray(dn_dT_grid), self.params.dn_dT)
+        T0_grid = self._apply_default(np.asarray(T0_grid), self.params.T0)
+
+        Q = self._build_heat_source(design, resolution, k_grid.shape)
+        T = np.array(T0_grid, dtype=float)
+
+        max_iters = int(self.params.max_iters)
+        tol = float(self.params.tol)
+
+        for _ in range(max_iters):
+            T_new = self._steady_state_step(T, k_grid, Q, resolution)
+            delta = np.max(np.abs(T_new - T))
+            T = T_new
+            if delta < tol:
+                break
+
+        n0 = np.sqrt(np.asarray(design.get_material_grids(resolution)[0]))
+        n = n0 + dn_dT_grid * (T - T0_grid)
+        eps_r = n * n
+        return eps_r, T
+
+    def _apply_default(self, grid, default):
+        if default is None:
+            return grid
+        if default == 0.0:
+            return grid
+        return np.where(grid == 0, default, grid)
+
+    def _build_heat_source(self, design, resolution, shape):
+        if self.heater_mask is None:
+            return np.zeros(shape)
+
+        if callable(self.heater_mask):
+            if len(shape) == 2:
+                ny, nx = shape
+                x_centers = (np.arange(nx) + 0.5) * resolution
+                y_centers = (np.arange(ny) + 0.5) * resolution
+                mask = np.zeros(shape, dtype=bool)
+                for i, y in enumerate(y_centers):
+                    for j, x in enumerate(x_centers):
+                        mask[i, j] = bool(self.heater_mask(x, y, 0.0))
+            else:
+                nz, ny, nx = shape
+                x_centers = (np.arange(nx) + 0.5) * resolution
+                y_centers = (np.arange(ny) + 0.5) * resolution
+                z_centers = (np.arange(nz) + 0.5) * resolution
+                mask = np.zeros(shape, dtype=bool)
+                for k, z in enumerate(z_centers):
+                    for i, y in enumerate(y_centers):
+                        for j, x in enumerate(x_centers):
+                            mask[k, i, j] = bool(self.heater_mask(x, y, z))
+        else:
+            mask = np.asarray(self.heater_mask).astype(bool)
+            if mask.shape != shape:
+                raise ValueError(
+                    f"Heater mask shape {mask.shape} does not match grid shape {shape}"
+                )
+
+        return self.heater_power * mask
+
+    def _steady_state_step(self, T, k_grid, Q, dx):
+        if T.ndim == 2:
+            pad = np.pad(T, ((1, 1), (1, 1)), mode="edge")
+            neighbor_sum = (
+                pad[1:-1, 2:] + pad[1:-1, :-2] + pad[2:, 1:-1] + pad[:-2, 1:-1]
+            )
+            denom = np.where(k_grid > 0, 4.0, 1.0)
+            rhs = np.where(k_grid > 0, (Q * dx * dx) / k_grid, 0.0)
+            updated = (neighbor_sum + rhs) / denom
+            return np.where(k_grid > 0, updated, T)
+        if T.ndim == 3:
+            pad = np.pad(T, ((1, 1), (1, 1), (1, 1)), mode="edge")
+            neighbor_sum = (
+                pad[1:-1, 1:-1, 2:]
+                + pad[1:-1, 1:-1, :-2]
+                + pad[1:-1, 2:, 1:-1]
+                + pad[1:-1, :-2, 1:-1]
+                + pad[2:, 1:-1, 1:-1]
+                + pad[:-2, 1:-1, 1:-1]
+            )
+            denom = np.where(k_grid > 0, 6.0, 1.0)
+            rhs = np.where(k_grid > 0, (Q * dx * dx) / k_grid, 0.0)
+            updated = (neighbor_sum + rhs) / denom
+            return np.where(k_grid > 0, updated, T)
+        raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
+
+
+def apply_static_thermal(design, resolution, params, heater_mask, heater_power):
+    solver = StaticThermalSolve(
+        params=params, heater_mask=heater_mask, heater_power=heater_power
+    )
+    return solver.solve(design, resolution)

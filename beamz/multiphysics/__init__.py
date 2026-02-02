@@ -1,3 +1,8 @@
-from beamz.multiphysics.thermal import ThermalParams, ThermoPhysics
+from beamz.multiphysics.thermal import (
+    StaticThermalSolve,
+    ThermalParams,
+    ThermoPhysics,
+    apply_static_thermal,
+)
 
-__all__ = ["ThermalParams", "ThermoPhysics"]
+__all__ = ["StaticThermalSolve", "ThermalParams", "ThermoPhysics", "apply_static_thermal"]
