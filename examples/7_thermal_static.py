@@ -51,9 +51,15 @@ k_grid, _, _, _, _ = design.get_thermal_grids(dx)
 qx = -k_grid * grad_x
 qy = -k_grid * grad_y
 qmag = np.sqrt(qx**2 + qy**2)
-qmag = np.nan_to_num(qmag)
-q_lo, q_hi = np.percentile(qmag, [5, 95])
-q_norm = np.clip((qmag - q_lo) / max(q_hi - q_lo, 1e-12), 0.0, 1.0)
+# Mask air + fixed-temperature sink regions for visualization
+sink_mask = np.zeros_like(qmag, dtype=bool)
+for i in range(qmag.shape[0]):
+    y = (i + 0.5) * dx
+    if 0.0 <= y <= 2.5e-6 or 7.1e-6 <= y <= H:
+        sink_mask[i, :] = True
+solid_mask = (k_grid > 0) & (~sink_mask)
+qmag_masked = np.ma.masked_where(~solid_mask, qmag)
+q_vis = np.ma.log10(1.0 + qmag_masked)
 
 fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12, 3.5))
 extent = (0, W * 1e6, 0, H * 1e6)
@@ -93,12 +99,13 @@ for x, y, w, h in structures:
     )
 
 im1 = ax1.imshow(
-    q_norm,
+    q_vis,
     origin="lower",
     extent=extent,
     cmap="magma",
 )
-fig.colorbar(im1, ax=ax1, label="Normalized |Heat Flux|")
+im1.cmap.set_bad(color=(0, 0, 0, 0))
+fig.colorbar(im1, ax=ax1, label="log10(1 + |Heat Flux|)")
 ax1.set_title("Heat Flux Magnitude + Direction")
 ax1.set_xlabel("X (µm)")
 ax1.set_ylabel("Y (µm)")
@@ -106,11 +113,12 @@ ax1.set_ylabel("Y (µm)")
 # Quiver for flux direction (subsample for clarity)
 step = 12
 yy, xx = np.mgrid[0:qmag.shape[0]:step, 0:qmag.shape[1]:step]
+mask_sub = solid_mask[yy, xx]
 ax1.quiver(
-    (xx + 0.5) * dx * 1e6,
-    (yy + 0.5) * dx * 1e6,
-    qx[yy, xx],
-    qy[yy, xx],
+    (xx + 0.5)[mask_sub] * dx * 1e6,
+    (yy + 0.5)[mask_sub] * dx * 1e6,
+    qx[yy, xx][mask_sub],
+    qy[yy, xx][mask_sub],
     color="white",
     alpha=0.6,
     scale=5e4,
