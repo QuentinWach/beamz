@@ -367,3 +367,17 @@ class Fields:
             self._update_2d(dt, source_j=source_j, source_m=source_m)
         else:  # 3D
             self._update_3d(dt, source_j=source_j, source_m=source_m)
+
+    def update_materials(self, permittivity=None, conductivity=None, permeability=None):
+        """Update material grids and recompute Yee parameters."""
+        if permittivity is not None:
+            self.permittivity = jnp.asarray(permittivity)
+        if conductivity is not None:
+            self.conductivity = jnp.asarray(conductivity)
+        if permeability is not None:
+            self.permeability = jnp.asarray(permeability)
+
+        if self.permittivity.ndim == 3:
+            self._init_material_parameters_3d()
+        else:
+            self._init_material_parameters_2d()

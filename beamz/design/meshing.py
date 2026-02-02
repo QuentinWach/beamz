@@ -69,6 +69,19 @@ class BaseMeshGrid:
             )
             return 1.0, 1.0, 0.0
 
+    def _get_thermal_properties_safe(self, material, x=0, y=0, z=0):
+        """Safely get thermal properties from material objects."""
+        if material is None:
+            return 0.0, 0.0, 0.0, 0.0, 300.0
+
+        # CustomMaterial or Material: thermal params are constants
+        k = getattr(material, "k", 0.0)
+        rho = getattr(material, "rho", 0.0)
+        cp = getattr(material, "cp", 0.0)
+        dn_dT = getattr(material, "dn_dT", 0.0)
+        T0 = getattr(material, "T0", 300.0)
+        return k, rho, cp, dn_dT, T0
+
 
 class RegularGrid(BaseMeshGrid):
     """2D Regular grid meshing for 2D designs (backwards compatible)."""
@@ -97,6 +110,12 @@ class RegularGrid(BaseMeshGrid):
         self.permittivity = np.zeros((grid_height, grid_width))
         self.permeability = np.zeros((grid_height, grid_width))
         self.conductivity = np.zeros((grid_height, grid_width))
+        # Initialize thermal property grids
+        self.k = np.zeros((grid_height, grid_width))
+        self.rho = np.zeros((grid_height, grid_width))
+        self.cp = np.zeros((grid_height, grid_width))
+        self.dn_dT = np.zeros((grid_height, grid_width))
+        self.T0 = np.zeros((grid_height, grid_width))
 
         # Rasterize the design
         self.__rasterize__()
@@ -120,6 +139,10 @@ class RegularGrid(BaseMeshGrid):
     def get_material_grids(self, resolution=None):
         """Get the material property grids."""
         return self.permittivity, self.conductivity, self.permeability
+
+    def get_thermal_grids(self):
+        """Get thermal property grids."""
+        return self.k, self.rho, self.cp, self.dn_dT, self.T0
 
     def __rasterize__(self):
         """Painters algorithm to rasterize the design into a grid using super-sampling
@@ -159,6 +182,11 @@ class RegularGrid(BaseMeshGrid):
         permittivity = np.ones((grid_height, grid_width))
         permeability = np.ones((grid_height, grid_width))
         conductivity = np.zeros((grid_height, grid_width))
+        k_grid = np.zeros((grid_height, grid_width))
+        rho_grid = np.zeros((grid_height, grid_width))
+        cp_grid = np.zeros((grid_height, grid_width))
+        dn_dT_grid = np.zeros((grid_height, grid_width))
+        T0_grid = np.full((grid_height, grid_width), 300.0)
 
         # Start with the background (first structure)
         if len(self.design.structures) > 0:
@@ -168,10 +196,18 @@ class RegularGrid(BaseMeshGrid):
                 bg_perm, bg_permb, bg_cond = self._get_material_properties_safe(
                     background.material
                 )
+                bg_k, bg_rho, bg_cp, bg_dn_dT, bg_T0 = self._get_thermal_properties_safe(
+                    background.material
+                )
                 # Fast fill for background
                 permittivity.fill(bg_perm)
                 permeability.fill(bg_permb)
                 conductivity.fill(bg_cond)
+                k_grid.fill(bg_k)
+                rho_grid.fill(bg_rho)
+                cp_grid.fill(bg_cp)
+                dn_dT_grid.fill(bg_dn_dT)
+                T0_grid.fill(bg_T0)
 
         # Process remaining structures in reverse order (foreground objects last)
         # Note: we process in ORIGINAL order, not reversed, because we want background first
@@ -194,10 +230,16 @@ class RegularGrid(BaseMeshGrid):
                 if is_custom_material:
                     # For CustomMaterial, we'll evaluate at each spatial location during rasterization
                     mat_perm, mat_permb, mat_cond = None, None, None
+                    mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
+                        self._get_thermal_properties_safe(structure.material)
+                    )
                 else:
                     # Cache material properties for performance (traditional Material objects)
                     mat_perm, mat_permb, mat_cond = self._get_material_properties_safe(
                         structure.material
+                    )
+                    mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
+                        self._get_thermal_properties_safe(structure.material)
                     )
                 try:
                     # Get bounding box of the structure
@@ -308,9 +350,19 @@ class RegularGrid(BaseMeshGrid):
                                                 structure.material, x, y
                                             )
                                         )
+                                        k_val, rho_val, cp_val, dn_dT_val, T0_val = (
+                                            self._get_thermal_properties_safe(
+                                                structure.material, x, y
+                                            )
+                                        )
                                         permittivity[i, j] = perm
                                         permeability[i, j] = permb
                                         conductivity[i, j] = cond
+                                        k_grid[i, j] = k_val
+                                        rho_grid[i, j] = rho_val
+                                        cp_grid[i, j] = cp_val
+                                        dn_dT_grid[i, j] = dn_dT_val
+                                        T0_grid[i, j] = T0_val
                             else:
                                 permittivity[
                                     inner_min_i:inner_max_i, inner_min_j:inner_max_j
@@ -321,6 +373,23 @@ class RegularGrid(BaseMeshGrid):
                                 conductivity[
                                     inner_min_i:inner_max_i, inner_min_j:inner_max_j
                                 ] = mat_cond
+                                k_grid[
+                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
+                                ] = (
+                                    mat_k
+                                )
+                                rho_grid[
+                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
+                                ] = mat_rho
+                                cp_grid[
+                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
+                                ] = mat_cp
+                                dn_dT_grid[
+                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
+                                ] = mat_dn_dT
+                                T0_grid[
+                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
+                                ] = mat_T0
                         # Calculate boundary region cells (those that need super-sampling)
                         # This is more efficient than checking each cell individually
                         boundary_mask = np.zeros(
@@ -374,6 +443,11 @@ class RegularGrid(BaseMeshGrid):
                                             structure.material, x, y
                                         )
                                     )
+                                    mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
+                                        self._get_thermal_properties_safe(
+                                            structure.material, x, y
+                                        )
+                                    )
                                 permittivity[i, j] = (
                                     permittivity[i, j] * (1 - blend_factor)
                                     + mat_perm * blend_factor
@@ -385,6 +459,26 @@ class RegularGrid(BaseMeshGrid):
                                 conductivity[i, j] = (
                                     conductivity[i, j] * (1 - blend_factor)
                                     + mat_cond * blend_factor
+                                )
+                                k_grid[i, j] = (
+                                    k_grid[i, j] * (1 - blend_factor)
+                                    + mat_k * blend_factor
+                                )
+                                rho_grid[i, j] = (
+                                    rho_grid[i, j] * (1 - blend_factor)
+                                    + mat_rho * blend_factor
+                                )
+                                cp_grid[i, j] = (
+                                    cp_grid[i, j] * (1 - blend_factor)
+                                    + mat_cp * blend_factor
+                                )
+                                dn_dT_grid[i, j] = (
+                                    dn_dT_grid[i, j] * (1 - blend_factor)
+                                    + mat_dn_dT * blend_factor
+                                )
+                                T0_grid[i, j] = (
+                                    T0_grid[i, j] * (1 - blend_factor)
+                                    + mat_T0 * blend_factor
                                 )
 
                     elif hasattr(structure, "radius"):  # Circle
@@ -419,6 +513,11 @@ class RegularGrid(BaseMeshGrid):
                             permittivity[global_i, global_j] = mat_perm
                             permeability[global_i, global_j] = mat_permb
                             conductivity[global_i, global_j] = mat_cond
+                            k_grid[global_i, global_j] = mat_k
+                            rho_grid[global_i, global_j] = mat_rho
+                            cp_grid[global_i, global_j] = mat_cp
+                            dn_dT_grid[global_i, global_j] = mat_dn_dT
+                            T0_grid[global_i, global_j] = mat_T0
                         # Super-sample for boundary cells
                         boundary_i, boundary_j = np.where(boundary)
                         for idx in range(len(boundary_i)):
@@ -451,6 +550,26 @@ class RegularGrid(BaseMeshGrid):
                                 conductivity[i, j] = (
                                     conductivity[i, j] * (1 - blend_factor)
                                     + mat_cond * blend_factor
+                                )
+                                k_grid[i, j] = (
+                                    k_grid[i, j] * (1 - blend_factor)
+                                    + mat_k * blend_factor
+                                )
+                                rho_grid[i, j] = (
+                                    rho_grid[i, j] * (1 - blend_factor)
+                                    + mat_rho * blend_factor
+                                )
+                                cp_grid[i, j] = (
+                                    cp_grid[i, j] * (1 - blend_factor)
+                                    + mat_cp * blend_factor
+                                )
+                                dn_dT_grid[i, j] = (
+                                    dn_dT_grid[i, j] * (1 - blend_factor)
+                                    + mat_dn_dT * blend_factor
+                                )
+                                T0_grid[i, j] = (
+                                    T0_grid[i, j] * (1 - blend_factor)
+                                    + mat_T0 * blend_factor
                                 )
 
                     elif hasattr(structure, "inner_radius") and hasattr(
@@ -492,6 +611,11 @@ class RegularGrid(BaseMeshGrid):
                             permittivity[global_i, global_j] = mat_perm
                             permeability[global_i, global_j] = mat_permb
                             conductivity[global_i, global_j] = mat_cond
+                            k_grid[global_i, global_j] = mat_k
+                            rho_grid[global_i, global_j] = mat_rho
+                            cp_grid[global_i, global_j] = mat_cp
+                            dn_dT_grid[global_i, global_j] = mat_dn_dT
+                            T0_grid[global_i, global_j] = mat_T0
                         # Super-sample for boundary cells
                         boundary_i, boundary_j = np.where(boundary)
                         for idx in range(len(boundary_i)):
@@ -524,6 +648,26 @@ class RegularGrid(BaseMeshGrid):
                                 conductivity[i, j] = (
                                     conductivity[i, j] * (1 - blend_factor)
                                     + mat_cond * blend_factor
+                                )
+                                k_grid[i, j] = (
+                                    k_grid[i, j] * (1 - blend_factor)
+                                    + mat_k * blend_factor
+                                )
+                                rho_grid[i, j] = (
+                                    rho_grid[i, j] * (1 - blend_factor)
+                                    + mat_rho * blend_factor
+                                )
+                                cp_grid[i, j] = (
+                                    cp_grid[i, j] * (1 - blend_factor)
+                                    + mat_cp * blend_factor
+                                )
+                                dn_dT_grid[i, j] = (
+                                    dn_dT_grid[i, j] * (1 - blend_factor)
+                                    + mat_dn_dT * blend_factor
+                                )
+                                T0_grid[i, j] = (
+                                    T0_grid[i, j] * (1 - blend_factor)
+                                    + mat_T0 * blend_factor
                                 )
                     else:
                         # GENERAL PATH: For polygons and complex shapes
@@ -597,6 +741,11 @@ class RegularGrid(BaseMeshGrid):
                                 permittivity[i, j] = mat_perm
                                 permeability[i, j] = mat_permb
                                 conductivity[i, j] = mat_cond
+                                k_grid[i, j] = mat_k
+                                rho_grid[i, j] = mat_rho
+                                cp_grid[i, j] = mat_cp
+                                dn_dT_grid[i, j] = mat_dn_dT
+                                T0_grid[i, j] = mat_T0
 
                             # Super-sample for boundary cells
                             boundary_i, boundary_j = np.where(boundary_mask)
@@ -627,6 +776,26 @@ class RegularGrid(BaseMeshGrid):
                                     conductivity[i, j] = (
                                         conductivity[i, j] * (1 - blend_factor)
                                         + mat_cond * blend_factor
+                                    )
+                                    k_grid[i, j] = (
+                                        k_grid[i, j] * (1 - blend_factor)
+                                        + mat_k * blend_factor
+                                    )
+                                    rho_grid[i, j] = (
+                                        rho_grid[i, j] * (1 - blend_factor)
+                                        + mat_rho * blend_factor
+                                    )
+                                    cp_grid[i, j] = (
+                                        cp_grid[i, j] * (1 - blend_factor)
+                                        + mat_cp * blend_factor
+                                    )
+                                    dn_dT_grid[i, j] = (
+                                        dn_dT_grid[i, j] * (1 - blend_factor)
+                                        + mat_dn_dT * blend_factor
+                                    )
+                                    T0_grid[i, j] = (
+                                        T0_grid[i, j] * (1 - blend_factor)
+                                        + mat_T0 * blend_factor
                                     )
 
                             # Check remaining cells not marked as inside or boundary
@@ -664,6 +833,26 @@ class RegularGrid(BaseMeshGrid):
                                         conductivity[i, j] * (1 - blend_factor)
                                         + mat_cond * blend_factor
                                     )
+                                    k_grid[i, j] = (
+                                        k_grid[i, j] * (1 - blend_factor)
+                                        + mat_k * blend_factor
+                                    )
+                                    rho_grid[i, j] = (
+                                        rho_grid[i, j] * (1 - blend_factor)
+                                        + mat_rho * blend_factor
+                                    )
+                                    cp_grid[i, j] = (
+                                        cp_grid[i, j] * (1 - blend_factor)
+                                        + mat_cp * blend_factor
+                                    )
+                                    dn_dT_grid[i, j] = (
+                                        dn_dT_grid[i, j] * (1 - blend_factor)
+                                        + mat_dn_dT * blend_factor
+                                    )
+                                    T0_grid[i, j] = (
+                                        T0_grid[i, j] * (1 - blend_factor)
+                                        + mat_T0 * blend_factor
+                                    )
                         else:
                             # Direct super-sampling for all cells in bounding box
                             for i in range(min_i, max_i):
@@ -695,6 +884,26 @@ class RegularGrid(BaseMeshGrid):
                                             conductivity[i, j] * (1 - blend_factor)
                                             + mat_cond * blend_factor
                                         )
+                                        k_grid[i, j] = (
+                                            k_grid[i, j] * (1 - blend_factor)
+                                            + mat_k * blend_factor
+                                        )
+                                        rho_grid[i, j] = (
+                                            rho_grid[i, j] * (1 - blend_factor)
+                                            + mat_rho * blend_factor
+                                        )
+                                        cp_grid[i, j] = (
+                                            cp_grid[i, j] * (1 - blend_factor)
+                                            + mat_cp * blend_factor
+                                        )
+                                        dn_dT_grid[i, j] = (
+                                            dn_dT_grid[i, j] * (1 - blend_factor)
+                                            + mat_dn_dT * blend_factor
+                                        )
+                                        T0_grid[i, j] = (
+                                            T0_grid[i, j] * (1 - blend_factor)
+                                            + mat_T0 * blend_factor
+                                        )
 
                 except (AttributeError, TypeError) as e:
                     print(
@@ -707,6 +916,11 @@ class RegularGrid(BaseMeshGrid):
         self.permittivity = permittivity
         self.permeability = permeability
         self.conductivity = conductivity
+        self.k = k_grid
+        self.rho = rho_grid
+        self.cp = cp_grid
+        self.dn_dT = dn_dT_grid
+        self.T0 = T0_grid
 
     def show(self, field: str = "permittivity"):
         """Display the rasterized grid with properly scaled SI units."""
@@ -791,6 +1005,12 @@ class RegularGrid3D(BaseMeshGrid):
         self.permittivity = np.zeros((grid_depth, grid_height, grid_width))
         self.permeability = np.zeros((grid_depth, grid_height, grid_width))
         self.conductivity = np.zeros((grid_depth, grid_height, grid_width))
+        # Initialize 3D thermal property grids
+        self.k = np.zeros((grid_depth, grid_height, grid_width))
+        self.rho = np.zeros((grid_depth, grid_height, grid_width))
+        self.cp = np.zeros((grid_depth, grid_height, grid_width))
+        self.dn_dT = np.zeros((grid_depth, grid_height, grid_width))
+        self.T0 = np.zeros((grid_depth, grid_height, grid_width))
 
         # Rasterize the design
         self.__rasterize_3d__()
@@ -846,6 +1066,11 @@ class RegularGrid3D(BaseMeshGrid):
         permittivity = np.ones((grid_depth, grid_height, grid_width))
         permeability = np.ones((grid_depth, grid_height, grid_width))
         conductivity = np.zeros((grid_depth, grid_height, grid_width))
+        k_grid = np.zeros((grid_depth, grid_height, grid_width))
+        rho_grid = np.zeros((grid_depth, grid_height, grid_width))
+        cp_grid = np.zeros((grid_depth, grid_height, grid_width))
+        dn_dT_grid = np.zeros((grid_depth, grid_height, grid_width))
+        T0_grid = np.full((grid_depth, grid_height, grid_width), 300.0)
 
         # Start with the background (first structure)
         if len(self.design.structures) > 0:
@@ -854,6 +1079,18 @@ class RegularGrid3D(BaseMeshGrid):
                 permittivity.fill(background.material.permittivity)
                 permeability.fill(background.material.permeability)
                 conductivity.fill(background.material.conductivity)
+                (
+                    bg_k,
+                    bg_rho,
+                    bg_cp,
+                    bg_dn_dT,
+                    bg_T0,
+                ) = self._get_thermal_properties_safe(background.material)
+                k_grid.fill(bg_k)
+                rho_grid.fill(bg_rho)
+                cp_grid.fill(bg_cp)
+                dn_dT_grid.fill(bg_dn_dT)
+                T0_grid.fill(bg_T0)
 
         # Process structures layer by layer
         with create_rich_progress() as progress:
@@ -877,6 +1114,9 @@ class RegularGrid3D(BaseMeshGrid):
                 # Cache material properties
                 mat_perm, mat_permb, mat_cond = self._get_material_properties_safe(
                     structure.material
+                )
+                mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
+                    self._get_thermal_properties_safe(structure.material)
                 )
 
                 try:
@@ -970,6 +1210,26 @@ class RegularGrid3D(BaseMeshGrid):
                                         conductivity[k, i, j] * (1 - blend_factor)
                                         + mat_cond * blend_factor
                                     )
+                                    k_grid[k, i, j] = (
+                                        k_grid[k, i, j] * (1 - blend_factor)
+                                        + mat_k * blend_factor
+                                    )
+                                    rho_grid[k, i, j] = (
+                                        rho_grid[k, i, j] * (1 - blend_factor)
+                                        + mat_rho * blend_factor
+                                    )
+                                    cp_grid[k, i, j] = (
+                                        cp_grid[k, i, j] * (1 - blend_factor)
+                                        + mat_cp * blend_factor
+                                    )
+                                    dn_dT_grid[k, i, j] = (
+                                        dn_dT_grid[k, i, j] * (1 - blend_factor)
+                                        + mat_dn_dT * blend_factor
+                                    )
+                                    T0_grid[k, i, j] = (
+                                        T0_grid[k, i, j] * (1 - blend_factor)
+                                        + mat_T0 * blend_factor
+                                    )
 
                 except (AttributeError, TypeError) as e:
                     display_status(
@@ -994,6 +1254,11 @@ class RegularGrid3D(BaseMeshGrid):
         self.permittivity = permittivity
         self.permeability = permeability
         self.conductivity = conductivity
+        self.k = k_grid
+        self.rho = rho_grid
+        self.cp = cp_grid
+        self.dn_dT = dn_dT_grid
+        self.T0 = T0_grid
 
     def _process_3d_pml(
         self,
@@ -1057,6 +1322,10 @@ class RegularGrid3D(BaseMeshGrid):
             "permeability": self.permeability[z_index, :, :],
             "conductivity": self.conductivity[z_index, :, :],
         }
+
+    def get_thermal_grids(self):
+        """Get thermal property grids."""
+        return self.k, self.rho, self.cp, self.dn_dT, self.T0
 
     def show_3d(self, field="permittivity", slice_spacing=1, alpha=0.3):
         """Display 3D visualization of the mesh."""

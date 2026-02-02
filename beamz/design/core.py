@@ -371,6 +371,18 @@ class Design:
             self._grid.permeability,
         )
 
+    def get_thermal_grids(self, resolution):
+        """Get cached rasterized thermal property arrays at specified resolution as references."""
+        if (
+            not hasattr(self, "_grid")
+            or not hasattr(self, "_grid_resolution")
+            or self._grid_resolution != resolution
+        ):
+            self.rasterize(resolution, grid_type="auto")
+        if hasattr(self._grid, "get_thermal_grids"):
+            return self._grid.get_thermal_grids()
+        return None
+
     def copy(self):
         """Create a deep copy of the design with all structures and properties."""
         background_material = (
