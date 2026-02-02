@@ -131,8 +131,8 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    learning_rate=0.05,
-    filter_radius=0.05 * µm,
+    learning_rate=0.015,
+    filter_radius=0.20 * µm,
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
     beta_schedule=(1.0, 16.0),
@@ -155,7 +155,112 @@ print(f"  Design region: 3.0 × 3.0 µm")
 print(f"\nObjective function:")
 print(f"  J = [ T(λ₁→port2) + T(λ₂→port3) ] / 2")
 print(f"  where T = |∫ P_out dt| / |∫ P_in dt| × 100%")
-print(f"  Gradient weighting: adaptive (deficit-based) to balance channels\n")
+print(f"  Gradient weighting: equal (both channels)\n")
+
+# ── 5b. Preliminary verification sims ────────────────────────────────────────
+print("Running preliminary sims to verify setup...\n")
+
+# Save permittivity map with physical axes
+plt.figure(figsize=(8, 6))
+extent = [0, W / µm, 0, H / µm]
+plt.imshow(grid.permittivity.T, cmap='gray', origin='lower', extent=extent)
+plt.colorbar(label='Permittivity (ε)')
+plt.xlabel('x (µm)')
+plt.ylabel('y (µm)')
+plt.title('Permittivity map — verify geometry')
+plt.tight_layout()
+plt.savefig('demux_permittivity.png', dpi=150, bbox_inches='tight')
+print("  Saved demux_permittivity.png")
+plt.close()
+
+for wl_label, wl_val in [("1300nm", WL_1), ("1550nm", WL_2)]:
+    print(f"  Preliminary sim at {wl_label}...")
+    sig_pre = _make_signal(wl_val)
+    src_pre = ModeSource(
+        grid, center=(2.0 * µm, H / 2), width=WG_W * 4,
+        wavelength=wl_val, pol="tm", signal=sig_pre, direction="+x",
+    )
+    mon_in_pre = Monitor(
+        design=grid,
+        start=(2.5 * µm, H / 2 - WG_W * 1.5),
+        end=(2.5 * µm, H / 2 + WG_W * 1.5),
+        accumulate_power=True, record_fields=False,
+    )
+    mon_o1_pre = Monitor(
+        design=grid,
+        start=(W - 2.5 * µm, OUT1_Y - WG_W * 1.5),
+        end=(W - 2.5 * µm, OUT1_Y + WG_W * 1.5),
+        accumulate_power=True, record_fields=False,
+    )
+    mon_o2_pre = Monitor(
+        design=grid,
+        start=(W - 2.5 * µm, OUT2_Y - WG_W * 1.5),
+        end=(W - 2.5 * µm, OUT2_Y + WG_W * 1.5),
+        accumulate_power=True, record_fields=False,
+    )
+    sim_pre = Simulation(
+        grid, [src_pre, mon_in_pre, mon_o1_pre, mon_o2_pre],
+        [PML(edges='all', thickness=PML_THICK)],
+        time=time_arr, resolution=DX,
+    )
+    res_pre = sim_pre.run(save_fields=['Ez'], field_subsample=4)
+
+    # Field snapshot near end of simulation
+    ez_fields = res_pre['fields']['Ez']
+    ez_last = np.array(ez_fields[-1])
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Left: permittivity overlay with Ez field
+    ax = axes[0]
+    ax.imshow(grid.permittivity.T, cmap='gray', origin='lower',
+              extent=extent, alpha=0.3)
+    vmax = np.max(np.abs(ez_last)) * 0.8
+    if vmax == 0:
+        vmax = 1.0
+    im = ax.imshow(ez_last.T, cmap='RdBu_r', origin='lower',
+                   extent=extent, alpha=0.85, vmin=-vmax, vmax=vmax)
+    fig.colorbar(im, ax=ax, label='Ez')
+    ax.set_xlabel('x (µm)')
+    ax.set_ylabel('y (µm)')
+    ax.set_title(f'Ez snapshot — {wl_label}')
+
+    # Right: time-averaged |Ez|² (from all saved frames)
+    ez_sq_avg = np.zeros_like(ez_last, dtype=float)
+    for frame in ez_fields:
+        f = np.array(frame, dtype=float)
+        ez_sq_avg += f ** 2
+    ez_sq_avg /= max(len(ez_fields), 1)
+
+    ax = axes[1]
+    ax.imshow(grid.permittivity.T, cmap='gray', origin='lower',
+              extent=extent, alpha=0.3)
+    im2 = ax.imshow(ez_sq_avg.T, cmap='hot', origin='lower',
+                    extent=extent, alpha=0.85)
+    fig.colorbar(im2, ax=ax, label='⟨|Ez|²⟩')
+    ax.set_xlabel('x (µm)')
+    ax.set_ylabel('y (µm)')
+    ax.set_title(f'Time-avg |Ez|² — {wl_label}')
+
+    fig.suptitle(f'Preliminary verification — {wl_label}', fontsize=13)
+    fig.tight_layout()
+    fname = f'demux_prelim_{wl_label}.png'
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    print(f"    Saved {fname}")
+    plt.close(fig)
+
+    in_E = np.abs(np.sum(mon_in_pre.power_history) * DT)
+    o1_E = np.abs(np.sum(mon_o1_pre.power_history) * DT)
+    o2_E = np.abs(np.sum(mon_o2_pre.power_history) * DT)
+    if in_E > 0:
+        print(f"    Input energy:  {in_E:.4e}")
+        print(f"    Out1 energy:   {o1_E:.4e}  ({o1_E/in_E*100:.1f}%)")
+        print(f"    Out2 energy:   {o2_E:.4e}  ({o2_E/in_E*100:.1f}%)")
+    else:
+        print(f"    WARNING: no input energy detected — check source placement")
+
+print("\nPreliminary sims done. Check demux_permittivity.png and demux_prelim_*.png")
+print("to verify geometry and propagation direction before optimization.\n")
 
 # ── 6. Optimization loop ────────────────────────────────────────────────────
 for step in range(STEPS):
@@ -279,30 +384,15 @@ for step in range(STEPS):
     assert len(fwd_ez_1550) == 0, "forward history should be emptied"
 
     # ── Combine gradients ───────────────────────────────────────────────────
-    # Normalize each channel's gradient so both contribute equally in
-    # magnitude; the adjoint overlap scale varies with wavelength.
     g1 = np.array(grad_1300, dtype=float)
     g2 = np.array(grad_1550, dtype=float)
-    g1_max = np.max(np.abs(g1))
-    g2_max = np.max(np.abs(g2))
-    if g1_max > 0:
-        g1 /= g1_max
-    if g2_max > 0:
-        g2 /= g2_max
 
-    # Adaptive weighting: the worse-performing channel gets more gradient
-    # weight so both channels are pushed toward 100% together.
-    deficit_1 = max(100.0 - trans_1, 1.0)
-    deficit_2 = max(100.0 - trans_2, 1.0)
-    w1 = deficit_1 / (deficit_1 + deficit_2)
-    w2 = deficit_2 / (deficit_1 + deficit_2)
-    grad_total = w1 * g1 + w2 * g2
-
-    # Step optimiser
-    max_update = opt.apply_gradient(grad_total, beta)
-
-    # Compute objective
+    # Equal weighting matches objective J = (T1 + T2) / 2
     obj = compute_objective(trans_1, trans_2)
+    grad_total = g1 + g2
+
+    # Step optimizer (overlap gradient passed directly; apply_gradient handles ascent)
+    max_update = opt.apply_gradient(grad_total, beta)
 
     # Track
     trans_history_1300.append(trans_1)
