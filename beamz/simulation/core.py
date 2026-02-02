@@ -22,6 +22,7 @@ class Simulation:
         design: Design = None,
         devices: list[Device] = [],
         boundaries: list[Boundary] = [],
+        thermal=None,
         resolution: float = 0.02 * µm,
         time: np.ndarray = None,
         plane_2d: str = "xy",
@@ -74,6 +75,11 @@ class Simulation:
         # Store boundary references (no duplication)
         self.boundaries = boundaries
 
+        # Optional thermal coupling
+        self.thermal = thermal
+        if self.thermal is not None and getattr(self.thermal, "enabled", True):
+            self.thermal.initialize(self)
+
     def step(self):
         """Perform one FDTD time step."""
         if self.current_step >= self.num_steps:
@@ -90,6 +96,10 @@ class Simulation:
 
         # Record monitor data (if monitors are in devices)
         self._record_monitors()
+
+        # Update coupled physics (thermal)
+        if self.thermal is not None and getattr(self.thermal, "enabled", True):
+            self.thermal.step(self)
 
         # Update time and step counter
         self.t += self.dt
@@ -296,6 +306,10 @@ class Simulation:
                 - 'fields': dict of recorded field arrays if record_interval was set
                 - 'monitors': list of Monitor objects with recorded data
         """
+        if self.thermal is not None and getattr(self.thermal, "enabled", True):
+            raise NotImplementedError(
+                "run_fast is not supported when thermal coupling is enabled."
+            )
         if num_steps is None:
             num_steps = self.num_steps - self.current_step
 
@@ -416,6 +430,10 @@ class Simulation:
         Returns:
             dict with final field state
         """
+        if self.thermal is not None and getattr(self.thermal, "enabled", True):
+            raise NotImplementedError(
+                "run_jit_scan is not supported when thermal coupling is enabled."
+            )
         if num_steps is None:
             num_steps = self.num_steps - self.current_step
 

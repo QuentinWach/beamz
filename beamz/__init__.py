@@ -44,6 +44,7 @@ from beamz.optimization.topology import (
 from beamz.optimization.autodiff import transform_density
 from beamz.simulation.boundaries import ABC, PML, Boundary, PeriodicBoundary
 from beamz.simulation.core import Simulation
+from beamz.multiphysics.thermal import ThermalParams, ThermoPhysics
 
 # Import UI helpers
 from beamz.visual.helpers import (
@@ -102,6 +103,9 @@ _exports = {
     # Simulation
     "RegularGrid": RegularGrid,
     "Simulation": Simulation,
+    # Multiphysics
+    "ThermalParams": ThermalParams,
+    "ThermoPhysics": ThermoPhysics,
     # Boundaries
     "Boundary": Boundary,
     "PML": PML,
