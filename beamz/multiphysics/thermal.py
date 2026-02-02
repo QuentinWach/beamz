@@ -278,7 +278,8 @@ class StaticThermalSolve:
                 pad[1:-1, 2:] + pad[1:-1, :-2] + pad[2:, 1:-1] + pad[:-2, 1:-1]
             )
             denom = np.where(k_grid > 0, 4.0, 1.0)
-            rhs = np.where(k_grid > 0, (Q * dx * dx) / k_grid, 0.0)
+            rhs = np.zeros_like(Q, dtype=float)
+            np.divide(Q * dx * dx, k_grid, out=rhs, where=k_grid > 0)
             updated = (neighbor_sum + rhs) / denom
             return np.where(k_grid > 0, updated, T)
         if T.ndim == 3:
@@ -292,7 +293,8 @@ class StaticThermalSolve:
                 + pad[:-2, 1:-1, 1:-1]
             )
             denom = np.where(k_grid > 0, 6.0, 1.0)
-            rhs = np.where(k_grid > 0, (Q * dx * dx) / k_grid, 0.0)
+            rhs = np.zeros_like(Q, dtype=float)
+            np.divide(Q * dx * dx, k_grid, out=rhs, where=k_grid > 0)
             updated = (neighbor_sum + rhs) / denom
             return np.where(k_grid > 0, updated, T)
         raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
