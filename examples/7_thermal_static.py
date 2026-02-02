@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 from matplotlib.patches import Rectangle as PlotRectangle
 
 from beamz import Design, Material, Rectangle, ThermalParams, apply_static_thermal
@@ -39,7 +40,7 @@ eps_r, temperature = apply_static_thermal(
     resolution=0.1e-6,
     params=params,
     heater_mask=heater_mask,
-    heater_power=8e12,
+    heater_power=5e16,
     fixed_temp_mask=substrate_and_air_sink_mask,
     fixed_temp_value=300.0,
 )
@@ -68,9 +69,11 @@ im0 = ax0.imshow(
     temperature,
     origin="lower",
     extent=extent,
-    cmap="inferno",
+    cmap="inferno"
 )
-fig.colorbar(im0, ax=ax0, label="Temperature (K)")
+temp_cbar = fig.colorbar(im0, ax=ax0, label="Temperature (K)")
+temp_cbar.formatter = FuncFormatter(lambda x, pos: f"{x:.2f}K")
+temp_cbar.update_ticks()
 ax0.set_title("Heated Chip Cross-Section (Static Solve)")
 ax0.set_xlabel("X (µm)")
 ax0.set_ylabel("Y (µm)")
