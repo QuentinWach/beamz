@@ -72,7 +72,7 @@ im0 = ax0.imshow(
     cmap="inferno"
 )
 temp_cbar = fig.colorbar(im0, ax=ax0, label="Temperature (K)")
-temp_cbar.formatter = FuncFormatter(lambda x, pos: f"{x:.2f}K")
+temp_cbar.formatter = FuncFormatter(lambda x, pos: f"{int(round(x))}K")
 temp_cbar.update_ticks()
 ax0.set_title("Heated Chip Cross-Section (Static Solve)")
 ax0.set_xlabel("X (µm)")
