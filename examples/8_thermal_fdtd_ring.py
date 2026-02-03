@@ -55,7 +55,7 @@ silicon = Material(
 # Waveguide + ring parameters
 WG_WIDTH = 0.5 * µm
 RING_RADIUS = 6.0 * µm
-GAP = 0.2 * WG_WIDTH
+GAP = 0.1 * WG_WIDTH
 
 # Build design (2D, in-plane)
 design = Design(width=W, height=H, material=oxide)
@@ -81,7 +81,7 @@ design += ring
 DX, DT = calc_optimal_fdtd_params(
     WL, n_max=N_CORE, dims=2, points_per_wavelength=12
 )
-TIME = 80 * WL / LIGHT_SPEED
+TIME = 200 * WL / LIGHT_SPEED
 
 # Rasterize once so thermal + EM share the same grid
 grid = design.rasterize(resolution=DX)
@@ -93,7 +93,7 @@ def run_transmission_sweep(eps_r_override, wavelengths):
 
     trans = []
     for wl_val in wavelengths:
-        time = np.arange(0, 80 * wl_val / LIGHT_SPEED, DT)
+        time = np.arange(0, TIME * wl_val / WL, DT)
         signal = ramped_cosine(
             time,
             amplitude=1.0,
@@ -142,9 +142,13 @@ def run_transmission_sweep(eps_r_override, wavelengths):
     return np.array(trans)
 
 eps_r_base = np.array(grid.permittivity, copy=True)
-wavelengths = np.linspace(1.52 * µm, 1.58 * µm, 7)
-print("Running baseline (isothermal) sweep...")
-trans_base = run_transmission_sweep(eps_r_base, wavelengths)
+coarse_wavelengths = np.linspace(1.52 * µm, 1.58 * µm, 11)
+print("Running baseline (isothermal) coarse sweep...")
+trans_base_coarse = run_transmission_sweep(eps_r_base, coarse_wavelengths)
+wl_center = coarse_wavelengths[np.argmin(trans_base_coarse)]
+fine_wavelengths = np.linspace(wl_center - 0.01 * µm, wl_center + 0.01 * µm, 41)
+print("Running baseline (isothermal) fine sweep...")
+trans_base = run_transmission_sweep(eps_r_base, fine_wavelengths)
 
 # --- 4. Static thermal solve ---
 outer_r = RING_RADIUS + WG_WIDTH / 2
@@ -199,13 +203,13 @@ eps_r_thermal, temperature = apply_static_thermal(
 )
 
 # --- 5. Update EM permittivity (thermal-shifted) ---
-print("Running thermal-shifted sweep...")
-trans_hot = run_transmission_sweep(eps_r_thermal, wavelengths)
+print("Running thermal-shifted fine sweep...")
+trans_hot = run_transmission_sweep(eps_r_thermal, fine_wavelengths)
 
 # --- 6. Results + Visualization ---
 max_dT = np.max(temperature) - 300.0
 print("\n--- Summary ---")
-idx_center = len(wavelengths) // 2
+idx_center = len(fine_wavelengths) // 2
 print(f"Baseline transmission: {trans_base[idx_center]:.4f}")
 print(f"Thermal transmission:  {trans_hot[idx_center]:.4f}")
 print(f"Delta transmission:    {trans_hot[idx_center] - trans_base[idx_center]:+.4f}")
@@ -235,8 +239,8 @@ ax0.add_patch(
 
 # Transmission comparison
 ax1 = axes[1]
-ax1.plot(wavelengths / µm, trans_base, "-o", label="Baseline", color="#4c72b0")
-ax1.plot(wavelengths / µm, trans_hot, "-o", label="Thermal", color="#dd8452")
+ax1.plot(fine_wavelengths / µm, trans_base, "-o", label="Baseline", color="#4c72b0")
+ax1.plot(fine_wavelengths / µm, trans_hot, "-o", label="Thermal", color="#dd8452")
 ax1.set_xlabel("Wavelength (µm)")
 ax1.set_ylabel("Transmission (arb.)")
 ax1.set_title("Thermal Detuning Impact (Spectrum)")
