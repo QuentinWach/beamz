@@ -23,6 +23,7 @@ Device layout (not to scale):
 
 import numpy as np
 import matplotlib.pyplot as plt
+import jax
 from beamz import *
 from beamz.optimization.topology import (
     TopologyManager,
@@ -43,8 +44,17 @@ PML_THICK = 1.0 * µm       # PML thickness
 
 # Use the shorter wavelength for resolution (stricter Nyquist)
 DX, DT = calc_optimal_fdtd_params(WL_1, N_CORE, points_per_wavelength=9)
-STEPS = 20                  # Optimization steps (reduce for faster testing)
+STEPS = 100                 # Optimization steps (reduce for faster testing)
 FIELD_SUB = 1               # Field subsampling factor
+
+
+# Ceviche-style step-function beta schedule: hold beta constant for many
+# iterations so Adam can converge at each binarization level before ramping.
+def get_beta(step):
+    while step < 70:
+        return 7
+    else:
+        return 35
 
 # Output waveguide vertical positions
 OUT1_Y = H / 2 + 1.15*WG_W  # Upper output (1300 nm)
@@ -93,24 +103,24 @@ design += opt_region
 # ── 3. Objective function ────────────────────────────────────────────────────
 def compute_objective(trans_1, trans_2):
     """
-    WDM Demux figure of merit.
+    WDM Demux figure of merit (following Ceviche convention).
 
-        J = [ T(λ₁ → port 2) + T(λ₂ → port 3) ] / 2
+        J = T₁ · T₂ / 100
 
     where T(λ → port) = |∫ P_out dt| / |∫ P_in dt| × 100%
     is the fraction of input power at wavelength λ that exits through
     the target output port.
 
-    Ranges from 0 (no light reaches correct ports) to 100 (perfect demux).
-    The adjoint gradient for each channel is weighted by its deficit from
-    100% so that the worse-performing channel receives stronger updates.
+    The product couples both channels: if either drops, J drops sharply.
+    This works when the beta schedule gives the optimizer enough
+    iterations at each binarization level to converge.
     """
-    return (trans_1 + trans_2) / 2.0
+    return trans_1 * trans_2 / 100.0
 
 
 # ── 4. Sources & monitors helpers ────────────────────────────────────────────
 # Simulation time — use longest wavelength for period estimate
-sim_duration = 30 * WL_2 / LIGHT_SPEED
+sim_duration = 50 * WL_2 / LIGHT_SPEED
 time_arr = np.arange(0, sim_duration, DT)
 
 
@@ -119,7 +129,7 @@ def _make_signal(wl):
     return ramped_cosine(
         time_arr, 1.0, LIGHT_SPEED / wl,
         ramp_duration=3 * wl / LIGHT_SPEED,
-        t_max=time_arr[-1] / 3,
+        t_max=time_arr[-1] / 4,
     )
 
 
@@ -131,11 +141,11 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    learning_rate=0.015,
-    filter_radius=0.20 * µm,
+    learning_rate=0.01,
+    filter_radius=0.18 * µm,
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
-    beta_schedule=(1.0, 16.0),
+    beta_schedule=(5.0, 200.0),   # range only; actual schedule is step-function
     filter_type="conic",
 )
 
@@ -153,9 +163,9 @@ print(f"  Channel 1: {WL_1/µm:.2f} µm → upper output (port 2)")
 print(f"  Channel 2: {WL_2/µm:.2f} µm → lower output (port 3)")
 print(f"  Design region: 3.0 × 3.0 µm")
 print(f"\nObjective function:")
-print(f"  J = [ T(λ₁→port2) + T(λ₂→port3) ] / 2")
+print(f"  J = T(λ₁→port2) · T(λ₂→port3) / 100")
 print(f"  where T = |∫ P_out dt| / |∫ P_in dt| × 100%")
-print(f"  Gradient weighting: equal (both channels)\n")
+print(f"  Beta schedule: step-function (10 → 100 → 200)\n")
 
 # ── 5b. Preliminary verification sims ────────────────────────────────────────
 print("Running preliminary sims to verify setup...\n")
@@ -264,8 +274,9 @@ print("to verify geometry and propagation direction before optimization.\n")
 
 # ── 6. Optimization loop ────────────────────────────────────────────────────
 for step in range(STEPS):
-    # --- Update permittivity from density ---
-    beta, phys_density = opt.update_design(step, STEPS)
+    # --- Update permittivity from density (Ceviche-style step-function beta) ---
+    beta = get_beta(step)
+    phys_density = opt.get_physical_density(beta)
     grid.permittivity[:] = base_eps
     grid.permittivity[mask] = opt.eps_min + phys_density[mask] * (opt.eps_max - opt.eps_min)
 
@@ -383,15 +394,20 @@ for step in range(STEPS):
     )
     assert len(fwd_ez_1550) == 0, "forward history should be emptied"
 
-    # ── Combine gradients ───────────────────────────────────────────────────
+    # ── Combine gradients via chain rule ─────────────────────────────────────
     g1 = np.array(grad_1300, dtype=float)
     g2 = np.array(grad_1550, dtype=float)
 
-    # Equal weighting matches objective J = (T1 + T2) / 2
+    # Compute objective and its partials w.r.t. each channel's transmission
     obj = compute_objective(trans_1, trans_2)
-    grad_total = g1 + g2
+    dJ_dT1, dJ_dT2 = jax.grad(compute_objective, argnums=(0, 1))(
+        float(trans_1), float(trans_2),
+    )
 
-    # Step optimizer (overlap gradient passed directly; apply_gradient handles ascent)
+    # Chain rule: dJ/dε = (∂J/∂T₁)·g₁ + (∂J/∂T₂)·g₂
+    grad_total = float(dJ_dT1) * g1 + float(dJ_dT2) * g2
+
+    # Step optimizer (apply_gradient handles ascent internally)
     max_update = opt.apply_gradient(grad_total, beta)
 
     # Track
@@ -407,7 +423,7 @@ for step in range(STEPS):
         f"J={obj:.1f}%  "
         f"T1300={trans_1:.1f}%  T1550={trans_2:.1f}%  "
         f"X1300={xtalk_1:.1f}%  X1550={xtalk_2:.1f}%  "
-        f"Mat={mat_frac:.1%}"
+        f"β={beta}  Mat={mat_frac:.1%}"
     )
 
     # Periodic permittivity snapshot
