@@ -34,11 +34,7 @@ References:
 """
 
 import numpy as np
-from beamz.design.materials import (
-    Material,
-    LinearThermoOpticMaterial,
-    ConstantMaterialModel,
-)
+from beamz.design.materials import Material, LinearThermoOpticMaterial
 from beamz.const import LIGHT_SPEED
 
 
@@ -541,7 +537,7 @@ LithiumNiobate = LiNbO3
 # METALS (using effective permittivity from Drude model parameters)
 # =============================================================================
 
-class Gold(ConstantMaterialModel):
+class Gold(Material):
     """
     Gold (Au).
     Highly conductive metal with plasmonic properties.
@@ -570,7 +566,7 @@ class Gold(ConstantMaterialModel):
             permittivity=eps_real,
             permeability=1.0,
             conductivity=conductivity,
-            dconductivity_dT=dconductivity_dT,
+            dsigma_dT=dconductivity_dT,
             name="Gold",
         )
         self.wavelength = wavelength
@@ -700,7 +696,7 @@ class Copper(Material):
 Cu = Copper
 
 
-class Aluminum(ConstantMaterialModel):
+class Aluminum(Material):
     """
     Aluminum (Al).
     Good reflector across broad spectrum including UV.
@@ -725,7 +721,7 @@ class Aluminum(ConstantMaterialModel):
             permittivity=eps_real,
             permeability=1.0,
             conductivity=conductivity,
-            dconductivity_dT=dconductivity_dT,
+            dsigma_dT=dconductivity_dT,
             name="Aluminum",
         )
         self.wavelength = wavelength
@@ -840,7 +836,7 @@ class Titanium(Material):
         return np.sqrt(cls.get_permittivity(wavelength))
 
 
-class TiN(ConstantMaterialModel):
+class TiN(Material):
     """
     Titanium Nitride (TiN).
     Approximate conductive model for plasmonic applications.
@@ -851,7 +847,7 @@ class TiN(ConstantMaterialModel):
             permittivity=permittivity,
             permeability=1.0,
             conductivity=conductivity,
-            dconductivity_dT=dconductivity_dT,
+            dsigma_dT=dconductivity_dT,
             name="TiN",
         )
 
@@ -1289,10 +1285,10 @@ def material_info(name):
     """
     mat = get_material(name)
     if hasattr(mat, "epsilon_r"):
-        t_ref = getattr(mat, "T_ref", getattr(mat, "T0", 300.0))
+        t_ref = getattr(mat, "T0", 300.0)
         perm = mat.epsilon_r(t_ref)
-        permb = mat.permeability(t_ref)
-        cond = mat.conductivity(t_ref)
+        permb = mat.permeability_T(t_ref)
+        cond = mat.conductivity_T(t_ref)
         if hasattr(perm, "item"):
             perm = perm.item()
         if hasattr(permb, "item"):

@@ -3,7 +3,7 @@ import numpy as np
 from mpl_toolkits.mplot3d import Axes3D
 
 from beamz.design.structures import Rectangle
-from beamz.design.materials import as_material_model, is_spatial_material
+from beamz.design.materials import is_spatial_material
 from beamz.visual.helpers import (
     create_rich_progress,
     display_status,
@@ -57,13 +57,13 @@ class BaseMeshGrid:
                     getattr(material, "default_conductivity", 0.0),
                 )
 
-        # Temperature-dependent MaterialModel
+        # Temperature-dependent Material base
         elif hasattr(material, "epsilon_r"):
             try:
-                t_ref = getattr(material, "T_ref", getattr(material, "T0", 300.0))
+                t_ref = getattr(material, "T0", 300.0)
                 permittivity = material.epsilon_r(t_ref)
-                permeability = material.permeability(t_ref)
-                conductivity = material.conductivity(t_ref)
+                permeability = material.permeability_T(t_ref)
+                conductivity = material.conductivity_T(t_ref)
 
                 if hasattr(permittivity, "item"):
                     permittivity = permittivity.item()
@@ -73,7 +73,7 @@ class BaseMeshGrid:
                     conductivity = conductivity.item()
                 return permittivity, permeability, conductivity
             except Exception as e:
-                print(f"Warning: MaterialModel evaluation failed: {e}, using defaults")
+                print(f"Warning: Material evaluation failed: {e}, using defaults")
                 return 1.0, 1.0, 0.0
 
         # Traditional Material object (direct attributes)
@@ -96,9 +96,9 @@ class BaseMeshGrid:
         if material is None:
             return 0.0, 0.0, 0.0, 0.0, 300.0
 
-        # Temperature-dependent MaterialModel
+        # Temperature-dependent Material base
         if hasattr(material, "thermal_k"):
-            t_ref = getattr(material, "T_ref", getattr(material, "T0", 300.0))
+            t_ref = getattr(material, "T0", 300.0)
             k = material.thermal_k(t_ref)
             rho = material.density(t_ref)
             cp = material.heat_capacity(t_ref)
@@ -128,11 +128,8 @@ class BaseMeshGrid:
         key = id(material)
         if key in self._material_id_map:
             return self._material_id_map[key]
-        model = as_material_model(material)
-        if model is None:
-            return None
         idx = len(self.material_table)
-        self.material_table.append(model)
+        self.material_table.append(material)
         self._material_id_map[key] = idx
         return idx
 

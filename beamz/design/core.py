@@ -1,12 +1,12 @@
 import random
 
 import numpy as np
+import jax.numpy as jnp
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
 
 from beamz.const import µm
 from beamz.design.materials import Material
-from beamz.design.material_evaluator import MaterialGridEvaluator
 from beamz.design.structures import (
     Circle,
     CircularBend,
@@ -60,10 +60,10 @@ class Design:
                 continue
 
             if hasattr(material, "epsilon_r"):
-                t_ref = getattr(material, "T_ref", getattr(material, "T0", 300.0))
+                t_ref = getattr(material, "T0", 300.0)
                 perm = material.epsilon_r(t_ref)
-                permb = material.permeability(t_ref)
-                cond = material.conductivity(t_ref)
+                permb = material.permeability_T(t_ref)
+                cond = material.conductivity_T(t_ref)
                 if hasattr(perm, "item"):
                     perm = perm.item()
                 if hasattr(permb, "item"):
@@ -197,12 +197,10 @@ class Design:
         for new_struct in new_structures:
             if hasattr(new_struct, "material") and new_struct.material:
                 if hasattr(new_struct.material, "epsilon_r"):
-                    t_ref = getattr(
-                        new_struct.material, "T_ref", getattr(new_struct.material, "T0", 300.0)
-                    )
+                    t_ref = getattr(new_struct.material, "T0", 300.0)
                     perm = new_struct.material.epsilon_r(t_ref)
-                    permb = new_struct.material.permeability(t_ref)
-                    cond = new_struct.material.conductivity(t_ref)
+                    permb = new_struct.material.permeability_T(t_ref)
+                    cond = new_struct.material.conductivity_T(t_ref)
                     if hasattr(perm, "item"):
                         perm = perm.item()
                     if hasattr(permb, "item"):
@@ -394,16 +392,8 @@ class Design:
             or self._grid_resolution != resolution
         ):
             self.rasterize(resolution, grid_type="auto")
-        evaluator = self._get_material_evaluator(resolution)
-        if evaluator is None:
-            return (
-                self._grid.permittivity,
-                self._grid.conductivity,
-                self._grid.permeability,
-            )
-        T0 = evaluator.get_T0_grid()
-        props = evaluator.evaluate(T0)
-        return props.permittivity, props.conductivity, props.permeability
+        props = self.evaluate_materials(resolution, None)
+        return props["permittivity"], props["conductivity"], props["permeability"]
 
     def get_thermal_grids(self, resolution):
         """Get cached rasterized thermal property arrays at specified resolution as references."""
@@ -413,17 +403,13 @@ class Design:
             or self._grid_resolution != resolution
         ):
             self.rasterize(resolution, grid_type="auto")
-        evaluator = self._get_material_evaluator(resolution)
-        if evaluator is None:
-            if hasattr(self._grid, "get_thermal_grids"):
-                return self._grid.get_thermal_grids()
+        if not hasattr(self._grid, "get_thermal_grids"):
             return None
-        T0 = evaluator.get_T0_grid()
-        props = evaluator.evaluate(T0)
+        props = self.evaluate_materials(resolution, None)
         dn_dT = getattr(self._grid, "dn_dT", None)
         if dn_dT is None:
-            dn_dT = np.zeros_like(props.permittivity)
-        return props.k, props.rho, props.cp, dn_dT, props.T0
+            dn_dT = np.zeros_like(props["permittivity"])
+        return props["k"], props["rho"], props["cp"], dn_dT, props["T0"]
 
     def get_material_id_grid(self, resolution):
         """Get material id grid if available."""
@@ -449,34 +435,83 @@ class Design:
             return self._grid.get_material_table()
         return None
 
-    def _get_material_evaluator(self, resolution):
+    def evaluate_materials(self, resolution, T):
+        """Evaluate temperature-dependent material properties on the rasterized grid."""
         if (
             not hasattr(self, "_grid")
             or not hasattr(self, "_grid_resolution")
             or self._grid_resolution != resolution
         ):
             self.rasterize(resolution, grid_type="auto")
-        if not hasattr(self._grid, "get_material_id_grid"):
-            return None
-        material_id = self._grid.get_material_id_grid()
-        material_table = self._grid.get_material_table()
-        if material_id is None or material_table is None:
-            return None
-        base_grids = {
-            "permittivity": getattr(self._grid, "permittivity", None),
-            "permeability": getattr(self._grid, "permeability", None),
-            "conductivity": getattr(self._grid, "conductivity", None),
-            "k": getattr(self._grid, "k", None),
-            "rho": getattr(self._grid, "rho", None),
-            "cp": getattr(self._grid, "cp", None),
-            "T0": getattr(self._grid, "T0", None),
-        }
-        base_grids = {k: v for k, v in base_grids.items() if v is not None}
-        return MaterialGridEvaluator(material_id, material_table, base_grids=base_grids)
 
-    def get_material_evaluator(self, resolution):
-        """Get a material evaluator for temperature-dependent properties."""
-        return self._get_material_evaluator(resolution)
+        base = {
+            "permittivity": jnp.asarray(getattr(self._grid, "permittivity", 1.0)),
+            "permeability": jnp.asarray(getattr(self._grid, "permeability", 1.0)),
+            "conductivity": jnp.asarray(getattr(self._grid, "conductivity", 0.0)),
+            "k": jnp.asarray(getattr(self._grid, "k", 0.0)),
+            "rho": jnp.asarray(getattr(self._grid, "rho", 0.0)),
+            "cp": jnp.asarray(getattr(self._grid, "cp", 0.0)),
+            "T0": jnp.asarray(getattr(self._grid, "T0", 300.0)),
+        }
+
+        material_id = (
+            self._grid.get_material_id_grid()
+            if hasattr(self._grid, "get_material_id_grid")
+            else None
+        )
+        material_table = (
+            self._grid.get_material_table()
+            if hasattr(self._grid, "get_material_table")
+            else None
+        )
+
+        if material_id is None or not material_table:
+            if T is None:
+                return base
+            return base
+
+        material_id = jnp.asarray(material_id)
+        if T is None:
+            T = base["T0"]
+        T = jnp.asarray(T)
+
+        for idx, mat in enumerate(material_table):
+            mask = material_id == idx
+            if not jnp.any(mask):
+                continue
+
+            eps = mat.epsilon_r(T)
+            mu = mat.permeability_T(T)
+            sigma = mat.conductivity_T(T)
+            k = mat.thermal_k(T)
+            rho = mat.density(T)
+            cp = mat.heat_capacity(T)
+            t0 = getattr(mat, "T0", base["T0"])
+
+            if not hasattr(eps, "shape") or eps.shape == ():
+                eps = jnp.full_like(T, eps)
+            if not hasattr(mu, "shape") or mu.shape == ():
+                mu = jnp.full_like(T, mu)
+            if not hasattr(sigma, "shape") or sigma.shape == ():
+                sigma = jnp.full_like(T, sigma)
+            if not hasattr(k, "shape") or k.shape == ():
+                k = jnp.full_like(T, k)
+            if not hasattr(rho, "shape") or rho.shape == ():
+                rho = jnp.full_like(T, rho)
+            if not hasattr(cp, "shape") or cp.shape == ():
+                cp = jnp.full_like(T, cp)
+            if not hasattr(t0, "shape") or getattr(t0, "shape", ()) == ():
+                t0 = jnp.full_like(T, t0)
+
+            base["permittivity"] = jnp.where(mask, eps, base["permittivity"])
+            base["permeability"] = jnp.where(mask, mu, base["permeability"])
+            base["conductivity"] = jnp.where(mask, sigma, base["conductivity"])
+            base["k"] = jnp.where(mask, k, base["k"])
+            base["rho"] = jnp.where(mask, rho, base["rho"])
+            base["cp"] = jnp.where(mask, cp, base["cp"])
+            base["T0"] = jnp.where(mask, t0, base["T0"])
+
+        return base
 
     def copy(self):
         """Create a deep copy of the design with all structures and properties."""

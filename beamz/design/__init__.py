@@ -6,9 +6,7 @@ from beamz.design.core import Design
 from beamz.design.materials import (
     CustomMaterial,
     Material,
-    MaterialModel,
     LinearThermoOpticMaterial,
-    ConstantMaterialModel,
 )
 from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
 from beamz.design.structures import (
@@ -23,9 +21,7 @@ from beamz.design.structures import (
 __all__ = [
     "Material",
     "CustomMaterial",
-    "MaterialModel",
     "LinearThermoOpticMaterial",
-    "ConstantMaterialModel",
     "Design",
     "Rectangle",
     "Circle",
