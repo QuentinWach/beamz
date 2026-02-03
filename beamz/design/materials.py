@@ -393,7 +393,7 @@ class LinearThermoOpticMaterial(Material):
 
 
 def is_spatial_material(material) -> bool:
-    return hasattr(material, "get_permittivity")
+    return isinstance(material, CustomMaterial)
 
 
 # =============================================================================

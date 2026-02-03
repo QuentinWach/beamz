@@ -290,7 +290,7 @@ class RegularGrid(BaseMeshGrid):
                     progress.update(task, advance=1)
                     continue
                 # Check if this is a CustomMaterial that needs spatial evaluation
-                is_custom_material = hasattr(structure.material, "get_permittivity")
+                is_custom_material = is_spatial_material(structure.material)
                 mat_id = self._register_material(structure.material)
                 if is_custom_material:
                     # For CustomMaterial, we'll evaluate at each spatial location during rasterization
