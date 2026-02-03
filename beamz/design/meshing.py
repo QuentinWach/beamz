@@ -291,6 +291,7 @@ class RegularGrid(BaseMeshGrid):
                     continue
                 # Check if this is a CustomMaterial that needs spatial evaluation
                 is_custom_material = hasattr(structure.material, "get_permittivity")
+                mat_id = self._register_material(structure.material)
                 if is_custom_material:
                     # For CustomMaterial, we'll evaluate at each spatial location during rasterization
                     mat_perm, mat_permb, mat_cond = None, None, None
@@ -1204,7 +1205,6 @@ class RegularGrid3D(BaseMeshGrid):
                 mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
                     self._get_thermal_properties_safe(structure.material)
                 )
-                mat_id = self._register_material(structure.material)
                 mat_id = self._register_material(structure.material)
 
                 try:

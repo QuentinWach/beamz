@@ -17,65 +17,113 @@ from beamz.const import (
 
 # Import design-related classes and functions
 from beamz.design.core import Design
-<<<<<<< HEAD
 from beamz.design.materials import (
-    Material, CustomMaterial,
+    Material,
+    CustomMaterial,
     # Advanced dispersive material models
-    SellmeierMaterial, DrudeMaterial, LorentzMaterial,
-    DebyeMaterial, PoleResidueMaterial, DrudeLorentzMaterial,
+    SellmeierMaterial,
+    DrudeMaterial,
+    LorentzMaterial,
+    DebyeMaterial,
+    PoleResidueMaterial,
+    DrudeLorentzMaterial,
     # Predefined dispersive materials
-    SiO2_Sellmeier, BK7_Sellmeier,
-    Gold_Drude, Silver_Drude, Aluminum_Drude, Copper_Drude,
-    Water_Debye, Gold_DrudeLorentz,
+    SiO2_Sellmeier,
+    BK7_Sellmeier,
+    Gold_Drude,
+    Silver_Drude,
+    Aluminum_Drude,
+    Copper_Drude,
+    Water_Debye,
+    Gold_DrudeLorentz,
 )
 from beamz.design.library import (
     # Material library - Vacuum & Gases
-    Vacuum, Air,
+    Vacuum,
+    Air,
     # Dielectrics & Glasses
-    SiO2, FusedSilica, Silica, Si3N4, SiliconNitride, SiN,
-    BK7, SodaLimeGlass, Sapphire, Al2O3, Diamond,
+    SiO2,
+    FusedSilica,
+    Silica,
+    Si3N4,
+    SiliconNitride,
+    SiN,
+    BK7,
+    SodaLimeGlass,
+    Sapphire,
+    Al2O3,
+    Diamond,
     # Semiconductors
-    Silicon, Si, Germanium, Ge, GaAs, InP, LiNbO3, LithiumNiobate,
+    Silicon,
+    Si,
+    Germanium,
+    Ge,
+    GaAs,
+    InP,
+    LiNbO3,
+    LithiumNiobate,
     # Metals
-    Gold, Au, Silver, Ag, Copper, Cu, Aluminum, Al, Chromium, Cr, Titanium, Ti,
+    Gold,
+    Au,
+    Silver,
+    Ag,
+    Copper,
+    Cu,
+    Aluminum,
+    Al,
+    Chromium,
+    Cr,
+    Titanium,
+    Ti,
     # Polymers
-    PMMA, SU8, Polystyrene, PDMS, HSQ,
+    PMMA,
+    SU8,
+    Polystyrene,
+    PDMS,
+    HSQ,
     # Liquids
-    Water, H2O, Ethanol, IPA, Glycerol, ImmersionOil,
+    Water,
+    H2O,
+    Ethanol,
+    IPA,
+    Glycerol,
+    ImmersionOil,
     # Specialty materials
-    ITO, TiO2, HfO2, Ta2O5, ZnO, AlN, MgF2, CaF2, BaF2, ZnSe, ZnS,
+    ITO,
+    TiO2,
+    HfO2,
+    Ta2O5,
+    ZnO,
+    AlN,
+    MgF2,
+    CaF2,
+    BaF2,
+    ZnSe,
+    ZnS,
     # Special materials
-    PEC, PMC,
+    PEC,
+    PMC,
     # Utility functions
-    list_materials, get_material, material_info,
+    list_materials,
+    get_material,
+    material_info,
 )
 from beamz.design.structures import (
-    Rectangle, Circle, Ring, 
-    CircularBend, Polygon, Taper, Sphere
+    Rectangle,
+    Circle,
+    Ring,
+    CircularBend,
+    Polygon,
+    Taper,
+    Sphere,
 )
 from beamz.devices.sources import ModeSource, GaussianSource
 from beamz.devices.monitors import Monitor
 from beamz.devices.sources.signals import ramped_cosine, plot_signal
 from beamz.devices.sources.mode import solve_modes
-=======
-from beamz.design.materials import CustomMaterial, Material
->>>>>>> main
 
 # Import simulation-related classes and functions
 from beamz.design.meshing import RegularGrid
-from beamz.design.structures import (
-    Circle,
-    CircularBend,
-    Polygon,
-    Rectangle,
-    Ring,
-    Sphere,
-    Taper,
-)
-from beamz.devices.monitors import Monitor
-from beamz.devices.sources import GaussianSource, ModeSource
-from beamz.devices.sources.mode import solve_modes
-from beamz.devices.sources.signals import plot_signal, ramped_cosine
 
 # from beamz.optimization.optimizers import Optimizer  # TODO: Re-enable when optimizers module is created
 from beamz.optimization.topology import (
@@ -116,118 +164,6 @@ from beamz.visual.helpers import (
 # Prepare a dictionary of all our exports
 _exports = {
     # Constants
-<<<<<<< HEAD
-    'LIGHT_SPEED': LIGHT_SPEED,
-    'VAC_PERMITTIVITY': VAC_PERMITTIVITY,
-    'VAC_PERMEABILITY': VAC_PERMEABILITY,
-    'EPS_0': EPS_0,
-    'MU_0': MU_0,
-    'um': um,
-    'nm': nm,
-    'µm': µm,
-    'μm': μm,
-    
-    # Materials - Basic
-    'Material': Material,
-    'CustomMaterial': CustomMaterial,
-
-    # Materials - Advanced dispersive models
-    'SellmeierMaterial': SellmeierMaterial,
-    'DrudeMaterial': DrudeMaterial,
-    'LorentzMaterial': LorentzMaterial,
-    'DebyeMaterial': DebyeMaterial,
-    'PoleResidueMaterial': PoleResidueMaterial,
-    'DrudeLorentzMaterial': DrudeLorentzMaterial,
-
-    # Materials - Predefined dispersive
-    'SiO2_Sellmeier': SiO2_Sellmeier,
-    'BK7_Sellmeier': BK7_Sellmeier,
-    'Gold_Drude': Gold_Drude,
-    'Silver_Drude': Silver_Drude,
-    'Aluminum_Drude': Aluminum_Drude,
-    'Copper_Drude': Copper_Drude,
-    'Water_Debye': Water_Debye,
-    'Gold_DrudeLorentz': Gold_DrudeLorentz,
-
-    # Materials - Library (Vacuum & Gases)
-    'Vacuum': Vacuum,
-    'Air': Air,
-
-    # Materials - Dielectrics & Glasses
-    'SiO2': SiO2,
-    'FusedSilica': FusedSilica,
-    'Silica': Silica,
-    'Si3N4': Si3N4,
-    'SiliconNitride': SiliconNitride,
-    'SiN': SiN,
-    'BK7': BK7,
-    'SodaLimeGlass': SodaLimeGlass,
-    'Sapphire': Sapphire,
-    'Al2O3': Al2O3,
-    'Diamond': Diamond,
-
-    # Materials - Semiconductors
-    'Silicon': Silicon,
-    'Si': Si,
-    'Germanium': Germanium,
-    'Ge': Ge,
-    'GaAs': GaAs,
-    'InP': InP,
-    'LiNbO3': LiNbO3,
-    'LithiumNiobate': LithiumNiobate,
-
-    # Materials - Metals
-    'Gold': Gold,
-    'Au': Au,
-    'Silver': Silver,
-    'Ag': Ag,
-    'Copper': Copper,
-    'Cu': Cu,
-    'Aluminum': Aluminum,
-    'Al': Al,
-    'Chromium': Chromium,
-    'Cr': Cr,
-    'Titanium': Titanium,
-    'Ti': Ti,
-
-    # Materials - Polymers
-    'PMMA': PMMA,
-    'SU8': SU8,
-    'Polystyrene': Polystyrene,
-    'PDMS': PDMS,
-    'HSQ': HSQ,
-
-    # Materials - Liquids
-    'Water': Water,
-    'H2O': H2O,
-    'Ethanol': Ethanol,
-    'IPA': IPA,
-    'Glycerol': Glycerol,
-    'ImmersionOil': ImmersionOil,
-
-    # Materials - Specialty
-    'ITO': ITO,
-    'TiO2': TiO2,
-    'HfO2': HfO2,
-    'Ta2O5': Ta2O5,
-    'ZnO': ZnO,
-    'AlN': AlN,
-    'MgF2': MgF2,
-    'CaF2': CaF2,
-    'BaF2': BaF2,
-    'ZnSe': ZnSe,
-    'ZnS': ZnS,
-
-    # Materials - Special
-    'PEC': PEC,
-    'PMC': PMC,
-
-    # Materials - Utility functions
-    'list_materials': list_materials,
-    'get_material': get_material,
-    'material_info': material_info,
-    
-=======
     "LIGHT_SPEED": LIGHT_SPEED,
     "VAC_PERMITTIVITY": VAC_PERMITTIVITY,
     "VAC_PERMEABILITY": VAC_PERMEABILITY,
@@ -237,10 +173,94 @@ _exports = {
     "nm": nm,
     "µm": µm,
     "μm": μm,
-    # Materials
+    # Materials - Basic
     "Material": Material,
     "CustomMaterial": CustomMaterial,
->>>>>>> main
+    # Materials - Advanced dispersive models
+    "SellmeierMaterial": SellmeierMaterial,
+    "DrudeMaterial": DrudeMaterial,
+    "LorentzMaterial": LorentzMaterial,
+    "DebyeMaterial": DebyeMaterial,
+    "PoleResidueMaterial": PoleResidueMaterial,
+    "DrudeLorentzMaterial": DrudeLorentzMaterial,
+    # Materials - Predefined dispersive
+    "SiO2_Sellmeier": SiO2_Sellmeier,
+    "BK7_Sellmeier": BK7_Sellmeier,
+    "Gold_Drude": Gold_Drude,
+    "Silver_Drude": Silver_Drude,
+    "Aluminum_Drude": Aluminum_Drude,
+    "Copper_Drude": Copper_Drude,
+    "Water_Debye": Water_Debye,
+    "Gold_DrudeLorentz": Gold_DrudeLorentz,
+    # Materials - Library (Vacuum & Gases)
+    "Vacuum": Vacuum,
+    "Air": Air,
+    # Materials - Dielectrics & Glasses
+    "SiO2": SiO2,
+    "FusedSilica": FusedSilica,
+    "Silica": Silica,
+    "Si3N4": Si3N4,
+    "SiliconNitride": SiliconNitride,
+    "SiN": SiN,
+    "BK7": BK7,
+    "SodaLimeGlass": SodaLimeGlass,
+    "Sapphire": Sapphire,
+    "Al2O3": Al2O3,
+    "Diamond": Diamond,
+    # Materials - Semiconductors
+    "Silicon": Silicon,
+    "Si": Si,
+    "Germanium": Germanium,
+    "Ge": Ge,
+    "GaAs": GaAs,
+    "InP": InP,
+    "LiNbO3": LiNbO3,
+    "LithiumNiobate": LithiumNiobate,
+    # Materials - Metals
+    "Gold": Gold,
+    "Au": Au,
+    "Silver": Silver,
+    "Ag": Ag,
+    "Copper": Copper,
+    "Cu": Cu,
+    "Aluminum": Aluminum,
+    "Al": Al,
+    "Chromium": Chromium,
+    "Cr": Cr,
+    "Titanium": Titanium,
+    "Ti": Ti,
+    # Materials - Polymers
+    "PMMA": PMMA,
+    "SU8": SU8,
+    "Polystyrene": Polystyrene,
+    "PDMS": PDMS,
+    "HSQ": HSQ,
+    # Materials - Liquids
+    "Water": Water,
+    "H2O": H2O,
+    "Ethanol": Ethanol,
+    "IPA": IPA,
+    "Glycerol": Glycerol,
+    "ImmersionOil": ImmersionOil,
+    # Materials - Specialty
+    "ITO": ITO,
+    "TiO2": TiO2,
+    "HfO2": HfO2,
+    "Ta2O5": Ta2O5,
+    "ZnO": ZnO,
+    "AlN": AlN,
+    "MgF2": MgF2,
+    "CaF2": CaF2,
+    "BaF2": BaF2,
+    "ZnSe": ZnSe,
+    "ZnS": ZnS,
+    # Materials - Special
+    "PEC": PEC,
+    "PMC": PMC,
+    # Materials - Utility functions
+    "list_materials": list_materials,
+    "get_material": get_material,
+    "material_info": material_info,
     # Structures
     "Design": Design,
     "Rectangle": Rectangle,

@@ -1431,6 +1431,3 @@ Gold_DrudeLorentz = DrudeLorentzMaterial(
     eps_inf=1.0,
     name="Gold (Drude-Lorentz)"
 )
-=======
-# Debye: A dispersive medium described by the Debye model.
->>>>>>> main
