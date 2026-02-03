@@ -2,12 +2,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle as PlotRectangle
 
+try:
+    import tidy3d as _tidy3d  # noqa: F401
+except ImportError as exc:
+    raise ImportError(
+        "This example requires tidy3d for mode solving. Install it with: pip install tidy3d"
+    ) from exc
+
 from beamz import (
     Design,
     Material,
     Rectangle,
     Ring,
-    GaussianSource,
+    ModeSource,
     Monitor,
     Simulation,
     PML,
@@ -74,55 +81,70 @@ design += ring
 DX, DT = calc_optimal_fdtd_params(
     WL, n_max=N_CORE, dims=2, points_per_wavelength=12
 )
-TIME = 120 * WL / LIGHT_SPEED
-
-time = np.arange(0, TIME, DT)
+TIME = 80 * WL / LIGHT_SPEED
 
 # Rasterize once so thermal + EM share the same grid
 grid = design.rasterize(resolution=DX)
 
 # --- 3. Baseline simulation (isothermal) ---
-signal = ramped_cosine(
-    time,
-    amplitude=1.0,
-    frequency=LIGHT_SPEED / WL,
-    phase=0.0,
-    ramp_duration=6 * WL / LIGHT_SPEED,
-    t_max=TIME / 2.5,
-)
-source = GaussianSource(
-    position=(2.0 * WL, bus_y + WG_WIDTH / 2),
-    width=WG_WIDTH * 1.2,
-    signal=signal,
-)
+def run_transmission_sweep(eps_r_override, wavelengths):
+    if eps_r_override is not None:
+        grid.permittivity = np.array(eps_r_override, copy=True)
 
-mon_in = Monitor(
-    design=grid,
-    start=(2.5 * WL, bus_y - WG_WIDTH),
-    end=(2.5 * WL, bus_y + 2.0 * WG_WIDTH),
-    accumulate_power=True,
-)
-mon_out = Monitor(
-    design=grid,
-    start=(W - 2.5 * WL, bus_y - WG_WIDTH),
-    end=(W - 2.5 * WL, bus_y + 2.0 * WG_WIDTH),
-    accumulate_power=True,
-)
+    trans = []
+    for wl_val in wavelengths:
+        time = np.arange(0, 80 * wl_val / LIGHT_SPEED, DT)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=LIGHT_SPEED / wl_val,
+            phase=0.0,
+            ramp_duration=6 * wl_val / LIGHT_SPEED,
+            t_max=time[-1] / 2.5,
+        )
+        source = ModeSource(
+            grid=grid,
+            center=(2.0 * WL, bus_y + WG_WIDTH / 2),
+            width=WG_WIDTH * 3.0,
+            wavelength=wl_val,
+            pol="tm",
+            signal=signal,
+            direction="+x",
+        )
+        source.initialize(grid.permittivity, DX)
 
-sim = Simulation(
-    design=grid,
-    devices=[source, mon_in, mon_out],
-    boundaries=[PML(edges="all", thickness=1.2 * WL)],
-    time=time,
-    resolution=DX,
-)
+        mon_in = Monitor(
+            design=grid,
+            start=(2.5 * WL, bus_y - WG_WIDTH),
+            end=(2.5 * WL, bus_y + 2.0 * WG_WIDTH),
+            accumulate_power=True,
+        )
+        mon_out = Monitor(
+            design=grid,
+            start=(W - 2.5 * WL, bus_y - WG_WIDTH),
+            end=(W - 2.5 * WL, bus_y + 2.0 * WG_WIDTH),
+            accumulate_power=True,
+        )
 
-print("Running baseline (isothermal) simulation...")
-sim.run(save_fields=[], field_subsample=10)
+        sim = Simulation(
+            design=grid,
+            devices=[source, mon_in, mon_out],
+            boundaries=[PML(edges="all", thickness=1.2 * WL)],
+            time=time,
+            resolution=DX,
+        )
+        sim.run(save_fields=[], field_subsample=10)
 
-in_E_base = np.sum(mon_in.power_history) * DT
-out_E_base = np.sum(mon_out.power_history) * DT
-trans_base = (np.abs(out_E_base) / np.abs(in_E_base)) if np.abs(in_E_base) > 0 else 0.0
+        in_E = np.sum(mon_in.power_history) * DT
+        out_E = np.sum(mon_out.power_history) * DT
+        trans.append((np.abs(out_E) / np.abs(in_E)) if np.abs(in_E) > 0 else 0.0)
+
+    return np.array(trans)
+
+eps_r_base = np.array(grid.permittivity, copy=True)
+wavelengths = np.linspace(1.52 * µm, 1.58 * µm, 7)
+print("Running baseline (isothermal) sweep...")
+trans_base = run_transmission_sweep(eps_r_base, wavelengths)
 
 # --- 4. Static thermal solve ---
 outer_r = RING_RADIUS + WG_WIDTH / 2
@@ -151,59 +173,42 @@ params = ThermalParams(
     tol=1e-6,
 )
 
+target_delta_t = 100.0
+heater_power_guess = 3e16
+_, temperature_guess = apply_static_thermal(
+    design,
+    resolution=DX,
+    params=params,
+    heater_mask=heater_mask,
+    heater_power=heater_power_guess,
+    fixed_temp_mask=fixed_temp_mask,
+    fixed_temp_value=300.0,
+)
+max_dT_guess = float(np.max(temperature_guess) - 300.0)
+scale = target_delta_t / max_dT_guess if max_dT_guess > 1e-9 else 1.0
+heater_power = heater_power_guess * scale
+
 eps_r_thermal, temperature = apply_static_thermal(
     design,
     resolution=DX,
     params=params,
     heater_mask=heater_mask,
-    heater_power=3e16,
+    heater_power=heater_power,
     fixed_temp_mask=fixed_temp_mask,
     fixed_temp_value=300.0,
 )
 
 # --- 5. Update EM permittivity (thermal-shifted) ---
-grid.permittivity = np.array(eps_r_thermal, copy=True)
-
-source_hot = GaussianSource(
-    position=(2.0 * WL, bus_y + WG_WIDTH / 2),
-    width=WG_WIDTH * 1.2,
-    signal=signal,
-)
-
-mon_in_hot = Monitor(
-    design=grid,
-    start=(2.5 * WL, bus_y - WG_WIDTH),
-    end=(2.5 * WL, bus_y + 2.0 * WG_WIDTH),
-    accumulate_power=True,
-)
-mon_out_hot = Monitor(
-    design=grid,
-    start=(W - 2.5 * WL, bus_y - WG_WIDTH),
-    end=(W - 2.5 * WL, bus_y + 2.0 * WG_WIDTH),
-    accumulate_power=True,
-)
-
-sim_hot = Simulation(
-    design=grid,
-    devices=[source_hot, mon_in_hot, mon_out_hot],
-    boundaries=[PML(edges="all", thickness=1.2 * WL)],
-    time=time,
-    resolution=DX,
-)
-
-print("Running thermal-shifted simulation...")
-sim_hot.run(save_fields=[], field_subsample=10)
-
-in_E_hot = np.sum(mon_in_hot.power_history) * DT
-out_E_hot = np.sum(mon_out_hot.power_history) * DT
-trans_hot = (np.abs(out_E_hot) / np.abs(in_E_hot)) if np.abs(in_E_hot) > 0 else 0.0
+print("Running thermal-shifted sweep...")
+trans_hot = run_transmission_sweep(eps_r_thermal, wavelengths)
 
 # --- 6. Results + Visualization ---
 max_dT = np.max(temperature) - 300.0
 print("\n--- Summary ---")
-print(f"Baseline transmission: {trans_base:.4f}")
-print(f"Thermal transmission:  {trans_hot:.4f}")
-print(f"Delta transmission:    {trans_hot - trans_base:+.4f}")
+idx_center = len(wavelengths) // 2
+print(f"Baseline transmission: {trans_base[idx_center]:.4f}")
+print(f"Thermal transmission:  {trans_hot[idx_center]:.4f}")
+print(f"Delta transmission:    {trans_hot[idx_center] - trans_base[idx_center]:+.4f}")
 print(f"Max temperature rise:  {max_dT:.2f} K")
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -230,10 +235,13 @@ ax0.add_patch(
 
 # Transmission comparison
 ax1 = axes[1]
-ax1.bar(["Baseline", "Thermal"], [trans_base, trans_hot], color=["#4c72b0", "#dd8452"])
+ax1.plot(wavelengths / µm, trans_base, "-o", label="Baseline", color="#4c72b0")
+ax1.plot(wavelengths / µm, trans_hot, "-o", label="Thermal", color="#dd8452")
+ax1.set_xlabel("Wavelength (µm)")
 ax1.set_ylabel("Transmission (arb.)")
-ax1.set_title("Thermal Detuning Impact")
-ax1.grid(True, axis="y", alpha=0.3)
+ax1.set_title("Thermal Detuning Impact (Spectrum)")
+ax1.grid(True, alpha=0.3)
+ax1.legend()
 
 plt.tight_layout()
 plt.show()
