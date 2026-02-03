@@ -33,8 +33,8 @@ class BaseMeshGrid:
         if material is None:
             return 1.0, 1.0, 0.0
 
-        # Check if this is a CustomMaterial (has getter methods)
-        if hasattr(material, "get_permittivity"):
+        # Check if this is a CustomMaterial (spatial material)
+        if is_spatial_material(material):
             try:
                 permittivity = material.get_permittivity(x, y, z)
                 permeability = material.get_permeability(x, y, z)

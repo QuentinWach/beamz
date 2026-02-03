@@ -15,37 +15,46 @@ def add_materials(design):
     # Ensure background has nonzero thermal conductivity for diffusion
     if hasattr(design.structures[0].material, "k"):
         design.structures[0].material.k = 0.026
+        design.structures[0].material.dn_dT = 2e-5
 
     # Core region (Silicon)
+    si = Silicon()
+    si.dn_dT = 3.5e-4
     design += Rectangle(
         position=(2 * µm, 2 * µm, 0),
         width=6 * µm,
         height=2 * µm,
-        material=Silicon(),
+        material=si,
     )
     # SiO2 block
+    sio2 = SiO2()
+    sio2.dn_dT = 1.5e-5
     design += Rectangle(
         position=(1 * µm, 6 * µm, 0),
         width=4 * µm,
         height=2 * µm,
-        material=SiO2(),
+        material=sio2,
     )
     # Si3N4 block
+    sin = Si3N4()
+    sin.dn_dT = 3.0e-5
     design += Rectangle(
         position=(7 * µm, 6 * µm, 0),
         width=2 * µm,
         height=2 * µm,
-        material=Si3N4(),
+        material=sin,
     )
     # Gold pad (heater)
     gold = Gold()
     gold.k = 318.0
+    gold.dsigma_dT = 2.0e5
     design += Rectangle(
         position=(6 * µm, 1 * µm, 0), width=2 * µm, height=1.5 * µm, material=gold
     )
     # TiN strip
     tin = TiN()
     tin.k = 30.0
+    tin.dsigma_dT = 5.0e4
     design += Rectangle(
         position=(1 * µm, 1 * µm, 0), width=3 * µm, height=0.8 * µm, material=tin
     )
