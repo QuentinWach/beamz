@@ -4,11 +4,21 @@ Tests verify:
 1. Phase velocity = c/n in dielectric materials
 2. Wavelength contraction by factor n
 """
-import pytest
+
 import numpy as np
+import pytest
+
 from beamz import (
-    Design, Material, Simulation, PML, GaussianSource,
-    LIGHT_SPEED, EPS_0, um, calc_optimal_fdtd_params, ramped_cosine
+    EPS_0,
+    LIGHT_SPEED,
+    PML,
+    Design,
+    GaussianSource,
+    Material,
+    Simulation,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    um,
 )
 
 # Import utilities
@@ -32,14 +42,13 @@ class TestWaveInMaterial:
         domain_size = 12 * wavelength
 
         dx, dt = calc_optimal_fdtd_params(
-            wavelength, n_material, dims=2,
-            safety_factor=0.95, points_per_wavelength=12
+            wavelength, n_material, dims=2, safety_factor=0.95, points_per_wavelength=12
         )
 
         design = Design(
             width=domain_size,
             height=domain_size,
-            material=Material(permittivity=n_material**2)
+            material=Material(permittivity=n_material**2),
         )
 
         frequency = LIGHT_SPEED / wavelength
@@ -51,15 +60,15 @@ class TestWaveInMaterial:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.5
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.5,
         )
 
         # Source on left side
         source = GaussianSource(
-            position=(2*wavelength, domain_size/2),
-            width=wavelength/(4*n_material),  # Smaller source in higher index
-            signal=signal
+            position=(2 * wavelength, domain_size / 2),
+            width=wavelength / (4 * n_material),  # Smaller source in higher index
+            signal=signal,
         )
 
         sim = Simulation(
@@ -67,18 +76,15 @@ class TestWaveInMaterial:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
         subsample = 10
-        result = sim.run(save_fields=['Ez'], field_subsample=subsample)
+        result = sim.run(save_fields=["Ez"], field_subsample=subsample)
 
         dt_snapshot = dt * subsample
         v_measured = estimate_phase_velocity(
-            result['fields']['Ez'],
-            dx,
-            dt_snapshot,
-            threshold=0.2
+            result["fields"]["Ez"], dx, dt_snapshot, threshold=0.2
         )
 
         expected_velocity = LIGHT_SPEED / n_material
@@ -101,11 +107,11 @@ class TestWaveInMaterial:
 
         Tolerance: 10%
         """
-        design = dielectric_domain['design']
-        wavelength = dielectric_domain['wavelength']
-        dx = dielectric_domain['dx']
-        dt = dielectric_domain['dt']
-        n = dielectric_domain['n']
+        design = dielectric_domain["design"]
+        wavelength = dielectric_domain["wavelength"]
+        dx = dielectric_domain["dx"]
+        dt = dielectric_domain["dt"]
+        n = dielectric_domain["n"]
 
         frequency = LIGHT_SPEED / wavelength
         n_periods = 12
@@ -116,15 +122,15 @@ class TestWaveInMaterial:
             time,
             amplitude=1.0,
             frequency=frequency,
-            ramp_duration=2/frequency,
-            t_max=t_total * 0.6
+            ramp_duration=2 / frequency,
+            t_max=t_total * 0.6,
         )
 
         # Source on left side
         source = GaussianSource(
-            position=(2*wavelength, design.height/2),
-            width=wavelength/(4*n),
-            signal=signal
+            position=(2 * wavelength, design.height / 2),
+            width=wavelength / (4 * n),
+            signal=signal,
         )
 
         sim = Simulation(
@@ -132,16 +138,16 @@ class TestWaveInMaterial:
             devices=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
-            resolution=dx
+            resolution=dx,
         )
 
         # Run until wave establishes
-        result = sim.run(save_fields=['Ez'], field_subsample=50)
+        result = sim.run(save_fields=["Ez"], field_subsample=50)
 
         # Take a snapshot after wave has propagated
         # Use one from middle of simulation
-        mid_idx = len(result['fields']['Ez']) // 2
-        Ez = result['fields']['Ez'][mid_idx]
+        mid_idx = len(result["fields"]["Ez"]) // 2
+        Ez = result["fields"]["Ez"][mid_idx]
 
         # Get 1D profile through center
         center_row = Ez.shape[0] // 2
@@ -182,14 +188,13 @@ class TestWaveInMaterial:
         for eps_r in [1.0, 2.25, 4.0]:  # n = 1, 1.5, 2
             n = np.sqrt(eps_r)
             dx, dt = calc_optimal_fdtd_params(
-                wavelength, n, dims=2,
-                safety_factor=0.95, points_per_wavelength=10
+                wavelength, n, dims=2, safety_factor=0.95, points_per_wavelength=10
             )
 
             design = Design(
                 width=domain_size,
                 height=domain_size,
-                material=Material(permittivity=eps_r)
+                material=Material(permittivity=eps_r),
             )
 
             frequency = LIGHT_SPEED / wavelength
@@ -200,14 +205,14 @@ class TestWaveInMaterial:
                 time,
                 amplitude=1.0,
                 frequency=frequency,
-                ramp_duration=2/frequency,
-                t_max=t_total * 0.4
+                ramp_duration=2 / frequency,
+                t_max=t_total * 0.4,
             )
 
             source = GaussianSource(
-                position=(2*wavelength, domain_size/2),
-                width=wavelength/4,
-                signal=signal
+                position=(2 * wavelength, domain_size / 2),
+                width=wavelength / 4,
+                signal=signal,
             )
 
             sim = Simulation(
@@ -215,17 +220,14 @@ class TestWaveInMaterial:
                 devices=[source],
                 boundaries=[PML(thickness=wavelength)],
                 time=time,
-                resolution=dx
+                resolution=dx,
             )
 
             subsample = 10
-            result = sim.run(save_fields=['Ez'], field_subsample=subsample)
+            result = sim.run(save_fields=["Ez"], field_subsample=subsample)
 
             v = estimate_phase_velocity(
-                result['fields']['Ez'],
-                dx,
-                dt * subsample,
-                threshold=0.2
+                result["fields"]["Ez"], dx, dt * subsample, threshold=0.2
             )
             if v is not None:
                 velocities.append(v)
@@ -233,7 +235,7 @@ class TestWaveInMaterial:
         # Verify we got measurements and they're monotonically decreasing
         assert len(velocities) >= 2, "Could not measure velocities"
         for i in range(1, len(velocities)):
-            assert velocities[i] < velocities[i-1], (
+            assert velocities[i] < velocities[i - 1], (
                 f"Higher permittivity should give lower velocity. "
                 f"Got velocities: {velocities}"
             )

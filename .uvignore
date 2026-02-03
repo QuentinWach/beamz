@@ -1,0 +1,9 @@
+# Files to ignore during uv operations
+docs/
+examples/
+tests/
+*.md
+*.txt
+pics/
+reference/
+site/

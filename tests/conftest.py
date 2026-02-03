@@ -1,10 +1,22 @@
 """Shared fixtures and utilities for BeamZ FDTD physics validation tests."""
-import pytest
+
 import numpy as np
+import pytest
+
 from beamz import (
-    Design, Material, Rectangle, Simulation, PML, Monitor,
-    GaussianSource, LIGHT_SPEED, EPS_0, MU_0, um,
-    calc_optimal_fdtd_params, ramped_cosine
+    EPS_0,
+    LIGHT_SPEED,
+    MU_0,
+    PML,
+    Design,
+    GaussianSource,
+    Material,
+    Monitor,
+    Rectangle,
+    Simulation,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    um,
 )
 
 # =============================================================================
@@ -44,23 +56,20 @@ def vacuum_domain_small():
     domain_size = 10 * wavelength
 
     dx, dt = calc_optimal_fdtd_params(
-        wavelength, n_max, dims=2,
-        safety_factor=0.95, points_per_wavelength=10
+        wavelength, n_max, dims=2, safety_factor=0.95, points_per_wavelength=10
     )
 
     design = Design(
-        width=domain_size,
-        height=domain_size,
-        material=Material(permittivity=1.0)
+        width=domain_size, height=domain_size, material=Material(permittivity=1.0)
     )
 
     return {
-        'design': design,
-        'wavelength': wavelength,
-        'domain_size': domain_size,
-        'dx': dx,
-        'dt': dt,
-        'n': n_max,
+        "design": design,
+        "wavelength": wavelength,
+        "domain_size": domain_size,
+        "dx": dx,
+        "dt": dt,
+        "n": n_max,
     }
 
 
@@ -75,23 +84,22 @@ def dielectric_domain():
     domain_size = 10 * wavelength
 
     dx, dt = calc_optimal_fdtd_params(
-        wavelength, n_material, dims=2,
-        safety_factor=0.95, points_per_wavelength=12
+        wavelength, n_material, dims=2, safety_factor=0.95, points_per_wavelength=12
     )
 
     design = Design(
         width=domain_size,
         height=domain_size,
-        material=Material(permittivity=n_material**2)
+        material=Material(permittivity=n_material**2),
     )
 
     return {
-        'design': design,
-        'wavelength': wavelength,
-        'domain_size': domain_size,
-        'dx': dx,
-        'dt': dt,
-        'n': n_material,
+        "design": design,
+        "wavelength": wavelength,
+        "domain_size": domain_size,
+        "dx": dx,
+        "dt": dt,
+        "n": n_material,
     }
 
 
@@ -110,36 +118,33 @@ def dielectric_interface_domain():
     domain_height = 10 * wavelength
 
     dx, dt = calc_optimal_fdtd_params(
-        wavelength, n2, dims=2,
-        safety_factor=0.95, points_per_wavelength=12
+        wavelength, n2, dims=2, safety_factor=0.95, points_per_wavelength=12
     )
 
     # Background is vacuum
     design = Design(
-        width=domain_width,
-        height=domain_height,
-        material=Material(permittivity=n1**2)
+        width=domain_width, height=domain_height, material=Material(permittivity=n1**2)
     )
 
     # Add dielectric in right half
     interface_x = domain_width / 2
     design += Rectangle(
-        position=(interface_x + domain_width/4, domain_height/2),
-        width=domain_width/2,
+        position=(interface_x + domain_width / 4, domain_height / 2),
+        width=domain_width / 2,
         height=domain_height,
-        material=Material(permittivity=n2**2)
+        material=Material(permittivity=n2**2),
     )
 
     return {
-        'design': design,
-        'wavelength': wavelength,
-        'domain_width': domain_width,
-        'domain_height': domain_height,
-        'interface_x': interface_x,
-        'n1': n1,
-        'n2': n2,
-        'dx': dx,
-        'dt': dt,
+        "design": design,
+        "wavelength": wavelength,
+        "domain_width": domain_width,
+        "domain_height": domain_height,
+        "interface_x": interface_x,
+        "n1": n1,
+        "n2": n2,
+        "dx": dx,
+        "dt": dt,
     }
 
 
@@ -159,33 +164,32 @@ def waveguide_domain():
     domain_height = 6 * wavelength
 
     dx, dt = calc_optimal_fdtd_params(
-        wavelength, n_core, dims=2,
-        safety_factor=0.95, points_per_wavelength=15
+        wavelength, n_core, dims=2, safety_factor=0.95, points_per_wavelength=15
     )
 
     # Background is cladding
     design = Design(
         width=domain_width,
         height=domain_height,
-        material=Material(permittivity=n_clad**2)
+        material=Material(permittivity=n_clad**2),
     )
 
     # Add waveguide core (horizontal stripe in center)
     design += Rectangle(
-        position=(domain_width/2, domain_height/2),
+        position=(domain_width / 2, domain_height / 2),
         width=domain_width,
         height=core_width,
-        material=Material(permittivity=n_core**2)
+        material=Material(permittivity=n_core**2),
     )
 
     return {
-        'design': design,
-        'wavelength': wavelength,
-        'domain_width': domain_width,
-        'domain_height': domain_height,
-        'core_width': core_width,
-        'n_core': n_core,
-        'n_clad': n_clad,
-        'dx': dx,
-        'dt': dt,
+        "design": design,
+        "wavelength": wavelength,
+        "domain_width": domain_width,
+        "domain_height": domain_height,
+        "core_width": core_width,
+        "n_core": n_core,
+        "n_clad": n_clad,
+        "dx": dx,
+        "dt": dt,
     }

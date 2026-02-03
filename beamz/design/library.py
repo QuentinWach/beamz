@@ -33,6 +33,7 @@ References:
     - CRC Handbook of Chemistry and Physics
 """
 
+<<<<<<< HEAD
 import numpy as np
 from beamz.design.materials import Material
 from beamz.const import LIGHT_SPEED
@@ -1279,3 +1280,6 @@ __all__ = [
     # Functions
     'list_materials', 'get_material', 'material_info',
 ]
+=======
+# Copper
+>>>>>>> main

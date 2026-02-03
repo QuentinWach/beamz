@@ -21,11 +21,13 @@ wheels/
 *.egg
 *.excalidraw
 wip/
+experiments/
 
 # Virtual Environment
 venv/
 env/
 ENV/
+.venv/
 
 # IDE
 .idea/
@@ -71,7 +73,7 @@ site/
 project_ideas/
 MARKETING_2.md
 TODO.md
-*.png
+!BEAMZ_logo.png
 *.npy
 
 beamz/devices/reference/
@@ -80,3 +82,4 @@ notes/
 .pytest_cache/
 .python_cache/
 .venv/
+reference/

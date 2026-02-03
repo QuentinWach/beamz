@@ -4,9 +4,11 @@ This module provides JAX-compatible replacements for NumPy/SciPy operations
 used in source initialization, enabling gradient computation through source
 parameters for inverse design optimization.
 """
+
+from functools import partial
+
 import jax
 import jax.numpy as jnp
-from functools import partial
 
 
 def jax_tukey_window(M: int, alpha: float = 0.5) -> jnp.ndarray:
@@ -36,8 +38,9 @@ def jax_tukey_window(M: int, alpha: float = 0.5) -> jnp.ndarray:
     left_taper = 0.5 * (1 + jnp.cos(jnp.pi * (n / width - 1)))
     right_taper = 0.5 * (1 + jnp.cos(jnp.pi * ((n - (M - 1 - width)) / width)))
 
-    window = jnp.where(n < width, left_taper,
-                       jnp.where(n > (M - 1) - width, right_taper, 1.0))
+    window = jnp.where(
+        n < width, left_taper, jnp.where(n > (M - 1) - width, right_taper, 1.0)
+    )
     return window
 
 
@@ -78,9 +81,9 @@ def soft_index_value(arr: jnp.ndarray, soft_idx: jnp.ndarray) -> jnp.ndarray:
     return (1 - frac) * arr_flat[idx_low] + frac * arr_flat[idx_high]
 
 
-def differentiable_phase_alignment(field: jnp.ndarray,
-                                    reference_field: jnp.ndarray = None,
-                                    temperature: float = 0.01) -> jnp.ndarray:
+def differentiable_phase_alignment(
+    field: jnp.ndarray, reference_field: jnp.ndarray = None, temperature: float = 0.01
+) -> jnp.ndarray:
     """Align field phase to make it mostly real at peak amplitude.
 
     Uses soft argmax for differentiability instead of hard argmax.
@@ -107,7 +110,9 @@ def differentiable_phase_alignment(field: jnp.ndarray,
     return field * jnp.exp(-1j * phase_ref)
 
 
-def stagger_field_yee(field: jnp.ndarray, axis: int, direction: str = 'forward') -> jnp.ndarray:
+def stagger_field_yee(
+    field: jnp.ndarray, axis: int, direction: str = "forward"
+) -> jnp.ndarray:
     """Differentiable Yee grid staggering via averaging.
 
     Averages adjacent cells along the specified axis for Yee grid interpolation.
@@ -132,10 +137,9 @@ def stagger_field_yee(field: jnp.ndarray, axis: int, direction: str = 'forward')
     return 0.5 * (field[tuple(slices_low)] + field[tuple(slices_high)])
 
 
-def gaussian_spatial_profile(position: tuple,
-                              width: float,
-                              grid_coords: tuple,
-                              resolution: float) -> jnp.ndarray:
+def gaussian_spatial_profile(
+    position: tuple, width: float, grid_coords: tuple, resolution: float
+) -> jnp.ndarray:
     """Generate differentiable Gaussian spatial profile.
 
     Args:
@@ -150,18 +154,18 @@ def gaussian_spatial_profile(position: tuple,
     if len(position) == 2:
         x0, y0 = position
         X, Y = grid_coords
-        dist_sq = (X - x0)**2 + (Y - y0)**2
+        dist_sq = (X - x0) ** 2 + (Y - y0) ** 2
     else:
         x0, y0, z0 = position
         X, Y, Z = grid_coords
-        dist_sq = (X - x0)**2 + (Y - y0)**2 + (Z - z0)**2
+        dist_sq = (X - x0) ** 2 + (Y - y0) ** 2 + (Z - z0) ** 2
 
     return jnp.exp(-dist_sq / (2 * width**2))
 
 
-def create_grid_coords_2d(x_start: int, x_end: int,
-                           y_start: int, y_end: int,
-                           resolution: float) -> tuple:
+def create_grid_coords_2d(
+    x_start: int, x_end: int, y_start: int, y_end: int, resolution: float
+) -> tuple:
     """Create 2D grid coordinate arrays for Gaussian profile.
 
     Args:
@@ -174,13 +178,18 @@ def create_grid_coords_2d(x_start: int, x_end: int,
     """
     x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
     y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
-    return jnp.meshgrid(x_coords, y_coords, indexing='xy')
+    return jnp.meshgrid(x_coords, y_coords, indexing="xy")
 
 
-def create_grid_coords_3d(x_start: int, x_end: int,
-                           y_start: int, y_end: int,
-                           z_start: int, z_end: int,
-                           resolution: float) -> tuple:
+def create_grid_coords_3d(
+    x_start: int,
+    x_end: int,
+    y_start: int,
+    y_end: int,
+    z_start: int,
+    z_end: int,
+    resolution: float,
+) -> tuple:
     """Create 3D grid coordinate arrays for Gaussian profile.
 
     Args:
@@ -195,14 +204,13 @@ def create_grid_coords_3d(x_start: int, x_end: int,
     x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
     y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
     z_coords = (jnp.arange(z_start, z_end) + 0.5) * resolution
-    return jnp.meshgrid(x_coords, y_coords, z_coords, indexing='ij')
+    return jnp.meshgrid(x_coords, y_coords, z_coords, indexing="ij")
 
 
 @partial(jax.jit, static_argnums=(1, 2))
-def interpolate_signal(signal_array: jnp.ndarray,
-                        signal_len: int,
-                        time: float,
-                        dt: float) -> jnp.ndarray:
+def interpolate_signal(
+    signal_array: jnp.ndarray, signal_len: int, time: float, dt: float
+) -> jnp.ndarray:
     """Differentiable signal interpolation at arbitrary time.
 
     Args:
@@ -226,7 +234,12 @@ def interpolate_signal(signal_array: jnp.ndarray,
     # Check if we're within valid range
     in_range = (idx_low >= 0) & (idx_low < signal_len - 1)
 
-    interp_val = (1.0 - frac) * signal_array[idx_low_safe] + frac * signal_array[idx_high_safe]
+    interp_val = (1.0 - frac) * signal_array[idx_low_safe] + frac * signal_array[
+        idx_high_safe
+    ]
 
-    return jnp.where(in_range, interp_val,
-                     jnp.where(idx_low == signal_len - 1, signal_array[idx_low_safe], 0.0))
+    return jnp.where(
+        in_range,
+        interp_val,
+        jnp.where(idx_low == signal_len - 1, signal_array[idx_low_safe], 0.0),
+    )

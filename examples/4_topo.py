@@ -5,13 +5,13 @@ from beamz.optimization.topology import TopologyManager, compute_overlap_gradien
 
 # --- 1. Simulation Setup ---
 W = H = 7*µm
-WG_W = 0.5*µm
+WG_W = 0.55*µm
 WL = 1.55*µm
-N_CORE, N_CLAD = 2.25, 1.444
-DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=20)
-STEPS = 20
-MAT_PENALTY = 0.1      # Target core material fraction (0.0 to 1.0)
-PENALTY_STRENGTH = 0 # Scaling factor for the penalty gradient
+N_CORE, N_CLAD = 2.25, 1.444 # Si3N4, SiO2
+DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=20) # reduce to 9 for faster simulation
+STEPS = 50 # reduce to 40 for faster optimization
+MAT_PENALTY = 0.3      # Target core material fraction (0.0 to 1.0)
+PENALTY_STRENGTH = 1 # Scaling factor for the penalty gradient
 
 # Design & Materials
 design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
@@ -25,8 +25,11 @@ design += opt_region
 # design.show()
 
 # Sources
-time = np.arange(0, 30*WL/LIGHT_SPEED, DT)
-signal = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time[-1])
+time = np.arange(0, 15*WL/LIGHT_SPEED, DT)
+signal = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=3.5*WL/LIGHT_SPEED, t_max=time[-1]/2)
+
+from beamz.devices.sources.signals import plot_signal
+plot_signal(signal, time, save_path='signal.png')
 src_fwd = ModeSource(None, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+x")
 src_adj = ModeSource(None, center=(W/2, 1.0*µm), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+y")
 
@@ -39,13 +42,12 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    learning_rate=0.1,
-    filter_radius=0.2*µm,       # Physical units: Radius of the conic filter
-    simple_smooth_radius=0.1*µm, # Physical units: Small blur to remove pixelation artifacts
+    learning_rate=0.015,
+    filter_radius=0.3*µm,       # Physical units: Controls minimum feature size AND boundary smoothness
     eps_min=N_CLAD**2,
     eps_max=N_CORE**2,
     beta_schedule=(1.0, 20.0),
-    filter_type='conic',         # Use conic filter for geometric constraints
+    filter_type="conic",         # Use conic filter for geometric constraints
 )
 
 print(f"Starting Topology Optimization ({STEPS} steps)...")
@@ -83,8 +85,8 @@ for step in range(STEPS):
     print(f"[{step+1}/{STEPS}] Forward Sim...", end="\r")
     results = sim_fwd.run(save_fields=['Ez'], field_subsample=2)
     
-    # Extract field history
-    fwd_ez_history = results['fields']['Ez'] if results and 'fields' in results else []
+    # Extract field history and ensure NumPy arrays
+    fwd_ez_history = [np.array(field) for field in results['fields']['Ez']] if results and 'fields' in results else []
     
     # Calculate transmission normalizing by measured input flux
     # Input flux includes forward wave + reflection. 
@@ -112,7 +114,7 @@ for step in range(STEPS):
                         [PML(edges='all', thickness=1*µm)], time=time, resolution=DX)
     
     adj_results = sim_adj.run(save_fields=['Ez'], field_subsample=2)
-    adj_ez_history = adj_results['fields']['Ez'] if adj_results and 'fields' in adj_results else []
+    adj_ez_history = [np.array(field) for field in adj_results['fields']['Ez']] if adj_results and 'fields' in adj_results else []
     
     # Calculate backward transmission normalizing by measured input flux
     measured_input_energy_back = np.sum(monitor_back_flux.power_history) * DT
@@ -132,21 +134,24 @@ for step in range(STEPS):
             
     # Compute Gradient (overlap of fwd and adj fields)
     grad_eps = compute_overlap_gradient(fwd_ez_history, adj_ez_history)
-    
+
+    # Ensure grad_eps is a NumPy array (not JAX array)
+    grad_eps = np.array(grad_eps)
+
     # Measure Material Usage (Relative core material amount)
     # phys_density is 0 (cladding) to 1 (core)
     current_density = np.mean(phys_density[mask])
-    
+
     # Quadratic Penalty: Strength * (current - target)^2
     # We want to maximize Obj, so we subtract penalty.
     # The gradient w.r.t. density is roughly proportional to (current - target).
     # We apply this uniform gradient correction to all pixels in the mask.
-    
+
     # Gradient contribution: push density towards target
     # If current > target, we want to decrease density -> negative gradient contribution
     # If current < target, we want to increase density -> positive gradient contribution
     # grad_correction = -Strength * (current - target)
-    
+
     grad_penalty = PENALTY_STRENGTH * (current_density - MAT_PENALTY)
     grad_eps[mask] -= grad_penalty
 
@@ -191,13 +196,13 @@ wavelengths = np.linspace(1.2*µm, 1.8*µm, 12)
 sweep_transmission = []
 
 # Use extended time to ensure full pulse transmission for all runs
-time_sweep = np.arange(0, 60*WL/LIGHT_SPEED, DT)
+time_sweep = np.arange(0, 15*WL/LIGHT_SPEED, DT)
 
 for i, wl_val in enumerate(wavelengths):
     print(f"Simulating Wavelength: {wl_val/µm:.3f} µm...", end="\r")
     
     # Create signal for this specific wavelength
-    signal_sweep = ramped_cosine(time_sweep, 1, LIGHT_SPEED/wl_val, ramp_duration=6*wl_val/LIGHT_SPEED, t_max=time_sweep[-1])
+    signal_sweep = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=3.5*WL/LIGHT_SPEED, t_max=time[-1]/2)
     
     # Create source
     src_sweep = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=wl_val, pol="tm", signal=signal_sweep, direction="+x")
@@ -239,7 +244,7 @@ print(f"Spectrum plot saved to transmission_spectrum.png")
 # --- 5. Final Visualization (Center Wavelength) ---
 # Re-run simulation at center wavelength (1.55) to generate field plot
 print("\n--- Generating Final Field Plot (1.55 µm) ---")
-signal_final = ramped_cosine(time_sweep, 1, LIGHT_SPEED/WL, ramp_duration=6*WL/LIGHT_SPEED, t_max=time_sweep[-1])
+signal_final = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=3.5*WL/LIGHT_SPEED, t_max=time[-1]/2)
 src_final = ModeSource(grid, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal_final, direction="+x")
 src_final.initialize(grid.permittivity, DX)
 
