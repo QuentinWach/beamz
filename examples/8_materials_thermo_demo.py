@@ -17,7 +17,7 @@ def add_materials(design):
         design.structures[0].material.k = 0.026
         design.structures[0].material.dn_dT = 2e-5
 
-    # Core region (Silicon)
+    # Core region (Silicon) - keep as-is
     si = Silicon()
     si.dn_dT = 3.5e-4
     design += Rectangle(
@@ -26,7 +26,7 @@ def add_materials(design):
         height=2 * µm,
         material=si,
     )
-    # SiO2 block
+    # SiO2 block - override permittivity explicitly
     sio2 = SiO2()
     sio2.dn_dT = 1.5e-5
     design += Rectangle(
@@ -35,7 +35,7 @@ def add_materials(design):
         height=2 * µm,
         material=sio2,
     )
-    # Si3N4 block
+    # Si3N4 block - override permittivity explicitly
     sin = Si3N4()
     sin.dn_dT = 3.0e-5
     design += Rectangle(
@@ -44,17 +44,19 @@ def add_materials(design):
         height=2 * µm,
         material=sin,
     )
-    # Gold pad (heater)
+    # Gold pad (heater) - override permittivity to avoid metal dominating εr map
     gold = Gold()
     gold.k = 318.0
     gold.dsigma_dT = 2.0e5
+    gold.permittivity = 1.0
     design += Rectangle(
         position=(6 * µm, 1 * µm, 0), width=2 * µm, height=1.5 * µm, material=gold
     )
-    # TiN strip
+    # TiN strip - override permittivity for contrast
     tin = TiN()
     tin.k = 30.0
     tin.dsigma_dT = 5.0e4
+    tin.permittivity = 6.0
     design += Rectangle(
         position=(1 * µm, 1 * µm, 0), width=3 * µm, height=0.8 * µm, material=tin
     )
@@ -90,9 +92,30 @@ def draw_material_outlines(ax, design, color="w", lw=0.8, alpha=0.6):
         ax.add_patch(rect)
 
 
-def plot_maps(props_T0, props_T, temperature, design, resolution):
+def add_material_legend(fig):
+    labels = [
+        ("Air", "lightgray"),
+        ("Si", "#1f77b4"),
+        ("SiO2", "#2ca02c"),
+        ("Si3N4", "#ff7f0e"),
+        ("Au (heater)", "#d62728"),
+        ("TiN", "#9467bd"),
+    ]
+    handles = [
+        plt.Line2D([0], [0], color=color, lw=6) for _, color in labels
+    ]
+    fig.legend(
+        handles,
+        [label for label, _ in labels],
+        loc="lower center",
+        ncol=3,
+        frameon=False,
+    )
+
+
+def plot_maps(props_T0, props_T, temperature, design, resolution, material_id):
     extent = (0, design.width / µm, 0, design.height / µm)
-    fig, axes = plt.subplots(2, 3, figsize=(12, 7))
+    fig, axes = plt.subplots(2, 4, figsize=(15, 7))
 
     eps0 = props_T0["permittivity"]
     epsT = props_T["permittivity"]
@@ -100,9 +123,8 @@ def plot_maps(props_T0, props_T, temperature, design, resolution):
     kT = props_T["k"]
     delta_eps = epsT - eps0
     delta_T = temperature - props_T0["T0"]
-    metal_mask = sigmaT > 1e5
-    eps0_plot = np.where(metal_mask, np.nan, eps0)
-    epsT_plot = np.where(metal_mask, np.nan, epsT)
+    eps0_plot = eps0
+    epsT_plot = epsT
 
     eps_vmin = np.nanpercentile(eps0_plot, 2)
     eps_vmax = np.nanpercentile(eps0_plot, 98)
@@ -112,7 +134,6 @@ def plot_maps(props_T0, props_T, temperature, design, resolution):
         temp_vmax = temp_vmin + 1.0
 
     eps_cmap = plt.cm.viridis.copy()
-    eps_cmap.set_bad(color="lightgray")
 
     im0 = axes[0, 0].imshow(
         eps0_plot,
@@ -156,23 +177,35 @@ def plot_maps(props_T0, props_T, temperature, design, resolution):
     plt.colorbar(im4, ax=axes[1, 1])
     draw_material_outlines(axes[1, 1], design)
 
+    # Material ID map (categorical)
+    material_map = np.where(material_id < 0, 0, material_id + 1)
+    cmap = plt.cm.get_cmap("tab20", int(np.max(material_map)) + 1)
+    im5 = axes[0, 3].imshow(material_map, origin="lower", extent=extent, cmap=cmap)
+    axes[0, 3].set_title("Material Map")
+    plt.colorbar(im5, ax=axes[0, 3])
+    draw_material_outlines(axes[0, 3], design)
+
     # Leave the last panel for a delta map
     delta_t_v = np.max(np.abs(delta_T))
     if delta_t_v == 0:
         delta_t_v = 1e-3
-    im5 = axes[1, 2].imshow(
+    im6 = axes[1, 2].imshow(
         delta_T, origin="lower", extent=extent, vmin=-delta_t_v, vmax=delta_t_v
     )
     axes[1, 2].set_title("ΔT (K)")
-    plt.colorbar(im5, ax=axes[1, 2])
+    plt.colorbar(im6, ax=axes[1, 2])
     draw_material_outlines(axes[1, 2], design)
 
     for ax in axes.flat:
         ax.set_xlabel("x (µm)")
         ax.set_ylabel("y (µm)")
 
+    # Hide unused panel
+    axes[1, 3].axis("off")
+
     fig.suptitle("Material + Thermodynamics Demo", fontsize=14)
-    fig.tight_layout()
+    add_material_legend(fig)
+    fig.tight_layout(rect=[0, 0.08, 1, 1])
     plt.show()
 
 
@@ -214,7 +247,9 @@ def main():
     props_T0 = design.evaluate_materials(resolution, None)
     props_T = design.evaluate_materials(resolution, temperature)
 
-    plot_maps(props_T0, props_T, temperature, design, resolution)
+    grid = design.rasterize(resolution)
+    material_id = grid.get_material_id_grid()
+    plot_maps(props_T0, props_T, temperature, design, resolution, material_id)
 
 
 if __name__ == "__main__":

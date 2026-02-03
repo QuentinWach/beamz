@@ -428,6 +428,8 @@ class RegularGrid(BaseMeshGrid):
                                         cp_grid[i, j] = cp_val
                                         dn_dT_grid[i, j] = dn_dT_val
                                         T0_grid[i, j] = T0_val
+                                        if mat_id is not None:
+                                            self.material_id[i, j] = mat_id
                             else:
                                 permittivity[
                                     inner_min_i:inner_max_i, inner_min_j:inner_max_j
@@ -455,6 +457,10 @@ class RegularGrid(BaseMeshGrid):
                                 T0_grid[
                                     inner_min_i:inner_max_i, inner_min_j:inner_max_j
                                 ] = mat_T0
+                                if mat_id is not None:
+                                    self.material_id[
+                                        inner_min_i:inner_max_i, inner_min_j:inner_max_j
+                                    ] = mat_id
                         # Calculate boundary region cells (those that need super-sampling)
                         # This is more efficient than checking each cell individually
                         boundary_mask = np.zeros(

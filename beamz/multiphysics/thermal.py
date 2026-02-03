@@ -259,10 +259,6 @@ class StaticThermalSolve:
         # Build permittivity from temperature-dependent materials to avoid sqrt on metals
         props = design.evaluate_materials(resolution, T)
         eps_r = np.asarray(props["permittivity"])
-        if np.any(dn_dT_grid != 0):
-            n0 = np.sqrt(np.asarray(design.get_material_grids(resolution)[0]))
-            n = n0 + dn_dT_grid * (T - T0_grid)
-            eps_r = n * n
         return eps_r, T
 
     def _apply_default(self, grid, default):
