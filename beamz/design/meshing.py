@@ -3,6 +3,7 @@ import numpy as np
 from mpl_toolkits.mplot3d import Axes3D
 
 from beamz.design.structures import Rectangle
+from beamz.design.materials import as_material_model, is_spatial_material
 from beamz.visual.helpers import (
     create_rich_progress,
     display_status,
@@ -16,6 +17,8 @@ class BaseMeshGrid:
     def __init__(self, design, resolution):
         self.design = design
         self.resolution = resolution
+        self.material_table = []
+        self._material_id_map = {}
         self._validate_inputs()
 
     def _validate_inputs(self):
@@ -54,6 +57,25 @@ class BaseMeshGrid:
                     getattr(material, "default_conductivity", 0.0),
                 )
 
+        # Temperature-dependent MaterialModel
+        elif hasattr(material, "epsilon_r"):
+            try:
+                t_ref = getattr(material, "T_ref", getattr(material, "T0", 300.0))
+                permittivity = material.epsilon_r(t_ref)
+                permeability = material.permeability(t_ref)
+                conductivity = material.conductivity(t_ref)
+
+                if hasattr(permittivity, "item"):
+                    permittivity = permittivity.item()
+                if hasattr(permeability, "item"):
+                    permeability = permeability.item()
+                if hasattr(conductivity, "item"):
+                    conductivity = conductivity.item()
+                return permittivity, permeability, conductivity
+            except Exception as e:
+                print(f"Warning: MaterialModel evaluation failed: {e}, using defaults")
+                return 1.0, 1.0, 0.0
+
         # Traditional Material object (direct attributes)
         elif hasattr(material, "permittivity"):
             return (
@@ -74,6 +96,22 @@ class BaseMeshGrid:
         if material is None:
             return 0.0, 0.0, 0.0, 0.0, 300.0
 
+        # Temperature-dependent MaterialModel
+        if hasattr(material, "thermal_k"):
+            t_ref = getattr(material, "T_ref", getattr(material, "T0", 300.0))
+            k = material.thermal_k(t_ref)
+            rho = material.density(t_ref)
+            cp = material.heat_capacity(t_ref)
+            dn_dT = getattr(material, "dn_dT", 0.0)
+            T0 = t_ref
+            if hasattr(k, "item"):
+                k = k.item()
+            if hasattr(rho, "item"):
+                rho = rho.item()
+            if hasattr(cp, "item"):
+                cp = cp.item()
+            return k, rho, cp, dn_dT, T0
+
         # CustomMaterial or Material: thermal params are constants
         k = getattr(material, "k", 0.0)
         rho = getattr(material, "rho", 0.0)
@@ -81,6 +119,22 @@ class BaseMeshGrid:
         dn_dT = getattr(material, "dn_dT", 0.0)
         T0 = getattr(material, "T0", 300.0)
         return k, rho, cp, dn_dT, T0
+
+    def _register_material(self, material):
+        if material is None:
+            return None
+        if is_spatial_material(material):
+            return -1
+        key = id(material)
+        if key in self._material_id_map:
+            return self._material_id_map[key]
+        model = as_material_model(material)
+        if model is None:
+            return None
+        idx = len(self.material_table)
+        self.material_table.append(model)
+        self._material_id_map[key] = idx
+        return idx
 
 
 class RegularGrid(BaseMeshGrid):
@@ -116,6 +170,8 @@ class RegularGrid(BaseMeshGrid):
         self.cp = np.zeros((grid_height, grid_width))
         self.dn_dT = np.zeros((grid_height, grid_width))
         self.T0 = np.zeros((grid_height, grid_width))
+        # Material id grid (-1 indicates spatial/custom material)
+        self.material_id = np.full((grid_height, grid_width), -1, dtype=np.int32)
 
         # Rasterize the design
         self.__rasterize__()
@@ -139,6 +195,14 @@ class RegularGrid(BaseMeshGrid):
     def get_material_grids(self, resolution=None):
         """Get the material property grids."""
         return self.permittivity, self.conductivity, self.permeability
+
+    def get_material_id_grid(self):
+        """Get material id grid."""
+        return self.material_id
+
+    def get_material_table(self):
+        """Get material table."""
+        return self.material_table
 
     def get_thermal_grids(self):
         """Get thermal property grids."""
@@ -199,6 +263,7 @@ class RegularGrid(BaseMeshGrid):
                 bg_k, bg_rho, bg_cp, bg_dn_dT, bg_T0 = self._get_thermal_properties_safe(
                     background.material
                 )
+                bg_id = self._register_material(background.material)
                 # Fast fill for background
                 permittivity.fill(bg_perm)
                 permeability.fill(bg_permb)
@@ -208,6 +273,8 @@ class RegularGrid(BaseMeshGrid):
                 cp_grid.fill(bg_cp)
                 dn_dT_grid.fill(bg_dn_dT)
                 T0_grid.fill(bg_T0)
+                if bg_id is not None and bg_id >= 0:
+                    self.material_id.fill(bg_id)
 
         # Process remaining structures in reverse order (foreground objects last)
         # Note: we process in ORIGINAL order, not reversed, because we want background first
@@ -480,6 +547,8 @@ class RegularGrid(BaseMeshGrid):
                                     T0_grid[i, j] * (1 - blend_factor)
                                     + mat_T0 * blend_factor
                                 )
+                                if mat_id is not None:
+                                    self.material_id[i, j] = mat_id
 
                     elif hasattr(structure, "radius"):  # Circle
                         # FAST PATH: Circle
@@ -518,6 +587,8 @@ class RegularGrid(BaseMeshGrid):
                             cp_grid[global_i, global_j] = mat_cp
                             dn_dT_grid[global_i, global_j] = mat_dn_dT
                             T0_grid[global_i, global_j] = mat_T0
+                            if mat_id is not None:
+                                self.material_id[global_i, global_j] = mat_id
                         # Super-sample for boundary cells
                         boundary_i, boundary_j = np.where(boundary)
                         for idx in range(len(boundary_i)):
@@ -616,6 +687,8 @@ class RegularGrid(BaseMeshGrid):
                             cp_grid[global_i, global_j] = mat_cp
                             dn_dT_grid[global_i, global_j] = mat_dn_dT
                             T0_grid[global_i, global_j] = mat_T0
+                            if mat_id is not None:
+                                self.material_id[global_i, global_j] = mat_id
                         # Super-sample for boundary cells
                         boundary_i, boundary_j = np.where(boundary)
                         for idx in range(len(boundary_i)):
@@ -797,6 +870,10 @@ class RegularGrid(BaseMeshGrid):
                                         T0_grid[i, j] * (1 - blend_factor)
                                         + mat_T0 * blend_factor
                                     )
+                                    if mat_id is not None:
+                                        self.material_id[i, j] = mat_id
+                                    if mat_id is not None:
+                                        self.material_id[i, j] = mat_id
 
                             # Check remaining cells not marked as inside or boundary
                             remaining_i, remaining_j = np.where(
@@ -904,6 +981,8 @@ class RegularGrid(BaseMeshGrid):
                                             T0_grid[i, j] * (1 - blend_factor)
                                             + mat_T0 * blend_factor
                                         )
+                                        if mat_id is not None:
+                                            self.material_id[i, j] = mat_id
 
                 except (AttributeError, TypeError) as e:
                     print(
@@ -1011,6 +1090,10 @@ class RegularGrid3D(BaseMeshGrid):
         self.cp = np.zeros((grid_depth, grid_height, grid_width))
         self.dn_dT = np.zeros((grid_depth, grid_height, grid_width))
         self.T0 = np.zeros((grid_depth, grid_height, grid_width))
+        # Material id grid (-1 indicates spatial/custom material)
+        self.material_id = np.full(
+            (grid_depth, grid_height, grid_width), -1, dtype=np.int32
+        )
 
         # Rasterize the design
         self.__rasterize_3d__()
@@ -1076,9 +1159,12 @@ class RegularGrid3D(BaseMeshGrid):
         if len(self.design.structures) > 0:
             background = self.design.structures[0]
             if hasattr(background, "material") and background.material is not None:
-                permittivity.fill(background.material.permittivity)
-                permeability.fill(background.material.permeability)
-                conductivity.fill(background.material.conductivity)
+                bg_perm, bg_permb, bg_cond = self._get_material_properties_safe(
+                    background.material
+                )
+                permittivity.fill(bg_perm)
+                permeability.fill(bg_permb)
+                conductivity.fill(bg_cond)
                 (
                     bg_k,
                     bg_rho,
@@ -1086,11 +1172,14 @@ class RegularGrid3D(BaseMeshGrid):
                     bg_dn_dT,
                     bg_T0,
                 ) = self._get_thermal_properties_safe(background.material)
+                bg_id = self._register_material(background.material)
                 k_grid.fill(bg_k)
                 rho_grid.fill(bg_rho)
                 cp_grid.fill(bg_cp)
                 dn_dT_grid.fill(bg_dn_dT)
                 T0_grid.fill(bg_T0)
+                if bg_id is not None and bg_id >= 0:
+                    self.material_id.fill(bg_id)
 
         # Process structures layer by layer
         with create_rich_progress() as progress:
@@ -1118,6 +1207,8 @@ class RegularGrid3D(BaseMeshGrid):
                 mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
                     self._get_thermal_properties_safe(structure.material)
                 )
+                mat_id = self._register_material(structure.material)
+                mat_id = self._register_material(structure.material)
 
                 try:
                     # Get 3D bounding box
@@ -1230,6 +1321,8 @@ class RegularGrid3D(BaseMeshGrid):
                                         T0_grid[k, i, j] * (1 - blend_factor)
                                         + mat_T0 * blend_factor
                                     )
+                                    if mat_id is not None:
+                                        self.material_id[k, i, j] = mat_id
 
                 except (AttributeError, TypeError) as e:
                     display_status(
@@ -1326,6 +1419,14 @@ class RegularGrid3D(BaseMeshGrid):
     def get_thermal_grids(self):
         """Get thermal property grids."""
         return self.k, self.rho, self.cp, self.dn_dT, self.T0
+
+    def get_material_id_grid(self):
+        """Get material id grid."""
+        return self.material_id
+
+    def get_material_table(self):
+        """Get material table."""
+        return self.material_table
 
     def show_3d(self, field="permittivity", slice_spacing=1, alpha=0.3):
         """Display 3D visualization of the mesh."""

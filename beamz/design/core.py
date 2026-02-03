@@ -6,6 +6,7 @@ from shapely.ops import unary_union
 
 from beamz.const import µm
 from beamz.design.materials import Material
+from beamz.design.material_evaluator import MaterialGridEvaluator
 from beamz.design.structures import (
     Circle,
     CircularBend,
@@ -58,11 +59,24 @@ class Design:
                 non_polygon_structures.append(structure)
                 continue
 
-            material_key = (
-                getattr(material, "permittivity", None),
-                getattr(material, "permeability", None),
-                getattr(material, "conductivity", None),
-            )
+            if hasattr(material, "epsilon_r"):
+                t_ref = getattr(material, "T_ref", getattr(material, "T0", 300.0))
+                perm = material.epsilon_r(t_ref)
+                permb = material.permeability(t_ref)
+                cond = material.conductivity(t_ref)
+                if hasattr(perm, "item"):
+                    perm = perm.item()
+                if hasattr(permb, "item"):
+                    permb = permb.item()
+                if hasattr(cond, "item"):
+                    cond = cond.item()
+                material_key = (perm, permb, cond)
+            else:
+                material_key = (
+                    getattr(material, "permittivity", None),
+                    getattr(material, "permeability", None),
+                    getattr(material, "conductivity", None),
+                )
 
             if material_key not in material_groups:
                 material_groups[material_key] = []
@@ -182,11 +196,26 @@ class Design:
         material_replacements = {}
         for new_struct in new_structures:
             if hasattr(new_struct, "material") and new_struct.material:
-                new_material_key = (
-                    getattr(new_struct.material, "permittivity", None),
-                    getattr(new_struct.material, "permeability", None),
-                    getattr(new_struct.material, "conductivity", None),
-                )
+                if hasattr(new_struct.material, "epsilon_r"):
+                    t_ref = getattr(
+                        new_struct.material, "T_ref", getattr(new_struct.material, "T0", 300.0)
+                    )
+                    perm = new_struct.material.epsilon_r(t_ref)
+                    permb = new_struct.material.permeability(t_ref)
+                    cond = new_struct.material.conductivity(t_ref)
+                    if hasattr(perm, "item"):
+                        perm = perm.item()
+                    if hasattr(permb, "item"):
+                        permb = permb.item()
+                    if hasattr(cond, "item"):
+                        cond = cond.item()
+                    new_material_key = (perm, permb, cond)
+                else:
+                    new_material_key = (
+                        getattr(new_struct.material, "permittivity", None),
+                        getattr(new_struct.material, "permeability", None),
+                        getattr(new_struct.material, "conductivity", None),
+                    )
                 for material_key, structure_group in material_groups.items():
                     if len(structure_group) > 1 and material_key == new_material_key:
                         if material_key not in material_replacements:
@@ -365,11 +394,16 @@ class Design:
             or self._grid_resolution != resolution
         ):
             self.rasterize(resolution, grid_type="auto")
-        return (
-            self._grid.permittivity,
-            self._grid.conductivity,
-            self._grid.permeability,
-        )
+        evaluator = self._get_material_evaluator(resolution)
+        if evaluator is None:
+            return (
+                self._grid.permittivity,
+                self._grid.conductivity,
+                self._grid.permeability,
+            )
+        T0 = evaluator.get_T0_grid()
+        props = evaluator.evaluate(T0)
+        return props.permittivity, props.conductivity, props.permeability
 
     def get_thermal_grids(self, resolution):
         """Get cached rasterized thermal property arrays at specified resolution as references."""
@@ -379,9 +413,70 @@ class Design:
             or self._grid_resolution != resolution
         ):
             self.rasterize(resolution, grid_type="auto")
-        if hasattr(self._grid, "get_thermal_grids"):
-            return self._grid.get_thermal_grids()
+        evaluator = self._get_material_evaluator(resolution)
+        if evaluator is None:
+            if hasattr(self._grid, "get_thermal_grids"):
+                return self._grid.get_thermal_grids()
+            return None
+        T0 = evaluator.get_T0_grid()
+        props = evaluator.evaluate(T0)
+        dn_dT = getattr(self._grid, "dn_dT", None)
+        if dn_dT is None:
+            dn_dT = np.zeros_like(props.permittivity)
+        return props.k, props.rho, props.cp, dn_dT, props.T0
+
+    def get_material_id_grid(self, resolution):
+        """Get material id grid if available."""
+        if (
+            not hasattr(self, "_grid")
+            or not hasattr(self, "_grid_resolution")
+            or self._grid_resolution != resolution
+        ):
+            self.rasterize(resolution, grid_type="auto")
+        if hasattr(self._grid, "get_material_id_grid"):
+            return self._grid.get_material_id_grid()
         return None
+
+    def get_material_table(self, resolution):
+        """Get material table if available."""
+        if (
+            not hasattr(self, "_grid")
+            or not hasattr(self, "_grid_resolution")
+            or self._grid_resolution != resolution
+        ):
+            self.rasterize(resolution, grid_type="auto")
+        if hasattr(self._grid, "get_material_table"):
+            return self._grid.get_material_table()
+        return None
+
+    def _get_material_evaluator(self, resolution):
+        if (
+            not hasattr(self, "_grid")
+            or not hasattr(self, "_grid_resolution")
+            or self._grid_resolution != resolution
+        ):
+            self.rasterize(resolution, grid_type="auto")
+        if not hasattr(self._grid, "get_material_id_grid"):
+            return None
+        material_id = self._grid.get_material_id_grid()
+        material_table = self._grid.get_material_table()
+        if material_id is None or material_table is None:
+            return None
+        base_grids = {
+            "permittivity": getattr(self._grid, "permittivity", None),
+            "permeability": getattr(self._grid, "permeability", None),
+            "conductivity": getattr(self._grid, "conductivity", None),
+            "k": getattr(self._grid, "k", None),
+            "rho": getattr(self._grid, "rho", None),
+            "cp": getattr(self._grid, "cp", None),
+            "T0": getattr(self._grid, "T0", None),
+        }
+        base_grids = {k: v for k, v in base_grids.items() if v is not None}
+        return MaterialGridEvaluator(material_id, material_table, base_grids=base_grids)
+
+    def get_material_evaluator(self, resolution):
+        """Get a material evaluator for temperature-dependent properties."""
+        return self._get_material_evaluator(resolution)
 
     def copy(self):
         """Create a deep copy of the design with all structures and properties."""

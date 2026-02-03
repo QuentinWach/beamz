@@ -33,9 +33,12 @@ References:
     - CRC Handbook of Chemistry and Physics
 """
 
-<<<<<<< HEAD
 import numpy as np
-from beamz.design.materials import Material
+from beamz.design.materials import (
+    Material,
+    LinearThermoOpticMaterial,
+    ConstantMaterialModel,
+)
 from beamz.const import LIGHT_SPEED
 
 
@@ -43,18 +46,17 @@ from beamz.const import LIGHT_SPEED
 # VACUUM & GASES
 # =============================================================================
 
-class Vacuum(Material):
+class Vacuum(LinearThermoOpticMaterial):
     """
     Vacuum / Free space.
     n = 1.0, k = 0
     """
     def __init__(self):
-        super().__init__(permittivity=1.0, permeability=1.0, conductivity=0.0)
-        self.name = "Vacuum"
+        super().__init__(n0=1.0, dn_dT=0.0, mu_r=1.0, sigma0=0.0, name="Vacuum")
         self.refractive_index = 1.0
 
 
-class Air(Material):
+class Air(LinearThermoOpticMaterial):
     """
     Air at standard temperature and pressure (STP).
     n ≈ 1.000293 at 589nm
@@ -62,8 +64,7 @@ class Air(Material):
     """
     def __init__(self, accurate=False):
         n = 1.000293 if accurate else 1.0
-        super().__init__(permittivity=n**2, permeability=1.0, conductivity=0.0)
-        self.name = "Air"
+        super().__init__(n0=n, dn_dT=0.0, mu_r=1.0, sigma0=0.0, name="Air")
         self.refractive_index = n
 
 
@@ -71,7 +72,7 @@ class Air(Material):
 # DIELECTRICS & GLASSES
 # =============================================================================
 
-class SiO2(Material):
+class SiO2(LinearThermoOpticMaterial):
     """
     Silicon Dioxide (Fused Silica / Quartz glass).
     n ≈ 1.444 at 1550nm (telecom wavelength)
@@ -85,10 +86,18 @@ class SiO2(Material):
     SELLMEIER_B = [0.6961663, 0.4079426, 0.8974794]
     SELLMEIER_C = [(0.0684043e-6)**2, (0.1162414e-6)**2, (9.896161e-6)**2]  # in m^2
 
-    def __init__(self, wavelength=1.55e-6):
+    def __init__(self, wavelength=1.55e-6, dn_dT=1.0e-5):
         n = self._sellmeier(wavelength)
-        super().__init__(permittivity=n**2, permeability=1.0, conductivity=0.0)
-        self.name = "SiO2"
+        super().__init__(
+            n0=n,
+            dn_dT=dn_dT,
+            mu_r=1.0,
+            sigma0=0.0,
+            k0=1.38,
+            rho0=2200.0,
+            cp0=703.0,
+            name="SiO2",
+        )
         self.refractive_index = n
         self.wavelength = wavelength
 
@@ -112,7 +121,7 @@ FusedSilica = SiO2
 Silica = SiO2
 
 
-class Si3N4(Material):
+class Si3N4(LinearThermoOpticMaterial):
     """
     Silicon Nitride (LPCVD stoichiometric Si3N4).
     n ≈ 2.0 at 1550nm
@@ -127,10 +136,18 @@ class Si3N4(Material):
     SELLMEIER_B = [3.0249]
     SELLMEIER_C = [(0.1353406e-6)**2]  # already squared, in m^2
 
-    def __init__(self, wavelength=1.55e-6):
+    def __init__(self, wavelength=1.55e-6, dn_dT=2.45e-5):
         n = self._sellmeier(wavelength)
-        super().__init__(permittivity=n**2, permeability=1.0, conductivity=0.0)
-        self.name = "Si3N4"
+        super().__init__(
+            n0=n,
+            dn_dT=dn_dT,
+            mu_r=1.0,
+            sigma0=0.0,
+            k0=30.0,
+            rho0=3100.0,
+            cp0=700.0,
+            name="Si3N4",
+        )
         self.refractive_index = n
         self.wavelength = wavelength
 
@@ -296,7 +313,7 @@ class Diamond(Material):
 # SEMICONDUCTORS
 # =============================================================================
 
-class Silicon(Material):
+class Silicon(LinearThermoOpticMaterial):
     """
     Crystalline Silicon.
     n ≈ 3.48 at 1550nm (telecom wavelength)
@@ -312,10 +329,19 @@ class Silicon(Material):
     SELLMEIER_B = 0.939816
     SELLMEIER_C = (1.1071e-6)**2  # in m^2
 
-    def __init__(self, wavelength=1.55e-6):
+    def __init__(self, wavelength=1.55e-6, dn_dT=1.86e-4):
         n = self._sellmeier(wavelength)
-        super().__init__(permittivity=n**2, permeability=1.0, conductivity=0.0)
-        self.name = "Silicon"
+        super().__init__(
+            n0=n,
+            dn_dT=dn_dT,
+            mu_r=1.0,
+            sigma0=0.0,
+            k0=148.0,
+            dk_dT=-0.3,
+            rho0=2330.0,
+            cp0=700.0,
+            name="Silicon",
+        )
         self.refractive_index = n
         self.wavelength = wavelength
 
@@ -515,7 +541,7 @@ LithiumNiobate = LiNbO3
 # METALS (using effective permittivity from Drude model parameters)
 # =============================================================================
 
-class Gold(Material):
+class Gold(ConstantMaterialModel):
     """
     Gold (Au).
     Highly conductive metal with plasmonic properties.
@@ -535,15 +561,18 @@ class Gold(Material):
     COLLISION_FREQ = 4.05e13  # rad/s
     DC_CONDUCTIVITY = 4.1e7  # S/m
 
-    def __init__(self, wavelength=1.55e-6):
+    def __init__(self, wavelength=1.55e-6, dconductivity_dT=0.0):
         eps_real, eps_imag = self._drude_permittivity(wavelength)
-        # For FDTD, we use the real part and represent loss via conductivity
-        # conductivity = omega * eps_0 * eps_imag
         omega = 2 * np.pi * LIGHT_SPEED / wavelength
         eps_0 = 8.85e-12
         conductivity = omega * eps_0 * abs(eps_imag)
-        super().__init__(permittivity=eps_real, permeability=1.0, conductivity=conductivity)
-        self.name = "Gold"
+        super().__init__(
+            permittivity=eps_real,
+            permeability=1.0,
+            conductivity=conductivity,
+            dconductivity_dT=dconductivity_dT,
+            name="Gold",
+        )
         self.wavelength = wavelength
         self.eps_complex = complex(eps_real, eps_imag)
 
@@ -671,7 +700,7 @@ class Copper(Material):
 Cu = Copper
 
 
-class Aluminum(Material):
+class Aluminum(ConstantMaterialModel):
     """
     Aluminum (Al).
     Good reflector across broad spectrum including UV.
@@ -687,13 +716,18 @@ class Aluminum(Material):
     COLLISION_FREQ = 1.22e14  # rad/s
     DC_CONDUCTIVITY = 3.77e7  # S/m
 
-    def __init__(self, wavelength=1.55e-6):
+    def __init__(self, wavelength=1.55e-6, dconductivity_dT=0.0):
         eps_real, eps_imag = self._drude_permittivity(wavelength)
         omega = 2 * np.pi * LIGHT_SPEED / wavelength
         eps_0 = 8.85e-12
         conductivity = omega * eps_0 * abs(eps_imag)
-        super().__init__(permittivity=eps_real, permeability=1.0, conductivity=conductivity)
-        self.name = "Aluminum"
+        super().__init__(
+            permittivity=eps_real,
+            permeability=1.0,
+            conductivity=conductivity,
+            dconductivity_dT=dconductivity_dT,
+            name="Aluminum",
+        )
         self.wavelength = wavelength
         self.eps_complex = complex(eps_real, eps_imag)
 
@@ -804,6 +838,22 @@ class Titanium(Material):
     def get_refractive_index(cls, wavelength):
         """Get complex refractive index at specified wavelength."""
         return np.sqrt(cls.get_permittivity(wavelength))
+
+
+class TiN(ConstantMaterialModel):
+    """
+    Titanium Nitride (TiN).
+    Approximate conductive model for plasmonic applications.
+    """
+
+    def __init__(self, permittivity=5.0, conductivity=2.5e6, dconductivity_dT=0.0):
+        super().__init__(
+            permittivity=permittivity,
+            permeability=1.0,
+            conductivity=conductivity,
+            dconductivity_dT=dconductivity_dT,
+            name="TiN",
+        )
 
 
 # Alias
@@ -1202,6 +1252,7 @@ def get_material(name, **kwargs):
         "aluminum": Aluminum, "al": Aluminum,
         "chromium": Chromium, "cr": Chromium,
         "titanium": Titanium, "ti": Titanium,
+        "tin": TiN, "titaniumnitride": TiN,
         # Polymers
         "pmma": PMMA, "su8": SU8, "su-8": SU8,
         "polystyrene": Polystyrene, "pdms": PDMS, "hsq": HSQ,
@@ -1237,11 +1288,27 @@ def material_info(name):
         dict with material properties and metadata
     """
     mat = get_material(name)
+    if hasattr(mat, "epsilon_r"):
+        t_ref = getattr(mat, "T_ref", getattr(mat, "T0", 300.0))
+        perm = mat.epsilon_r(t_ref)
+        permb = mat.permeability(t_ref)
+        cond = mat.conductivity(t_ref)
+        if hasattr(perm, "item"):
+            perm = perm.item()
+        if hasattr(permb, "item"):
+            permb = permb.item()
+        if hasattr(cond, "item"):
+            cond = cond.item()
+    else:
+        perm = getattr(mat, "permittivity", None)
+        permb = getattr(mat, "permeability", None)
+        cond = getattr(mat, "conductivity", None)
+
     info = {
-        "name": mat.name if hasattr(mat, 'name') else name,
-        "permittivity": mat.permittivity,
-        "permeability": mat.permeability,
-        "conductivity": mat.conductivity,
+        "name": mat.name if hasattr(mat, "name") else name,
+        "permittivity": perm,
+        "permeability": permb,
+        "conductivity": cond,
     }
     if hasattr(mat, 'refractive_index'):
         info["refractive_index"] = mat.refractive_index
@@ -1267,7 +1334,7 @@ __all__ = [
     'LiNbO3', 'LithiumNiobate',
     # Metals
     'Gold', 'Au', 'Silver', 'Ag', 'Copper', 'Cu', 'Aluminum', 'Al',
-    'Chromium', 'Cr', 'Titanium', 'Ti',
+    'Chromium', 'Cr', 'Titanium', 'Ti', 'TiN',
     # Polymers
     'PMMA', 'SU8', 'Polystyrene', 'PDMS', 'HSQ',
     # Liquids
@@ -1280,6 +1347,3 @@ __all__ = [
     # Functions
     'list_materials', 'get_material', 'material_info',
 ]
-=======
-# Copper
->>>>>>> main

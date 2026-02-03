@@ -1,3 +1,12 @@
+try:
+    import jax.numpy as jnp
+except ImportError:  # Fallback for environments without JAX
+    import numpy as jnp
+
+
+# =============================================================================
+# LEGACY MATERIALS (CONSTANT)
+# =============================================================================
 # Medium: Dispersionless medium.
 class Material:
     def __init__(
@@ -293,6 +302,257 @@ class CustomMaterial:
             bounds=self.bounds,  # Bounds can be shared (tuples are immutable)
             interpolation=self.interpolation,
         )
+
+
+# =============================================================================
+# TEMPERATURE-DEPENDENT MATERIAL MODELS
+# =============================================================================
+
+
+class MaterialModel:
+    """Temperature-dependent material model base class."""
+
+    def __init__(self, T_ref=300.0, name=None):
+        self.T_ref = float(T_ref)
+        self.name = name or self.__class__.__name__
+
+    def epsilon_r(self, T, omega=None):
+        raise NotImplementedError
+
+    def conductivity(self, T, omega=None):
+        return 0.0
+
+    def permeability(self, T, omega=None):
+        return 1.0
+
+    def thermal_k(self, T):
+        return 0.0
+
+    def heat_capacity(self, T):
+        return 0.0
+
+    def density(self, T):
+        return 0.0
+
+    @property
+    def permittivity(self):
+        value = self.epsilon_r(self.T_ref)
+        return value.item() if hasattr(value, "item") else value
+
+    @property
+    def conductivity_ref(self):
+        value = self.conductivity(self.T_ref)
+        return value.item() if hasattr(value, "item") else value
+
+    @property
+    def permeability_ref(self):
+        value = self.permeability(self.T_ref)
+        return value.item() if hasattr(value, "item") else value
+
+    @property
+    def k(self):
+        value = self.thermal_k(self.T_ref)
+        return value.item() if hasattr(value, "item") else value
+
+    @property
+    def rho(self):
+        value = self.density(self.T_ref)
+        return value.item() if hasattr(value, "item") else value
+
+    @property
+    def cp(self):
+        value = self.heat_capacity(self.T_ref)
+        return value.item() if hasattr(value, "item") else value
+
+
+class LinearThermoOpticMaterial(MaterialModel):
+    """Linear temperature-dependent material model with optional linear thermal props."""
+
+    def __init__(
+        self,
+        n0,
+        dn_dT=0.0,
+        mu_r=1.0,
+        sigma0=0.0,
+        dsigma_dT=0.0,
+        k0=0.0,
+        dk_dT=0.0,
+        rho0=0.0,
+        drho_dT=0.0,
+        cp0=0.0,
+        dcp_dT=0.0,
+        T_ref=300.0,
+        name=None,
+    ):
+        super().__init__(T_ref=T_ref, name=name)
+        self.n0 = float(n0)
+        self.dn_dT = float(dn_dT)
+        self.mu_r = float(mu_r)
+        self.sigma0 = float(sigma0)
+        self.dsigma_dT = float(dsigma_dT)
+        self.k0 = float(k0)
+        self.dk_dT = float(dk_dT)
+        self.rho0 = float(rho0)
+        self.drho_dT = float(drho_dT)
+        self.cp0 = float(cp0)
+        self.dcp_dT = float(dcp_dT)
+
+    def epsilon_r(self, T, omega=None):
+        T = jnp.asarray(T)
+        n = self.n0 + self.dn_dT * (T - self.T_ref)
+        return n * n
+
+    def conductivity(self, T, omega=None):
+        T = jnp.asarray(T)
+        return self.sigma0 + self.dsigma_dT * (T - self.T_ref)
+
+    def permeability(self, T, omega=None):
+        return self.mu_r
+
+    def thermal_k(self, T):
+        T = jnp.asarray(T)
+        return self.k0 + self.dk_dT * (T - self.T_ref)
+
+    def heat_capacity(self, T):
+        T = jnp.asarray(T)
+        return self.cp0 + self.dcp_dT * (T - self.T_ref)
+
+    def density(self, T):
+        T = jnp.asarray(T)
+        return self.rho0 + self.drho_dT * (T - self.T_ref)
+
+
+class ConstantMaterialModel(MaterialModel):
+    """Material model with constant permittivity and optional linear conductivity/thermal props."""
+
+    def __init__(
+        self,
+        permittivity,
+        permeability=1.0,
+        conductivity=0.0,
+        dconductivity_dT=0.0,
+        k0=0.0,
+        dk_dT=0.0,
+        rho0=0.0,
+        drho_dT=0.0,
+        cp0=0.0,
+        dcp_dT=0.0,
+        T_ref=300.0,
+        name=None,
+    ):
+        super().__init__(T_ref=T_ref, name=name)
+        self._permittivity = permittivity
+        self._permeability = permeability
+        self._conductivity = conductivity
+        self._dconductivity_dT = dconductivity_dT
+        self.k0 = k0
+        self.dk_dT = dk_dT
+        self.rho0 = rho0
+        self.drho_dT = drho_dT
+        self.cp0 = cp0
+        self.dcp_dT = dcp_dT
+
+    def epsilon_r(self, T, omega=None):
+        return self._permittivity
+
+    def conductivity(self, T, omega=None):
+        T = jnp.asarray(T)
+        return self._conductivity + self._dconductivity_dT * (T - self.T_ref)
+
+    def permeability(self, T, omega=None):
+        return self._permeability
+
+    def thermal_k(self, T):
+        T = jnp.asarray(T)
+        return self.k0 + self.dk_dT * (T - self.T_ref)
+
+    def heat_capacity(self, T):
+        T = jnp.asarray(T)
+        return self.cp0 + self.dcp_dT * (T - self.T_ref)
+
+    def density(self, T):
+        T = jnp.asarray(T)
+        return self.rho0 + self.drho_dT * (T - self.T_ref)
+
+
+class ConstantMaterialAdapter(MaterialModel):
+    """Adapter for legacy Material to a MaterialModel interface."""
+
+    def __init__(self, material: Material):
+        super().__init__(T_ref=getattr(material, "T0", 300.0), name=getattr(material, "name", None))
+        self.material = material
+        self._permittivity = getattr(material, "permittivity", 1.0)
+        self._permeability = getattr(material, "permeability", 1.0)
+        self._conductivity = getattr(material, "conductivity", 0.0)
+        self._k = getattr(material, "k", 0.0)
+        self._rho = getattr(material, "rho", 0.0)
+        self._cp = getattr(material, "cp", 0.0)
+        self.dn_dT = getattr(material, "dn_dT", 0.0)
+
+    def epsilon_r(self, T, omega=None):
+        return self._permittivity
+
+    def conductivity(self, T, omega=None):
+        return self._conductivity
+
+    def permeability(self, T, omega=None):
+        return self._permeability
+
+    def thermal_k(self, T):
+        return self._k
+
+    def heat_capacity(self, T):
+        return self._cp
+
+    def density(self, T):
+        return self._rho
+
+
+class CustomMaterialAdapter(MaterialModel):
+    """Adapter for CustomMaterial with constant thermal properties."""
+
+    def __init__(self, material: CustomMaterial):
+        super().__init__(T_ref=getattr(material, "T0", 300.0), name=getattr(material, "name", None))
+        self.material = material
+        self._permittivity = getattr(material, "default_permittivity", 1.0)
+        self._permeability = getattr(material, "default_permeability", 1.0)
+        self._conductivity = getattr(material, "default_conductivity", 0.0)
+        self._k = getattr(material, "k", 0.0)
+        self._rho = getattr(material, "rho", 0.0)
+        self._cp = getattr(material, "cp", 0.0)
+        self.dn_dT = getattr(material, "dn_dT", 0.0)
+
+    def epsilon_r(self, T, omega=None):
+        return self._permittivity
+
+    def conductivity(self, T, omega=None):
+        return self._conductivity
+
+    def permeability(self, T, omega=None):
+        return self._permeability
+
+    def thermal_k(self, T):
+        return self._k
+
+    def heat_capacity(self, T):
+        return self._cp
+
+    def density(self, T):
+        return self._rho
+
+
+def is_spatial_material(material) -> bool:
+    return hasattr(material, "get_permittivity")
+
+
+def as_material_model(material):
+    if isinstance(material, MaterialModel):
+        return material
+    if isinstance(material, Material):
+        return ConstantMaterialAdapter(material)
+    if isinstance(material, CustomMaterial):
+        return CustomMaterialAdapter(material)
+    return None
 
 
 # =============================================================================

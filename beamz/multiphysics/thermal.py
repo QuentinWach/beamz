@@ -94,6 +94,7 @@ class ThermoPhysics:
         self.cp = None
         self.dn_dT = None
         self.T0 = None
+        self.material_evaluator = None
 
         self.T = None
         self.E2_avg = None
@@ -108,17 +109,28 @@ class ThermoPhysics:
         if not self.enabled:
             return
 
-        self.base_eps_r = jnp.asarray(sim.fields.permittivity)
-        thermal_grids = sim.design.get_thermal_grids(sim.resolution)
-        if thermal_grids is None:
-            raise ValueError("Thermal grids not available on design.")
+        self.material_evaluator = sim.design.get_material_evaluator(sim.resolution)
+        if self.material_evaluator is None:
+            self.base_eps_r = jnp.asarray(sim.fields.permittivity)
+            thermal_grids = sim.design.get_thermal_grids(sim.resolution)
+            if thermal_grids is None:
+                raise ValueError("Thermal grids not available on design.")
 
-        k, rho, cp, dn_dT, T0 = thermal_grids
-        self.k = self._apply_default(jnp.asarray(k), self.params.k)
-        self.rho = self._apply_default(jnp.asarray(rho), self.params.rho)
-        self.cp = self._apply_default(jnp.asarray(cp), self.params.cp)
-        self.dn_dT = self._apply_default(jnp.asarray(dn_dT), self.params.dn_dT)
-        self.T0 = self._apply_default(jnp.asarray(T0), self.params.T0)
+            k, rho, cp, dn_dT, T0 = thermal_grids
+            self.k = self._apply_default(jnp.asarray(k), self.params.k)
+            self.rho = self._apply_default(jnp.asarray(rho), self.params.rho)
+            self.cp = self._apply_default(jnp.asarray(cp), self.params.cp)
+            self.dn_dT = self._apply_default(jnp.asarray(dn_dT), self.params.dn_dT)
+            self.T0 = self._apply_default(jnp.asarray(T0), self.params.T0)
+        else:
+            T0 = self.material_evaluator.get_T0_grid()
+            self.T0 = self._apply_default(jnp.asarray(T0), self.params.T0)
+            props = self.material_evaluator.evaluate(self.T0)
+            self.base_eps_r = props.permittivity
+            self.k = self._apply_default(props.k, self.params.k)
+            self.rho = self._apply_default(props.rho, self.params.rho)
+            self.cp = self._apply_default(props.cp, self.params.cp)
+            self.dn_dT = jnp.zeros_like(self.T0)
 
         self.T = jnp.array(self.T0)
         self.E2_avg = jnp.zeros_like(self.T)
@@ -155,7 +167,11 @@ class ThermoPhysics:
             alpha = dt / tau_avg
             self.E2_avg = self.E2_avg + alpha * (E2 - self.E2_avg)
 
-        sigma = sim.fields.conductivity
+        if self.material_evaluator is None:
+            sigma = sim.fields.conductivity
+        else:
+            props = self.material_evaluator.evaluate(self.T)
+            sigma = props.conductivity
         Q = sigma * self.E2_avg
 
         thermal_dt = self.params.thermal_dt
@@ -169,17 +185,34 @@ class ThermoPhysics:
 
         for _ in range(num_steps):
             lap = _laplacian_neumann(self.T, self.dx, self.dy, self.dz)
-            source = self.k * lap + Q
-            denom = self.rho * self.cp
+            if self.material_evaluator is None:
+                k = self.k
+                rho = self.rho
+                cp = self.cp
+            else:
+                props = self.material_evaluator.evaluate(self.T)
+                k = props.k
+                rho = props.rho
+                cp = props.cp
+            source = k * lap + Q
+            denom = rho * cp
             update = jnp.where(denom > 0, (thermal_dt / denom) * source, 0.0)
             self.T = self.T + update
 
         self.t_accum -= num_steps * thermal_dt
 
-        n0 = jnp.sqrt(self.base_eps_r)
-        n = n0 + self.dn_dT * (self.T - self.T0)
-        eps_r = n * n
-        sim.fields.update_materials(permittivity=eps_r)
+        if self.material_evaluator is None:
+            n0 = jnp.sqrt(self.base_eps_r)
+            n = n0 + self.dn_dT * (self.T - self.T0)
+            eps_r = n * n
+            sim.fields.update_materials(permittivity=eps_r)
+        else:
+            props = self.material_evaluator.evaluate(self.T)
+            sim.fields.update_materials(
+                permittivity=props.permittivity,
+                conductivity=props.conductivity,
+                permeability=props.permeability,
+            )
 
     def _compute_e2(self, fields, target_shape):
         """Compute |E|^2 on the cell-centered grid."""
