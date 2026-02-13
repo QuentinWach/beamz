@@ -1,11 +1,6 @@
-"""Shared helpers for ModeSource injection setup.
-
-Consolidates duplicated staggering, windowing, and index computation logic
-that was previously copy-pasted for x vs y propagation in both 2D and 3D.
-"""
+"""Shared helpers for ModeSource injection setup."""
 
 import logging
-import warnings
 
 import jax.numpy as jnp
 import numpy as np
