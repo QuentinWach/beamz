@@ -2,9 +2,13 @@
 
 import numpy as np
 
-from beamz.visual.animation import get_twilight_zero_cmap
-from beamz.visual.design_viz import draw_boundary
-from beamz.visual.helpers import display_status, get_si_scale_and_label
+from beamz.visual.design_viz import (
+    add_design_overlays,
+    configure_axes,
+    draw_boundary,
+    draw_scale_bar,
+    resolve_cmap,
+)
 
 
 class VideoRecorder:
@@ -207,14 +211,7 @@ class VideoRecorder:
         fig_height_px = fig_height_px + (fig_height_px % 2)
         figsize = (fig_width_px / self.dpi, fig_height_px / self.dpi)
 
-        # Get colormap
-        if self.cmap == "twilight_zero":
-            try:
-                actual_cmap = plt.get_cmap("twilight_zero")
-            except ValueError:
-                actual_cmap = get_twilight_zero_cmap()
-        else:
-            actual_cmap = self.cmap
+        actual_cmap = resolve_cmap(self.cmap)
 
         # Setup FFmpeg writer
         writer = FFMpegWriter(fps=self.fps, bitrate=5000)
@@ -261,79 +258,27 @@ class VideoRecorder:
                         )
 
                     # Add structure overlays
-                    if self.design is not None:
-                        try:
-                            tmp_design = self.design.copy()
-                            tmp_design.unify_polygons()
-                            overlay_structures = tmp_design.structures
-                        except Exception:
-                            overlay_structures = getattr(self.design, "structures", [])
-
-                        for structure in overlay_structures or []:
-                            if hasattr(structure, "is_pml") and structure.is_pml:
-                                structure.add_to_plot(
-                                    ax,
-                                    edgecolor=self.line_color,
-                                    linestyle="--",
-                                    facecolor="none",
-                                    alpha=self.line_opacity,
-                                )
-                            elif hasattr(structure, "vertices") and getattr(
-                                structure, "vertices", None
-                            ):
-                                structure.add_to_plot(
-                                    ax,
-                                    facecolor="none",
-                                    edgecolor=self.line_color,
-                                    linestyle="-",
-                                    alpha=self.line_opacity,
-                                )
-
-                        # Add sources
-                        for source in getattr(self.design, "sources", []) or []:
-                            if hasattr(source, "add_to_plot"):
-                                source.add_to_plot(ax)
-
-                        # Add monitors
-                        for monitor in getattr(self.design, "monitors", []) or []:
-                            if hasattr(monitor, "add_to_plot"):
-                                monitor.add_to_plot(
-                                    ax,
-                                    edgecolor=self.line_color,
-                                    alpha=self.line_opacity,
-                                )
+                    add_design_overlays(
+                        ax, self.design,
+                        line_color=self.line_color,
+                        line_opacity=self.line_opacity,
+                    )
 
                     # Draw PML boundaries
                     if self.boundaries:
                         for boundary in self.boundaries:
                             draw_boundary(
-                                ax,
-                                boundary,
-                                self.design,
-                                edgecolor=self.line_color,
-                                linestyle=":",
-                                alpha=self.line_opacity,
+                                ax, boundary, self.design,
+                                edgecolor=self.line_color, linestyle=":", alpha=self.line_opacity,
                             )
 
                     # Add axis labels if not clean
                     if self.design is not None and not self.clean_visualization:
-                        max_dim = max(self.design.width, self.design.height)
-                        scale, unit = get_si_scale_and_label(max_dim)
-
-                        xlabel, ylabel = "X", "Y"
-                        if self.plane_2d == "yz":
-                            xlabel, ylabel = "Y", "Z"
-                        elif self.plane_2d == "xz":
-                            xlabel, ylabel = "X", "Z"
-
-                        ax.set_xlabel(f"{xlabel} ({unit})")
-                        ax.set_ylabel(f"{ylabel} ({unit})")
-                        ax.xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-                        ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
+                        configure_axes(ax, self.design, plane_2d=self.plane_2d)
 
                     # Add scale bar for clean visualization
                     if self.clean_visualization and self.design is not None:
-                        self._add_scale_bar(ax)
+                        draw_scale_bar(ax, self.design, wavelength=self.wavelength)
 
                     if not self.clean_visualization:
                         fig.tight_layout()
@@ -355,70 +300,4 @@ class VideoRecorder:
             except Exception:
                 pass
 
-    def _add_scale_bar(self, ax):
-        """Add a scale bar to clean visualization."""
-        import numpy as np
-
-        if self.design is None:
-            return
-
-        max_dim = max(self.design.width, self.design.height)
-        scale_factor, unit = get_si_scale_and_label(max_dim)
-
-        if self.wavelength is not None:
-            wavelength_um = self.wavelength * 1e6
-            scale_bar_length_um = np.round(2 * wavelength_um)
-            scale_bar_length = scale_bar_length_um * 1e-6
-        else:
-            min_dim = min(self.design.width, self.design.height)
-            scale_bar_fraction = 0.18
-            scale_bar_length_physical = min_dim * scale_bar_fraction
-
-            if scale_bar_length_physical > 0:
-                order = 10 ** np.floor(np.log10(scale_bar_length_physical))
-                normalized = scale_bar_length_physical / order
-                if normalized <= 1.25:
-                    nice_value = 1 * order
-                elif normalized <= 2.5:
-                    nice_value = 2 * order
-                elif normalized <= 6:
-                    nice_value = 5 * order
-                else:
-                    nice_value = 10 * order
-                scale_bar_length = nice_value
-            else:
-                scale_bar_length = min_dim * 0.15
-
-        margin_x = self.design.width * 0.1
-        margin_y = self.design.height * 0.1
-        x_start = self.design.width - scale_bar_length - margin_x
-        x_end = self.design.width - margin_x
-        y_pos = margin_y
-
-        ax.plot(
-            [x_start, x_end], [y_pos, y_pos], "w", linewidth=3, solid_capstyle="butt"
-        )
-
-        label_y = y_pos - self.design.height * 0.02
-        if self.wavelength is not None:
-            scale_bar_length_display_um = scale_bar_length * 1e6
-            label_text = f"{int(scale_bar_length_display_um)} µm"
-        else:
-            scale_bar_length_display = scale_bar_length * scale_factor
-            if scale_bar_length_display >= 1:
-                label_text = f"{scale_bar_length_display:.0f} {unit}"
-            elif scale_bar_length_display >= 0.1:
-                label_text = f"{scale_bar_length_display:.1f} {unit}"
-            else:
-                label_text = f"{scale_bar_length_display:.2f} {unit}"
-
-        ax.text(
-            (x_start + x_end) / 2,
-            label_y,
-            label_text,
-            ha="center",
-            va="top",
-            color="white",
-            fontsize=10,
-        )
 

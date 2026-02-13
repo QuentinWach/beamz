@@ -2,6 +2,19 @@
 Visual module for BEAMZ - Contains visualization and UI helpers.
 """
 
+from beamz.visual.animation import (
+    JupyterAnimator,
+    animate_manual_field,
+    is_jupyter_environment,
+)
+from beamz.visual.design_viz import (
+    draw_boundary,
+    draw_polygon,
+    show_design,
+    show_design_2d,
+    show_design_3d,
+)
+from beamz.visual.fields import plot_fdtd_field, plot_fdtd_power
 from beamz.visual.helpers import (
     calc_optimal_fdtd_params,
     check_fdtd_stability,
@@ -9,21 +22,11 @@ from beamz.visual.helpers import (
     display_status,
     get_si_scale_and_label,
 )
-from beamz.visual.viz import (
-    JupyterAnimator,
-    VideoRecorder,
-    animate_manual_field,
-    draw_polygon,
-    is_jupyter_environment,
-    plot_fdtd_field,
-    plot_fdtd_power,
-    show_design,
-    show_design_2d,
-    show_design_3d,
-)
+from beamz.visual.video import VideoRecorder
 
 __all__ = [
     "draw_polygon",
+    "draw_boundary",
     "show_design",
     "show_design_2d",
     "show_design_3d",

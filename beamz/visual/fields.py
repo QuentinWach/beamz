@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from beamz.visual.helpers import get_si_scale_and_label
+from beamz.visual.design_viz import add_design_overlays, configure_axes
 
 
 def plot_fdtd_field(
@@ -36,7 +36,6 @@ def plot_fdtd_field(
     else:
         field_label = field + slice_info
 
-    scale, unit = get_si_scale_and_label(max(fdtd.design.width, fdtd.design.height))
     grid_height, grid_width = current_field.shape
     aspect_ratio = grid_width / grid_height
     base_size = 6
@@ -46,8 +45,8 @@ def plot_fdtd_field(
         else (base_size, base_size / aspect_ratio)
     )
 
-    plt.figure(figsize=figsize)
-    plt.imshow(
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(
         current_field,
         origin="lower",
         extent=(0, fdtd.design.width, 0, fdtd.design.height),
@@ -55,38 +54,10 @@ def plot_fdtd_field(
         aspect="equal",
         interpolation="bicubic",
     )
-    plt.colorbar(label=f"{field_label}")
-    plt.title(f"{field_label} Field at t = {current_t:.2e} s")
-    plt.xlabel(f"X ({unit})")
-    plt.ylabel(f"Y ({unit})")
-    plt.gca().xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-    plt.gca().yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-
-    try:
-        tmp_design = fdtd.design.copy()
-        tmp_design.unify_polygons()
-        overlay_structures = tmp_design.structures
-    except Exception:
-        overlay_structures = fdtd.design.structures
-    for structure in overlay_structures:
-        if hasattr(structure, "is_pml") and structure.is_pml:
-            structure.add_to_plot(
-                plt.gca(),
-                edgecolor="black",
-                linestyle="--",
-                facecolor="none",
-                alpha=0.5,
-            )
-        elif hasattr(structure, "vertices") and getattr(structure, "vertices", None):
-            structure.add_to_plot(
-                plt.gca(), facecolor="none", edgecolor="black", linestyle="-"
-            )
-    for source in fdtd.design.sources:
-        if hasattr(source, "add_to_plot"):
-            source.add_to_plot(plt.gca())
-    for monitor in fdtd.design.monitors:
-        if hasattr(monitor, "add_to_plot"):
-            monitor.add_to_plot(plt.gca(), edgecolor="black")
+    plt.colorbar(ax.images[0], label=f"{field_label}")
+    ax.set_title(f"{field_label} Field at t = {current_t:.2e} s")
+    configure_axes(ax, fdtd.design)
+    add_design_overlays(ax, fdtd.design, line_color="black", line_opacity=0.5)
     plt.tight_layout()
     plt.show()
 
@@ -153,10 +124,9 @@ def plot_fdtd_power(
         return
 
     # Normalize power using 99th percentile to avoid source-dominated colormaps
-    # This makes propagated power visible by clipping source peaks
     power_sorted = np.sort(power.flatten())
     nonzero_power = power_sorted[power_sorted > 0]
-    if len(nonzero_power) > 100:  # Need sufficient data points
+    if len(nonzero_power) > 100:
         p99 = np.percentile(nonzero_power, 99)
         power_clipped = np.clip(power, 0, p99)
         if p99 > 0:
@@ -164,14 +134,12 @@ def plot_fdtd_power(
         else:
             power_normalized = power
     else:
-        # Fallback to max normalization for small datasets
         power_max = np.max(power)
         if power_max > 0 and np.isfinite(power_max):
             power_normalized = power / power_max
         else:
             power_normalized = power
 
-    scale, unit = get_si_scale_and_label(max(fdtd.design.width, fdtd.design.height))
     aspect_ratio = power.shape[1] / power.shape[0]
     base_size = 8
     figsize = (
@@ -181,7 +149,6 @@ def plot_fdtd_power(
     )
 
     fdtd.fig, fdtd.ax = plt.subplots(figsize=figsize)
-    # Use normalized power for display to avoid numerical precision issues with tiny values
     display_power = power_normalized if vmin is None and vmax is None else power
     fdtd.im = fdtd.ax.imshow(
         display_power,
@@ -195,11 +162,10 @@ def plot_fdtd_power(
     )
     colorbar = plt.colorbar(fdtd.im, orientation="vertical", aspect=30, extend="both")
     if db_colorbar:
-        # dB scale now works on normalized power (0 to 1)
         def db_formatter(x, pos):
             if x <= 0:
                 return "-∞ dB"
-            ratio = max(x, 1e-10)  # x is already normalized to max=1
+            ratio = max(x, 1e-10)
             db_val = 10 * np.log10(ratio)
             return f"{db_val:.1f} dB"
 
@@ -209,31 +175,12 @@ def plot_fdtd_power(
     else:
         colorbar.set_label("Normalized Power")
 
-    try:
-        tmp_design = fdtd.design.copy()
-        tmp_design.unify_polygons()
-        overlay_structures = tmp_design.structures
-    except Exception:
-        overlay_structures = fdtd.design.structures
-    for structure in overlay_structures:
-        if hasattr(structure, "is_pml") and structure.is_pml:
-            structure.add_to_plot(
-                fdtd.ax, edgecolor="white", linestyle="--", facecolor="none", alpha=0.5
-            )
-        elif hasattr(structure, "vertices") and getattr(structure, "vertices", None):
-            structure.add_to_plot(
-                fdtd.ax, facecolor="none", edgecolor="white", linestyle="-"
-            )
-    # Sources are not shown in power plot to avoid visual clutter
-    for monitor in fdtd.design.monitors:
-        if hasattr(monitor, "add_to_plot"):
-            monitor.add_to_plot(fdtd.ax, edgecolor="white")
-
-    plt.xlabel(f"X ({unit})")
-    plt.ylabel(f"Y ({unit})")
-    fdtd.ax.xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-    fdtd.ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
+    add_design_overlays(
+        fdtd.ax, fdtd.design,
+        line_color="white", line_opacity=0.5,
+        sources=[],  # Sources not shown in power plot
+    )
+    configure_axes(fdtd.ax, fdtd.design)
     plt.title("Time-Averaged Power Distribution")
     plt.tight_layout()
     plt.show()
-

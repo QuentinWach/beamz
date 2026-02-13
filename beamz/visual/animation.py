@@ -493,11 +493,11 @@ class JupyterAnimator:
                 plt.tight_layout()
 
             # Add structure overlays (static, only done once)
-            self._add_overlays(self._ax, design, boundaries, plane_2d)
+            self._add_overlays(self._ax, design, boundaries)
 
             # Add scale bar for clean visualization
             if self.clean_visualization:
-                self._add_scale_bar(self._ax, design)
+                draw_scale_bar(self._ax, design, wavelength=self.wavelength, fontsize=14)
 
         else:
             # Subsequent frames: just update the data
@@ -528,137 +528,21 @@ class JupyterAnimator:
             self._cbar = None
             self._title = None
 
-    def _add_overlays(self, ax, design, boundaries, plane_2d):
+    def _add_overlays(self, ax, design, boundaries):
         """Add structure, source, monitor, and boundary overlays."""
-        if design is not None:
-            try:
-                tmp_design = design.copy()
-                tmp_design.unify_polygons()
-                overlay_structures = tmp_design.structures
-            except Exception:
-                overlay_structures = getattr(design, "structures", [])
-
-            for structure in overlay_structures or []:
-                # Skip the background structure (first structure that spans full design)
-                if hasattr(structure, "vertices") and structure.vertices:
-                    vertices = np.array(structure.vertices)
-                    min_x, max_x = vertices[:, 0].min(), vertices[:, 0].max()
-                    min_y, max_y = vertices[:, 1].min(), vertices[:, 1].max()
-                    # Check if structure spans the full design dimensions
-                    if (
-                        abs(min_x) < 1e-10
-                        and abs(min_y) < 1e-10
-                        and abs(max_x - design.width) < 1e-10
-                        and abs(max_y - design.height) < 1e-10
-                    ):
-                        continue  # Skip background structure
-
-                if hasattr(structure, "is_pml") and structure.is_pml:
-                    structure.add_to_plot(
-                        ax,
-                        edgecolor=self.line_color,
-                        linestyle="--",
-                        facecolor="none",
-                        alpha=self.line_opacity,
-                    )
-                elif hasattr(structure, "vertices"):
-                    structure.add_to_plot(
-                        ax,
-                        facecolor="none",
-                        edgecolor=self.line_color,
-                        linestyle="-",
-                        alpha=self.line_opacity,
-                    )
-
-            for source in getattr(design, "sources", []) or []:
-                if hasattr(source, "add_to_plot"):
-                    source.add_to_plot(ax)
-
-            for monitor in getattr(design, "monitors", []) or []:
-                if hasattr(monitor, "add_to_plot"):
-                    monitor.add_to_plot(
-                        ax, edgecolor=self.line_color, alpha=self.line_opacity
-                    )
+        add_design_overlays(
+            ax, design,
+            line_color=self.line_color,
+            line_opacity=self.line_opacity,
+            skip_background=True,
+        )
 
         if boundaries:
             for boundary in boundaries:
                 draw_boundary(
-                    ax,
-                    boundary,
-                    design,
-                    edgecolor=self.line_color,
-                    linestyle=":",
-                    alpha=self.line_opacity,
+                    ax, boundary, design,
+                    edgecolor=self.line_color, linestyle=":", alpha=self.line_opacity,
                 )
-
-    def _add_scale_bar(self, ax, design):
-        """Add scale bar to the plot for clean visualization mode."""
-        if design is None:
-            return
-
-        max_dim = max(design.width, design.height)
-        scale_factor, unit = get_si_scale_and_label(max_dim)
-
-        # Calculate scale bar length: 2 * wavelength rounded to nearest integer µm
-        if self.wavelength is not None:
-            wavelength_um = self.wavelength * 1e6
-            scale_bar_length_um = np.round(2 * wavelength_um)
-            scale_bar_length = scale_bar_length_um * 1e-6
-        else:
-            # Fallback: use design-based calculation
-            min_dim = min(design.width, design.height)
-            scale_bar_length_physical = min_dim * 0.18
-
-            if scale_bar_length_physical > 0:
-                order = 10 ** np.floor(np.log10(scale_bar_length_physical))
-                normalized = scale_bar_length_physical / order
-                if normalized <= 1.25:
-                    nice_value = 1 * order
-                elif normalized <= 2.5:
-                    nice_value = 2 * order
-                elif normalized <= 6:
-                    nice_value = 5 * order
-                else:
-                    nice_value = 10 * order
-                scale_bar_length = nice_value
-            else:
-                scale_bar_length = min_dim * 0.15
-
-        # Position in bottom-right corner with some margin
-        margin_x = design.width * 0.1
-        margin_y = design.height * 0.1
-        x_start = design.width - scale_bar_length - margin_x
-        x_end = design.width - margin_x
-        y_pos = margin_y
-
-        # Draw scale bar line
-        ax.plot(
-            [x_start, x_end], [y_pos, y_pos], "w", linewidth=3, solid_capstyle="butt"
-        )
-
-        # Add text label below the bar
-        label_y = y_pos - design.height * 0.02
-        if self.wavelength is not None:
-            scale_bar_length_display_um = scale_bar_length * 1e6
-            label_text = f"{int(scale_bar_length_display_um)} µm"
-        else:
-            scale_bar_length_display = scale_bar_length * scale_factor
-            if scale_bar_length_display >= 1:
-                label_text = f"{scale_bar_length_display:.0f} {unit}"
-            elif scale_bar_length_display >= 0.1:
-                label_text = f"{scale_bar_length_display:.1f} {unit}"
-            else:
-                label_text = f"{scale_bar_length_display:.2f} {unit}"
-
-        ax.text(
-            (x_start + x_end) / 2,
-            label_y,
-            label_text,
-            ha="center",
-            va="top",
-            color="white",
-            fontsize=14,
-        )
 
     def get_animation(self, fps=30):
         """Create an HTML5 video animation from stored frames.
@@ -698,14 +582,7 @@ class JupyterAnimator:
         else:
             fig, ax = plt.subplots(figsize=(10, 8))
 
-        # Get colormap
-        if self.cmap == "twilight_zero":
-            try:
-                actual_cmap = plt.get_cmap("twilight_zero")
-            except ValueError:
-                actual_cmap = get_twilight_zero_cmap()
-        else:
-            actual_cmap = self.cmap
+        actual_cmap = resolve_cmap(self.cmap)
 
         # Initial frame
         im = ax.imshow(
@@ -736,12 +613,11 @@ class JupyterAnimator:
             ax,
             self.metadata.get("design"),
             self.metadata.get("boundaries"),
-            self.metadata.get("plane_2d", "xy"),
         )
 
         # Add scale bar for clean visualization
         if self.clean_visualization:
-            self._add_scale_bar(ax, self.metadata.get("design"))
+            draw_scale_bar(ax, self.metadata.get("design"), wavelength=self.wavelength, fontsize=14)
 
         def update(frame_idx):
             im.set_data(self.frames[frame_idx])
@@ -820,14 +696,7 @@ class JupyterAnimator:
         else:
             fig, ax = plt.subplots(figsize=(10, 8))
 
-        # Get colormap
-        if self.cmap == "twilight_zero":
-            try:
-                actual_cmap = plt.get_cmap("twilight_zero")
-            except ValueError:
-                actual_cmap = get_twilight_zero_cmap()
-        else:
-            actual_cmap = self.cmap
+        actual_cmap = resolve_cmap(self.cmap)
 
         # Initial frame
         im = ax.imshow(
@@ -858,12 +727,11 @@ class JupyterAnimator:
             ax,
             self.metadata.get("design"),
             self.metadata.get("boundaries"),
-            self.metadata.get("plane_2d", "xy"),
         )
 
         # Add scale bar for clean visualization
         if self.clean_visualization:
-            self._add_scale_bar(ax, self.metadata.get("design"))
+            draw_scale_bar(ax, self.metadata.get("design"), wavelength=self.wavelength, fontsize=14)
 
         def update(frame_idx):
             im.set_data(self.frames[frame_idx])
@@ -921,14 +789,7 @@ class JupyterAnimator:
             vmax = self._global_vmax if self._global_vmax > 0 else 1.0
             vmin = -vmax
 
-        # Get colormap
-        if self.cmap == "twilight_zero":
-            try:
-                actual_cmap = plt.get_cmap("twilight_zero")
-            except ValueError:
-                actual_cmap = get_twilight_zero_cmap()
-        else:
-            actual_cmap = self.cmap
+        actual_cmap = resolve_cmap(self.cmap)
 
         try:
             import ipywidgets as widgets
@@ -979,7 +840,6 @@ class JupyterAnimator:
                     ax,
                     self.metadata.get("design"),
                     self.metadata.get("boundaries"),
-                    self.metadata.get("plane_2d", "xy"),
                 )
 
                 plt.show()

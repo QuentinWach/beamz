@@ -992,10 +992,7 @@ def structure_to_3d_mesh(design, structure, depth, z_offset=0):
             vertices_2d, interior_paths, depth, actual_z
         )
 
-    try:
-        triangles = _robust_triangulation(vertices_2d)
-    except Exception:
-        triangles = _fallback_triangulation(vertices_2d)
+    triangles = _triangulate(vertices_2d)
     if not triangles:
         return None
 
@@ -1030,120 +1027,36 @@ def structure_to_3d_mesh(design, structure, depth, z_offset=0):
     }
 
 
-def _robust_triangulation(vertices_2d):
-    if len(vertices_2d) < 3:
+def _triangulate(vertices_2d):
+    """Triangulate a simple polygon using scipy Delaunay with centroid filtering."""
+    n = len(vertices_2d)
+    if n < 3:
         return []
-    if len(vertices_2d) == 3:
+    if n == 3:
         return [(0, 1, 2)]
-    if len(vertices_2d) == 4:
+    if n == 4:
         return [(0, 1, 2), (0, 2, 3)]
-    try:
-        import scipy.spatial
 
-        points = np.array(vertices_2d)
-        tri = scipy.spatial.Delaunay(points)
-        valid_triangles = []
-        for triangle in tri.simplices:
-            centroid = np.mean(points[triangle], axis=0)
-            if _point_in_polygon_2d(centroid[0], centroid[1], vertices_2d):
-                v1 = points[triangle[1]] - points[triangle[0]]
-                v2 = points[triangle[2]] - points[triangle[0]]
-                if np.cross(v1, v2) > 0:
-                    valid_triangles.append(tuple(triangle))
-                else:
-                    valid_triangles.append((triangle[0], triangle[2], triangle[1]))
-        return valid_triangles
-    except ImportError:
-        return _ear_clipping_triangulation(vertices_2d)
-
-
-def _ear_clipping_triangulation(vertices):
-    if len(vertices) < 3:
-        return []
-
-    def is_ear(i, j, k, vertices, indices):
-        a = np.array(vertices[indices[i]])
-        b = np.array(vertices[indices[j]])
-        c = np.array(vertices[indices[k]])
-        ab = b - a
-        cb = b - c
-        cross = np.cross(ab, cb)
-        if cross <= 0:
-            return False
-        triangle = [a, b, c]
-        for m in range(len(indices)):
-            if m not in [i, j, k]:
-                p = np.array(vertices[indices[m]])
-                if _point_in_triangle(p, a, b, c):
-                    return False
-        return True
-
-    indices = list(range(len(vertices)))
-    triangles = []
-    while len(indices) > 3:
-        n = len(indices)
-        ear_found = False
-        for j in range(n):
-            i = (j - 1) % n
-            k = (j + 1) % n
-            if is_ear(i, j, k, vertices, indices):
-                triangles.append((indices[i], indices[j], indices[k]))
-                indices.pop(j)
-                ear_found = True
-                break
-        if not ear_found:
-            break
-    if len(indices) == 3:
-        triangles.append((indices[0], indices[1], indices[2]))
-    return triangles
-
-
-def _fallback_triangulation(vertices_2d):
-    if len(vertices_2d) < 3:
-        return []
-    if len(vertices_2d) == 3:
-        return [(0, 1, 2)]
-    if len(vertices_2d) == 4:
-        return [(0, 1, 2), (0, 2, 3)]
-    try:
-        return _convex_hull_triangulation(vertices_2d)
-    except Exception:
-        triangles = []
-        for i in range(1, len(vertices_2d) - 1):
-            triangles.append((0, i, i + 1))
-        return triangles
-
-
-def _convex_hull_triangulation(vertices_2d):
     import scipy.spatial
 
     points = np.array(vertices_2d)
-    hull = scipy.spatial.ConvexHull(points)
-    hull_vertices = hull.vertices
-    if len(hull_vertices) == len(vertices_2d):
-        triangles = []
-        for i in range(1, len(vertices_2d) - 1):
-            triangles.append((0, i, i + 1))
-        return triangles
-    else:
-        return _decompose_polygon(vertices_2d)
+    try:
+        tri = scipy.spatial.Delaunay(points)
+    except Exception:
+        # Degenerate geometry — fall back to fan triangulation
+        return [(0, i, i + 1) for i in range(1, n - 1)]
 
-
-def _decompose_polygon(vertices_2d):
-    triangles = []
-    n = len(vertices_2d)
-    center_idx = 0
-    for i in range(1, n - 1):
-        next_i = i + 1
-        if _is_valid_triangle(vertices_2d, center_idx, i, next_i):
-            triangles.append((center_idx, i, next_i))
-    return triangles if triangles else [(0, 1, 2)]
-
-
-def _is_valid_triangle(vertices, i, j, k):
-    p1, p2, p3 = vertices[i], vertices[j], vertices[k]
-    area = abs((p2[0] - p1[0]) * (p3[1] - p1[1]) - (p3[0] - p1[0]) * (p2[1] - p1[1]))
-    return area > 1e-10
+    valid_triangles = []
+    for triangle in tri.simplices:
+        centroid = np.mean(points[triangle], axis=0)
+        if _point_in_polygon_2d(centroid[0], centroid[1], vertices_2d):
+            v1 = points[triangle[1]] - points[triangle[0]]
+            v2 = points[triangle[2]] - points[triangle[0]]
+            if np.cross(v1, v2) > 0:
+                valid_triangles.append(tuple(triangle))
+            else:
+                valid_triangles.append((triangle[0], triangle[2], triangle[1]))
+    return valid_triangles
 
 
 def _point_in_polygon_2d(x, y, polygon_vertices):
@@ -1161,20 +1074,6 @@ def _point_in_polygon_2d(x, y, polygon_vertices):
                         inside = not inside
         p1x, p1y = p2x, p2y
     return inside
-
-
-def _point_in_triangle(point, a, b, c):
-    x, y = point
-    x1, y1 = a
-    x2, y2 = b
-    x3, y3 = c
-    denominator = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
-    if abs(denominator) < 1e-10:
-        return False
-    a_coord = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3)) / denominator
-    b_coord = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3)) / denominator
-    c_coord = 1 - a_coord - b_coord
-    return a_coord >= 0 and b_coord >= 0 and c_coord >= 0
 
 
 def _triangulate_polygon_with_holes(exterior_vertices, interior_paths, depth, z_offset):

@@ -12,7 +12,8 @@ from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
-from beamz.visual.viz import VideoRecorder, animate_manual_field
+from beamz.visual.animation import animate_manual_field
+from beamz.visual.video import VideoRecorder
 
 
 @dataclass
@@ -607,7 +608,7 @@ class Simulation:
                     cfg.wavelength = device.wavelength
                     break
 
-        from beamz.visual.viz import JupyterAnimator, is_jupyter_environment
+        from beamz.visual.animation import JupyterAnimator, is_jupyter_environment
 
         use_jupyter = (
             cfg.jupyter_live
