@@ -393,6 +393,6 @@ class Design:
 
     def show(self, **kwargs):
         """Display the design using the visualization module."""
-        from beamz.visual.viz import show_design
+        from beamz.visual.design_viz import show_design
 
         show_design(self, **kwargs)
