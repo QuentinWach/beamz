@@ -69,95 +69,27 @@ class GaussianSource:
 
     def inject(self, fields, t, dt, current_step, resolution, design):
         """Inject source fields directly into the simulation grid before the FDTD update step."""
-        dx = dy = resolution
+        is_3d = len(self.position) >= 3 if hasattr(self.position, "__len__") else False
 
-        # Check dimensionality from position length (more reliable than fields when meshing is 2D for 3D design)
-        position_len = len(self.position) if hasattr(self.position, "__len__") else 1
-        if position_len == 3:
-            self._inject_3d(fields, t, dt, resolution)
-        else:
-            self._inject_2d(fields, t, dt, resolution)
-
-    def _inject_2d(self, fields, t, dt, resolution):
-        """Inject into 2D grid (Ez component)."""
-        ny, nx = fields.Ez.shape
-
-        # Initialize spatial profile if needed (do this once)
         if self._spatial_profile_ez is None:
-            x0, y0 = self.position
-
-            # Determine bounding box for Gaussian (e.g., +/- 4 sigma) to save computation
-            # Convert position to grid indices (these are static, computed once)
-            sigma_grid = self.width / resolution
-            radius_grid = int(np.ceil(4 * sigma_grid))
-
-            cx = int(round(x0 / resolution))
-            cy = int(round(y0 / resolution))
-
-            # Define ROI limits
-            x_start = max(0, cx - radius_grid)
-            x_end = min(nx, cx + radius_grid + 1)
-            y_start = max(0, cy - radius_grid)
-            y_end = min(ny, cy + radius_grid + 1)
-
-            self._grid_indices = (slice(y_start, y_end), slice(x_start, x_end))
-
-            # Generate coordinate grids for the ROI using JAX
-            x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
-            y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
-
-            X, Y = jnp.meshgrid(x_coords, y_coords, indexing="xy")
-
-            # Compute Gaussian using JAX (differentiable w.r.t. position and width)
-            dist_sq = (X - x0) ** 2 + (Y - y0) ** 2
-            profile = jnp.exp(-dist_sq / (2 * self.width**2))
-            self._spatial_profile_ez = profile
-
-        # Get signal value
-        # Inject at t + 0.5 dt because Ez is updated at n+1 from n
-        # Soft source: J_z is added.
-        # Ez_new = Ez_old + ... - dt/eps * J_z
-        # We want to add to Ez.
-        # Typically soft source adds to E directly or J term.
-        # ModeSource adds: fields.Ez += injection
-        # injection = -jz * dt / (eps * eps0)
-        # Here we treat GaussianSource as a J_z source.
+            self._init_spatial_profile(fields.Ez.shape, resolution, is_3d)
 
         signal_val = self._get_signal_value(t + 0.5 * dt, dt)
-
-        # Get permittivity in the region
         eps_region = fields.permittivity[self._grid_indices]
-
-        # Calculate injection term
-        # J(x, t) = Profile(x) * s(t)
-        # Update: E += -J * dt / (eps * eps0)
-        # We can absorb the negative sign into the signal definition if we want E to follow signal
-        # But strictly J is current.
-        # Let's just add it as a "forcing function" to E.
-        # If we want E ~ Signal, we might just add Profile * Signal * Scaling
-        # Let's follow ModeSource physics: inject current J.
 
         term = self._spatial_profile_ez * signal_val
         injection = -term * dt / (EPS_0 * eps_region)
-
-        # Inject using JAX functional update
         fields.Ez = fields.Ez.at[self._grid_indices].add(injection)
 
-    def _inject_3d(self, fields, t, dt, resolution):
-        """Inject into 3D grid (Ez component, could be expanded)."""
-        # Similar to 2D but with Z coordinate
-        # Only implementing Ez injection for dipole-like behavior along Z
-        nz, ny, nx = fields.Ez.shape
+    def _init_spatial_profile(self, ez_shape, resolution, is_3d):
+        """Compute the spatial Gaussian profile and grid indices (called once)."""
+        sigma_grid = self.width / resolution
+        radius_grid = int(np.ceil(4 * sigma_grid))
 
-        if self._spatial_profile_ez is None:
+        if is_3d:
             x0, y0, z0 = self.position
-
-            sigma_grid = self.width / resolution
-            radius_grid = int(np.ceil(4 * sigma_grid))
-
-            cx = int(round(x0 / resolution))
-            cy = int(round(y0 / resolution))
-            cz = int(round(z0 / resolution))
+            nz, ny, nx = ez_shape
+            cx, cy, cz = (int(round(c / resolution)) for c in (x0, y0, z0))
 
             x_start, x_end = max(0, cx - radius_grid), min(nx, cx + radius_grid + 1)
             y_start, y_end = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
@@ -169,25 +101,27 @@ class GaussianSource:
                 slice(x_start, x_end),
             )
 
-            # Generate coordinate grids using JAX
             x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
             y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
             z_coords = (jnp.arange(z_start, z_end) + 0.5) * resolution
-
             Z, Y, X = jnp.meshgrid(z_coords, y_coords, x_coords, indexing="ij")
-
-            # Compute Gaussian using JAX (differentiable w.r.t. position and width)
             dist_sq = (X - x0) ** 2 + (Y - y0) ** 2 + (Z - z0) ** 2
-            self._spatial_profile_ez = jnp.exp(-dist_sq / (2 * self.width**2))
+        else:
+            x0, y0 = self.position
+            ny, nx = ez_shape
+            cx, cy = int(round(x0 / resolution)), int(round(y0 / resolution))
 
-        signal_val = self._get_signal_value(t + 0.5 * dt, dt)
-        eps_region = fields.permittivity[self._grid_indices]
+            x_start, x_end = max(0, cx - radius_grid), min(nx, cx + radius_grid + 1)
+            y_start, y_end = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
 
-        term = self._spatial_profile_ez * signal_val
-        injection = -term * dt / (EPS_0 * eps_region)
+            self._grid_indices = (slice(y_start, y_end), slice(x_start, x_end))
 
-        # Inject using JAX functional update
-        fields.Ez = fields.Ez.at[self._grid_indices].add(injection)
+            x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
+            y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
+            X, Y = jnp.meshgrid(x_coords, y_coords, indexing="xy")
+            dist_sq = (X - x0) ** 2 + (Y - y0) ** 2
+
+        self._spatial_profile_ez = jnp.exp(-dist_sq / (2 * self.width**2))
 
     def add_to_plot(
         self, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"

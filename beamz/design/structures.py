@@ -244,7 +244,7 @@ class Polygon:
     def add_to_plot(
         self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
     ):
-        from beamz.visual.viz import draw_polygon
+        from beamz.visual.design_viz import draw_polygon
 
         return draw_polygon(
             ax,

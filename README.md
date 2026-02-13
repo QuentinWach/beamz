@@ -5,7 +5,7 @@ BEAMZ is an **electromagnetic simulation** package using the FDTD method. It fea
 </div>
 
 ```bash
-uv pip install beamz
+pip install beamz
 ```
 
 ![PyPI](https://img.shields.io/pypi/v/beamz?color=black)
@@ -14,11 +14,15 @@ uv pip install beamz
 ![Stargazers](https://img.shields.io/github/stars/QuentinWach/beamz)
 
 
----
+## Get Started
+Read and try out our **[example notebooks](https://quentinwach.com/beamz-notebooks/)** or download and run `examples/` from this repository.
 
-<div align="left">
-  <img src="docs/assets/4_topo.png" alt="Example topology optimization result" width="200" align="right" style="border-radius: 15px; margin-left: 15px;"/>
-  <img src="docs/assets/4_topo.gif" alt="Topology optimization process (animation)" width="200" align="right" style="border-radius: 15px; margin-left: 15px;"/>
-  Design your first gradient-optimized 90°-bend topology in under 5 min by copying the example script from this repo and running <code>uv run python examples/4_topology.py</code>.
-  <span>This design predicts a high broadband transmission of &gt;98% from 1200&nbsp;nm to 1800&nbsp;nm.</span>
-</div>
+
+## Features
+
+...
+
+
+## Planned
+
+...

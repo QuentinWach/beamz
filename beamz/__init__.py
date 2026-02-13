@@ -35,7 +35,6 @@ from beamz.devices.sources import GaussianSource, ModeSource
 from beamz.devices.sources.mode import solve_modes
 from beamz.devices.sources.signals import plot_signal, ramped_cosine
 
-# from beamz.optimization.optimizers import Optimizer  # TODO: Re-enable when optimizers module is created
 from beamz.optimization.topology import (
     TopologyManager,
     compute_overlap_gradient,
@@ -54,21 +53,10 @@ from beamz.multiphysics.thermal import (
 # Import UI helpers
 from beamz.visual.helpers import (
     calc_optimal_fdtd_params,
-    code_preview,
     create_rich_progress,
-    display_header,
-    display_optimization_progress,
-    display_parameters,
-    display_results,
-    display_simulation_status,
     display_status,
-    display_time_elapsed,
     get_si_scale_and_label,
-    tree_view,
 )
-
-# Import optimization-related classes
-# (Currently empty, to be filled as the module grows)
 
 
 # Prepare a dictionary of all our exports
@@ -119,22 +107,13 @@ _exports = {
     "ABC": ABC,
     "PeriodicBoundary": PeriodicBoundary,
     # Optimization
-    # 'Optimizer': Optimizer,  # TODO: Re-enable when optimizers module is created
     "TopologyManager": TopologyManager,
     "compute_overlap_gradient": compute_overlap_gradient,
     "create_optimization_mask": create_optimization_mask,
     "transform_density": transform_density,
     # UI helpers
-    "display_header": display_header,
     "display_status": display_status,
     "create_rich_progress": create_rich_progress,
-    "display_parameters": display_parameters,
-    "display_results": display_results,
-    "display_simulation_status": display_simulation_status,
-    "display_optimization_progress": display_optimization_progress,
-    "display_time_elapsed": display_time_elapsed,
-    "tree_view": tree_view,
-    "code_preview": code_preview,
     "get_si_scale_and_label": get_si_scale_and_label,
     "calc_optimal_fdtd_params": calc_optimal_fdtd_params,
 }

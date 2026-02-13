@@ -25,6 +25,7 @@ grid = design.rasterize(resolution=DX)
 # Define the source
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
+#plot_signal(signal, time_steps)
 # Prefer TE polarization and restrict transverse width to single-mode core to avoid exciting higher-order lobes
 source = ModeSource(grid=grid, center=(3*µm, Y/2), width=WG_W * 3.5, wavelength=WL, pol="tm", signal=signal, direction="+x")
 

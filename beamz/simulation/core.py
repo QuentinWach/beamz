@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from functools import partial
 
 import jax
@@ -11,7 +12,31 @@ from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
-from beamz.visual.viz import VideoRecorder, animate_manual_field, close_fdtd_figure
+from beamz.visual.animation import animate_manual_field
+from beamz.visual.video import VideoRecorder
+
+
+@dataclass
+class _VizConfig:
+    """Internal config for visualization during simulation run."""
+
+    animate_live: str = None
+    animation_interval: int = 10
+    axis_scale: tuple = None
+    cmap: str = "twilight_zero"
+    clean_visualization: bool = False
+    wavelength: float = None
+    line_color: str = "gray"
+    line_opacity: float = 0.5
+    interpolation: str = "bicubic"
+    save_video: str = None
+    video_fps: int = 30
+    video_dpi: int = 150
+    video_field: str = None
+    save_fields: list = None
+    field_subsample: int = 1
+    jupyter_live: bool = None
+    store_animation: bool = True
 
 
 class Simulation:
@@ -60,9 +85,6 @@ class Simulation:
                     )
                 )
             self.pml_data = pml_data
-
-            # Initialize split fields in Fields object - DEPRECATED/REMOVED in favor of effective conductivity
-            # self.fields._init_upml_fields(pml_data)
 
             # Set effective conductivity for PML
             self.fields.set_pml_conductivity(pml_data)
@@ -171,12 +193,11 @@ class Simulation:
 
         return source_j, source_m
 
-    def _create_jit_step_2d(self):
-        """Create a JIT-compiled 2D FDTD step function for maximum performance.
+    def _create_jit_step(self):
+        """Create a JIT-compiled FDTD step function for maximum performance.
 
         Returns a pure function that takes field arrays and returns updated field arrays.
         """
-        # Extract static parameters for JIT compilation
         resolution = self.resolution
         dt = self.dt
         plane_2d = self.plane_2d
@@ -201,91 +222,50 @@ class Simulation:
         sigma_m_hy = self.fields.sigma_m_hy
         sigma_m_hz = self.fields.sigma_m_hz
 
-        # Import curl operations
-        from beamz.simulation.ops import curl_e_to_h_2d, curl_h_to_e_2d
-
-        @jax.jit
-        def step_2d(Ex, Ey, Ez, Hx, Hy, Hz):
-            """Pure JIT-compiled FDTD step (no sources)."""
-            # 1. Update H fields from E fields
-            curlE_x, curlE_y, curlE_z = curl_e_to_h_2d(
-                (Ex, Ey, Ez), resolution, plane=plane_2d
-            )
-
-            Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
-            Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
-            Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
-
-            # 2. Update E fields from H fields
-            curlH_x, curlH_y, curlH_z = curl_h_to_e_2d(
-                (Hx_new, Hy_new, Hz_new),
-                resolution,
-                (Ex.shape, Ey.shape, Ez.shape),
-                plane=plane_2d,
-            )
-
-            Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
-            Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
-            Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
-
-            return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
-
-        return step_2d
-
-    def _create_jit_step_3d(self):
-        """Create a JIT-compiled 3D FDTD step function for maximum performance."""
-        resolution = self.resolution
-        dt = self.dt
-
-        eps_x, sig_x, region_x = (
-            self.fields.eps_x,
-            self.fields.sig_x,
-            self.fields.region_x,
+        from beamz.simulation.ops import (
+            curl_e_to_h_2d,
+            curl_e_to_h_3d,
+            curl_h_to_e_2d,
+            curl_h_to_e_3d,
         )
-        eps_y, sig_y, region_y = (
-            self.fields.eps_y,
-            self.fields.sig_y,
-            self.fields.region_y,
-        )
-        eps_z, sig_z, region_z = (
-            self.fields.eps_z,
-            self.fields.sig_z,
-            self.fields.region_z,
-        )
-        sigma_m_hx = self.fields.sigma_m_hx
-        sigma_m_hy = self.fields.sigma_m_hy
-        sigma_m_hz = self.fields.sigma_m_hz
 
-        from beamz.simulation.ops import curl_e_to_h_3d, curl_h_to_e_3d
+        if self.is_3d:
 
-        @jax.jit
-        def step_3d(Ex, Ey, Ez, Hx, Hy, Hz):
-            """Pure JIT-compiled 3D FDTD step (no sources)."""
-            # 1. Update H fields from E fields
-            curlE_x, curlE_y, curlE_z = curl_e_to_h_3d(Ex, Ey, Ez, resolution)
+            @jax.jit
+            def step(Ex, Ey, Ez, Hx, Hy, Hz):
+                curlE_x, curlE_y, curlE_z = curl_e_to_h_3d(Ex, Ey, Ez, resolution)
+                Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+                Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+                Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+                curlH_x, curlH_y, curlH_z = curl_h_to_e_3d(
+                    Hx_new, Hy_new, Hz_new, resolution,
+                    ex_shape=Ex.shape, ey_shape=Ey.shape, ez_shape=Ez.shape,
+                )
+                Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
+                Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
+                Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
+                return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
 
-            Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
-            Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
-            Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+        else:
 
-            # 2. Update E fields from H fields
-            curlH_x, curlH_y, curlH_z = curl_h_to_e_3d(
-                Hx_new,
-                Hy_new,
-                Hz_new,
-                resolution,
-                ex_shape=Ex.shape,
-                ey_shape=Ey.shape,
-                ez_shape=Ez.shape,
-            )
+            @jax.jit
+            def step(Ex, Ey, Ez, Hx, Hy, Hz):
+                curlE_x, curlE_y, curlE_z = curl_e_to_h_2d(
+                    (Ex, Ey, Ez), resolution, plane=plane_2d
+                )
+                Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+                Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+                Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+                curlH_x, curlH_y, curlH_z = curl_h_to_e_2d(
+                    (Hx_new, Hy_new, Hz_new), resolution,
+                    (Ex.shape, Ey.shape, Ez.shape), plane=plane_2d,
+                )
+                Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
+                Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
+                Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
+                return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
 
-            Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
-            Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
-            Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
-
-            return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
-
-        return step_3d
+        return step
 
     def run_fast(
         self, num_steps=None, record_interval=None, record_fields=None, progress=True
@@ -318,7 +298,7 @@ class Simulation:
 
         # Create JIT-compiled step function
         jit_step = (
-            self._create_jit_step_2d() if not self.is_3d else self._create_jit_step_3d()
+            self._create_jit_step()
         )
 
         # Warm up JIT (compile on first call)
@@ -449,7 +429,7 @@ class Simulation:
 
         # Create pure FDTD step function for scan
         jit_step = (
-            self._create_jit_step_2d() if not self.is_3d else self._create_jit_step_3d()
+            self._create_jit_step()
         )
 
         @jax.jit
@@ -554,61 +534,109 @@ class Simulation:
                 - 'monitors': list of Monitor objects with recorded data
                 - 'animation': JupyterAnimator object if running in Jupyter with animate_live
         """
-        # Handle 3D simulations - use monitor slice if available
+        cfg = _VizConfig(
+            animate_live=animate_live,
+            animation_interval=animation_interval,
+            axis_scale=axis_scale,
+            cmap=cmap,
+            clean_visualization=clean_visualization,
+            wavelength=wavelength,
+            line_color=line_color,
+            line_opacity=line_opacity,
+            interpolation=interpolation,
+            save_video=save_video,
+            video_fps=video_fps,
+            video_dpi=video_dpi,
+            video_field=video_field,
+            save_fields=save_fields,
+            field_subsample=field_subsample,
+            jupyter_live=jupyter_live,
+            store_animation=store_animation,
+        )
+
+        active_monitor, use_jupyter, jupyter_animator, video_recorder, viz_context = (
+            self._setup_visualization(cfg)
+        )
+
+        field_history = {name: [] for name in (cfg.save_fields or [])}
+
+        try:
+            while self.step():
+                self._store_fields(field_history, cfg)
+
+                if self.current_step % cfg.animation_interval != 0:
+                    continue
+
+                if video_recorder:
+                    self._record_video_frame(video_recorder, cfg)
+
+                if cfg.animate_live:
+                    viz_context = self._update_live_display(
+                        cfg, active_monitor, use_jupyter, jupyter_animator, viz_context
+                    )
+        finally:
+            if video_recorder:
+                video_recorder.save()
+            if jupyter_animator:
+                jupyter_animator.finalize()
+            if not use_jupyter and viz_context and viz_context.get("fig"):
+                import matplotlib.pyplot as plt
+
+                plt.show(block=False)
+                print("Simulation complete. Close the plot window to continue.")
+
+        return self._collect_results(field_history, cfg, jupyter_animator)
+
+    def _setup_visualization(self, cfg):
+        """Set up all visualization components for run()."""
         active_monitor = None
-        if animate_live and self.is_3d:
+        if cfg.animate_live and self.is_3d:
             active_monitor = next(
                 (d for d in self.devices if isinstance(d, Monitor) and d.is_3d), None
             )
             if not active_monitor:
-                # print("● Live animation for 3D simulations requires a Monitor (add one to devices)")
-                animate_live = None
+                cfg.animate_live = None
 
-        # Initialize animation context if requested
-        viz_context = None
-        if animate_live:
-            # Validate field component exists
+        if cfg.animate_live:
             available = self.fields.available_components()
-            if animate_live not in available:
-                # print(f"● Warning: Field '{animate_live}' not found. Available: {available}")
-                animate_live = None
+            if cfg.animate_live not in available:
+                cfg.animate_live = None
 
-        # Extract wavelength from devices if not provided
-        if wavelength is None:
+        if cfg.wavelength is None:
             for device in self.devices:
                 if hasattr(device, "wavelength"):
-                    wavelength = device.wavelength
+                    cfg.wavelength = device.wavelength
                     break
 
-        # Detect Jupyter environment and initialize animator if needed
-        from beamz.visual.viz import JupyterAnimator, is_jupyter_environment
+        from beamz.visual.animation import JupyterAnimator, is_jupyter_environment
 
         use_jupyter = (
-            jupyter_live if jupyter_live is not None else is_jupyter_environment()
+            cfg.jupyter_live
+            if cfg.jupyter_live is not None
+            else is_jupyter_environment()
         )
 
         jupyter_animator = None
-        if animate_live and use_jupyter:
+        if cfg.animate_live and use_jupyter:
             jupyter_animator = JupyterAnimator(
-                cmap=cmap,
-                axis_scale=axis_scale,
-                clean_visualization=clean_visualization,
-                wavelength=wavelength,
-                line_color=line_color,
-                line_opacity=line_opacity,
-                interpolation=interpolation,
+                cmap=cfg.cmap,
+                axis_scale=cfg.axis_scale,
+                clean_visualization=cfg.clean_visualization,
+                wavelength=cfg.wavelength,
+                line_color=cfg.line_color,
+                line_opacity=cfg.line_opacity,
+                interpolation=cfg.interpolation,
                 live_display=True,
-                store_frames=store_animation,
+                store_frames=cfg.store_animation,
             )
 
-        # Initialize video recorder if requested
         video_recorder = None
-        if save_video:
-            # Determine which field to record for video
+        if cfg.save_video:
             record_field = (
-                video_field if video_field else (animate_live if animate_live else "Ez")
+                cfg.video_field
+                or cfg.animate_live
+                or "Ez"
             )
-            # Validate field component exists
             available = self.fields.available_components()
             if record_field not in available:
                 print(
@@ -617,157 +645,120 @@ class Simulation:
                 record_field = available[0] if available else None
             if record_field:
                 video_recorder = VideoRecorder(
-                    filename=save_video,
-                    fps=video_fps,
-                    dpi=video_dpi,
-                    cmap=cmap,
-                    axis_scale=axis_scale,
-                    clean_visualization=clean_visualization,
-                    wavelength=wavelength,
-                    line_color=line_color,
-                    line_opacity=line_opacity,
-                    interpolation=interpolation,
+                    filename=cfg.save_video,
+                    fps=cfg.video_fps,
+                    dpi=cfg.video_dpi,
+                    cmap=cfg.cmap,
+                    axis_scale=cfg.axis_scale,
+                    clean_visualization=cfg.clean_visualization,
+                    wavelength=cfg.wavelength,
+                    line_color=cfg.line_color,
+                    line_opacity=cfg.line_opacity,
+                    interpolation=cfg.interpolation,
                 )
 
-        # Initialize field storage if requested
-        field_history = {}
-        if save_fields:
-            for field_name in save_fields:
-                field_history[field_name] = []
+        return active_monitor, use_jupyter, jupyter_animator, video_recorder, None
 
-        try:
-            # Main simulation loop
-            while self.step():
-                # Save field history if requested
-                # current_step is incremented in step(), so we check after increment
-                if save_fields and (self.current_step % field_subsample == 0):
-                    for field_name in save_fields:
-                        if hasattr(self.fields, field_name):
-                            field_history[field_name].append(
-                                getattr(self.fields, field_name).copy()
-                            )
+    def _store_fields(self, field_history, cfg):
+        """Store field snapshots if requested."""
+        if not cfg.save_fields or self.current_step % cfg.field_subsample != 0:
+            return
+        for field_name in cfg.save_fields:
+            if hasattr(self.fields, field_name):
+                field_history[field_name].append(
+                    getattr(self.fields, field_name).copy()
+                )
 
-                # Record video frame if enabled
-                if video_recorder and self.current_step % animation_interval == 0:
-                    record_field = (
-                        video_field
-                        if video_field
-                        else (animate_live if animate_live else "Ez")
-                    )
-                    if hasattr(self.fields, record_field):
-                        field_display = getattr(self.fields, record_field)
-                        # Convert to V/µm for E-fields
-                        field_display = (
-                            field_display * 1e-6
-                            if "E" in record_field
-                            else field_display
-                        )
-                        extent = (0, self.design.width, 0, self.design.height)
-                        video_recorder.add_frame(
-                            field_display,
-                            t=self.t,
-                            step=self.current_step,
-                            num_steps=self.num_steps,
-                            field_name=record_field,
-                            units="V/µm" if "E" in record_field else "A/m",
-                            extent=extent,
-                            design=self.design,
-                            boundaries=self.boundaries,
-                            plane_2d=self.plane_2d,
-                        )
+    def _record_video_frame(self, video_recorder, cfg):
+        """Record a single video frame."""
+        record_field = cfg.video_field or cfg.animate_live or "Ez"
+        if not hasattr(self.fields, record_field):
+            return
+        field_display = getattr(self.fields, record_field)
+        if "E" in record_field:
+            field_display = field_display * 1e-6
+        video_recorder.add_frame(
+            field_display,
+            t=self.t,
+            step=self.current_step,
+            num_steps=self.num_steps,
+            field_name=record_field,
+            units="V/µm" if "E" in record_field else "A/m",
+            extent=(0, self.design.width, 0, self.design.height),
+            design=self.design,
+            boundaries=self.boundaries,
+            plane_2d=self.plane_2d,
+        )
 
-                # Update live animation if enabled
-                if animate_live and self.current_step % animation_interval == 0:
-                    if self.is_3d and active_monitor:
-                        # Use monitor fields for 3D animation
-                        if (
-                            animate_live in active_monitor.fields
-                            and active_monitor.fields[animate_live]
-                        ):
-                            field_display = active_monitor.fields[animate_live][-1]
-                            # print(f"● 3D Animation slice shape: {field_display.shape}")
-                            # Use monitor's physical extent
-                            extent = (
-                                active_monitor.start[0],
-                                active_monitor.start[0] + active_monitor.size[0],
-                                active_monitor.start[1],
-                                active_monitor.start[1] + active_monitor.size[1],
-                            )
-                        else:
-                            continue
-                    else:
-                        # Standard 2D animation
-                        field_display = getattr(self.fields, animate_live)
-                        extent = (0, self.design.width, 0, self.design.height)
+    def _update_live_display(self, cfg, active_monitor, use_jupyter, jupyter_animator, viz_context):
+        """Update live animation display and return updated viz_context."""
+        if self.is_3d and active_monitor:
+            if (
+                cfg.animate_live in active_monitor.fields
+                and active_monitor.fields[cfg.animate_live]
+            ):
+                field_display = active_monitor.fields[cfg.animate_live][-1]
+                extent = (
+                    active_monitor.start[0],
+                    active_monitor.start[0] + active_monitor.size[0],
+                    active_monitor.start[1],
+                    active_monitor.start[1] + active_monitor.size[1],
+                )
+            else:
+                return viz_context
+        else:
+            field_display = getattr(self.fields, cfg.animate_live)
+            extent = (0, self.design.width, 0, self.design.height)
 
-                    # Convert to V/µm for display
-                    field_display = (
-                        field_display * 1e-6 if "E" in animate_live else field_display
-                    )
+        if "E" in cfg.animate_live:
+            field_display = field_display * 1e-6
+        units = "V/µm" if "E" in cfg.animate_live else "A/m"
 
-                    if use_jupyter and jupyter_animator:
-                        # Use Jupyter animator for notebook display
-                        jupyter_animator.update(
-                            field_display,
-                            t=self.t,
-                            step=self.current_step,
-                            num_steps=self.num_steps,
-                            field_name=animate_live,
-                            units="V/µm" if "E" in animate_live else "A/m",
-                            extent=extent,
-                            design=self.design,
-                            boundaries=self.boundaries,
-                            plane_2d=self.plane_2d,
-                        )
-                    else:
-                        # Use script-based matplotlib animation
-                        title = f"{animate_live} at t = {self.t:.2e} s (step {self.current_step}/{self.num_steps})"
-                        viz_context = animate_manual_field(
-                            field_display,
-                            context=viz_context,
-                            extent=extent,
-                            title=title,
-                            units="V/µm" if "E" in animate_live else "A/m",
-                            design=self.design,
-                            boundaries=self.boundaries,
-                            pause=0.001,
-                            axis_scale=axis_scale,
-                            cmap=cmap,
-                            clean_visualization=clean_visualization,
-                            wavelength=wavelength,
-                            line_color=line_color,
-                            line_opacity=line_opacity,
-                            plane_2d=self.plane_2d,
-                            interpolation=interpolation,
-                        )
-        finally:
-            # Save video if recorder was used
-            if video_recorder:
-                video_recorder.save()
+        if use_jupyter and jupyter_animator:
+            jupyter_animator.update(
+                field_display,
+                t=self.t,
+                step=self.current_step,
+                num_steps=self.num_steps,
+                field_name=cfg.animate_live,
+                units=units,
+                extent=extent,
+                design=self.design,
+                boundaries=self.boundaries,
+                plane_2d=self.plane_2d,
+            )
+        else:
+            title = f"{cfg.animate_live} at t = {self.t:.2e} s (step {self.current_step}/{self.num_steps})"
+            viz_context = animate_manual_field(
+                field_display,
+                context=viz_context,
+                extent=extent,
+                title=title,
+                units=units,
+                design=self.design,
+                boundaries=self.boundaries,
+                pause=0.001,
+                axis_scale=cfg.axis_scale,
+                cmap=cfg.cmap,
+                clean_visualization=cfg.clean_visualization,
+                wavelength=cfg.wavelength,
+                line_color=cfg.line_color,
+                line_opacity=cfg.line_opacity,
+                plane_2d=self.plane_2d,
+                interpolation=cfg.interpolation,
+            )
+        return viz_context
 
-            # Cleanup Jupyter animator figure
-            if jupyter_animator:
-                jupyter_animator.finalize()
-
-            # Cleanup: keep the final frame visible (script mode only)
-            if not use_jupyter and viz_context and viz_context.get("fig"):
-                import matplotlib.pyplot as plt
-
-                plt.show(block=False)
-                print("Simulation complete. Close the plot window to continue.")
-
-        # Collect monitor data
+    def _collect_results(self, field_history, cfg, jupyter_animator):
+        """Collect and return simulation results."""
         monitors = [
             device for device in self.devices if hasattr(device, "power_history")
         ]
-
-        # Return results
         result = {}
-        if save_fields:
+        if cfg.save_fields:
             result["fields"] = field_history
         if monitors:
             result["monitors"] = monitors
         if jupyter_animator and jupyter_animator.frames:
             result["animation"] = jupyter_animator
-
         return result if result else None

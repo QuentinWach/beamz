@@ -1,5 +1,3 @@
-import random
-
 import numpy as np
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
@@ -7,13 +5,9 @@ from shapely.ops import unary_union
 from beamz.const import µm
 from beamz.design.materials import Material
 from beamz.design.structures import (
-    Circle,
-    CircularBend,
     Polygon,
     Rectangle,
     Ring,
-    Sphere,
-    Taper,
 )
 
 
@@ -251,62 +245,16 @@ class Design:
                     self.is_3d = True
                     break
 
-    def scatter(
-        self,
-        structure: type[Polygon],
-        n: int = 1000,
-        xyrange: tuple[float, float] = (-5 * µm, 5 * µm),
-        scale_range: tuple[float, float] = (0.05, 1),
-    ):
-        """Randomly distribute n copies of the structure across the design domain."""
-        for _ in range(n):
-            new_structure = structure.copy()
-            new_structure.shift(
-                random.uniform(xyrange[0], xyrange[1]),
-                random.uniform(xyrange[0], xyrange[1]),
-            )
-            new_structure.rotate(random.uniform(0, 360))
-            new_structure.scale(random.uniform(scale_range[0], scale_range[1]))
-            self.add(new_structure)
-
     def get_material_value(self, x: float, y: float, z: float = 0.0):
         """Return material properties at coordinate (x,y,z) prioritizing topmost structure."""
         epsilon, mu, sigma_base = 1.0, 1.0, 0.0
 
-        # TODO: Check if we can reduce this by simply using the Polygon
         for structure in reversed(self.structures):
-            if isinstance(structure, Polygon):
-                if structure.point_in_polygon(x, y, z):
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
-
-            elif isinstance(structure, Rectangle):
-                if hasattr(structure, "is_pml") and structure.is_pml:
-                    continue
-                if structure.point_in_polygon(x, y, z):
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
-            elif isinstance(structure, Circle):
-                if (
-                    np.hypot(x - structure.position[0], y - structure.position[1])
-                    <= structure.radius
-                ):
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
-            elif isinstance(structure, Ring):
-                distance = np.hypot(
-                    x - structure.position[0], y - structure.position[1]
-                )
-                if structure.inner_radius <= distance <= structure.outer_radius:
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
-            elif isinstance(structure, CircularBend):
-                distance = np.hypot(
-                    x - structure.position[0], y - structure.position[1]
-                )
-                if structure.inner_radius <= distance <= structure.outer_radius:
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
+            if getattr(structure, "is_pml", False):
+                continue
+            if structure.point_in_polygon(x, y, z):
+                epsilon, mu, sigma_base = structure.material.get_sample()
+                break
 
         return [epsilon, mu, sigma_base]
 
@@ -445,6 +393,6 @@ class Design:
 
     def show(self, **kwargs):
         """Display the design using the visualization module."""
-        from beamz.visual.viz import show_design
+        from beamz.visual.design_viz import show_design
 
         show_design(self, **kwargs)

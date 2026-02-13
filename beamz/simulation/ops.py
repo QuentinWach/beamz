@@ -386,23 +386,6 @@ def curl_h_to_e_3d(hx, hy, hz, resolution, ex_shape=None, ey_shape=None, ez_shap
     return (curl_hx, curl_hy, curl_hz)
 
 
-def magnetic_conductivity_terms_2d(conductivity, permeability, hx_shape, hy_shape):
-    """Compute magnetic conductivity σ_m = σ * μ₀μᵣ/ε₀ for H-field PML absorption in 2D."""
-    if conductivity.ndim < 2:
-        return (
-            jnp.zeros(hx_shape),
-            jnp.zeros(hy_shape),
-        )  # No PML if conductivity is scalar
-    # PML uses magnetic loss: σ_m = σ * (μ₀μᵣ/ε₀) to create matched impedance at boundaries
-    sigma_m_x = (
-        conductivity[:, :-1] * permeability[:, :-1] * MU_0 / EPS_0
-    )  # Slice to Hx position (y, x-1/2)
-    sigma_m_y = (
-        conductivity[:-1, :] * permeability[:-1, :] * MU_0 / EPS_0
-    )  # Slice to Hy position (y-1/2, x)
-    return (jnp.reshape(sigma_m_x, hx_shape), jnp.reshape(sigma_m_y, hy_shape))
-
-
 def magnetic_conductivity_terms_3d(
     conductivity, permeability, hx_shape, hy_shape, hz_shape
 ):
@@ -459,16 +442,6 @@ def advance_e_field(field, curl, conductivity, permittivity, dt, region):
     return field.at[region].set(new_values)
 
 
-def material_slice_for_e_2d(permittivity, conductivity):
-    """Extract material parameters at staggered Yee grid positions for E-field in 2D."""
-    # Ez is located at (i, j) on Yee grid, interior points exclude boundaries for proper curl computation
-    region = (
-        slice(1, -1),
-        slice(1, -1),
-    )  # [1:-1, 1:-1] selects interior, avoiding edges
-    return permittivity[region], conductivity[region], region
-
-
 def material_slice_for_e_3d(permittivity, conductivity, orientation):
     """Extract material parameters at staggered Yee grid positions for E-field components in 3D."""
     # Each E-field component lives at different staggered positions on Yee grid:
@@ -488,39 +461,3 @@ def material_slice_for_e_3d(permittivity, conductivity, orientation):
     return permittivity[m_region], conductivity[m_region], f_region
 
 
-def update_e_field_upml_2d(
-    Ez, Ez_x, Ez_y, Hx, Hy, pml_data, permittivity, conductivity, resolution, dt
-):
-    """Update E field with UPML split-field formulation for 2D TM mode.
-
-    FUNCTIONAL version - returns NEW array.
-    """
-    # Standard curl calculation
-    (curl_h,) = curl_h_to_e_2d(Hx, Hy, resolution, Ez.shape)
-
-    # Get PML parameters
-    mask = pml_data["mask"]
-    sigma_x = pml_data["sigma_x"]
-    sigma_y = pml_data["sigma_y"]
-    kappa_x = pml_data["kappa_x"]
-    kappa_y = pml_data["kappa_y"]
-    alpha_x = pml_data["alpha_x"]
-    alpha_y = pml_data["alpha_y"]
-
-    # Simplified UPML implementation - use standard FDTD with PML conductivity
-    # This is more stable than the full split-field formulation
-    region = (slice(1, -1), slice(1, -1))
-
-    # Add PML conductivity to the existing conductivity
-    total_conductivity = conductivity[region] + sigma_x[region] + sigma_y[region]
-
-    # Use standard FDTD update with modified conductivity
-    denom = 1.0 + total_conductivity * dt / (2.0 * EPS_0 * permittivity[region])
-    factor = (
-        1.0 - total_conductivity * dt / (2.0 * EPS_0 * permittivity[region])
-    ) / denom
-    source = (dt / (EPS_0 * permittivity[region])) / denom
-
-    # Compute new values and use .at[].set() for functional update
-    new_values = factor * Ez[region] + source * curl_h[region]
-    return Ez.at[region].set(new_values)
