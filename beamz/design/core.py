@@ -5,13 +5,9 @@ from shapely.ops import unary_union
 from beamz.const import µm
 from beamz.design.materials import Material
 from beamz.design.structures import (
-    Circle,
-    CircularBend,
     Polygon,
     Rectangle,
     Ring,
-    Sphere,
-    Taper,
 )
 
 
@@ -253,40 +249,12 @@ class Design:
         """Return material properties at coordinate (x,y,z) prioritizing topmost structure."""
         epsilon, mu, sigma_base = 1.0, 1.0, 0.0
 
-        # TODO: Check if we can reduce this by simply using the Polygon
         for structure in reversed(self.structures):
-            if isinstance(structure, Polygon):
-                if structure.point_in_polygon(x, y, z):
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
-
-            elif isinstance(structure, Rectangle):
-                if hasattr(structure, "is_pml") and structure.is_pml:
-                    continue
-                if structure.point_in_polygon(x, y, z):
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
-            elif isinstance(structure, Circle):
-                if (
-                    np.hypot(x - structure.position[0], y - structure.position[1])
-                    <= structure.radius
-                ):
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
-            elif isinstance(structure, Ring):
-                distance = np.hypot(
-                    x - structure.position[0], y - structure.position[1]
-                )
-                if structure.inner_radius <= distance <= structure.outer_radius:
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
-            elif isinstance(structure, CircularBend):
-                distance = np.hypot(
-                    x - structure.position[0], y - structure.position[1]
-                )
-                if structure.inner_radius <= distance <= structure.outer_radius:
-                    epsilon, mu, sigma_base = structure.material.get_sample()
-                    break
+            if getattr(structure, "is_pml", False):
+                continue
+            if structure.point_in_polygon(x, y, z):
+                epsilon, mu, sigma_base = structure.material.get_sample()
+                break
 
         return [epsilon, mu, sigma_base]
 
