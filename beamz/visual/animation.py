@@ -2,8 +2,14 @@
 
 import numpy as np
 
-from beamz.visual.design_viz import draw_boundary
-from beamz.visual.helpers import display_status, get_si_scale_and_label
+from beamz.visual.design_viz import (
+    add_design_overlays,
+    configure_axes,
+    draw_boundary,
+    draw_scale_bar,
+    resolve_cmap,
+)
+from beamz.visual.helpers import get_si_scale_and_label
 
 
 def get_twilight_zero_cmap():
@@ -69,192 +75,6 @@ def is_jupyter_environment():
         return False
     except (ImportError, NameError):
         return False
-
-def animate_fdtd_live(fdtd, field_data=None, field="Ez", axis_scale=None, z_slice=None):
-    """Animate FDTD field in real time using matplotlib animation."""
-    import matplotlib.pyplot as plt
-
-    if field_data is None:
-        field_data = fdtd.backend.to_numpy(getattr(fdtd, field))
-
-    if fdtd.is_3d and len(field_data.shape) == 3:
-        if z_slice is None:
-            z_slice = field_data.shape[0] // 2
-        field_data = field_data[z_slice, :, :]
-        slice_info = f" (z-slice {z_slice})"
-    else:
-        slice_info = ""
-
-    # Always visualize Ez field amplitude for live view
-    quantity = "field"
-    if quantity == "power":
-        # Compute instantaneous power magnitude Sx,Sy (2D) and plot W/µm²
-        Ez_np = field_data
-        Hx_raw = (
-            fdtd.backend.to_numpy(getattr(fdtd, "Hx")) if hasattr(fdtd, "Hx") else None
-        )
-        Hy_raw = (
-            fdtd.backend.to_numpy(getattr(fdtd, "Hy")) if hasattr(fdtd, "Hy") else None
-        )
-        if np.iscomplexobj(Ez_np):
-            Ez_real = np.real(Ez_np)
-            Ez_imag = np.imag(Ez_np)
-        else:
-            Ez_real = Ez_np
-            Ez_imag = 0.0
-        if Hx_raw is None or Hy_raw is None:
-            current_field = np.zeros_like(Ez_real)
-        else:
-            if np.iscomplexobj(Hx_raw) or np.iscomplexobj(Hy_raw):
-                Hx_full = np.zeros_like(Ez_real, dtype=np.complex128)
-                Hy_full = np.zeros_like(Ez_real, dtype=np.complex128)
-            else:
-                Hx_full = np.zeros_like(Ez_real)
-                Hy_full = np.zeros_like(Ez_real)
-            Hx_full[:, :-1] = Hx_raw
-            Hy_full[:-1, :] = Hy_raw
-            if (
-                np.iscomplexobj(Hx_full)
-                or np.iscomplexobj(Hy_full)
-                or np.iscomplexobj(Ez_np)
-            ):
-                Hx_real = np.real(Hx_full)
-                Hx_imag = np.imag(Hx_full)
-                Hy_real = np.real(Hy_full)
-                Hy_imag = np.imag(Hy_full)
-                Sx = -Ez_real * Hy_real - Ez_imag * Hy_imag
-                Sy = Ez_real * Hx_real + Ez_imag * Hx_imag
-            else:
-                Sx = -Ez_real * Hy_full
-                Sy = Ez_real * Hx_full
-            power_si = Sx**2 + Sy**2  # W^2/m^4 (magnitude squared); for visualization
-            # Use linear power density magnitude for color scaling (W/m^2)
-            power_mag = np.sqrt(power_si)
-            # Convert to W/µm² for display
-            power_um2 = power_mag * (1.0e-12)
-            current_field = power_um2
-        if axis_scale is None:
-            # Dynamic scaling: compute from current field every frame
-            # Use 99th percentile for power to avoid outliers
-            ax_min = 0.0
-            ax_max = float(
-                np.percentile(current_field, 99) or np.max(current_field) or 1e-9
-            )
-        else:
-            ax_min, ax_max = axis_scale
-        cbar_label = f"Power Density (W/µm²)"
-    else:
-        if np.iscomplexobj(field_data):
-            field_data = np.real(field_data)
-        # Convert Ez from V/m to V/µm for display
-        current_field = field_data * 1.0e-6
-
-        if axis_scale is None:
-            # Dynamic scaling: compute from current field every frame
-            # Ignore fdtd._axis_scale for truly adaptive behavior
-            field_abs = np.abs(current_field)
-            # Use 99th percentile instead of max to avoid extreme values at source
-            # dominating the colormap
-            amax = float(np.percentile(field_abs, 99) or 1.0)
-            # Ensure at least some visible range
-            if amax < 1e-10:
-                amax = float(np.max(field_abs) or 1.0)
-            ax_min, ax_max = -amax, amax
-        else:
-            # Fixed scaling: use the provided axis_scale
-            amax = float(max(abs(axis_scale[0]), abs(axis_scale[1])))
-            if not np.isfinite(amax) or amax <= 0:
-                amax = float(np.max(np.abs(current_field)) or 1.0)
-            ax_min, ax_max = -amax, amax
-        cbar_label = f"{field}{slice_info} (V/µm)"
-
-    if fdtd.fig is not None and plt.fignum_exists(fdtd.fig.number):
-        fdtd.im.set_array(current_field)
-        fdtd.im.set_clim(vmin=ax_min, vmax=ax_max)
-
-        # Update colorbar by directly modifying its properties (fast method)
-        if hasattr(fdtd, "colorbar") and fdtd.colorbar is not None:
-            try:
-                # Update the colorbar's norm to match the new limits
-                fdtd.colorbar.mappable.set_clim(vmin=ax_min, vmax=ax_max)
-                # Force colorbar to recompute ticks
-                fdtd.colorbar.update_ticks()
-                fdtd.colorbar.draw_all()
-            except:
-                pass
-
-        fdtd.ax.set_title(f"t = {fdtd.t:.2e} s{slice_info}")
-        fdtd.fig.canvas.draw_idle()
-        fdtd.fig.canvas.flush_events()
-        return
-
-    grid_height, grid_width = current_field.shape
-    aspect_ratio = grid_width / grid_height
-    base_size = 5
-    figsize = (
-        (base_size * aspect_ratio * 1.2, base_size)
-        if aspect_ratio > 1
-        else (base_size * 1.2, base_size / aspect_ratio)
-    )
-    fdtd.fig, fdtd.ax = plt.subplots(figsize=figsize)
-    fdtd.im = fdtd.ax.imshow(
-        current_field,
-        origin="lower",
-        extent=(0, fdtd.design.width, 0, fdtd.design.height),
-        cmap="RdBu",
-        aspect="equal",
-        interpolation="bicubic",
-        vmin=ax_min,
-        vmax=ax_max,
-    )
-    fdtd.colorbar = plt.colorbar(
-        fdtd.im, orientation="vertical", aspect=30, extend="both"
-    )
-    fdtd.colorbar.set_label(cbar_label)
-
-    try:
-        tmp_design = fdtd.design.copy()
-        tmp_design.unify_polygons()
-        overlay_structures = tmp_design.structures
-    except Exception:
-        overlay_structures = fdtd.design.structures
-    for structure in overlay_structures:
-        if hasattr(structure, "is_pml") and structure.is_pml:
-            structure.add_to_plot(
-                fdtd.ax, edgecolor="black", linestyle="--", facecolor="none", alpha=0.5
-            )
-        elif hasattr(structure, "vertices") and getattr(structure, "vertices", None):
-            structure.add_to_plot(
-                fdtd.ax, facecolor="none", edgecolor="black", linestyle="-"
-            )
-    # Draw sources from both design and fdtd.sources list
-    all_sources = list(fdtd.design.sources) if hasattr(fdtd.design, "sources") else []
-    if hasattr(fdtd, "sources"):
-        all_sources.extend(fdtd.sources)
-    for source in all_sources:
-        if hasattr(source, "add_to_plot"):
-            source.add_to_plot(fdtd.ax)
-
-    for monitor in fdtd.design.monitors:
-        if hasattr(monitor, "add_to_plot"):
-            monitor.add_to_plot(fdtd.ax, edgecolor="black")
-
-    max_dim = max(fdtd.design.width, fdtd.design.height)
-    if max_dim >= 1e-3:
-        scale, unit = 1e3, "mm"
-    elif max_dim >= 1e-6:
-        scale, unit = 1e6, "µm"
-    elif max_dim >= 1e-9:
-        scale, unit = 1e9, "nm"
-    else:
-        scale, unit = 1e12, "pm"
-    plt.xlabel(f"X ({unit})")
-    plt.ylabel(f"Y ({unit})")
-    fdtd.ax.xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-    fdtd.ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-    plt.tight_layout()
-    plt.show(block=False)
-    plt.pause(0.001)
 
 def animate_manual_field(
     field_array,
@@ -365,14 +185,7 @@ def animate_manual_field(
 
     if context.get("im") is None:
         fig, ax = plt.subplots()
-        # Handle custom colormap
-        if cmap == "twilight_zero":
-            try:
-                actual_cmap = plt.get_cmap("twilight_zero")
-            except ValueError:
-                actual_cmap = get_twilight_zero_cmap()
-        else:
-            actual_cmap = cmap
+        actual_cmap = resolve_cmap(cmap)
 
         if extent is not None:
             im = ax.imshow(
@@ -410,146 +223,26 @@ def animate_manual_field(
                 ax.set_title(title)
 
         if design is not None and show_structures:
-            try:
-                tmp_design = design.copy()
-                tmp_design.unify_polygons()
-                overlay_structures = tmp_design.structures
-            except Exception:
-                overlay_structures = getattr(design, "structures", [])
-            for structure in overlay_structures or []:
-                if hasattr(structure, "is_pml") and structure.is_pml:
-                    structure.add_to_plot(
-                        ax,
-                        edgecolor=line_color,
-                        linestyle="--",
-                        facecolor="none",
-                        alpha=line_opacity,
-                    )
-                elif hasattr(structure, "vertices") and getattr(
-                    structure, "vertices", None
-                ):
-                    structure.add_to_plot(
-                        ax,
-                        facecolor="none",
-                        edgecolor=line_color,
-                        linestyle="-",
-                        alpha=line_opacity,
-                    )
-            if show_sources:
-                for source in getattr(design, "sources", []) or []:
-                    if hasattr(source, "add_to_plot"):
-                        source.add_to_plot(ax)
-            if show_monitors:
-                for monitor in getattr(design, "monitors", []) or []:
-                    if hasattr(monitor, "add_to_plot"):
-                        monitor.add_to_plot(
-                            ax, edgecolor=line_color, alpha=line_opacity
-                        )
+            add_design_overlays(
+                ax, design,
+                line_color=line_color,
+                line_opacity=line_opacity,
+                sources=getattr(design, "sources", []) if show_sources else [],
+                show_monitors=show_monitors,
+            )
 
-        # Draw PML boundaries if provided
         if boundaries:
             for boundary in boundaries:
                 draw_boundary(
-                    ax,
-                    boundary,
-                    design,
-                    edgecolor=line_color,
-                    linestyle=":",
-                    alpha=line_opacity,
+                    ax, boundary, design,
+                    edgecolor=line_color, linestyle=":", alpha=line_opacity,
                 )
 
         if design is not None and not clean_visualization:
-            max_dim = max(design.width, design.height)
-            scale, unit = get_si_scale_and_label(max_dim)
-
-            # Set axis labels based on plane
-            xlabel, ylabel = "X", "Y"
-            if plane_2d == "yz":
-                xlabel, ylabel = "Y", "Z"
-            elif plane_2d == "xz":
-                xlabel, ylabel = "X", "Z"
-
-            ax.set_xlabel(f"{xlabel} ({unit})")
-            ax.set_ylabel(f"{ylabel} ({unit})")
-            ax.xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-            ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
+            configure_axes(ax, design, plane_2d=plane_2d)
 
         if clean_visualization and design is not None:
-            # Add scale bar in bottom-right corner
-            max_dim = max(design.width, design.height)
-            scale_factor, unit = get_si_scale_and_label(max_dim)
-
-            # Calculate scale bar length: 2 * wavelength rounded up to next integer µm
-            if wavelength is not None:
-                # Convert wavelength to µm and calculate 2 * wavelength
-                wavelength_um = wavelength * 1e6  # Convert from meters to µm
-                scale_bar_length_um = 2 * wavelength_um
-                # Round to nearest integer µm
-                scale_bar_length_um = np.round(scale_bar_length_um)
-                # Convert back to meters
-                scale_bar_length = scale_bar_length_um * 1e-6
-            else:
-                # Fallback: use design-based calculation
-                min_dim = min(design.width, design.height)
-                scale_bar_fraction = 0.18
-                scale_bar_length_physical = min_dim * scale_bar_fraction
-
-                # Round to a nice number (round to nearest, not always down)
-                if scale_bar_length_physical > 0:
-                    order = 10 ** np.floor(np.log10(scale_bar_length_physical))
-                    normalized = scale_bar_length_physical / order
-                    if normalized <= 1.25:
-                        nice_value = 1 * order
-                    elif normalized <= 2.5:
-                        nice_value = 2 * order
-                    elif normalized <= 6:
-                        nice_value = 5 * order
-                    else:
-                        nice_value = 10 * order
-                    scale_bar_length = nice_value
-                else:
-                    scale_bar_length = min_dim * 0.15
-
-            # Position in bottom-right corner with some margin
-            margin_x = design.width * 0.1
-            margin_y = design.height * 0.1
-            x_start = design.width - scale_bar_length - margin_x
-            x_end = design.width - margin_x
-            y_pos = margin_y
-
-            # Draw scale bar line (solid white bar, no caps)
-            ax.plot(
-                [x_start, x_end],
-                [y_pos, y_pos],
-                "w",
-                linewidth=3,
-                solid_capstyle="butt",
-            )
-
-            # Add text label below the bar
-            label_y = y_pos - design.height * 0.02
-            # If wavelength-based, always display in µm as integer
-            if wavelength is not None:
-                scale_bar_length_display_um = scale_bar_length * 1e6  # Convert to µm
-                label_text = f"{int(scale_bar_length_display_um)} µm"
-            else:
-                scale_bar_length_display = scale_bar_length * scale_factor
-                if scale_bar_length_display >= 1:
-                    label_text = f"{scale_bar_length_display:.0f} {unit}"
-                elif scale_bar_length_display >= 0.1:
-                    label_text = f"{scale_bar_length_display:.1f} {unit}"
-                else:
-                    label_text = f"{scale_bar_length_display:.2f} {unit}"
-
-            ax.text(
-                (x_start + x_end) / 2,
-                label_y,
-                label_text,
-                ha="center",
-                va="top",
-                color="white",
-                fontsize=10,
-            )
+            draw_scale_bar(ax, design, wavelength=wavelength)
 
         if clean_visualization:
             plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
@@ -586,126 +279,6 @@ def animate_manual_field(
     fig.canvas.flush_events()
     plt.pause(pause)
     return context
-
-def save_fdtd_animation(
-    fdtd,
-    field: str = "Ez",
-    axis_scale=[-1, 1],
-    filename="fdtd_animation.mp4",
-    fps=60,
-    frame_skip=4,
-    clean_visualization=False,
-):
-    """Save an animation of FDTD results as an mp4 file."""
-    import matplotlib.pyplot as plt
-    from matplotlib.animation import FuncAnimation
-
-    if len(fdtd.results[field]) == 0:
-        print(
-            "No field data to animate. Make sure to run the simulation with save=True."
-        )
-        return
-    total_frames = len(fdtd.results[field])
-    frame_indices = range(0, total_frames, frame_skip)
-    grid_height, grid_width = fdtd.results[field][0].shape
-    aspect_ratio = grid_width / grid_height
-    base_size = 5
-    figsize = (
-        (base_size * aspect_ratio * 1.2, base_size)
-        if aspect_ratio > 1
-        else (base_size * 1.2, base_size / aspect_ratio)
-    )
-
-    if clean_visualization:
-        if aspect_ratio > 1:
-            figsize = (base_size * aspect_ratio, base_size)
-        else:
-            figsize = (base_size, base_size / aspect_ratio)
-        fig = plt.figure(figsize=figsize, frameon=False)
-        ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_axis_off()
-        plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["bottom"].set_visible(False)
-        ax.spines["left"].set_visible(False)
-        ax.get_xaxis().set_visible(False)
-        ax.get_yaxis().set_visible(False)
-    else:
-        fig, ax = plt.subplots(figsize=figsize)
-        max_dim = max(fdtd.design.width, fdtd.design.height)
-        scale, unit = get_si_scale_and_label(max_dim)
-
-    im = ax.imshow(
-        fdtd.results[field][0],
-        origin="lower",
-        extent=(0, fdtd.design.width, 0, fdtd.design.height),
-        cmap="RdBu",
-        aspect="equal",
-        interpolation="bicubic",
-        vmin=axis_scale[0],
-        vmax=axis_scale[1],
-    )
-    if not clean_visualization:
-        colorbar = plt.colorbar(im, orientation="vertical", aspect=30, extend="both")
-        colorbar.set_label(f"{field}")
-
-    try:
-        tmp_design = fdtd.design.copy()
-        tmp_design.unify_polygons()
-        overlay_structures = tmp_design.structures
-    except Exception:
-        overlay_structures = fdtd.design.structures
-    for structure in overlay_structures:
-        if hasattr(structure, "is_pml") and structure.is_pml:
-            structure.add_to_plot(
-                ax, edgecolor="black", linestyle="--", facecolor="none", alpha=0.5
-            )
-        elif hasattr(structure, "vertices") and getattr(structure, "vertices", None):
-            structure.add_to_plot(
-                ax, facecolor="none", edgecolor="black", linestyle="-"
-            )
-    for source in fdtd.design.sources:
-        if hasattr(source, "add_to_plot"):
-            source.add_to_plot(ax)
-    for monitor in fdtd.design.monitors:
-        if hasattr(monitor, "add_to_plot"):
-            monitor.add_to_plot(ax)
-
-    if not clean_visualization:
-        plt.xlabel(f"X ({unit})")
-        plt.ylabel(f"Y ({unit})")
-        ax.xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-        ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-        title = ax.set_title(f't = {fdtd.results["t"][0]:.2e} s')
-    else:
-        title = None
-
-    def update(frame_idx):
-        frame = list(frame_indices)[frame_idx]
-        im.set_array(fdtd.results[field][frame])
-        if not clean_visualization:
-            title.set_text(f't = {fdtd.results["t"][frame]:.2e} s')
-            return [im, title]
-        return [im]
-
-    frames = len(list(frame_indices))
-    ani = FuncAnimation(fig, update, frames=frames, blit=True)
-    try:
-        from matplotlib.animation import FFMpegWriter
-
-        writer = FFMpegWriter(fps=fps)
-        if clean_visualization:
-            ani.save(filename, writer=writer, dpi=300)
-        else:
-            ani.save(filename, writer=writer, dpi=100)
-        print(
-            f"Animation saved to {filename} (using {frames} of {total_frames} frames)"
-        )
-    except Exception as e:
-        print(f"Error saving animation: {e}")
-        print("Make sure FFmpeg is installed on your system.")
-    plt.close(fig)
 
 class JupyterAnimator:
     """Handles live animation and replay for Jupyter notebooks.
@@ -878,14 +451,7 @@ class JupyterAnimator:
             vmax = self._global_vmax if self._global_vmax > 0 else 1.0
             vmin = -vmax
 
-        # Get colormap
-        if self.cmap == "twilight_zero":
-            try:
-                actual_cmap = plt.get_cmap("twilight_zero")
-            except ValueError:
-                actual_cmap = get_twilight_zero_cmap()
-        else:
-            actual_cmap = self.cmap
+        actual_cmap = resolve_cmap(self.cmap)
 
         # First frame: create the figure and all elements
         if self._fig is None:

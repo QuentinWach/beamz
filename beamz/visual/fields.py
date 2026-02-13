@@ -237,17 +237,3 @@ def plot_fdtd_power(
     plt.tight_layout()
     plt.show()
 
-def close_fdtd_figure(fdtd):
-    """Close and reset the current FDTD Matplotlib figure safely."""
-    import matplotlib.pyplot as plt
-
-    if fdtd is None:
-        return
-    if getattr(fdtd, "fig", None) is not None:
-        try:
-            plt.close(fdtd.fig)
-        finally:
-            fdtd.fig = None
-            fdtd.ax = None
-            fdtd.im = None
-

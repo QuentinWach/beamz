@@ -12,7 +12,7 @@ from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
-from beamz.visual.viz import VideoRecorder, animate_manual_field, close_fdtd_figure
+from beamz.visual.viz import VideoRecorder, animate_manual_field
 
 
 @dataclass

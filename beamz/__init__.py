@@ -53,17 +53,9 @@ from beamz.multiphysics.thermal import (
 # Import UI helpers
 from beamz.visual.helpers import (
     calc_optimal_fdtd_params,
-    code_preview,
     create_rich_progress,
-    display_header,
-    display_optimization_progress,
-    display_parameters,
-    display_results,
-    display_simulation_status,
     display_status,
-    display_time_elapsed,
     get_si_scale_and_label,
-    tree_view,
 )
 
 
@@ -120,16 +112,8 @@ _exports = {
     "create_optimization_mask": create_optimization_mask,
     "transform_density": transform_density,
     # UI helpers
-    "display_header": display_header,
     "display_status": display_status,
     "create_rich_progress": create_rich_progress,
-    "display_parameters": display_parameters,
-    "display_results": display_results,
-    "display_simulation_status": display_simulation_status,
-    "display_optimization_progress": display_optimization_progress,
-    "display_time_elapsed": display_time_elapsed,
-    "tree_view": tree_view,
-    "code_preview": code_preview,
     "get_si_scale_and_label": get_si_scale_and_label,
     "calc_optimal_fdtd_params": calc_optimal_fdtd_params,
 }
