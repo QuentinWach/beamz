@@ -2,10 +2,10 @@
 
 import numpy as np
 
-from beamz.visual.design_viz import (
+from beamz.visual.design_viz import draw_boundary
+from beamz.visual.overlays import (
     add_design_overlays,
     configure_axes,
-    draw_boundary,
     draw_scale_bar,
     resolve_cmap,
 )
@@ -544,22 +544,22 @@ class JupyterAnimator:
                     edgecolor=self.line_color, linestyle=":", alpha=self.line_opacity,
                 )
 
-    def get_animation(self, fps=30):
-        """Create an HTML5 video animation from stored frames.
+    def _build_replay(self, fps, facecolor="none"):
+        """Build a FuncAnimation from stored frames.
 
         Args:
-            fps: Frames per second for the animation
+            fps: Frames per second for the animation.
+            facecolor: Figure background color ("none" for HTML5, "black" for MP4).
 
         Returns:
-            IPython.display.HTML: Playable HTML5 video animation
+            Tuple of (fig, anim) or (None, None) if no frames stored.
         """
         import matplotlib.pyplot as plt
-        from IPython.display import HTML
         from matplotlib.animation import FuncAnimation
 
         if not self.frames:
             print("No frames stored. Enable store_frames=True.")
-            return None
+            return None, None
 
         # Determine color scale from all frames
         if self.axis_scale is not None:
@@ -577,14 +577,13 @@ class JupyterAnimator:
             fig_height = 8
             fig_width = fig_height * aspect_ratio
             fig = plt.figure(figsize=(fig_width, fig_height))
-            fig.patch.set_facecolor("none")  # Transparent background
+            fig.patch.set_facecolor(facecolor)
             ax = fig.add_axes([0, 0, 1, 1])
         else:
             fig, ax = plt.subplots(figsize=(10, 8))
 
         actual_cmap = resolve_cmap(self.cmap)
 
-        # Initial frame
         im = ax.imshow(
             self.frames[0],
             origin="lower",
@@ -608,14 +607,12 @@ class JupyterAnimator:
             title = ax.set_title("")
             plt.tight_layout()
 
-        # Add static overlays
         self._add_overlays(
             ax,
             self.metadata.get("design"),
             self.metadata.get("boundaries"),
         )
 
-        # Add scale bar for clean visualization
         if self.clean_visualization:
             draw_scale_bar(ax, self.metadata.get("design"), wavelength=self.wavelength, fontsize=14)
 
@@ -633,6 +630,24 @@ class JupyterAnimator:
             fig, update, frames=len(self.frames), interval=1000 / fps, blit=True
         )
 
+        return fig, anim
+
+    def get_animation(self, fps=30):
+        """Create an HTML5 video animation from stored frames.
+
+        Args:
+            fps: Frames per second for the animation
+
+        Returns:
+            IPython.display.HTML: Playable HTML5 video animation
+        """
+        import matplotlib.pyplot as plt
+        from IPython.display import HTML
+
+        fig, anim = self._build_replay(fps, facecolor="none")
+        if fig is None:
+            return None
+
         plt.close(fig)
 
         # Increase embed limit for larger animations (default is ~20MB)
@@ -642,14 +657,12 @@ class JupyterAnimator:
         mpl.rcParams["animation.embed_limit"] = 200  # 200 MB limit
 
         try:
-            # Convert to HTML5 video
             html_content = anim.to_jshtml()
             size_bytes = len(html_content.encode("utf-8"))
             size_mb = size_bytes / (1024 * 1024)
             print(f"Animation size: {size_mb:.1f} MB ({len(self.frames)} frames)")
             return HTML(html_content)
         finally:
-            # Restore original limit
             mpl.rcParams["animation.embed_limit"] = old_limit
 
     def get_video(self, filename="animation.mp4", fps=30, dpi=150):
@@ -667,87 +680,12 @@ class JupyterAnimator:
 
         import matplotlib.pyplot as plt
         from IPython.display import Video
-        from matplotlib.animation import FFMpegWriter, FuncAnimation
+        from matplotlib.animation import FFMpegWriter
 
-        if not self.frames:
-            print("No frames stored. Enable store_frames=True.")
+        fig, anim = self._build_replay(fps, facecolor="black")
+        if fig is None:
             return None
 
-        # Determine color scale from all frames
-        if self.axis_scale is not None:
-            vmin, vmax = self.axis_scale
-        else:
-            vmax = self._global_vmax if self._global_vmax > 0 else 1.0
-            vmin = -vmax
-
-        # Calculate figure size based on data aspect ratio for clean visualization
-        extent = self.metadata.get("extent")
-        if self.clean_visualization and extent:
-            data_width = extent[1] - extent[0]
-            data_height = extent[3] - extent[2]
-            aspect_ratio = data_width / data_height
-            fig_height = 8
-            fig_width = fig_height * aspect_ratio
-            fig = plt.figure(figsize=(fig_width, fig_height))
-            fig.patch.set_facecolor(
-                "black"
-            )  # Black background (MP4 doesn't support transparency)
-            ax = fig.add_axes([0, 0, 1, 1])
-        else:
-            fig, ax = plt.subplots(figsize=(10, 8))
-
-        actual_cmap = resolve_cmap(self.cmap)
-
-        # Initial frame
-        im = ax.imshow(
-            self.frames[0],
-            origin="lower",
-            cmap=actual_cmap,
-            vmin=vmin,
-            vmax=vmax,
-            extent=extent,
-            interpolation=self.interpolation,
-        )
-
-        title = None
-        if self.clean_visualization:
-            ax.set_axis_off()
-            ax.set_frame_on(False)
-        else:
-            plt.colorbar(
-                im,
-                ax=ax,
-                label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})",
-            )
-            title = ax.set_title("")
-            plt.tight_layout()
-
-        # Add static overlays
-        self._add_overlays(
-            ax,
-            self.metadata.get("design"),
-            self.metadata.get("boundaries"),
-        )
-
-        # Add scale bar for clean visualization
-        if self.clean_visualization:
-            draw_scale_bar(ax, self.metadata.get("design"), wavelength=self.wavelength, fontsize=14)
-
-        def update(frame_idx):
-            im.set_data(self.frames[frame_idx])
-            if title is not None and self.times:
-                t, step, num_steps = self.times[frame_idx]
-                field_name = self.metadata.get("field_name", "Field")
-                title.set_text(
-                    f"{field_name} at t = {t:.2e} s (step {step}/{num_steps})"
-                )
-            return [im] if title is None else [im, title]
-
-        anim = FuncAnimation(
-            fig, update, frames=len(self.frames), interval=1000 / fps, blit=True
-        )
-
-        # Save as MP4
         print(f"Rendering {len(self.frames)} frames to {filename}...")
         try:
             writer = FFMpegWriter(fps=fps, metadata={"title": "BEAMZ Simulation"})
@@ -756,12 +694,10 @@ class JupyterAnimator:
             )
             plt.close(fig)
 
-            # Get file size
             size_bytes = os.path.getsize(filename)
             size_mb = size_bytes / (1024 * 1024)
             print(f"Video saved: {filename} ({size_mb:.1f} MB)")
 
-            # Return video widget for Jupyter
             return Video(filename, embed=True)
         except Exception as e:
             plt.close(fig)

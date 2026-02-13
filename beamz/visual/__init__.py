@@ -7,14 +7,13 @@ from beamz.visual.animation import (
     animate_manual_field,
     is_jupyter_environment,
 )
+from beamz.visual.design_3d import show_design_3d
 from beamz.visual.design_viz import (
     draw_boundary,
     draw_polygon,
     show_design,
     show_design_2d,
-    show_design_3d,
 )
-from beamz.visual.fields import plot_fdtd_field, plot_fdtd_power
 from beamz.visual.helpers import (
     calc_optimal_fdtd_params,
     check_fdtd_stability,
@@ -30,8 +29,6 @@ __all__ = [
     "show_design",
     "show_design_2d",
     "show_design_3d",
-    "plot_fdtd_field",
-    "plot_fdtd_power",
     "animate_manual_field",
     "VideoRecorder",
     "JupyterAnimator",

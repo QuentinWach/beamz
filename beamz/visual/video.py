@@ -2,10 +2,10 @@
 
 import numpy as np
 
-from beamz.visual.design_viz import (
+from beamz.visual.design_viz import draw_boundary
+from beamz.visual.overlays import (
     add_design_overlays,
     configure_axes,
-    draw_boundary,
     draw_scale_bar,
     resolve_cmap,
 )
