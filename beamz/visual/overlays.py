@@ -181,6 +181,120 @@ def configure_axes(ax, design, plane_2d="xy"):
     ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
 
 
+def show_mesh_grid(grid, design, field="permittivity"):
+    """Display a 2D rasterized mesh grid with properly scaled SI units.
+
+    Args:
+        grid: 2D numpy array of field values.
+        design: Design object (used for width/height and SI scaling).
+        field: Name of the field (used for colorbar label and title).
+    """
+    import matplotlib.pyplot as plt
+
+    scale, unit = get_si_scale_and_label(max(design.width, design.height))
+    grid_height, grid_width = grid.shape
+    aspect_ratio = grid_width / grid_height
+    base_size = 2.5
+    if aspect_ratio > 1:
+        figsize = (base_size * aspect_ratio, base_size)
+    else:
+        figsize = (base_size, base_size / aspect_ratio)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(
+        grid, origin="lower", cmap="Grays",
+        extent=(0, design.width, 0, design.height),
+    )
+    fig.colorbar(ax.images[0], ax=ax, label=field)
+    ax.set_title("Rasterized Design Grid")
+    configure_axes(ax, design)
+    fig.tight_layout()
+    plt.show()
+
+
+def show_mesh_slice(grid, design, field="permittivity", z_index=None, z_res=None):
+    """Display a 2D slice from a 3D mesh grid with SI-scaled units.
+
+    Args:
+        grid: 2D numpy array of the slice.
+        design: Design object.
+        field: Name of the field.
+        z_index: Z-layer index (for title label).
+        z_res: Z resolution in metres (for title label).
+    """
+    import matplotlib.pyplot as plt
+
+    scale, unit = get_si_scale_and_label(max(design.width, design.height))
+    grid_height, grid_width = grid.shape
+    aspect_ratio = grid_width / grid_height
+    base_size = 2.5
+    if aspect_ratio > 1:
+        figsize = (base_size * aspect_ratio, base_size)
+    else:
+        figsize = (base_size, base_size / aspect_ratio)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(
+        grid, origin="lower", cmap="Grays",
+        extent=(0, design.width, 0, design.height),
+    )
+    fig.colorbar(ax.images[0], ax=ax, label=field)
+
+    if z_index is not None and z_res is not None:
+        z_pos = z_index * z_res
+        ax.set_title(f"3D {field.capitalize()} at z = {z_pos*scale:.2f} {unit}")
+    else:
+        ax.set_title(f"3D {field.capitalize()} Slice")
+
+    configure_axes(ax, design)
+    fig.tight_layout()
+    plt.show()
+
+
+def show_mesh_3d(grid_3d, design, field="permittivity", slice_spacing=1, alpha=0.3):
+    """Display a 3D surface-slice visualization of a volumetric mesh.
+
+    Args:
+        grid_3d: 3D numpy array (nz, ny, nx).
+        design: Design object (used for width/height/depth and SI scaling).
+        field: Name of the field.
+        slice_spacing: Show every *n*-th z-layer.
+        alpha: Transparency of each slice surface.
+    """
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection="3d")
+
+    nz, ny, nx = grid_3d.shape
+    x = np.linspace(0, design.width, nx)
+    y = np.linspace(0, design.height, ny)
+    z = np.linspace(0, design.depth, nz)
+
+    for k in range(0, nz, slice_spacing):
+        X, Y = np.meshgrid(x, y)
+        Z = np.full_like(X, z[k])
+        ax.plot_surface(
+            X, Y, Z,
+            facecolors=plt.cm.viridis(grid_3d[k, :, :]),
+            alpha=alpha, linewidth=0, antialiased=True,
+        )
+
+    scale, unit = get_si_scale_and_label(
+        max(design.width, design.height, design.depth)
+    )
+    ax.set_xlabel(f"X ({unit})")
+    ax.set_ylabel(f"Y ({unit})")
+    ax.set_zlabel(f"Z ({unit})")
+    ax.set_title(f"3D {field.capitalize()} Distribution")
+    ax.xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
+    ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
+    ax.zaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
+
+    plt.tight_layout()
+    plt.show()
+
+
 def _get_deterministic_color(index):
     """Get deterministic color: first from const.py, then deterministic generated colors."""
     import colorsys

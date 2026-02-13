@@ -1,12 +1,9 @@
-import matplotlib.pyplot as plt
 import numpy as np
-from mpl_toolkits.mplot3d import Axes3D
 
 from beamz.design.structures import Rectangle
 from beamz.visual.helpers import (
     create_rich_progress,
     display_status,
-    get_si_scale_and_label,
 )
 
 
@@ -124,6 +121,22 @@ class BaseMeshGrid:
         k, rho, cp, dn_dT, T0 = self._get_thermal_properties_safe(material, x, y, z)
         return (perm, permb, cond, k, rho, cp, dn_dT, T0)
 
+    def get_thermal_grids(self):
+        """Get thermal property grids."""
+        return self.k, self.rho, self.cp, self.dn_dT, self.T0
+
+    def get_material_grids(self, resolution=None):
+        """Get the material property grids."""
+        return self.permittivity, self.conductivity, self.permeability
+
+    def rasterize(self, resolution=None):
+        """Return self if resolution matches, otherwise raise."""
+        if resolution is None or resolution == self.resolution:
+            return self
+        raise ValueError(
+            "Cannot re-rasterize with different resolution. Use Design.rasterize()"
+        )
+
 
 class RegularGrid(BaseMeshGrid):
     """2D Regular grid meshing for 2D designs (backwards compatible)."""
@@ -150,23 +163,6 @@ class RegularGrid(BaseMeshGrid):
         self.dy = self.resolution
         self.width = self.design.width
         self.height = self.design.height
-
-    def rasterize(self, resolution=None):
-        """Mock rasterize method to return self if resolution matches."""
-        if resolution is None or resolution == self.resolution:
-            return self
-        else:
-            raise ValueError(
-                "RegularGrid cannot re-rasterize itself with different resolution. Use Design.rasterize()"
-            )
-
-    def get_material_grids(self, resolution=None):
-        """Get the material property grids."""
-        return self.permittivity, self.conductivity, self.permeability
-
-    def get_thermal_grids(self):
-        """Get thermal property grids."""
-        return self.k, self.rho, self.cp, self.dn_dT, self.T0
 
     def __rasterize__(self):
         """Painters algorithm: rasterize design into a grid using super-sampling.
@@ -493,39 +489,11 @@ class RegularGrid(BaseMeshGrid):
 
     def show(self, field: str = "permittivity"):
         """Display the rasterized grid with properly scaled SI units."""
-        if field == "permittivity":
-            grid = self.permittivity
-        elif field == "permeability":
-            grid = self.permeability
-        elif field == "conductivity":
-            grid = self.conductivity
+        from beamz.visual.overlays import show_mesh_grid
+
+        grid = getattr(self, field, None)
         if grid is not None:
-            scale, unit = get_si_scale_and_label(max(self.design.width, self.design.height))
-            # Calculate figure size based on grid dimensions
-            grid_height, grid_width = grid.shape
-            aspect_ratio = grid_width / grid_height
-            base_size = 2.5  # Base size for the smaller dimension
-            if aspect_ratio > 1:
-                figsize = (base_size * aspect_ratio, base_size)
-            else:
-                figsize = (base_size, base_size / aspect_ratio)
-            # Make the actual figure
-            plt.figure(figsize=figsize)
-            plt.imshow(
-                grid,
-                origin="lower",
-                cmap="Grays",
-                extent=(0, self.design.width, 0, self.design.height),
-            )
-            plt.colorbar(label=field)
-            plt.title("Rasterized Design Grid")
-            plt.xlabel(f"X ({unit})")
-            plt.ylabel(f"Y ({unit})")
-            # Update tick labels with scaled values
-            plt.gca().xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-            plt.gca().yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-            plt.tight_layout()
-            plt.show()
+            show_mesh_grid(grid, self.design, field)
         else:
             print("Grid not rasterized yet.")
 
@@ -770,105 +738,25 @@ class RegularGrid3D(BaseMeshGrid):
             "conductivity": self.conductivity[z_index, :, :],
         }
 
-    def get_thermal_grids(self):
-        """Get thermal property grids."""
-        return self.k, self.rho, self.cp, self.dn_dT, self.T0
-
     def show_3d(self, field="permittivity", slice_spacing=1, alpha=0.3):
         """Display 3D visualization of the mesh."""
-        if field == "permittivity":
-            grid = self.permittivity
-        elif field == "permeability":
-            grid = self.permeability
-        elif field == "conductivity":
-            grid = self.conductivity
-        else:
+        from beamz.visual.overlays import show_mesh_3d
+
+        grid = getattr(self, field, None)
+        if grid is None:
             raise ValueError(f"Unknown field: {field}")
-
-        # Create 3D plot
-        fig = plt.figure(figsize=(12, 10))
-        ax = fig.add_subplot(111, projection="3d")
-
-        # Create coordinate grids
-        nz, ny, nx = grid.shape
-        x = np.linspace(0, self.design.width, nx)
-        y = np.linspace(0, self.design.height, ny)
-        z = np.linspace(0, self.design.depth, nz)
-
-        # Show slices with different spacing
-        for k in range(0, nz, slice_spacing):
-            X, Y = np.meshgrid(x, y)
-            Z = np.full_like(X, z[k])
-            colors = grid[k, :, :]
-
-            # Plot surface
-            surf = ax.plot_surface(
-                X,
-                Y,
-                Z,
-                facecolors=plt.cm.viridis(colors),
-                alpha=alpha,
-                linewidth=0,
-                antialiased=True,
-            )
-
-        # Set labels and title
-        scale, unit = get_si_scale_and_label(max(self.design.width, self.design.height, self.design.depth))
-
-        ax.set_xlabel(f"X ({unit})")
-        ax.set_ylabel(f"Y ({unit})")
-        ax.set_zlabel(f"Z ({unit})")
-        ax.set_title(f"3D {field.capitalize()} Distribution")
-
-        # Scale the axes
-        ax.xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-        ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-        ax.zaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-
-        plt.tight_layout()
-        plt.show()
+        show_mesh_3d(grid, self.design, field, slice_spacing, alpha)
 
     def show(self, field="permittivity", z_index=None, z_position=None):
         """Display a 2D slice of the 3D mesh (backwards compatible interface)."""
+        from beamz.visual.overlays import show_mesh_slice
+
         slice_data = self.get_2d_slice(z_index, z_position)
         grid = slice_data[field]
 
         if grid is not None:
-            scale, unit = get_si_scale_and_label(max(self.design.width, self.design.height))
-
-            # Calculate figure size based on grid dimensions
-            grid_height, grid_width = grid.shape
-            aspect_ratio = grid_width / grid_height
-            base_size = 2.5
-            if aspect_ratio > 1:
-                figsize = (base_size * aspect_ratio, base_size)
-            else:
-                figsize = (base_size, base_size / aspect_ratio)
-
-            # Create the plot
-            plt.figure(figsize=figsize)
-            plt.imshow(
-                grid,
-                origin="lower",
-                cmap="Grays",
-                extent=(0, self.design.width, 0, self.design.height),
-            )
-            plt.colorbar(label=field)
-
-            # Determine z-layer info
             z_idx = z_index if z_index is not None else self.shape[0] // 2
-            z_pos = z_idx * self.resolution_z
-            plt.title(f"3D {field.capitalize()} at z = {z_pos*scale:.2f} {unit}")
-
-            plt.xlabel(f"X ({unit})")
-            plt.ylabel(f"Y ({unit})")
-
-            # Update tick labels with scaled values
-            plt.gca().xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-            plt.gca().yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
-
-            plt.tight_layout()
-            plt.show()
+            show_mesh_slice(grid, self.design, field, z_idx, self.resolution_z)
         else:
             print("Grid not rasterized yet.")
 
@@ -897,22 +785,3 @@ def create_mesh(design, resolution, auto_select=True, force_3d=False):
         return RegularGrid(design, resolution)
 
 
-def mesh_2d(design, resolution):
-    """Create a 2D mesh (backwards compatible function)."""
-    return RegularGrid(design, resolution)
-
-
-def mesh_3d(design, resolution_xy, resolution_z=None):
-    """Create a 3D mesh with optional separate z-resolution."""
-    return RegularGrid3D(design, resolution_xy, resolution_z)
-
-
-# Export classes and functions
-__all__ = [
-    "BaseMeshGrid",
-    "RegularGrid",
-    "RegularGrid3D",
-    "create_mesh",
-    "mesh_2d",
-    "mesh_3d",
-]
