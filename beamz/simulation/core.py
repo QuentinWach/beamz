@@ -4,7 +4,6 @@ import numpy as np
 
 from beamz.const import µm
 from beamz.design.core import Design
-from beamz.devices.core import Device
 from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.fields import Fields
@@ -17,7 +16,7 @@ class Simulation:
     def __init__(
         self,
         design: Design = None,
-        devices: list[Device] = None,
+        devices: list = None,
         boundaries: list[Boundary] = None,
         thermal=None,
         resolution: float = 0.02 * µm,

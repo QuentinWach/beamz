@@ -2,10 +2,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0
-from beamz.devices.core import Device
 
 
-class GaussianSource(Device):
+class GaussianSource:
     """Gaussian spatial source for FDTD simulations.
 
     Injects a Gaussian spatial profile into the Ez field (and other E components in 3D).
