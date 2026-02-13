@@ -4,6 +4,52 @@ import random
 import numpy as np
 
 
+def _rotate_vertices(vertices, angle_rad, axis, center):
+    """Rotate a list of 3D vertices around center by angle_rad on the given axis."""
+    cx, cy, cz = center
+    cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
+    if axis == "z":
+        return [
+            (
+                cx + (v[0] - cx) * cos_a - (v[1] - cy) * sin_a,
+                cy + (v[0] - cx) * sin_a + (v[1] - cy) * cos_a,
+                v[2],
+            )
+            for v in vertices
+        ]
+    elif axis == "x":
+        return [
+            (
+                v[0],
+                cy + (v[1] - cy) * cos_a - (v[2] - cz) * sin_a,
+                cz + (v[1] - cy) * sin_a + (v[2] - cz) * cos_a,
+            )
+            for v in vertices
+        ]
+    elif axis == "y":
+        return [
+            (
+                cx + (v[0] - cx) * cos_a + (v[2] - cz) * sin_a,
+                v[1],
+                cz - (v[0] - cx) * sin_a + (v[2] - cz) * cos_a,
+            )
+            for v in vertices
+        ]
+    else:
+        raise ValueError(f"Invalid rotation axis '{axis}'. Must be 'x', 'y', or 'z'.")
+
+
+def _normalize_position(position, z=None):
+    """Ensure position is a 3-tuple, optionally overriding z."""
+    if len(position) == 2:
+        position = (position[0], position[1], 0.0)
+    elif len(position) != 3:
+        raise ValueError("Position must be (x,y) or (x,y,z)")
+    if z is not None:
+        position = (position[0], position[1], z)
+    return position
+
+
 class Polygon:
     def __init__(
         self,
@@ -19,7 +65,7 @@ class Polygon:
             vertices if vertices is not None else [], z
         )
         self.interiors = [
-            self._process_vertices_preserve_orientation(interior, z)
+            self._process_vertices(interior, z, ensure_ccw=False)
             for interior in (interiors if interiors is not None else [])
         ]
         self.material = material
@@ -28,24 +74,18 @@ class Polygon:
         self.depth = depth if depth is not None else 0
         self.z = z if z is not None else 0
 
-    def _process_vertices(self, vertices, z=0):
+    def _process_vertices(self, vertices, z=0, ensure_ccw=True):
         if not vertices:
             return []
         vertices_3d = self._ensure_3d_vertices(vertices)
-        vertices_2d = [(v[0], v[1]) for v in vertices_3d]
-        if len(vertices_2d) >= 3:
+        if ensure_ccw and len(vertices_3d) >= 3:
+            vertices_2d = [(v[0], v[1]) for v in vertices_3d]
             vertices_2d = self._ensure_ccw_vertices(vertices_2d)
             vertices_3d = [
                 (x, y, vertices_3d[i][2] if len(vertices_3d[i]) > 2 else z)
                 for i, (x, y) in enumerate(vertices_2d)
             ]
         return vertices_3d
-
-    def _process_vertices_preserve_orientation(self, vertices, z=0):
-        if not vertices:
-            return []
-        vertices_3d = self._ensure_3d_vertices(vertices)
-        return [(v[0], v[1], v[2] if len(v) > 2 else z) for v in vertices_3d]
 
     def _ensure_ccw_vertices(self, vertices_2d):
         if len(vertices_2d) < 3:
@@ -83,15 +123,14 @@ class Polygon:
         return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
 
     def shift(self, x, y, z=0):
+        if hasattr(self, 'position') and self.position is not None:
+            self.position = (self.position[0] + x, self.position[1] + y, self.position[2] + z)
         if self.vertices:
             self.vertices = [(v[0] + x, v[1] + y, v[2] + z) for v in self.vertices]
-        new_interiors_paths = []
-        for interior_path in self.interiors:
-            if interior_path:
-                new_interiors_paths.append(
-                    [(v[0] + x, v[1] + y, v[2] + z) for v in interior_path]
-                )
-        self.interiors = new_interiors_paths
+        self.interiors = [
+            [(v[0] + x, v[1] + y, v[2] + z) for v in path]
+            for path in self.interiors if path
+        ]
         return self
 
     def scale(self, s_x, s_y=None, s_z=None):
@@ -131,114 +170,20 @@ class Polygon:
         if self.vertices:
             angle_rad = np.radians(angle)
             if point is None:
-                x_center = sum(v[0] for v in self.vertices) / len(self.vertices)
-                y_center = sum(v[1] for v in self.vertices) / len(self.vertices)
-                z_center = sum(v[2] for v in self.vertices) / len(self.vertices)
-            else:
-                x_center, y_center, z_center = (
-                    point[0],
-                    point[1],
-                    point[2] if len(point) > 2 else 0,
+                center = (
+                    sum(v[0] for v in self.vertices) / len(self.vertices),
+                    sum(v[1] for v in self.vertices) / len(self.vertices),
+                    sum(v[2] for v in self.vertices) / len(self.vertices),
                 )
+            else:
+                center = (point[0], point[1], point[2] if len(point) > 2 else 0)
 
-            if axis == "z":
-                cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-                self.vertices = [
-                    (
-                        x_center
-                        + (v[0] - x_center) * cos_a
-                        - (v[1] - y_center) * sin_a,
-                        y_center
-                        + (v[0] - x_center) * sin_a
-                        + (v[1] - y_center) * cos_a,
-                        v[2],
-                    )
-                    for v in self.vertices
-                ]
-            elif axis == "x":
-                cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-                self.vertices = [
-                    (
-                        v[0],
-                        y_center
-                        + (v[1] - y_center) * cos_a
-                        - (v[2] - z_center) * sin_a,
-                        z_center
-                        + (v[1] - y_center) * sin_a
-                        + (v[2] - z_center) * cos_a,
-                    )
-                    for v in self.vertices
-                ]
-            elif axis == "y":
-                cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-                self.vertices = [
-                    (
-                        x_center
-                        + (v[0] - x_center) * cos_a
-                        + (v[2] - z_center) * sin_a,
-                        v[1],
-                        z_center
-                        - (v[0] - x_center) * sin_a
-                        + (v[2] - z_center) * cos_a,
-                    )
-                    for v in self.vertices
-                ]
-            else:
-                raise ValueError(
-                    f"Invalid rotation axis '{axis}'. Must be 'x', 'y', or 'z'."
-                )
-            new_interiors_paths = []
-            for interior_path in self.interiors:
-                if interior_path:
-                    if axis == "z":
-                        cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-                        new_interiors_paths.append(
-                            [
-                                (
-                                    x_center
-                                    + (v[0] - x_center) * cos_a
-                                    - (v[1] - y_center) * sin_a,
-                                    y_center
-                                    + (v[0] - x_center) * sin_a
-                                    + (v[1] - y_center) * cos_a,
-                                    v[2],
-                                )
-                                for v in interior_path
-                            ]
-                        )
-                    elif axis == "x":
-                        cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-                        new_interiors_paths.append(
-                            [
-                                (
-                                    v[0],
-                                    y_center
-                                    + (v[1] - y_center) * cos_a
-                                    - (v[2] - z_center) * sin_a,
-                                    z_center
-                                    + (v[1] - y_center) * sin_a
-                                    + (v[2] - z_center) * cos_a,
-                                )
-                                for v in interior_path
-                            ]
-                        )
-                    elif axis == "y":
-                        cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-                        new_interiors_paths.append(
-                            [
-                                (
-                                    x_center
-                                    + (v[0] - x_center) * cos_a
-                                    + (v[2] - z_center) * sin_a,
-                                    v[1],
-                                    z_center
-                                    - (v[0] - x_center) * sin_a
-                                    + (v[2] - z_center) * cos_a,
-                                )
-                                for v in interior_path
-                            ]
-                        )
-            self.interiors = new_interiors_paths
+            self.vertices = _rotate_vertices(self.vertices, angle_rad, axis, center)
+            self.interiors = [
+                _rotate_vertices(path, angle_rad, axis, center)
+                for path in self.interiors
+                if path
+            ]
         return self
 
     def add_to_plot(
@@ -346,17 +291,7 @@ class Rectangle(Polygon):
         if depth < 0:
             raise ValueError(f"depth must be non-negative, got {depth}")
 
-        if z is not None:
-            if len(position) == 2:
-                position = (position[0], position[1], z)
-            elif len(position) == 3:
-                position = (position[0], position[1], z)
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position, z)
         x, y, z_pos = position
         vertices = [
             (x, y, z_pos),
@@ -383,15 +318,6 @@ class Rectangle(Polygon):
             x, y, z = self.position
             return (x, y, z, x + self.width, y + self.height, z + self.depth)
         return super().get_bounding_box()
-
-    def shift(self, x, y, z=0):
-        self.position = (
-            self.position[0] + x,
-            self.position[1] + y,
-            self.position[2] + z,
-        )
-        super().shift(x, y, z)
-        return self
 
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
@@ -451,12 +377,7 @@ class Circle(Polygon):
         if depth < 0:
             raise ValueError(f"depth must be non-negative, got {depth}")
 
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position)
         theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
         vertices = [
             (
@@ -477,15 +398,6 @@ class Circle(Polygon):
         self.position = position
         self.radius = radius
         self.points = points
-
-    def shift(self, x, y, z=0):
-        self.position = (
-            self.position[0] + x,
-            self.position[1] + y,
-            self.position[2] + z,
-        )
-        super().shift(x, y, z)
-        return self
 
     def scale(self, s_x, s_y=None, s_z=None):
         if s_y is None:
@@ -540,17 +452,7 @@ class Ring(Polygon):
         if depth < 0:
             raise ValueError(f"depth must be non-negative, got {depth}")
 
-        if z is not None:
-            if len(position) == 2:
-                position = (position[0], position[1], z)
-            elif len(position) == 3:
-                position = (position[0], position[1], z)
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position, z)
         theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
         outer_ext_vertices = [
             (
@@ -581,15 +483,6 @@ class Ring(Polygon):
         self.position = position
         self.inner_radius = inner_radius
         self.outer_radius = outer_radius
-
-    def shift(self, x, y, z=0):
-        self.position = (
-            self.position[0] + x,
-            self.position[1] + y,
-            self.position[2] + z,
-        )
-        super().shift(x, y, z)
-        return self
 
     def scale(self, s_x, s_y=None, s_z=None):
         if s_y is None:
@@ -665,12 +558,7 @@ class CircularBend(Polygon):
         depth=0,
         z=0,
     ):
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position)
         self.points = points
         theta = np.linspace(0, np.radians(angle), points)
         rotation_rad = np.radians(rotation)
@@ -704,15 +592,6 @@ class CircularBend(Polygon):
         self.outer_radius = outer_radius
         self.angle = angle
         self.rotation = rotation
-
-    def shift(self, x, y, z=0):
-        self.position = (
-            self.position[0] + x,
-            self.position[1] + y,
-            self.position[2] + z,
-        )
-        super().shift(x, y, z)
-        return self
 
     def rotate(self, angle, axis="z", point=None):
         if axis == "z":
@@ -795,12 +674,7 @@ class Taper(Polygon):
         depth=0,
         z=0,
     ):
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position)
         x, y, z = position
         vertices = [
             (x, y - input_width / 2, z),

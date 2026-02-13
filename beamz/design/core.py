@@ -11,6 +11,162 @@ from beamz.design.structures import (
 )
 
 
+def _material_key(material):
+    """Return a hashable key for a material based on its physical properties."""
+    return (
+        getattr(material, "permittivity", None),
+        getattr(material, "permeability", None),
+        getattr(material, "conductivity", None),
+    )
+
+
+def _to_shapely(structure):
+    """Convert a beamz structure to a Shapely polygon, or None if not possible."""
+    if hasattr(structure, "interiors") and structure.interiors:
+        valid_interiors = [list(i_path) for i_path in structure.interiors if i_path]
+        if structure.vertices and valid_interiors:
+            poly = ShapelyPolygon(shell=structure.vertices, holes=valid_interiors)
+        elif structure.vertices:
+            poly = ShapelyPolygon(shell=structure.vertices)
+        else:
+            return None
+    elif hasattr(structure, "vertices") and structure.vertices:
+        poly = ShapelyPolygon(shell=structure.vertices)
+    else:
+        return None
+    return poly if poly.is_valid else None
+
+
+def _group_by_material(structures):
+    """Group structures by material key and convert to Shapely polygons.
+
+    Returns (material_groups, structures_to_remove) where material_groups maps
+    material_key -> list of (structure, shapely_polygon) tuples.
+    """
+    material_groups = {}
+    structures_to_remove = []
+    for structure in structures:
+        material = getattr(structure, "material", None)
+        if not material:
+            continue
+        key = _material_key(material)
+        shapely_poly = _to_shapely(structure)
+        if shapely_poly is None:
+            continue
+        material_groups.setdefault(key, []).append((structure, shapely_poly))
+        structures_to_remove.append(structure)
+    return material_groups, structures_to_remove
+
+
+def _find_rings_to_preserve(material_groups, structures_to_remove):
+    """Identify Ring structures that should not be merged (they have interiors)."""
+    rings_to_preserve = []
+    for structure_group in material_groups.values():
+        if len(structure_group) <= 1:
+            continue
+        for _idx, (struct, _shapely) in enumerate(structure_group):
+            if isinstance(struct, Ring):
+                rings_to_preserve.append(struct)
+                if struct in structures_to_remove:
+                    structures_to_remove.remove(struct)
+    return rings_to_preserve
+
+
+def _shapely_to_polygons(merged, material, first_structure):
+    """Convert a merged Shapely geometry back to beamz Polygon(s).
+
+    Returns a list of Polygon objects, or None if conversion fails.
+    """
+    depth = getattr(first_structure, "depth", 0)
+    z = getattr(first_structure, "z", 0)
+
+    def _geom_to_polygon(geom):
+        exterior_coords = list(geom.exterior.coords[:-1])
+        if not exterior_coords or len(exterior_coords) < 3:
+            return None
+        interior_coords_lists = [
+            list(interior.coords[:-1]) for interior in geom.interiors
+        ]
+        return Polygon(
+            vertices=exterior_coords,
+            interiors=interior_coords_lists,
+            material=material,
+            depth=depth,
+            z=z,
+        )
+
+    if merged.geom_type == "Polygon":
+        poly = _geom_to_polygon(merged)
+        return [poly] if poly else None
+    elif merged.geom_type == "MultiPolygon":
+        polys = []
+        for geom in merged.geoms:
+            poly = _geom_to_polygon(geom)
+            if poly is None:
+                return None
+            polys.append(poly)
+        return polys
+    return None
+
+
+def _merge_groups(material_groups, rings_to_preserve, structures_to_remove):
+    """Merge each material group using Shapely union.
+
+    Returns (new_structures, updated structures_to_remove).
+    """
+    new_structures = []
+    for material_key, structure_group in material_groups.items():
+        filtered_group = [s for s in structure_group if s[0] not in rings_to_preserve]
+        if len(filtered_group) <= 1:
+            new_structures.extend([s[0] for s in filtered_group])
+            for s in filtered_group:
+                if s[0] in structures_to_remove:
+                    structures_to_remove.remove(s[0])
+            continue
+
+        shapely_polygons = [p[1] for p in filtered_group]
+        material = filtered_group[0][0].material
+        merged = unary_union(shapely_polygons)
+        result = _shapely_to_polygons(merged, material, filtered_group[0][0])
+
+        if result is not None:
+            new_structures.extend(result)
+        else:
+            # Fallback: keep originals
+            new_structures.extend([s[0] for s in structure_group])
+            for s_tuple in structure_group:
+                if s_tuple[0] in structures_to_remove:
+                    structures_to_remove.remove(s_tuple[0])
+
+    return new_structures, structures_to_remove
+
+
+def _rebuild_structure_list(original, structures_to_remove, new_structures, material_groups):
+    """Rebuild the structure list, replacing merged groups at their original position."""
+    material_replacements = {}
+    for new_struct in new_structures:
+        if not (hasattr(new_struct, "material") and new_struct.material):
+            continue
+        key = _material_key(new_struct.material)
+        for mat_key, group in material_groups.items():
+            if len(group) > 1 and mat_key == key:
+                material_replacements.setdefault(mat_key, []).append(new_struct)
+                break
+
+    rebuilt, used = [], set()
+    for structure in original:
+        if structure in structures_to_remove:
+            if not (hasattr(structure, "material") and structure.material):
+                continue
+            key = _material_key(structure.material)
+            if key not in used and key in material_replacements:
+                rebuilt.extend(material_replacements[key])
+                used.add(key)
+        else:
+            rebuilt.append(structure)
+    return rebuilt
+
+
 class Design:
     def __init__(
         self,
@@ -44,173 +200,14 @@ class Design:
 
     def unify_polygons(self):
         """Merge overlapping polygons with the same material properties into unified shapes."""
-        material_groups, non_polygon_structures, structures_to_remove = {}, [], []
-
-        for structure in self.structures:
-            material = getattr(structure, "material", None)
-            if not material:
-                non_polygon_structures.append(structure)
-                continue
-
-            material_key = (
-                getattr(material, "permittivity", None),
-                getattr(material, "permeability", None),
-                getattr(material, "conductivity", None),
-            )
-
-            if material_key not in material_groups:
-                material_groups[material_key] = []
-
-            if hasattr(structure, "interiors") and structure.interiors:
-                valid_interiors = [
-                    list(i_path) for i_path in structure.interiors if i_path
-                ]
-                if structure.vertices and valid_interiors:
-                    shapely_polygon = ShapelyPolygon(
-                        shell=structure.vertices, holes=valid_interiors
-                    )
-                elif structure.vertices:
-                    shapely_polygon = ShapelyPolygon(shell=structure.vertices)
-                else:
-                    non_polygon_structures.append(structure)
-                    continue
-            elif hasattr(structure, "vertices") and structure.vertices:
-                shapely_polygon = ShapelyPolygon(shell=structure.vertices)
-            else:
-                non_polygon_structures.append(structure)
-                continue
-
-            if shapely_polygon.is_valid:
-                material_groups[material_key].append((structure, shapely_polygon))
-                structures_to_remove.append(structure)
-            else:
-                non_polygon_structures.append(structure)
-
-        rings_to_preserve = []
-        for material_key, structure_group in material_groups.items():
-            if len(structure_group) <= 1:
-                continue
-            rings_in_group = [
-                (idx, s)
-                for idx, s in enumerate(structure_group)
-                if isinstance(s[0], Ring)
-            ]
-            if not rings_in_group:
-                continue
-            for ring_idx, (ring, ring_shapely) in rings_in_group:
-                rings_to_preserve.append(ring)
-                if ring in structures_to_remove:
-                    structures_to_remove.remove(ring)
-
-        new_structures = []
-        for material_key, structure_group in material_groups.items():
-            filtered_group = [
-                s for s in structure_group if s[0] not in rings_to_preserve
-            ]
-            if len(filtered_group) <= 1:
-                new_structures.extend([s[0] for s in filtered_group])
-                for s in filtered_group:
-                    if s[0] in structures_to_remove:
-                        structures_to_remove.remove(s[0])
-                continue
-
-            shapely_polygons = [p[1] for p in filtered_group]
-            material = filtered_group[0][0].material
-            merged = unary_union(shapely_polygons)
-
-            if merged.geom_type == "Polygon":
-                exterior_coords = list(merged.exterior.coords[:-1])
-                interior_coords_lists = [
-                    list(interior.coords[:-1]) for interior in merged.interiors
-                ]
-                if exterior_coords and len(exterior_coords) >= 3:
-                    first_structure = filtered_group[0][0]
-                    new_poly = Polygon(
-                        vertices=exterior_coords,
-                        interiors=interior_coords_lists,
-                        material=material,
-                        depth=getattr(first_structure, "depth", 0),
-                        z=getattr(first_structure, "z", 0),
-                    )
-                    new_structures.append(new_poly)
-                else:
-                    new_structures.extend([s[0] for s in structure_group])
-                    for s_tuple in structure_group:
-                        if s_tuple[0] in structures_to_remove:
-                            structures_to_remove.remove(s_tuple[0])
-            elif merged.geom_type == "MultiPolygon":
-                all_valid = True
-                temp_new_polys = []
-                for geom in merged.geoms:
-                    exterior_coords = list(geom.exterior.coords[:-1])
-                    interior_coords_lists = [
-                        list(interior.coords[:-1]) for interior in geom.interiors
-                    ]
-                    if exterior_coords and len(exterior_coords) >= 3:
-                        first_structure = filtered_group[0][0]
-                        new_poly = Polygon(
-                            vertices=exterior_coords,
-                            interiors=interior_coords_lists,
-                            material=material,
-                            depth=getattr(first_structure, "depth", 0),
-                            z=getattr(first_structure, "z", 0),
-                        )
-                        temp_new_polys.append(new_poly)
-                    else:
-                        all_valid = False
-                        break
-
-                if all_valid:
-                    new_structures.extend(temp_new_polys)
-                else:
-                    new_structures.extend([s[0] for s in structure_group])
-                    for s_tuple in structure_group:
-                        if s_tuple[0] in structures_to_remove:
-                            structures_to_remove.remove(s_tuple[0])
-            else:
-                new_structures.extend([s[0] for s in structure_group])
-                for s in structure_group:
-                    if s[0] in structures_to_remove:
-                        structures_to_remove.remove(s[0])
-
-        material_replacements = {}
-        for new_struct in new_structures:
-            if hasattr(new_struct, "material") and new_struct.material:
-                new_material_key = (
-                    getattr(new_struct.material, "permittivity", None),
-                    getattr(new_struct.material, "permeability", None),
-                    getattr(new_struct.material, "conductivity", None),
-                )
-                for material_key, structure_group in material_groups.items():
-                    if len(structure_group) > 1 and material_key == new_material_key:
-                        if material_key not in material_replacements:
-                            material_replacements[material_key] = []
-                        material_replacements[material_key].append(new_struct)
-                        break
-
-        rebuilt_structures, material_groups_used = [], set()
-        for structure in self.structures:
-            if structure in structures_to_remove:
-                structure_material_key = None
-                if hasattr(structure, "material") and structure.material:
-                    structure_material_key = (
-                        getattr(structure.material, "permittivity", None),
-                        getattr(structure.material, "permeability", None),
-                        getattr(structure.material, "conductivity", None),
-                    )
-                if (
-                    structure_material_key
-                    and structure_material_key not in material_groups_used
-                ):
-                    if structure_material_key in material_replacements:
-                        rebuilt_structures.extend(
-                            material_replacements[structure_material_key]
-                        )
-                        material_groups_used.add(structure_material_key)
-            else:
-                rebuilt_structures.append(structure)
-
-        self.structures = rebuilt_structures
+        material_groups, structures_to_remove = _group_by_material(self.structures)
+        rings_to_preserve = _find_rings_to_preserve(material_groups, structures_to_remove)
+        new_structures, structures_to_remove = _merge_groups(
+            material_groups, rings_to_preserve, structures_to_remove
+        )
+        self.structures = _rebuild_structure_list(
+            self.structures, structures_to_remove, new_structures, material_groups
+        )
         return True
 
     def add(self, structure: type[Polygon]):

@@ -429,15 +429,3 @@ class PML(Boundary):
         return self.alpha_max * ((thickness - dist) / thickness) ** self.m
 
 
-class ABC(Boundary):
-    """Absorbing Boundary Condition (Mur, Liao, etc.) - placeholder."""
-
-    def apply(self, fields, design, resolution, dt):
-        pass  # TODO: implement
-
-
-class PeriodicBoundary(Boundary):
-    """Periodic boundary condition - placeholder."""
-
-    def apply(self, fields, design, resolution, dt):
-        pass  # TODO: implement

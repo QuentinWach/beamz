@@ -41,7 +41,7 @@ from beamz.optimization.topology import (
     create_optimization_mask,
 )
 from beamz.optimization.autodiff import transform_density
-from beamz.simulation.boundaries import ABC, PML, Boundary, PeriodicBoundary
+from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.core import Simulation
 from beamz.multiphysics.thermal import (
     StaticThermalSolve,
@@ -104,8 +104,6 @@ _exports = {
     # Boundaries
     "Boundary": Boundary,
     "PML": PML,
-    "ABC": ABC,
-    "PeriodicBoundary": PeriodicBoundary,
     # Optimization
     "TopologyManager": TopologyManager,
     "compute_overlap_gradient": compute_overlap_gradient,
