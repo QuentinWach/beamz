@@ -1,10 +1,8 @@
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.const import *
+from beamz.const import µm
 from beamz.design.core import Design
 from beamz.devices.core import Device
 from beamz.devices.monitors.monitors import Monitor
@@ -19,14 +17,16 @@ class Simulation:
     def __init__(
         self,
         design: Design = None,
-        devices: list[Device] = [],
-        boundaries: list[Boundary] = [],
+        devices: list[Device] = None,
+        boundaries: list[Boundary] = None,
         thermal=None,
         resolution: float = 0.02 * µm,
         time: np.ndarray = None,
         plane_2d: str = "xy",
     ):
         self.design = design
+        devices = devices or []
+        boundaries = boundaries or []
         self.resolution = resolution
         self.is_3d = design.is_3d and design.depth > 0
         self.plane_2d = plane_2d.lower()
@@ -42,13 +42,16 @@ class Simulation:
         self.time, self.dt, self.num_steps = time, float(time[1] - time[0]), len(time)
         self.t, self.current_step = 0, 0
 
+        # Check for PML boundaries before creating fields (to avoid double material init)
+        pml_boundaries = [b for b in boundaries if isinstance(b, PML)]
+
         # Create field storage (fields owns the E/H field arrays, references material grids)
         self.fields = Fields(
-            permittivity, conductivity, permeability, resolution, plane_2d=self.plane_2d
+            permittivity, conductivity, permeability, resolution,
+            plane_2d=self.plane_2d, _init_materials=not pml_boundaries,
         )
 
         # Initialize PML regions if present
-        pml_boundaries = [b for b in boundaries if isinstance(b, PML)]
         if pml_boundaries:
             # Create PML regions (do this once, not every timestep)
             pml_data = {}
@@ -105,32 +108,31 @@ class Simulation:
     def _record_monitors(self):
         """Record data from Monitor devices during simulation."""
         for device in self.devices:
-            if hasattr(device, "should_record") and hasattr(device, "record_fields"):
-                if device.should_record(self.current_step):
-                    if not self.is_3d:
-                        device.record_fields(
-                            self.fields.Ez,
-                            self.fields.Hx,
-                            self.fields.Hy,
-                            self.t,
-                            self.resolution,
-                            self.resolution,
-                            self.current_step,
-                        )
-                    else:
-                        device.record_fields(
-                            self.fields.Ex,
-                            self.fields.Ey,
-                            self.fields.Ez,
-                            self.fields.Hx,
-                            self.fields.Hy,
-                            self.fields.Hz,
-                            self.t,
-                            self.resolution,
-                            self.resolution,
-                            self.resolution,
-                            self.current_step,
-                        )
+            if isinstance(device, Monitor) and device.should_record(self.current_step):
+                if not self.is_3d:
+                    device.record_fields(
+                        self.fields.Ez,
+                        self.fields.Hx,
+                        self.fields.Hy,
+                        self.t,
+                        self.resolution,
+                        self.resolution,
+                        self.current_step,
+                    )
+                else:
+                    device.record_fields(
+                        self.fields.Ex,
+                        self.fields.Ey,
+                        self.fields.Ez,
+                        self.fields.Hx,
+                        self.fields.Hy,
+                        self.fields.Hz,
+                        self.t,
+                        self.resolution,
+                        self.resolution,
+                        self.resolution,
+                        self.current_step,
+                    )
 
     def _inject_sources(self):
         """Inject source fields directly into the simulation grid."""
@@ -160,10 +162,10 @@ class Simulation:
                     self.resolution,
                     self.design,
                 )
-                if j:
-                    source_j.update(j)
-                if m:
-                    source_m.update(m)
+                for key, val in j.items():
+                    source_j.setdefault(key, []).append(val)
+                for key, val in m.items():
+                    source_m.setdefault(key, []).append(val)
 
         return source_j, source_m
 
@@ -353,7 +355,7 @@ class Simulation:
 
         # Collect monitor data
         monitors = [
-            device for device in self.devices if hasattr(device, "power_history")
+            device for device in self.devices if isinstance(device, Monitor)
         ]
 
         # Convert field history to numpy arrays

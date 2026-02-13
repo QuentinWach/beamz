@@ -16,8 +16,8 @@ class Fields:
         conductivity,
         permeability,
         resolution,
-        pml_regions=None,
         plane_2d="xy",
+        _init_materials=True,
     ):
         """Initialize field arrays on a Yee grid for 2D (all 6 components) or 3D (Ex, Ey, Ez, Hx, Hy, Hz) simulations."""
         self.resolution = resolution
@@ -27,12 +27,7 @@ class Fields:
         self.conductivity = jnp.asarray(conductivity)
         self.permeability = jnp.asarray(permeability)
 
-        # Initialize PML regions if present
-        if pml_regions:
-            self.has_pml = True
-            self.pml_regions = pml_regions
-        else:
-            self.has_pml = False
+        self.has_pml = False
 
         # Infer dimensionality and shape from material arrays
         is_3d = self.permittivity.ndim == 3
@@ -45,7 +40,8 @@ class Fields:
             dim1, dim2 = grid_shape
             self._init_fields_2d(dim1, dim2)
 
-        self._init_material_parameters()
+        if _init_materials:
+            self._init_material_parameters()
 
     def set_pml_conductivity(self, pml_data):
         """Set effective conductivity for PML regions."""
@@ -184,15 +180,15 @@ class Fields:
 
         # Inject magnetic sources
         if source_m:
-            for comp, curl in [("Hx", "x"), ("Hy", "y"), ("Hz", "z")]:
+            for comp in ("Hx", "Hy", "Hz"):
                 if comp in source_m:
-                    val, indices = source_m[comp]
-                    if comp == "Hx":
-                        curlE_x = curlE_x.at[indices].add(val)
-                    elif comp == "Hy":
-                        curlE_y = curlE_y.at[indices].add(val)
-                    else:
-                        curlE_z = curlE_z.at[indices].add(val)
+                    for val, indices in source_m[comp]:
+                        if comp == "Hx":
+                            curlE_x = curlE_x.at[indices].add(val)
+                        elif comp == "Hy":
+                            curlE_y = curlE_y.at[indices].add(val)
+                        else:
+                            curlE_z = curlE_z.at[indices].add(val)
 
         self.Hx = ops.advance_h_field(self.Hx, curlE_x, self.sigma_m_hx, dt)
         self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_hy, dt)
@@ -221,13 +217,13 @@ class Fields:
         if source_j:
             for comp in ("Ex", "Ey", "Ez"):
                 if comp in source_j:
-                    val, indices = source_j[comp]
-                    if comp == "Ex":
-                        curlH_x = curlH_x.at[indices].add(val)
-                    elif comp == "Ey":
-                        curlH_y = curlH_y.at[indices].add(val)
-                    else:
-                        curlH_z = curlH_z.at[indices].add(val)
+                    for val, indices in source_j[comp]:
+                        if comp == "Ex":
+                            curlH_x = curlH_x.at[indices].add(val)
+                        elif comp == "Ey":
+                            curlH_y = curlH_y.at[indices].add(val)
+                        else:
+                            curlH_z = curlH_z.at[indices].add(val)
 
         self.Ex = ops.advance_e_field(
             self.Ex, curlH_x, self.sig_x, self.eps_x, dt, self.region_x

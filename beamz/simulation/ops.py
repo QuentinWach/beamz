@@ -72,7 +72,7 @@ def curl_e_to_h_2d(e_fields, resolution, plane="xy"):
 
         return curl_ex, curl_ey, curl_ez
 
-    return None
+    raise ValueError(f"Invalid plane: {plane}")
 
 
 def curl_h_to_e_2d(h_fields, resolution, e_shapes, plane="xy"):
@@ -164,35 +164,13 @@ def curl_h_to_e_2d(h_fields, resolution, e_shapes, plane="xy"):
 
         return curl_ex, curl_ey, curl_ez
 
-    return None
+    raise ValueError(f"Invalid plane: {plane}")
 
 
 def material_slice_for_e_2d_component(permittivity, conductivity, component, plane):
     """Extract material parameters for a specific E-component in 2D plane."""
     # component: 'x', 'y', or 'z'
     # plane: 'xy', 'yz', 'xz'
-
-    # We need to slice based on where the component is defined in the grid
-    # To simplify, we'll take the "interior" valid region for update
-
-    # 3D Shapes: Ex(z, y, x-1/2), Ey(z, y-1/2, x), Ez(z-1/2, y, x)
-    # 2D Slices must respect this relative staggering
-
-    slices = [slice(None), slice(None), slice(None)]  # [z, y, x]
-
-    # Default to "exclude boundaries" (1:-1) for active dimensions
-    # and "select all" (slice(None)) or specific index for invariant dimension
-
-    if plane == "xy":
-        # Invariant z (axis 0 in 3D array if present, or implied)
-        # If arrays are 3D (nz, ny, nx): slice z=0 or middle?
-        # But permittivity is likely 2D (ny, nx) passed in?
-        # Fields.__init__ passes self.permittivity.
-        pass  # Handle below
-
-    # Helper to generate the 2D slice tuple for (dim1, dim2) array
-    def get_slice(s1, s2):
-        return (s1, s2)
 
     s_mid = slice(1, -1)
     s_all = slice(None)
@@ -301,22 +279,9 @@ def magnetic_conductivity_terms_2d_full(
         sigma_m_hy = base_term[:-1, :-1]  # Staggered in both z and x
         sigma_m_hz = base_term[:-1, :]  # Staggered in z
 
-    # Ensure shapes match exactly
-    sigma_m_hx = (
-        jnp.reshape(sigma_m_hx, hx_shape)
-        if sigma_m_hx.shape != hx_shape
-        else sigma_m_hx
-    )
-    sigma_m_hy = (
-        jnp.reshape(sigma_m_hy, hy_shape)
-        if sigma_m_hy.shape != hy_shape
-        else sigma_m_hy
-    )
-    sigma_m_hz = (
-        jnp.reshape(sigma_m_hz, hz_shape)
-        if sigma_m_hz.shape != hz_shape
-        else sigma_m_hz
-    )
+    assert sigma_m_hx.shape == hx_shape, f"sigma_m_hx shape mismatch: {sigma_m_hx.shape} vs {hx_shape}"
+    assert sigma_m_hy.shape == hy_shape, f"sigma_m_hy shape mismatch: {sigma_m_hy.shape} vs {hy_shape}"
+    assert sigma_m_hz.shape == hz_shape, f"sigma_m_hz shape mismatch: {sigma_m_hz.shape} vs {hz_shape}"
 
     return sigma_m_hx, sigma_m_hy, sigma_m_hz
 
