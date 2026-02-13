@@ -768,170 +768,20 @@ class Monitor:
 
         return polygon
 
-    def plot_fields(self, field="Ez", figsize=(10, 6), time_index=-1):
-        """Plot field data from the monitor.
+    def plot_fields(self, **kwargs):
+        """Plot field data from the monitor. Delegates to visual.monitor_plots."""
+        from beamz.visual.monitor_plots import plot_monitor_fields
+        return plot_monitor_fields(self, **kwargs)
 
-        Args:
-            field: Field component to plot ('Ez', 'Ex', 'Ey', 'Hx', 'Hy', 'Hz')
-            figsize: Figure size tuple
-            time_index: Time index to plot (-1 for latest)
+    def plot_power(self, **kwargs):
+        """Plot power history from the monitor. Delegates to visual.monitor_plots."""
+        from beamz.visual.monitor_plots import plot_monitor_power
+        return plot_monitor_power(self, **kwargs)
 
-        Returns:
-            (fig, ax) tuple
-        """
-        if not self.fields["t"]:
-            print("No field data recorded.")
-            return None, None
-
-        if field not in self.fields:
-            print(
-                f"Field '{field}' not available. Available fields: {list(self.fields.keys())}"
-            )
-            return None, None
-
-        if not self.fields[field]:
-            print(f"No data for field '{field}'.")
-            return None, None
-
-        fig, ax = plt.subplots(figsize=figsize)
-
-        if self.monitor_type == "line":
-            # 2D line monitor - plot field along the line
-            field_data = self.fields[field][time_index]
-            x_pos = range(len(field_data))
-            ax.plot(x_pos, field_data, "b-", linewidth=2)
-            ax.set_xlabel("Position along monitor line")
-            ax.set_ylabel(f"{field} amplitude")
-            ax.set_title(f'{field} at t = {self.fields["t"][time_index]:.2e} s')
-            ax.grid(True, alpha=0.3)
-
-        else:
-            # 3D plane monitor - show 2D field distribution
-            field_data = self.fields[field][time_index]
-            im = ax.imshow(field_data, cmap="RdBu", origin="lower", aspect="auto")
-            plt.colorbar(im, ax=ax, label=f"{field} amplitude")
-            ax.set_xlabel("X index")
-            ax.set_ylabel("Y index")
-            ax.set_title(f'{field} at t = {self.fields["t"][time_index]:.2e} s')
-
-        plt.tight_layout()
-        return fig, ax
-
-    def plot_power(self, figsize=(10, 6), log_scale=False, db_scale=False):
-        """Plot power history from the monitor.
-
-        Args:
-            figsize: Figure size tuple
-            log_scale: Use logarithmic scale
-            db_scale: Use dB scale (10*log10)
-
-        Returns:
-            (fig, ax) tuple
-        """
-        if not self.power_history:
-            print("No power data recorded.")
-            return None, None
-
-        fig, ax = plt.subplots(figsize=figsize)
-
-        time_steps = range(len(self.power_history))
-        power_data = np.array(self.power_history)
-
-        if db_scale:
-            # Convert to dB scale
-            power_data = 10 * np.log10(np.maximum(power_data, 1e-12))  # Avoid log(0)
-            ax.plot(time_steps, power_data, "r-", linewidth=2)
-            ax.set_ylabel("Power (dB)")
-        elif log_scale:
-            ax.semilogy(time_steps, power_data, "r-", linewidth=2)
-            ax.set_ylabel("Power (log scale)")
-        else:
-            ax.plot(time_steps, power_data, "r-", linewidth=2)
-            ax.set_ylabel("Power")
-
-        ax.set_xlabel("Time step")
-        ax.set_title("Power vs Time")
-        ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        return fig, ax
-
-    def animate_fields(
-        self, field="Ez", figsize=(8, 6), interval=100, save_filename=None
-    ):
-        """Create an animation of field evolution.
-
-        Args:
-            field: Field component to animate
-            figsize: Figure size tuple
-            interval: Animation interval in milliseconds
-            save_filename: Optional filename to save animation
-
-        Returns:
-            Animation object
-        """
-        if not self.fields["t"] or field not in self.fields:
-            print(f"No data available for field '{field}'.")
-            return None
-
-        from matplotlib.animation import FuncAnimation
-
-        fig, ax = plt.subplots(figsize=figsize)
-
-        if self.monitor_type == "line":
-            # Line plot animation
-            (line,) = ax.plot([], [], "b-", linewidth=2)
-            ax.set_xlabel("Position along monitor line")
-            ax.set_ylabel(f"{field} amplitude")
-
-            # Set fixed limits based on data range
-            all_data = np.concatenate(self.fields[field])
-            ax.set_xlim(0, len(self.fields[field][0]))
-            ax.set_ylim(np.min(all_data), np.max(all_data))
-
-            def animate(frame):
-                field_data = self.fields[field][frame]
-                x_pos = range(len(field_data))
-                line.set_data(x_pos, field_data)
-                ax.set_title(f'{field} at t = {self.fields["t"][frame]:.2e} s')
-                return (line,)
-
-        else:
-            # 2D plot animation
-            field_data = self.fields[field][0]
-            im = ax.imshow(
-                field_data, cmap="RdBu", origin="lower", aspect="auto", animated=True
-            )
-            plt.colorbar(im, ax=ax, label=f"{field} amplitude")
-            ax.set_xlabel("X index")
-            ax.set_ylabel("Y index")
-
-            # Set fixed color limits
-            all_data = np.array(self.fields[field])
-            vmin, vmax = np.min(all_data), np.max(all_data)
-            im.set_clim(vmin, vmax)
-
-            def animate(frame):
-                field_data = self.fields[field][frame]
-                im.set_array(field_data)
-                ax.set_title(f'{field} at t = {self.fields["t"][frame]:.2e} s')
-                return [im]
-
-        anim = FuncAnimation(
-            fig,
-            animate,
-            frames=len(self.fields["t"]),
-            interval=interval,
-            blit=True,
-            repeat=True,
-        )
-
-        if save_filename:
-            anim.save(save_filename, writer="pillow", fps=1000 // interval)
-            print(f"Animation saved to {save_filename}")
-
-        plt.tight_layout()
-        return anim
+    def animate_fields(self, **kwargs):
+        """Create an animation of field evolution. Delegates to visual.monitor_plots."""
+        from beamz.visual.monitor_plots import animate_monitor_fields
+        return animate_monitor_fields(self, **kwargs)
 
     def get_field_at_time(self, field="Ez", time_value=None, time_index=None):
         """Get field data at a specific time.
