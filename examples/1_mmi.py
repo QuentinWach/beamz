@@ -16,11 +16,11 @@ design += Rectangle(position=(0, Y/2-WG_W/2), width=X/2, height=WG_W, material=M
 design += Rectangle(position=(X/2, Y/2 + OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2, Y/2 - OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2-W/2, Y/2-H/2), width=W, height=H, material=Material(N_CORE**2))
-#design.show()
+design.show()
 
 # Rasterize the design
 grid = design.rasterize(resolution=DX)
-#grid.show(field="permittivity")
+grid.show(field="permittivity")
 
 # Define the source
 time_steps = np.arange(0, TIME, DT)
