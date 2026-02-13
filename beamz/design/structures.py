@@ -39,6 +39,17 @@ def _rotate_vertices(vertices, angle_rad, axis, center):
         raise ValueError(f"Invalid rotation axis '{axis}'. Must be 'x', 'y', or 'z'.")
 
 
+def _normalize_position(position, z=None):
+    """Ensure position is a 3-tuple, optionally overriding z."""
+    if len(position) == 2:
+        position = (position[0], position[1], 0.0)
+    elif len(position) != 3:
+        raise ValueError("Position must be (x,y) or (x,y,z)")
+    if z is not None:
+        position = (position[0], position[1], z)
+    return position
+
+
 class Polygon:
     def __init__(
         self,
@@ -281,17 +292,7 @@ class Rectangle(Polygon):
         if depth < 0:
             raise ValueError(f"depth must be non-negative, got {depth}")
 
-        if z is not None:
-            if len(position) == 2:
-                position = (position[0], position[1], z)
-            elif len(position) == 3:
-                position = (position[0], position[1], z)
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position, z)
         x, y, z_pos = position
         vertices = [
             (x, y, z_pos),
@@ -386,12 +387,7 @@ class Circle(Polygon):
         if depth < 0:
             raise ValueError(f"depth must be non-negative, got {depth}")
 
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position)
         theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
         vertices = [
             (
@@ -475,17 +471,7 @@ class Ring(Polygon):
         if depth < 0:
             raise ValueError(f"depth must be non-negative, got {depth}")
 
-        if z is not None:
-            if len(position) == 2:
-                position = (position[0], position[1], z)
-            elif len(position) == 3:
-                position = (position[0], position[1], z)
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position, z)
         theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
         outer_ext_vertices = [
             (
@@ -600,12 +586,7 @@ class CircularBend(Polygon):
         depth=0,
         z=0,
     ):
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position)
         self.points = points
         theta = np.linspace(0, np.radians(angle), points)
         rotation_rad = np.radians(rotation)
