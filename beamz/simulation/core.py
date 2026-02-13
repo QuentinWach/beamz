@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from functools import partial
 
 import jax
@@ -12,6 +13,29 @@ from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
 from beamz.visual.viz import VideoRecorder, animate_manual_field, close_fdtd_figure
+
+
+@dataclass
+class _VizConfig:
+    """Internal config for visualization during simulation run."""
+
+    animate_live: str = None
+    animation_interval: int = 10
+    axis_scale: tuple = None
+    cmap: str = "twilight_zero"
+    clean_visualization: bool = False
+    wavelength: float = None
+    line_color: str = "gray"
+    line_opacity: float = 0.5
+    interpolation: str = "bicubic"
+    save_video: str = None
+    video_fps: int = 30
+    video_dpi: int = 150
+    video_field: str = None
+    save_fields: list = None
+    field_subsample: int = 1
+    jupyter_live: bool = None
+    store_animation: bool = True
 
 
 class Simulation:
@@ -168,12 +192,11 @@ class Simulation:
 
         return source_j, source_m
 
-    def _create_jit_step_2d(self):
-        """Create a JIT-compiled 2D FDTD step function for maximum performance.
+    def _create_jit_step(self):
+        """Create a JIT-compiled FDTD step function for maximum performance.
 
         Returns a pure function that takes field arrays and returns updated field arrays.
         """
-        # Extract static parameters for JIT compilation
         resolution = self.resolution
         dt = self.dt
         plane_2d = self.plane_2d
@@ -198,91 +221,50 @@ class Simulation:
         sigma_m_hy = self.fields.sigma_m_hy
         sigma_m_hz = self.fields.sigma_m_hz
 
-        # Import curl operations
-        from beamz.simulation.ops import curl_e_to_h_2d, curl_h_to_e_2d
-
-        @jax.jit
-        def step_2d(Ex, Ey, Ez, Hx, Hy, Hz):
-            """Pure JIT-compiled FDTD step (no sources)."""
-            # 1. Update H fields from E fields
-            curlE_x, curlE_y, curlE_z = curl_e_to_h_2d(
-                (Ex, Ey, Ez), resolution, plane=plane_2d
-            )
-
-            Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
-            Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
-            Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
-
-            # 2. Update E fields from H fields
-            curlH_x, curlH_y, curlH_z = curl_h_to_e_2d(
-                (Hx_new, Hy_new, Hz_new),
-                resolution,
-                (Ex.shape, Ey.shape, Ez.shape),
-                plane=plane_2d,
-            )
-
-            Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
-            Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
-            Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
-
-            return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
-
-        return step_2d
-
-    def _create_jit_step_3d(self):
-        """Create a JIT-compiled 3D FDTD step function for maximum performance."""
-        resolution = self.resolution
-        dt = self.dt
-
-        eps_x, sig_x, region_x = (
-            self.fields.eps_x,
-            self.fields.sig_x,
-            self.fields.region_x,
+        from beamz.simulation.ops import (
+            curl_e_to_h_2d,
+            curl_e_to_h_3d,
+            curl_h_to_e_2d,
+            curl_h_to_e_3d,
         )
-        eps_y, sig_y, region_y = (
-            self.fields.eps_y,
-            self.fields.sig_y,
-            self.fields.region_y,
-        )
-        eps_z, sig_z, region_z = (
-            self.fields.eps_z,
-            self.fields.sig_z,
-            self.fields.region_z,
-        )
-        sigma_m_hx = self.fields.sigma_m_hx
-        sigma_m_hy = self.fields.sigma_m_hy
-        sigma_m_hz = self.fields.sigma_m_hz
 
-        from beamz.simulation.ops import curl_e_to_h_3d, curl_h_to_e_3d
+        if self.is_3d:
 
-        @jax.jit
-        def step_3d(Ex, Ey, Ez, Hx, Hy, Hz):
-            """Pure JIT-compiled 3D FDTD step (no sources)."""
-            # 1. Update H fields from E fields
-            curlE_x, curlE_y, curlE_z = curl_e_to_h_3d(Ex, Ey, Ez, resolution)
+            @jax.jit
+            def step(Ex, Ey, Ez, Hx, Hy, Hz):
+                curlE_x, curlE_y, curlE_z = curl_e_to_h_3d(Ex, Ey, Ez, resolution)
+                Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+                Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+                Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+                curlH_x, curlH_y, curlH_z = curl_h_to_e_3d(
+                    Hx_new, Hy_new, Hz_new, resolution,
+                    ex_shape=Ex.shape, ey_shape=Ey.shape, ez_shape=Ez.shape,
+                )
+                Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
+                Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
+                Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
+                return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
 
-            Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
-            Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
-            Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+        else:
 
-            # 2. Update E fields from H fields
-            curlH_x, curlH_y, curlH_z = curl_h_to_e_3d(
-                Hx_new,
-                Hy_new,
-                Hz_new,
-                resolution,
-                ex_shape=Ex.shape,
-                ey_shape=Ey.shape,
-                ez_shape=Ez.shape,
-            )
+            @jax.jit
+            def step(Ex, Ey, Ez, Hx, Hy, Hz):
+                curlE_x, curlE_y, curlE_z = curl_e_to_h_2d(
+                    (Ex, Ey, Ez), resolution, plane=plane_2d
+                )
+                Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+                Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+                Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+                curlH_x, curlH_y, curlH_z = curl_h_to_e_2d(
+                    (Hx_new, Hy_new, Hz_new), resolution,
+                    (Ex.shape, Ey.shape, Ez.shape), plane=plane_2d,
+                )
+                Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
+                Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
+                Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
+                return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
 
-            Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
-            Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
-            Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
-
-            return Ex_new, Ey_new, Ez_new, Hx_new, Hy_new, Hz_new
-
-        return step_3d
+        return step
 
     def run_fast(
         self, num_steps=None, record_interval=None, record_fields=None, progress=True
@@ -315,7 +297,7 @@ class Simulation:
 
         # Create JIT-compiled step function
         jit_step = (
-            self._create_jit_step_2d() if not self.is_3d else self._create_jit_step_3d()
+            self._create_jit_step()
         )
 
         # Warm up JIT (compile on first call)
@@ -446,7 +428,7 @@ class Simulation:
 
         # Create pure FDTD step function for scan
         jit_step = (
-            self._create_jit_step_2d() if not self.is_3d else self._create_jit_step_3d()
+            self._create_jit_step()
         )
 
         @jax.jit
