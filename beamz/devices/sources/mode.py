@@ -316,17 +316,44 @@ def _crop_and_window_all(staggered, z_start, z_end, t_start, t_end, dir_sign, us
     return profiles
 
 
-def _inject_3d_fields(fields, profiles, indices, signal_e, signal_h, dt, resolution):
-    """Inject all 6 field components into a 3D field object."""
-    _inject_e_component(fields, "Ex", profiles, indices, "Hx", signal_e, dt, resolution)
-    _inject_e_component(fields, "Ey", profiles, indices, "Hz", signal_e, dt, resolution)
-    _inject_e_component(fields, "Ez", profiles, indices, "Hy", signal_e, dt, resolution)
-    _inject_h_component(fields, "Hx", profiles, indices, "Ex", signal_h, dt, resolution)
-    _inject_h_component(fields, "Hy", profiles, indices, "Ez", signal_h, dt, resolution)
-    _inject_h_component(fields, "Hz", profiles, indices, "Ey", signal_h, dt, resolution)
+# ---------------------------------------------------------------------------
+# Huygens cross-product sign tables
+# sign = multiplier in: target += sign * source_profile * sig * dt / (material * dx)
+# Only transverse components are injected; longitudinal components are skipped.
+# ---------------------------------------------------------------------------
+_HUYGENS_SIGNS = {
+    "x": {
+        "e": [("Ey", "Hz", -1), ("Ez", "Hy", +1)],
+        "h": [("Hy", "Ez", -1), ("Hz", "Ey", +1)],
+    },
+    "y": {
+        "e": [("Ex", "Hz", +1), ("Ez", "Hx", -1)],
+        "h": [("Hx", "Ez", +1), ("Hz", "Ex", -1)],
+    },
+}
 
 
-def _inject_e_component(fields, comp, profiles, indices, j_source, sig, dt, res):
+def _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axis):
+    """Inject E-field components for 3D Huygens source (J = n x H), after E update."""
+    for e_comp, h_source, sign in _HUYGENS_SIGNS[axis]["e"]:
+        _inject_e_component(fields, e_comp, profiles, indices, h_source,
+                            signal_e, dt, resolution, sign=sign)
+
+
+def _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axis):
+    """Inject H-field components for 3D Huygens source (M = -n x E), after H update."""
+    for h_comp, e_source, sign in _HUYGENS_SIGNS[axis]["h"]:
+        _inject_h_component(fields, h_comp, profiles, indices, e_source,
+                            signal_h, dt, resolution, sign=sign)
+
+
+def _inject_3d_fields(fields, profiles, indices, signal_e, signal_h, dt, resolution, axis="x"):
+    """Inject all field components into a 3D field object (backward compat wrapper)."""
+    _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axis)
+    _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axis)
+
+
+def _inject_e_component(fields, comp, profiles, indices, j_source, sig, dt, res, sign=-1):
     """Inject one E-field component via J = cross(n, H)."""
     profile = profiles.get(comp)
     idx = indices.get(comp)
@@ -340,10 +367,10 @@ def _inject_e_component(fields, comp, profiles, indices, j_source, sig, dt, res)
         return
     eps = fields.permittivity[idx]
     setattr(fields, comp,
-            getattr(fields, comp).at[idx].add(-j_term * sig * dt / (EPS_0 * eps * res)))
+            getattr(fields, comp).at[idx].add(sign * j_term * sig * dt / (EPS_0 * eps * res)))
 
 
-def _inject_h_component(fields, comp, profiles, indices, m_source, sig, dt, res):
+def _inject_h_component(fields, comp, profiles, indices, m_source, sig, dt, res, sign=-1):
     """Inject one H-field component via M = -cross(n, E)."""
     profile = profiles.get(comp)
     idx = indices.get(comp)
@@ -358,7 +385,7 @@ def _inject_h_component(fields, comp, profiles, indices, m_source, sig, dt, res)
     mu = getattr(fields, "permeability", None)
     mu_val = mu[idx] if mu is not None else 1.0
     setattr(fields, comp,
-            getattr(fields, comp).at[idx].add(-m_term * sig * dt / (MU_0 * mu_val * res)))
+            getattr(fields, comp).at[idx].add(sign * m_term * sig * dt / (MU_0 * mu_val * res)))
 
 
 def _match_shape(profile, target_shape):
@@ -457,6 +484,7 @@ class ModeSource:
             self.height = None
 
         axis = "x" if self.direction in ("+x", "-x") else "y"
+        self._axis = axis
         self._dt_physical = 0.0
 
         # 1. Get center index for injection plane
@@ -751,10 +779,10 @@ class ModeSource:
                 Ez_cropped = Ez_cropped * window
 
             if self.direction == "+y":
-                self._jz_profile = -Hx_cropped
+                self._jz_profile = Hx_cropped
                 self._my_profile = Ez_cropped
             else:
-                self._jz_profile = Hx_cropped
+                self._jz_profile = -Hx_cropped
                 self._my_profile = -Ez_cropped
 
         else:  # TE y-prop
@@ -795,8 +823,8 @@ class ModeSource:
                 Hz_cropped = Hz_cropped * window
                 Ex_cropped = Ex_cropped * window
 
-            self._jx_profile = dir_sign * Hz_cropped
-            self._mz_profile = dir_sign * Ex_cropped
+            self._jx_profile = -dir_sign * Hz_cropped
+            self._mz_profile = -dir_sign * Ex_cropped
 
     @staticmethod
     def _make_1d_window(width_cells, alpha=0.3):
@@ -863,21 +891,38 @@ class ModeSource:
         else:
             return 0.0
 
-    def inject(self, fields, t, dt, current_step, resolution, design):
-        """Inject source fields into the grid."""
+    def inject_h(self, fields, t, dt, current_step, resolution, design):
+        """Inject magnetic current (M) into H-fields after the H update."""
+        if self._Ez_profile is None and self._jz_profile is None:
+            self.initialize(fields.permittivity, resolution)
+
+        signal_value_h = self._get_signal_value(t + 0.5 * dt + self._dt_physical, dt)
+
+        if self._Ex_profile is not None and self._is_3d:
+            self._inject_3d_h(fields, signal_value_h, dt, resolution)
+        else:
+            self._inject_2d_h(fields, signal_value_h, dt, resolution)
+
+    def inject_e(self, fields, t, dt, current_step, resolution, design):
+        """Inject electric current (J) into E-fields after the E update."""
         if self._Ez_profile is None and self._jz_profile is None:
             self.initialize(fields.permittivity, resolution)
 
         signal_value_e = self._get_signal_value(t + 0.5 * dt, dt)
-        signal_value_h = self._get_signal_value(t + 0.5 * dt + self._dt_physical, dt)
 
         if self._Ex_profile is not None and self._is_3d:
-            self._inject_3d(fields, signal_value_e, signal_value_h, dt, resolution)
+            self._inject_3d_e(fields, signal_value_e, dt, resolution)
         else:
-            self._inject_2d(fields, signal_value_e, signal_value_h, dt, resolution)
+            self._inject_2d_e(fields, signal_value_e, dt, resolution)
 
-    def _inject_3d(self, fields, signal_e, signal_h, dt, resolution):
-        """Inject all 6 components for 3D simulation."""
+    def inject(self, fields, t, dt, current_step, resolution, design):
+        """Inject source fields (calls inject_h + inject_e for backward compatibility)."""
+        self.inject_h(fields, t, dt, current_step, resolution, design)
+        self.inject_e(fields, t, dt, current_step, resolution, design)
+
+    # -- 3D injection (split) ------------------------------------------
+
+    def _get_3d_profiles_and_indices(self):
         profiles = {
             "Ex": self._Ex_profile, "Ey": self._Ey_profile, "Ez": self._Ez_profile,
             "Hx": self._Hx_profile, "Hy": self._Hy_profile, "Hz": self._Hz_profile,
@@ -886,17 +931,23 @@ class ModeSource:
             "Ex": self._Ex_indices, "Ey": self._Ey_indices, "Ez": self._Ez_indices,
             "Hx": self._Hx_indices, "Hy": self._Hy_indices, "Hz": self._Hz_indices,
         }
-        _inject_3d_fields(fields, profiles, indices, signal_e, signal_h, dt, resolution)
+        return profiles, indices
 
-    def _inject_2d(self, fields, signal_e, signal_h, dt, resolution):
-        """Legacy 2D injection (dominant components only)."""
+    def _inject_3d_h(self, fields, signal_h, dt, resolution):
+        """Inject H-field components for 3D Huygens source."""
+        profiles, indices = self._get_3d_profiles_and_indices()
+        _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, self._axis)
+
+    def _inject_3d_e(self, fields, signal_e, dt, resolution):
+        """Inject E-field components for 3D Huygens source."""
+        profiles, indices = self._get_3d_profiles_and_indices()
+        _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, self._axis)
+
+    # -- 2D injection (split, with corrected signs) ---------------------
+
+    def _inject_2d_h(self, fields, signal_h, dt, resolution):
+        """Inject magnetic current into H-fields for 2D (after H update)."""
         if self.pol == "tm":
-            if self._ez_indices is not None and self._jz_profile is not None:
-                eps_at_source = fields.permittivity[self._ez_indices]
-                jz_term = self._jz_profile * signal_e / resolution
-                ez_injection = -jz_term * dt / (EPS_0 * eps_at_source)
-                fields.Ez = fields.Ez.at[self._ez_indices].add(ez_injection)
-
             if self._h_indices is not None and self._my_profile is not None:
                 mu_val = getattr(fields, "permeability", None)
                 mu_at_source = mu_val[self._h_indices] if mu_val is not None else 1.0
@@ -907,6 +958,22 @@ class ModeSource:
                     fields.Hx = fields.Hx.at[self._h_indices].add(h_injection)
                 else:
                     fields.Hy = fields.Hy.at[self._h_indices].add(h_injection)
+        else:  # TE
+            if self._hz_indices is not None and self._mz_profile is not None:
+                mu_val = getattr(fields, "permeability", None)
+                mu_at_source = mu_val[self._hz_indices] if mu_val is not None else 1.0
+                mz_term = self._mz_profile * signal_h / resolution
+                hz_injection = +mz_term * dt / (MU_0 * mu_at_source)
+                fields.Hz = fields.Hz.at[self._hz_indices].add(hz_injection)
+
+    def _inject_2d_e(self, fields, signal_e, dt, resolution):
+        """Inject electric current into E-fields for 2D (after E update)."""
+        if self.pol == "tm":
+            if self._ez_indices is not None and self._jz_profile is not None:
+                eps_at_source = fields.permittivity[self._ez_indices]
+                jz_term = self._jz_profile * signal_e / resolution
+                ez_injection = +jz_term * dt / (EPS_0 * eps_at_source)
+                fields.Ez = fields.Ez.at[self._ez_indices].add(ez_injection)
         else:  # TE
             if self._e_indices is not None:
                 j_profile = (
@@ -921,13 +988,6 @@ class ModeSource:
                         fields.Ex = fields.Ex.at[self._e_indices].add(e_injection)
                     else:
                         fields.Ey = fields.Ey.at[self._e_indices].add(e_injection)
-
-            if self._hz_indices is not None and self._mz_profile is not None:
-                mu_val = getattr(fields, "permeability", None)
-                mu_at_source = mu_val[self._hz_indices] if mu_val is not None else 1.0
-                mz_term = self._mz_profile * signal_h / resolution
-                hz_injection = -mz_term * dt / (MU_0 * mu_at_source)
-                fields.Hz = fields.Hz.at[self._hz_indices].add(hz_injection)
 
     def show(self, field=None):
         """Visualize the 2D mode profile (for 3D simulations) or 1D profile (for 2D)."""

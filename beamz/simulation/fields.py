@@ -164,11 +164,10 @@ class Fields:
         """Return list of available field components."""
         return ["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]
 
-    def update(self, dt, source_j=None, source_m=None):
-        """Execute one FDTD time step (2D or 3D) with optional source injection."""
+    def update_h(self, dt, source_m=None):
+        """Execute the H-field half of an FDTD time step."""
         is_3d = self.permittivity.ndim == 3
 
-        # 1. Compute curl(E) for H update
         if is_3d:
             curlE_x, curlE_y, curlE_z = ops.curl_e_to_h_3d(
                 self.Ex, self.Ey, self.Ez, self.resolution
@@ -178,7 +177,6 @@ class Fields:
                 (self.Ex, self.Ey, self.Ez), self.resolution, plane=self.plane_2d
             )
 
-        # Inject magnetic sources
         if source_m:
             for comp in ("Hx", "Hy", "Hz"):
                 if comp in source_m:
@@ -194,7 +192,10 @@ class Fields:
         self.Hy = ops.advance_h_field(self.Hy, curlE_y, self.sigma_m_hy, dt)
         self.Hz = ops.advance_h_field(self.Hz, curlE_z, self.sigma_m_hz, dt)
 
-        # 2. Compute curl(H) for E update
+    def update_e(self, dt, source_j=None):
+        """Execute the E-field half of an FDTD time step."""
+        is_3d = self.permittivity.ndim == 3
+
         if is_3d:
             curlH_x, curlH_y, curlH_z = ops.curl_h_to_e_3d(
                 self.Hx,
@@ -213,7 +214,6 @@ class Fields:
                 plane=self.plane_2d,
             )
 
-        # Inject electric sources
         if source_j:
             for comp in ("Ex", "Ey", "Ez"):
                 if comp in source_j:
@@ -234,6 +234,11 @@ class Fields:
         self.Ez = ops.advance_e_field(
             self.Ez, curlH_z, self.sig_z, self.eps_z, dt, self.region_z
         )
+
+    def update(self, dt, source_j=None, source_m=None):
+        """Execute one FDTD time step (2D or 3D) with optional source injection."""
+        self.update_h(dt, source_m=source_m)
+        self.update_e(dt, source_j=source_j)
 
     def update_materials(self, permittivity=None, conductivity=None, permeability=None):
         """Update material grids and recompute Yee parameters."""

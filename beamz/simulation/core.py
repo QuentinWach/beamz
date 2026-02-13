@@ -79,18 +79,30 @@ class Simulation:
             self.thermal.initialize(self)
 
     def step(self):
-        """Perform one FDTD time step."""
+        """Perform one FDTD time step with correct Huygens source timing.
+
+        Order: H-update → M-injection → E-update → J-injection → legacy sources
+        """
         if self.current_step >= self.num_steps:
             return False
 
-        # Inject source fields (if any) directly into the grid before update
-        self._inject_sources()
+        # Legacy devices (only have inject(), no inject_h/inject_e): inject before update
+        self._inject_legacy_sources()
 
         # Collect source terms from legacy devices (if any)
         source_j, source_m = self._collect_source_terms()
 
-        # Update fields (legacy sources passed, new sources already injected)
-        self.fields.update(self.dt, source_j=source_j, source_m=source_m)
+        # 1. H update
+        self.fields.update_h(self.dt, source_m=source_m)
+
+        # 2. M injection (modifies H after update)
+        self._inject_h_sources()
+
+        # 3. E update (uses modified H)
+        self.fields.update_e(self.dt, source_j=source_j)
+
+        # 4. J injection (modifies E after update)
+        self._inject_e_sources()
 
         # Record monitor data (if monitors are in devices)
         self._record_monitors()
@@ -133,17 +145,31 @@ class Simulation:
                         self.current_step,
                     )
 
-    def _inject_sources(self):
-        """Inject source fields directly into the simulation grid."""
+    def _inject_h_sources(self):
+        """Inject magnetic currents (M) into H-fields after H update."""
         for device in self.devices:
-            if hasattr(device, "inject"):
+            if hasattr(device, "inject_h"):
+                device.inject_h(
+                    self.fields, self.t, self.dt,
+                    self.current_step, self.resolution, self.design,
+                )
+
+    def _inject_e_sources(self):
+        """Inject electric currents (J) into E-fields after E update."""
+        for device in self.devices:
+            if hasattr(device, "inject_e"):
+                device.inject_e(
+                    self.fields, self.t, self.dt,
+                    self.current_step, self.resolution, self.design,
+                )
+
+    def _inject_legacy_sources(self):
+        """Inject from devices that only have inject() (no inject_h/inject_e)."""
+        for device in self.devices:
+            if hasattr(device, "inject") and not hasattr(device, "inject_h"):
                 device.inject(
-                    self.fields,
-                    self.t,
-                    self.dt,
-                    self.current_step,
-                    self.resolution,
-                    self.design,
+                    self.fields, self.t, self.dt,
+                    self.current_step, self.resolution, self.design,
                 )
 
     def _collect_source_terms(self):
@@ -242,6 +268,74 @@ class Simulation:
 
         return step
 
+    def _create_jit_step_h(self):
+        """Create a JIT-compiled H-update function."""
+        resolution = self.resolution
+        dt = self.dt
+        plane_2d = self.plane_2d
+        sigma_m_hx = self.fields.sigma_m_hx
+        sigma_m_hy = self.fields.sigma_m_hy
+        sigma_m_hz = self.fields.sigma_m_hz
+
+        from beamz.simulation.ops import curl_e_to_h_2d, curl_e_to_h_3d
+
+        if self.is_3d:
+            @jax.jit
+            def step_h(Ex, Ey, Ez, Hx, Hy, Hz):
+                curlE_x, curlE_y, curlE_z = curl_e_to_h_3d(Ex, Ey, Ez, resolution)
+                Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+                Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+                Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+                return Hx_new, Hy_new, Hz_new
+        else:
+            @jax.jit
+            def step_h(Ex, Ey, Ez, Hx, Hy, Hz):
+                curlE_x, curlE_y, curlE_z = curl_e_to_h_2d(
+                    (Ex, Ey, Ez), resolution, plane=plane_2d
+                )
+                Hx_new = advance_h_field(Hx, curlE_x, sigma_m_hx, dt)
+                Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
+                Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
+                return Hx_new, Hy_new, Hz_new
+
+        return step_h
+
+    def _create_jit_step_e(self):
+        """Create a JIT-compiled E-update function."""
+        resolution = self.resolution
+        dt = self.dt
+        plane_2d = self.plane_2d
+        eps_x, sig_x, region_x = self.fields.eps_x, self.fields.sig_x, self.fields.region_x
+        eps_y, sig_y, region_y = self.fields.eps_y, self.fields.sig_y, self.fields.region_y
+        eps_z, sig_z, region_z = self.fields.eps_z, self.fields.sig_z, self.fields.region_z
+
+        from beamz.simulation.ops import curl_h_to_e_2d, curl_h_to_e_3d
+
+        if self.is_3d:
+            @jax.jit
+            def step_e(Ex, Ey, Ez, Hx, Hy, Hz):
+                curlH_x, curlH_y, curlH_z = curl_h_to_e_3d(
+                    Hx, Hy, Hz, resolution,
+                    ex_shape=Ex.shape, ey_shape=Ey.shape, ez_shape=Ez.shape,
+                )
+                Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
+                Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
+                Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
+                return Ex_new, Ey_new, Ez_new
+        else:
+            @jax.jit
+            def step_e(Ex, Ey, Ez, Hx, Hy, Hz):
+                curlH_x, curlH_y, curlH_z = curl_h_to_e_2d(
+                    (Hx, Hy, Hz), resolution,
+                    (Ex.shape, Ey.shape, Ez.shape), plane=plane_2d,
+                )
+                Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
+                Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
+                Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
+                return Ex_new, Ey_new, Ez_new
+
+        return step_e
+
     def run_fast(
         self, num_steps=None, record_interval=None, record_fields=None, progress=True
     ):
@@ -271,25 +365,23 @@ class Simulation:
         if record_fields is None:
             record_fields = ["Ez"]
 
-        # Create JIT-compiled step function
-        jit_step = (
-            self._create_jit_step()
-        )
+        # Create split JIT-compiled step functions
+        jit_step_h = self._create_jit_step_h()
+        jit_step_e = self._create_jit_step_e()
 
         # Warm up JIT (compile on first call)
         if progress:
             print("● JIT compiling FDTD kernel...", end=" ", flush=True)
 
-        # Run one step to trigger compilation
-        Ex, Ey, Ez, Hx, Hy, Hz = jit_step(
-            self.fields.Ex,
-            self.fields.Ey,
-            self.fields.Ez,
-            self.fields.Hx,
-            self.fields.Hy,
-            self.fields.Hz,
+        # Run one step to trigger compilation of both kernels
+        Hx, Hy, Hz = jit_step_h(
+            self.fields.Ex, self.fields.Ey, self.fields.Ez,
+            self.fields.Hx, self.fields.Hy, self.fields.Hz,
         )
-        # Block until compilation is done
+        Ex, Ey, Ez = jit_step_e(
+            self.fields.Ex, self.fields.Ey, self.fields.Ez,
+            Hx, Hy, Hz,
+        )
         Ex.block_until_ready()
 
         if progress:
@@ -298,28 +390,37 @@ class Simulation:
         # Initialize field history storage
         field_history = {name: [] for name in record_fields}
 
-        # Main simulation loop with JIT-compiled steps
+        # Main simulation loop with correct Huygens timing
         try:
             for step_idx in range(num_steps):
-                # Inject source fields (Python, not JIT-compiled)
-                self._inject_sources()
+                # 0. Legacy sources (before update, preserves old timing)
+                self._inject_legacy_sources()
 
-                # Execute JIT-compiled field update
+                # 1. H update (JIT)
+                (
+                    self.fields.Hx,
+                    self.fields.Hy,
+                    self.fields.Hz,
+                ) = jit_step_h(
+                    self.fields.Ex, self.fields.Ey, self.fields.Ez,
+                    self.fields.Hx, self.fields.Hy, self.fields.Hz,
+                )
+
+                # 2. M injection (Python, after H update)
+                self._inject_h_sources()
+
+                # 3. E update (JIT, uses modified H)
                 (
                     self.fields.Ex,
                     self.fields.Ey,
                     self.fields.Ez,
-                    self.fields.Hx,
-                    self.fields.Hy,
-                    self.fields.Hz,
-                ) = jit_step(
-                    self.fields.Ex,
-                    self.fields.Ey,
-                    self.fields.Ez,
-                    self.fields.Hx,
-                    self.fields.Hy,
-                    self.fields.Hz,
+                ) = jit_step_e(
+                    self.fields.Ex, self.fields.Ey, self.fields.Ez,
+                    self.fields.Hx, self.fields.Hy, self.fields.Hz,
                 )
+
+                # 4. J injection (Python, after E update)
+                self._inject_e_sources()
 
                 # Record monitor data
                 self._record_monitors()
