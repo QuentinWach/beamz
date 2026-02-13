@@ -10,6 +10,42 @@ from beamz.visual.helpers import (
 )
 
 
+class MaterialGrids:
+    """Bundles the 8 material property arrays with bulk operations."""
+    NAMES = ('permittivity', 'permeability', 'conductivity', 'k', 'rho', 'cp', 'dn_dT', 'T0')
+    DEFAULTS = (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 300.0)
+
+    def __init__(self, shape):
+        for name, default in zip(self.NAMES, self.DEFAULTS):
+            setattr(self, name, np.full(shape, default))
+
+    def fill_all(self, props):
+        """Fill all grids with material property tuple."""
+        for name, val in zip(self.NAMES, props):
+            getattr(self, name).fill(val)
+
+    def set_at(self, idx, props):
+        """Set all properties at index (i,j) or (k,i,j)."""
+        for name, val in zip(self.NAMES, props):
+            getattr(self, name)[idx] = val
+
+    def blend_at(self, idx, props, factor):
+        """Blend properties at index with given factor."""
+        for name, val in zip(self.NAMES, props):
+            arr = getattr(self, name)
+            arr[idx] = arr[idx] * (1 - factor) + val * factor
+
+    def set_region(self, slices, props):
+        """Set all properties for a slice/index-array region."""
+        for name, val in zip(self.NAMES, props):
+            getattr(self, name)[slices] = val
+
+    def assign_to(self, target):
+        """Copy all grids as attributes onto target object."""
+        for name in self.NAMES:
+            setattr(target, name, getattr(self, name))
+
+
 class BaseMeshGrid:
     """Base class for mesh grids with common functionality."""
 
@@ -82,6 +118,12 @@ class BaseMeshGrid:
         T0 = getattr(material, "T0", 300.0)
         return k, rho, cp, dn_dT, T0
 
+    def _get_all_material_props(self, material, x=0, y=0, z=0):
+        """Get all 8 material properties as a single tuple matching MaterialGrids.NAMES order."""
+        perm, permb, cond = self._get_material_properties_safe(material, x, y, z)
+        k, rho, cp, dn_dT, T0 = self._get_thermal_properties_safe(material, x, y, z)
+        return (perm, permb, cond, k, rho, cp, dn_dT, T0)
+
 
 class RegularGrid(BaseMeshGrid):
     """2D Regular grid meshing for 2D designs (backwards compatible)."""
@@ -97,27 +139,9 @@ class RegularGrid(BaseMeshGrid):
             )
 
         # Determine is_3d property for compatibility with Simulation class
-        self.is_3d = False
-        if design.is_3d and design.depth > 0:
-            self.is_3d = True
+        self.is_3d = design.is_3d and design.depth > 0
 
-        # Calculate 2D grid dimensions
-        width, height = self.design.width, self.design.height
-        grid_width = int(width / self.resolution)
-        grid_height = int(height / self.resolution)
-
-        # Initialize 2D material grids
-        self.permittivity = np.zeros((grid_height, grid_width))
-        self.permeability = np.zeros((grid_height, grid_width))
-        self.conductivity = np.zeros((grid_height, grid_width))
-        # Initialize thermal property grids
-        self.k = np.zeros((grid_height, grid_width))
-        self.rho = np.zeros((grid_height, grid_width))
-        self.cp = np.zeros((grid_height, grid_width))
-        self.dn_dT = np.zeros((grid_height, grid_width))
-        self.T0 = np.zeros((grid_height, grid_width))
-
-        # Rasterize the design
+        # Rasterize the design (assigns all 8 material grids via MaterialGrids)
         self.__rasterize__()
 
         # Set grid properties
@@ -145,17 +169,11 @@ class RegularGrid(BaseMeshGrid):
         return self.k, self.rho, self.cp, self.dn_dT, self.T0
 
     def __rasterize__(self):
-        """Painters algorithm to rasterize the design into a grid using super-sampling
-        by utilizing the ordered nature of the structures and their bounding boxes.
-        We iterate through the sorted list of objects:
-        1. First, draw the background layer without any anti-aliasing or boundary box consideration.
-        2. Then take the boundary box of the next object and create a mask for the material arrays.
-        3. Then use super-sampling over that boundary box to draw this object.
-        4. Do this until all objects are drawn.
+        """Painters algorithm: rasterize design into a grid using super-sampling.
 
-        TODO:
-            + Refactor into more readable code with distinct repeatable functions.
-            + Write detailed documentation (see Quentin's personal notes for details).
+        Iterates through structures in order (background first, foreground last).
+        Uses bounding-box clipping and fast paths for axis-aligned rectangles,
+        circles, and rings. Boundary cells get 3x3 super-sampling for anti-aliasing.
         """
         width, height = self.design.width, self.design.height
         grid_width, grid_height = int(width / self.resolution), int(
@@ -169,741 +187,73 @@ class RegularGrid(BaseMeshGrid):
 
         # Precompute offsets for all 9 sample points
         offsets = np.array([-0.25, 0, 0.25]) * cell_size
-        dx, dy = np.meshgrid(offsets, offsets)
-        dx = dx.flatten()
-        dy = dy.flatten()
-        num_samples = len(dx)
+        sample_dx, sample_dy = np.meshgrid(offsets, offsets)
+        sample_dx = sample_dx.flatten()
+        sample_dy = sample_dy.flatten()
+        num_samples = len(sample_dx)
 
-        # Estimate dt for PML calculations
-        c = 3e8  # Speed of light
-        dt_estimate = 0.5 * self.resolution / (c * np.sqrt(2))
+        grids = MaterialGrids((grid_height, grid_width))
 
-        # Initialize material grids with vacuum (air) properties
-        permittivity = np.ones((grid_height, grid_width))
-        permeability = np.ones((grid_height, grid_width))
-        conductivity = np.zeros((grid_height, grid_width))
-        k_grid = np.zeros((grid_height, grid_width))
-        rho_grid = np.zeros((grid_height, grid_width))
-        cp_grid = np.zeros((grid_height, grid_width))
-        dn_dT_grid = np.zeros((grid_height, grid_width))
-        T0_grid = np.full((grid_height, grid_width), 300.0)
-
-        # Start with the background (first structure)
+        # Fill background (first structure)
         if len(self.design.structures) > 0:
             background = self.design.structures[0]
             if hasattr(background, "material") and background.material is not None:
-                # Get background material properties safely
-                bg_perm, bg_permb, bg_cond = self._get_material_properties_safe(
-                    background.material
-                )
-                bg_k, bg_rho, bg_cp, bg_dn_dT, bg_T0 = self._get_thermal_properties_safe(
-                    background.material
-                )
-                # Fast fill for background
-                permittivity.fill(bg_perm)
-                permeability.fill(bg_permb)
-                conductivity.fill(bg_cond)
-                k_grid.fill(bg_k)
-                rho_grid.fill(bg_rho)
-                cp_grid.fill(bg_cp)
-                dn_dT_grid.fill(bg_dn_dT)
-                T0_grid.fill(bg_T0)
+                grids.fill_all(self._get_all_material_props(background.material))
 
-        # Process remaining structures in reverse order (foreground objects last)
-        # Note: we process in ORIGINAL order, not reversed, because we want background first
+        # Process remaining structures
         with create_rich_progress() as progress:
             task = progress.add_task(
                 "Rasterizing structures...", total=len(self.design.structures)
             )
-            progress.update(task, advance=1)  # Skip the background we already processed
+            progress.update(task, advance=1)  # Skip background
+
             for idx in range(1, len(self.design.structures)):
                 structure = self.design.structures[idx]
-                # Skip PML visualization structures or structures without material (sources, monitors, etc.)
+
                 if hasattr(structure, "is_pml") and structure.is_pml:
                     progress.update(task, advance=1)
                     continue
                 if not hasattr(structure, "material") or structure.material is None:
                     progress.update(task, advance=1)
                     continue
-                # Check if this is a CustomMaterial that needs spatial evaluation
+
                 is_custom_material = hasattr(structure.material, "get_permittivity")
-                if is_custom_material:
-                    # For CustomMaterial, we'll evaluate at each spatial location during rasterization
-                    mat_perm, mat_permb, mat_cond = None, None, None
-                    mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
-                        self._get_thermal_properties_safe(structure.material)
-                    )
-                else:
-                    # Cache material properties for performance (traditional Material objects)
-                    mat_perm, mat_permb, mat_cond = self._get_material_properties_safe(
-                        structure.material
-                    )
-                    mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
-                        self._get_thermal_properties_safe(structure.material)
-                    )
+                props = None if is_custom_material else self._get_all_material_props(structure.material)
+
                 try:
-                    # Get bounding box of the structure
-                    bbox = structure.get_bounding_box()
-                    if bbox is None:
-                        raise AttributeError("Bounding box is None")
-
-                    # Handle both 2D and 3D bounding boxes
-                    if (
-                        len(bbox) == 6
-                    ):  # 3D bounding box: (min_x, min_y, min_z, max_x, max_y, max_z)
-                        min_x, min_y, min_z, max_x, max_y, max_z = bbox
-                    elif (
-                        len(bbox) == 4
-                    ):  # 2D bounding box: (min_x, min_y, max_x, max_y)
-                        min_x, min_y, max_x, max_y = bbox
-                    else:
-                        raise ValueError(f"Invalid bounding box format: {bbox}")
-
-                    # Convert to grid indices
-                    min_i = max(0, int(min_y / cell_size) - 1)
-                    min_j = max(0, int(min_x / cell_size) - 1)
-                    max_i = min(grid_height, int(np.ceil(max_y / cell_size)) + 1)
-                    max_j = min(grid_width, int(np.ceil(max_x / cell_size)) + 1)
-                    # Skip if bounding box is outside grid
-                    if (
-                        min_i >= grid_height
-                        or min_j >= grid_width
-                        or max_i <= 0
-                        or max_j <= 0
-                    ):
+                    bbox_indices = self._get_bbox_indices(
+                        structure, grid_height, grid_width, cell_size
+                    )
+                    if bbox_indices is None:
                         progress.update(task, advance=1)
                         continue
-                    # Fast paths for different structure types
-                    if isinstance(structure, Rectangle) and all(
-                        v == 0
-                        for v in [
-                            structure.vertices[0][0] - structure.position[0],
-                            structure.vertices[0][1] - structure.position[1],
-                        ]
-                    ):
-                        # FAST PATH: Axis-aligned rectangle
-                        # Define rectangle bounds for grid indices
-                        rect_min_j = max(0, int(structure.position[0] / cell_size))
-                        rect_min_i = max(0, int(structure.position[1] / cell_size))
-                        rect_max_j = min(
-                            grid_width,
-                            int(
-                                np.ceil(
-                                    (structure.position[0] + structure.width)
-                                    / cell_size
-                                )
-                            ),
-                        )
-                        rect_max_i = min(
-                            grid_height,
-                            int(
-                                np.ceil(
-                                    (structure.position[1] + structure.height)
-                                    / cell_size
-                                )
-                            ),
-                        )
-                        # Identify interior and boundary cells
-                        inner_min_j = max(
-                            0,
-                            int((structure.position[0] + 0.25 * cell_size) / cell_size),
-                        )
-                        inner_min_i = max(
-                            0,
-                            int((structure.position[1] + 0.25 * cell_size) / cell_size),
-                        )
-                        inner_max_j = min(
-                            grid_width,
-                            int(
-                                np.floor(
-                                    (
-                                        structure.position[0]
-                                        + structure.width
-                                        - 0.25 * cell_size
-                                    )
-                                    / cell_size
-                                )
-                            ),
-                        )
-                        inner_max_i = min(
-                            grid_height,
-                            int(
-                                np.floor(
-                                    (
-                                        structure.position[1]
-                                        + structure.height
-                                        - 0.25 * cell_size
-                                    )
-                                    / cell_size
-                                )
-                            ),
-                        )
-                        # Fast fill interior cells (fully covered, no need for sampling)
-                        if inner_max_i > inner_min_i and inner_max_j > inner_min_j:
-                            if is_custom_material:
-                                # Evaluate CustomMaterial at each interior point
-                                for i in range(inner_min_i, inner_max_i):
-                                    for j in range(inner_min_j, inner_max_j):
-                                        x, y = x_centers[j], y_centers[i]
-                                        perm, permb, cond = (
-                                            self._get_material_properties_safe(
-                                                structure.material, x, y
-                                            )
-                                        )
-                                        k_val, rho_val, cp_val, dn_dT_val, T0_val = (
-                                            self._get_thermal_properties_safe(
-                                                structure.material, x, y
-                                            )
-                                        )
-                                        permittivity[i, j] = perm
-                                        permeability[i, j] = permb
-                                        conductivity[i, j] = cond
-                                        k_grid[i, j] = k_val
-                                        rho_grid[i, j] = rho_val
-                                        cp_grid[i, j] = cp_val
-                                        dn_dT_grid[i, j] = dn_dT_val
-                                        T0_grid[i, j] = T0_val
-                            else:
-                                permittivity[
-                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
-                                ] = mat_perm
-                                permeability[
-                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
-                                ] = mat_permb
-                                conductivity[
-                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
-                                ] = mat_cond
-                                k_grid[
-                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
-                                ] = (
-                                    mat_k
-                                )
-                                rho_grid[
-                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
-                                ] = mat_rho
-                                cp_grid[
-                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
-                                ] = mat_cp
-                                dn_dT_grid[
-                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
-                                ] = mat_dn_dT
-                                T0_grid[
-                                    inner_min_i:inner_max_i, inner_min_j:inner_max_j
-                                ] = mat_T0
-                        # Calculate boundary region cells (those that need super-sampling)
-                        # This is more efficient than checking each cell individually
-                        boundary_mask = np.zeros(
-                            (rect_max_i - rect_min_i, rect_max_j - rect_min_j),
-                            dtype=bool,
-                        )
-                        # Top and bottom boundaries
-                        if rect_min_i < inner_min_i:
-                            boundary_mask[: inner_min_i - rect_min_i, :] = True
-                        if inner_max_i < rect_max_i:
-                            boundary_mask[inner_max_i - rect_min_i :, :] = True
-                        # Left and right boundaries
-                        if rect_min_j < inner_min_j:
-                            boundary_mask[:, : inner_min_j - rect_min_j] = True
-                        if inner_max_j < rect_max_j:
-                            boundary_mask[:, inner_max_j - rect_min_j :] = True
-                        # Process boundary cells with super-sampling
-                        boundary_indices = np.where(boundary_mask)
-                        for idx in range(len(boundary_indices[0])):
-                            i_rel, j_rel = (
-                                boundary_indices[0][idx],
-                                boundary_indices[1][idx],
-                            )
-                            i, j = i_rel + rect_min_i, j_rel + rect_min_j
-                            # Cell center
-                            center_x = x_centers[j]
-                            center_y = y_centers[i]
-                            # Count samples inside rectangle
-                            samples_inside = 0
-                            for k in range(num_samples):
-                                x_sample = center_x + dx[k]
-                                y_sample = center_y + dy[k]
-                                if (
-                                    structure.position[0]
-                                    <= x_sample
-                                    < structure.position[0] + structure.width
-                                    and structure.position[1]
-                                    <= y_sample
-                                    < structure.position[1] + structure.height
-                                ):
-                                    samples_inside += 1
-                            if samples_inside > 0:
-                                # Calculate blend factor
-                                blend_factor = samples_inside / num_samples
-                                # Update material properties
-                                if is_custom_material:
-                                    # Evaluate CustomMaterial at cell center for boundary blending
-                                    x, y = x_centers[j], y_centers[i]
-                                    mat_perm, mat_permb, mat_cond = (
-                                        self._get_material_properties_safe(
-                                            structure.material, x, y
-                                        )
-                                    )
-                                    mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
-                                        self._get_thermal_properties_safe(
-                                            structure.material, x, y
-                                        )
-                                    )
-                                permittivity[i, j] = (
-                                    permittivity[i, j] * (1 - blend_factor)
-                                    + mat_perm * blend_factor
-                                )
-                                permeability[i, j] = (
-                                    permeability[i, j] * (1 - blend_factor)
-                                    + mat_permb * blend_factor
-                                )
-                                conductivity[i, j] = (
-                                    conductivity[i, j] * (1 - blend_factor)
-                                    + mat_cond * blend_factor
-                                )
-                                k_grid[i, j] = (
-                                    k_grid[i, j] * (1 - blend_factor)
-                                    + mat_k * blend_factor
-                                )
-                                rho_grid[i, j] = (
-                                    rho_grid[i, j] * (1 - blend_factor)
-                                    + mat_rho * blend_factor
-                                )
-                                cp_grid[i, j] = (
-                                    cp_grid[i, j] * (1 - blend_factor)
-                                    + mat_cp * blend_factor
-                                )
-                                dn_dT_grid[i, j] = (
-                                    dn_dT_grid[i, j] * (1 - blend_factor)
-                                    + mat_dn_dT * blend_factor
-                                )
-                                T0_grid[i, j] = (
-                                    T0_grid[i, j] * (1 - blend_factor)
-                                    + mat_T0 * blend_factor
-                                )
+                    min_i, min_j, max_i, max_j = bbox_indices
 
-                    elif hasattr(structure, "radius"):  # Circle
-                        # FAST PATH: Circle
-                        # Get circle parameters
-                        if len(structure.position) == 3:
-                            center_x, center_y, _ = structure.position  # 3D position
-                        else:
-                            center_x, center_y = structure.position  # 2D position
-                        radius = structure.radius
-                        # Create local coordinate arrays for the bounding box region
-                        j_indices = np.arange(min_j, max_j)
-                        i_indices = np.arange(min_i, max_i)
-                        local_x = x_centers[j_indices]
-                        local_y = y_centers[i_indices]
-                        # Create a grid of coordinates
-                        X, Y = np.meshgrid(local_x, local_y)
-                        # Calculate distances from center
-                        distances = np.sqrt((X - center_x) ** 2 + (Y - center_y) ** 2)
-                        # Find cells fully inside circle (all sample points inside)
-                        fully_inside = (
-                            distances + 0.3536 * cell_size <= radius
-                        )  # sqrt(2)/4 ≈ 0.3536 for diagonal
-                        # Find cells potentially on the boundary (need super-sampling)
-                        boundary = (
-                            distances - 0.3536 * cell_size <= radius
-                        ) & ~fully_inside
-                        # Fast update for fully inside cells
-                        local_i, local_j = np.where(fully_inside)
-                        global_i, global_j = local_i + min_i, local_j + min_j
-                        if len(global_i) > 0:
-                            permittivity[global_i, global_j] = mat_perm
-                            permeability[global_i, global_j] = mat_permb
-                            conductivity[global_i, global_j] = mat_cond
-                            k_grid[global_i, global_j] = mat_k
-                            rho_grid[global_i, global_j] = mat_rho
-                            cp_grid[global_i, global_j] = mat_cp
-                            dn_dT_grid[global_i, global_j] = mat_dn_dT
-                            T0_grid[global_i, global_j] = mat_T0
-                        # Super-sample for boundary cells
-                        boundary_i, boundary_j = np.where(boundary)
-                        for idx in range(len(boundary_i)):
-                            i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
-                            # Cell center
-                            center_x_cell = x_centers[j]
-                            center_y_cell = y_centers[i]
-                            # Count samples inside circle
-                            samples_inside = 0
-                            for k in range(num_samples):
-                                x_sample = center_x_cell + dx[k]
-                                y_sample = center_y_cell + dy[k]
-                                if (
-                                    np.hypot(x_sample - center_x, y_sample - center_y)
-                                    <= radius
-                                ):
-                                    samples_inside += 1
-                            if samples_inside > 0:
-                                # Calculate blend factor
-                                blend_factor = samples_inside / num_samples
-                                # Update material properties
-                                permittivity[i, j] = (
-                                    permittivity[i, j] * (1 - blend_factor)
-                                    + mat_perm * blend_factor
-                                )
-                                permeability[i, j] = (
-                                    permeability[i, j] * (1 - blend_factor)
-                                    + mat_permb * blend_factor
-                                )
-                                conductivity[i, j] = (
-                                    conductivity[i, j] * (1 - blend_factor)
-                                    + mat_cond * blend_factor
-                                )
-                                k_grid[i, j] = (
-                                    k_grid[i, j] * (1 - blend_factor)
-                                    + mat_k * blend_factor
-                                )
-                                rho_grid[i, j] = (
-                                    rho_grid[i, j] * (1 - blend_factor)
-                                    + mat_rho * blend_factor
-                                )
-                                cp_grid[i, j] = (
-                                    cp_grid[i, j] * (1 - blend_factor)
-                                    + mat_cp * blend_factor
-                                )
-                                dn_dT_grid[i, j] = (
-                                    dn_dT_grid[i, j] * (1 - blend_factor)
-                                    + mat_dn_dT * blend_factor
-                                )
-                                T0_grid[i, j] = (
-                                    T0_grid[i, j] * (1 - blend_factor)
-                                    + mat_T0 * blend_factor
-                                )
-
-                    elif hasattr(structure, "inner_radius") and hasattr(
-                        structure, "outer_radius"
-                    ):  # Ring
-                        # FAST PATH: Ring
-                        # Get ring parameters
-                        if len(structure.position) == 3:
-                            center_x, center_y, _ = structure.position  # 3D position
-                        else:
-                            center_x, center_y = structure.position  # 2D position
-                        inner_radius = structure.inner_radius
-                        outer_radius = structure.outer_radius
-                        # Create local coordinate arrays for the bounding box region
-                        j_indices = np.arange(min_j, max_j)
-                        i_indices = np.arange(min_i, max_i)
-                        local_x = x_centers[j_indices]
-                        local_y = y_centers[i_indices]
-                        # Create a grid of coordinates
-                        X, Y = np.meshgrid(local_x, local_y)
-                        # Calculate distances from center
-                        distances = np.sqrt((X - center_x) ** 2 + (Y - center_y) ** 2)
-                        # Find cells fully inside ring (all sample points inside)
-                        fully_inside = (
-                            distances - 0.3536 * cell_size >= inner_radius
-                        ) & (distances + 0.3536 * cell_size <= outer_radius)
-                        # Find cells potentially on the boundary (need super-sampling)
-                        inner_boundary = (
-                            distances - 0.3536 * cell_size <= inner_radius
-                        ) & (distances + 0.3536 * cell_size >= inner_radius)
-                        outer_boundary = (
-                            distances - 0.3536 * cell_size <= outer_radius
-                        ) & (distances + 0.3536 * cell_size >= outer_radius)
-                        boundary = inner_boundary | outer_boundary
-                        # Fast update for fully inside cells
-                        local_i, local_j = np.where(fully_inside)
-                        global_i, global_j = local_i + min_i, local_j + min_j
-                        if len(global_i) > 0:
-                            permittivity[global_i, global_j] = mat_perm
-                            permeability[global_i, global_j] = mat_permb
-                            conductivity[global_i, global_j] = mat_cond
-                            k_grid[global_i, global_j] = mat_k
-                            rho_grid[global_i, global_j] = mat_rho
-                            cp_grid[global_i, global_j] = mat_cp
-                            dn_dT_grid[global_i, global_j] = mat_dn_dT
-                            T0_grid[global_i, global_j] = mat_T0
-                        # Super-sample for boundary cells
-                        boundary_i, boundary_j = np.where(boundary)
-                        for idx in range(len(boundary_i)):
-                            i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
-                            # Cell center
-                            center_x_cell = x_centers[j]
-                            center_y_cell = y_centers[i]
-                            # Count samples inside ring
-                            samples_inside = 0
-                            for k in range(num_samples):
-                                x_sample = center_x_cell + dx[k]
-                                y_sample = center_y_cell + dy[k]
-                                distance = np.hypot(
-                                    x_sample - center_x, y_sample - center_y
-                                )
-                                if inner_radius <= distance <= outer_radius:
-                                    samples_inside += 1
-                            if samples_inside > 0:
-                                # Calculate blend factor
-                                blend_factor = samples_inside / num_samples
-                                # Update material properties
-                                permittivity[i, j] = (
-                                    permittivity[i, j] * (1 - blend_factor)
-                                    + mat_perm * blend_factor
-                                )
-                                permeability[i, j] = (
-                                    permeability[i, j] * (1 - blend_factor)
-                                    + mat_permb * blend_factor
-                                )
-                                conductivity[i, j] = (
-                                    conductivity[i, j] * (1 - blend_factor)
-                                    + mat_cond * blend_factor
-                                )
-                                k_grid[i, j] = (
-                                    k_grid[i, j] * (1 - blend_factor)
-                                    + mat_k * blend_factor
-                                )
-                                rho_grid[i, j] = (
-                                    rho_grid[i, j] * (1 - blend_factor)
-                                    + mat_rho * blend_factor
-                                )
-                                cp_grid[i, j] = (
-                                    cp_grid[i, j] * (1 - blend_factor)
-                                    + mat_cp * blend_factor
-                                )
-                                dn_dT_grid[i, j] = (
-                                    dn_dT_grid[i, j] * (1 - blend_factor)
-                                    + mat_dn_dT * blend_factor
-                                )
-                                T0_grid[i, j] = (
-                                    T0_grid[i, j] * (1 - blend_factor)
-                                    + mat_T0 * blend_factor
-                                )
+                    # Dispatch to shape-specific fast path
+                    if isinstance(structure, Rectangle) and self._is_axis_aligned(structure):
+                        self._rasterize_rectangle(
+                            structure, grids, props, is_custom_material,
+                            grid_height, grid_width, cell_size,
+                            x_centers, y_centers, sample_dx, sample_dy, num_samples,
+                        )
+                    elif hasattr(structure, "radius") and not hasattr(structure, "inner_radius"):
+                        self._rasterize_circle(
+                            structure, grids, props,
+                            min_i, min_j, max_i, max_j, cell_size,
+                            x_centers, y_centers, sample_dx, sample_dy, num_samples,
+                        )
+                    elif hasattr(structure, "inner_radius") and hasattr(structure, "outer_radius"):
+                        self._rasterize_ring(
+                            structure, grids, props,
+                            min_i, min_j, max_i, max_j, cell_size,
+                            x_centers, y_centers, sample_dx, sample_dy, num_samples,
+                        )
                     else:
-                        # GENERAL PATH: For polygons and complex shapes
-                        # Select the appropriate containment function
-                        if hasattr(structure, "point_in_polygon"):
-                            contains_func = lambda x, y: structure.point_in_polygon(
-                                x, y
-                            )
-                        else:
-                            # Fallback method using material values
-                            contains_func = lambda x, y: any(
-                                val != def_val
-                                for val, def_val in zip(
-                                    self.design.get_material_value(x, y, z=0),
-                                    [1.0, 1.0, 0.0],
-                                )
-                            )
-                        # First, try to identify fully inside cells if possible to minimize super-sampling
-                        if (
-                            hasattr(structure, "vertices")
-                            and len(getattr(structure, "vertices", [])) > 0
-                        ):
-                            # Sample a center grid of points in each cell to detect likely inside areas
-                            # This is a heuristic to identify cells likely fully inside
-                            inside_mask = np.zeros(
-                                (max_i - min_i, max_j - min_j), dtype=bool
-                            )
-                            boundary_mask = np.zeros(
-                                (max_i - min_i, max_j - min_j), dtype=bool
-                            )
-                            # Sample 5 points per cell (center and corners) to identify inside/boundary cells
-                            sample_points = [
-                                (0, 0),
-                                (-0.4, -0.4),
-                                (-0.4, 0.4),
-                                (0.4, -0.4),
-                                (0.4, 0.4),
-                            ]
-                            for i_rel in range(max_i - min_i):
-                                for j_rel in range(max_j - min_j):
-                                    i, j = i_rel + min_i, j_rel + min_j
-                                    # Get cell center
-                                    center_x = x_centers[j]
-                                    center_y = y_centers[i]
-                                    # Track points inside/outside
-                                    points_inside = 0
-                                    center_inside = False
-                                    # Check center point first
-                                    if contains_func(center_x, center_y):
-                                        center_inside = True
-                                        points_inside += 1
-                                    # Check corner points
-                                    for dx_pt, dy_pt in sample_points[1:]:
-                                        x_pt = center_x + dx_pt * cell_size
-                                        y_pt = center_y + dy_pt * cell_size
-                                        if contains_func(x_pt, y_pt):
-                                            points_inside += 1
-                                    # If center is inside and all sample points are inside
-                                    if center_inside and points_inside == len(
-                                        sample_points
-                                    ):
-                                        inside_mask[i_rel, j_rel] = True
-                                    # If some points are inside and some are outside
-                                    elif points_inside > 0:
-                                        boundary_mask[i_rel, j_rel] = True
-
-                            # Fast update for fully inside cells
-                            inside_i, inside_j = np.where(inside_mask)
-                            for idx in range(len(inside_i)):
-                                i, j = inside_i[idx] + min_i, inside_j[idx] + min_j
-                                permittivity[i, j] = mat_perm
-                                permeability[i, j] = mat_permb
-                                conductivity[i, j] = mat_cond
-                                k_grid[i, j] = mat_k
-                                rho_grid[i, j] = mat_rho
-                                cp_grid[i, j] = mat_cp
-                                dn_dT_grid[i, j] = mat_dn_dT
-                                T0_grid[i, j] = mat_T0
-
-                            # Super-sample for boundary cells
-                            boundary_i, boundary_j = np.where(boundary_mask)
-                            for idx in range(len(boundary_i)):
-                                i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
-                                # Cell center
-                                center_x = x_centers[j]
-                                center_y = y_centers[i]
-                                # Count samples inside shape
-                                samples_inside = 0
-                                for k in range(num_samples):
-                                    x_sample = center_x + dx[k]
-                                    y_sample = center_y + dy[k]
-                                    if contains_func(x_sample, y_sample):
-                                        samples_inside += 1
-                                if samples_inside > 0:
-                                    # Calculate blend factor
-                                    blend_factor = samples_inside / num_samples
-                                    # Update material properties
-                                    permittivity[i, j] = (
-                                        permittivity[i, j] * (1 - blend_factor)
-                                        + mat_perm * blend_factor
-                                    )
-                                    permeability[i, j] = (
-                                        permeability[i, j] * (1 - blend_factor)
-                                        + mat_permb * blend_factor
-                                    )
-                                    conductivity[i, j] = (
-                                        conductivity[i, j] * (1 - blend_factor)
-                                        + mat_cond * blend_factor
-                                    )
-                                    k_grid[i, j] = (
-                                        k_grid[i, j] * (1 - blend_factor)
-                                        + mat_k * blend_factor
-                                    )
-                                    rho_grid[i, j] = (
-                                        rho_grid[i, j] * (1 - blend_factor)
-                                        + mat_rho * blend_factor
-                                    )
-                                    cp_grid[i, j] = (
-                                        cp_grid[i, j] * (1 - blend_factor)
-                                        + mat_cp * blend_factor
-                                    )
-                                    dn_dT_grid[i, j] = (
-                                        dn_dT_grid[i, j] * (1 - blend_factor)
-                                        + mat_dn_dT * blend_factor
-                                    )
-                                    T0_grid[i, j] = (
-                                        T0_grid[i, j] * (1 - blend_factor)
-                                        + mat_T0 * blend_factor
-                                    )
-
-                            # Check remaining cells not marked as inside or boundary
-                            remaining_i, remaining_j = np.where(
-                                ~inside_mask & ~boundary_mask
-                            )
-                            for idx in range(len(remaining_i)):
-                                i, j = (
-                                    remaining_i[idx] + min_i,
-                                    remaining_j[idx] + min_j,
-                                )
-                                # Cell center
-                                center_x = x_centers[j]
-                                center_y = y_centers[i]
-                                # Super-sample
-                                samples_inside = 0
-                                for k in range(num_samples):
-                                    x_sample = center_x + dx[k]
-                                    y_sample = center_y + dy[k]
-                                    if contains_func(x_sample, y_sample):
-                                        samples_inside += 1
-                                if samples_inside > 0:
-                                    # Calculate blend factor
-                                    blend_factor = samples_inside / num_samples
-                                    # Update material properties
-                                    permittivity[i, j] = (
-                                        permittivity[i, j] * (1 - blend_factor)
-                                        + mat_perm * blend_factor
-                                    )
-                                    permeability[i, j] = (
-                                        permeability[i, j] * (1 - blend_factor)
-                                        + mat_permb * blend_factor
-                                    )
-                                    conductivity[i, j] = (
-                                        conductivity[i, j] * (1 - blend_factor)
-                                        + mat_cond * blend_factor
-                                    )
-                                    k_grid[i, j] = (
-                                        k_grid[i, j] * (1 - blend_factor)
-                                        + mat_k * blend_factor
-                                    )
-                                    rho_grid[i, j] = (
-                                        rho_grid[i, j] * (1 - blend_factor)
-                                        + mat_rho * blend_factor
-                                    )
-                                    cp_grid[i, j] = (
-                                        cp_grid[i, j] * (1 - blend_factor)
-                                        + mat_cp * blend_factor
-                                    )
-                                    dn_dT_grid[i, j] = (
-                                        dn_dT_grid[i, j] * (1 - blend_factor)
-                                        + mat_dn_dT * blend_factor
-                                    )
-                                    T0_grid[i, j] = (
-                                        T0_grid[i, j] * (1 - blend_factor)
-                                        + mat_T0 * blend_factor
-                                    )
-                        else:
-                            # Direct super-sampling for all cells in bounding box
-                            for i in range(min_i, max_i):
-                                for j in range(min_j, max_j):
-                                    # Cell center
-                                    center_x = x_centers[j]
-                                    center_y = y_centers[i]
-                                    # Super-sample
-                                    samples_inside = 0
-                                    for k in range(num_samples):
-                                        x_sample = center_x + dx[k]
-                                        y_sample = center_y + dy[k]
-                                        if contains_func(x_sample, y_sample):
-                                            samples_inside += 1
-
-                                    if samples_inside > 0:
-                                        # Calculate blend factor
-                                        blend_factor = samples_inside / num_samples
-                                        # Update material properties
-                                        permittivity[i, j] = (
-                                            permittivity[i, j] * (1 - blend_factor)
-                                            + mat_perm * blend_factor
-                                        )
-                                        permeability[i, j] = (
-                                            permeability[i, j] * (1 - blend_factor)
-                                            + mat_permb * blend_factor
-                                        )
-                                        conductivity[i, j] = (
-                                            conductivity[i, j] * (1 - blend_factor)
-                                            + mat_cond * blend_factor
-                                        )
-                                        k_grid[i, j] = (
-                                            k_grid[i, j] * (1 - blend_factor)
-                                            + mat_k * blend_factor
-                                        )
-                                        rho_grid[i, j] = (
-                                            rho_grid[i, j] * (1 - blend_factor)
-                                            + mat_rho * blend_factor
-                                        )
-                                        cp_grid[i, j] = (
-                                            cp_grid[i, j] * (1 - blend_factor)
-                                            + mat_cp * blend_factor
-                                        )
-                                        dn_dT_grid[i, j] = (
-                                            dn_dT_grid[i, j] * (1 - blend_factor)
-                                            + mat_dn_dT * blend_factor
-                                        )
-                                        T0_grid[i, j] = (
-                                            T0_grid[i, j] * (1 - blend_factor)
-                                            + mat_T0 * blend_factor
-                                        )
+                        self._rasterize_polygon(
+                            structure, grids, props, is_custom_material,
+                            min_i, min_j, max_i, max_j, cell_size,
+                            x_centers, y_centers, sample_dx, sample_dy, num_samples,
+                        )
 
                 except (AttributeError, TypeError) as e:
                     print(
@@ -912,15 +262,234 @@ class RegularGrid(BaseMeshGrid):
 
                 progress.update(task, advance=1)
 
-        # Assign final arrays to class instance
-        self.permittivity = permittivity
-        self.permeability = permeability
-        self.conductivity = conductivity
-        self.k = k_grid
-        self.rho = rho_grid
-        self.cp = cp_grid
-        self.dn_dT = dn_dT_grid
-        self.T0 = T0_grid
+        grids.assign_to(self)
+
+    @staticmethod
+    def _is_axis_aligned(structure):
+        """Check if a Rectangle is axis-aligned (not rotated)."""
+        return (
+            structure.vertices[0][0] == structure.position[0]
+            and structure.vertices[0][1] == structure.position[1]
+        )
+
+    def _get_bbox_indices(self, structure, grid_height, grid_width, cell_size):
+        """Get bounding box grid indices for a structure. Returns None if outside grid."""
+        bbox = structure.get_bounding_box()
+        if bbox is None:
+            return None
+
+        if len(bbox) == 6:
+            min_x, min_y, _, max_x, max_y, _ = bbox
+        elif len(bbox) == 4:
+            min_x, min_y, max_x, max_y = bbox
+        else:
+            raise ValueError(f"Invalid bounding box format: {bbox}")
+
+        min_i = max(0, int(min_y / cell_size) - 1)
+        min_j = max(0, int(min_x / cell_size) - 1)
+        max_i = min(grid_height, int(np.ceil(max_y / cell_size)) + 1)
+        max_j = min(grid_width, int(np.ceil(max_x / cell_size)) + 1)
+
+        if min_i >= grid_height or min_j >= grid_width or max_i <= 0 or max_j <= 0:
+            return None
+        return min_i, min_j, max_i, max_j
+
+    def _supersample_cell(self, cx, cy, sample_dx, sample_dy, num_samples, contains_fn):
+        """Count how many of the 3x3 sample points are inside the shape."""
+        count = 0
+        for k in range(num_samples):
+            if contains_fn(cx + sample_dx[k], cy + sample_dy[k]):
+                count += 1
+        return count
+
+    def _rasterize_rectangle(self, structure, grids, props, is_custom_material,
+                             grid_height, grid_width, cell_size,
+                             x_centers, y_centers, sample_dx, sample_dy, num_samples):
+        """Fast path for axis-aligned rectangles."""
+        rect_min_j = max(0, int(structure.position[0] / cell_size))
+        rect_min_i = max(0, int(structure.position[1] / cell_size))
+        rect_max_j = min(grid_width, int(np.ceil((structure.position[0] + structure.width) / cell_size)))
+        rect_max_i = min(grid_height, int(np.ceil((structure.position[1] + structure.height) / cell_size)))
+
+        # Interior cells (fully covered)
+        inner_min_j = max(0, int((structure.position[0] + 0.25 * cell_size) / cell_size))
+        inner_min_i = max(0, int((structure.position[1] + 0.25 * cell_size) / cell_size))
+        inner_max_j = min(grid_width, int(np.floor((structure.position[0] + structure.width - 0.25 * cell_size) / cell_size)))
+        inner_max_i = min(grid_height, int(np.floor((structure.position[1] + structure.height - 0.25 * cell_size) / cell_size)))
+
+        if inner_max_i > inner_min_i and inner_max_j > inner_min_j:
+            if is_custom_material:
+                for i in range(inner_min_i, inner_max_i):
+                    for j in range(inner_min_j, inner_max_j):
+                        p = self._get_all_material_props(structure.material, x_centers[j], y_centers[i])
+                        grids.set_at((i, j), p)
+            else:
+                s = np.s_[inner_min_i:inner_max_i, inner_min_j:inner_max_j]
+                grids.set_region(s, props)
+
+        # Boundary cells (need super-sampling)
+        boundary_mask = np.zeros((rect_max_i - rect_min_i, rect_max_j - rect_min_j), dtype=bool)
+        if rect_min_i < inner_min_i:
+            boundary_mask[: inner_min_i - rect_min_i, :] = True
+        if inner_max_i < rect_max_i:
+            boundary_mask[inner_max_i - rect_min_i :, :] = True
+        if rect_min_j < inner_min_j:
+            boundary_mask[:, : inner_min_j - rect_min_j] = True
+        if inner_max_j < rect_max_j:
+            boundary_mask[:, inner_max_j - rect_min_j :] = True
+
+        sx, sy = structure.position[0], structure.position[1]
+        sw, sh = structure.width, structure.height
+
+        boundary_indices = np.where(boundary_mask)
+        for idx in range(len(boundary_indices[0])):
+            i = boundary_indices[0][idx] + rect_min_i
+            j = boundary_indices[1][idx] + rect_min_j
+            cx, cy = x_centers[j], y_centers[i]
+
+            samples_inside = self._supersample_cell(
+                cx, cy, sample_dx, sample_dy, num_samples,
+                lambda x, y: sx <= x < sx + sw and sy <= y < sy + sh,
+            )
+            if samples_inside > 0:
+                blend_factor = samples_inside / num_samples
+                if is_custom_material:
+                    props = self._get_all_material_props(structure.material, cx, cy)
+                grids.blend_at((i, j), props, blend_factor)
+
+    def _rasterize_circle(self, structure, grids, props,
+                          min_i, min_j, max_i, max_j, cell_size,
+                          x_centers, y_centers, sample_dx, sample_dy, num_samples):
+        """Fast path for circles using distance-based classification."""
+        center_x, center_y = structure.position[0], structure.position[1]
+        radius = structure.radius
+
+        j_indices = np.arange(min_j, max_j)
+        i_indices = np.arange(min_i, max_i)
+        X, Y = np.meshgrid(x_centers[j_indices], y_centers[i_indices])
+        distances = np.sqrt((X - center_x) ** 2 + (Y - center_y) ** 2)
+
+        diag = 0.3536 * cell_size  # sqrt(2)/4
+        fully_inside = distances + diag <= radius
+        boundary = (distances - diag <= radius) & ~fully_inside
+
+        # Bulk set fully inside cells
+        local_i, local_j = np.where(fully_inside)
+        if len(local_i) > 0:
+            grids.set_region((local_i + min_i, local_j + min_j), props)
+
+        # Super-sample boundary cells
+        boundary_i, boundary_j = np.where(boundary)
+        for idx in range(len(boundary_i)):
+            i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
+            cx, cy = x_centers[j], y_centers[i]
+            samples_inside = self._supersample_cell(
+                cx, cy, sample_dx, sample_dy, num_samples,
+                lambda x, y: np.hypot(x - center_x, y - center_y) <= radius,
+            )
+            if samples_inside > 0:
+                grids.blend_at((i, j), props, samples_inside / num_samples)
+
+    def _rasterize_ring(self, structure, grids, props,
+                        min_i, min_j, max_i, max_j, cell_size,
+                        x_centers, y_centers, sample_dx, sample_dy, num_samples):
+        """Fast path for rings using distance-based classification."""
+        center_x, center_y = structure.position[0], structure.position[1]
+        inner_radius = structure.inner_radius
+        outer_radius = structure.outer_radius
+
+        j_indices = np.arange(min_j, max_j)
+        i_indices = np.arange(min_i, max_i)
+        X, Y = np.meshgrid(x_centers[j_indices], y_centers[i_indices])
+        distances = np.sqrt((X - center_x) ** 2 + (Y - center_y) ** 2)
+
+        diag = 0.3536 * cell_size
+        fully_inside = (distances - diag >= inner_radius) & (distances + diag <= outer_radius)
+        inner_boundary = (distances - diag <= inner_radius) & (distances + diag >= inner_radius)
+        outer_boundary = (distances - diag <= outer_radius) & (distances + diag >= outer_radius)
+        boundary = inner_boundary | outer_boundary
+
+        # Bulk set fully inside cells
+        local_i, local_j = np.where(fully_inside)
+        if len(local_i) > 0:
+            grids.set_region((local_i + min_i, local_j + min_j), props)
+
+        # Super-sample boundary cells
+        boundary_i, boundary_j = np.where(boundary)
+        for idx in range(len(boundary_i)):
+            i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
+            cx, cy = x_centers[j], y_centers[i]
+            samples_inside = self._supersample_cell(
+                cx, cy, sample_dx, sample_dy, num_samples,
+                lambda x, y: inner_radius <= np.hypot(x - center_x, y - center_y) <= outer_radius,
+            )
+            if samples_inside > 0:
+                grids.blend_at((i, j), props, samples_inside / num_samples)
+
+    def _rasterize_polygon(self, structure, grids, props, is_custom_material,
+                           min_i, min_j, max_i, max_j, cell_size,
+                           x_centers, y_centers, sample_dx, sample_dy, num_samples):
+        """General path for polygons and complex shapes."""
+        if hasattr(structure, "point_in_polygon"):
+            contains_func = lambda x, y: structure.point_in_polygon(x, y)
+        else:
+            contains_func = lambda x, y: any(
+                val != def_val
+                for val, def_val in zip(
+                    self.design.get_material_value(x, y, z=0), [1.0, 1.0, 0.0]
+                )
+            )
+
+        if hasattr(structure, "vertices") and len(getattr(structure, "vertices", [])) > 0:
+            # Classify cells as fully-inside, boundary, or remaining
+            inside_mask = np.zeros((max_i - min_i, max_j - min_j), dtype=bool)
+            boundary_mask = np.zeros((max_i - min_i, max_j - min_j), dtype=bool)
+            sample_points = [(0, 0), (-0.4, -0.4), (-0.4, 0.4), (0.4, -0.4), (0.4, 0.4)]
+
+            for i_rel in range(max_i - min_i):
+                for j_rel in range(max_j - min_j):
+                    cx = x_centers[j_rel + min_j]
+                    cy = y_centers[i_rel + min_i]
+                    points_inside = 0
+                    center_inside = False
+                    if contains_func(cx, cy):
+                        center_inside = True
+                        points_inside += 1
+                    for dx_pt, dy_pt in sample_points[1:]:
+                        if contains_func(cx + dx_pt * cell_size, cy + dy_pt * cell_size):
+                            points_inside += 1
+                    if center_inside and points_inside == len(sample_points):
+                        inside_mask[i_rel, j_rel] = True
+                    elif points_inside > 0:
+                        boundary_mask[i_rel, j_rel] = True
+
+            # Set fully inside cells
+            inside_i, inside_j = np.where(inside_mask)
+            for idx in range(len(inside_i)):
+                i, j = inside_i[idx] + min_i, inside_j[idx] + min_j
+                grids.set_at((i, j), props)
+
+            # Blend boundary + remaining cells via super-sampling
+            for mask in (boundary_mask, ~inside_mask & ~boundary_mask):
+                bi, bj = np.where(mask)
+                for idx in range(len(bi)):
+                    i, j = bi[idx] + min_i, bj[idx] + min_j
+                    cx, cy = x_centers[j], y_centers[i]
+                    samples_inside = self._supersample_cell(
+                        cx, cy, sample_dx, sample_dy, num_samples, contains_func,
+                    )
+                    if samples_inside > 0:
+                        grids.blend_at((i, j), props, samples_inside / num_samples)
+        else:
+            # Direct super-sampling for all cells in bounding box
+            for i in range(min_i, max_i):
+                for j in range(min_j, max_j):
+                    cx, cy = x_centers[j], y_centers[i]
+                    samples_inside = self._supersample_cell(
+                        cx, cy, sample_dx, sample_dy, num_samples, contains_func,
+                    )
+                    if samples_inside > 0:
+                        grids.blend_at((i, j), props, samples_inside / num_samples)
 
     def show(self, field: str = "permittivity"):
         """Display the rasterized grid with properly scaled SI units."""
@@ -931,16 +500,7 @@ class RegularGrid(BaseMeshGrid):
         elif field == "conductivity":
             grid = self.conductivity
         if grid is not None:
-            # Determine appropriate SI unit and scale
-            max_dim = max(self.design.width, self.design.height)
-            if max_dim >= 1e-3:
-                scale, unit = 1e3, "mm"
-            elif max_dim >= 1e-6:
-                scale, unit = 1e6, "µm"
-            elif max_dim >= 1e-9:
-                scale, unit = 1e9, "nm"
-            else:
-                scale, unit = 1, "m"
+            scale, unit = get_si_scale_and_label(max(self.design.width, self.design.height))
             # Calculate figure size based on grid dimensions
             grid_height, grid_width = grid.shape
             aspect_ratio = grid_width / grid_height
@@ -995,25 +555,14 @@ class RegularGrid3D(BaseMeshGrid):
         self.resolution_xy = resolution_xy
         self.resolution_z = resolution_z
 
-        # Calculate 3D grid dimensions
+        # Rasterize the design (assigns all 8 material grids via MaterialGrids)
+        self.__rasterize_3d__()
+
+        # Calculate grid dimensions for status message
         width, height, depth = self.design.width, self.design.height, self.design.depth
         grid_width = int(width / self.resolution_xy)
         grid_height = int(height / self.resolution_xy)
         grid_depth = int(depth / self.resolution_z) if depth > 0 else 1
-
-        # Initialize 3D material grids
-        self.permittivity = np.zeros((grid_depth, grid_height, grid_width))
-        self.permeability = np.zeros((grid_depth, grid_height, grid_width))
-        self.conductivity = np.zeros((grid_depth, grid_height, grid_width))
-        # Initialize 3D thermal property grids
-        self.k = np.zeros((grid_depth, grid_height, grid_width))
-        self.rho = np.zeros((grid_depth, grid_height, grid_width))
-        self.cp = np.zeros((grid_depth, grid_height, grid_width))
-        self.dn_dT = np.zeros((grid_depth, grid_height, grid_width))
-        self.T0 = np.zeros((grid_depth, grid_height, grid_width))
-
-        # Rasterize the design
-        self.__rasterize_3d__()
 
         # Set grid properties
         self.shape = self.permittivity.shape
@@ -1038,100 +587,63 @@ class RegularGrid3D(BaseMeshGrid):
         cell_size_xy = self.resolution_xy
         cell_size_z = self.resolution_z
 
-        # Create grid of cell centers for xy plane
-        x_centers = np.linspace(
-            0.5 * cell_size_xy, width - 0.5 * cell_size_xy, grid_width
-        )
-        y_centers = np.linspace(
-            0.5 * cell_size_xy, height - 0.5 * cell_size_xy, grid_height
-        )
+        # Create grid of cell centers
+        x_centers = np.linspace(0.5 * cell_size_xy, width - 0.5 * cell_size_xy, grid_width)
+        y_centers = np.linspace(0.5 * cell_size_xy, height - 0.5 * cell_size_xy, grid_height)
         z_centers = (
             np.linspace(0.5 * cell_size_z, depth - 0.5 * cell_size_z, grid_depth)
-            if depth > 0
-            else [0]
+            if depth > 0 else [0]
         )
 
         # Precompute offsets for 3D super-sampling (3x3x3 = 27 samples)
         offsets_xy = np.array([-0.25, 0, 0.25]) * cell_size_xy
         offsets_z = np.array([-0.25, 0, 0.25]) * cell_size_z if depth > 0 else [0]
-        dx, dy, dz = np.meshgrid(offsets_xy, offsets_xy, offsets_z)
-        dx, dy, dz = dx.flatten(), dy.flatten(), dz.flatten()
-        num_samples = len(dx)
+        sdx, sdy, sdz = np.meshgrid(offsets_xy, offsets_xy, offsets_z)
+        sdx, sdy, sdz = sdx.flatten(), sdy.flatten(), sdz.flatten()
+        num_samples = len(sdx)
 
         # Estimate dt for PML calculations
-        c = 3e8  # Speed of light
+        c = 3e8
         dt_estimate = 0.5 * self.resolution / (c * np.sqrt(2))
 
-        # Initialize material grids with vacuum properties
-        permittivity = np.ones((grid_depth, grid_height, grid_width))
-        permeability = np.ones((grid_depth, grid_height, grid_width))
-        conductivity = np.zeros((grid_depth, grid_height, grid_width))
-        k_grid = np.zeros((grid_depth, grid_height, grid_width))
-        rho_grid = np.zeros((grid_depth, grid_height, grid_width))
-        cp_grid = np.zeros((grid_depth, grid_height, grid_width))
-        dn_dT_grid = np.zeros((grid_depth, grid_height, grid_width))
-        T0_grid = np.full((grid_depth, grid_height, grid_width), 300.0)
+        grids = MaterialGrids((grid_depth, grid_height, grid_width))
 
-        # Start with the background (first structure)
+        # Fill background
         if len(self.design.structures) > 0:
             background = self.design.structures[0]
             if hasattr(background, "material") and background.material is not None:
-                permittivity.fill(background.material.permittivity)
-                permeability.fill(background.material.permeability)
-                conductivity.fill(background.material.conductivity)
-                (
-                    bg_k,
-                    bg_rho,
-                    bg_cp,
-                    bg_dn_dT,
-                    bg_T0,
-                ) = self._get_thermal_properties_safe(background.material)
-                k_grid.fill(bg_k)
-                rho_grid.fill(bg_rho)
-                cp_grid.fill(bg_cp)
-                dn_dT_grid.fill(bg_dn_dT)
-                T0_grid.fill(bg_T0)
+                grids.fill_all(self._get_all_material_props(background.material))
 
         # Process structures layer by layer
         with create_rich_progress() as progress:
             task = progress.add_task(
                 "Rasterizing 3D structures...", total=len(self.design.structures)
             )
-            progress.update(task, advance=1)  # Skip background
+            progress.update(task, advance=1)
 
             for idx in range(1, len(self.design.structures)):
                 structure = self.design.structures[idx]
 
-                # Skip PML visualization structures
                 if hasattr(structure, "is_pml") and structure.is_pml:
                     progress.update(task, advance=1)
                     continue
-                # Skip structures without material
                 if not hasattr(structure, "material") or structure.material is None:
                     progress.update(task, advance=1)
                     continue
 
-                # Cache material properties
-                mat_perm, mat_permb, mat_cond = self._get_material_properties_safe(
-                    structure.material
-                )
-                mat_k, mat_rho, mat_cp, mat_dn_dT, mat_T0 = (
-                    self._get_thermal_properties_safe(structure.material)
-                )
+                props = self._get_all_material_props(structure.material)
 
                 try:
-                    # Get 3D bounding box
                     bbox = structure.get_bounding_box()
                     if bbox is None:
                         raise AttributeError("Bounding box is None")
 
-                    if len(bbox) == 6:  # 3D bounding box
+                    if len(bbox) == 6:
                         min_x, min_y, min_z, max_x, max_y, max_z = bbox
-                    else:  # 2D bounding box - extend to 3D
+                    else:
                         min_x, min_y, max_x, max_y = bbox
                         min_z, max_z = 0, 0
 
-                    # Convert to grid indices
                     min_i = max(0, int(min_y / cell_size_xy) - 1)
                     min_j = max(0, int(min_x / cell_size_xy) - 1)
                     min_k = max(0, int(min_z / cell_size_z) - 1) if depth > 0 else 0
@@ -1139,96 +651,44 @@ class RegularGrid3D(BaseMeshGrid):
                     max_j = min(grid_width, int(np.ceil(max_x / cell_size_xy)) + 1)
                     max_k = (
                         min(grid_depth, int(np.ceil(max_z / cell_size_z)) + 1)
-                        if depth > 0
-                        else 1
+                        if depth > 0 else 1
                     )
 
-                    # Skip if bounding box is outside grid
-                    if (
-                        min_i >= grid_height
-                        or min_j >= grid_width
-                        or min_k >= grid_depth
-                        or max_i <= 0
-                        or max_j <= 0
-                        or max_k <= 0
-                    ):
+                    if (min_i >= grid_height or min_j >= grid_width or min_k >= grid_depth
+                            or max_i <= 0 or max_j <= 0 or max_k <= 0):
                         progress.update(task, advance=1)
                         continue
 
-                    # Process each z-layer
+                    # Build 3D containment function
+                    if hasattr(structure, "point_in_polygon"):
+                        contains_fn = lambda x, y, z: structure.point_in_polygon(x, y, z)
+                    else:
+                        contains_fn = lambda x, y, z: any(
+                            val != def_val
+                            for val, def_val in zip(
+                                self.design.get_material_value(x, y, z), [1.0, 1.0, 0.0]
+                            )
+                        )
+
                     for k in range(min_k, max_k):
                         z_center = z_centers[k]
-
-                        # Process xy grid for this z-layer
                         for i in range(min_i, max_i):
                             for j in range(min_j, max_j):
                                 x_center = x_centers[j]
                                 y_center = y_centers[i]
 
-                                # Super-sample this cell
                                 samples_inside = 0
-                                for sample_idx in range(num_samples):
-                                    x_sample = x_center + dx[sample_idx]
-                                    y_sample = y_center + dy[sample_idx]
-                                    z_sample = z_center + dz[sample_idx]
-
-                                    # Check if sample point is inside structure
-                                    if hasattr(structure, "point_in_polygon"):
-                                        # Use 3D-aware point-in-polygon
-                                        if structure.point_in_polygon(
-                                            x_sample, y_sample, z_sample
-                                        ):
-                                            samples_inside += 1
-                                    else:
-                                        # Fallback: use design's material value method
-                                        material_vals = self.design.get_material_value(
-                                            x_sample, y_sample, z_sample
-                                        )
-                                        # Check if material is different from background
-                                        if any(
-                                            val != def_val
-                                            for val, def_val in zip(
-                                                material_vals, [1.0, 1.0, 0.0]
-                                            )
-                                        ):
-                                            samples_inside += 1
+                                for si in range(num_samples):
+                                    if contains_fn(
+                                        x_center + sdx[si],
+                                        y_center + sdy[si],
+                                        z_center + sdz[si],
+                                    ):
+                                        samples_inside += 1
 
                                 if samples_inside > 0:
-                                    # Calculate blend factor
-                                    blend_factor = samples_inside / num_samples
-
-                                    # Update material properties with blending
-                                    permittivity[k, i, j] = (
-                                        permittivity[k, i, j] * (1 - blend_factor)
-                                        + mat_perm * blend_factor
-                                    )
-                                    permeability[k, i, j] = (
-                                        permeability[k, i, j] * (1 - blend_factor)
-                                        + mat_permb * blend_factor
-                                    )
-                                    conductivity[k, i, j] = (
-                                        conductivity[k, i, j] * (1 - blend_factor)
-                                        + mat_cond * blend_factor
-                                    )
-                                    k_grid[k, i, j] = (
-                                        k_grid[k, i, j] * (1 - blend_factor)
-                                        + mat_k * blend_factor
-                                    )
-                                    rho_grid[k, i, j] = (
-                                        rho_grid[k, i, j] * (1 - blend_factor)
-                                        + mat_rho * blend_factor
-                                    )
-                                    cp_grid[k, i, j] = (
-                                        cp_grid[k, i, j] * (1 - blend_factor)
-                                        + mat_cp * blend_factor
-                                    )
-                                    dn_dT_grid[k, i, j] = (
-                                        dn_dT_grid[k, i, j] * (1 - blend_factor)
-                                        + mat_dn_dT * blend_factor
-                                    )
-                                    T0_grid[k, i, j] = (
-                                        T0_grid[k, i, j] * (1 - blend_factor)
-                                        + mat_T0 * blend_factor
+                                    grids.blend_at(
+                                        (k, i, j), props, samples_inside / num_samples
                                     )
 
                 except (AttributeError, TypeError) as e:
@@ -1241,24 +701,11 @@ class RegularGrid3D(BaseMeshGrid):
 
         # Process 3D PML boundaries
         self._process_3d_pml(
-            permittivity,
-            permeability,
-            conductivity,
-            x_centers,
-            y_centers,
-            z_centers,
-            dt_estimate,
+            grids.permittivity, grids.permeability, grids.conductivity,
+            x_centers, y_centers, z_centers, dt_estimate,
         )
 
-        # Assign final arrays
-        self.permittivity = permittivity
-        self.permeability = permeability
-        self.conductivity = conductivity
-        self.k = k_grid
-        self.rho = rho_grid
-        self.cp = cp_grid
-        self.dn_dT = dn_dT_grid
-        self.T0 = T0_grid
+        grids.assign_to(self)
 
     def _process_3d_pml(
         self,
@@ -1366,15 +813,7 @@ class RegularGrid3D(BaseMeshGrid):
             )
 
         # Set labels and title
-        max_dim = max(self.design.width, self.design.height, self.design.depth)
-        if max_dim >= 1e-3:
-            scale, unit = 1e3, "mm"
-        elif max_dim >= 1e-6:
-            scale, unit = 1e6, "µm"
-        elif max_dim >= 1e-9:
-            scale, unit = 1e9, "nm"
-        else:
-            scale, unit = 1, "m"
+        scale, unit = get_si_scale_and_label(max(self.design.width, self.design.height, self.design.depth))
 
         ax.set_xlabel(f"X ({unit})")
         ax.set_ylabel(f"Y ({unit})")
@@ -1395,16 +834,7 @@ class RegularGrid3D(BaseMeshGrid):
         grid = slice_data[field]
 
         if grid is not None:
-            # Determine appropriate SI unit and scale
-            max_dim = max(self.design.width, self.design.height)
-            if max_dim >= 1e-3:
-                scale, unit = 1e3, "mm"
-            elif max_dim >= 1e-6:
-                scale, unit = 1e6, "µm"
-            elif max_dim >= 1e-9:
-                scale, unit = 1e9, "nm"
-            else:
-                scale, unit = 1, "m"
+            scale, unit = get_si_scale_and_label(max(self.design.width, self.design.height))
 
             # Calculate figure size based on grid dimensions
             grid_height, grid_width = grid.shape

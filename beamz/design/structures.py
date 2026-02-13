@@ -123,15 +123,14 @@ class Polygon:
         return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
 
     def shift(self, x, y, z=0):
+        if hasattr(self, 'position') and self.position is not None:
+            self.position = (self.position[0] + x, self.position[1] + y, self.position[2] + z)
         if self.vertices:
             self.vertices = [(v[0] + x, v[1] + y, v[2] + z) for v in self.vertices]
-        new_interiors_paths = []
-        for interior_path in self.interiors:
-            if interior_path:
-                new_interiors_paths.append(
-                    [(v[0] + x, v[1] + y, v[2] + z) for v in interior_path]
-                )
-        self.interiors = new_interiors_paths
+        self.interiors = [
+            [(v[0] + x, v[1] + y, v[2] + z) for v in path]
+            for path in self.interiors if path
+        ]
         return self
 
     def scale(self, s_x, s_y=None, s_z=None):
@@ -320,15 +319,6 @@ class Rectangle(Polygon):
             return (x, y, z, x + self.width, y + self.height, z + self.depth)
         return super().get_bounding_box()
 
-    def shift(self, x, y, z=0):
-        self.position = (
-            self.position[0] + x,
-            self.position[1] + y,
-            self.position[2] + z,
-        )
-        super().shift(x, y, z)
-        return self
-
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
         min_x = min(v[0] for v in self.vertices)
@@ -408,15 +398,6 @@ class Circle(Polygon):
         self.position = position
         self.radius = radius
         self.points = points
-
-    def shift(self, x, y, z=0):
-        self.position = (
-            self.position[0] + x,
-            self.position[1] + y,
-            self.position[2] + z,
-        )
-        super().shift(x, y, z)
-        return self
 
     def scale(self, s_x, s_y=None, s_z=None):
         if s_y is None:
@@ -502,15 +483,6 @@ class Ring(Polygon):
         self.position = position
         self.inner_radius = inner_radius
         self.outer_radius = outer_radius
-
-    def shift(self, x, y, z=0):
-        self.position = (
-            self.position[0] + x,
-            self.position[1] + y,
-            self.position[2] + z,
-        )
-        super().shift(x, y, z)
-        return self
 
     def scale(self, s_x, s_y=None, s_z=None):
         if s_y is None:
@@ -621,15 +593,6 @@ class CircularBend(Polygon):
         self.angle = angle
         self.rotation = rotation
 
-    def shift(self, x, y, z=0):
-        self.position = (
-            self.position[0] + x,
-            self.position[1] + y,
-            self.position[2] + z,
-        )
-        super().shift(x, y, z)
-        return self
-
     def rotate(self, angle, axis="z", point=None):
         if axis == "z":
             self.rotation = (self.rotation + angle) % 360
@@ -711,12 +674,7 @@ class Taper(Polygon):
         depth=0,
         z=0,
     ):
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        elif len(position) == 3:
-            position = position
-        else:
-            raise ValueError("Position must be (x,y) or (x,y,z)")
+        position = _normalize_position(position)
         x, y, z = position
         vertices = [
             (x, y - input_width / 2, z),
