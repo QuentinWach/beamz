@@ -11,7 +11,39 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0, MU_0
-from beamz.devices.sources.jax_utils import jax_tukey_window
+
+
+def jax_tukey_window(M: int, alpha: float = 0.5) -> jnp.ndarray:
+    """JAX-compatible Tukey (tapered cosine) window.
+
+    Replaces scipy.signal.windows.tukey for differentiable source initialization.
+
+    Args:
+        M: Number of points in the window
+        alpha: Shape parameter (0 = rectangular, 1 = Hann)
+
+    Returns:
+        The Tukey window as a JAX array
+    """
+    if M <= 0:
+        return jnp.array([])
+    if M == 1:
+        return jnp.ones(1)
+
+    n = jnp.arange(M)
+    width = alpha * (M - 1) / 2.0
+
+    # Avoid division by zero when alpha=0
+    width = jnp.maximum(width, 1e-10)
+
+    # Three regions: taper up, flat, taper down
+    left_taper = 0.5 * (1 + jnp.cos(jnp.pi * (n / width - 1)))
+    right_taper = 0.5 * (1 + jnp.cos(jnp.pi * ((n - (M - 1 - width)) / width)))
+
+    window = jnp.where(
+        n < width, left_taper, jnp.where(n > (M - 1) - width, right_taper, 1.0)
+    )
+    return window
 
 logger = logging.getLogger(__name__)
 

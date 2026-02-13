@@ -4,17 +4,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0, µm
+from beamz.devices.core import Device
 from beamz.devices.sources._injection import build_3d_profiles, inject_3d_fields
-from beamz.devices.sources.jax_utils import (
-    differentiable_phase_alignment,
-    jax_tukey_window,
-)
 from beamz.devices.sources.solve import solve_modes
 
 logger = logging.getLogger(__name__)
 
 
-class ModeSource:
+class ModeSource(Device):
     """Huygens mode source on Yee grid supporting ±x/±y propagation.
 
     In 3D, injects all 6 field components (Ex, Ey, Ez, Hx, Hy, Hz) for accurate
@@ -561,102 +558,17 @@ class ModeSource:
 
     def show(self, field=None):
         """Visualize the 2D mode profile (for 3D simulations) or 1D profile (for 2D)."""
-        import matplotlib.pyplot as plt
+        from beamz.visual.source_plots import show_mode_profile
 
-        if self._Ez_profile is None and self._jz_profile is None:
-            if self.grid is not None and hasattr(self.grid, "permittivity"):
-                res = getattr(self.grid, "resolution", 0.05e-6)
-                self.initialize(self.grid.permittivity, res)
-            else:
-                print(
-                    "[ModeSource] Source not initialized. Call Simulation or initialize manually."
-                )
-                return
-
-        if self._Ez_profile is not None:
-            profile = self._Ez_profile
-            title = "Ez (mode profile)"
-        elif self._jz_profile is not None:
-            profile = self._jz_profile
-            title = "Hz (mode profile)"
-        else:
-            print("[ModeSource] No profiles available.")
-            return
-
-        profile = np.squeeze(profile)
-
-        plt.figure(figsize=(8, 6))
-        if profile.ndim == 2:
-            im = plt.imshow(
-                np.abs(profile), origin="lower", cmap="magma", aspect="auto"
-            )
-            plt.colorbar(im, label="Absolute Amplitude")
-            plt.title(f"Mode Source 2D Profile: {title} (neff={self._neff:.4f})")
-            if self.direction in ["+x", "-x"]:
-                plt.xlabel("Y-axis")
-                plt.ylabel("Z-axis")
-            else:
-                plt.xlabel("X-axis")
-                plt.ylabel("Z-axis")
-        else:
-            plt.plot(np.abs(profile), "k-")
-            plt.title(f"Mode Source 1D Profile: {title} (neff={self._neff:.4f})")
-            plt.xlabel("Transverse Coordinate (cells)")
-            plt.ylabel("Absolute Amplitude")
-            plt.grid(True)
-
-        plt.tight_layout()
-        plt.show()
+        show_mode_profile(self, field=field)
 
     def add_to_plot(
         self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"
     ):
         """Add source visualization to 2D matplotlib plot."""
-        from matplotlib.patches import FancyArrowPatch
+        from beamz.visual.overlays import add_mode_source_to_plot
 
-        center = (
-            self.center if isinstance(self.center, (tuple, list)) else (self.center, 0)
+        add_mode_source_to_plot(
+            self, ax, facecolor=facecolor, edgecolor=edgecolor,
+            alpha=alpha, linestyle=linestyle,
         )
-        if len(center) == 3:
-            x_pos = center[0]
-            y_pos = center[1]
-        else:
-            x_pos, y_pos = center[0], center[1]
-
-        half_width = self.width / 2 if self.width else 0.5e-6
-
-        if self.direction in ["+x", "-x"]:
-            y_start = y_pos - half_width
-            y_end = y_pos + half_width
-            line_x = [x_pos, x_pos]
-            line_y = [y_start, y_end]
-        else:
-            x_start = x_pos - half_width
-            x_end = x_pos + half_width
-            line_x = [x_start, x_end]
-            line_y = [y_pos, y_pos]
-
-        ax.plot(
-            line_x, line_y,
-            color=edgecolor, linewidth=3, alpha=alpha,
-            solid_capstyle="round", label="ModeSource",
-        )
-
-        arrow_length = self.wavelength * 0.5 if hasattr(self, "wavelength") else 0.5e-6
-        if self.direction in ["+x", "-x"]:
-            arrow_dx = arrow_length if self.direction == "+x" else -arrow_length
-            arrow_dy = 0
-        else:
-            arrow_dx = 0
-            arrow_dy = arrow_length if self.direction == "+y" else -arrow_length
-
-        arrow = FancyArrowPatch(
-            (x_pos, y_pos),
-            (x_pos + arrow_dx, y_pos + arrow_dy),
-            arrowstyle="-|>",
-            mutation_scale=10,
-            color=edgecolor,
-            linewidth=2,
-            alpha=alpha,
-        )
-        ax.add_patch(arrow)

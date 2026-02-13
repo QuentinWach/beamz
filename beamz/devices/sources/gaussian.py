@@ -2,9 +2,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0
+from beamz.devices.core import Device
 
 
-class GaussianSource:
+class GaussianSource(Device):
     """Gaussian spatial source for FDTD simulations.
 
     Injects a Gaussian spatial profile into the Ez field (and other E components in 3D).
@@ -126,37 +127,10 @@ class GaussianSource:
     def add_to_plot(
         self, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"
     ):
-        """Add source visualization to 2D matplotlib plot.
+        """Add source visualization to 2D matplotlib plot."""
+        from beamz.visual.overlays import add_gaussian_source_to_plot
 
-        Draws a circle at the source position with radius proportional to the width.
-        """
-        from matplotlib.patches import Circle
-
-        # Get position (2D or 3D)
-        if len(self.position) >= 2:
-            x_pos, y_pos = self.position[0], self.position[1]
-        else:
-            x_pos, y_pos = self.position[0], 0
-
-        # Draw circle with radius = width (standard deviation)
-        circle = Circle(
-            (x_pos, y_pos),
-            radius=self.width,
-            facecolor="none",
-            edgecolor=edgecolor,
-            linewidth=2,
-            alpha=alpha,
-            linestyle=linestyle,
-            label="GaussianSource",
+        add_gaussian_source_to_plot(
+            self, ax, facecolor=facecolor, edgecolor=edgecolor,
+            alpha=alpha, linestyle=linestyle,
         )
-        ax.add_patch(circle)
-
-        # Draw a small filled circle at center
-        center_dot = Circle(
-            (x_pos, y_pos),
-            radius=self.width * 0.1,
-            facecolor=edgecolor,
-            edgecolor="none",
-            alpha=alpha,
-        )
-        ax.add_patch(center_dot)
