@@ -35,7 +35,6 @@ from beamz.devices.sources import GaussianSource, ModeSource
 from beamz.devices.sources.mode import solve_modes
 from beamz.devices.sources.signals import plot_signal, ramped_cosine
 
-# from beamz.optimization.optimizers import Optimizer  # TODO: Re-enable when optimizers module is created
 from beamz.optimization.topology import (
     TopologyManager,
     compute_overlap_gradient,
@@ -66,9 +65,6 @@ from beamz.visual.helpers import (
     get_si_scale_and_label,
     tree_view,
 )
-
-# Import optimization-related classes
-# (Currently empty, to be filled as the module grows)
 
 
 # Prepare a dictionary of all our exports
@@ -119,7 +115,6 @@ _exports = {
     "ABC": ABC,
     "PeriodicBoundary": PeriodicBoundary,
     # Optimization
-    # 'Optimizer': Optimizer,  # TODO: Re-enable when optimizers module is created
     "TopologyManager": TopologyManager,
     "compute_overlap_gradient": compute_overlap_gradient,
     "create_optimization_mask": create_optimization_mask,

@@ -1,5 +1,3 @@
-import random
-
 import numpy as np
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
@@ -250,24 +248,6 @@ class Design:
                 if len(vertex) > 2 and vertex[2] != 0:
                     self.is_3d = True
                     break
-
-    def scatter(
-        self,
-        structure: type[Polygon],
-        n: int = 1000,
-        xyrange: tuple[float, float] = (-5 * µm, 5 * µm),
-        scale_range: tuple[float, float] = (0.05, 1),
-    ):
-        """Randomly distribute n copies of the structure across the design domain."""
-        for _ in range(n):
-            new_structure = structure.copy()
-            new_structure.shift(
-                random.uniform(xyrange[0], xyrange[1]),
-                random.uniform(xyrange[0], xyrange[1]),
-            )
-            new_structure.rotate(random.uniform(0, 360))
-            new_structure.scale(random.uniform(scale_range[0], scale_range[1]))
-            self.add(new_structure)
 
     def get_material_value(self, x: float, y: float, z: float = 0.0):
         """Return material properties at coordinate (x,y,z) prioritizing topmost structure."""

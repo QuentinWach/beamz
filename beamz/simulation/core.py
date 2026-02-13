@@ -61,9 +61,6 @@ class Simulation:
                 )
             self.pml_data = pml_data
 
-            # Initialize split fields in Fields object - DEPRECATED/REMOVED in favor of effective conductivity
-            # self.fields._init_upml_fields(pml_data)
-
             # Set effective conductivity for PML
             self.fields.set_pml_conductivity(pml_data)
         else:
