@@ -581,6 +581,114 @@ class TestModeSourcePolarization:
             f"{profile_attr} is near zero for +y/{pol}; check component mapping"
         )
 
+    @pytest.mark.parametrize(
+        ("direction", "pol"),
+        [
+            ("+x", "tm"),
+            ("-x", "tm"),
+            ("+x", "te"),
+            ("-x", "te"),
+            ("+y", "tm"),
+            ("-y", "tm"),
+            ("+y", "te"),
+            ("-y", "te"),
+        ],
+    )
+    def test_directionality_across_axes_and_polarizations(self, direction, pol):
+        """ModeSource should inject predominantly in the requested direction for 2D guides."""
+        wavelength = TEST_WAVELENGTH
+        n_core = 2.0
+        n_clad = 1.0
+        wg_width = 0.55 * wavelength
+
+        domain_width = 10 * wavelength
+        domain_height = 10 * wavelength
+
+        dx, dt = calc_optimal_fdtd_params(
+            wavelength,
+            n_core,
+            dims=2,
+            safety_factor=0.95,
+            points_per_wavelength=12,
+        )
+
+        design = Design(
+            width=domain_width,
+            height=domain_height,
+            material=Material(permittivity=n_clad**2),
+        )
+        if direction in {"+x", "-x"}:
+            design += Rectangle(
+                position=(0, domain_height / 2 - wg_width / 2),
+                width=domain_width,
+                height=wg_width,
+                material=Material(permittivity=n_core**2),
+            )
+        else:
+            design += Rectangle(
+                position=(domain_width / 2 - wg_width / 2, 0),
+                width=wg_width,
+                height=domain_height,
+                material=Material(permittivity=n_core**2),
+            )
+
+        frequency = LIGHT_SPEED / wavelength
+        t_total = 16 / frequency
+        time = np.arange(0, t_total, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=4 / frequency,
+            t_max=t_total / 2,
+        )
+
+        center = (domain_width / 2, domain_height / 2)
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=center,
+            width=wg_width * 3,
+            wavelength=wavelength,
+            pol=pol,
+            signal=signal,
+            direction=direction,
+        )
+
+        sim = Simulation(
+            design=design,
+            devices=[source],
+            boundaries=[PML(thickness=1.5 * wavelength)],
+            time=time,
+            resolution=dx,
+        )
+
+        field_name = "Ez" if pol == "tm" else "Hz"
+        result = sim.run(save_fields=[field_name], field_subsample=8)
+        snapshot = result["fields"][field_name][len(result["fields"][field_name]) // 3]
+
+        sx = int(center[0] / dx)
+        sy = int(center[1] / dx)
+
+        if direction == "+x":
+            forward = compute_field_energy(snapshot[:, sx:], dx)
+            backward = compute_field_energy(snapshot[:, :sx], dx)
+        elif direction == "-x":
+            forward = compute_field_energy(snapshot[:, :sx], dx)
+            backward = compute_field_energy(snapshot[:, sx:], dx)
+        elif direction == "+y":
+            forward = compute_field_energy(snapshot[sy:, :], dx)
+            backward = compute_field_energy(snapshot[:sy, :], dx)
+        else:
+            forward = compute_field_energy(snapshot[:sy, :], dx)
+            backward = compute_field_energy(snapshot[sy:, :], dx)
+
+        forward_fraction = forward / (forward + backward + 1e-30)
+        assert forward_fraction > 0.85, (
+            f"Poor directionality for {direction}/{pol}: "
+            f"forward_fraction={forward_fraction:.3f}"
+        )
+
 
 @pytest.mark.simulation
 class TestModeSolver:

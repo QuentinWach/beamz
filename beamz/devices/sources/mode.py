@@ -722,12 +722,9 @@ class ModeSource:
                 Hz_cropped = Hz_cropped * window
                 Ey_cropped = Ey_cropped * window
 
-            if self.direction == "+x":
-                self._jy_profile = Hz_cropped
-                self._mz_profile = Ey_cropped
-            else:
-                self._jy_profile = -Hz_cropped
-                self._mz_profile = -Ey_cropped
+            # Relative J/M sign controls propagation handedness for TE in x-propagation.
+            self._jy_profile = dir_sign * Hz_cropped
+            self._mz_profile = -dir_sign * Ey_cropped
 
     def _setup_2d_y(
         self, E_mode, H_mode, center_idx, offset_idx, ny, nx, resolution,
@@ -769,12 +766,9 @@ class ModeSource:
                 Hx_cropped = Hx_cropped * window
                 Ez_cropped = Ez_cropped * window
 
-            if self.direction == "+y":
-                self._jz_profile = Hx_cropped
-                self._my_profile = Ez_cropped
-            else:
-                self._jz_profile = -Hx_cropped
-                self._my_profile = -Ez_cropped
+            # Relative J/M sign controls propagation handedness for TM in y-propagation.
+            self._jz_profile = dir_sign * Hx_cropped
+            self._my_profile = -dir_sign * Ez_cropped
 
         else:  # TE y-prop
             hz_row = (
@@ -861,8 +855,10 @@ class ModeSource:
                 coord_e = (idx_e + 0.5) * dy
                 coord_h = (idx_h + 1.0) * dy
 
+        # Use the physical E/H plane separation magnitude for phase delay.
+        # Directionality is set by J/M cross-product signs, not by changing this delay sign.
         self._dt_physical = (
-            (coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
+            abs(coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
         )
 
     def _get_signal_value(self, time, dt):

@@ -106,7 +106,7 @@ def compute_mode_polarization_fraction(
     E2 = E_fields[tangential_axes[1]]
 
     if pol == "te":
-        # BEAMZ convention:
+        # Common convention:
         # - TE: dominant in-plane transverse E component for the selected propagation axis.
         # - TM: dominant orthogonal transverse E component.
         #
