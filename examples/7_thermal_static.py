@@ -1,17 +1,39 @@
+import sys
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 from matplotlib.patches import Rectangle as PlotRectangle
 
-from beamz import Design, Material, Rectangle, ThermalParams, apply_static_thermal
+# Ensure examples run against local source tree when invoked as:
+# `python examples/7_thermal_static.py`
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from beamz import (
+    Design,
+    Material,
+    Rectangle,
+    ThermalConfig,
+)
 
 # Chip cross-section (top to bottom): air, heater, oxide, silicon, substrate
 W, H = 20e-6, 8e-6
-design = Design(width=W, height=H, material=Material(permittivity=1.0, k=0.03, T0=300.0))
+design = Design(
+    width=W, height=H, material=Material(permittivity=1.0, k=0.03, T0=300.0)
+)
 
-oxide = Material(permittivity=1.44**2, k=1.4, rho=2200.0, cp=703.0, dn_dT=1e-5, T0=300.0)
-silicon = Material(permittivity=3.48**2, k=148.0, rho=2330.0, cp=700.0, dn_dT=1.86e-4, T0=300.0)
-substrate = Material(permittivity=3.4**2, k=120.0, rho=2650.0, cp=750.0, dn_dT=1.5e-4, T0=300.0)
+oxide = Material(
+    permittivity=1.44**2, k=1.4, rho=2200.0, cp=703.0, dn_dT=1e-5, T0=300.0
+)
+silicon = Material(
+    permittivity=3.48**2, k=148.0, rho=2330.0, cp=700.0, dn_dT=1.86e-4, T0=300.0
+)
+substrate = Material(
+    permittivity=3.4**2, k=120.0, rho=2650.0, cp=750.0, dn_dT=1.5e-4, T0=300.0
+)
 heater = Material(permittivity=1.0, k=80.0, rho=5000.0, cp=300.0, T0=300.0)
 
 # Layers
@@ -20,10 +42,12 @@ design += Rectangle(position=(0, 2.5e-6), width=W, height=2.0e-6, material=silic
 design += Rectangle(position=(0, 4.5e-6), width=W, height=2.5e-6, material=oxide)
 design += Rectangle(position=(7e-6, 6.7e-6), width=6e-6, height=0.4e-6, material=heater)
 
+
 def heater_mask(x, y, z):
     return 7e-6 <= x <= 13e-6 and 6.7e-6 <= y <= 7.1e-6
 
-params = ThermalParams(
+
+params = ThermalConfig(
     thermal_dt=1e-13,
     tau_avg=1e-13,
     steady_state=True,
@@ -31,19 +55,21 @@ params = ThermalParams(
     tol=1e-6,
 )
 
+
 def substrate_and_air_sink_mask(x, y, z):
     # Bottom substrate sink and top air sink above the heater
     return (0.0 <= y <= 2.5e-6) or (7.1e-6 <= y <= H)
 
-eps_r, temperature = apply_static_thermal(
-    design,
+
+result = design.solve_static_thermal(
     resolution=0.1e-6,
-    params=params,
+    config=params,
     heater_mask=heater_mask,
     heater_power=5e16,
     fixed_temp_mask=substrate_and_air_sink_mask,
     fixed_temp_value=300.0,
 )
+eps_r, temperature = result.permittivity, result.temperature
 
 # Compute heat flux for visualization (2D)
 dx = 0.1e-6
@@ -65,12 +91,7 @@ q_vis = np.log10(1.0 + qmag_solid)
 fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(7, 6.4))
 extent = (0, W * 1e6, 0, H * 1e6)
 
-im0 = ax0.imshow(
-    temperature,
-    origin="lower",
-    extent=extent,
-    cmap="inferno"
-)
+im0 = ax0.imshow(temperature, origin="lower", extent=extent, cmap="inferno")
 temp_cbar = fig.colorbar(im0, ax=ax0, label="Temperature (K)")
 temp_cbar.formatter = FuncFormatter(lambda x, pos: f"{int(round(x))}K")
 temp_cbar.update_ticks()
@@ -83,7 +104,7 @@ ax = ax0
 outline_color = "white"
 outline_alpha = 0.5
 structures = [
-    (0, 0.0, W, 2.5e-6),     # substrate
+    (0, 0.0, W, 2.5e-6),  # substrate
     (0, 2.5e-6, W, 2.0e-6),  # silicon
     (0, 4.5e-6, W, 2.5e-6),  # oxide
     (7e-6, 6.7e-6, 6e-6, 0.4e-6),  # heater

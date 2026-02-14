@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import math
 from dataclasses import dataclass
 
 import jax.numpy as jnp
@@ -5,7 +8,7 @@ import numpy as np
 
 
 @dataclass
-class ThermalParams:
+class ThermalConfig:
     thermal_dt: float
     tau_avg: float
     k: float = 0.0
@@ -18,6 +21,12 @@ class ThermalParams:
     tol: float = 1e-6
 
 
+@dataclass
+class StaticThermalResult:
+    permittivity: np.ndarray
+    temperature: np.ndarray
+
+
 def _laplacian_neumann(field, dx, dy=None, dz=None):
     """Compute Laplacian with zero-flux Neumann boundaries using edge padding."""
     if dy is None:
@@ -27,7 +36,7 @@ def _laplacian_neumann(field, dx, dy=None, dz=None):
         lap_x = (pad[1:-1, 2:] - 2.0 * pad[1:-1, 1:-1] + pad[1:-1, :-2]) / (dx * dx)
         lap_y = (pad[2:, 1:-1] - 2.0 * pad[1:-1, 1:-1] + pad[:-2, 1:-1]) / (dy * dy)
         return lap_x + lap_y
-    elif field.ndim == 3:
+    if field.ndim == 3:
         if dz is None:
             dz = dx
         pad = jnp.pad(field, ((1, 1), (1, 1), (1, 1)), mode="edge")
@@ -72,9 +81,9 @@ def _to_center(component, target_shape):
     return centered
 
 
-class ThermoPhysics:
-    def __init__(self, params: ThermalParams, enabled: bool = True):
-        self.params = params
+class ThermalCoupling:
+    def __init__(self, config: ThermalConfig, enabled: bool = True):
+        self.config = config
         self.enabled = enabled
         self.initialized = False
 
@@ -104,11 +113,11 @@ class ThermoPhysics:
             raise ValueError("Thermal grids not available on design.")
 
         k, rho, cp, dn_dT, T0 = thermal_grids
-        self.k = self._apply_default(jnp.asarray(k), self.params.k)
-        self.rho = self._apply_default(jnp.asarray(rho), self.params.rho)
-        self.cp = self._apply_default(jnp.asarray(cp), self.params.cp)
-        self.dn_dT = self._apply_default(jnp.asarray(dn_dT), self.params.dn_dT)
-        self.T0 = self._apply_default(jnp.asarray(T0), self.params.T0)
+        self.k = self._apply_default(jnp.asarray(k), self.config.k)
+        self.rho = self._apply_default(jnp.asarray(rho), self.config.rho)
+        self.cp = self._apply_default(jnp.asarray(cp), self.config.cp)
+        self.dn_dT = self._apply_default(jnp.asarray(dn_dT), self.config.dn_dT)
+        self.T0 = self._apply_default(jnp.asarray(T0), self.config.T0)
 
         self.T = jnp.array(self.T0)
         self.E2_avg = jnp.zeros_like(self.T)
@@ -126,6 +135,25 @@ class ThermoPhysics:
             return grid
         return jnp.where(grid == 0, default, grid)
 
+    def _stable_substep_dt(self):
+        denom = self.rho * self.cp
+        alpha = jnp.where(denom > 0, self.k / denom, 0.0)
+        alpha_max = float(jnp.max(alpha))
+        if alpha_max <= 0:
+            return None
+
+        inv_dx2 = 1.0 / (self.dx * self.dx)
+        inv_dy2 = 1.0 / (self.dy * self.dy)
+        inv_sum = inv_dx2 + inv_dy2
+        if self.T.ndim == 3:
+            inv_dz2 = 1.0 / (self.dz * self.dz)
+            inv_sum += inv_dz2
+
+        if inv_sum <= 0:
+            return None
+
+        return 0.5 / (alpha_max * inv_sum)
+
     def step(self, sim):
         """Advance thermal state and update permittivity."""
         if not self.enabled:
@@ -134,7 +162,7 @@ class ThermoPhysics:
             self.initialize(sim)
 
         dt = sim.dt
-        tau_avg = self.params.tau_avg
+        tau_avg = self.config.tau_avg
         if tau_avg <= 0:
             tau_avg = None
 
@@ -148,7 +176,7 @@ class ThermoPhysics:
         sigma = sim.fields.conductivity
         Q = sigma * self.E2_avg
 
-        thermal_dt = self.params.thermal_dt
+        thermal_dt = self.config.thermal_dt
         if thermal_dt <= 0:
             return
 
@@ -157,12 +185,20 @@ class ThermoPhysics:
         if num_steps <= 0:
             return
 
+        stable_dt = self._stable_substep_dt()
+        if stable_dt is None:
+            substeps = 1
+        else:
+            substeps = max(1, int(math.ceil(thermal_dt / stable_dt)))
+        sub_dt = thermal_dt / substeps
+
         for _ in range(num_steps):
-            lap = _laplacian_neumann(self.T, self.dx, self.dy, self.dz)
-            source = self.k * lap + Q
-            denom = self.rho * self.cp
-            update = jnp.where(denom > 0, (thermal_dt / denom) * source, 0.0)
-            self.T = self.T + update
+            for _ in range(substeps):
+                lap = _laplacian_neumann(self.T, self.dx, self.dy, self.dz)
+                source = self.k * lap + Q
+                denom = self.rho * self.cp
+                update = jnp.where(denom > 0, (sub_dt / denom) * source, 0.0)
+                self.T = self.T + update
 
         self.t_accum -= num_steps * thermal_dt
 
@@ -188,30 +224,30 @@ class ThermoPhysics:
         return E2
 
 
-class StaticThermalSolve:
+class StaticThermalSolver:
     def __init__(
         self,
-        params: ThermalParams,
+        config: ThermalConfig,
         heater_mask=None,
         heater_power=0.0,
         fixed_temp_mask=None,
         fixed_temp_value=None,
     ):
-        self.params = params
+        self.config = config
         self.heater_mask = heater_mask
         self.heater_power = heater_power
         self.fixed_temp_mask = fixed_temp_mask
         self.fixed_temp_value = fixed_temp_value
 
-    def solve(self, design, resolution):
+    def solve(self, design, resolution) -> StaticThermalResult:
         thermal_grids = design.get_thermal_grids(resolution)
         if thermal_grids is None:
             raise ValueError("Thermal grids not available on design.")
 
-        k_grid, rho_grid, cp_grid, dn_dT_grid, T0_grid = thermal_grids
-        k_grid = self._apply_default(np.asarray(k_grid), self.params.k)
-        dn_dT_grid = self._apply_default(np.asarray(dn_dT_grid), self.params.dn_dT)
-        T0_grid = self._apply_default(np.asarray(T0_grid), self.params.T0)
+        k_grid, _rho_grid, _cp_grid, dn_dT_grid, T0_grid = thermal_grids
+        k_grid = self._apply_default(np.asarray(k_grid), self.config.k)
+        dn_dT_grid = self._apply_default(np.asarray(dn_dT_grid), self.config.dn_dT)
+        T0_grid = self._apply_default(np.asarray(T0_grid), self.config.T0)
 
         Q = self._build_heat_source(design, resolution, k_grid.shape)
         fixed_mask = self._build_mask(
@@ -222,8 +258,8 @@ class StaticThermalSolve:
         if fixed_mask is not None and fixed_value is not None:
             T = np.where(fixed_mask, fixed_value, T)
 
-        max_iters = int(self.params.max_iters)
-        tol = float(self.params.tol)
+        max_iters = int(self.config.max_iters)
+        tol = float(self.config.tol)
 
         for _ in range(max_iters):
             T_new = self._steady_state_step(T, k_grid, Q, resolution)
@@ -237,7 +273,7 @@ class StaticThermalSolve:
         n0 = np.sqrt(np.asarray(design.get_material_grids(resolution)[0]))
         n = n0 + dn_dT_grid * (T - T0_grid)
         eps_r = n * n
-        return eps_r, T
+        return StaticThermalResult(permittivity=eps_r, temperature=T)
 
     def _apply_default(self, grid, default):
         if default is None:
@@ -311,20 +347,29 @@ class StaticThermalSolve:
         raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
 
 
-def apply_static_thermal(
+def solve_static_thermal(
     design,
     resolution,
-    params,
+    config,
     heater_mask,
     heater_power,
     fixed_temp_mask=None,
     fixed_temp_value=None,
-):
-    solver = StaticThermalSolve(
-        params=params,
+) -> StaticThermalResult:
+    solver = StaticThermalSolver(
+        config=config,
         heater_mask=heater_mask,
         heater_power=heater_power,
         fixed_temp_mask=fixed_temp_mask,
         fixed_temp_value=fixed_temp_value,
     )
     return solver.solve(design, resolution)
+
+
+__all__ = [
+    "ThermalConfig",
+    "ThermalCoupling",
+    "StaticThermalResult",
+    "StaticThermalSolver",
+    "solve_static_thermal",
+]

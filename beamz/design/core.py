@@ -332,6 +332,28 @@ class Design:
             return self._grid.get_thermal_grids()
         return None
 
+    def solve_static_thermal(
+        self,
+        resolution,
+        config,
+        heater_mask,
+        heater_power,
+        fixed_temp_mask=None,
+        fixed_temp_value=None,
+    ):
+        """Solve steady-state thermal profile for this design and return thermo-optic result."""
+        from beamz.simulation.thermal import solve_static_thermal
+
+        return solve_static_thermal(
+            design=self,
+            resolution=resolution,
+            config=config,
+            heater_mask=heater_mask,
+            heater_power=heater_power,
+            fixed_temp_mask=fixed_temp_mask,
+            fixed_temp_value=fixed_temp_value,
+        )
+
     def copy(self):
         """Create a deep copy of the design with all structures and properties."""
         background_material = (

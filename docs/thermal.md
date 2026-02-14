@@ -22,8 +22,8 @@ from beamz import (
     GaussianSource,
     PML,
     Simulation,
-    ThermalParams,
-    ThermoPhysics,
+    ThermalConfig,
+    ThermalCoupling,
     LIGHT_SPEED,
 )
 
@@ -48,8 +48,8 @@ time = np.arange(0, 200 * dt, dt)
 signal = np.sin(2 * np.pi * LIGHT_SPEED / 1.55e-6 * time)
 source = GaussianSource(position=(1e-6, 2e-6), width=0.3e-6, signal=signal)
 
-thermal = ThermoPhysics(
-    ThermalParams(thermal_dt=1e-13, tau_avg=1e-13, T0=300)
+thermal = ThermalCoupling(
+    ThermalConfig(thermal_dt=1e-13, tau_avg=1e-13, T0=300)
 )
 
 sim = Simulation(
@@ -76,8 +76,7 @@ from beamz import (
     Design,
     Material,
     Rectangle,
-    apply_static_thermal,
-    ThermalParams,
+    ThermalConfig,
 )
 
 W, H = 12e-6, 5e-6
@@ -89,8 +88,12 @@ design += Rectangle(position=(3e-6, 3.4e-6), width=6e-6, height=0.4e-6, material
 def heater_mask(x, y, z):
     return 3e-6 <= x <= 9e-6 and 3.4e-6 <= y <= 3.8e-6
 
-params = ThermalParams(thermal_dt=1e-13, tau_avg=1e-13, steady_state=True)
-eps_r, temperature = apply_static_thermal(
-    design, resolution=0.1e-6, params=params, heater_mask=heater_mask, heater_power=5e12
+params = ThermalConfig(thermal_dt=1e-13, tau_avg=1e-13, steady_state=True)
+result = design.solve_static_thermal(
+    resolution=0.1e-6,
+    config=params,
+    heater_mask=heater_mask,
+    heater_power=5e12,
 )
+eps_r, temperature = result.permittivity, result.temperature
 ```

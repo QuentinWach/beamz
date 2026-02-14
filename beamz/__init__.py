@@ -34,12 +34,6 @@ from beamz.devices.monitors import Monitor
 from beamz.devices.sources import GaussianSource, ModeSource
 from beamz.devices.sources.mode import solve_modes
 from beamz.devices.sources.signals import ramped_cosine
-from beamz.multiphysics.thermal import (
-    StaticThermalSolve,
-    ThermalParams,
-    ThermoPhysics,
-    apply_static_thermal,
-)
 from beamz.optimization.autodiff import transform_density
 from beamz.optimization.topology import (
     TopologyManager,
@@ -48,6 +42,13 @@ from beamz.optimization.topology import (
 )
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.core import Simulation
+from beamz.simulation.thermal import (
+    StaticThermalResult,
+    StaticThermalSolver,
+    ThermalConfig,
+    ThermalCoupling,
+    solve_static_thermal,
+)
 
 # Import UI helpers
 from beamz.visual.helpers import (
@@ -95,11 +96,12 @@ _exports = {
     # Simulation
     "RegularGrid": RegularGrid,
     "Simulation": Simulation,
-    # Multiphysics
-    "ThermalParams": ThermalParams,
-    "ThermoPhysics": ThermoPhysics,
-    "StaticThermalSolve": StaticThermalSolve,
-    "apply_static_thermal": apply_static_thermal,
+    # Thermal (new primary API)
+    "ThermalConfig": ThermalConfig,
+    "ThermalCoupling": ThermalCoupling,
+    "StaticThermalResult": StaticThermalResult,
+    "StaticThermalSolver": StaticThermalSolver,
+    "solve_static_thermal": solve_static_thermal,
     # Boundaries
     "Boundary": Boundary,
     "PML": PML,
