@@ -131,7 +131,9 @@ def _setup_visualization(sim, cfg):
         record_field = cfg.video_field or cfg.animate_live or "Ez"
         available = sim.fields.available_components()
         if record_field not in available:
-            print(f"Warning: Field '{record_field}' not found for video. Available: {available}")
+            print(
+                f"Warning: Field '{record_field}' not found for video. Available: {available}"
+            )
             record_field = available[0] if available else None
         if record_field:
             video_recorder = VideoRecorder(
@@ -156,9 +158,7 @@ def _store_fields(sim, field_history, cfg):
         return
     for field_name in cfg.save_fields:
         if hasattr(sim.fields, field_name):
-            field_history[field_name].append(
-                getattr(sim.fields, field_name).copy()
-            )
+            field_history[field_name].append(getattr(sim.fields, field_name).copy())
 
 
 def _record_video_frame(sim, video_recorder, cfg):
@@ -183,7 +183,9 @@ def _record_video_frame(sim, video_recorder, cfg):
     )
 
 
-def _update_live_display(sim, cfg, active_monitor, use_jupyter, jupyter_animator, viz_context):
+def _update_live_display(
+    sim, cfg, active_monitor, use_jupyter, jupyter_animator, viz_context
+):
     """Update live animation display and return updated viz_context."""
     from beamz.visual.animation import animate_manual_field
 
@@ -247,9 +249,7 @@ def _update_live_display(sim, cfg, active_monitor, use_jupyter, jupyter_animator
 
 def _collect_results(sim, field_history, cfg, jupyter_animator):
     """Collect and return simulation results."""
-    monitors = [
-        device for device in sim.devices if hasattr(device, "power_history")
-    ]
+    monitors = [device for device in sim.devices if hasattr(device, "power_history")]
     result = {}
     if cfg.save_fields:
         result["fields"] = field_history

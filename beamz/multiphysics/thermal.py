@@ -24,31 +24,21 @@ def _laplacian_neumann(field, dx, dy=None, dz=None):
         dy = dx
     if field.ndim == 2:
         pad = jnp.pad(field, ((1, 1), (1, 1)), mode="edge")
-        lap_x = (pad[1:-1, 2:] - 2.0 * pad[1:-1, 1:-1] + pad[1:-1, :-2]) / (
-            dx * dx
-        )
-        lap_y = (pad[2:, 1:-1] - 2.0 * pad[1:-1, 1:-1] + pad[:-2, 1:-1]) / (
-            dy * dy
-        )
+        lap_x = (pad[1:-1, 2:] - 2.0 * pad[1:-1, 1:-1] + pad[1:-1, :-2]) / (dx * dx)
+        lap_y = (pad[2:, 1:-1] - 2.0 * pad[1:-1, 1:-1] + pad[:-2, 1:-1]) / (dy * dy)
         return lap_x + lap_y
     elif field.ndim == 3:
         if dz is None:
             dz = dx
         pad = jnp.pad(field, ((1, 1), (1, 1), (1, 1)), mode="edge")
         lap_x = (
-            pad[1:-1, 1:-1, 2:]
-            - 2.0 * pad[1:-1, 1:-1, 1:-1]
-            + pad[1:-1, 1:-1, :-2]
+            pad[1:-1, 1:-1, 2:] - 2.0 * pad[1:-1, 1:-1, 1:-1] + pad[1:-1, 1:-1, :-2]
         ) / (dx * dx)
         lap_y = (
-            pad[1:-1, 2:, 1:-1]
-            - 2.0 * pad[1:-1, 1:-1, 1:-1]
-            + pad[1:-1, :-2, 1:-1]
+            pad[1:-1, 2:, 1:-1] - 2.0 * pad[1:-1, 1:-1, 1:-1] + pad[1:-1, :-2, 1:-1]
         ) / (dy * dy)
         lap_z = (
-            pad[2:, 1:-1, 1:-1]
-            - 2.0 * pad[1:-1, 1:-1, 1:-1]
-            + pad[:-2, 1:-1, 1:-1]
+            pad[2:, 1:-1, 1:-1] - 2.0 * pad[1:-1, 1:-1, 1:-1] + pad[:-2, 1:-1, 1:-1]
         ) / (dz * dz)
         return lap_x + lap_y + lap_z
     raise ValueError(f"Unsupported field dimension: {field.ndim}")
@@ -224,7 +214,9 @@ class StaticThermalSolve:
         T0_grid = self._apply_default(np.asarray(T0_grid), self.params.T0)
 
         Q = self._build_heat_source(design, resolution, k_grid.shape)
-        fixed_mask = self._build_mask(design, resolution, k_grid.shape, self.fixed_temp_mask)
+        fixed_mask = self._build_mask(
+            design, resolution, k_grid.shape, self.fixed_temp_mask
+        )
         fixed_value = self.fixed_temp_value
         T = np.array(T0_grid, dtype=float)
         if fixed_mask is not None and fixed_value is not None:

@@ -1,6 +1,5 @@
-import numpy as np
-
 import jax.numpy as jnp
+import numpy as np
 
 from beamz import Design, Material, Simulation, ThermalParams, ThermoPhysics
 
@@ -8,7 +7,9 @@ from beamz import Design, Material, Simulation, ThermalParams, ThermoPhysics
 def _make_sim(material, dt=1.0, resolution=1.0):
     design = Design(width=3.0, height=3.0, material=material)
     time = np.array([0.0, dt])
-    return Simulation(design=design, devices=[], boundaries=[], time=time, resolution=resolution)
+    return Simulation(
+        design=design, devices=[], boundaries=[], time=time, resolution=resolution
+    )
 
 
 def test_thermal_diffusion_smooths_hotspot():
@@ -19,9 +20,7 @@ def test_thermal_diffusion_smooths_hotspot():
     thermal.initialize(sim)
 
     # Hotspot at center
-    T = jnp.array([[300.0, 300.0, 300.0],
-                   [300.0, 310.0, 300.0],
-                   [300.0, 300.0, 300.0]])
+    T = jnp.array([[300.0, 300.0, 300.0], [300.0, 310.0, 300.0], [300.0, 300.0, 300.0]])
     thermal.T = T
 
     # Ensure no heating source

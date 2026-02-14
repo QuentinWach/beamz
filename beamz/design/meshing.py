@@ -9,7 +9,17 @@ from beamz.visual.helpers import (
 
 class MaterialGrids:
     """Bundles the 8 material property arrays with bulk operations."""
-    NAMES = ('permittivity', 'permeability', 'conductivity', 'k', 'rho', 'cp', 'dn_dT', 'T0')
+
+    NAMES = (
+        "permittivity",
+        "permeability",
+        "conductivity",
+        "k",
+        "rho",
+        "cp",
+        "dn_dT",
+        "T0",
+    )
     DEFAULTS = (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 300.0)
 
     def __init__(self, shape):
@@ -214,7 +224,11 @@ class RegularGrid(BaseMeshGrid):
                     continue
 
                 is_custom_material = hasattr(structure.material, "get_permittivity")
-                props = None if is_custom_material else self._get_all_material_props(structure.material)
+                props = (
+                    None
+                    if is_custom_material
+                    else self._get_all_material_props(structure.material)
+                )
 
                 try:
                     bbox_indices = self._get_bbox_indices(
@@ -226,29 +240,75 @@ class RegularGrid(BaseMeshGrid):
                     min_i, min_j, max_i, max_j = bbox_indices
 
                     # Dispatch to shape-specific fast path
-                    if isinstance(structure, Rectangle) and self._is_axis_aligned(structure):
+                    if isinstance(structure, Rectangle) and self._is_axis_aligned(
+                        structure
+                    ):
                         self._rasterize_rectangle(
-                            structure, grids, props, is_custom_material,
-                            grid_height, grid_width, cell_size,
-                            x_centers, y_centers, sample_dx, sample_dy, num_samples,
+                            structure,
+                            grids,
+                            props,
+                            is_custom_material,
+                            grid_height,
+                            grid_width,
+                            cell_size,
+                            x_centers,
+                            y_centers,
+                            sample_dx,
+                            sample_dy,
+                            num_samples,
                         )
-                    elif hasattr(structure, "radius") and not hasattr(structure, "inner_radius"):
+                    elif hasattr(structure, "radius") and not hasattr(
+                        structure, "inner_radius"
+                    ):
                         self._rasterize_circle(
-                            structure, grids, props,
-                            min_i, min_j, max_i, max_j, cell_size,
-                            x_centers, y_centers, sample_dx, sample_dy, num_samples,
+                            structure,
+                            grids,
+                            props,
+                            min_i,
+                            min_j,
+                            max_i,
+                            max_j,
+                            cell_size,
+                            x_centers,
+                            y_centers,
+                            sample_dx,
+                            sample_dy,
+                            num_samples,
                         )
-                    elif hasattr(structure, "inner_radius") and hasattr(structure, "outer_radius"):
+                    elif hasattr(structure, "inner_radius") and hasattr(
+                        structure, "outer_radius"
+                    ):
                         self._rasterize_ring(
-                            structure, grids, props,
-                            min_i, min_j, max_i, max_j, cell_size,
-                            x_centers, y_centers, sample_dx, sample_dy, num_samples,
+                            structure,
+                            grids,
+                            props,
+                            min_i,
+                            min_j,
+                            max_i,
+                            max_j,
+                            cell_size,
+                            x_centers,
+                            y_centers,
+                            sample_dx,
+                            sample_dy,
+                            num_samples,
                         )
                     else:
                         self._rasterize_polygon(
-                            structure, grids, props, is_custom_material,
-                            min_i, min_j, max_i, max_j, cell_size,
-                            x_centers, y_centers, sample_dx, sample_dy, num_samples,
+                            structure,
+                            grids,
+                            props,
+                            is_custom_material,
+                            min_i,
+                            min_j,
+                            max_i,
+                            max_j,
+                            cell_size,
+                            x_centers,
+                            y_centers,
+                            sample_dx,
+                            sample_dy,
+                            num_samples,
                         )
 
                 except (AttributeError, TypeError) as e:
@@ -298,33 +358,75 @@ class RegularGrid(BaseMeshGrid):
                 count += 1
         return count
 
-    def _rasterize_rectangle(self, structure, grids, props, is_custom_material,
-                             grid_height, grid_width, cell_size,
-                             x_centers, y_centers, sample_dx, sample_dy, num_samples):
+    def _rasterize_rectangle(
+        self,
+        structure,
+        grids,
+        props,
+        is_custom_material,
+        grid_height,
+        grid_width,
+        cell_size,
+        x_centers,
+        y_centers,
+        sample_dx,
+        sample_dy,
+        num_samples,
+    ):
         """Fast path for axis-aligned rectangles."""
         rect_min_j = max(0, int(structure.position[0] / cell_size))
         rect_min_i = max(0, int(structure.position[1] / cell_size))
-        rect_max_j = min(grid_width, int(np.ceil((structure.position[0] + structure.width) / cell_size)))
-        rect_max_i = min(grid_height, int(np.ceil((structure.position[1] + structure.height) / cell_size)))
+        rect_max_j = min(
+            grid_width,
+            int(np.ceil((structure.position[0] + structure.width) / cell_size)),
+        )
+        rect_max_i = min(
+            grid_height,
+            int(np.ceil((structure.position[1] + structure.height) / cell_size)),
+        )
 
         # Interior cells (fully covered)
-        inner_min_j = max(0, int((structure.position[0] + 0.25 * cell_size) / cell_size))
-        inner_min_i = max(0, int((structure.position[1] + 0.25 * cell_size) / cell_size))
-        inner_max_j = min(grid_width, int(np.floor((structure.position[0] + structure.width - 0.25 * cell_size) / cell_size)))
-        inner_max_i = min(grid_height, int(np.floor((structure.position[1] + structure.height - 0.25 * cell_size) / cell_size)))
+        inner_min_j = max(
+            0, int((structure.position[0] + 0.25 * cell_size) / cell_size)
+        )
+        inner_min_i = max(
+            0, int((structure.position[1] + 0.25 * cell_size) / cell_size)
+        )
+        inner_max_j = min(
+            grid_width,
+            int(
+                np.floor(
+                    (structure.position[0] + structure.width - 0.25 * cell_size)
+                    / cell_size
+                )
+            ),
+        )
+        inner_max_i = min(
+            grid_height,
+            int(
+                np.floor(
+                    (structure.position[1] + structure.height - 0.25 * cell_size)
+                    / cell_size
+                )
+            ),
+        )
 
         if inner_max_i > inner_min_i and inner_max_j > inner_min_j:
             if is_custom_material:
                 for i in range(inner_min_i, inner_max_i):
                     for j in range(inner_min_j, inner_max_j):
-                        p = self._get_all_material_props(structure.material, x_centers[j], y_centers[i])
+                        p = self._get_all_material_props(
+                            structure.material, x_centers[j], y_centers[i]
+                        )
                         grids.set_at((i, j), p)
             else:
                 s = np.s_[inner_min_i:inner_max_i, inner_min_j:inner_max_j]
                 grids.set_region(s, props)
 
         # Boundary cells (need super-sampling)
-        boundary_mask = np.zeros((rect_max_i - rect_min_i, rect_max_j - rect_min_j), dtype=bool)
+        boundary_mask = np.zeros(
+            (rect_max_i - rect_min_i, rect_max_j - rect_min_j), dtype=bool
+        )
         if rect_min_i < inner_min_i:
             boundary_mask[: inner_min_i - rect_min_i, :] = True
         if inner_max_i < rect_max_i:
@@ -344,7 +446,11 @@ class RegularGrid(BaseMeshGrid):
             cx, cy = x_centers[j], y_centers[i]
 
             samples_inside = self._supersample_cell(
-                cx, cy, sample_dx, sample_dy, num_samples,
+                cx,
+                cy,
+                sample_dx,
+                sample_dy,
+                num_samples,
                 lambda x, y: sx <= x < sx + sw and sy <= y < sy + sh,
             )
             if samples_inside > 0:
@@ -353,9 +459,22 @@ class RegularGrid(BaseMeshGrid):
                     props = self._get_all_material_props(structure.material, cx, cy)
                 grids.blend_at((i, j), props, blend_factor)
 
-    def _rasterize_circle(self, structure, grids, props,
-                          min_i, min_j, max_i, max_j, cell_size,
-                          x_centers, y_centers, sample_dx, sample_dy, num_samples):
+    def _rasterize_circle(
+        self,
+        structure,
+        grids,
+        props,
+        min_i,
+        min_j,
+        max_i,
+        max_j,
+        cell_size,
+        x_centers,
+        y_centers,
+        sample_dx,
+        sample_dy,
+        num_samples,
+    ):
         """Fast path for circles using distance-based classification."""
         center_x, center_y = structure.position[0], structure.position[1]
         radius = structure.radius
@@ -380,15 +499,32 @@ class RegularGrid(BaseMeshGrid):
             i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
             cx, cy = x_centers[j], y_centers[i]
             samples_inside = self._supersample_cell(
-                cx, cy, sample_dx, sample_dy, num_samples,
+                cx,
+                cy,
+                sample_dx,
+                sample_dy,
+                num_samples,
                 lambda x, y: np.hypot(x - center_x, y - center_y) <= radius,
             )
             if samples_inside > 0:
                 grids.blend_at((i, j), props, samples_inside / num_samples)
 
-    def _rasterize_ring(self, structure, grids, props,
-                        min_i, min_j, max_i, max_j, cell_size,
-                        x_centers, y_centers, sample_dx, sample_dy, num_samples):
+    def _rasterize_ring(
+        self,
+        structure,
+        grids,
+        props,
+        min_i,
+        min_j,
+        max_i,
+        max_j,
+        cell_size,
+        x_centers,
+        y_centers,
+        sample_dx,
+        sample_dy,
+        num_samples,
+    ):
         """Fast path for rings using distance-based classification."""
         center_x, center_y = structure.position[0], structure.position[1]
         inner_radius = structure.inner_radius
@@ -400,9 +536,15 @@ class RegularGrid(BaseMeshGrid):
         distances = np.sqrt((X - center_x) ** 2 + (Y - center_y) ** 2)
 
         diag = 0.3536 * cell_size
-        fully_inside = (distances - diag >= inner_radius) & (distances + diag <= outer_radius)
-        inner_boundary = (distances - diag <= inner_radius) & (distances + diag >= inner_radius)
-        outer_boundary = (distances - diag <= outer_radius) & (distances + diag >= outer_radius)
+        fully_inside = (distances - diag >= inner_radius) & (
+            distances + diag <= outer_radius
+        )
+        inner_boundary = (distances - diag <= inner_radius) & (
+            distances + diag >= inner_radius
+        )
+        outer_boundary = (distances - diag <= outer_radius) & (
+            distances + diag >= outer_radius
+        )
         boundary = inner_boundary | outer_boundary
 
         # Bulk set fully inside cells
@@ -416,15 +558,35 @@ class RegularGrid(BaseMeshGrid):
             i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
             cx, cy = x_centers[j], y_centers[i]
             samples_inside = self._supersample_cell(
-                cx, cy, sample_dx, sample_dy, num_samples,
-                lambda x, y: inner_radius <= np.hypot(x - center_x, y - center_y) <= outer_radius,
+                cx,
+                cy,
+                sample_dx,
+                sample_dy,
+                num_samples,
+                lambda x, y: inner_radius
+                <= np.hypot(x - center_x, y - center_y)
+                <= outer_radius,
             )
             if samples_inside > 0:
                 grids.blend_at((i, j), props, samples_inside / num_samples)
 
-    def _rasterize_polygon(self, structure, grids, props, is_custom_material,
-                           min_i, min_j, max_i, max_j, cell_size,
-                           x_centers, y_centers, sample_dx, sample_dy, num_samples):
+    def _rasterize_polygon(
+        self,
+        structure,
+        grids,
+        props,
+        is_custom_material,
+        min_i,
+        min_j,
+        max_i,
+        max_j,
+        cell_size,
+        x_centers,
+        y_centers,
+        sample_dx,
+        sample_dy,
+        num_samples,
+    ):
         """General path for polygons and complex shapes."""
         if hasattr(structure, "point_in_polygon"):
             contains_func = lambda x, y: structure.point_in_polygon(x, y)
@@ -436,7 +598,10 @@ class RegularGrid(BaseMeshGrid):
                 )
             )
 
-        if hasattr(structure, "vertices") and len(getattr(structure, "vertices", [])) > 0:
+        if (
+            hasattr(structure, "vertices")
+            and len(getattr(structure, "vertices", [])) > 0
+        ):
             # Classify cells as fully-inside, boundary, or remaining
             inside_mask = np.zeros((max_i - min_i, max_j - min_j), dtype=bool)
             boundary_mask = np.zeros((max_i - min_i, max_j - min_j), dtype=bool)
@@ -452,7 +617,9 @@ class RegularGrid(BaseMeshGrid):
                         center_inside = True
                         points_inside += 1
                     for dx_pt, dy_pt in sample_points[1:]:
-                        if contains_func(cx + dx_pt * cell_size, cy + dy_pt * cell_size):
+                        if contains_func(
+                            cx + dx_pt * cell_size, cy + dy_pt * cell_size
+                        ):
                             points_inside += 1
                     if center_inside and points_inside == len(sample_points):
                         inside_mask[i_rel, j_rel] = True
@@ -472,7 +639,12 @@ class RegularGrid(BaseMeshGrid):
                     i, j = bi[idx] + min_i, bj[idx] + min_j
                     cx, cy = x_centers[j], y_centers[i]
                     samples_inside = self._supersample_cell(
-                        cx, cy, sample_dx, sample_dy, num_samples, contains_func,
+                        cx,
+                        cy,
+                        sample_dx,
+                        sample_dy,
+                        num_samples,
+                        contains_func,
                     )
                     if samples_inside > 0:
                         grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -482,7 +654,12 @@ class RegularGrid(BaseMeshGrid):
                 for j in range(min_j, max_j):
                     cx, cy = x_centers[j], y_centers[i]
                     samples_inside = self._supersample_cell(
-                        cx, cy, sample_dx, sample_dy, num_samples, contains_func,
+                        cx,
+                        cy,
+                        sample_dx,
+                        sample_dy,
+                        num_samples,
+                        contains_func,
                     )
                     if samples_inside > 0:
                         grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -556,11 +733,16 @@ class RegularGrid3D(BaseMeshGrid):
         cell_size_z = self.resolution_z
 
         # Create grid of cell centers
-        x_centers = np.linspace(0.5 * cell_size_xy, width - 0.5 * cell_size_xy, grid_width)
-        y_centers = np.linspace(0.5 * cell_size_xy, height - 0.5 * cell_size_xy, grid_height)
+        x_centers = np.linspace(
+            0.5 * cell_size_xy, width - 0.5 * cell_size_xy, grid_width
+        )
+        y_centers = np.linspace(
+            0.5 * cell_size_xy, height - 0.5 * cell_size_xy, grid_height
+        )
         z_centers = (
             np.linspace(0.5 * cell_size_z, depth - 0.5 * cell_size_z, grid_depth)
-            if depth > 0 else [0]
+            if depth > 0
+            else [0]
         )
 
         # Precompute offsets for 3D super-sampling (3x3x3 = 27 samples)
@@ -619,17 +801,26 @@ class RegularGrid3D(BaseMeshGrid):
                     max_j = min(grid_width, int(np.ceil(max_x / cell_size_xy)) + 1)
                     max_k = (
                         min(grid_depth, int(np.ceil(max_z / cell_size_z)) + 1)
-                        if depth > 0 else 1
+                        if depth > 0
+                        else 1
                     )
 
-                    if (min_i >= grid_height or min_j >= grid_width or min_k >= grid_depth
-                            or max_i <= 0 or max_j <= 0 or max_k <= 0):
+                    if (
+                        min_i >= grid_height
+                        or min_j >= grid_width
+                        or min_k >= grid_depth
+                        or max_i <= 0
+                        or max_j <= 0
+                        or max_k <= 0
+                    ):
                         progress.update(task, advance=1)
                         continue
 
                     # Build 3D containment function
                     if hasattr(structure, "point_in_polygon"):
-                        contains_fn = lambda x, y, z: structure.point_in_polygon(x, y, z)
+                        contains_fn = lambda x, y, z: structure.point_in_polygon(
+                            x, y, z
+                        )
                     else:
                         contains_fn = lambda x, y, z: any(
                             val != def_val
@@ -669,8 +860,13 @@ class RegularGrid3D(BaseMeshGrid):
 
         # Process 3D PML boundaries
         self._process_3d_pml(
-            grids.permittivity, grids.permeability, grids.conductivity,
-            x_centers, y_centers, z_centers, dt_estimate,
+            grids.permittivity,
+            grids.permeability,
+            grids.conductivity,
+            x_centers,
+            y_centers,
+            z_centers,
+            dt_estimate,
         )
 
         grids.assign_to(self)
@@ -783,5 +979,3 @@ def create_mesh(design, resolution, auto_select=True, force_3d=False):
                 "Auto-selecting 2D meshing for effectively 2D design (depth=0)", "info"
             )
         return RegularGrid(design, resolution)
-
-

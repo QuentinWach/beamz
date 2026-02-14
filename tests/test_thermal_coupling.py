@@ -1,6 +1,5 @@
-import numpy as np
-
 import jax.numpy as jnp
+import numpy as np
 
 from beamz import Design, Material, Simulation, ThermalParams, ThermoPhysics
 
@@ -8,7 +7,9 @@ from beamz import Design, Material, Simulation, ThermalParams, ThermoPhysics
 def _make_sim(material, dt=1.0, resolution=1.0):
     design = Design(width=2.0, height=2.0, material=material)
     time = np.array([0.0, dt])
-    return Simulation(design=design, devices=[], boundaries=[], time=time, resolution=resolution)
+    return Simulation(
+        design=design, devices=[], boundaries=[], time=time, resolution=resolution
+    )
 
 
 def test_thermal_coupling_increases_temperature_and_eps():

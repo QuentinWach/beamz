@@ -130,6 +130,10 @@ class GaussianSource:
         from beamz.visual.overlays import add_gaussian_source_to_plot
 
         add_gaussian_source_to_plot(
-            self, ax, facecolor=facecolor, edgecolor=edgecolor,
-            alpha=alpha, linestyle=linestyle,
+            self,
+            ax,
+            facecolor=facecolor,
+            edgecolor=edgecolor,
+            alpha=alpha,
+            linestyle=linestyle,
         )

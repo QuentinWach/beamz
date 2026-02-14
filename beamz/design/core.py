@@ -141,7 +141,9 @@ def _merge_groups(material_groups, rings_to_preserve, structures_to_remove):
     return new_structures, structures_to_remove
 
 
-def _rebuild_structure_list(original, structures_to_remove, new_structures, material_groups):
+def _rebuild_structure_list(
+    original, structures_to_remove, new_structures, material_groups
+):
     """Rebuild the structure list, replacing merged groups at their original position."""
     material_replacements = {}
     for new_struct in new_structures:
@@ -201,7 +203,9 @@ class Design:
     def unify_polygons(self):
         """Merge overlapping polygons with the same material properties into unified shapes."""
         material_groups, structures_to_remove = _group_by_material(self.structures)
-        rings_to_preserve = _find_rings_to_preserve(material_groups, structures_to_remove)
+        rings_to_preserve = _find_rings_to_preserve(
+            material_groups, structures_to_remove
+        )
         new_structures, structures_to_remove = _merge_groups(
             material_groups, rings_to_preserve, structures_to_remove
         )

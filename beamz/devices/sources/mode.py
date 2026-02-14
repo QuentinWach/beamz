@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Private helpers
 # ---------------------------------------------------------------------------
 
+
 def _jax_tukey_window(M: int, alpha: float = 0.5) -> jnp.ndarray:
     """JAX-compatible Tukey (tapered cosine) window.
 
@@ -48,6 +49,7 @@ def _jax_tukey_window(M: int, alpha: float = 0.5) -> jnp.ndarray:
 
 def _scipy_tukey(n, alpha=0.3):
     from scipy.signal.windows import tukey
+
     return tukey(n, alpha=alpha)
 
 
@@ -71,8 +73,16 @@ def _make_tukey_window_2d(height_cells, width_cells, alpha=0.3, use_jax=True):
     _make = _jax_tukey_window if use_jax else _scipy_tukey
     _ones = jnp.ones if use_jax else np.ones
 
-    wz = _make(height_cells, alpha=alpha) if height_cells > 2 else _ones(max(1, height_cells))
-    wt = _make(width_cells, alpha=alpha) if width_cells > 2 else _ones(max(1, width_cells))
+    wz = (
+        _make(height_cells, alpha=alpha)
+        if height_cells > 2
+        else _ones(max(1, height_cells))
+    )
+    wt = (
+        _make(width_cells, alpha=alpha)
+        if width_cells > 2
+        else _ones(max(1, width_cells))
+    )
 
     if use_jax:
         return wz[:, jnp.newaxis] * wt[jnp.newaxis, :]
@@ -155,11 +165,22 @@ def _impedance_match_e_profile(e_profile, h_profile, Z_phys, eps=1e-12):
 
 
 def _build_3d_profiles(
-    Ex, Ey, Ez, Hx, Hy, Hz,
-    axis, direction,
-    center, width, height,
-    center_idx, offset_idx,
-    grid_shape, resolution, neff,
+    Ex,
+    Ey,
+    Ez,
+    Hx,
+    Hy,
+    Hz,
+    axis,
+    direction,
+    center,
+    width,
+    height,
+    center_idx,
+    offset_idx,
+    grid_shape,
+    resolution,
+    neff,
 ):
     """Build staggered, windowed, impedance-corrected injection profiles for 3D.
 
@@ -177,28 +198,64 @@ def _build_3d_profiles(
 
     if axis == "x":
         return _build_3d_x(
-            Ex, Ey, Ez, Hx, Hy, Hz,
-            dir_sign, Z_phys,
-            center, width, height,
-            center_idx, offset_idx,
-            nz, ny, nx, resolution,
+            Ex,
+            Ey,
+            Ez,
+            Hx,
+            Hy,
+            Hz,
+            dir_sign,
+            Z_phys,
+            center,
+            width,
+            height,
+            center_idx,
+            offset_idx,
+            nz,
+            ny,
+            nx,
+            resolution,
         )
     else:
         return _build_3d_y(
-            Ex, Ey, Ez, Hx, Hy, Hz,
-            dir_sign, Z_phys,
-            center, width, height,
-            center_idx, offset_idx,
-            nz, ny, nx, resolution,
+            Ex,
+            Ey,
+            Ez,
+            Hx,
+            Hy,
+            Hz,
+            dir_sign,
+            Z_phys,
+            center,
+            width,
+            height,
+            center_idx,
+            offset_idx,
+            nz,
+            ny,
+            nx,
+            resolution,
         )
 
 
 def _build_3d_x(
-    Ex, Ey, Ez, Hx, Hy, Hz,
-    dir_sign, Z_phys,
-    center, width, height,
-    center_idx, offset_idx,
-    nz, ny, nx, resolution,
+    Ex,
+    Ey,
+    Ez,
+    Hx,
+    Hy,
+    Hz,
+    dir_sign,
+    Z_phys,
+    center,
+    width,
+    height,
+    center_idx,
+    offset_idx,
+    nz,
+    ny,
+    nx,
+    resolution,
 ):
     # --- stagger ---
     Ey_s = _stagger_half(Ey, axis=1)
@@ -215,48 +272,87 @@ def _build_3d_x(
 
     # --- indices  (z_slice, y_slice, x_index) ---
     indices = {
-        "Ex": (slice(z_start, min(z_end, Ex_s.shape[0], nz)),
-               slice(y_start, min(y_end, Ex_s.shape[1], ny)),
-               offset_idx),
-        "Ey": (slice(z_start, min(z_end, Ey_s.shape[0], nz)),
-               slice(y_start, min(y_end, Ey_s.shape[1], ny - 1)),
-               center_idx),
-        "Ez": (slice(z_start, min(z_end, Ez_s.shape[0], nz - 1)),
-               slice(y_start, min(y_end, Ez_s.shape[1], ny)),
-               center_idx),
-        "Hx": (slice(z_start, min(z_end, Hx_s.shape[0], nz - 1)),
-               slice(y_start, min(y_end, Hx_s.shape[1], ny - 1)),
-               center_idx),
-        "Hy": (slice(z_start, min(z_end, Hy_s.shape[0], nz - 1)),
-               slice(y_start, min(y_end, Hy_s.shape[1], ny)),
-               offset_idx),
-        "Hz": (slice(z_start, min(z_end, Hz_s.shape[0], nz)),
-               slice(y_start, min(y_end, Hz_s.shape[1], ny - 1)),
-               offset_idx),
+        "Ex": (
+            slice(z_start, min(z_end, Ex_s.shape[0], nz)),
+            slice(y_start, min(y_end, Ex_s.shape[1], ny)),
+            offset_idx,
+        ),
+        "Ey": (
+            slice(z_start, min(z_end, Ey_s.shape[0], nz)),
+            slice(y_start, min(y_end, Ey_s.shape[1], ny - 1)),
+            center_idx,
+        ),
+        "Ez": (
+            slice(z_start, min(z_end, Ez_s.shape[0], nz - 1)),
+            slice(y_start, min(y_end, Ez_s.shape[1], ny)),
+            center_idx,
+        ),
+        "Hx": (
+            slice(z_start, min(z_end, Hx_s.shape[0], nz - 1)),
+            slice(y_start, min(y_end, Hx_s.shape[1], ny - 1)),
+            center_idx,
+        ),
+        "Hy": (
+            slice(z_start, min(z_end, Hy_s.shape[0], nz - 1)),
+            slice(y_start, min(y_end, Hy_s.shape[1], ny)),
+            offset_idx,
+        ),
+        "Hz": (
+            slice(z_start, min(z_end, Hz_s.shape[0], nz)),
+            slice(y_start, min(y_end, Hz_s.shape[1], ny - 1)),
+            offset_idx,
+        ),
     }
 
     # --- impedance correction (JAX) ---
     Ex_s, Ey_s, Ez_s = _impedance_correct_e_fields(
-        [Ex_s, Ey_s, Ez_s], [Hy_s, Hz_s], Z_phys, use_jax=True,
+        [Ex_s, Ey_s, Ez_s],
+        [Hy_s, Hz_s],
+        Z_phys,
+        use_jax=True,
     )
 
     # --- crop & window ---
     staggered = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s, "Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
     profiles = _crop_and_window_all(
-        staggered, z_start, z_end, y_start, y_end, dir_sign, use_jax=True,
+        staggered,
+        z_start,
+        z_end,
+        y_start,
+        y_end,
+        dir_sign,
+        use_jax=True,
     )
 
-    extra = {"_y_start": y_start, "_y_end": y_end, "_z_start": z_start, "_z_end": z_end,
-             "_h_component": "Hy", "_e_component": "Ey"}
+    extra = {
+        "_y_start": y_start,
+        "_y_end": y_end,
+        "_z_start": z_start,
+        "_z_end": z_end,
+        "_h_component": "Hy",
+        "_e_component": "Ey",
+    }
     return profiles, indices, extra
 
 
 def _build_3d_y(
-    Ex, Ey, Ez, Hx, Hy, Hz,
-    dir_sign, Z_phys,
-    center, width, height,
-    center_idx, offset_idx,
-    nz, ny, nx, resolution,
+    Ex,
+    Ey,
+    Ez,
+    Hx,
+    Hy,
+    Hz,
+    dir_sign,
+    Z_phys,
+    center,
+    width,
+    height,
+    center_idx,
+    offset_idx,
+    nz,
+    ny,
+    nx,
+    resolution,
 ):
     # --- stagger (y-propagation) ---
     Ex_s = _stagger_half(Ex, axis=1)
@@ -273,39 +369,66 @@ def _build_3d_y(
 
     # --- indices  (z_slice, y_index, x_slice) ---
     indices = {
-        "Ex": (slice(z_start, min(z_end, Ex_s.shape[0], nz)),
-               center_idx,
-               slice(x_start, min(x_end, Ex_s.shape[1], nx - 1))),
-        "Ey": (slice(z_start, min(z_end, Ey_s.shape[0], nz)),
-               offset_idx,
-               slice(x_start, min(x_end, Ey_s.shape[1], nx))),
-        "Ez": (slice(z_start, min(z_end, Ez_s.shape[0], nz - 1)),
-               center_idx,
-               slice(x_start, min(x_end, Ez_s.shape[1], nx))),
-        "Hx": (slice(z_start, min(z_end, Hx_s.shape[0], nz - 1)),
-               center_idx,
-               slice(x_start, min(x_end, Hx_s.shape[1], nx))),
-        "Hy": (slice(z_start, min(z_end, Hy_s.shape[0], nz - 1)),
-               center_idx,
-               slice(x_start, min(x_end, Hy_s.shape[1], nx - 1))),
-        "Hz": (slice(z_start, min(z_end, Hz_s.shape[0], nz)),
-               offset_idx,
-               slice(x_start, min(x_end, Hz_s.shape[1], nx - 1))),
+        "Ex": (
+            slice(z_start, min(z_end, Ex_s.shape[0], nz)),
+            center_idx,
+            slice(x_start, min(x_end, Ex_s.shape[1], nx - 1)),
+        ),
+        "Ey": (
+            slice(z_start, min(z_end, Ey_s.shape[0], nz)),
+            offset_idx,
+            slice(x_start, min(x_end, Ey_s.shape[1], nx)),
+        ),
+        "Ez": (
+            slice(z_start, min(z_end, Ez_s.shape[0], nz - 1)),
+            center_idx,
+            slice(x_start, min(x_end, Ez_s.shape[1], nx)),
+        ),
+        "Hx": (
+            slice(z_start, min(z_end, Hx_s.shape[0], nz - 1)),
+            center_idx,
+            slice(x_start, min(x_end, Hx_s.shape[1], nx)),
+        ),
+        "Hy": (
+            slice(z_start, min(z_end, Hy_s.shape[0], nz - 1)),
+            center_idx,
+            slice(x_start, min(x_end, Hy_s.shape[1], nx - 1)),
+        ),
+        "Hz": (
+            slice(z_start, min(z_end, Hz_s.shape[0], nz)),
+            offset_idx,
+            slice(x_start, min(x_end, Hz_s.shape[1], nx - 1)),
+        ),
     }
 
     # --- impedance correction (numpy path — matches original y-axis code) ---
     Ex_s, Ey_s, Ez_s = _impedance_correct_e_fields(
-        [Ex_s, Ey_s, Ez_s], [Hx_s, Hz_s], Z_phys, use_jax=False,
+        [Ex_s, Ey_s, Ez_s],
+        [Hx_s, Hz_s],
+        Z_phys,
+        use_jax=False,
     )
 
     # --- crop & window ---
     staggered = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s, "Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
     profiles = _crop_and_window_all(
-        staggered, z_start, z_end, x_start, x_end, dir_sign, use_jax=False,
+        staggered,
+        z_start,
+        z_end,
+        x_start,
+        x_end,
+        dir_sign,
+        use_jax=False,
     )
 
-    extra = {"_x_start": x_start, "_x_end": x_end, "_z_start": z_start, "_z_end": z_end,
-             "_h_component": "Hx", "_e_component": "Ex"}
+    extra = {
+        "_x_start": x_start,
+        "_x_end": x_end,
+        "_z_start": z_start,
+        "_z_end": z_end,
+        "_h_component": "Hx",
+        "_e_component": "Ex",
+    }
     return profiles, indices, extra
 
 
@@ -349,24 +472,46 @@ _HUYGENS_SIGNS = {
 def _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axis):
     """Inject E-field components for 3D Huygens source (J = n x H), after E update."""
     for e_comp, h_source, sign in _HUYGENS_SIGNS[axis]["e"]:
-        _inject_e_component(fields, e_comp, profiles, indices, h_source,
-                            signal_e, dt, resolution, sign=sign)
+        _inject_e_component(
+            fields,
+            e_comp,
+            profiles,
+            indices,
+            h_source,
+            signal_e,
+            dt,
+            resolution,
+            sign=sign,
+        )
 
 
 def _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axis):
     """Inject H-field components for 3D Huygens source (M = -n x E), after H update."""
     for h_comp, e_source, sign in _HUYGENS_SIGNS[axis]["h"]:
-        _inject_h_component(fields, h_comp, profiles, indices, e_source,
-                            signal_h, dt, resolution, sign=sign)
+        _inject_h_component(
+            fields,
+            h_comp,
+            profiles,
+            indices,
+            e_source,
+            signal_h,
+            dt,
+            resolution,
+            sign=sign,
+        )
 
 
-def _inject_3d_fields(fields, profiles, indices, signal_e, signal_h, dt, resolution, axis="x"):
+def _inject_3d_fields(
+    fields, profiles, indices, signal_e, signal_h, dt, resolution, axis="x"
+):
     """Inject all field components into a 3D field object (backward compat wrapper)."""
     _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axis)
     _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axis)
 
 
-def _inject_e_component(fields, comp, profiles, indices, j_source, sig, dt, res, sign=-1):
+def _inject_e_component(
+    fields, comp, profiles, indices, j_source, sig, dt, res, sign=-1
+):
     """Inject one E-field component via J = cross(n, H)."""
     profile = profiles.get(comp)
     idx = indices.get(comp)
@@ -379,11 +524,18 @@ def _inject_e_component(fields, comp, profiles, indices, j_source, sig, dt, res,
         logger.debug("Shape mismatch injecting %s, skipping", comp)
         return
     eps = fields.permittivity[idx]
-    setattr(fields, comp,
-            getattr(fields, comp).at[idx].add(sign * j_term * sig * dt / (EPS_0 * eps * res)))
+    setattr(
+        fields,
+        comp,
+        getattr(fields, comp)
+        .at[idx]
+        .add(sign * j_term * sig * dt / (EPS_0 * eps * res)),
+    )
 
 
-def _inject_h_component(fields, comp, profiles, indices, m_source, sig, dt, res, sign=-1):
+def _inject_h_component(
+    fields, comp, profiles, indices, m_source, sig, dt, res, sign=-1
+):
     """Inject one H-field component via M = -cross(n, E)."""
     profile = profiles.get(comp)
     idx = indices.get(comp)
@@ -397,8 +549,13 @@ def _inject_h_component(fields, comp, profiles, indices, m_source, sig, dt, res,
         return
     mu = getattr(fields, "permeability", None)
     mu_val = mu[idx] if mu is not None else 1.0
-    setattr(fields, comp,
-            getattr(fields, comp).at[idx].add(sign * m_term * sig * dt / (MU_0 * mu_val * res)))
+    setattr(
+        fields,
+        comp,
+        getattr(fields, comp)
+        .at[idx]
+        .add(sign * m_term * sig * dt / (MU_0 * mu_val * res)),
+    )
 
 
 def _match_shape(profile, target_shape):
@@ -409,8 +566,10 @@ def _match_shape(profile, target_shape):
     if profile.shape == target_shape:
         return profile
     if profile.ndim == len(target_shape):
-        slices = tuple(slice(0, min(profile.shape[i], target_shape[i]))
-                       for i in range(profile.ndim))
+        slices = tuple(
+            slice(0, min(profile.shape[i], target_shape[i]))
+            for i in range(profile.ndim)
+        )
         trimmed = profile[slices]
         if trimmed.shape == target_shape:
             return trimmed
@@ -423,6 +582,7 @@ def _match_shape(profile, target_shape):
 # ---------------------------------------------------------------------------
 # ModeSource class
 # ---------------------------------------------------------------------------
+
 
 class ModeSource:
     """Huygens mode source on Yee grid supporting ±x/±y propagation.
@@ -578,10 +738,19 @@ class ModeSource:
         # 5. Apply Yee grid staggering and set up indices
         if is_3d:
             self._setup_3d_injection(
-                Ex_aligned, Ey_aligned, Ez_aligned,
-                Hx_aligned, Hy_aligned, Hz_aligned,
-                center_idx, offset_idx, axis,
-                nz, ny, nx, resolution,
+                Ex_aligned,
+                Ey_aligned,
+                Ez_aligned,
+                Hx_aligned,
+                Hy_aligned,
+                Hz_aligned,
+                center_idx,
+                offset_idx,
+                axis,
+                nz,
+                ny,
+                nx,
+                resolution,
             )
         else:
             self._setup_2d_injection(
@@ -592,13 +761,29 @@ class ModeSource:
         self._initialized = True
 
     def _setup_3d_injection(
-        self, Ex, Ey, Ez, Hx, Hy, Hz,
-        center_idx, offset_idx, axis,
-        nz, ny, nx, resolution,
+        self,
+        Ex,
+        Ey,
+        Ez,
+        Hx,
+        Hy,
+        Hz,
+        center_idx,
+        offset_idx,
+        axis,
+        nz,
+        ny,
+        nx,
+        resolution,
     ):
         """Set up full 6-component injection for 3D simulations."""
         profiles, indices, extra = _build_3d_profiles(
-            Ex, Ey, Ez, Hx, Hy, Hz,
+            Ex,
+            Ey,
+            Ez,
+            Hx,
+            Hy,
+            Hz,
             axis=axis,
             direction=self.direction,
             center=self.center,
@@ -650,18 +835,40 @@ class ModeSource:
 
         if axis == "x":
             self._setup_2d_x(
-                E_mode, H_mode, center_idx, offset_idx, ny, nx, resolution,
-                dir_sign, Z_phys,
+                E_mode,
+                H_mode,
+                center_idx,
+                offset_idx,
+                ny,
+                nx,
+                resolution,
+                dir_sign,
+                Z_phys,
             )
         else:
             self._setup_2d_y(
-                E_mode, H_mode, center_idx, offset_idx, ny, nx, resolution,
-                dir_sign, Z_phys,
+                E_mode,
+                H_mode,
+                center_idx,
+                offset_idx,
+                ny,
+                nx,
+                resolution,
+                dir_sign,
+                Z_phys,
             )
 
     def _setup_2d_x(
-        self, E_mode, H_mode, center_idx, offset_idx, ny, nx, resolution,
-        dir_sign, Z_phys,
+        self,
+        E_mode,
+        H_mode,
+        center_idx,
+        offset_idx,
+        ny,
+        nx,
+        resolution,
+        dir_sign,
+        Z_phys,
     ):
         """2D injection setup for x-propagation."""
         center_y_idx = int(round(self.center[1] / resolution))
@@ -702,7 +909,8 @@ class ModeSource:
 
         else:  # TE
             hz_col = (
-                max(0, offset_idx - 1) if self.direction == "+x"
+                max(0, offset_idx - 1)
+                if self.direction == "+x"
                 else min(nx - 2, offset_idx)
             )
 
@@ -738,8 +946,16 @@ class ModeSource:
             self._mz_profile = -dir_sign * Ey_cropped
 
     def _setup_2d_y(
-        self, E_mode, H_mode, center_idx, offset_idx, ny, nx, resolution,
-        dir_sign, Z_phys,
+        self,
+        E_mode,
+        H_mode,
+        center_idx,
+        offset_idx,
+        ny,
+        nx,
+        resolution,
+        dir_sign,
+        Z_phys,
     ):
         """2D injection setup for y-propagation."""
         center_x_idx = int(round(self.center[0] / resolution))
@@ -781,7 +997,8 @@ class ModeSource:
 
         else:  # TE y-prop
             hz_row = (
-                max(0, offset_idx - 1) if self.direction == "+y"
+                max(0, offset_idx - 1)
+                if self.direction == "+y"
                 else min(ny - 2, offset_idx)
             )
 
@@ -820,6 +1037,7 @@ class ModeSource:
         """Create a 1D Tukey window for smooth edges."""
         if width_cells > 2:
             from scipy.signal.windows import tukey
+
             return tukey(width_cells, alpha=alpha)
         return np.ones(max(1, width_cells))
 
@@ -927,24 +1145,36 @@ class ModeSource:
 
     def _get_3d_profiles_and_indices(self):
         profiles = {
-            "Ex": self._Ex_profile, "Ey": self._Ey_profile, "Ez": self._Ez_profile,
-            "Hx": self._Hx_profile, "Hy": self._Hy_profile, "Hz": self._Hz_profile,
+            "Ex": self._Ex_profile,
+            "Ey": self._Ey_profile,
+            "Ez": self._Ez_profile,
+            "Hx": self._Hx_profile,
+            "Hy": self._Hy_profile,
+            "Hz": self._Hz_profile,
         }
         indices = {
-            "Ex": self._Ex_indices, "Ey": self._Ey_indices, "Ez": self._Ez_indices,
-            "Hx": self._Hx_indices, "Hy": self._Hy_indices, "Hz": self._Hz_indices,
+            "Ex": self._Ex_indices,
+            "Ey": self._Ey_indices,
+            "Ez": self._Ez_indices,
+            "Hx": self._Hx_indices,
+            "Hy": self._Hy_indices,
+            "Hz": self._Hz_indices,
         }
         return profiles, indices
 
     def _inject_3d_h(self, fields, signal_h, dt, resolution):
         """Inject H-field components for 3D Huygens source."""
         profiles, indices = self._get_3d_profiles_and_indices()
-        _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, self._axis)
+        _inject_3d_h_fields(
+            fields, profiles, indices, signal_h, dt, resolution, self._axis
+        )
 
     def _inject_3d_e(self, fields, signal_e, dt, resolution):
         """Inject E-field components for 3D Huygens source."""
         profiles, indices = self._get_3d_profiles_and_indices()
-        _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, self._axis)
+        _inject_3d_e_fields(
+            fields, profiles, indices, signal_e, dt, resolution, self._axis
+        )
 
     # -- 2D injection (split, with corrected signs) ---------------------
 
@@ -1005,6 +1235,10 @@ class ModeSource:
         from beamz.visual.overlays import add_mode_source_to_plot
 
         add_mode_source_to_plot(
-            self, ax, facecolor=facecolor, edgecolor=edgecolor,
-            alpha=alpha, linestyle=linestyle,
+            self,
+            ax,
+            facecolor=facecolor,
+            edgecolor=edgecolor,
+            alpha=alpha,
+            linestyle=linestyle,
         )

@@ -153,5 +153,3 @@ def create_rich_progress() -> Progress:
         "[progress.percentage]{task.percentage:>3.0f}%",
         TimeRemainingColumn(),
     )
-
-
