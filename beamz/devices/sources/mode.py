@@ -884,7 +884,8 @@ class ModeSource:
         if self._Ez_profile is None and self._jz_profile is None:
             self.initialize(fields.permittivity, resolution)
 
-        signal_value_h = self._get_signal_value(t + 0.5 * dt + self._dt_physical, dt)
+        # M=-n×E is injected on the H update at the standard half-step time.
+        signal_value_h = self._get_signal_value(t + 0.5 * dt, dt)
 
         if self._Ex_profile is not None and self._is_3d:
             self._inject_3d_h(fields, signal_value_h, dt, resolution)
@@ -896,7 +897,8 @@ class ModeSource:
         if self._Ez_profile is None and self._jz_profile is None:
             self.initialize(fields.permittivity, resolution)
 
-        signal_value_e = self._get_signal_value(t + 0.5 * dt, dt)
+        # J=n×H is evaluated on the E update and needs the physical E/H plane offset.
+        signal_value_e = self._get_signal_value(t + 0.5 * dt + self._dt_physical, dt)
 
         if self._Ex_profile is not None and self._is_3d:
             self._inject_3d_e(fields, signal_value_e, dt, resolution)

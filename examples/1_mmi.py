@@ -8,14 +8,17 @@ TIME = 40*WL/LIGHT_SPEED # total simulation duration
 N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
 WG_W = 0.565*µm # width of the waveguide
 H, W, OFFSET = 3.5*µm, 9*µm, 1.05*µm # height, length, offset of the MMI
+MMI_TAPER = 1.5*µm # smooth input transition to reduce physical reflection at MMI entrance
 DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=20) 
 
 # Design the MMI with input and output waveguides
 design = Design(width=X, height=Y, material=Material(N_CLAD**2))
-design += Rectangle(position=(0, Y/2-WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
+mmi_body_start = X/2 - W/2 + MMI_TAPER
+design += Rectangle(position=(0, Y/2-WG_W/2), width=mmi_body_start, height=WG_W, material=Material(N_CORE**2))
+design += Taper(position=(mmi_body_start, Y/2), input_width=WG_W, output_width=H, length=MMI_TAPER, material=Material(N_CORE**2))
+design += Rectangle(position=(mmi_body_start + MMI_TAPER, Y/2-H/2), width=W - MMI_TAPER, height=H, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2, Y/2 + OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
 design += Rectangle(position=(X/2, Y/2 - OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
-design += Rectangle(position=(X/2-W/2, Y/2-H/2), width=W, height=H, material=Material(N_CORE**2))
 design.show()
 
 # Rasterize the design
