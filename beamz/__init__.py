@@ -54,8 +54,8 @@ from beamz.simulation.thermal import (
     ThermalScenario,
     ThermalSink,
     ThermalSource,
-    solve_thermal,
     solve_static_thermal,
+    solve_thermal,
     sweep_mzi_heater,
 )
 

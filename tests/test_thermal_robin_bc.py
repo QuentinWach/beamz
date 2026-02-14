@@ -1,12 +1,12 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from beamz import (
     ConvectionBC,
     Design,
     Material,
-    StaticThermalConfig,
     Simulation,
+    StaticThermalConfig,
     ThermalConfig,
     ThermalCoupling,
     ThermalScenario,
