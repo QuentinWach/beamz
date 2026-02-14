@@ -141,6 +141,19 @@ def _impedance_correct_e_fields(E_components, H_components, Z_phys, use_jax=True
     return list(E_components)
 
 
+def _impedance_match_e_profile(e_profile, h_profile, Z_phys, eps=1e-12):
+    """Match one E-profile to one H-profile with a shared 2D rule.
+
+    Uses mean-absolute amplitudes so TE/TM use the same normalization
+    and the result is less sensitive to single-cell peaks.
+    """
+    norm_h = np.mean(np.abs(h_profile))
+    norm_e = np.mean(np.abs(e_profile))
+    if norm_h > eps and norm_e > eps:
+        return e_profile * (Z_phys / (norm_e / norm_h))
+    return e_profile
+
+
 def _build_3d_profiles(
     Ex, Ey, Ez, Hx, Hy, Hz,
     axis, direction,
@@ -673,9 +686,7 @@ class ModeSource:
             Hy_profile = Hy_raw * np.exp(-1j * phase_ref)
             Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
 
-            norm_h, norm_e = np.max(np.abs(Hy_profile)), np.max(np.abs(Ez_profile))
-            if norm_h > 1e-12 and norm_e > 1e-12:
-                Ez_profile = Ez_profile * (Z_phys / (norm_e / norm_h))
+            Ez_profile = _impedance_match_e_profile(Ez_profile, Hy_profile, Z_phys)
 
             width_cells = y_end - y_start
             window = self._make_1d_window(width_cells)
@@ -711,13 +722,7 @@ class ModeSource:
             Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
             Ey_profile = Ey_staggered * np.exp(-1j * phase_ref)
 
-            # TE uses staggered/averaged transverse profiles on the Yee grid.
-            # Use an L1-based impedance match (instead of peak-amplitude match)
-            # to avoid over-weighting single-cell extrema and reduce backscatter.
-            norm_h = np.mean(np.abs(Hz_profile))
-            norm_e = np.mean(np.abs(Ey_profile))
-            if norm_h > 1e-12 and norm_e > 1e-12:
-                Ey_profile = Ey_profile * (Z_phys / (norm_e / norm_h))
+            Ey_profile = _impedance_match_e_profile(Ey_profile, Hz_profile, Z_phys)
 
             width_cells = min(y_end, len(Hz_profile)) - y_start
             window = self._make_1d_window(width_cells)
@@ -759,9 +764,7 @@ class ModeSource:
             Hx_profile = Hx_raw * np.exp(-1j * phase_ref)
             Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
 
-            norm_h, norm_e = np.max(np.abs(Hx_profile)), np.max(np.abs(Ez_profile))
-            if norm_h > 1e-12 and norm_e > 1e-12:
-                Ez_profile = Ez_profile * (Z_phys / (norm_e / norm_h))
+            Ez_profile = _impedance_match_e_profile(Ez_profile, Hx_profile, Z_phys)
 
             width_cells = x_end - x_start
             window = self._make_1d_window(width_cells)
@@ -798,13 +801,7 @@ class ModeSource:
             Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
             Ex_profile = Ex_staggered * np.exp(-1j * phase_ref)
 
-            # TE uses staggered/averaged transverse profiles on the Yee grid.
-            # Use an L1-based impedance match (instead of peak-amplitude match)
-            # to avoid over-weighting single-cell extrema and reduce backscatter.
-            norm_h = np.mean(np.abs(Hz_profile))
-            norm_e = np.mean(np.abs(Ex_profile))
-            if norm_h > 1e-12 and norm_e > 1e-12:
-                Ex_profile = Ex_profile * (Z_phys / (norm_e / norm_h))
+            Ex_profile = _impedance_match_e_profile(Ex_profile, Hz_profile, Z_phys)
 
             width_cells = min(x_end, len(Hz_profile)) - x_start
             window = self._make_1d_window(width_cells)

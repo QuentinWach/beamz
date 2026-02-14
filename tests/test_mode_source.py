@@ -684,7 +684,7 @@ class TestModeSourcePolarization:
             backward = compute_field_energy(snapshot[sy:, :], dx)
 
         forward_fraction = forward / (forward + backward + 1e-30)
-        min_forward = 0.97 if pol == "te" else 0.85
+        min_forward = 0.97
         assert forward_fraction > min_forward, (
             f"Poor directionality for {direction}/{pol}: "
             f"forward_fraction={forward_fraction:.3f}"
