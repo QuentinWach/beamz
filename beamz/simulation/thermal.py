@@ -18,6 +18,9 @@ class ThermalConfig:
     T0: float = 300.0
     max_iters: int = 5000
     tol: float = 1e-6
+    robin_h: float = 0.0
+    robin_T_ambient: float = 300.0
+    robin_sides: tuple[str, ...] = ()
 
 
 @dataclass
@@ -79,7 +82,17 @@ def _div_k_grad_neumann(field, k, dx, dy=None, dz=None):
     raise ValueError(f"Unsupported field dimension: {field.ndim}")
 
 
-def _steady_state_jacobi_step(T, k_grid, Q, dx, dy=None, dz=None):
+def _steady_state_jacobi_step(
+    T,
+    k_grid,
+    Q,
+    dx,
+    dy=None,
+    dz=None,
+    robin_h=0.0,
+    robin_t_ambient=300.0,
+    robin_sides=(),
+):
     """One Jacobi iteration of div(k grad T) + Q = 0 with Neumann boundaries."""
     if dy is None:
         dy = dx
@@ -101,6 +114,16 @@ def _steady_state_jacobi_step(T, k_grid, Q, dx, dy=None, dz=None):
         denom[:-1, :] += ky_face
         denom[1:, :] += ky_face
 
+        numer, denom = _apply_robin_static_np(
+            numer=numer,
+            denom=denom,
+            T=T,
+            h=robin_h,
+            t_ambient=robin_t_ambient,
+            dx=dx,
+            dy=dy,
+            sides=robin_sides,
+        )
         return np.where(denom > 0, numer / denom, T)
 
     if T.ndim == 3:
@@ -128,7 +151,116 @@ def _steady_state_jacobi_step(T, k_grid, Q, dx, dy=None, dz=None):
         denom[:-1, :, :] += kz_face
         denom[1:, :, :] += kz_face
 
+        numer, denom = _apply_robin_static_np(
+            numer=numer,
+            denom=denom,
+            T=T,
+            h=robin_h,
+            t_ambient=robin_t_ambient,
+            dx=dx,
+            dy=dy,
+            dz=dz,
+            sides=robin_sides,
+        )
         return np.where(denom > 0, numer / denom, T)
+
+    raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
+
+
+def _validate_robin_sides(sides, ndim):
+    valid = {"left", "right", "bottom", "top"}
+    if ndim == 3:
+        valid = valid | {"front", "back"}
+    invalid = [s for s in sides if s not in valid]
+    if invalid:
+        raise ValueError(f"Unsupported robin_sides {invalid} for {ndim}D thermal grid")
+
+
+def _apply_robin_source_jax(source, T, h, t_ambient, dx, dy=None, dz=None, sides=()):
+    if h <= 0 or not sides:
+        return source
+    if dy is None:
+        dy = dx
+    _validate_robin_sides(sides, T.ndim)
+
+    out = source
+    if T.ndim == 2:
+        if "left" in sides:
+            out = out.at[:, 0].add(-(h / dx) * (T[:, 0] - t_ambient))
+        if "right" in sides:
+            out = out.at[:, -1].add(-(h / dx) * (T[:, -1] - t_ambient))
+        if "bottom" in sides:
+            out = out.at[0, :].add(-(h / dy) * (T[0, :] - t_ambient))
+        if "top" in sides:
+            out = out.at[-1, :].add(-(h / dy) * (T[-1, :] - t_ambient))
+        return out
+
+    if T.ndim == 3:
+        if dz is None:
+            dz = dx
+        if "left" in sides:
+            out = out.at[:, :, 0].add(-(h / dx) * (T[:, :, 0] - t_ambient))
+        if "right" in sides:
+            out = out.at[:, :, -1].add(-(h / dx) * (T[:, :, -1] - t_ambient))
+        if "bottom" in sides:
+            out = out.at[:, 0, :].add(-(h / dy) * (T[:, 0, :] - t_ambient))
+        if "top" in sides:
+            out = out.at[:, -1, :].add(-(h / dy) * (T[:, -1, :] - t_ambient))
+        if "front" in sides:
+            out = out.at[0, :, :].add(-(h / dz) * (T[0, :, :] - t_ambient))
+        if "back" in sides:
+            out = out.at[-1, :, :].add(-(h / dz) * (T[-1, :, :] - t_ambient))
+        return out
+
+    raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
+
+
+def _apply_robin_static_np(
+    numer, denom, T, h, t_ambient, dx, dy=None, dz=None, sides=()
+):
+    if h <= 0 or not sides:
+        return numer, denom
+    if dy is None:
+        dy = dx
+    _validate_robin_sides(sides, T.ndim)
+
+    if T.ndim == 2:
+        if "left" in sides:
+            denom[:, 0] += h / dx
+            numer[:, 0] += (h / dx) * t_ambient
+        if "right" in sides:
+            denom[:, -1] += h / dx
+            numer[:, -1] += (h / dx) * t_ambient
+        if "bottom" in sides:
+            denom[0, :] += h / dy
+            numer[0, :] += (h / dy) * t_ambient
+        if "top" in sides:
+            denom[-1, :] += h / dy
+            numer[-1, :] += (h / dy) * t_ambient
+        return numer, denom
+
+    if T.ndim == 3:
+        if dz is None:
+            dz = dx
+        if "left" in sides:
+            denom[:, :, 0] += h / dx
+            numer[:, :, 0] += (h / dx) * t_ambient
+        if "right" in sides:
+            denom[:, :, -1] += h / dx
+            numer[:, :, -1] += (h / dx) * t_ambient
+        if "bottom" in sides:
+            denom[:, 0, :] += h / dy
+            numer[:, 0, :] += (h / dy) * t_ambient
+        if "top" in sides:
+            denom[:, -1, :] += h / dy
+            numer[:, -1, :] += (h / dy) * t_ambient
+        if "front" in sides:
+            denom[0, :, :] += h / dz
+            numer[0, :, :] += (h / dz) * t_ambient
+        if "back" in sides:
+            denom[-1, :, :] += h / dz
+            numer[-1, :, :] += (h / dz) * t_ambient
+        return numer, denom
 
     raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
 
@@ -181,6 +313,9 @@ class ThermalCoupling:
         self.dx = None
         self.dy = None
         self.dz = None
+        self.robin_h = 0.0
+        self.robin_t_ambient = 300.0
+        self.robin_sides = ()
 
     def initialize(self, sim):
         """Initialize thermal grids and state from the simulation."""
@@ -206,6 +341,12 @@ class ThermalCoupling:
         self.dx = sim.resolution
         self.dy = sim.resolution
         self.dz = getattr(sim.fields, "resolution", sim.resolution)
+        self.robin_h = float(getattr(self.config, "robin_h", 0.0))
+        self.robin_t_ambient = float(
+            getattr(self.config, "robin_T_ambient", self.config.T0)
+        )
+        self.robin_sides = tuple(getattr(self.config, "robin_sides", ()))
+        _validate_robin_sides(self.robin_sides, self.T.ndim)
         self.initialized = True
 
     def _apply_default(self, grid, default):
@@ -278,6 +419,16 @@ class ThermalCoupling:
                     self.T, self.k, self.dx, self.dy, self.dz
                 )
                 source = div_k_grad + Q
+                source = _apply_robin_source_jax(
+                    source=source,
+                    T=self.T,
+                    h=self.robin_h,
+                    t_ambient=self.robin_t_ambient,
+                    dx=self.dx,
+                    dy=self.dy,
+                    dz=self.dz,
+                    sides=self.robin_sides,
+                )
                 denom = self.rho * self.cp
                 update = jnp.where(denom > 0, (sub_dt / denom) * source, 0.0)
                 self.T = self.T + update
@@ -401,7 +552,15 @@ class StaticThermalSolver:
         return mask
 
     def _steady_state_step(self, T, k_grid, Q, dx):
-        return _steady_state_jacobi_step(T, k_grid, Q, dx)
+        return _steady_state_jacobi_step(
+            T=T,
+            k_grid=k_grid,
+            Q=Q,
+            dx=dx,
+            robin_h=float(self.config.robin_h),
+            robin_t_ambient=float(self.config.robin_T_ambient),
+            robin_sides=tuple(self.config.robin_sides),
+        )
 
 
 def solve_static_thermal(

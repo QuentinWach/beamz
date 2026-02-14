@@ -7,54 +7,64 @@ from beamz import Design, Material, Rectangle, ThermalConfig
 
 
 def main():
-    # Chip cross-section (top to bottom): air, heater, oxide, silicon, substrate
-    W, H = 20e-6, 8e-6
-    # Air cladding (approx. room-temperature thermal conductivity).
+    # Chip cross-section (top to bottom): air, heater, top oxide, BOX, Si substrate.
+    # Use a taller substrate so heat can spread before reaching the thermal anchor.
+    W, H = 30e-6, 18e-6
+    # Air cladding (room-temperature thermal conductivity).
     design = Design(
         width=W, height=H, material=Material(permittivity=1.0, k=0.026, T0=300.0)
     )
 
-    oxide = Material(
+    box = Material(
         permittivity=1.44**2, k=1.38, rho=2200.0, cp=703.0, dn_dT=1e-5, T0=300.0
     )
-    silicon = Material(
-        permittivity=3.48**2, k=130.0, rho=2330.0, cp=700.0, dn_dT=1.86e-4, T0=300.0
+    top_oxide = Material(
+        permittivity=1.44**2, k=1.38, rho=2200.0, cp=703.0, dn_dT=1e-5, T0=300.0
     )
+    # Silicon handle wafer (effective substrate sink path).
     substrate = Material(
-        permittivity=3.4**2, k=130.0, rho=2330.0, cp=700.0, dn_dT=1.5e-4, T0=300.0
+        permittivity=3.45**2, k=130.0, rho=2330.0, cp=700.0, dn_dT=1.86e-4, T0=300.0
     )
     # Metal heater (representative TiN-like thermal properties).
     heater = Material(permittivity=1.0, k=25.0, rho=5200.0, cp=540.0, T0=300.0)
 
     # Layers
-    design += Rectangle(position=(0, 0.0), width=W, height=2.5e-6, material=substrate)
-    design += Rectangle(position=(0, 2.5e-6), width=W, height=2.0e-6, material=silicon)
-    design += Rectangle(position=(0, 4.5e-6), width=W, height=2.5e-6, material=oxide)
+    design += Rectangle(position=(0, 0.0), width=W, height=12.0e-6, material=substrate)
+    design += Rectangle(position=(0, 12.0e-6), width=W, height=2.0e-6, material=box)
     design += Rectangle(
-        position=(7e-6, 6.7e-6), width=6e-6, height=0.4e-6, material=heater
+        position=(0, 14.0e-6), width=W, height=3.0e-6, material=top_oxide
+    )
+    design += Rectangle(
+        position=(12e-6, 16.4e-6), width=6e-6, height=0.3e-6, material=heater
     )
 
     def heater_mask(x, y, z):
-        return 7e-6 <= x <= 13e-6 and 6.7e-6 <= y <= 7.1e-6
+        return 12e-6 <= x <= 18e-6 and 16.4e-6 <= y <= 16.7e-6
 
     params = ThermalConfig(
         thermal_dt=1e-13,
         tau_avg=1e-13,
-        max_iters=6000,
+        max_iters=8000,
         tol=1e-6,
+        # Robin BC proxy for natural convection to ambient air at the top surface.
+        robin_h=10.0,
+        robin_T_ambient=300.0,
+        robin_sides=("top",),
     )
 
-    def substrate_sink_mask(x, y, z):
-        # Fix the bottom substrate to ambient (simple thermal-anchor model).
-        return 0.0 <= y <= 2.5e-6
+    def backside_sink_mask(x, y, z):
+        # Backside thermal anchor: only a thin bottom slice is clamped to ambient.
+        # This better approximates heat flowing into a heat sink/chuck than pinning
+        # the entire substrate volume to 300 K.
+        return 0.0 <= y <= 0.2e-6
 
     result = design.solve_static_thermal(
         resolution=0.1e-6,
         config=params,
         heater_mask=heater_mask,
-        # Tuned for this geometry to produce a realistic hotspot range (~300-370 K).
+        # Tuned for this stack to produce a realistic hotspot range (~300-380 K).
         heater_power=2e14,
-        fixed_temp_mask=substrate_sink_mask,
+        fixed_temp_mask=backside_sink_mask,
         fixed_temp_value=300.0,
     )
     eps_r, temperature = result.permittivity, result.temperature
@@ -71,7 +81,7 @@ def main():
     sink_mask = np.zeros_like(qmag, dtype=bool)
     for i in range(qmag.shape[0]):
         y = (i + 0.5) * dx
-        if 0.0 <= y <= 2.5e-6:
+        if 0.0 <= y <= 0.2e-6:
             sink_mask[i, :] = True
     solid_mask = (k_grid > 0) & (~sink_mask)
     qmag_solid = np.where(solid_mask, qmag, 0.0)
@@ -92,10 +102,10 @@ def main():
     outline_color = "white"
     outline_alpha = 0.5
     structures = [
-        (0, 0.0, W, 2.5e-6),  # substrate
-        (0, 2.5e-6, W, 2.0e-6),  # silicon
-        (0, 4.5e-6, W, 2.5e-6),  # oxide
-        (7e-6, 6.7e-6, 6e-6, 0.4e-6),  # heater
+        (0, 0.0, W, 12.0e-6),  # substrate
+        (0, 12.0e-6, W, 2.0e-6),  # BOX
+        (0, 14.0e-6, W, 3.0e-6),  # top oxide
+        (12e-6, 16.4e-6, 6e-6, 0.3e-6),  # heater
     ]
     for x, y, w, h in structures:
         ax0.add_patch(

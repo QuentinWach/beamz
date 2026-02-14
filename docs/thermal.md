@@ -90,17 +90,56 @@ def heater_mask(x, y, z):
     return 3e-6 <= x <= 9e-6 and 3.4e-6 <= y <= 3.8e-6
 
 params = ThermalConfig(thermal_dt=1e-13, tau_avg=1e-13)
+
+def backside_sink_mask(x, y, z):
+    # Approximate a thermal chuck by clamping only the wafer backside.
+    return 0.0 <= y <= 0.2e-6
+
 result = design.solve_static_thermal(
     resolution=0.1e-6,
     config=params,
     heater_mask=heater_mask,
-    heater_power=5e12,
+    heater_power=2e14,
+    fixed_temp_mask=backside_sink_mask,
+    fixed_temp_value=300.0,
 )
 eps_r, temperature = result.permittivity, result.temperature
 ```
+
+If you want to model ambient air cooling on exposed boundaries, use Robin BC
+settings in `ThermalConfig`:
+
+```python
+params = ThermalConfig(
+    thermal_dt=1e-13,
+    tau_avg=1e-13,
+    robin_h=10.0,              # W/m^2/K (natural convection order of magnitude)
+    robin_T_ambient=300.0,     # ambient temperature (K)
+    robin_sides=("top",),      # apply on selected outer boundaries
+)
+```
+
+For microheaters, substrate conduction is often the dominant thermal path.
+Robin top cooling is typically a secondary effect unless forced convection is strong.
 
 Run the static example module with:
 
 ```bash
 python -m examples.thermal_static
 ```
+
+## Benchmark Demo (Analytical Check)
+
+A standard correctness benchmark is a 1D slab with:
+- Uniform volumetric heating
+- Left boundary fixed temperature (Dirichlet)
+- Right boundary convection to ambient (Robin)
+
+Run:
+
+```bash
+python -m examples.thermal_benchmark_slab
+```
+
+This compares the BEAMZ static solution against the closed-form analytical profile
+and prints absolute/relative error.
