@@ -79,9 +79,7 @@ def show_mode_profile(mode_source, field=None):
 
     plt.figure(figsize=(8, 6))
     if profile.ndim == 2:
-        im = plt.imshow(
-            np.abs(profile), origin="lower", cmap="magma", aspect="auto"
-        )
+        im = plt.imshow(np.abs(profile), origin="lower", cmap="magma", aspect="auto")
         plt.colorbar(im, label="Absolute Amplitude")
         plt.title(f"Mode Source 2D Profile: {title} (neff={mode_source._neff:.4f})")
         if mode_source.direction in ["+x", "-x"]:

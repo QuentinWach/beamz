@@ -17,13 +17,19 @@ def resolve_cmap(cmap):
             return plt.get_cmap("twilight_zero")
         except ValueError:
             from beamz.visual.animation import get_twilight_zero_cmap
+
             return get_twilight_zero_cmap()
     return cmap
 
 
 def add_design_overlays(
-    ax, design, line_color="gray", line_opacity=0.5,
-    sources=None, show_monitors=True, skip_background=False,
+    ax,
+    design,
+    line_color="gray",
+    line_opacity=0.5,
+    sources=None,
+    show_monitors=True,
+    skip_background=False,
 ):
     """Draw structure outlines, sources, and monitors on an axis.
 
@@ -76,7 +82,9 @@ def add_design_overlays(
                 alpha=line_opacity,
             )
 
-    for source in (sources if sources is not None else getattr(design, "sources", []) or []):
+    for source in (
+        sources if sources is not None else getattr(design, "sources", []) or []
+    ):
         if hasattr(source, "add_to_plot"):
             source.add_to_plot(ax)
 
@@ -130,9 +138,7 @@ def draw_scale_bar(ax, design, wavelength=None, fontsize=10):
     x_end = design.width - margin_x
     y_pos = margin_y
 
-    ax.plot(
-        [x_start, x_end], [y_pos, y_pos], "w", linewidth=3, solid_capstyle="butt"
-    )
+    ax.plot([x_start, x_end], [y_pos, y_pos], "w", linewidth=3, solid_capstyle="butt")
 
     label_y = y_pos - design.height * 0.02
     if wavelength is not None:
@@ -202,7 +208,9 @@ def show_mesh_grid(grid, design, field="permittivity"):
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.imshow(
-        grid, origin="lower", cmap="Grays",
+        grid,
+        origin="lower",
+        cmap="Grays",
         extent=(0, design.width, 0, design.height),
     )
     fig.colorbar(ax.images[0], ax=ax, label=field)
@@ -235,7 +243,9 @@ def show_mesh_slice(grid, design, field="permittivity", z_index=None, z_res=None
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.imshow(
-        grid, origin="lower", cmap="Grays",
+        grid,
+        origin="lower",
+        cmap="Grays",
         extent=(0, design.width, 0, design.height),
     )
     fig.colorbar(ax.images[0], ax=ax, label=field)
@@ -275,14 +285,16 @@ def show_mesh_3d(grid_3d, design, field="permittivity", slice_spacing=1, alpha=0
         X, Y = np.meshgrid(x, y)
         Z = np.full_like(X, z[k])
         ax.plot_surface(
-            X, Y, Z,
+            X,
+            Y,
+            Z,
             facecolors=plt.cm.viridis(grid_3d[k, :, :]),
-            alpha=alpha, linewidth=0, antialiased=True,
+            alpha=alpha,
+            linewidth=0,
+            antialiased=True,
         )
 
-    scale, unit = get_si_scale_and_label(
-        max(design.width, design.height, design.depth)
-    )
+    scale, unit = get_si_scale_and_label(max(design.width, design.height, design.depth))
     ax.set_xlabel(f"X ({unit})")
     ax.set_ylabel(f"Y ({unit})")
     ax.set_zlabel(f"Z ({unit})")
@@ -326,12 +338,18 @@ def add_mode_source_to_plot(
         line_y = [y_pos, y_pos]
 
     ax.plot(
-        line_x, line_y,
-        color=edgecolor, linewidth=3, alpha=alpha,
-        solid_capstyle="round", label="ModeSource",
+        line_x,
+        line_y,
+        color=edgecolor,
+        linewidth=3,
+        alpha=alpha,
+        solid_capstyle="round",
+        label="ModeSource",
     )
 
-    arrow_length = mode_source.wavelength * 0.5 if hasattr(mode_source, "wavelength") else 0.5e-6
+    arrow_length = (
+        mode_source.wavelength * 0.5 if hasattr(mode_source, "wavelength") else 0.5e-6
+    )
     if mode_source.direction in ["+x", "-x"]:
         arrow_dx = arrow_length if mode_source.direction == "+x" else -arrow_length
         arrow_dy = 0

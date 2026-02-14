@@ -64,6 +64,7 @@ def draw_polygon(
     )
     ax.add_patch(patch)
 
+
 def determine_if_3d(design):
     """Determine if the design should be visualized in 3D based on structure properties."""
     if design.depth and design.depth > 0:
@@ -86,13 +87,16 @@ def determine_if_3d(design):
                         return True
     return False
 
+
 def show_design(design, unify_structures=True):
     """Display the design visually using 2D matplotlib or 3D plotly."""
     if determine_if_3d(design):
         from beamz.visual.design_3d import show_design_3d
+
         show_design_3d(design, unify_structures)
     else:
         show_design_2d(design, unify_structures)
+
 
 def show_design_2d(design, unify_structures=True):
     """Display the design using 2D matplotlib visualization."""
@@ -167,6 +171,7 @@ def show_design_2d(design, unify_structures=True):
 
     plt.tight_layout()
     plt.show()
+
 
 def draw_boundary(ax, boundary, design, edgecolor="red", linestyle="--", alpha=0.5):
     """Draw boundary regions on a matplotlib axis."""

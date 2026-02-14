@@ -141,7 +141,9 @@ def _merge_groups(material_groups, rings_to_preserve, structures_to_remove):
     return new_structures, structures_to_remove
 
 
-def _rebuild_structure_list(original, structures_to_remove, new_structures, material_groups):
+def _rebuild_structure_list(
+    original, structures_to_remove, new_structures, material_groups
+):
     """Rebuild the structure list, replacing merged groups at their original position."""
     material_replacements = {}
     for new_struct in new_structures:
@@ -201,7 +203,9 @@ class Design:
     def unify_polygons(self):
         """Merge overlapping polygons with the same material properties into unified shapes."""
         material_groups, structures_to_remove = _group_by_material(self.structures)
-        rings_to_preserve = _find_rings_to_preserve(material_groups, structures_to_remove)
+        rings_to_preserve = _find_rings_to_preserve(
+            material_groups, structures_to_remove
+        )
         new_structures, structures_to_remove = _merge_groups(
             material_groups, rings_to_preserve, structures_to_remove
         )
@@ -327,6 +331,84 @@ class Design:
         if hasattr(self._grid, "get_thermal_grids"):
             return self._grid.get_thermal_grids()
         return None
+
+    def solve_thermal(
+        self,
+        resolution,
+        scenario,
+        config=None,
+    ):
+        """Solve steady-state thermal profile for this design and return thermo-optic result."""
+        from beamz.simulation.thermal import solve_static_thermal
+
+        return solve_static_thermal(
+            design=self,
+            resolution=resolution,
+            scenario=scenario,
+            config=config,
+        )
+
+    def solve_static_thermal(
+        self,
+        resolution,
+        scenario=None,
+        config=None,
+        **kwargs,
+    ):
+        """Compatibility wrapper with migration hint for the scenario-based static API."""
+        legacy_keys = {
+            "heater_mask",
+            "heater_power",
+            "fixed_temp_mask",
+            "fixed_temp_value",
+        }
+        if legacy_keys.intersection(kwargs):
+            raise ValueError(
+                "Static thermal API changed. Replace legacy kwargs with "
+                "Design.solve_thermal(resolution=..., scenario=ThermalScenario(...), "
+                "config=StaticThermalConfig(...))."
+            )
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+        if scenario is None:
+            raise ValueError(
+                "solve_static_thermal now requires scenario=ThermalScenario(...)."
+            )
+        return self.solve_thermal(
+            resolution=resolution,
+            scenario=scenario,
+            config=config,
+        )
+
+    def sweep_mzi_heater(
+        self,
+        resolution,
+        powers_w,
+        heater,
+        optical_region,
+        arm_length_m,
+        wavelength_m,
+        group_index,
+        scenario_base,
+        mode_weight=None,
+        config=None,
+    ):
+        """Run a static thermal heater sweep and return MZI tuning metrics."""
+        from beamz.simulation.thermal import sweep_mzi_heater
+
+        return sweep_mzi_heater(
+            design=self,
+            resolution=resolution,
+            powers_w=powers_w,
+            heater=heater,
+            optical_region=optical_region,
+            arm_length_m=arm_length_m,
+            wavelength_m=wavelength_m,
+            group_index=group_index,
+            scenario_base=scenario_base,
+            mode_weight=mode_weight,
+            config=config,
+        )
 
     def copy(self):
         """Create a deep copy of the design with all structures and properties."""

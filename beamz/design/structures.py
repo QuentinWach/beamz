@@ -123,13 +123,18 @@ class Polygon:
         return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
 
     def shift(self, x, y, z=0):
-        if hasattr(self, 'position') and self.position is not None:
-            self.position = (self.position[0] + x, self.position[1] + y, self.position[2] + z)
+        if hasattr(self, "position") and self.position is not None:
+            self.position = (
+                self.position[0] + x,
+                self.position[1] + y,
+                self.position[2] + z,
+            )
         if self.vertices:
             self.vertices = [(v[0] + x, v[1] + y, v[2] + z) for v in self.vertices]
         self.interiors = [
             [(v[0] + x, v[1] + y, v[2] + z) for v in path]
-            for path in self.interiors if path
+            for path in self.interiors
+            if path
         ]
         return self
 

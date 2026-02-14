@@ -259,7 +259,8 @@ class VideoRecorder:
 
                     # Add structure overlays
                     add_design_overlays(
-                        ax, self.design,
+                        ax,
+                        self.design,
                         line_color=self.line_color,
                         line_opacity=self.line_opacity,
                     )
@@ -268,8 +269,12 @@ class VideoRecorder:
                     if self.boundaries:
                         for boundary in self.boundaries:
                             draw_boundary(
-                                ax, boundary, self.design,
-                                edgecolor=self.line_color, linestyle=":", alpha=self.line_opacity,
+                                ax,
+                                boundary,
+                                self.design,
+                                edgecolor=self.line_color,
+                                linestyle=":",
+                                alpha=self.line_opacity,
                             )
 
                     # Add axis labels if not clean
@@ -299,5 +304,3 @@ class VideoRecorder:
                 plt.switch_backend(original_backend)
             except Exception:
                 pass
-
-

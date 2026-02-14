@@ -34,21 +34,29 @@ from beamz.devices.monitors import Monitor
 from beamz.devices.sources import GaussianSource, ModeSource
 from beamz.devices.sources.mode import solve_modes
 from beamz.devices.sources.signals import ramped_cosine
-from beamz.visual.source_plots import plot_signal
-
+from beamz.optimization.autodiff import transform_density
 from beamz.optimization.topology import (
     TopologyManager,
     compute_overlap_gradient,
     create_optimization_mask,
 )
-from beamz.optimization.autodiff import transform_density
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.core import Simulation
-from beamz.multiphysics.thermal import (
-    StaticThermalSolve,
-    ThermalParams,
-    ThermoPhysics,
-    apply_static_thermal,
+from beamz.simulation.thermal import (
+    ConvectionBC,
+    MZITuningResult,
+    StaticThermalConfig,
+    StaticThermalResult,
+    StaticThermalSolver,
+    ThermalBoundaryProfile,
+    ThermalConfig,
+    ThermalCoupling,
+    ThermalScenario,
+    ThermalSink,
+    ThermalSource,
+    solve_static_thermal,
+    solve_thermal,
+    sweep_mzi_heater,
 )
 
 # Import UI helpers
@@ -58,7 +66,7 @@ from beamz.visual.helpers import (
     display_status,
     get_si_scale_and_label,
 )
-
+from beamz.visual.source_plots import plot_signal
 
 # Prepare a dictionary of all our exports
 _exports = {
@@ -97,11 +105,21 @@ _exports = {
     # Simulation
     "RegularGrid": RegularGrid,
     "Simulation": Simulation,
-    # Multiphysics
-    "ThermalParams": ThermalParams,
-    "ThermoPhysics": ThermoPhysics,
-    "StaticThermalSolve": StaticThermalSolve,
-    "apply_static_thermal": apply_static_thermal,
+    # Thermal (new primary API)
+    "ThermalConfig": ThermalConfig,
+    "ThermalCoupling": ThermalCoupling,
+    "StaticThermalConfig": StaticThermalConfig,
+    "StaticThermalResult": StaticThermalResult,
+    "ThermalSource": ThermalSource,
+    "ThermalSink": ThermalSink,
+    "ConvectionBC": ConvectionBC,
+    "ThermalBoundaryProfile": ThermalBoundaryProfile,
+    "ThermalScenario": ThermalScenario,
+    "MZITuningResult": MZITuningResult,
+    "StaticThermalSolver": StaticThermalSolver,
+    "solve_thermal": solve_thermal,
+    "solve_static_thermal": solve_static_thermal,
+    "sweep_mzi_heater": sweep_mzi_heater,
     # Boundaries
     "Boundary": Boundary,
     "PML": PML,

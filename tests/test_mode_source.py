@@ -577,9 +577,9 @@ class TestModeSourcePolarization:
 
         profile = getattr(source, profile_attr)
         assert profile is not None, f"{profile_attr} should be defined for +y/{pol}"
-        assert float(np.max(np.abs(np.asarray(profile)))) > 1e-8, (
-            f"{profile_attr} is near zero for +y/{pol}; check component mapping"
-        )
+        assert (
+            float(np.max(np.abs(np.asarray(profile)))) > 1e-8
+        ), f"{profile_attr} is near zero for +y/{pol}; check component mapping"
 
     @pytest.mark.parametrize(
         ("direction", "pol"),

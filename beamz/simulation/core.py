@@ -46,8 +46,12 @@ class Simulation:
 
         # Create field storage (fields owns the E/H field arrays, references material grids)
         self.fields = Fields(
-            permittivity, conductivity, permeability, resolution,
-            plane_2d=self.plane_2d, _init_materials=not pml_boundaries,
+            permittivity,
+            conductivity,
+            permeability,
+            resolution,
+            plane_2d=self.plane_2d,
+            _init_materials=not pml_boundaries,
         )
 
         # Initialize PML regions if present
@@ -150,8 +154,12 @@ class Simulation:
         for device in self.devices:
             if hasattr(device, "inject_h"):
                 device.inject_h(
-                    self.fields, self.t, self.dt,
-                    self.current_step, self.resolution, self.design,
+                    self.fields,
+                    self.t,
+                    self.dt,
+                    self.current_step,
+                    self.resolution,
+                    self.design,
                 )
 
     def _inject_e_sources(self):
@@ -159,8 +167,12 @@ class Simulation:
         for device in self.devices:
             if hasattr(device, "inject_e"):
                 device.inject_e(
-                    self.fields, self.t, self.dt,
-                    self.current_step, self.resolution, self.design,
+                    self.fields,
+                    self.t,
+                    self.dt,
+                    self.current_step,
+                    self.resolution,
+                    self.design,
                 )
 
     def _inject_legacy_sources(self):
@@ -168,8 +180,12 @@ class Simulation:
         for device in self.devices:
             if hasattr(device, "inject") and not hasattr(device, "inject_h"):
                 device.inject(
-                    self.fields, self.t, self.dt,
-                    self.current_step, self.resolution, self.design,
+                    self.fields,
+                    self.t,
+                    self.dt,
+                    self.current_step,
+                    self.resolution,
+                    self.design,
                 )
 
     def _collect_source_terms(self):
@@ -239,8 +255,13 @@ class Simulation:
                 Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
                 Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
                 curlH_x, curlH_y, curlH_z = curl_h_to_e_3d(
-                    Hx_new, Hy_new, Hz_new, resolution,
-                    ex_shape=Ex.shape, ey_shape=Ey.shape, ez_shape=Ez.shape,
+                    Hx_new,
+                    Hy_new,
+                    Hz_new,
+                    resolution,
+                    ex_shape=Ex.shape,
+                    ey_shape=Ey.shape,
+                    ez_shape=Ez.shape,
                 )
                 Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
                 Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
@@ -258,8 +279,10 @@ class Simulation:
                 Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
                 Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
                 curlH_x, curlH_y, curlH_z = curl_h_to_e_2d(
-                    (Hx_new, Hy_new, Hz_new), resolution,
-                    (Ex.shape, Ey.shape, Ez.shape), plane=plane_2d,
+                    (Hx_new, Hy_new, Hz_new),
+                    resolution,
+                    (Ex.shape, Ey.shape, Ez.shape),
+                    plane=plane_2d,
                 )
                 Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
                 Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
@@ -280,6 +303,7 @@ class Simulation:
         from beamz.simulation.ops import curl_e_to_h_2d, curl_e_to_h_3d
 
         if self.is_3d:
+
             @jax.jit
             def step_h(Ex, Ey, Ez, Hx, Hy, Hz):
                 curlE_x, curlE_y, curlE_z = curl_e_to_h_3d(Ex, Ey, Ez, resolution)
@@ -287,7 +311,9 @@ class Simulation:
                 Hy_new = advance_h_field(Hy, curlE_y, sigma_m_hy, dt)
                 Hz_new = advance_h_field(Hz, curlE_z, sigma_m_hz, dt)
                 return Hx_new, Hy_new, Hz_new
+
         else:
+
             @jax.jit
             def step_h(Ex, Ey, Ez, Hx, Hy, Hz):
                 curlE_x, curlE_y, curlE_z = curl_e_to_h_2d(
@@ -305,29 +331,51 @@ class Simulation:
         resolution = self.resolution
         dt = self.dt
         plane_2d = self.plane_2d
-        eps_x, sig_x, region_x = self.fields.eps_x, self.fields.sig_x, self.fields.region_x
-        eps_y, sig_y, region_y = self.fields.eps_y, self.fields.sig_y, self.fields.region_y
-        eps_z, sig_z, region_z = self.fields.eps_z, self.fields.sig_z, self.fields.region_z
+        eps_x, sig_x, region_x = (
+            self.fields.eps_x,
+            self.fields.sig_x,
+            self.fields.region_x,
+        )
+        eps_y, sig_y, region_y = (
+            self.fields.eps_y,
+            self.fields.sig_y,
+            self.fields.region_y,
+        )
+        eps_z, sig_z, region_z = (
+            self.fields.eps_z,
+            self.fields.sig_z,
+            self.fields.region_z,
+        )
 
         from beamz.simulation.ops import curl_h_to_e_2d, curl_h_to_e_3d
 
         if self.is_3d:
+
             @jax.jit
             def step_e(Ex, Ey, Ez, Hx, Hy, Hz):
                 curlH_x, curlH_y, curlH_z = curl_h_to_e_3d(
-                    Hx, Hy, Hz, resolution,
-                    ex_shape=Ex.shape, ey_shape=Ey.shape, ez_shape=Ez.shape,
+                    Hx,
+                    Hy,
+                    Hz,
+                    resolution,
+                    ex_shape=Ex.shape,
+                    ey_shape=Ey.shape,
+                    ez_shape=Ez.shape,
                 )
                 Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
                 Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
                 Ez_new = advance_e_field(Ez, curlH_z, sig_z, eps_z, dt, region_z)
                 return Ex_new, Ey_new, Ez_new
+
         else:
+
             @jax.jit
             def step_e(Ex, Ey, Ez, Hx, Hy, Hz):
                 curlH_x, curlH_y, curlH_z = curl_h_to_e_2d(
-                    (Hx, Hy, Hz), resolution,
-                    (Ex.shape, Ey.shape, Ez.shape), plane=plane_2d,
+                    (Hx, Hy, Hz),
+                    resolution,
+                    (Ex.shape, Ey.shape, Ez.shape),
+                    plane=plane_2d,
                 )
                 Ex_new = advance_e_field(Ex, curlH_x, sig_x, eps_x, dt, region_x)
                 Ey_new = advance_e_field(Ey, curlH_y, sig_y, eps_y, dt, region_y)
@@ -375,12 +423,20 @@ class Simulation:
 
         # Run one step to trigger compilation of both kernels
         Hx, Hy, Hz = jit_step_h(
-            self.fields.Ex, self.fields.Ey, self.fields.Ez,
-            self.fields.Hx, self.fields.Hy, self.fields.Hz,
+            self.fields.Ex,
+            self.fields.Ey,
+            self.fields.Ez,
+            self.fields.Hx,
+            self.fields.Hy,
+            self.fields.Hz,
         )
         Ex, Ey, Ez = jit_step_e(
-            self.fields.Ex, self.fields.Ey, self.fields.Ez,
-            Hx, Hy, Hz,
+            self.fields.Ex,
+            self.fields.Ey,
+            self.fields.Ez,
+            Hx,
+            Hy,
+            Hz,
         )
         Ex.block_until_ready()
 
@@ -402,8 +458,12 @@ class Simulation:
                     self.fields.Hy,
                     self.fields.Hz,
                 ) = jit_step_h(
-                    self.fields.Ex, self.fields.Ey, self.fields.Ez,
-                    self.fields.Hx, self.fields.Hy, self.fields.Hz,
+                    self.fields.Ex,
+                    self.fields.Ey,
+                    self.fields.Ez,
+                    self.fields.Hx,
+                    self.fields.Hy,
+                    self.fields.Hz,
                 )
 
                 # 2. M injection (Python, after H update)
@@ -415,8 +475,12 @@ class Simulation:
                     self.fields.Ey,
                     self.fields.Ez,
                 ) = jit_step_e(
-                    self.fields.Ex, self.fields.Ey, self.fields.Ez,
-                    self.fields.Hx, self.fields.Hy, self.fields.Hz,
+                    self.fields.Ex,
+                    self.fields.Ey,
+                    self.fields.Ez,
+                    self.fields.Hx,
+                    self.fields.Hy,
+                    self.fields.Hz,
                 )
 
                 # 4. J injection (Python, after E update)
@@ -454,9 +518,7 @@ class Simulation:
                 print(f"\n● Simulation interrupted at step {self.current_step}")
 
         # Collect monitor data
-        monitors = [
-            device for device in self.devices if isinstance(device, Monitor)
-        ]
+        monitors = [device for device in self.devices if isinstance(device, Monitor)]
 
         # Convert field history to numpy arrays
         for name in field_history:
@@ -504,9 +566,7 @@ class Simulation:
             return self.run_fast(num_steps=num_steps, progress=progress)
 
         # Create pure FDTD step function for scan
-        jit_step = (
-            self._create_jit_step()
-        )
+        jit_step = self._create_jit_step()
 
         @jax.jit
         def scan_body(carry, _):
@@ -576,4 +636,5 @@ class Simulation:
                 - 'animation': JupyterAnimator object if running in Jupyter with animate_live
         """
         from beamz.visual.runner import run_with_visualization
+
         return run_with_visualization(self, **kwargs)

@@ -1,14 +1,15 @@
+import jax.numpy as jnp
 import numpy as np
 
-import jax.numpy as jnp
-
-from beamz import Design, Material, Simulation, ThermalParams, ThermoPhysics
+from beamz import Design, Material, Simulation, ThermalConfig, ThermalCoupling
 
 
 def _make_sim(material, dt=1.0, resolution=1.0):
     design = Design(width=2.0, height=2.0, material=material)
     time = np.array([0.0, dt])
-    return Simulation(design=design, devices=[], boundaries=[], time=time, resolution=resolution)
+    return Simulation(
+        design=design, devices=[], boundaries=[], time=time, resolution=resolution
+    )
 
 
 def test_thermal_coupling_increases_temperature_and_eps():
@@ -23,11 +24,10 @@ def test_thermal_coupling_increases_temperature_and_eps():
     )
     sim = _make_sim(material, dt=1.0, resolution=1.0)
 
-    thermal = ThermoPhysics(ThermalParams(thermal_dt=1.0, tau_avg=1.0, T0=300.0))
+    thermal = ThermalCoupling(ThermalConfig(thermal_dt=1.0, tau_avg=1.0, T0=300.0))
     thermal.initialize(sim)
 
     sim.fields.Ez = jnp.ones_like(sim.fields.Ez)
-    thermal.t_accum = 1.0
     thermal.step(sim)
 
     assert float(jnp.max(thermal.T)) > 300.0

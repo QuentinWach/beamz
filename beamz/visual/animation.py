@@ -3,13 +3,13 @@
 import numpy as np
 
 from beamz.visual.design_viz import draw_boundary
+from beamz.visual.helpers import get_si_scale_and_label
 from beamz.visual.overlays import (
     add_design_overlays,
     configure_axes,
     draw_scale_bar,
     resolve_cmap,
 )
-from beamz.visual.helpers import get_si_scale_and_label
 
 
 def get_twilight_zero_cmap():
@@ -53,6 +53,7 @@ def _register_custom_colormaps():
 # Register on import
 _register_custom_colormaps()
 
+
 def is_jupyter_environment():
     """Detect if code is running in a Jupyter notebook/lab environment.
 
@@ -75,6 +76,7 @@ def is_jupyter_environment():
         return False
     except (ImportError, NameError):
         return False
+
 
 def animate_manual_field(
     field_array,
@@ -224,7 +226,8 @@ def animate_manual_field(
 
         if design is not None and show_structures:
             add_design_overlays(
-                ax, design,
+                ax,
+                design,
                 line_color=line_color,
                 line_opacity=line_opacity,
                 sources=getattr(design, "sources", []) if show_sources else [],
@@ -234,8 +237,12 @@ def animate_manual_field(
         if boundaries:
             for boundary in boundaries:
                 draw_boundary(
-                    ax, boundary, design,
-                    edgecolor=line_color, linestyle=":", alpha=line_opacity,
+                    ax,
+                    boundary,
+                    design,
+                    edgecolor=line_color,
+                    linestyle=":",
+                    alpha=line_opacity,
                 )
 
         if design is not None and not clean_visualization:
@@ -279,6 +286,7 @@ def animate_manual_field(
     fig.canvas.flush_events()
     plt.pause(pause)
     return context
+
 
 class JupyterAnimator:
     """Handles live animation and replay for Jupyter notebooks.
@@ -497,7 +505,9 @@ class JupyterAnimator:
 
             # Add scale bar for clean visualization
             if self.clean_visualization:
-                draw_scale_bar(self._ax, design, wavelength=self.wavelength, fontsize=14)
+                draw_scale_bar(
+                    self._ax, design, wavelength=self.wavelength, fontsize=14
+                )
 
         else:
             # Subsequent frames: just update the data
@@ -531,7 +541,8 @@ class JupyterAnimator:
     def _add_overlays(self, ax, design, boundaries):
         """Add structure, source, monitor, and boundary overlays."""
         add_design_overlays(
-            ax, design,
+            ax,
+            design,
             line_color=self.line_color,
             line_opacity=self.line_opacity,
             skip_background=True,
@@ -540,8 +551,12 @@ class JupyterAnimator:
         if boundaries:
             for boundary in boundaries:
                 draw_boundary(
-                    ax, boundary, design,
-                    edgecolor=self.line_color, linestyle=":", alpha=self.line_opacity,
+                    ax,
+                    boundary,
+                    design,
+                    edgecolor=self.line_color,
+                    linestyle=":",
+                    alpha=self.line_opacity,
                 )
 
     def _build_replay(self, fps, facecolor="none"):
@@ -614,7 +629,9 @@ class JupyterAnimator:
         )
 
         if self.clean_visualization:
-            draw_scale_bar(ax, self.metadata.get("design"), wavelength=self.wavelength, fontsize=14)
+            draw_scale_bar(
+                ax, self.metadata.get("design"), wavelength=self.wavelength, fontsize=14
+            )
 
         def update(frame_idx):
             im.set_data(self.frames[frame_idx])
@@ -809,4 +826,3 @@ class JupyterAnimator:
         show_frame(0)
 
         return widgets.VBox([widgets.HBox([play, slider]), output])
-

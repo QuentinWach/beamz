@@ -25,7 +25,9 @@ def plot_monitor_fields(monitor, field="Ez", figsize=(10, 6), time_index=-1):
         return None, None
 
     if field not in monitor.fields:
-        print(f"Field '{field}' not available. Available fields: {list(monitor.fields.keys())}")
+        print(
+            f"Field '{field}' not available. Available fields: {list(monitor.fields.keys())}"
+        )
         return None, None
 
     if not monitor.fields[field]:
@@ -94,7 +96,9 @@ def plot_monitor_power(monitor, figsize=(10, 6), log_scale=False, db_scale=False
     return fig, ax
 
 
-def animate_monitor_fields(monitor, field="Ez", figsize=(8, 6), interval=100, save_filename=None):
+def animate_monitor_fields(
+    monitor, field="Ez", figsize=(8, 6), interval=100, save_filename=None
+):
     """Create an animation of field evolution from a monitor.
 
     Args:
@@ -130,9 +134,12 @@ def animate_monitor_fields(monitor, field="Ez", figsize=(8, 6), interval=100, sa
             line.set_data(x_pos, field_data)
             ax.set_title(f'{field} at t = {monitor.fields["t"][frame]:.2e} s')
             return (line,)
+
     else:
         field_data = monitor.fields[field][0]
-        im = ax.imshow(field_data, cmap="RdBu", origin="lower", aspect="auto", animated=True)
+        im = ax.imshow(
+            field_data, cmap="RdBu", origin="lower", aspect="auto", animated=True
+        )
         plt.colorbar(im, ax=ax, label=f"{field} amplitude")
         ax.set_xlabel("X index")
         ax.set_ylabel("Y index")
@@ -148,8 +155,12 @@ def animate_monitor_fields(monitor, field="Ez", figsize=(8, 6), interval=100, sa
             return [im]
 
     anim = FuncAnimation(
-        fig, animate, frames=len(monitor.fields["t"]),
-        interval=interval, blit=True, repeat=True,
+        fig,
+        animate,
+        frames=len(monitor.fields["t"]),
+        interval=interval,
+        blit=True,
+        repeat=True,
     )
 
     if save_filename:

@@ -279,9 +279,15 @@ def magnetic_conductivity_terms_2d_full(
         sigma_m_hy = base_term[:-1, :-1]  # Staggered in both z and x
         sigma_m_hz = base_term[:-1, :]  # Staggered in z
 
-    assert sigma_m_hx.shape == hx_shape, f"sigma_m_hx shape mismatch: {sigma_m_hx.shape} vs {hx_shape}"
-    assert sigma_m_hy.shape == hy_shape, f"sigma_m_hy shape mismatch: {sigma_m_hy.shape} vs {hy_shape}"
-    assert sigma_m_hz.shape == hz_shape, f"sigma_m_hz shape mismatch: {sigma_m_hz.shape} vs {hz_shape}"
+    assert (
+        sigma_m_hx.shape == hx_shape
+    ), f"sigma_m_hx shape mismatch: {sigma_m_hx.shape} vs {hx_shape}"
+    assert (
+        sigma_m_hy.shape == hy_shape
+    ), f"sigma_m_hy shape mismatch: {sigma_m_hy.shape} vs {hy_shape}"
+    assert (
+        sigma_m_hz.shape == hz_shape
+    ), f"sigma_m_hz shape mismatch: {sigma_m_hz.shape} vs {hz_shape}"
 
     return sigma_m_hx, sigma_m_hy, sigma_m_hz
 
@@ -424,5 +430,3 @@ def material_slice_for_e_3d(permittivity, conductivity, orientation):
         f_region = (slice(None), slice(1, -1), slice(1, -1))
 
     return permittivity[m_region], conductivity[m_region], f_region
-
-

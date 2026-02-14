@@ -17,6 +17,7 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
         )
         display_status("Falling back to 2D visualization...", "warning")
         from beamz.visual.design_viz import show_design_2d
+
         show_design_2d(design, unify_structures)
         return
 

@@ -771,16 +771,19 @@ class Monitor:
     def plot_fields(self, **kwargs):
         """Plot field data from the monitor. Delegates to visual.monitor_plots."""
         from beamz.visual.monitor_plots import plot_monitor_fields
+
         return plot_monitor_fields(self, **kwargs)
 
     def plot_power(self, **kwargs):
         """Plot power history from the monitor. Delegates to visual.monitor_plots."""
         from beamz.visual.monitor_plots import plot_monitor_power
+
         return plot_monitor_power(self, **kwargs)
 
     def animate_fields(self, **kwargs):
         """Create an animation of field evolution. Delegates to visual.monitor_plots."""
         from beamz.visual.monitor_plots import animate_monitor_fields
+
         return animate_monitor_fields(self, **kwargs)
 
     def get_field_at_time(self, field="Ez", time_value=None, time_index=None):
