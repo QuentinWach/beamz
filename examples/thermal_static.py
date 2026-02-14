@@ -9,20 +9,22 @@ from beamz import Design, Material, Rectangle, ThermalConfig
 def main():
     # Chip cross-section (top to bottom): air, heater, oxide, silicon, substrate
     W, H = 20e-6, 8e-6
+    # Air cladding (approx. room-temperature thermal conductivity).
     design = Design(
-        width=W, height=H, material=Material(permittivity=1.0, k=0.03, T0=300.0)
+        width=W, height=H, material=Material(permittivity=1.0, k=0.026, T0=300.0)
     )
 
     oxide = Material(
-        permittivity=1.44**2, k=1.4, rho=2200.0, cp=703.0, dn_dT=1e-5, T0=300.0
+        permittivity=1.44**2, k=1.38, rho=2200.0, cp=703.0, dn_dT=1e-5, T0=300.0
     )
     silicon = Material(
-        permittivity=3.48**2, k=148.0, rho=2330.0, cp=700.0, dn_dT=1.86e-4, T0=300.0
+        permittivity=3.48**2, k=130.0, rho=2330.0, cp=700.0, dn_dT=1.86e-4, T0=300.0
     )
     substrate = Material(
-        permittivity=3.4**2, k=120.0, rho=2650.0, cp=750.0, dn_dT=1.5e-4, T0=300.0
+        permittivity=3.4**2, k=130.0, rho=2330.0, cp=700.0, dn_dT=1.5e-4, T0=300.0
     )
-    heater = Material(permittivity=1.0, k=80.0, rho=5000.0, cp=300.0, T0=300.0)
+    # Metal heater (representative TiN-like thermal properties).
+    heater = Material(permittivity=1.0, k=25.0, rho=5200.0, cp=540.0, T0=300.0)
 
     # Layers
     design += Rectangle(position=(0, 0.0), width=W, height=2.5e-6, material=substrate)
@@ -42,16 +44,17 @@ def main():
         tol=1e-6,
     )
 
-    def substrate_and_air_sink_mask(x, y, z):
-        # Bottom substrate sink and top air sink above the heater
-        return (0.0 <= y <= 2.5e-6) or (7.1e-6 <= y <= H)
+    def substrate_sink_mask(x, y, z):
+        # Fix the bottom substrate to ambient (simple thermal-anchor model).
+        return 0.0 <= y <= 2.5e-6
 
     result = design.solve_static_thermal(
         resolution=0.1e-6,
         config=params,
         heater_mask=heater_mask,
-        heater_power=5e16,
-        fixed_temp_mask=substrate_and_air_sink_mask,
+        # Tuned for this geometry to produce a realistic hotspot range (~300-370 K).
+        heater_power=2e14,
+        fixed_temp_mask=substrate_sink_mask,
         fixed_temp_value=300.0,
     )
     eps_r, temperature = result.permittivity, result.temperature
@@ -68,7 +71,7 @@ def main():
     sink_mask = np.zeros_like(qmag, dtype=bool)
     for i in range(qmag.shape[0]):
         y = (i + 0.5) * dx
-        if 0.0 <= y <= 2.5e-6 or 7.1e-6 <= y <= H:
+        if 0.0 <= y <= 2.5e-6:
             sink_mask[i, :] = True
     solid_mask = (k_grid > 0) & (~sink_mask)
     qmag_solid = np.where(solid_mask, qmag, 0.0)
