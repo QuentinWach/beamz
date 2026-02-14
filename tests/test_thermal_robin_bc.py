@@ -1,7 +1,18 @@
-import jax.numpy as jnp
 import numpy as np
+import jax.numpy as jnp
 
-from beamz import Design, Material, Simulation, ThermalConfig, ThermalCoupling
+from beamz import (
+    ConvectionBC,
+    Design,
+    Material,
+    StaticThermalConfig,
+    Simulation,
+    ThermalConfig,
+    ThermalCoupling,
+    ThermalScenario,
+    ThermalSink,
+    ThermalSource,
+)
 
 
 def test_static_robin_bc_reduces_peak_temperature():
@@ -11,32 +22,35 @@ def test_static_robin_bc_reduces_peak_temperature():
     fixed_mask = np.zeros((10, 10), dtype=bool)
     fixed_mask[0, :] = True
 
-    base_cfg = ThermalConfig(thermal_dt=1.0, tau_avg=1.0, max_iters=2000, tol=1e-7)
-    robin_cfg = ThermalConfig(
-        thermal_dt=1.0,
-        tau_avg=1.0,
+    base_cfg = StaticThermalConfig(
         max_iters=2000,
         tol=1e-7,
-        robin_h=1.0,
-        robin_T_ambient=300.0,
-        robin_sides=("top",),
+    )
+    robin_cfg = StaticThermalConfig(
+        max_iters=2000,
+        tol=1e-7,
+    )
+    base_scenario = ThermalScenario(
+        extrusion_depth_m=1.0,
+        sources=[ThermalSource(region=heater_mask, power_density_w_m3=50.0)],
+        sinks=[ThermalSink(region=fixed_mask, temperature_k=300.0)],
+    )
+    robin_scenario = ThermalScenario(
+        extrusion_depth_m=1.0,
+        sources=[ThermalSource(region=heater_mask, power_density_w_m3=50.0)],
+        sinks=[ThermalSink(region=fixed_mask, temperature_k=300.0)],
+        convection=ConvectionBC(h_w_m2_k=1.0, ambient_temp_k=300.0, sides=("top",)),
     )
 
-    base = design.solve_static_thermal(
+    base = design.solve_thermal(
         resolution=1.0,
+        scenario=base_scenario,
         config=base_cfg,
-        heater_mask=heater_mask,
-        heater_power=50.0,
-        fixed_temp_mask=fixed_mask,
-        fixed_temp_value=300.0,
     )
-    robin = design.solve_static_thermal(
+    robin = design.solve_thermal(
         resolution=1.0,
+        scenario=robin_scenario,
         config=robin_cfg,
-        heater_mask=heater_mask,
-        heater_power=50.0,
-        fixed_temp_mask=fixed_mask,
-        fixed_temp_value=300.0,
     )
 
     assert float(robin.temperature.max()) < float(base.temperature.max())

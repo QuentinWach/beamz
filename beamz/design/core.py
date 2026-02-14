@@ -332,14 +332,11 @@ class Design:
             return self._grid.get_thermal_grids()
         return None
 
-    def solve_static_thermal(
+    def solve_thermal(
         self,
         resolution,
-        config,
-        heater_mask,
-        heater_power,
-        fixed_temp_mask=None,
-        fixed_temp_value=None,
+        scenario,
+        config=None,
     ):
         """Solve steady-state thermal profile for this design and return thermo-optic result."""
         from beamz.simulation.thermal import solve_static_thermal
@@ -347,11 +344,70 @@ class Design:
         return solve_static_thermal(
             design=self,
             resolution=resolution,
+            scenario=scenario,
             config=config,
-            heater_mask=heater_mask,
-            heater_power=heater_power,
-            fixed_temp_mask=fixed_temp_mask,
-            fixed_temp_value=fixed_temp_value,
+        )
+
+    def solve_static_thermal(
+        self,
+        resolution,
+        scenario=None,
+        config=None,
+        **kwargs,
+    ):
+        """Compatibility wrapper with migration hint for the scenario-based static API."""
+        legacy_keys = {
+            "heater_mask",
+            "heater_power",
+            "fixed_temp_mask",
+            "fixed_temp_value",
+        }
+        if legacy_keys.intersection(kwargs):
+            raise ValueError(
+                "Static thermal API changed. Replace legacy kwargs with "
+                "Design.solve_thermal(resolution=..., scenario=ThermalScenario(...), "
+                "config=StaticThermalConfig(...))."
+            )
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {sorted(kwargs)}")
+        if scenario is None:
+            raise ValueError(
+                "solve_static_thermal now requires scenario=ThermalScenario(...)."
+            )
+        return self.solve_thermal(
+            resolution=resolution,
+            scenario=scenario,
+            config=config,
+        )
+
+    def sweep_mzi_heater(
+        self,
+        resolution,
+        powers_w,
+        heater,
+        optical_region,
+        arm_length_m,
+        wavelength_m,
+        group_index,
+        scenario_base,
+        mode_weight=None,
+        config=None,
+    ):
+        """Run a static thermal heater sweep and return MZI tuning metrics."""
+        from beamz.simulation.thermal import sweep_mzi_heater
+
+        return sweep_mzi_heater(
+            design=self,
+            resolution=resolution,
+            powers_w=powers_w,
+            heater=heater,
+            optical_region=optical_region,
+            arm_length_m=arm_length_m,
+            wavelength_m=wavelength_m,
+            group_index=group_index,
+            scenario_base=scenario_base,
+            mode_weight=mode_weight,
+            config=config,
         )
 
     def copy(self):

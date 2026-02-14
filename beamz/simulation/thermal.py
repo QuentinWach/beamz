@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 
 import jax.numpy as jnp
 import numpy as np
@@ -27,6 +28,117 @@ class ThermalConfig:
 class StaticThermalResult:
     permittivity: np.ndarray
     temperature: np.ndarray
+
+
+@dataclass
+class StaticThermalConfig:
+    k: float = 0.0
+    rho: float = 0.0
+    cp: float = 0.0
+    dn_dT: float = 0.0
+    T0: float = 300.0
+    max_iters: int = 5000
+    tol: float = 1e-6
+
+
+@dataclass
+class ThermalSource:
+    region: object
+    power_w: float | None = None
+    power_density_w_m3: float | np.ndarray | None = None
+    name: str | None = None
+
+
+@dataclass
+class ThermalSink:
+    region: object
+    temperature_k: float
+    name: str | None = None
+
+
+@dataclass
+class ConvectionBC:
+    h_w_m2_k: float
+    ambient_temp_k: float = 300.0
+    sides: tuple[str, ...] = ("top",)
+
+
+@dataclass
+class ThermalBoundaryProfile:
+    sinks: list[ThermalSink] = field(default_factory=list)
+    convection: ConvectionBC | None = None
+
+    @classmethod
+    def photonic_chip(
+        cls,
+        sink_thickness_m: float = 0.2e-6,
+        sink_temperature_k: float = 300.0,
+        top_h_w_m2_k: float = 10.0,
+        ambient_temp_k: float = 300.0,
+    ) -> "ThermalBoundaryProfile":
+        def substrate_sink(x, y, z):
+            _ = x, z
+            return 0.0 <= y <= sink_thickness_m
+
+        return cls(
+            sinks=[
+                ThermalSink(
+                    region=substrate_sink,
+                    temperature_k=sink_temperature_k,
+                    name="substrate_sink",
+                )
+            ],
+            convection=ConvectionBC(
+                h_w_m2_k=top_h_w_m2_k,
+                ambient_temp_k=ambient_temp_k,
+                sides=("top",),
+            ),
+        )
+
+
+@dataclass
+class ThermalScenario:
+    sources: list[ThermalSource] = field(default_factory=list)
+    sinks: list[ThermalSink] = field(default_factory=list)
+    convection: ConvectionBC | None = None
+    boundary_profile: ThermalBoundaryProfile | None = None
+    extrusion_depth_m: float | None = None
+
+    def iter_sources(self):
+        for source in self.sources:
+            if not isinstance(source, ThermalSource):
+                raise TypeError(
+                    "ThermalScenario.sources must contain ThermalSource objects."
+                )
+            yield source
+
+    def iter_sinks(self):
+        profile_sinks = (
+            self.boundary_profile.sinks if self.boundary_profile is not None else []
+        )
+        for sink in [*profile_sinks, *self.sinks]:
+            if not isinstance(sink, ThermalSink):
+                raise TypeError(
+                    "ThermalScenario.sinks must contain ThermalSink objects."
+                )
+            yield sink
+
+    def get_convection(self):
+        if self.convection is not None:
+            return self.convection
+        if self.boundary_profile is not None:
+            return self.boundary_profile.convection
+        return None
+
+
+@dataclass
+class MZITuningResult:
+    power_w: np.ndarray
+    delta_t_eff_k: np.ndarray
+    delta_n_eff: np.ndarray
+    delta_phi_rad: np.ndarray
+    p_pi_w: float
+    temperature_at_power: dict[float, np.ndarray] | None = None
 
 
 def _harmonic_mean_jax(left, right):
@@ -457,47 +569,187 @@ class ThermalCoupling:
         return E2
 
 
-class StaticThermalSolver:
-    def __init__(
-        self,
-        config: ThermalConfig,
-        heater_mask=None,
-        heater_power=0.0,
-        fixed_temp_mask=None,
-        fixed_temp_value=None,
-    ):
-        self.config = config
-        self.heater_mask = heater_mask
-        self.heater_power = heater_power
-        self.fixed_temp_mask = fixed_temp_mask
-        self.fixed_temp_value = fixed_temp_value
+def _apply_default_np(grid, default):
+    if default is None:
+        return grid
+    if default == 0.0:
+        return grid
+    return np.where(grid == 0, default, grid)
 
-    def solve(self, design, resolution) -> StaticThermalResult:
+
+def _iter_cell_centers(shape, resolution):
+    if len(shape) == 2:
+        ny, nx = shape
+        for i in range(ny):
+            y = (i + 0.5) * resolution
+            for j in range(nx):
+                x = (j + 0.5) * resolution
+                yield (i, j), (x, y, 0.0)
+    elif len(shape) == 3:
+        nz, ny, nx = shape
+        for k in range(nz):
+            z = (k + 0.5) * resolution
+            for i in range(ny):
+                y = (i + 0.5) * resolution
+                for j in range(nx):
+                    x = (j + 0.5) * resolution
+                    yield (k, i, j), (x, y, z)
+    else:
+        raise ValueError(f"Unsupported thermal grid shape: {shape}")
+
+
+def _sample_region_mask(shape, resolution, predicate):
+    mask = np.zeros(shape, dtype=bool)
+    for idx, xyz in _iter_cell_centers(shape, resolution):
+        mask[idx] = bool(predicate(*xyz))
+    return mask
+
+
+def _resolve_region_mask(design, resolution, shape, region):
+    _ = design
+    if region is None:
+        return np.zeros(shape, dtype=bool)
+
+    if isinstance(region, np.ndarray):
+        mask = np.asarray(region).astype(bool)
+        if mask.shape != shape:
+            raise ValueError(
+                f"Region shape {mask.shape} does not match grid shape {shape}"
+            )
+        return mask
+
+    if hasattr(region, "point_in_polygon"):
+        return _sample_region_mask(
+            shape,
+            resolution,
+            lambda x, y, z: region.point_in_polygon(x, y, z),
+        )
+
+    if callable(region):
+        return _sample_region_mask(shape, resolution, region)
+
+    if isinstance(region, Iterable) and not isinstance(region, (str, bytes)):
+        mask = np.zeros(shape, dtype=bool)
+        for part in region:
+            mask |= _resolve_region_mask(design, resolution, shape, part)
+        return mask
+
+    raise TypeError(
+        "Thermal region must be a structure reference, callable, bool array, "
+        "or iterable of those."
+    )
+
+
+def _resolve_weight_array(shape, mode_weight):
+    if mode_weight is None:
+        return np.ones(shape, dtype=float)
+    weights = np.asarray(mode_weight, dtype=float)
+    if weights.shape != shape:
+        raise ValueError(
+            f"mode_weight shape {weights.shape} does not match thermal grid shape {shape}"
+        )
+    return weights
+
+
+def _source_power_density(
+    source, active_cells, resolution, ndim, extrusion_depth_m, shape
+):
+    if source.power_density_w_m3 is not None and source.power_w is not None:
+        raise ValueError(
+            "ThermalSource can specify either power_w or power_density_w_m3, not both."
+        )
+
+    if source.power_density_w_m3 is not None:
+        density = np.asarray(source.power_density_w_m3, dtype=float)
+        if density.ndim == 0:
+            return float(density)
+        if density.shape != shape:
+            raise ValueError(
+                f"Power density shape {density.shape} does not match thermal grid shape {shape}"
+            )
+        return density
+
+    if source.power_w is None:
+        return None
+
+    if active_cells <= 0:
+        return None
+
+    if ndim == 2:
+        if extrusion_depth_m is None or extrusion_depth_m <= 0:
+            raise ValueError(
+                "2D total-power sources require scenario.extrusion_depth_m > 0. "
+                "Set extrusion depth to convert heater power (W) to volumetric source (W/m^3)."
+            )
+        cell_volume = resolution * resolution * extrusion_depth_m
+    else:
+        cell_volume = resolution**3
+
+    return float(source.power_w) / (active_cells * cell_volume)
+
+
+def _copy_scenario_with_sources(scenario, sources):
+    return ThermalScenario(
+        sources=list(sources),
+        sinks=list(scenario.sinks),
+        convection=scenario.convection,
+        boundary_profile=scenario.boundary_profile,
+        extrusion_depth_m=scenario.extrusion_depth_m,
+    )
+
+
+class StaticThermalSolver:
+    def __init__(self, config: StaticThermalConfig | None = None):
+        self.config = config or StaticThermalConfig()
+
+    def solve(
+        self, design, resolution, scenario: ThermalScenario
+    ) -> StaticThermalResult:
+        if not isinstance(scenario, ThermalScenario):
+            raise TypeError("solve_thermal expects a ThermalScenario object.")
+
         thermal_grids = design.get_thermal_grids(resolution)
         if thermal_grids is None:
             raise ValueError("Thermal grids not available on design.")
 
         k_grid, _rho_grid, _cp_grid, dn_dT_grid, T0_grid = thermal_grids
-        k_grid = self._apply_default(np.asarray(k_grid), self.config.k)
-        dn_dT_grid = self._apply_default(np.asarray(dn_dT_grid), self.config.dn_dT)
-        T0_grid = self._apply_default(np.asarray(T0_grid), self.config.T0)
+        k_grid = _apply_default_np(np.asarray(k_grid), self.config.k)
+        dn_dT_grid = _apply_default_np(np.asarray(dn_dT_grid), self.config.dn_dT)
+        T0_grid = _apply_default_np(np.asarray(T0_grid), self.config.T0)
 
-        Q = self._build_heat_source(design, resolution, k_grid.shape)
-        fixed_mask = self._build_mask(
-            design, resolution, k_grid.shape, self.fixed_temp_mask
+        Q = self._build_heat_source(design, resolution, k_grid.shape, scenario)
+        fixed_mask, fixed_values = self._build_fixed_temperature(
+            design, resolution, k_grid.shape, scenario
         )
-        fixed_value = self.fixed_temp_value
+        convection = scenario.get_convection()
+        robin_h = 0.0
+        robin_t_ambient = float(self.config.T0)
+        robin_sides = ()
+        if convection is not None:
+            robin_h = float(convection.h_w_m2_k)
+            robin_t_ambient = float(convection.ambient_temp_k)
+            robin_sides = tuple(convection.sides)
+            _validate_robin_sides(robin_sides, k_grid.ndim)
+
         T = np.array(T0_grid, dtype=float)
-        if fixed_mask is not None and fixed_value is not None:
-            T = np.where(fixed_mask, fixed_value, T)
+        if fixed_mask is not None:
+            T = np.where(fixed_mask, fixed_values, T)
 
         max_iters = int(self.config.max_iters)
         tol = float(self.config.tol)
 
         for _ in range(max_iters):
-            T_new = self._steady_state_step(T, k_grid, Q, resolution)
-            if fixed_mask is not None and fixed_value is not None:
-                T_new = np.where(fixed_mask, fixed_value, T_new)
+            T_new = _steady_state_jacobi_step(
+                T=T,
+                k_grid=k_grid,
+                Q=Q,
+                dx=resolution,
+                robin_h=robin_h,
+                robin_t_ambient=robin_t_ambient,
+                robin_sides=robin_sides,
+            )
+            if fixed_mask is not None:
+                T_new = np.where(fixed_mask, fixed_values, T_new)
             delta = np.max(np.abs(T_new - T))
             T = T_new
             if delta < tol:
@@ -508,84 +760,180 @@ class StaticThermalSolver:
         eps_r = n * n
         return StaticThermalResult(permittivity=eps_r, temperature=T)
 
-    def _apply_default(self, grid, default):
-        if default is None:
-            return grid
-        if default == 0.0:
-            return grid
-        return np.where(grid == 0, default, grid)
+    def _build_heat_source(self, design, resolution, shape, scenario):
+        source_total = np.zeros(shape, dtype=float)
+        for source in scenario.iter_sources():
+            mask = _resolve_region_mask(design, resolution, shape, source.region)
+            active_cells = int(np.count_nonzero(mask))
+            density = _source_power_density(
+                source=source,
+                active_cells=active_cells,
+                resolution=resolution,
+                ndim=len(shape),
+                extrusion_depth_m=scenario.extrusion_depth_m,
+                shape=shape,
+            )
+            if density is None:
+                continue
+            source_total = source_total + density * mask.astype(float)
+        return source_total
 
-    def _build_heat_source(self, design, resolution, shape):
-        if self.heater_mask is None:
-            return np.zeros(shape)
-        mask = self._build_mask(design, resolution, shape, self.heater_mask)
-        return self.heater_power * mask
-
-    def _build_mask(self, design, resolution, shape, mask_def):
-        if mask_def is None:
-            return None
-        if callable(mask_def):
-            if len(shape) == 2:
-                ny, nx = shape
-                x_centers = (np.arange(nx) + 0.5) * resolution
-                y_centers = (np.arange(ny) + 0.5) * resolution
-                mask = np.zeros(shape, dtype=bool)
-                for i, y in enumerate(y_centers):
-                    for j, x in enumerate(x_centers):
-                        mask[i, j] = bool(mask_def(x, y, 0.0))
-            else:
-                nz, ny, nx = shape
-                x_centers = (np.arange(nx) + 0.5) * resolution
-                y_centers = (np.arange(ny) + 0.5) * resolution
-                z_centers = (np.arange(nz) + 0.5) * resolution
-                mask = np.zeros(shape, dtype=bool)
-                for k, z in enumerate(z_centers):
-                    for i, y in enumerate(y_centers):
-                        for j, x in enumerate(x_centers):
-                            mask[k, i, j] = bool(mask_def(x, y, z))
-        else:
-            mask = np.asarray(mask_def).astype(bool)
-            if mask.shape != shape:
-                raise ValueError(
-                    f"Mask shape {mask.shape} does not match grid shape {shape}"
-                )
-        return mask
-
-    def _steady_state_step(self, T, k_grid, Q, dx):
-        return _steady_state_jacobi_step(
-            T=T,
-            k_grid=k_grid,
-            Q=Q,
-            dx=dx,
-            robin_h=float(self.config.robin_h),
-            robin_t_ambient=float(self.config.robin_T_ambient),
-            robin_sides=tuple(self.config.robin_sides),
-        )
+    def _build_fixed_temperature(self, design, resolution, shape, scenario):
+        fixed_mask = np.zeros(shape, dtype=bool)
+        fixed_values = np.zeros(shape, dtype=float)
+        has_sink = False
+        for sink in scenario.iter_sinks():
+            sink_mask = _resolve_region_mask(design, resolution, shape, sink.region)
+            if not np.any(sink_mask):
+                continue
+            fixed_mask |= sink_mask
+            fixed_values[sink_mask] = float(sink.temperature_k)
+            has_sink = True
+        if not has_sink:
+            return None, None
+        return fixed_mask, fixed_values
 
 
 def solve_static_thermal(
     design,
-    resolution,
-    config,
-    heater_mask,
-    heater_power,
-    fixed_temp_mask=None,
-    fixed_temp_value=None,
+    resolution: float,
+    scenario: ThermalScenario,
+    config: StaticThermalConfig | None = None,
 ) -> StaticThermalResult:
-    solver = StaticThermalSolver(
-        config=config,
-        heater_mask=heater_mask,
-        heater_power=heater_power,
-        fixed_temp_mask=fixed_temp_mask,
-        fixed_temp_value=fixed_temp_value,
+    solver = StaticThermalSolver(config=config)
+    return solver.solve(design=design, resolution=resolution, scenario=scenario)
+
+
+def solve_thermal(
+    design,
+    resolution: float,
+    scenario: ThermalScenario,
+    config: StaticThermalConfig | None = None,
+) -> StaticThermalResult:
+    return solve_static_thermal(
+        design=design, resolution=resolution, scenario=scenario, config=config
     )
-    return solver.solve(design, resolution)
+
+
+def sweep_mzi_heater(
+    design,
+    resolution: float,
+    powers_w: np.ndarray,
+    heater: ThermalSource | list[ThermalSource],
+    optical_region,
+    arm_length_m: float,
+    wavelength_m: float,
+    group_index: float,
+    scenario_base: ThermalScenario,
+    mode_weight: np.ndarray | None = None,
+    config: StaticThermalConfig | None = None,
+) -> MZITuningResult:
+    powers = np.asarray(powers_w, dtype=float).reshape(-1)
+    if powers.size == 0:
+        raise ValueError("powers_w must contain at least one power point.")
+    if wavelength_m <= 0 or arm_length_m <= 0 or group_index <= 0:
+        raise ValueError("wavelength_m, arm_length_m and group_index must be > 0.")
+    if not isinstance(scenario_base, ThermalScenario):
+        raise TypeError("scenario_base must be a ThermalScenario.")
+
+    if isinstance(heater, ThermalSource):
+        heater_sources = [heater]
+    elif isinstance(heater, Iterable):
+        heater_sources = list(heater)
+        if not heater_sources or not all(
+            isinstance(source, ThermalSource) for source in heater_sources
+        ):
+            raise TypeError("heater list must contain ThermalSource objects.")
+    else:
+        raise TypeError("heater must be a ThermalSource or list[ThermalSource].")
+
+    thermal_grids = design.get_thermal_grids(resolution)
+    if thermal_grids is None:
+        raise ValueError("Thermal grids not available on design.")
+    k_grid, _rho, _cp, dn_dT_grid_raw, _T0 = thermal_grids
+    grid_shape = np.asarray(k_grid).shape
+
+    dn_dT_grid = np.asarray(dn_dT_grid_raw)
+    cfg = config or StaticThermalConfig()
+    dn_dT_grid = _apply_default_np(dn_dT_grid, cfg.dn_dT)
+
+    optical_mask = _resolve_region_mask(design, resolution, grid_shape, optical_region)
+    if not np.any(optical_mask):
+        raise ValueError("optical_region resolved to an empty mask.")
+    weights = _resolve_weight_array(grid_shape, mode_weight)
+    weights = np.where(optical_mask, weights, 0.0)
+    weight_sum = float(np.sum(weights))
+    if weight_sum <= 0:
+        raise ValueError("optical_region/mode_weight produced zero effective weight.")
+
+    temperatures = []
+    temperature_at_power = {}
+    n_heaters = len(heater_sources)
+    for idx, power in enumerate(powers):
+        power_per_heater = float(power) / n_heaters
+        dynamic_sources = []
+        for src in heater_sources:
+            dynamic_sources.append(
+                replace(src, power_w=power_per_heater, power_density_w_m3=None)
+            )
+        scenario_iter = _copy_scenario_with_sources(
+            scenario_base, [*scenario_base.sources, *dynamic_sources]
+        )
+        result = solve_static_thermal(
+            design=design,
+            resolution=resolution,
+            scenario=scenario_iter,
+            config=cfg,
+        )
+        T = np.asarray(result.temperature)
+        temperatures.append(T)
+        if idx in {0, len(powers) - 1}:
+            temperature_at_power[float(power)] = T
+
+    baseline = temperatures[0]
+    delta_t_eff = np.zeros_like(powers, dtype=float)
+    delta_n_eff = np.zeros_like(powers, dtype=float)
+    delta_phi = np.zeros_like(powers, dtype=float)
+
+    phase_scale = (2.0 * np.pi / wavelength_m) * group_index * arm_length_m
+    for i, temp in enumerate(temperatures):
+        delta_t = temp - baseline
+        delta_t_eff[i] = float(np.sum(delta_t * weights) / weight_sum)
+        delta_n = dn_dT_grid * delta_t
+        delta_n_eff[i] = float(np.sum(delta_n * weights) / weight_sum)
+        delta_phi[i] = phase_scale * delta_n_eff[i]
+
+    p_pi = float("nan")
+    if np.any(np.diff(delta_phi) != 0):
+        slope = float(np.polyfit(powers, delta_phi, 1)[0])
+        if slope > 0:
+            p_pi = float(np.pi / slope)
+        if np.all(np.diff(delta_phi) >= 0) and delta_phi[-1] >= np.pi:
+            p_pi = float(np.interp(np.pi, delta_phi, powers))
+
+    return MZITuningResult(
+        power_w=powers,
+        delta_t_eff_k=delta_t_eff,
+        delta_n_eff=delta_n_eff,
+        delta_phi_rad=delta_phi,
+        p_pi_w=p_pi,
+        temperature_at_power=temperature_at_power or None,
+    )
 
 
 __all__ = [
     "ThermalConfig",
     "ThermalCoupling",
+    "StaticThermalConfig",
     "StaticThermalResult",
+    "ThermalSource",
+    "ThermalSink",
+    "ConvectionBC",
+    "ThermalBoundaryProfile",
+    "ThermalScenario",
+    "MZITuningResult",
     "StaticThermalSolver",
+    "solve_thermal",
     "solve_static_thermal",
+    "sweep_mzi_heater",
 ]

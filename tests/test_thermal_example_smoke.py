@@ -30,3 +30,11 @@ def test_static_thermal_example_module_runs():
 
 def test_static_thermal_wrapper_runs():
     _run([sys.executable, "examples/7_thermal_static.py"])
+
+
+def test_thermal_mms_benchmark_example_runs():
+    _run([sys.executable, "-m", "examples.thermal_benchmark_mms2d"])
+
+
+def test_thermal_mzi_phase_shifter_example_runs():
+    _run([sys.executable, "-m", "examples.thermal_mzi_phase_shifter"])

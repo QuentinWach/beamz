@@ -6,8 +6,11 @@ from beamz import (
     Material,
     Rectangle,
     Simulation,
+    StaticThermalConfig,
     ThermalConfig,
     ThermalCoupling,
+    ThermalScenario,
+    ThermalSink,
 )
 
 
@@ -40,22 +43,22 @@ def test_static_solver_preserves_flux_continuity_for_heterogeneous_k():
     design = _two_material_design(nx=nx, ny=ny, k_left=1.0, k_right=5.0)
 
     k_grid = design.get_thermal_grids(dx)[0]
-    fixed_mask = np.zeros_like(k_grid, dtype=bool)
-    fixed_mask[:, 0] = True
-    fixed_mask[:, -1] = True
+    left_mask = np.zeros_like(k_grid, dtype=bool)
+    right_mask = np.zeros_like(k_grid, dtype=bool)
+    left_mask[:, 0] = True
+    right_mask[:, -1] = True
 
-    fixed_values = np.full_like(k_grid, 300.0, dtype=float)
-    fixed_values[:, 0] = 310.0
-    fixed_values[:, -1] = 300.0
-
-    params = ThermalConfig(thermal_dt=1.0, tau_avg=1.0, max_iters=8000, tol=1e-8)
-    result = design.solve_static_thermal(
+    params = StaticThermalConfig(max_iters=8000, tol=1e-8)
+    scenario = ThermalScenario(
+        sinks=[
+            ThermalSink(region=left_mask, temperature_k=310.0),
+            ThermalSink(region=right_mask, temperature_k=300.0),
+        ],
+    )
+    result = design.solve_thermal(
         resolution=dx,
+        scenario=scenario,
         config=params,
-        heater_mask=np.zeros_like(k_grid, dtype=bool),
-        heater_power=0.0,
-        fixed_temp_mask=fixed_mask,
-        fixed_temp_value=fixed_values,
     )
 
     T = result.temperature

@@ -3,7 +3,15 @@ import numpy as np
 from matplotlib.patches import Rectangle as PlotRectangle
 from matplotlib.ticker import FuncFormatter
 
-from beamz import Design, Material, Rectangle, ThermalConfig
+from beamz import (
+    Design,
+    Material,
+    Rectangle,
+    StaticThermalConfig,
+    ThermalBoundaryProfile,
+    ThermalScenario,
+    ThermalSource,
+)
 
 
 def main():
@@ -34,38 +42,33 @@ def main():
     design += Rectangle(
         position=(0, 14.0e-6), width=W, height=3.0e-6, material=top_oxide
     )
-    design += Rectangle(
+    heater_rect = Rectangle(
         position=(12e-6, 16.4e-6), width=6e-6, height=0.3e-6, material=heater
     )
+    design += heater_rect
 
-    def heater_mask(x, y, z):
-        return 12e-6 <= x <= 18e-6 and 16.4e-6 <= y <= 16.7e-6
-
-    params = ThermalConfig(
-        thermal_dt=1e-13,
-        tau_avg=1e-13,
-        max_iters=8000,
-        tol=1e-6,
-        # Robin BC proxy for natural convection to ambient air at the top surface.
-        robin_h=10.0,
-        robin_T_ambient=300.0,
-        robin_sides=("top",),
+    params = StaticThermalConfig(max_iters=8000, tol=1e-6)
+    scenario = ThermalScenario(
+        extrusion_depth_m=100e-6,
+        boundary_profile=ThermalBoundaryProfile.photonic_chip(
+            sink_thickness_m=0.2e-6,
+            sink_temperature_k=300.0,
+            top_h_w_m2_k=10.0,
+            ambient_temp_k=300.0,
+        ),
+        sources=[
+            ThermalSource(
+                region=heater_rect,
+                # ~30 mW over a 100 µm out-of-plane heater segment.
+                power_w=0.03,
+                name="mzi_heater",
+            )
+        ],
     )
-
-    def backside_sink_mask(x, y, z):
-        # Backside thermal anchor: only a thin bottom slice is clamped to ambient.
-        # This better approximates heat flowing into a heat sink/chuck than pinning
-        # the entire substrate volume to 300 K.
-        return 0.0 <= y <= 0.2e-6
-
-    result = design.solve_static_thermal(
+    result = design.solve_thermal(
         resolution=0.1e-6,
+        scenario=scenario,
         config=params,
-        heater_mask=heater_mask,
-        # Tuned for this stack to produce a realistic hotspot range (~300-380 K).
-        heater_power=2e14,
-        fixed_temp_mask=backside_sink_mask,
-        fixed_temp_value=300.0,
     )
     eps_r, temperature = result.permittivity, result.temperature
     _ = eps_r

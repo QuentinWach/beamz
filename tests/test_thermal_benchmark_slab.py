@@ -1,6 +1,14 @@
 import numpy as np
 
-from beamz import Design, Material, ThermalConfig
+from beamz import (
+    ConvectionBC,
+    Design,
+    Material,
+    StaticThermalConfig,
+    ThermalScenario,
+    ThermalSink,
+    ThermalSource,
+)
 
 
 def _analytical_slab_with_generation(x, k, q_vol, t_left, t_ambient, h, length):
@@ -34,24 +42,24 @@ def test_static_slab_robin_matches_analytical_profile():
     heater_mask = np.ones((ny, nx), dtype=bool)
     fixed_mask = np.zeros((ny, nx), dtype=bool)
     fixed_mask[:, 0] = True
-    fixed_values = np.full((ny, nx), t_left, dtype=float)
 
-    config = ThermalConfig(
-        thermal_dt=1.0,
-        tau_avg=1.0,
+    config = StaticThermalConfig(
         max_iters=20000,
         tol=1e-8,
-        robin_h=h,
-        robin_T_ambient=t_ambient,
-        robin_sides=("right",),
     )
-    result = design.solve_static_thermal(
+    scenario = ThermalScenario(
+        sources=[ThermalSource(region=heater_mask, power_density_w_m3=q_vol)],
+        sinks=[ThermalSink(region=fixed_mask, temperature_k=t_left)],
+        convection=ConvectionBC(
+            h_w_m2_k=h,
+            ambient_temp_k=t_ambient,
+            sides=("right",),
+        ),
+    )
+    result = design.solve_thermal(
         resolution=dx,
+        scenario=scenario,
         config=config,
-        heater_mask=heater_mask,
-        heater_power=q_vol,
-        fixed_temp_mask=fixed_mask,
-        fixed_temp_value=fixed_values,
     )
 
     t_num = np.asarray(result.temperature).mean(axis=0)
