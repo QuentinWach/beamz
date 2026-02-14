@@ -33,7 +33,7 @@ source = ModeSource(
     center=(design.width/2, design.height/2),
     width=WG_WIDTH * 3.5, # Slightly wider than waveguide to capture mode tails, but not so wide to hit PML/boundaries
     wavelength=WL,
-    pol="te",
+    pol="tm",
     signal=signal,
     direction="-x",
 )
@@ -46,9 +46,9 @@ sim = Simulation(
     time=time_steps,
     resolution=DX
 )
-sim.run(animate_live="Hz",
+sim.run(animate_live="Ez",
     animation_interval=20,
-    axis_scale=[-0.5, 0.5],
+    axis_scale=[-5e-5, 5e-5],
     #axis_scale=None,
     cmap="twilight_zero",
     clean_visualization=True)

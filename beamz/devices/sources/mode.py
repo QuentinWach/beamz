@@ -467,10 +467,6 @@ class ModeSource:
         self._dt_physical = 0.0
         self._initialized = False
 
-        # Empirical discrete-impedance correction for TE Huygens pairing on the
-        # 2D Yee grid. This reduces residual counter-propagating TE leakage.
-        self._te_m_scale_2d = 0.8
-
     def initialize(self, permittivity, resolution):
         """Compute the mode and set up the source currents for all 6 components in 3D."""
         dx = dy = resolution
@@ -715,7 +711,11 @@ class ModeSource:
             Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
             Ey_profile = Ey_staggered * np.exp(-1j * phase_ref)
 
-            norm_h, norm_e = np.max(np.abs(Hz_profile)), np.max(np.abs(Ey_profile))
+            # TE uses staggered/averaged transverse profiles on the Yee grid.
+            # Use an L1-based impedance match (instead of peak-amplitude match)
+            # to avoid over-weighting single-cell extrema and reduce backscatter.
+            norm_h = np.mean(np.abs(Hz_profile))
+            norm_e = np.mean(np.abs(Ey_profile))
             if norm_h > 1e-12 and norm_e > 1e-12:
                 Ey_profile = Ey_profile * (Z_phys / (norm_e / norm_h))
 
@@ -730,7 +730,7 @@ class ModeSource:
 
             # Relative J/M sign controls propagation handedness for TE in x-propagation.
             self._jy_profile = dir_sign * Hz_cropped
-            self._mz_profile = -dir_sign * self._te_m_scale_2d * Ey_cropped
+            self._mz_profile = -dir_sign * Ey_cropped
 
     def _setup_2d_y(
         self, E_mode, H_mode, center_idx, offset_idx, ny, nx, resolution,
@@ -798,7 +798,11 @@ class ModeSource:
             Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
             Ex_profile = Ex_staggered * np.exp(-1j * phase_ref)
 
-            norm_h, norm_e = np.max(np.abs(Hz_profile)), np.max(np.abs(Ex_profile))
+            # TE uses staggered/averaged transverse profiles on the Yee grid.
+            # Use an L1-based impedance match (instead of peak-amplitude match)
+            # to avoid over-weighting single-cell extrema and reduce backscatter.
+            norm_h = np.mean(np.abs(Hz_profile))
+            norm_e = np.mean(np.abs(Ex_profile))
             if norm_h > 1e-12 and norm_e > 1e-12:
                 Ex_profile = Ex_profile * (Z_phys / (norm_e / norm_h))
 
@@ -812,7 +816,7 @@ class ModeSource:
                 Ex_cropped = Ex_cropped * window
 
             self._jx_profile = -dir_sign * Hz_cropped
-            self._mz_profile = -dir_sign * self._te_m_scale_2d * Ex_cropped
+            self._mz_profile = -dir_sign * Ex_cropped
 
     @staticmethod
     def _make_1d_window(width_cells, alpha=0.3):
