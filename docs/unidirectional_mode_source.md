@@ -125,8 +125,8 @@ The mode solver returns fields in a coordinate system where:
 - **TM** mode: H transverse (H_x, H_y), E has z-component (E_z)
 
 For 2D FDTD with x-propagation:
-- `pol="te"` → Uses E_mode[2] (E_z) and H_mode[1] (H_y)
-- `pol="tm"` → Uses E_mode[1] (E_y) and H_mode[2] (H_z) mapped as equivalent fields
+- `pol="te"` → Uses `E_mode[1]` (E_y) and `H_mode[2]` (H_z)
+- `pol="tm"` → Uses `E_mode[2]` (E_z) and `H_mode[1]` (H_y)
 
 ### Direction Handling
 
@@ -164,4 +164,3 @@ The implementation has been verified to:
 - Mode effective index (neff) is printed during initialization
 - Both TE and TM polarizations are supported for 2D simulations
 - For proper unidirectional behavior, ensure PML boundaries are used to absorb outgoing waves
-

@@ -33,7 +33,8 @@ from beamz.design.structures import (
 from beamz.devices.monitors import Monitor
 from beamz.devices.sources import GaussianSource, ModeSource
 from beamz.devices.sources.mode import solve_modes
-from beamz.devices.sources.signals import plot_signal, ramped_cosine
+from beamz.devices.sources.signals import ramped_cosine
+from beamz.visual.source_plots import plot_signal
 
 from beamz.optimization.topology import (
     TopologyManager,

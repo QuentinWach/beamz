@@ -295,6 +295,95 @@ def show_mesh_3d(grid_3d, design, field="permittivity", slice_spacing=1, alpha=0
     plt.show()
 
 
+def add_mode_source_to_plot(
+    mode_source, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"
+):
+    """Draw a ModeSource overlay (line + direction arrow) on *ax*."""
+    from matplotlib.patches import FancyArrowPatch
+
+    center = (
+        mode_source.center
+        if isinstance(mode_source.center, (tuple, list))
+        else (mode_source.center, 0)
+    )
+    if len(center) == 3:
+        x_pos = center[0]
+        y_pos = center[1]
+    else:
+        x_pos, y_pos = center[0], center[1]
+
+    half_width = mode_source.width / 2 if mode_source.width else 0.5e-6
+
+    if mode_source.direction in ["+x", "-x"]:
+        y_start = y_pos - half_width
+        y_end = y_pos + half_width
+        line_x = [x_pos, x_pos]
+        line_y = [y_start, y_end]
+    else:
+        x_start = x_pos - half_width
+        x_end = x_pos + half_width
+        line_x = [x_start, x_end]
+        line_y = [y_pos, y_pos]
+
+    ax.plot(
+        line_x, line_y,
+        color=edgecolor, linewidth=3, alpha=alpha,
+        solid_capstyle="round", label="ModeSource",
+    )
+
+    arrow_length = mode_source.wavelength * 0.5 if hasattr(mode_source, "wavelength") else 0.5e-6
+    if mode_source.direction in ["+x", "-x"]:
+        arrow_dx = arrow_length if mode_source.direction == "+x" else -arrow_length
+        arrow_dy = 0
+    else:
+        arrow_dx = 0
+        arrow_dy = arrow_length if mode_source.direction == "+y" else -arrow_length
+
+    arrow = FancyArrowPatch(
+        (x_pos, y_pos),
+        (x_pos + arrow_dx, y_pos + arrow_dy),
+        arrowstyle="-|>",
+        mutation_scale=10,
+        color=edgecolor,
+        linewidth=2,
+        alpha=alpha,
+    )
+    ax.add_patch(arrow)
+
+
+def add_gaussian_source_to_plot(
+    gaussian_source, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"
+):
+    """Draw a GaussianSource overlay (circle + center dot) on *ax*."""
+    from matplotlib.patches import Circle
+
+    if len(gaussian_source.position) >= 2:
+        x_pos, y_pos = gaussian_source.position[0], gaussian_source.position[1]
+    else:
+        x_pos, y_pos = gaussian_source.position[0], 0
+
+    circle = Circle(
+        (x_pos, y_pos),
+        radius=gaussian_source.width,
+        facecolor="none",
+        edgecolor=edgecolor,
+        linewidth=2,
+        alpha=alpha,
+        linestyle=linestyle,
+        label="GaussianSource",
+    )
+    ax.add_patch(circle)
+
+    center_dot = Circle(
+        (x_pos, y_pos),
+        radius=gaussian_source.width * 0.1,
+        facecolor=edgecolor,
+        edgecolor="none",
+        alpha=alpha,
+    )
+    ax.add_patch(center_dot)
+
+
 def _get_deterministic_color(index):
     """Get deterministic color: first from const.py, then deterministic generated colors."""
     import colorsys
