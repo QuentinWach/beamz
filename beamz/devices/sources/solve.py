@@ -106,9 +106,14 @@ def compute_mode_polarization_fraction(
     E2 = E_fields[tangential_axes[1]]
 
     if pol == "te":
-        numerator = np.sum(np.abs(E1) ** 2)
-    elif pol == "tm":
+        # BEAMZ convention:
+        # - TE: dominant in-plane transverse E component for the selected propagation axis.
+        # - TM: dominant orthogonal transverse E component.
+        #
+        # For +x propagation this maps to TE~Ey and TM~Ez.
         numerator = np.sum(np.abs(E2) ** 2)
+    elif pol == "tm":
+        numerator = np.sum(np.abs(E1) ** 2)
     else:
         raise ValueError(f"pol must be 'te' or 'tm', but got {pol}")
 

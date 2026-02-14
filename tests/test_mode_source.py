@@ -522,6 +522,65 @@ class TestModeSourcePolarization:
         )
         assert has_profile, f"No mode profile computed for {pol} mode"
 
+    @pytest.mark.parametrize(
+        ("pol", "profile_attr"),
+        [("tm", "_jz_profile"), ("te", "_jx_profile")],
+    )
+    def test_y_direction_profile_nonzero(self, waveguide_domain, pol, profile_attr):
+        """+y mode setup should build non-zero polarization-specific source profiles."""
+        wavelength = waveguide_domain["wavelength"]
+        dx = waveguide_domain["dx"]
+        dt = waveguide_domain["dt"]
+
+        n_core = waveguide_domain["n_core"]
+        n_clad = waveguide_domain["n_clad"]
+
+        domain_width = 8 * wavelength
+        domain_height = 8 * wavelength
+        core_width = 0.6 * wavelength
+
+        design = Design(
+            width=domain_width,
+            height=domain_height,
+            material=Material(permittivity=n_clad**2),
+        )
+        # Vertical core for +y propagation
+        design += Rectangle(
+            position=(domain_width / 2 - core_width / 2, 0),
+            width=core_width,
+            height=domain_height,
+            material=Material(permittivity=n_core**2),
+        )
+
+        frequency = LIGHT_SPEED / wavelength
+        t_total = 3 / frequency
+        time = np.arange(0, t_total, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=2 / frequency,
+            t_max=t_total,
+        )
+
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=(domain_width / 2, 2 * wavelength),
+            width=core_width * 3,
+            wavelength=wavelength,
+            pol=pol,
+            signal=signal,
+            direction="+y",
+        )
+        source.initialize(grid.permittivity, dx)
+
+        profile = getattr(source, profile_attr)
+        assert profile is not None, f"{profile_attr} should be defined for +y/{pol}"
+        assert float(np.max(np.abs(np.asarray(profile)))) > 1e-8, (
+            f"{profile_attr} is near zero for +y/{pol}; check component mapping"
+        )
+
 
 @pytest.mark.simulation
 class TestModeSolver:
@@ -555,3 +614,49 @@ class TestModeSolver:
         assert (
             n_clad < neff_real < n_core
         ), f"n_eff={neff_real:.4f} should be between {n_clad} and {n_core}"
+
+    def test_filter_pol_uses_common_te_tm_mapping(self, waveguide_domain):
+        """For +x propagation: TE should be Ey/Hz-like and TM should be Ez/Hy-like."""
+        wavelength = waveguide_domain["wavelength"]
+        dx = waveguide_domain["dx"]
+        n_core = waveguide_domain["n_core"]
+        n_clad = waveguide_domain["n_clad"]
+        core_width = waveguide_domain["core_width"]
+        domain_height = waveguide_domain["domain_height"]
+
+        n_points = int(domain_height / dx)
+        eps_profile = np.ones(n_points) * n_clad**2
+        center = n_points // 2
+        half_core = int(core_width / (2 * dx))
+        eps_profile[center - half_core : center + half_core] = n_core**2
+
+        omega = 2 * np.pi * LIGHT_SPEED / wavelength
+
+        _, e_te, h_te, _ = solve_modes(
+            eps=eps_profile,
+            omega=omega,
+            dL=dx,
+            m=1,
+            direction="+x",
+            filter_pol="te",
+            return_fields=True,
+        )
+        _, e_tm, h_tm, _ = solve_modes(
+            eps=eps_profile,
+            omega=omega,
+            dL=dx,
+            m=1,
+            direction="+x",
+            filter_pol="tm",
+            return_fields=True,
+        )
+
+        e_te_max = [float(np.max(np.abs(np.squeeze(e_te[0, i])))) for i in range(3)]
+        h_te_max = [float(np.max(np.abs(np.squeeze(h_te[0, i])))) for i in range(3)]
+        e_tm_max = [float(np.max(np.abs(np.squeeze(e_tm[0, i])))) for i in range(3)]
+        h_tm_max = [float(np.max(np.abs(np.squeeze(h_tm[0, i])))) for i in range(3)]
+
+        assert e_te_max[1] > 1.05 * e_te_max[2], f"TE should be Ey-like, got {e_te_max}"
+        assert h_te_max[2] > 1.05 * h_te_max[1], f"TE should be Hz-like, got {h_te_max}"
+        assert e_tm_max[2] > 1.05 * e_tm_max[1], f"TM should be Ez-like, got {e_tm_max}"
+        assert h_tm_max[1] > 1.05 * h_tm_max[2], f"TM should be Hy-like, got {h_tm_max}"

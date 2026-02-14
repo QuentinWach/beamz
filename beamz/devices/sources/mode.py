@@ -428,7 +428,9 @@ class ModeSource:
         self.width = width
         self.height = height
         self.wavelength = wavelength
-        self.pol = pol
+        self.pol = str(pol).lower()
+        if self.pol not in {"te", "tm"}:
+            raise ValueError(f"pol must be 'te' or 'tm', got {pol!r}")
         self.signal = signal
         self.direction = direction
 
@@ -621,13 +623,11 @@ class ModeSource:
     def _setup_2d_injection(
         self, E_mode, H_mode, center_idx, offset_idx, axis, ny, nx, resolution
     ):
-        """Legacy 2D injection setup using original index-based extraction.
+        """2D injection setup using explicit global component mapping.
 
-        The mode solver returns fields in a specific order based on propagation axis.
-        For 2D (1D eps profile), the output uses propagation_axis=0, giving:
-        E_mode = [Ez, Ex, Ey], H_mode = [Hz, Hx, Hy] in tidy3d convention.
-
-        We use index-based extraction with fallback to handle different mode types.
+        `solve_modes(..., return_fields=True)` returns fields ordered as:
+        E_mode = [Ex, Ey, Ez], H_mode = [Hx, Hy, Hz] in global components.
+        We pick the physically matching TE/TM pair for the chosen propagation axis.
         """
         dir_sign = 1.0 if self.direction.startswith("+") else -1.0
         ETA_0 = np.sqrt(MU_0 / EPS_0)
@@ -662,12 +662,9 @@ class ModeSource:
             self._h_indices = (y_slice, offset_idx)
             self._h_component = "Hx"
 
+            # +x TM: (Ez, Hy)
             Hy_raw = np.squeeze(H_mode[1])
             Ez_raw = np.squeeze(E_mode[2])
-            if np.max(np.abs(Hy_raw)) < 1e-9:
-                Hy_raw = np.squeeze(H_mode[2])
-            if np.max(np.abs(Ez_raw)) < 1e-9:
-                Ez_raw = np.squeeze(E_mode[1])
 
             idx_max = np.argmax(np.abs(Hy_raw))
             phase_ref = np.angle(Hy_raw.flatten()[idx_max])
@@ -700,12 +697,9 @@ class ModeSource:
             self._e_indices = (slice(y_start, min(y_end, ny - 1)), offset_idx)
             self._e_component = "Ey"
 
-            h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
-            e_candidates = [np.squeeze(E_mode[i]) for i in range(3)]
-            h_scores = [float(np.max(np.abs(hc))) for hc in h_candidates]
-            e_scores = [float(np.max(np.abs(ec))) for ec in e_candidates]
-            Hz_raw = h_candidates[int(np.argmax(h_scores))]
-            Ey_raw = e_candidates[int(np.argmax(e_scores))]
+            # +x TE: (Ey, Hz)
+            Hz_raw = np.squeeze(H_mode[2])
+            Ey_raw = np.squeeze(E_mode[1])
 
             Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
             Ey_staggered = 0.5 * (Ey_raw[:-1] + Ey_raw[1:])
@@ -753,12 +747,9 @@ class ModeSource:
             self._h_indices = (offset_idx, x_slice)
             self._h_component = "Hy"
 
+            # +y TM uses the rotated x-solver basis: (Ez, Hx) <- (Ez, Hy_xbasis)
             Hx_raw = np.squeeze(H_mode[1])
             Ez_raw = np.squeeze(E_mode[2])
-            if np.max(np.abs(Hx_raw)) < 1e-9:
-                Hx_raw = np.squeeze(H_mode[2])
-            if np.max(np.abs(Ez_raw)) < 1e-9:
-                Ez_raw = np.squeeze(E_mode[1])
 
             idx_max = np.argmax(np.abs(Hx_raw))
             phase_ref = np.angle(Hx_raw.flatten()[idx_max])
@@ -795,12 +786,9 @@ class ModeSource:
             self._e_indices = (offset_idx, slice(x_start, min(x_end, nx - 1)))
             self._e_component = "Ex"
 
-            h_candidates = [np.squeeze(H_mode[i]) for i in range(3)]
-            e_candidates = [np.squeeze(E_mode[i]) for i in range(3)]
-            h_scores = [float(np.max(np.abs(hc))) for hc in h_candidates]
-            e_scores = [float(np.max(np.abs(ec))) for ec in e_candidates]
-            Hz_raw = h_candidates[int(np.argmax(h_scores))]
-            Ex_raw = e_candidates[int(np.argmax(e_scores))]
+            # +y TE uses the rotated x-solver basis: (Ex, Hz) <- (Ey_xbasis, Hz_xbasis)
+            Hz_raw = np.squeeze(H_mode[2])
+            Ex_raw = np.squeeze(E_mode[1])
 
             Hz_staggered = 0.5 * (Hz_raw[:-1] + Hz_raw[1:])
             Ex_staggered = 0.5 * (Ex_raw[:-1] + Ex_raw[1:])
