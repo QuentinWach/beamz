@@ -465,6 +465,11 @@ class ModeSource:
         self._e_component = None
         self._neff = None
         self._dt_physical = 0.0
+        self._initialized = False
+
+        # Empirical discrete-impedance correction for TE Huygens pairing on the
+        # 2D Yee grid. This reduces residual counter-propagating TE leakage.
+        self._te_m_scale_2d = 0.8
 
     def initialize(self, permittivity, resolution):
         """Compute the mode and set up the source currents for all 6 components in 3D."""
@@ -575,6 +580,7 @@ class ModeSource:
             )
 
         self._compute_dt_physical(axis, is_3d, dx, dy)
+        self._initialized = True
 
     def _setup_3d_injection(
         self, Ex, Ey, Ez, Hx, Hy, Hz,
@@ -724,7 +730,7 @@ class ModeSource:
 
             # Relative J/M sign controls propagation handedness for TE in x-propagation.
             self._jy_profile = dir_sign * Hz_cropped
-            self._mz_profile = -dir_sign * Ey_cropped
+            self._mz_profile = -dir_sign * self._te_m_scale_2d * Ey_cropped
 
     def _setup_2d_y(
         self, E_mode, H_mode, center_idx, offset_idx, ny, nx, resolution,
@@ -806,7 +812,7 @@ class ModeSource:
                 Ex_cropped = Ex_cropped * window
 
             self._jx_profile = -dir_sign * Hz_cropped
-            self._mz_profile = -dir_sign * Ex_cropped
+            self._mz_profile = -dir_sign * self._te_m_scale_2d * Ex_cropped
 
     @staticmethod
     def _make_1d_window(width_cells, alpha=0.3):
@@ -877,7 +883,12 @@ class ModeSource:
 
     def inject_h(self, fields, t, dt, current_step, resolution, design):
         """Inject magnetic current (M) into H-fields after the H update."""
-        if self._Ez_profile is None and self._jz_profile is None:
+        if (
+            (not self._initialized)
+            or (self._grid_shape != fields.permittivity.shape)
+            or (self._resolution is None)
+            or (not np.isclose(self._resolution, resolution))
+        ):
             self.initialize(fields.permittivity, resolution)
 
         # M=-n×E is injected on the H update at the standard half-step time.
@@ -890,7 +901,12 @@ class ModeSource:
 
     def inject_e(self, fields, t, dt, current_step, resolution, design):
         """Inject electric current (J) into E-fields after the E update."""
-        if self._Ez_profile is None and self._jz_profile is None:
+        if (
+            (not self._initialized)
+            or (self._grid_shape != fields.permittivity.shape)
+            or (self._resolution is None)
+            or (not np.isclose(self._resolution, resolution))
+        ):
             self.initialize(fields.permittivity, resolution)
 
         # J=n×H is evaluated on the E update and needs the physical E/H plane offset.

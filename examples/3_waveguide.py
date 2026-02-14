@@ -10,8 +10,8 @@ DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, 
 
 # Create the design
 design = Design(width=18*µm, height=7*µm, material=Material(N_CLAD**2))
-#design += Rectangle(position=(0,3.5*µm-WG_WIDTH/2), width=18*µm, height=WG_WIDTH, material=Material(N_CORE**2))
-design += Rectangle(position=(9*µm-WG_WIDTH/2,0), width=WG_WIDTH, height=7*µm, material=Material(N_CORE**2))
+design += Rectangle(position=(0,3.5*µm-WG_WIDTH/2), width=18*µm, height=WG_WIDTH, material=Material(N_CORE**2))
+#design += Rectangle(position=(9*µm-WG_WIDTH/2,0), width=WG_WIDTH, height=7*µm, material=Material(N_CORE**2))
 design.show()
 
 # Rasterize the design
@@ -33,9 +33,9 @@ source = ModeSource(
     center=(design.width/2, design.height/2),
     width=WG_WIDTH * 3.5, # Slightly wider than waveguide to capture mode tails, but not so wide to hit PML/boundaries
     wavelength=WL,
-    pol="tm",
+    pol="te",
     signal=signal,
-    direction="-y",
+    direction="-x",
 )
 
 # Run the simulation
@@ -46,8 +46,9 @@ sim = Simulation(
     time=time_steps,
     resolution=DX
 )
-sim.run(animate_live="Ez",
+sim.run(animate_live="Hz",
     animation_interval=20,
-    axis_scale=[-9e-5, 9e-5],
+    axis_scale=[-0.5, 0.5],
+    #axis_scale=None,
     cmap="twilight_zero",
     clean_visualization=True)
