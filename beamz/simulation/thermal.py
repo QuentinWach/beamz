@@ -16,7 +16,6 @@ class ThermalConfig:
     cp: float = 0.0
     dn_dT: float = 0.0
     T0: float = 300.0
-    steady_state: bool = False
     max_iters: int = 5000
     tol: float = 1e-6
 
@@ -27,30 +26,111 @@ class StaticThermalResult:
     temperature: np.ndarray
 
 
-def _laplacian_neumann(field, dx, dy=None, dz=None):
-    """Compute Laplacian with zero-flux Neumann boundaries using edge padding."""
+def _harmonic_mean_jax(left, right):
+    denom = left + right
+    valid = (left > 0) & (right > 0) & (denom > 0)
+    return jnp.where(valid, 2.0 * left * right / denom, 0.0)
+
+
+def _harmonic_mean_np(left, right):
+    denom = left + right
+    out = np.zeros_like(denom, dtype=float)
+    valid = (left > 0) & (right > 0) & (denom > 0)
+    np.divide(2.0 * left * right, denom, out=out, where=valid)
+    return out
+
+
+def _div_k_grad_neumann(field, k, dx, dy=None, dz=None):
+    """Compute div(k grad T) with zero-flux Neumann boundary conditions."""
     if dy is None:
         dy = dx
     if field.ndim == 2:
-        pad = jnp.pad(field, ((1, 1), (1, 1)), mode="edge")
-        lap_x = (pad[1:-1, 2:] - 2.0 * pad[1:-1, 1:-1] + pad[1:-1, :-2]) / (dx * dx)
-        lap_y = (pad[2:, 1:-1] - 2.0 * pad[1:-1, 1:-1] + pad[:-2, 1:-1]) / (dy * dy)
-        return lap_x + lap_y
+        kx_face = _harmonic_mean_jax(k[:, :-1], k[:, 1:])
+        ky_face = _harmonic_mean_jax(k[:-1, :], k[1:, :])
+
+        grad_x_face = kx_face * (field[:, 1:] - field[:, :-1]) / dx
+        grad_y_face = ky_face * (field[1:, :] - field[:-1, :]) / dy
+
+        div = jnp.zeros_like(field)
+        div = div.at[:, :-1].add(grad_x_face / dx)
+        div = div.at[:, 1:].add(-grad_x_face / dx)
+        div = div.at[:-1, :].add(grad_y_face / dy)
+        div = div.at[1:, :].add(-grad_y_face / dy)
+        return div
     if field.ndim == 3:
         if dz is None:
             dz = dx
-        pad = jnp.pad(field, ((1, 1), (1, 1), (1, 1)), mode="edge")
-        lap_x = (
-            pad[1:-1, 1:-1, 2:] - 2.0 * pad[1:-1, 1:-1, 1:-1] + pad[1:-1, 1:-1, :-2]
-        ) / (dx * dx)
-        lap_y = (
-            pad[1:-1, 2:, 1:-1] - 2.0 * pad[1:-1, 1:-1, 1:-1] + pad[1:-1, :-2, 1:-1]
-        ) / (dy * dy)
-        lap_z = (
-            pad[2:, 1:-1, 1:-1] - 2.0 * pad[1:-1, 1:-1, 1:-1] + pad[:-2, 1:-1, 1:-1]
-        ) / (dz * dz)
-        return lap_x + lap_y + lap_z
+        kx_face = _harmonic_mean_jax(k[:, :, :-1], k[:, :, 1:])
+        ky_face = _harmonic_mean_jax(k[:, :-1, :], k[:, 1:, :])
+        kz_face = _harmonic_mean_jax(k[:-1, :, :], k[1:, :, :])
+
+        grad_x_face = kx_face * (field[:, :, 1:] - field[:, :, :-1]) / dx
+        grad_y_face = ky_face * (field[:, 1:, :] - field[:, :-1, :]) / dy
+        grad_z_face = kz_face * (field[1:, :, :] - field[:-1, :, :]) / dz
+
+        div = jnp.zeros_like(field)
+        div = div.at[:, :, :-1].add(grad_x_face / dx)
+        div = div.at[:, :, 1:].add(-grad_x_face / dx)
+        div = div.at[:, :-1, :].add(grad_y_face / dy)
+        div = div.at[:, 1:, :].add(-grad_y_face / dy)
+        div = div.at[:-1, :, :].add(grad_z_face / dz)
+        div = div.at[1:, :, :].add(-grad_z_face / dz)
+        return div
     raise ValueError(f"Unsupported field dimension: {field.ndim}")
+
+
+def _steady_state_jacobi_step(T, k_grid, Q, dx, dy=None, dz=None):
+    """One Jacobi iteration of div(k grad T) + Q = 0 with Neumann boundaries."""
+    if dy is None:
+        dy = dx
+
+    if T.ndim == 2:
+        kx_face = _harmonic_mean_np(k_grid[:, :-1], k_grid[:, 1:]) / (dx * dx)
+        ky_face = _harmonic_mean_np(k_grid[:-1, :], k_grid[1:, :]) / (dy * dy)
+
+        numer = np.array(Q, dtype=float, copy=True)
+        denom = np.zeros_like(T, dtype=float)
+
+        numer[:, :-1] += kx_face * T[:, 1:]
+        numer[:, 1:] += kx_face * T[:, :-1]
+        denom[:, :-1] += kx_face
+        denom[:, 1:] += kx_face
+
+        numer[:-1, :] += ky_face * T[1:, :]
+        numer[1:, :] += ky_face * T[:-1, :]
+        denom[:-1, :] += ky_face
+        denom[1:, :] += ky_face
+
+        return np.where(denom > 0, numer / denom, T)
+
+    if T.ndim == 3:
+        if dz is None:
+            dz = dx
+        kx_face = _harmonic_mean_np(k_grid[:, :, :-1], k_grid[:, :, 1:]) / (dx * dx)
+        ky_face = _harmonic_mean_np(k_grid[:, :-1, :], k_grid[:, 1:, :]) / (dy * dy)
+        kz_face = _harmonic_mean_np(k_grid[:-1, :, :], k_grid[1:, :, :]) / (dz * dz)
+
+        numer = np.array(Q, dtype=float, copy=True)
+        denom = np.zeros_like(T, dtype=float)
+
+        numer[:, :, :-1] += kx_face * T[:, :, 1:]
+        numer[:, :, 1:] += kx_face * T[:, :, :-1]
+        denom[:, :, :-1] += kx_face
+        denom[:, :, 1:] += kx_face
+
+        numer[:, :-1, :] += ky_face * T[:, 1:, :]
+        numer[:, 1:, :] += ky_face * T[:, :-1, :]
+        denom[:, :-1, :] += ky_face
+        denom[:, 1:, :] += ky_face
+
+        numer[:-1, :, :] += kz_face * T[1:, :, :]
+        numer[1:, :, :] += kz_face * T[:-1, :, :]
+        denom[:-1, :, :] += kz_face
+        denom[1:, :, :] += kz_face
+
+        return np.where(denom > 0, numer / denom, T)
+
+    raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
 
 
 def _to_center(component, target_shape):
@@ -170,8 +250,8 @@ class ThermalCoupling:
         if tau_avg is None:
             self.E2_avg = E2
         else:
-            alpha = dt / tau_avg
-            self.E2_avg = self.E2_avg + alpha * (E2 - self.E2_avg)
+            beta = 1.0 - math.exp(-dt / tau_avg)
+            self.E2_avg = self.E2_avg + beta * (E2 - self.E2_avg)
 
         sigma = sim.fields.conductivity
         Q = sigma * self.E2_avg
@@ -194,8 +274,10 @@ class ThermalCoupling:
 
         for _ in range(num_steps):
             for _ in range(substeps):
-                lap = _laplacian_neumann(self.T, self.dx, self.dy, self.dz)
-                source = self.k * lap + Q
+                div_k_grad = _div_k_grad_neumann(
+                    self.T, self.k, self.dx, self.dy, self.dz
+                )
+                source = div_k_grad + Q
                 denom = self.rho * self.cp
                 update = jnp.where(denom > 0, (sub_dt / denom) * source, 0.0)
                 self.T = self.T + update
@@ -319,32 +401,7 @@ class StaticThermalSolver:
         return mask
 
     def _steady_state_step(self, T, k_grid, Q, dx):
-        if T.ndim == 2:
-            pad = np.pad(T, ((1, 1), (1, 1)), mode="edge")
-            neighbor_sum = (
-                pad[1:-1, 2:] + pad[1:-1, :-2] + pad[2:, 1:-1] + pad[:-2, 1:-1]
-            )
-            denom = np.where(k_grid > 0, 4.0, 1.0)
-            rhs = np.zeros_like(Q, dtype=float)
-            np.divide(Q * dx * dx, k_grid, out=rhs, where=k_grid > 0)
-            updated = (neighbor_sum + rhs) / denom
-            return np.where(k_grid > 0, updated, T)
-        if T.ndim == 3:
-            pad = np.pad(T, ((1, 1), (1, 1), (1, 1)), mode="edge")
-            neighbor_sum = (
-                pad[1:-1, 1:-1, 2:]
-                + pad[1:-1, 1:-1, :-2]
-                + pad[1:-1, 2:, 1:-1]
-                + pad[1:-1, :-2, 1:-1]
-                + pad[2:, 1:-1, 1:-1]
-                + pad[:-2, 1:-1, 1:-1]
-            )
-            denom = np.where(k_grid > 0, 6.0, 1.0)
-            rhs = np.zeros_like(Q, dtype=float)
-            np.divide(Q * dx * dx, k_grid, out=rhs, where=k_grid > 0)
-            updated = (neighbor_sum + rhs) / denom
-            return np.where(k_grid > 0, updated, T)
-        raise ValueError(f"Unsupported temperature grid dimension: {T.ndim}")
+        return _steady_state_jacobi_step(T, k_grid, Q, dx)
 
 
 def solve_static_thermal(

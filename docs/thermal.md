@@ -6,6 +6,7 @@ This guide shows how to run a transient thermal solve alongside the EM FDTD loop
 
 - Joule heating: `Q = σ⟨|E|^2⟩`
 - Heat equation: `rho * Cp * dT/dt = ∇·(k ∇T) + Q`
+- Spatial discretization: finite-volume-style `div(k grad T)` with harmonic face conductivity
 - Thermo-optic update: `n = n0 + dn/dT * (T - T0)`, `εr = n^2`
 
 Thermal parameters are defined per material and rasterized onto the simulation grid.
@@ -88,7 +89,7 @@ design += Rectangle(position=(3e-6, 3.4e-6), width=6e-6, height=0.4e-6, material
 def heater_mask(x, y, z):
     return 3e-6 <= x <= 9e-6 and 3.4e-6 <= y <= 3.8e-6
 
-params = ThermalConfig(thermal_dt=1e-13, tau_avg=1e-13, steady_state=True)
+params = ThermalConfig(thermal_dt=1e-13, tau_avg=1e-13)
 result = design.solve_static_thermal(
     resolution=0.1e-6,
     config=params,
@@ -96,4 +97,10 @@ result = design.solve_static_thermal(
     heater_power=5e12,
 )
 eps_r, temperature = result.permittivity, result.temperature
+```
+
+Run the static example module with:
+
+```bash
+python -m examples.thermal_static
 ```
