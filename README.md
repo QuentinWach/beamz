@@ -22,7 +22,7 @@ pip install beamz
 - PML absorbing boundaries.
 - Sub-pixel smoothing.
 - Gaussian and mode sources with TE and TM polarization.
-- Custom source time profiles (array/callable signal support).
+- Custom source time profiles.
 - Dedicated visualization module for ...almost everything.
 - Streamlined parametric design module.
 - Thermal workflows (transient coupling + static thermal solves).
