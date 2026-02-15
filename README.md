@@ -1,7 +1,7 @@
 <div align="left">
 <img src="docs/assets/BEAMZ_logo.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
 
-BEAMZ is an **electromagnetic simulation** package using the FDTD method. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for topology optimization using the adjoint method with **Jax-based autodiff** and a thermal solver. Made for (but not limited to) photonic integrated circuits.
+BEAMZ is an **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package using the [FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for topology optimization using the adjoint method with **Jax-based [autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)** and a thermal solver. Made for (but not limited to) photonic integrated circuits.
 </div>
 
 ```bash
@@ -14,28 +14,76 @@ pip install beamz
 ![Stargazers](https://img.shields.io/github/stars/QuentinWach/beamz)
 
 
-## Get Started
+## ✨ Core Features
+- **100% Python**, free (MIT license; not just GPL) & open-source.
+- Modular architecture with a high-level API.
+- **GPU-accelerated** (but CPU capable).
+- Built-in layout flow (GDSII import/export).
+- FDTD simulation in 2D and 3D.
+- PML absorbing boundaries.
+- Gaussian and mode sources with TE and TM polarization.
+- Custom source time profiles (array/callable signal support).
+- Dedicated visualization module for ...almost everything.
+- Streamlined parametric design module.
+- Thermal workflows (transient coupling + static thermal solves).
+- Optimization/autodiff utilities for **inverse-design** with Jax.
+
+
+## 🚀 Example Library
 Read and try out our **[example notebooks](https://quentinwach.com/beamz-notebooks/)** or download and run `examples/` from this repository.
 
 
-## Features
-
-- 100% Python, Free & Open-Source.
-- Modular Architecture with High-level API.
-- GPU accelerated.
-- Built-in layout flow (GDS import/export).
-- 2D/3D simulation.
-- PML boundaries.
-- Gaussian and mode sources.
-- TE/TM polarization.
-- Monitors and field recording/visualization.
-- Thermal workflows (transient coupling + static thermal solves).
-- Optimization/autodiff utilities for inverse-design with Jax.
+---
 
 
 ## Planned / Work in Progress
-
 - [ ] Native dispersive EM time-domain models (Drude/Lorentz/Sellmeier/Debye).
 - [ ] Simulation benchmarks and performance improvements (especially in 3D).
 - [ ] Explicit production-grade multi-GPU scaling.
 - [ ] Enable full polarization control in mode solving beyond TE and TM.
+
+
+- [ ] Cylindrical-coordinate simulation mode.
+- [ ] Official Conda precompiled package channel.
+- [ ] Arbitrary spatial custom-current source profile API parity.
+- [ ] Broader material model parity:
+  - [ ] Anisotropic epsilon/mu tensors.
+  - [ ] Native dispersive epsilon(omega)/mu(omega) updates in FDTD stepping.
+  - [ ] Nonlinear Kerr/Pockels material models.
+  - [ ] Saturable gain/absorption models.
+  - [ ] Gyrotropic (magneto-optical) media.
+- [ ] Built-in broadband materials library (predefined complex index datasets).
+- [ ] Boundary-condition parity beyond PML:
+  - [ ] Bloch-periodic boundaries.
+  - [ ] Perfect-conductor boundary conditions.
+- [ ] Symmetry-exploitation API (mirror/rotation domain reduction).
+- [ ] Full subpixel-smoothing parity for accuracy/shape optimization.
+- [ ] Frequency-domain solver (CW response).
+- [ ] Frequency-domain eigensolver (resonant modes).
+- [ ] HDF5 epsilon/mu and field import/export workflows.
+- [ ] Advanced field-analysis parity:
+  - [ ] DTFT/FFT field-spectrum monitor APIs.
+  - [ ] Mode decomposition / S-parameter pipeline.
+  - [ ] Near-to-far-field transforms.
+  - [ ] Frequency extraction helpers.
+  - [ ] LDOS and modal-volume analysis.
+  - [ ] Energy-density spectra APIs.
+  - [ ] Maxwell stress tensor analysis.
+  - [ ] Absorbed power density analysis API.
+  - [ ] Programmable arbitrary field-function analysis parity.
+- [ ] Sanitizer CI pipeline parity.
+- [ ] Hosted "latest docs" badge/documentation deployment parity.
+- [ ] Formal citation guidance section in README/docs.
+
+
+## About
+BEAMZ's goal is to become the pragmatic FDTD engine of choice for photonic chip designers.
+
+It focuses on stream-lined workflows to produce usefuly results quickly. I.e. this is not a research project with the goal to demo a novel framework we can publish nor a costly, closed API that hides how it works and gives you no ownership.
+
+
+## Contributing
+If you have any questions, please open an issue on GitHub! And feel free to fork this project, to suggest or contribute new features. The WIP section contains a list of features that are planned to be implemented. Help is very much appreciated! That said, the easiest way to support the project is to **give this repo a ⭐!**
+
+Thank you!
+
