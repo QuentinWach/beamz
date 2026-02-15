@@ -14,12 +14,13 @@ pip install beamz
 
 
 ## ✨ Core Features
-- **100% Python**, free (MIT license; not just GPL) & open-source.
+- **100% Python**, free (MIT license) & open-source.
 - Modular architecture with a high-level API.
 - **GPU-accelerated** (but CPU-capable).
 - Built-in layout flow (GDSII import/export).
 - FDTD simulation in 2D and 3D.
 - PML absorbing boundaries.
+- Sub-pixel smoothing.
 - Gaussian and mode sources with TE and TM polarization.
 - Custom source time profiles (array/callable signal support).
 - Dedicated visualization module for ...almost everything.
@@ -35,20 +36,19 @@ Read and try out our **[example notebooks](https://quentinwach.com/beamz-noteboo
 ---
 
 
-## Planned / Work in Progress
+## Planned / Work in Progress for v1.0.0
+Much is in place already. The modules are established and the core features are working. Further development will hence focus on introducing more advanced EM physics and tooling, including:
+
 - [ ] Native dispersive EM time-domain models (Drude/Lorentz/Sellmeier/Debye).
 - [ ] Simulation benchmarks and performance improvements (especially in 3D).
 - [ ] Explicit production-grade multi-GPU scaling.
 - [ ] Enable full polarization control in mode solving beyond TE and TM.
-
----
-
 - [ ] Cylindrical-coordinate simulation mode.
 - [ ] Official Conda precompiled package channel.
-- [ ] Arbitrary spatial custom-current source profile API parity.
-- [ ] Broader material model parity:
+- [ ] Arbitrary spatial custom-current source profile.
+- [ ] Broader material models:
   - [ ] Anisotropic epsilon/mu tensors.
-  - [ ] Native dispersive epsilon(omega)/mu(omega) updates in FDTD stepping.
+  - [ ] Native dispersive epsilon(omega)/mu(omega) updates.
   - [ ] Nonlinear Kerr/Pockels material models.
   - [ ] Saturable gain/absorption models.
   - [ ] Gyrotropic (magneto-optical) media.
@@ -56,11 +56,13 @@ Read and try out our **[example notebooks](https://quentinwach.com/beamz-noteboo
 - [ ] Boundary-condition parity beyond PML:
   - [ ] Bloch-periodic boundaries.
   - [ ] Perfect-conductor boundary conditions.
-- [ ] Symmetry-exploitation API (mirror/rotation domain reduction).
-- [ ] Full subpixel-smoothing parity for accuracy/shape optimization.
-- [ ] Frequency-domain solver (CW response).
-- [ ] Frequency-domain eigensolver (resonant modes).
-- [ ] HDF5 epsilon/mu and field import/export workflows.
+- [ ] Symmetry-exploitation for optimization (mirror/rotation domain reduction).
+- [ ] Integrated frequency-domain solver (CW response).
+- [ ] Integrated frequency-domain eigensolver (resonant modes) instead of external package.
+- [ ] Better epsilon/mu and field import/export workflows.
+
+---
+
 - [ ] Advanced field-analysis parity:
   - [ ] DTFT/FFT field-spectrum monitor APIs.
   - [ ] Mode decomposition / S-parameter pipeline.
@@ -71,31 +73,28 @@ Read and try out our **[example notebooks](https://quentinwach.com/beamz-noteboo
   - [ ] Maxwell stress tensor analysis.
   - [ ] Absorbed power density analysis API.
   - [ ] Programmable arbitrary field-function analysis parity.
-- [ ] Sanitizer CI pipeline parity.
-- [ ] Hosted "latest docs" badge/documentation deployment parity.
-- [ ] Formal citation guidance section in README/docs.
+
 
 ---
 
 - [ ] Explicit production-grade multi-GPU scaling workflow and tuning guidance.
 - [ ] Memory-efficiency strategy parity for reverse/adjoint gradients at very large scale.
 - [ ] "Billions of grid cells" scale claims backed by benchmarks and docs.
-- [ ] Installation profile parity with accelerator-specific extras (e.g. CUDA/ROCm install paths).
-- [ ] Consolidated "best practices" performance guide for large JAX runs.
-- [ ] Formal citation block in README/docs (paper/JOSS style entry).
 
 
 ## About
 BEAMZ's goal is to become the **pragmatic** FDTD engine of choice for **photonic chip designers**.
 
-It focuses on **stream-lined workflows** to produce **usefuly results** without tedious setup or configuration files. I.e. this is _not_ a research project with the goal to demo a novel framework we can publish nor a costly, closed API that hides how it works and gives you no ownership. 
+It focuses on **streamlined workflows** to produce **useful results** without tedious setup or configuration files. This is _not_ a research project with the goal to demo a novel framework we can publish, nor a costly, closed API that hides how it works and gives you no ownership. 
 
-We are building in python and choosing a modular architecture that is composible over a brutalist object-oriented architecture to make the code readable and development easy. So that, if there is something that isn't working or missing, you can quickly add it yourself!
+We are building in Python and choosing a **modular architecture** that is composable over a brutalist object-oriented architecture to **make the code readable and development easy**. So that, if there is something that isn't working or missing, you can quickly add it yourself!
 
-This project is part of my long-term ambition to push towards something like COMSOL + Tidy3D, a programmatic, differentiable multi-physics engine for coupled electromagnetics + thermodynamics + charge carrier dynamics + mechanics (maybe even microfluidics) simulations of complex devices. Who doesn't dream of that? And I am wondering what devices AI could dream up with a tool like that.
+This project is part of my long-term ambition to push towards something like COMSOL + Tidy3D, a programmatic, **differentiable multi-physics engine** for coupled electromagnetics + thermodynamics + charge carrier dynamics + mechanics (maybe even microfluidics) simulations and optimization of complex devices. Who doesn't dream of that? And I am wondering what devices AI could create with a tool like that, too.
 
 
 ## Contributing
-If any of this excites you or if have any questions, please open an issue on GitHub! And feel free to fork this project, to suggest or contribute new features. The WIP section contains a list of features that are planned to be implemented. Help is very much appreciated! That said, the easiest way to support the project is to **give this repo a ⭐!**
+If any of this excites you or if have any questions, please open an issue on GitHub!
+
+Feel free to fork this project, to suggest or contribute new features. The WIP section contains a list of features that are planned to be implemented. Help is very much appreciated! That said, the easiest way to support the project is to **give this repo a ⭐!**
 
 Thank you!
