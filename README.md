@@ -1,7 +1,7 @@
 <div align="left">
 <img src="docs/assets/BEAMZ_logo.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
 
-BEAMZ is an **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package using the [FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for topology optimization using the adjoint method with **Jax-based [autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)** and a thermal solver. Made for (but not limited to) photonic integrated circuits.
+BEAMZ is an **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package using the [FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for topology optimization using the adjoint method with **Jax-based [autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)** and a thermal solver.
 </div>
 
 ```bash
@@ -16,7 +16,7 @@ pip install beamz
 ## ✨ Core Features
 - **100% Python**, free (MIT license; not just GPL) & open-source.
 - Modular architecture with a high-level API.
-- **GPU-accelerated** (but CPU capable).
+- **GPU-accelerated** (but CPU-capable).
 - Built-in layout flow (GDSII import/export).
 - FDTD simulation in 2D and 3D.
 - PML absorbing boundaries.
@@ -25,11 +25,11 @@ pip install beamz
 - Dedicated visualization module for ...almost everything.
 - Streamlined parametric design module.
 - Thermal workflows (transient coupling + static thermal solves).
-- Optimization/autodiff utilities for **inverse-design** with Jax.
+- Optimization/autodiff utilities for gradient-based **inverse-design** with Jax.
 
 
 ## 🚀 Example Library
-Read and try out our **[example notebooks](https://quentinwach.com/beamz-notebooks/)** or download and run `examples/` from this repository.
+Read and try out our **[example notebooks](https://quentinwach.com/beamz-notebooks/)** or download and run [`examples/` from this repository](https://github.com/QuentinWach/beamz/tree/main/examples).
 
 
 ---
@@ -41,6 +41,7 @@ Read and try out our **[example notebooks](https://quentinwach.com/beamz-noteboo
 - [ ] Explicit production-grade multi-GPU scaling.
 - [ ] Enable full polarization control in mode solving beyond TE and TM.
 
+---
 
 - [ ] Cylindrical-coordinate simulation mode.
 - [ ] Official Conda precompiled package channel.
@@ -74,19 +75,8 @@ Read and try out our **[example notebooks](https://quentinwach.com/beamz-noteboo
 - [ ] Hosted "latest docs" badge/documentation deployment parity.
 - [ ] Formal citation guidance section in README/docs.
 
-## FDTDX Feature Coverage (Implemented vs WIP)
+---
 
-This section mirrors the main points from the FDTDX README and marks whether the same capability is already available in BEAMZ.
-
-### Already Implemented in BEAMZ
-- [x] JAX-based autodiff utilities for gradient-based inverse-design workflows.
-- [x] GPU-capable execution path (JAX backend on supported hardware).
-- [x] 3D simulation support (plus 2D support).
-- [x] High-level, user-friendly Python API for geometry/source/monitor setup.
-- [x] Public docs/examples/notebooks for onboarding and API usage.
-- [x] CI and code coverage integrated in the repository.
-
-### TODO / WIP for FDTDX-Level Parity
 - [ ] Explicit production-grade multi-GPU scaling workflow and tuning guidance.
 - [ ] Memory-efficiency strategy parity for reverse/adjoint gradients at very large scale.
 - [ ] "Billions of grid cells" scale claims backed by benchmarks and docs.
@@ -102,8 +92,10 @@ It focuses on **stream-lined workflows** to produce **usefuly results** without 
 
 We are building in python and choosing a modular architecture that is composible over a brutalist object-oriented architecture to make the code readable and development easy. So that, if there is something that isn't working or missing, you can quickly add it yourself!
 
+This project is part of my long-term ambition to push towards something like COMSOL + Tidy3D, a programmatic, differentiable multi-physics engine for coupled electromagnetics + thermodynamics + charge carrier dynamics + mechanics (maybe even microfluidics) simulations of complex devices. Who doesn't dream of that? And I am wondering what devices AI could dream up with a tool like that.
+
 
 ## Contributing
-If you have any questions, please open an issue on GitHub! And feel free to fork this project, to suggest or contribute new features. The WIP section contains a list of features that are planned to be implemented. Help is very much appreciated! That said, the easiest way to support the project is to **give this repo a ⭐!**
+If any of this excites you or if have any questions, please open an issue on GitHub! And feel free to fork this project, to suggest or contribute new features. The WIP section contains a list of features that are planned to be implemented. Help is very much appreciated! That said, the easiest way to support the project is to **give this repo a ⭐!**
 
 Thank you!
