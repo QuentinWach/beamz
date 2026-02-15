@@ -43,15 +43,14 @@ Much is in place already. The modules are established and the core features are 
 - [ ] Simulation benchmarks and performance improvements (especially in 3D).
 - [ ] Explicit production-grade multi-GPU scaling.
 - [ ] Enable full polarization control in mode solving beyond TE and TM.
-- [ ] Cylindrical-coordinate simulation mode.
 - [ ] Official Conda precompiled package channel.
 - [ ] Arbitrary spatial custom-current source profile.
 - [ ] Broader material models:
   - [ ] Anisotropic epsilon/mu tensors.
   - [ ] Native dispersive epsilon(omega)/mu(omega) updates.
-  - [ ] Nonlinear Kerr/Pockels material models.
-  - [ ] Saturable gain/absorption models.
-  - [ ] Gyrotropic (magneto-optical) media.
+  - [ ] Nonlinear Kerr/Pockels material models. _(not core to chip design)_
+  - [ ] Saturable gain/absorption models. _(not core to chip design)_
+  - [ ] Gyrotropic (magneto-optical) media. _(not core to chip design)_
 - [ ] Built-in broadband materials library (predefined complex index datasets).
 - [ ] Boundary-condition parity beyond PML:
   - [ ] Bloch-periodic boundaries.
@@ -60,20 +59,18 @@ Much is in place already. The modules are established and the core features are 
 - [ ] Integrated frequency-domain solver (CW response).
 - [ ] Integrated frequency-domain eigensolver (resonant modes) instead of external package.
 - [ ] Better epsilon/mu and field import/export workflows.
+- [ ] Cylindrical-coordinate simulation mode. _(not core to chip design)_
 
 ---
 
 - [ ] Advanced field-analysis parity:
   - [ ] DTFT/FFT field-spectrum monitor APIs.
   - [ ] Mode decomposition / S-parameter pipeline.
-  - [ ] Near-to-far-field transforms.
-  - [ ] Frequency extraction helpers.
-  - [ ] LDOS and modal-volume analysis.
   - [ ] Energy-density spectra APIs.
-  - [ ] Maxwell stress tensor analysis.
-  - [ ] Absorbed power density analysis API.
-  - [ ] Programmable arbitrary field-function analysis parity.
+  - [ ] Maxwell stress tensor analysis. _(not core to chip design)_
+  - [ ] Near-to-far-field transforms. _(not core to chip design)_
 
+- [ ] Dispersive material fitting plugin.
 
 ---
 
