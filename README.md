@@ -37,46 +37,7 @@ Read and try out our **[example notebooks](https://quentinwach.com/beamz-noteboo
 
 
 ## Planned / Work in Progress for v1.0.0
-Much is in place already. The modules are established and the core features are working. Further development will hence focus on introducing more advanced EM physics and tooling, including:
-
-- [ ] Native dispersive EM time-domain models (Drude/Lorentz/Sellmeier/Debye).
-- [ ] Simulation benchmarks and performance improvements (especially in 3D).
-- [ ] Explicit production-grade multi-GPU scaling.
-- [ ] Enable full polarization control in mode solving beyond TE and TM.
-- [ ] Official Conda precompiled package channel.
-- [ ] Arbitrary spatial custom-current source profile.
-- [ ] Broader material models:
-  - [ ] Anisotropic epsilon/mu tensors.
-  - [ ] Native dispersive epsilon(omega)/mu(omega) updates.
-  - [ ] Nonlinear Kerr/Pockels material models. _(not core to chip design)_
-  - [ ] Saturable gain/absorption models. _(not core to chip design)_
-  - [ ] Gyrotropic (magneto-optical) media. _(not core to chip design)_
-- [ ] Built-in broadband materials library (predefined complex index datasets).
-- [ ] Boundary-condition parity beyond PML:
-  - [ ] Bloch-periodic boundaries.
-  - [ ] Perfect-conductor boundary conditions.
-- [ ] Symmetry-exploitation for optimization (mirror/rotation domain reduction).
-- [ ] Integrated frequency-domain solver (CW response).
-- [ ] Integrated frequency-domain eigensolver (resonant modes) instead of external package.
-- [ ] Better epsilon/mu and field import/export workflows.
-- [ ] Cylindrical-coordinate simulation mode. _(not core to chip design)_
-
----
-
-- [ ] Advanced field-analysis parity:
-  - [ ] DTFT/FFT field-spectrum monitor APIs.
-  - [ ] Mode decomposition / S-parameter pipeline.
-  - [ ] Energy-density spectra APIs.
-  - [ ] Maxwell stress tensor analysis. _(not core to chip design)_
-  - [ ] Near-to-far-field transforms. _(not core to chip design)_
-
-- [ ] Dispersive material fitting plugin.
-
----
-
-- [ ] Explicit production-grade multi-GPU scaling workflow and tuning guidance.
-- [ ] Memory-efficiency strategy parity for reverse/adjoint gradients at very large scale.
-- [ ] "Billions of grid cells" scale claims backed by benchmarks and docs.
+Much is in place already. The modules are established and the core features are working. Further development will hence focus on introducing more advanced EM physics and tooling. Please read `TODO.md` for a detailed list.
 
 
 ## About
