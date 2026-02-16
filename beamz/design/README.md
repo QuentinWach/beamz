@@ -8,8 +8,6 @@ Module to define complex structures parametrically and rasterize them into mater
                  `PMCMaterial`, `SellmeierMaterial`, `DrudeMaterial`,
                  `LorentzMaterial`, `DebyeMaterial`, `PoleResidueMaterial`,
                  `Material2D`, `AnisotropicMaterial`).
-+ library.py    / Deprecated compatibility shim (`list_materials()`, `get_material()`,
-                 `material_info()`) that forwards to `beamz.material_library.material_library`.
 + meshing.py    / Turns parametric design into rasterized grids.
 + io.py         / Import and export of designs as .gds, .gltf, etc.
 

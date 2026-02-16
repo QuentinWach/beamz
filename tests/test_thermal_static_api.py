@@ -107,14 +107,15 @@ def test_power_w_requires_extrusion_depth_in_2d():
         )
 
 
-def test_legacy_static_kwargs_raise_migration_hint():
+def test_solve_static_thermal_rejects_unknown_kwargs():
     design = Design(
         width=3.0, height=3.0, material=Material(permittivity=1.0, k=1.0, T0=300.0)
     )
-    with pytest.raises(ValueError, match="Static thermal API changed"):
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
         design.solve_static_thermal(
             resolution=1.0,
             config=StaticThermalConfig(),
+            scenario=ThermalScenario(extrusion_depth_m=1.0),
             heater_mask=np.ones((3, 3), dtype=bool),
             heater_power=1.0,
         )

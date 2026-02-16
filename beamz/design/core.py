@@ -351,29 +351,10 @@ class Design:
     def solve_static_thermal(
         self,
         resolution,
-        scenario=None,
+        scenario,
         config=None,
-        **kwargs,
     ):
-        """Compatibility wrapper with migration hint for the scenario-based static API."""
-        legacy_keys = {
-            "heater_mask",
-            "heater_power",
-            "fixed_temp_mask",
-            "fixed_temp_value",
-        }
-        if legacy_keys.intersection(kwargs):
-            raise ValueError(
-                "Static thermal API changed. Replace legacy kwargs with "
-                "Design.solve_thermal(resolution=..., scenario=ThermalScenario(...), "
-                "config=StaticThermalConfig(...))."
-            )
-        if kwargs:
-            raise TypeError(f"Unexpected keyword arguments: {sorted(kwargs)}")
-        if scenario is None:
-            raise ValueError(
-                "solve_static_thermal now requires scenario=ThermalScenario(...)."
-            )
+        """Alias for solve_thermal to preserve method surface."""
         return self.solve_thermal(
             resolution=resolution,
             scenario=scenario,
