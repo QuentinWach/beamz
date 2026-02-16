@@ -8,6 +8,8 @@ Module to define complex structures parametrically and rasterize them into mater
                  `PMCMaterial`, `SellmeierMaterial`, `DrudeMaterial`,
                  `LorentzMaterial`, `DebyeMaterial`, `PoleResidueMaterial`,
                  `Material2D`, `AnisotropicMaterial`).
++ material_library.py / Curated material library containers + `material_library` dataset
+                      (`MaterialItem`, variants/default/medium contract).
 + meshing.py    / Turns parametric design into rasterized grids.
 + io.py         / Import and export of designs as .gds, .gltf, etc.
 

@@ -4,7 +4,7 @@
 MATERIAL_LIBRARY_EXPORT = {'generated_utc': '2026-02-16T00:00:00Z',
  'material_count': 13,
  'source_commit': 'curated-materials-v1',
- 'source_module': 'beamz.material_library.material_library',
+ 'source_module': 'beamz.design.material_library',
  'source_repo': 'https://github.com/QuentinWach/beamz'}
 MATERIAL_LIBRARY_ITEMS = [{'default': 'Default',
   'key': 'Vacuum',

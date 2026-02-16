@@ -3,7 +3,7 @@
     "source_repo": "https://github.com/QuentinWach/beamz",
     "source_commit": "curated-materials-v1",
     "generated_utc": "2026-02-16T00:00:00Z",
-    "source_module": "beamz.material_library.material_library",
+    "source_module": "beamz.design.material_library",
     "material_count": 13
   },
   "materials": [

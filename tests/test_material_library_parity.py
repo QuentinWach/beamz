@@ -1,6 +1,6 @@
 from beamz import material_library
 from beamz.design.materials import Material, PECMaterial, PMCMaterial
-from beamz.material_library.material_library import (
+from beamz.design.material_library import (
     MaterialItem,
     MaterialItemUniaxial,
     VariantItem,

@@ -1,1 +1,0 @@
-"""Vendored material-library datasets."""

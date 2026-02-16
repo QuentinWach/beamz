@@ -21,7 +21,15 @@ from beamz.design.materials import (
     PoleResidueMaterial,
     SellmeierMaterial,
 )
-from beamz.material_library.material_reference import ReferenceData
+
+
+@dataclass(frozen=True)
+class ReferenceData:
+    doi: str | None = None
+    journal: str | None = None
+    url: str | None = None
+    manufacturer: str | None = None
+    datasheet_title: str | None = None
 
 
 MaterialModel = (
@@ -240,7 +248,7 @@ def _build_medium(payload: dict[str, Any]) -> MaterialModel:
 
 def _load_data() -> tuple[ExportData, list[dict[str, Any]]]:
     try:
-        from beamz.material_library.data._generated import (
+        from beamz.design.material_library_data._generated import (
             MATERIAL_LIBRARY_EXPORT,
             MATERIAL_LIBRARY_ITEMS,
         )
@@ -249,7 +257,11 @@ def _load_data() -> tuple[ExportData, list[dict[str, Any]]]:
         items = MATERIAL_LIBRARY_ITEMS
         return export, items
     except Exception:
-        data_path = Path(__file__).resolve().parent / "data" / "materials.normalized.json"
+        data_path = (
+            Path(__file__).resolve().parent
+            / "material_library_data"
+            / "materials.normalized.json"
+        )
         payload = json.loads(data_path.read_text())
         export = ExportData(**payload["export"])
         return export, payload["materials"]
@@ -363,6 +375,7 @@ __all__ = [
     "VariantItemUniaxial",
     "MaterialItemUniaxial",
     "MaterialLibrary",
+    "ReferenceData",
     "material_library_export",
     "material_library",
     "export_matlib_to_file",
