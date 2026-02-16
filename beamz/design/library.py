@@ -16,10 +16,6 @@ from beamz.design.materials import (
     LorentzMaterial,
     Material,
     Material2D,
-    PEC,
-    PMC,
-    PECMaterial,
-    PMCMaterial,
     PoleResidueMaterial,
     SellmeierMaterial,
 )
@@ -55,8 +51,6 @@ MaterialModel = (
     | LorentzMaterial
     | DebyeMaterial
     | Material2D
-    | PECMaterial
-    | PMCMaterial
 )
 
 
@@ -249,14 +243,6 @@ def ito() -> DrudeMaterial:
     )
 
 
-def pec() -> PECMaterial:
-    return PEC
-
-
-def pmc() -> PMCMaterial:
-    return PMC
-
-
 # --- Registry builders -----------------------------------------------------------------------
 
 
@@ -322,14 +308,6 @@ def ito_item() -> MaterialItem:
     return _bulk_item("Indium Tin Oxide", ito, "Drude model (representative NIR fit)")
 
 
-def pec_item() -> MaterialItem:
-    return _bulk_item("Perfect Electric Conductor", pec, "Symbolic perfect electric conductor")
-
-
-def pmc_item() -> MaterialItem:
-    return _bulk_item("Perfect Magnetic Conductor", pmc, "Symbolic perfect magnetic conductor")
-
-
 def build_material_library() -> MaterialLibrary:
     return MaterialLibrary(
         {
@@ -344,8 +322,6 @@ def build_material_library() -> MaterialLibrary:
             "Copper": copper_item(),
             "Water": water_item(),
             "ITO": ito_item(),
-            "PEC": pec_item(),
-            "PMC": pmc_item(),
         }
     )
 
@@ -412,8 +388,6 @@ __all__ = [
     "copper",
     "water",
     "ito",
-    "pec",
-    "pmc",
     "build_material_library",
     "material_library_export",
     "material_library",

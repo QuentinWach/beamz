@@ -24,10 +24,6 @@ from beamz.design.materials import (
     LorentzMaterial,
     Material,
     Material2D,
-    PEC,
-    PMC,
-    PECMaterial,
-    PMCMaterial,
     PoleResidueMaterial,
     SellmeierMaterial,
 )
@@ -102,12 +98,8 @@ _exports = {
     "LorentzMaterial": LorentzMaterial,
     "DebyeMaterial": DebyeMaterial,
     "PoleResidueMaterial": PoleResidueMaterial,
-    "PECMaterial": PECMaterial,
-    "PMCMaterial": PMCMaterial,
     "Material2D": Material2D,
     "AnisotropicMaterial": AnisotropicMaterial,
-    "PEC": PEC,
-    "PMC": PMC,
     # Material library (Tidy3D-style)
     "material_library": material_library,
     # Structures

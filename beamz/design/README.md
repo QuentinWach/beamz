@@ -4,8 +4,8 @@ Module to define complex structures parametrically and rasterize them into mater
 
 + core.py       / Main module to define and organize geometry and materials.
 + structures.py / Polygon objects to define geometry within the design.
-+ materials.py  / Canonical material models (`Material`, `CustomMaterial`, `PECMaterial`,
-                 `PMCMaterial`, `SellmeierMaterial`, `DrudeMaterial`,
++ materials.py  / Canonical material models (`Material`, `CustomMaterial`,
+                 `SellmeierMaterial`, `DrudeMaterial`,
                  `LorentzMaterial`, `DebyeMaterial`, `PoleResidueMaterial`,
                  `Material2D`, `AnisotropicMaterial`).
 + library.py    / Curated function-based material registry + `material_library` dataset

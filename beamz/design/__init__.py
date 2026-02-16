@@ -11,10 +11,6 @@ from beamz.design.materials import (
     LorentzMaterial,
     Material,
     Material2D,
-    PEC,
-    PMC,
-    PECMaterial,
-    PMCMaterial,
     PoleResidueMaterial,
     SellmeierMaterial,
 )
@@ -31,10 +27,6 @@ from beamz.design.structures import (
 __all__ = [
     "Material",
     "CustomMaterial",
-    "PECMaterial",
-    "PMCMaterial",
-    "PEC",
-    "PMC",
     "SellmeierMaterial",
     "DrudeMaterial",
     "LorentzMaterial",

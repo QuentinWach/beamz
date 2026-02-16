@@ -64,30 +64,6 @@ class Material:
         return self.permittivity, self.permeability, self.conductivity
 
 
-class PECMaterial(Material):
-    """Perfect electric conductor placeholder material."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            permittivity=1e20,
-            permeability=1.0,
-            conductivity=1e20,
-            name="PEC",
-        )
-
-
-class PMCMaterial(Material):
-    """Perfect magnetic conductor placeholder material."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            permittivity=1.0,
-            permeability=1e20,
-            conductivity=0.0,
-            name="PMC",
-        )
-
-
 class CustomMaterial:
     def __init__(
         self,
@@ -573,17 +549,9 @@ class AnisotropicMaterial:
     zz: Material | _DispersiveBase
 
 
-PEC = PECMaterial()
-PMC = PMCMaterial()
-
-
 __all__ = [
     "Material",
     "CustomMaterial",
-    "PECMaterial",
-    "PMCMaterial",
-    "PEC",
-    "PMC",
     "DispersiveMetadata",
     "SellmeierMaterial",
     "DrudeMaterial",
