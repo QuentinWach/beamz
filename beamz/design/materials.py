@@ -63,6 +63,28 @@ class Material:
     def get_sample(self) -> tuple[float, float, float]:
         return self.permittivity, self.permeability, self.conductivity
 
+    def show(
+        self,
+        *,
+        wavelength_range_um: tuple[float, float] = (0.4, 2.0),
+        num_points: int = 300,
+        title: str | None = None,
+    ) -> None:
+        """Display a compact material summary and constant spectral response.
+
+        Example
+        -------
+        >>> Material(permittivity=2.1).show()
+        """
+        from beamz.visual.material_plots import show_material
+
+        show_material(
+            self,
+            wavelength_range_um=wavelength_range_um,
+            num_points=num_points,
+            title=title,
+        )
+
 
 class CustomMaterial:
     def __init__(
@@ -253,6 +275,29 @@ class CustomMaterial:
             interpolation=self.interpolation,
         )
 
+    def show(
+        self,
+        *,
+        bounds: tuple[tuple[float, float], tuple[float, float]] | None = None,
+        grid_shape: tuple[int, int] = (150, 150),
+        title: str | None = None,
+    ) -> None:
+        """Display spatial material fields from grids/functions when available.
+
+        Example
+        -------
+        >>> mat = CustomMaterial(permittivity_func=lambda x, y: 2.0 + x, bounds=((-1, 1), (-1, 1)))
+        >>> mat.show()
+        """
+        from beamz.visual.material_plots import show_custom_material
+
+        show_custom_material(
+            self,
+            bounds=bounds,
+            grid_shape=grid_shape,
+            title=title,
+        )
+
 
 @dataclass(frozen=True)
 class DispersiveMetadata:
@@ -333,6 +378,28 @@ class _DispersiveBase:
 
     def n_model(self, frequency: float | np.ndarray) -> np.ndarray:
         return self.n_complex(frequency=frequency)
+
+    def show(
+        self,
+        *,
+        wavelength_range_um: tuple[float, float] = (0.4, 2.0),
+        num_points: int = 300,
+        title: str | None = None,
+    ) -> None:
+        """Display dispersive material response over wavelength.
+
+        Example
+        -------
+        >>> SellmeierMaterial(coeffs=((0.696, 0.068**2),)).show()
+        """
+        from beamz.visual.material_plots import show_dispersive_material
+
+        show_dispersive_material(
+            self,
+            wavelength_range_um=wavelength_range_um,
+            num_points=num_points,
+            title=title,
+        )
 
     def to_material(
         self,
@@ -539,6 +606,28 @@ class Material2D:
     def eps_model(self, frequency: float | np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return self.ss.eps_model(frequency), self.tt.eps_model(frequency)
 
+    def show(
+        self,
+        *,
+        wavelength_range_um: tuple[float, float] = (0.4, 2.0),
+        num_points: int = 300,
+        title: str | None = None,
+    ) -> None:
+        """Display 2D material component dispersion (ss/tt).
+
+        Example
+        -------
+        >>> Material2D(ss=Material(permittivity=2.0), tt=Material(permittivity=2.2)).show()
+        """
+        from beamz.visual.material_plots import show_material2d
+
+        show_material2d(
+            self,
+            wavelength_range_um=wavelength_range_um,
+            num_points=num_points,
+            title=title,
+        )
+
 
 @dataclass
 class AnisotropicMaterial:
@@ -547,6 +636,28 @@ class AnisotropicMaterial:
     xx: Material | _DispersiveBase
     yy: Material | _DispersiveBase
     zz: Material | _DispersiveBase
+
+    def show(
+        self,
+        *,
+        wavelength_range_um: tuple[float, float] = (0.4, 2.0),
+        num_points: int = 300,
+        title: str | None = None,
+    ) -> None:
+        """Display anisotropic material dispersion (xx/yy/zz).
+
+        Example
+        -------
+        >>> AnisotropicMaterial(xx=Material(2.1), yy=Material(2.2), zz=Material(2.3)).show()
+        """
+        from beamz.visual.material_plots import show_anisotropic_material
+
+        show_anisotropic_material(
+            self,
+            wavelength_range_um=wavelength_range_um,
+            num_points=num_points,
+            title=title,
+        )
 
 
 __all__ = [

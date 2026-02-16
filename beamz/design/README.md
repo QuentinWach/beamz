@@ -18,3 +18,19 @@ Module to define complex structures parametrically and rasterize them into mater
 - Dispersive models are operating-point models and must be converted using
   `to_material(frequency=... or wavelength=...)` before mesh/simulation use.
 - The runtime material catalog is intentionally curated and minimal.
+
+## Quick Visualization
+```python
+from beamz.design.library import material_library
+from beamz.design.materials import Material
+
+# Constant material summary
+Material(name="SimpleOxide", permittivity=2.1, conductivity=1e-4).show()
+
+# Dispersive material from library
+material_library["Gold"].medium.show(wavelength_range_um=(0.45, 1.8))
+
+# Uniaxial LiNbO3 (extraordinary axis along z)
+lno = material_library["LiNbO3"].medium("z")
+lno.show(wavelength_range_um=(0.5, 2.0))
+```

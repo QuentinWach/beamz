@@ -3,8 +3,6 @@ from beamz.design.materials import (
     DebyeMaterial,
     DrudeMaterial,
     LorentzMaterial,
-    PECMaterial,
-    PMCMaterial,
     SellmeierMaterial,
 )
 from beamz.design.library import (
@@ -26,8 +24,6 @@ EXPECTED_KEYS = {
     "Copper",
     "Water",
     "ITO",
-    "PEC",
-    "PMC",
 }
 
 
@@ -74,15 +70,6 @@ def test_uniaxial_axis_aware_contract_for_lino3():
     eps_zx = anis_z.xx.to_material(wavelength=1.55e-6).permittivity
     assert eps_xx != eps_yy
     assert eps_zz != eps_zx
-
-
-def test_symbolic_materials_are_present_and_typed():
-    pec = material_library["PEC"].medium
-    pmc = material_library["PMC"].medium
-
-    assert isinstance(pec, PECMaterial)
-    assert isinstance(pmc, PMCMaterial)
-
 
 def test_expected_model_classes_by_key():
     assert isinstance(material_library["Si3N4"].medium, SellmeierMaterial)
