@@ -27,6 +27,8 @@ classifiers = [
 dependencies = [
     "numpy>=1.24.4",
     "matplotlib>=3.7.5",
+    "plotly",
+    "tidy3d",
     "gdspy>=1.6.0",
     "scipy>=1.10.1",
     "rich>=13.9.4",
