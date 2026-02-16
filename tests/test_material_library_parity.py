@@ -1,6 +1,13 @@
 from beamz import material_library
-from beamz.design.materials import Material, PECMaterial, PMCMaterial
-from beamz.design.material_library import (
+from beamz.design.materials import (
+    DebyeMaterial,
+    DrudeMaterial,
+    LorentzMaterial,
+    PECMaterial,
+    PMCMaterial,
+    SellmeierMaterial,
+)
+from beamz.design.library import (
     MaterialItem,
     MaterialItemUniaxial,
     VariantItem,
@@ -38,14 +45,14 @@ def test_bulk_items_have_single_default_variant():
 
 def test_default_medium_and_variant_access_contract():
     gold = material_library["Gold"]
-    assert isinstance(gold["Default"], Material)
+    assert isinstance(gold["Default"], DrudeMaterial)
     assert gold["Default"] is gold.medium
 
 
 def test_variant_item_required_fields_present():
     sio2_variant = material_library["SiO2"].variants["Default"]
     assert isinstance(sio2_variant, VariantItem)
-    assert sio2_variant.medium is not None
+    assert isinstance(sio2_variant.medium, SellmeierMaterial)
     assert hasattr(sio2_variant, "reference")
     assert hasattr(sio2_variant, "data_url")
     assert hasattr(sio2_variant, "notes")
@@ -59,8 +66,14 @@ def test_uniaxial_axis_aware_contract_for_lino3():
     anis_x = lno.medium("x")
     anis_z = lno.medium("z")
 
-    assert anis_x.xx.permittivity != anis_x.yy.permittivity
-    assert anis_z.zz.permittivity != anis_z.xx.permittivity
+    assert isinstance(anis_x.xx, SellmeierMaterial)
+    assert isinstance(anis_z.zz, SellmeierMaterial)
+    eps_xx = anis_x.xx.to_material(wavelength=1.55e-6).permittivity
+    eps_yy = anis_x.yy.to_material(wavelength=1.55e-6).permittivity
+    eps_zz = anis_z.zz.to_material(wavelength=1.55e-6).permittivity
+    eps_zx = anis_z.xx.to_material(wavelength=1.55e-6).permittivity
+    assert eps_xx != eps_yy
+    assert eps_zz != eps_zx
 
 
 def test_symbolic_materials_are_present_and_typed():
@@ -69,3 +82,10 @@ def test_symbolic_materials_are_present_and_typed():
 
     assert isinstance(pec, PECMaterial)
     assert isinstance(pmc, PMCMaterial)
+
+
+def test_expected_model_classes_by_key():
+    assert isinstance(material_library["Si3N4"].medium, SellmeierMaterial)
+    assert isinstance(material_library["Silicon"].medium, LorentzMaterial)
+    assert isinstance(material_library["Water"].medium, DebyeMaterial)
+    assert isinstance(material_library["ITO"].medium, DrudeMaterial)

@@ -31,7 +31,7 @@ from beamz.design.materials import (
     PoleResidueMaterial,
     SellmeierMaterial,
 )
-from beamz.design.material_library import material_library
+from beamz.design.library import material_library
 
 # Import simulation-related classes and functions
 from beamz.design.meshing import RegularGrid
