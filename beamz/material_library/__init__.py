@@ -14,7 +14,6 @@ from beamz.material_library.material_library import (
     material_library_export,
 )
 from beamz.material_library.material_reference import ReferenceData
-from beamz.material_library.parametric_materials import Graphene, GrapheneClass
 
 __all__ = [
     "ReferenceData",
@@ -29,6 +28,4 @@ __all__ = [
     "material_library",
     "material_library_export",
     "export_matlib_to_file",
-    "Graphene",
-    "GrapheneClass",
 ]

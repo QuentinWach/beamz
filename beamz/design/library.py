@@ -9,9 +9,11 @@ from __future__ import annotations
 from copy import deepcopy
 import warnings
 
-from beamz.components.medium import Medium, Medium2D, PoleResidue
-from beamz.const import LIGHT_SPEED
-from beamz.design.materials import Material
+from beamz.design.materials import (
+    AnisotropicMaterial,
+    Material,
+    Material2D,
+)
 from beamz.material_library.material_library import material_library
 
 
@@ -40,14 +42,31 @@ def _resolve_item(name: str):
     raise KeyError(f"Unknown material '{name}'.")
 
 
-def _pole_residue_to_material(pr: PoleResidue, wavelength: float = REFERENCE_WAVELENGTH_M) -> Material:
-    frequency = LIGHT_SPEED / wavelength
-    med = pr.to_medium(frequency)
-    return Material(
-        permittivity=med.permittivity,
-        permeability=med.permeability,
-        conductivity=med.conductivity,
-    )
+def _to_design_material(model) -> Material:
+    if isinstance(model, Material):
+        return Material(
+            permittivity=model.permittivity,
+            permeability=model.permeability,
+            conductivity=model.conductivity,
+            k=model.k,
+            rho=model.rho,
+            cp=model.cp,
+            dn_dT=model.dn_dT,
+            T0=model.T0,
+            name=model.name,
+            frequency_range=model.frequency_range,
+        )
+
+    if isinstance(model, Material2D):
+        return _to_design_material(model.ss)
+
+    if isinstance(model, AnisotropicMaterial):
+        return _to_design_material(model.xx)
+
+    if hasattr(model, "to_material"):
+        return model.to_material(wavelength=REFERENCE_WAVELENGTH_M)
+
+    raise ValueError(f"Unsupported medium conversion path for type '{type(model).__name__}'.")
 
 
 def list_materials(category: str | None = None, include_symbolic: bool = True) -> list[str]:
@@ -57,28 +76,17 @@ def list_materials(category: str | None = None, include_symbolic: bool = True) -
     """
     _warn_deprecated()
     names = []
-    for key, item in material_library.items():
+    for key in material_library:
         if not include_symbolic and key in {"PEC", "PMC"}:
             continue
-        if isinstance(item, type):
-            continue
         names.append(key)
-    names = sorted(set(names), key=str.lower)
-    return names
+    return sorted(set(names), key=str.lower)
 
 
 def material_info(name: str) -> dict:
     """Deprecated helper: return metadata summary from new material_library."""
     _warn_deprecated()
     key, item = _resolve_item(name)
-
-    if isinstance(item, type):
-        return {
-            "key": key,
-            "name": key,
-            "kind": "parametric_class",
-            "class_name": item.__name__,
-        }
 
     payload = {
         "key": key,
@@ -103,34 +111,13 @@ def get_material(name: str, allow_symbolic: bool = False):
             f"{key} is symbolic. Use material_info('{key}') or the new material_library API."
         )
 
-    if isinstance(item, type):
-        if allow_symbolic:
-            return material_info(key)
-        raise ValueError(
-            f"{key} is a parametric class entry. Instantiate via `beamz.Graphene(...)`."
-        )
+    medium_or_callable = item.medium
+    if callable(medium_or_callable):
+        medium = medium_or_callable("z")
+    else:
+        medium = medium_or_callable
 
-    med = item.medium
-    if isinstance(med, PoleResidue):
-        return _pole_residue_to_material(med)
-    if isinstance(med, Medium):
-        return Material(
-            permittivity=med.permittivity,
-            permeability=med.permeability,
-            conductivity=med.conductivity,
-        )
-    if isinstance(med, Medium2D):
-        # Migration fallback: use in-plane `ss` component.
-        if isinstance(med.ss, PoleResidue):
-            return _pole_residue_to_material(med.ss)
-        if isinstance(med.ss, Medium):
-            return Material(
-                permittivity=med.ss.permittivity,
-                permeability=med.ss.permeability,
-                conductivity=med.ss.conductivity,
-            )
-
-    raise ValueError(f"Unsupported medium conversion path for material '{name}'.")
+    return _to_design_material(medium)
 
 
 __all__ = [

@@ -1,24 +1,40 @@
-"""Material library structures for Beamz."""
+"""Curated material library with a compact Material-first API."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from beamz.components.medium import (
-    AnisotropicMedium,
-    Medium,
-    Medium2D,
+from beamz.design.materials import (
+    AnisotropicMaterial,
+    DebyeMaterial,
+    DrudeMaterial,
+    LorentzMaterial,
+    Material,
+    Material2D,
     PEC,
     PMC,
-    PECMedium,
-    PMCMedium,
-    PoleResidue,
+    PECMaterial,
+    PMCMaterial,
+    PoleResidueMaterial,
+    SellmeierMaterial,
 )
 from beamz.material_library.material_reference import ReferenceData
-from beamz.material_library.parametric_materials import Graphene
+
+
+MaterialModel = (
+    Material
+    | PoleResidueMaterial
+    | SellmeierMaterial
+    | DrudeMaterial
+    | LorentzMaterial
+    | DebyeMaterial
+    | Material2D
+    | PECMaterial
+    | PMCMaterial
+)
 
 
 @dataclass(frozen=True)
@@ -32,7 +48,7 @@ class ExportData:
 
 @dataclass
 class VariantItem:
-    medium: PoleResidue | Medium | Medium2D | PECMedium | PMCMedium
+    medium: MaterialModel
     reference: list[ReferenceData] | None = None
     data_url: str | None = None
     notes: str | None = None
@@ -51,17 +67,17 @@ class MaterialItem:
                 f"Default variant '{self.default}' not found in variants of {self.name}."
             )
 
-    def __getitem__(self, variant_name: str):
+    def __getitem__(self, variant_name: str) -> MaterialModel:
         return self.variants[variant_name].medium
 
     @property
-    def medium(self):
+    def medium(self) -> MaterialModel:
         return self.variants[self.default].medium
 
 
 @dataclass
 class VariantItem2D:
-    medium: Medium2D
+    medium: Material2D
     reference: list[ReferenceData] | None = None
     data_url: str | None = None
     notes: str | None = None
@@ -75,14 +91,14 @@ class MaterialItem2D(MaterialItem):
 
 @dataclass
 class VariantItemUniaxial:
-    ordinary: PoleResidue
-    extraordinary: PoleResidue
+    ordinary: Material | PoleResidueMaterial | SellmeierMaterial
+    extraordinary: Material | PoleResidueMaterial | SellmeierMaterial
     reference: list[ReferenceData] | None = None
     data_url: str | None = None
     notes: str | None = None
     frequency_range: tuple[float, float] | None = None
 
-    def medium(self, optical_axis: int | str = 2) -> AnisotropicMedium:
+    def medium(self, optical_axis: int | str = 2) -> AnisotropicMaterial:
         axes = {0: "x", 1: "y", 2: "z", "x": "x", "y": "y", "z": "z"}
         axis = axes.get(optical_axis)
         if axis is None:
@@ -90,14 +106,14 @@ class VariantItemUniaxial:
         xx = self.extraordinary if axis == "x" else self.ordinary
         yy = self.extraordinary if axis == "y" else self.ordinary
         zz = self.extraordinary if axis == "z" else self.ordinary
-        return AnisotropicMedium(xx=xx, yy=yy, zz=zz)
+        return AnisotropicMaterial(xx=xx, yy=yy, zz=zz)
 
 
 @dataclass
 class MaterialItemUniaxial(MaterialItem):
     variants: dict[str, VariantItemUniaxial]
 
-    def medium(self, optical_axis: int | str = 2) -> AnisotropicMedium:
+    def medium(self, optical_axis: int | str = 2) -> AnisotropicMaterial:
         return self.variants[self.default].medium(optical_axis)
 
 
@@ -105,9 +121,7 @@ class MaterialLibrary(dict):
     def __str__(self) -> str:
         lines = ["Material Library Summary:"]
         for key, item in self.items():
-            if isinstance(item, type):
-                lines.append(f"  - Key: {key}")
-            elif hasattr(item, "variants"):
+            if hasattr(item, "variants"):
                 lines.append(
                     f"  - Key: {key}, Name: {item.name}, "
                     f"Default Variant: {item.default}, # Variants: {len(item.variants)}"
@@ -138,54 +152,98 @@ def _build_reference_list(data: list[dict[str, Any]] | None) -> list[ReferenceDa
     return refs
 
 
-def _build_pole_residue(params: dict[str, Any]) -> PoleResidue:
-    poles = []
-    for pair in params.get("poles", []):
-        a = _deserialize_complex(pair[0])
-        c = _deserialize_complex(pair[1])
-        poles.append((a, c))
-    fr = params.get("frequency_range")
-    fr_t = tuple(fr) if fr is not None else None
-    return PoleResidue(
-        name=params.get("name"),
-        eps_inf=float(params.get("eps_inf", 1.0)),
-        poles=tuple(poles),
-        frequency_range=fr_t,
-    )
-
-
-def _build_medium(payload: dict[str, Any]):
+def _build_medium(payload: dict[str, Any]) -> MaterialModel:
     model = payload["model"]
     params = payload.get("params", {})
-    if model == "PoleResidue":
-        return _build_pole_residue(params)
-    if model == "Medium":
+
+    if model == "Material":
         fr = params.get("frequency_range")
-        return Medium(
+        return Material(
             name=params.get("name"),
             permittivity=float(params.get("permittivity", 1.0)),
             permeability=float(params.get("permeability", 1.0)),
             conductivity=float(params.get("conductivity", 0.0)),
             frequency_range=tuple(fr) if fr is not None else None,
         )
-    if model == "Medium2D":
+
+    if model == "PoleResidueMaterial":
+        poles = []
+        for pair in params.get("poles", []):
+            poles.append((_deserialize_complex(pair[0]), _deserialize_complex(pair[1])))
         fr = params.get("frequency_range")
-        return Medium2D(
+        return PoleResidueMaterial(
+            name=params.get("name"),
+            eps_inf=float(params.get("eps_inf", 1.0)),
+            poles=tuple(poles),
+            frequency_range=tuple(fr) if fr is not None else None,
+        )
+
+    if model == "SellmeierMaterial":
+        coeffs = tuple((float(b), float(c)) for b, c in params.get("coeffs", []))
+        fr = params.get("frequency_range")
+        return SellmeierMaterial(
+            name=params.get("name"),
+            coeffs=coeffs,
+            frequency_range=tuple(fr) if fr is not None else None,
+        )
+
+    if model == "DrudeMaterial":
+        coeffs = tuple((float(fp), float(delta)) for fp, delta in params.get("coeffs", []))
+        fr = params.get("frequency_range")
+        return DrudeMaterial(
+            name=params.get("name"),
+            coeffs=coeffs,
+            eps_inf=float(params.get("eps_inf", 1.0)),
+            frequency_range=tuple(fr) if fr is not None else None,
+        )
+
+    if model == "LorentzMaterial":
+        coeffs = tuple(
+            (float(de), float(f0), float(delta))
+            for de, f0, delta in params.get("coeffs", [])
+        )
+        fr = params.get("frequency_range")
+        return LorentzMaterial(
+            name=params.get("name"),
+            coeffs=coeffs,
+            eps_inf=float(params.get("eps_inf", 1.0)),
+            frequency_range=tuple(fr) if fr is not None else None,
+        )
+
+    if model == "DebyeMaterial":
+        coeffs = tuple((float(de), float(tau)) for de, tau in params.get("coeffs", []))
+        fr = params.get("frequency_range")
+        return DebyeMaterial(
+            name=params.get("name"),
+            coeffs=coeffs,
+            eps_inf=float(params.get("eps_inf", 1.0)),
+            frequency_range=tuple(fr) if fr is not None else None,
+        )
+
+    if model == "Material2D":
+        fr = params.get("frequency_range")
+        return Material2D(
             name=params.get("name"),
             ss=_build_medium(params["ss"]),
             tt=_build_medium(params["tt"]),
             frequency_range=tuple(fr) if fr is not None else None,
         )
-    if model == "PECMedium":
+
+    if model == "PECMaterial":
         return PEC
-    if model == "PMCMedium":
+
+    if model == "PMCMaterial":
         return PMC
+
     raise ValueError(f"Unsupported model type '{model}'.")
 
 
 def _load_data() -> tuple[ExportData, list[dict[str, Any]]]:
     try:
-        from beamz.material_library.data._generated import MATERIAL_LIBRARY_EXPORT, MATERIAL_LIBRARY_ITEMS
+        from beamz.material_library.data._generated import (
+            MATERIAL_LIBRARY_EXPORT,
+            MATERIAL_LIBRARY_ITEMS,
+        )
 
         export = ExportData(**MATERIAL_LIBRARY_EXPORT)
         items = MATERIAL_LIBRARY_ITEMS
@@ -202,26 +260,19 @@ def _build_material_library(items: list[dict[str, Any]]) -> MaterialLibrary:
     for item in items:
         key = item["key"]
         kind = item["kind"]
-
-        if kind == "parametric_class":
-            out[key] = Graphene
-            continue
-
         variants_raw = item["variants"]
 
         if kind == "uniaxial":
             variants: dict[str, VariantItemUniaxial] = {}
-            for vk, vv in variants_raw.items():
-                ordinary = _build_medium(vv["ordinary"])
-                extraordinary = _build_medium(vv["extraordinary"])
-                variants[vk] = VariantItemUniaxial(
-                    ordinary=ordinary,
-                    extraordinary=extraordinary,
-                    reference=_build_reference_list(vv.get("reference")),
-                    data_url=vv.get("data_url"),
-                    notes=vv.get("notes"),
-                    frequency_range=tuple(vv["frequency_range"])
-                    if vv.get("frequency_range")
+            for variant_key, variant_value in variants_raw.items():
+                variants[variant_key] = VariantItemUniaxial(
+                    ordinary=_build_medium(variant_value["ordinary"]),
+                    extraordinary=_build_medium(variant_value["extraordinary"]),
+                    reference=_build_reference_list(variant_value.get("reference")),
+                    data_url=variant_value.get("data_url"),
+                    notes=variant_value.get("notes"),
+                    frequency_range=tuple(variant_value["frequency_range"])
+                    if variant_value.get("frequency_range")
                     else None,
                 )
             out[key] = MaterialItemUniaxial(
@@ -233,15 +284,14 @@ def _build_material_library(items: list[dict[str, Any]]) -> MaterialLibrary:
 
         if kind == "2d":
             variants_2d: dict[str, VariantItem2D] = {}
-            for vk, vv in variants_raw.items():
-                medium = _build_medium(vv["medium"])
-                variants_2d[vk] = VariantItem2D(
-                    medium=medium,
-                    reference=_build_reference_list(vv.get("reference")),
-                    data_url=vv.get("data_url"),
-                    notes=vv.get("notes"),
-                    frequency_range=tuple(vv["frequency_range"])
-                    if vv.get("frequency_range")
+            for variant_key, variant_value in variants_raw.items():
+                variants_2d[variant_key] = VariantItem2D(
+                    medium=_build_medium(variant_value["medium"]),
+                    reference=_build_reference_list(variant_value.get("reference")),
+                    data_url=variant_value.get("data_url"),
+                    notes=variant_value.get("notes"),
+                    frequency_range=tuple(variant_value["frequency_range"])
+                    if variant_value.get("frequency_range")
                     else None,
                 )
             out[key] = MaterialItem2D(
@@ -252,15 +302,14 @@ def _build_material_library(items: list[dict[str, Any]]) -> MaterialLibrary:
             continue
 
         variants_bulk: dict[str, VariantItem] = {}
-        for vk, vv in variants_raw.items():
-            medium = _build_medium(vv["medium"])
-            variants_bulk[vk] = VariantItem(
-                medium=medium,
-                reference=_build_reference_list(vv.get("reference")),
-                data_url=vv.get("data_url"),
-                notes=vv.get("notes"),
-                frequency_range=tuple(vv["frequency_range"])
-                if vv.get("frequency_range")
+        for variant_key, variant_value in variants_raw.items():
+            variants_bulk[variant_key] = VariantItem(
+                medium=_build_medium(variant_value["medium"]),
+                reference=_build_reference_list(variant_value.get("reference")),
+                data_url=variant_value.get("data_url"),
+                notes=variant_value.get("notes"),
+                frequency_range=tuple(variant_value["frequency_range"])
+                if variant_value.get("frequency_range")
                 else None,
             )
         out[key] = MaterialItem(
@@ -269,54 +318,36 @@ def _build_material_library(items: list[dict[str, Any]]) -> MaterialLibrary:
             default=item["default"],
         )
 
-    # Add symbolic placeholders explicitly to guarantee availability.
-    out.setdefault(
-        "PEC",
-        MaterialItem(
-            name="Perfect Electric Conductor",
-            variants={"default": VariantItem(medium=PEC)},
-            default="default",
-        ),
-    )
-    out.setdefault(
-        "PMC",
-        MaterialItem(
-            name="Perfect Magnetic Conductor",
-            variants={"default": VariantItem(medium=PMC)},
-            default="default",
-        ),
-    )
-
     return out
 
 
 def export_matlib_to_file(fname: str | Path = "matlib.json") -> None:
-    """Export simplified material library to JSON file."""
     out = {}
     for key, item in material_library.items():
-        if isinstance(item, type):
-            continue
         if isinstance(item, MaterialItemUniaxial):
             out[key] = {
                 "name": item.name,
                 "default": item.default,
                 "variants": {
-                    vk: {
-                        "ordinary": vv.ordinary,
-                        "extraordinary": vv.extraordinary,
-                        "data_url": vv.data_url,
+                    variant_key: {
+                        "ordinary": repr(variant_value.ordinary),
+                        "extraordinary": repr(variant_value.extraordinary),
+                        "data_url": variant_value.data_url,
                     }
-                    for vk, vv in item.variants.items()
+                    for variant_key, variant_value in item.variants.items()
                 },
             }
             continue
         out[key] = {
             "name": item.name,
             "default": item.default,
-            "variants": {vk: {"data_url": vv.data_url} for vk, vv in item.variants.items()},
+            "variants": {
+                variant_key: {"data_url": variant_value.data_url}
+                for variant_key, variant_value in item.variants.items()
+            },
         }
 
-    Path(fname).write_text(json.dumps(out, default=str, indent=2, sort_keys=True))
+    Path(fname).write_text(json.dumps(out, indent=2, sort_keys=True))
 
 
 material_library_export, _material_items = _load_data()

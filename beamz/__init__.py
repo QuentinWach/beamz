@@ -14,24 +14,24 @@ from beamz.const import (
     µm,
     μm,
 )
-from beamz.components.medium import (
-    Debye,
-    Drude,
-    Lorentz,
-    Medium,
-    PEC,
-    PMC,
-    PECMedium,
-    PMCMedium,
-    PoleResidue,
-    Sellmeier,
-)
-
 # Import design-related classes and functions
 from beamz.design.core import Design
-from beamz.design.materials import CustomMaterial, Material
+from beamz.design.materials import (
+    AnisotropicMaterial,
+    CustomMaterial,
+    DebyeMaterial,
+    DrudeMaterial,
+    LorentzMaterial,
+    Material,
+    Material2D,
+    PEC,
+    PMC,
+    PECMaterial,
+    PMCMaterial,
+    PoleResidueMaterial,
+    SellmeierMaterial,
+)
 from beamz.material_library.material_library import material_library
-from beamz.material_library.parametric_materials import Graphene, GrapheneClass
 
 # Import simulation-related classes and functions
 from beamz.design.meshing import RegularGrid
@@ -97,20 +97,19 @@ _exports = {
     # Materials
     "Material": Material,
     "CustomMaterial": CustomMaterial,
-    "Medium": Medium,
-    "Sellmeier": Sellmeier,
-    "Drude": Drude,
-    "Lorentz": Lorentz,
-    "Debye": Debye,
-    "PoleResidue": PoleResidue,
-    "PECMedium": PECMedium,
-    "PMCMedium": PMCMedium,
+    "SellmeierMaterial": SellmeierMaterial,
+    "DrudeMaterial": DrudeMaterial,
+    "LorentzMaterial": LorentzMaterial,
+    "DebyeMaterial": DebyeMaterial,
+    "PoleResidueMaterial": PoleResidueMaterial,
+    "PECMaterial": PECMaterial,
+    "PMCMaterial": PMCMaterial,
+    "Material2D": Material2D,
+    "AnisotropicMaterial": AnisotropicMaterial,
     "PEC": PEC,
     "PMC": PMC,
     # Material library (Tidy3D-style)
     "material_library": material_library,
-    "Graphene": Graphene,
-    "GrapheneClass": GrapheneClass,
     # Structures
     "Design": Design,
     "Rectangle": Rectangle,
