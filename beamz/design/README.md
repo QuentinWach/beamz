@@ -16,3 +16,5 @@ Module to define the design of complex structures parametrically as well as mesh
 - Dispersive models are operating-point models and must be converted using
   `to_material(frequency=... or wavelength=...)` before mesh/simulation use.
 - Static catalog constants in `library.py` are referenced to 1.55 um.
+- `design/library.py` is a compatibility shim. New code should use
+  `beamz.material_library.material_library` and `beamz.components.medium`.

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import warnings
 
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 
@@ -333,6 +334,13 @@ class _DispersiveBase:
         dn_dT: float = 0.0,
         T0: float = 300.0,
     ) -> None:
+        warnings.warn(
+            "beamz.design.materials dispersive classes are deprecated. "
+            "Use beamz.components.medium classes (Sellmeier/Drude/Lorentz/Debye/PoleResidue) "
+            "and beamz.material_library.material_library instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.name = name
         self.metadata = metadata or DispersiveMetadata()
         self.k = k
