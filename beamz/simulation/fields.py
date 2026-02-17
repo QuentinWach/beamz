@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
+from beamz.simulation.dispersion import (
+    ADEState,
+    advance_e_field_dispersive,
+    slice_poles_for_component_2d,
+    slice_poles_for_component_3d,
+)
 from beamz.simulation import ops
 
 
@@ -17,6 +23,7 @@ class Fields:
         permeability,
         resolution,
         plane_2d="xy",
+        dispersion=None,
         _init_materials=True,
     ):
         """Initialize field arrays on a Yee grid for 2D (all 6 components) or 3D (Ex, Ey, Ez, Hx, Hy, Hz) simulations."""
@@ -26,8 +33,18 @@ class Fields:
         self.permittivity = jnp.asarray(permittivity)
         self.conductivity = jnp.asarray(conductivity)
         self.permeability = jnp.asarray(permeability)
+        self.permittivity_ref = self.permittivity
+        self.dispersion_spec = dispersion
 
         self.has_pml = False
+        self.has_dispersion = False
+        self.ade_state = ADEState(psi_x=None, psi_y=None, psi_z=None)
+        self.pole_a_x = None
+        self.pole_a_y = None
+        self.pole_a_z = None
+        self.pole_c_x = None
+        self.pole_c_y = None
+        self.pole_c_z = None
 
         # Infer dimensionality and shape from material arrays
         is_3d = self.permittivity.ndim == 3
@@ -112,6 +129,51 @@ class Fields:
                     self.plane_2d,
                 )
             )
+
+        self.permittivity_ref = self.permittivity
+        self.has_dispersion = False
+        self.ade_state = ADEState(psi_x=None, psi_y=None, psi_z=None)
+        self.pole_a_x = self.pole_a_y = self.pole_a_z = None
+        self.pole_c_x = self.pole_c_y = self.pole_c_z = None
+
+        if self.dispersion_spec is not None:
+            pole_a_grid = jnp.asarray(self.dispersion_spec.get("pole_a"))
+            pole_c_grid = jnp.asarray(self.dispersion_spec.get("pole_c"))
+            mask = jnp.asarray(self.dispersion_spec.get("mask"))
+            if int(pole_a_grid.shape[0]) > 0 and bool(jnp.any(mask)):
+                self.has_dispersion = True
+                if is_3d:
+                    self.pole_a_x = slice_poles_for_component_3d(pole_a_grid, "x")
+                    self.pole_a_y = slice_poles_for_component_3d(pole_a_grid, "y")
+                    self.pole_a_z = slice_poles_for_component_3d(pole_a_grid, "z")
+                    self.pole_c_x = slice_poles_for_component_3d(pole_c_grid, "x")
+                    self.pole_c_y = slice_poles_for_component_3d(pole_c_grid, "y")
+                    self.pole_c_z = slice_poles_for_component_3d(pole_c_grid, "z")
+                else:
+                    self.pole_a_x = slice_poles_for_component_2d(
+                        pole_a_grid, "x", self.plane_2d
+                    )
+                    self.pole_a_y = slice_poles_for_component_2d(
+                        pole_a_grid, "y", self.plane_2d
+                    )
+                    self.pole_a_z = slice_poles_for_component_2d(
+                        pole_a_grid, "z", self.plane_2d
+                    )
+                    self.pole_c_x = slice_poles_for_component_2d(
+                        pole_c_grid, "x", self.plane_2d
+                    )
+                    self.pole_c_y = slice_poles_for_component_2d(
+                        pole_c_grid, "y", self.plane_2d
+                    )
+                    self.pole_c_z = slice_poles_for_component_2d(
+                        pole_c_grid, "z", self.plane_2d
+                    )
+
+                self.ade_state = ADEState(
+                    psi_x=jnp.zeros_like(self.pole_a_x),
+                    psi_y=jnp.zeros_like(self.pole_a_y),
+                    psi_z=jnp.zeros_like(self.pole_a_z),
+                )
 
     def _init_fields_3d(self, nx, ny, nz):
         """Initialize 3D field arrays (Ex, Ey, Ez, Hx, Hy, Hz) with proper Yee grid staggering."""
@@ -225,15 +287,51 @@ class Fields:
                         else:
                             curlH_z = curlH_z.at[indices].add(val)
 
-        self.Ex = ops.advance_e_field(
-            self.Ex, curlH_x, self.sig_x, self.eps_x, dt, self.region_x
-        )
-        self.Ey = ops.advance_e_field(
-            self.Ey, curlH_y, self.sig_y, self.eps_y, dt, self.region_y
-        )
-        self.Ez = ops.advance_e_field(
-            self.Ez, curlH_z, self.sig_z, self.eps_z, dt, self.region_z
-        )
+        if not self.has_dispersion:
+            self.Ex = ops.advance_e_field(
+                self.Ex, curlH_x, self.sig_x, self.eps_x, dt, self.region_x
+            )
+            self.Ey = ops.advance_e_field(
+                self.Ey, curlH_y, self.sig_y, self.eps_y, dt, self.region_y
+            )
+            self.Ez = ops.advance_e_field(
+                self.Ez, curlH_z, self.sig_z, self.eps_z, dt, self.region_z
+            )
+        else:
+            self.Ex, psi_x = advance_e_field_dispersive(
+                self.Ex,
+                curlH_x,
+                self.sig_x,
+                self.eps_x,
+                dt,
+                self.region_x,
+                self.ade_state.psi_x,
+                self.pole_a_x,
+                self.pole_c_x,
+            )
+            self.Ey, psi_y = advance_e_field_dispersive(
+                self.Ey,
+                curlH_y,
+                self.sig_y,
+                self.eps_y,
+                dt,
+                self.region_y,
+                self.ade_state.psi_y,
+                self.pole_a_y,
+                self.pole_c_y,
+            )
+            self.Ez, psi_z = advance_e_field_dispersive(
+                self.Ez,
+                curlH_z,
+                self.sig_z,
+                self.eps_z,
+                dt,
+                self.region_z,
+                self.ade_state.psi_z,
+                self.pole_a_z,
+                self.pole_c_z,
+            )
+            self.ade_state = ADEState(psi_x=psi_x, psi_y=psi_y, psi_z=psi_z)
 
     def update(self, dt, source_j=None, source_m=None):
         """Execute one FDTD time step (2D or 3D) with optional source injection."""
@@ -242,6 +340,10 @@ class Fields:
 
     def update_materials(self, permittivity=None, conductivity=None, permeability=None):
         """Update material grids and recompute Yee parameters."""
+        if self.has_dispersion:
+            raise NotImplementedError(
+                "Runtime material updates are not supported for dispersive ADE materials."
+            )
         if permittivity is not None:
             self.permittivity = jnp.asarray(permittivity)
         if conductivity is not None:

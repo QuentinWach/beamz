@@ -17,8 +17,8 @@ pip install beamz
 - **100% Python**, free (MIT license) & open-source.
 - Modular architecture with a high-level API.
 - **GPU-accelerated** (but CPU-capable).
-- Built-in layout flow (GDSII import/export).
 - FDTD simulation in 2D and 3D.
+- Native dispersive ADE materials (Drude/Lorentz/Debye/Sellmeier/Pole-Residue).
 - PML absorbing boundaries.
 - Sub-pixel smoothing.
 - Gaussian and mode sources with TE and TM polarization.
@@ -26,6 +26,7 @@ pip install beamz
 - Dedicated visualization module for ...almost everything.
 - Streamlined parametric design module.
 - Thermal workflows (transient coupling + static thermal solves).
+- Built-in layout flow (GDSII import/export).
 - Optimization/autodiff utilities for gradient-based **inverse-design** with Jax.
 
 

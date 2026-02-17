@@ -33,7 +33,13 @@ class Simulation:
             self.plane_2d = "xy"
 
         # Get material grids from design (design owns the material grids, we reference them)
-        permittivity, conductivity, permeability = design.get_material_grids(resolution)
+        solver_material_data = design.get_solver_material_data(
+            resolution, plane_2d=self.plane_2d
+        )
+        permittivity = solver_material_data["permittivity"]
+        conductivity = solver_material_data["conductivity"]
+        permeability = solver_material_data["permeability"]
+        dispersion = solver_material_data.get("dispersion")
 
         # Initialize time stepping first
         if time is None or len(time) < 2:
@@ -51,6 +57,7 @@ class Simulation:
             permeability,
             resolution,
             plane_2d=self.plane_2d,
+            dispersion=dispersion,
             _init_materials=not pml_boundaries,
         )
 
@@ -79,6 +86,14 @@ class Simulation:
 
         # Optional thermal coupling
         self.thermal = thermal
+        if (
+            self.thermal is not None
+            and getattr(self.thermal, "enabled", True)
+            and self.fields.has_dispersion
+        ):
+            raise NotImplementedError(
+                "Thermal coupling with dispersive ADE materials is not supported yet."
+            )
         if self.thermal is not None and getattr(self.thermal, "enabled", True):
             self.thermal.initialize(self)
 
@@ -215,6 +230,10 @@ class Simulation:
 
         Returns a pure function that takes field arrays and returns updated field arrays.
         """
+        if self.fields.has_dispersion:
+            raise NotImplementedError(
+                "Pure JIT scan kernel is not implemented for dispersive ADE materials."
+            )
         resolution = self.resolution
         dt = self.dt
         plane_2d = self.plane_2d
@@ -328,6 +347,10 @@ class Simulation:
 
     def _create_jit_step_e(self):
         """Create a JIT-compiled E-update function."""
+        if self.fields.has_dispersion:
+            raise NotImplementedError(
+                "JIT E-step kernel is not implemented for dispersive ADE materials."
+            )
         resolution = self.resolution
         dt = self.dt
         plane_2d = self.plane_2d
@@ -412,6 +435,66 @@ class Simulation:
 
         if record_fields is None:
             record_fields = ["Ez"]
+
+        if self.fields.has_dispersion:
+            if progress:
+                print(
+                    "● Dispersive ADE detected: using mixed loop (JIT H-step + ADE E-step)."
+                )
+            jit_step_h = self._create_jit_step_h()
+            field_history = {name: [] for name in record_fields}
+            try:
+                for step_idx in range(num_steps):
+                    self._inject_legacy_sources()
+                    (
+                        self.fields.Hx,
+                        self.fields.Hy,
+                        self.fields.Hz,
+                    ) = jit_step_h(
+                        self.fields.Ex,
+                        self.fields.Ey,
+                        self.fields.Ez,
+                        self.fields.Hx,
+                        self.fields.Hy,
+                        self.fields.Hz,
+                    )
+                    self._inject_h_sources()
+                    self.fields.update_e(self.dt)
+                    self._inject_e_sources()
+                    self._record_monitors()
+
+                    self.t += self.dt
+                    self.current_step += 1
+
+                    if record_interval and self.current_step % record_interval == 0:
+                        for field_name in record_fields:
+                            if hasattr(self.fields, field_name):
+                                field_history[field_name].append(
+                                    np.array(getattr(self.fields, field_name))
+                                )
+                    if progress and (step_idx + 1) % max(1, num_steps // 20) == 0:
+                        pct = 100 * (step_idx + 1) / num_steps
+                        print(
+                            f"\r● Progress: {pct:.0f}% ({step_idx + 1}/{num_steps} steps)",
+                            end="",
+                            flush=True,
+                        )
+                if progress:
+                    print()
+            except KeyboardInterrupt:
+                if progress:
+                    print(f"\n● Simulation interrupted at step {self.current_step}")
+
+            monitors = [device for device in self.devices if isinstance(device, Monitor)]
+            for name in field_history:
+                if field_history[name]:
+                    field_history[name] = np.stack(field_history[name])
+            result = {}
+            if record_interval:
+                result["fields"] = field_history
+            if monitors:
+                result["monitors"] = monitors
+            return result if result else None
 
         # Create split JIT-compiled step functions
         jit_step_h = self._create_jit_step_h()
@@ -559,6 +642,12 @@ class Simulation:
         has_sources = any(
             hasattr(d, "inject") or hasattr(d, "get_source_terms") for d in self.devices
         )
+        if self.fields.has_dispersion:
+            if progress:
+                print(
+                    "● Warning: Dispersive ADE detected. Falling back to run_fast() for this run."
+                )
+            return self.run_fast(num_steps=num_steps, progress=progress)
         if has_sources:
             print(
                 "● Warning: Sources detected. Using run_fast() instead for source injection support."

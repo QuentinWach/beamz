@@ -104,6 +104,10 @@ class BaseMeshGrid:
                 getattr(material, "permeability", 1.0),
                 getattr(material, "conductivity", 0.0),
             )
+        elif hasattr(material, "to_canonical_poles"):
+            # Dispersive material: use static reference (eps_inf, sigma) for base raster.
+            spec = material.to_canonical_poles()
+            return float(spec.eps_inf), 1.0, float(spec.conductivity)
 
         # Fallback for unknown material types
         else:

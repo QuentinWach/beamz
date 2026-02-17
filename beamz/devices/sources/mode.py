@@ -523,7 +523,8 @@ def _inject_e_component(
     if j_term is None:
         logger.debug("Shape mismatch injecting %s, skipping", comp)
         return
-    eps = fields.permittivity[idx]
+    eps_ref = getattr(fields, "permittivity_ref", fields.permittivity)
+    eps = eps_ref[idx]
     setattr(
         fields,
         comp,
@@ -1102,13 +1103,14 @@ class ModeSource:
 
     def inject_h(self, fields, t, dt, current_step, resolution, design):
         """Inject magnetic current (M) into H-fields after the H update."""
+        eps_ref = getattr(fields, "permittivity_ref", fields.permittivity)
         if (
             (not self._initialized)
-            or (self._grid_shape != fields.permittivity.shape)
+            or (self._grid_shape != eps_ref.shape)
             or (self._resolution is None)
             or (not np.isclose(self._resolution, resolution))
         ):
-            self.initialize(fields.permittivity, resolution)
+            self.initialize(eps_ref, resolution)
 
         # M=-n×E is injected on the H update at the standard half-step time.
         signal_value_h = self._get_signal_value(t + 0.5 * dt, dt)
@@ -1120,13 +1122,14 @@ class ModeSource:
 
     def inject_e(self, fields, t, dt, current_step, resolution, design):
         """Inject electric current (J) into E-fields after the E update."""
+        eps_ref = getattr(fields, "permittivity_ref", fields.permittivity)
         if (
             (not self._initialized)
-            or (self._grid_shape != fields.permittivity.shape)
+            or (self._grid_shape != eps_ref.shape)
             or (self._resolution is None)
             or (not np.isclose(self._resolution, resolution))
         ):
-            self.initialize(fields.permittivity, resolution)
+            self.initialize(eps_ref, resolution)
 
         # J=n×H is evaluated on the E update and needs the physical E/H plane offset.
         signal_value_e = self._get_signal_value(t + 0.5 * dt + self._dt_physical, dt)
@@ -1201,9 +1204,10 @@ class ModeSource:
 
     def _inject_2d_e(self, fields, signal_e, dt, resolution):
         """Inject electric current into E-fields for 2D (after E update)."""
+        eps_ref = getattr(fields, "permittivity_ref", fields.permittivity)
         if self.pol == "tm":
             if self._ez_indices is not None and self._jz_profile is not None:
-                eps_at_source = fields.permittivity[self._ez_indices]
+                eps_at_source = eps_ref[self._ez_indices]
                 jz_term = self._jz_profile * signal_e / resolution
                 ez_injection = +jz_term * dt / (EPS_0 * eps_at_source)
                 fields.Ez = fields.Ez.at[self._ez_indices].add(ez_injection)
@@ -1213,7 +1217,7 @@ class ModeSource:
                     self._jx_profile if self._e_component == "Ex" else self._jy_profile
                 )
                 if j_profile is not None:
-                    eps_at_source = fields.permittivity[self._e_indices]
+                    eps_at_source = eps_ref[self._e_indices]
                     j_term = j_profile * signal_e / resolution
                     e_injection = -j_term * dt / (EPS_0 * eps_at_source)
 

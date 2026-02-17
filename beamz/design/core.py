@@ -254,10 +254,32 @@ class Design:
             if getattr(structure, "is_pml", False):
                 continue
             if structure.point_in_polygon(x, y, z):
-                epsilon, mu, sigma_base = structure.material.get_sample()
+                material = structure.material
+                if hasattr(material, "get_sample"):
+                    try:
+                        epsilon, mu, sigma_base = material.get_sample()
+                    except ValueError:
+                        # Dispersive models are not directly sampleable; use static reference.
+                        if hasattr(material, "to_canonical_poles"):
+                            spec = material.to_canonical_poles()
+                            epsilon, mu, sigma_base = float(spec.eps_inf), 1.0, float(
+                                spec.conductivity
+                            )
+                        else:
+                            epsilon, mu, sigma_base = 1.0, 1.0, 0.0
+                else:
+                    epsilon, mu, sigma_base = 1.0, 1.0, 0.0
                 break
 
         return [epsilon, mu, sigma_base]
+
+    def _material_at_point(self, x: float, y: float, z: float = 0.0):
+        for structure in reversed(self.structures):
+            if getattr(structure, "is_pml", False):
+                continue
+            if structure.point_in_polygon(x, y, z):
+                return getattr(structure, "material", None)
+        return None
 
     def rasterize(
         self,
@@ -319,6 +341,100 @@ class Design:
             self._grid.conductivity,
             self._grid.permeability,
         )
+
+    def get_solver_material_data(self, resolution, plane_2d: str = "xy"):
+        """Get solver material data, including optional dispersive pole tensors."""
+        permittivity, conductivity, permeability = self.get_material_grids(resolution)
+        base_perm = np.asarray(permittivity, dtype=float)
+        base_cond = np.asarray(conductivity, dtype=float)
+        base_mu = np.asarray(permeability, dtype=float)
+
+        dispersive_materials = []
+        for structure in self.structures:
+            mat = getattr(structure, "material", None)
+            if mat is None or not hasattr(mat, "to_canonical_poles"):
+                continue
+            poles = mat.to_canonical_poles().poles
+            if len(poles) > 0:
+                dispersive_materials.append(mat)
+
+        if not dispersive_materials:
+            return {
+                "permittivity": base_perm,
+                "conductivity": base_cond,
+                "permeability": base_mu,
+                "dispersion": None,
+            }
+
+        max_poles = max(len(mat.to_canonical_poles().poles) for mat in dispersive_materials)
+        eps_inf = np.array(base_perm, copy=True)
+        sigma_static = np.array(base_cond, copy=True)
+        pole_a = np.zeros((max_poles, *eps_inf.shape), dtype=np.complex128)
+        pole_c = np.zeros((max_poles, *eps_inf.shape), dtype=np.complex128)
+        mask = np.zeros(eps_inf.shape, dtype=bool)
+
+        if eps_inf.ndim == 2:
+            n0, n1 = eps_inf.shape
+            for i in range(n0):
+                for j in range(n1):
+                    if plane_2d == "yz":
+                        x, y, z = 0.0, (j + 0.5) * resolution, (i + 0.5) * resolution
+                    elif plane_2d == "xz":
+                        x, y, z = (j + 0.5) * resolution, 0.0, (i + 0.5) * resolution
+                    else:
+                        x, y, z = (j + 0.5) * resolution, (i + 0.5) * resolution, 0.0
+
+                    mat = self._material_at_point(x, y, z)
+                    if mat is None or not hasattr(mat, "to_canonical_poles"):
+                        continue
+                    spec = mat.to_canonical_poles()
+                    if not spec.poles:
+                        continue
+                    mask[i, j] = True
+                    eps_inf[i, j] = float(spec.eps_inf)
+                    sigma_static[i, j] = float(spec.conductivity)
+                    for p, (a, c) in enumerate(spec.poles):
+                        pole_a[p, i, j] = complex(a)
+                        pole_c[p, i, j] = complex(c)
+        elif eps_inf.ndim == 3:
+            nz, ny, nx = eps_inf.shape
+            for k in range(nz):
+                z = (k + 0.5) * resolution
+                for i in range(ny):
+                    y = (i + 0.5) * resolution
+                    for j in range(nx):
+                        x = (j + 0.5) * resolution
+                        mat = self._material_at_point(x, y, z)
+                        if mat is None or not hasattr(mat, "to_canonical_poles"):
+                            continue
+                        spec = mat.to_canonical_poles()
+                        if not spec.poles:
+                            continue
+                        mask[k, i, j] = True
+                        eps_inf[k, i, j] = float(spec.eps_inf)
+                        sigma_static[k, i, j] = float(spec.conductivity)
+                        for p, (a, c) in enumerate(spec.poles):
+                            pole_a[p, k, i, j] = complex(a)
+                            pole_c[p, k, i, j] = complex(c)
+        else:
+            raise ValueError(f"Unsupported solver grid shape: {eps_inf.shape}")
+
+        dispersion = None
+        if bool(np.any(mask)):
+            dispersion = {
+                "eps_inf": eps_inf,
+                "conductivity": sigma_static,
+                "pole_a": pole_a,
+                "pole_c": pole_c,
+                "mask": mask,
+            }
+
+        return {
+            "permittivity": eps_inf,
+            "conductivity": sigma_static,
+            "permeability": base_mu,
+            "dispersion": dispersion,
+        }
 
     def get_thermal_grids(self, resolution):
         """Get cached rasterized thermal property arrays at specified resolution as references."""

@@ -11,6 +11,7 @@ from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 
 
 UM = 1e-6
+TWO_PI = 2.0 * np.pi
 
 
 def _as_float_array(value: float | np.ndarray) -> np.ndarray:
@@ -21,6 +22,40 @@ def _ensure_positive(name: str, value: np.ndarray) -> np.ndarray:
     if np.any(value <= 0):
         raise ValueError(f"{name} must be > 0.")
     return value
+
+
+def _lorentz_term_to_poles_hz(
+    delta_eps: float,
+    resonance_hz: float,
+    damping_hz: float,
+) -> tuple[tuple[complex, complex], tuple[complex, complex]]:
+    """Convert one Lorentz term into first-order poles in Hz-domain.
+
+    Canonical susceptibility form:
+      chi(f) = sum_k residue_k / (1j * f + pole_k)
+    """
+    de = float(delta_eps)
+    f0 = float(resonance_hz)
+    delta = float(damping_hz)
+    disc = complex(delta**2 - f0**2)
+    root = np.lib.scimath.sqrt(disc)
+    u1 = complex(delta + root)
+    u2 = complex(delta - root)
+    denom = u1 - u2
+    if abs(denom) < 1e-30:
+        denom = complex(1e-30)
+    residue = complex(de * f0**2 / denom)
+    # if == u, so denominator (if - u) == (if + pole), pole = -u.
+    return ((-u1, residue), (-u2, -residue))
+
+
+@dataclass(frozen=True)
+class CanonicalPoleSpec:
+    """Canonical pole model consumed by the dispersive FDTD solver."""
+
+    eps_inf: float
+    conductivity: float
+    poles: tuple[tuple[complex, complex], ...]
 
 
 class Material:
@@ -59,6 +94,13 @@ class Material:
 
     def to_material(self, **_: Any) -> Material:
         return self
+
+    def to_canonical_poles(self) -> CanonicalPoleSpec:
+        return CanonicalPoleSpec(
+            eps_inf=float(self.permittivity),
+            conductivity=float(self.conductivity),
+            poles=(),
+        )
 
     def get_sample(self) -> tuple[float, float, float]:
         return self.permittivity, self.permeability, self.conductivity
@@ -379,6 +421,9 @@ class _DispersiveBase:
     def n_model(self, frequency: float | np.ndarray) -> np.ndarray:
         return self.n_complex(frequency=frequency)
 
+    def to_canonical_poles(self) -> CanonicalPoleSpec:
+        raise NotImplementedError
+
     def show(
         self,
         *,
@@ -465,6 +510,21 @@ class SellmeierMaterial(_DispersiveBase):
             n2 = n2 + b * lam_um2 / (lam_um2 - c)
         return n2.astype(complex)
 
+    def to_canonical_poles(self) -> CanonicalPoleSpec:
+        poles: list[tuple[complex, complex]] = []
+        # Sellmeier: B*lambda^2/(lambda^2-C) == B*f0^2/(f0^2-f^2), C in um^2.
+        k_um_hz = LIGHT_SPEED * 1e6
+        for b, c in self.coeffs:
+            if c <= 0:
+                continue
+            f0 = k_um_hz / float(np.sqrt(c))
+            poles.extend(_lorentz_term_to_poles_hz(b, f0, 0.0))
+        return CanonicalPoleSpec(
+            eps_inf=1.0,
+            conductivity=0.0,
+            poles=tuple(poles),
+        )
+
 
 class DrudeMaterial(_DispersiveBase):
     """Drude model with coeffs as (plasma_frequency, damping) in Hz."""
@@ -505,6 +565,23 @@ class DrudeMaterial(_DispersiveBase):
         omega = 2.0 * np.pi * f
         return float(np.sqrt(2.0 / (omega * MU_0 * sigma)))
 
+    def to_canonical_poles(self) -> CanonicalPoleSpec:
+        poles: list[tuple[complex, complex]] = []
+        for fp, delta in self.coeffs:
+            if abs(delta) < 1e-30:
+                # delta -> 0 gives 1/f^2 singularity, keep as regularized pole pair.
+                reg = 1e-9
+                poles.append((0.0 + 0.0j, complex(-fp**2 / reg)))
+                poles.append((complex(-reg), complex(fp**2 / reg)))
+                continue
+            poles.append((0.0 + 0.0j, complex(-fp**2 / delta)))
+            poles.append((complex(-delta), complex(fp**2 / delta)))
+        return CanonicalPoleSpec(
+            eps_inf=self.eps_inf,
+            conductivity=0.0,
+            poles=tuple(poles),
+        )
+
 
 class LorentzMaterial(_DispersiveBase):
     """Lorentz model with coeffs (delta_eps, resonance_hz, damping_hz)."""
@@ -532,6 +609,16 @@ class LorentzMaterial(_DispersiveBase):
         for de, f0, delta in self.coeffs:
             eps = eps + (de * f0**2) / (f0**2 - 2j * f * delta - f**2)
         return eps
+
+    def to_canonical_poles(self) -> CanonicalPoleSpec:
+        poles: list[tuple[complex, complex]] = []
+        for de, f0, delta in self.coeffs:
+            poles.extend(_lorentz_term_to_poles_hz(de, f0, delta))
+        return CanonicalPoleSpec(
+            eps_inf=self.eps_inf,
+            conductivity=0.0,
+            poles=tuple(poles),
+        )
 
 
 class DebyeMaterial(_DispersiveBase):
@@ -561,6 +648,18 @@ class DebyeMaterial(_DispersiveBase):
             eps = eps + de / (1 - 1j * f * tau)
         return eps
 
+    def to_canonical_poles(self) -> CanonicalPoleSpec:
+        poles: list[tuple[complex, complex]] = []
+        for de, tau in self.coeffs:
+            if tau <= 0:
+                continue
+            poles.append((complex(-1.0 / tau), complex(-de / tau)))
+        return CanonicalPoleSpec(
+            eps_inf=self.eps_inf,
+            conductivity=0.0,
+            poles=tuple(poles),
+        )
+
 
 class PoleResidueMaterial(_DispersiveBase):
     """Pole-residue model.
@@ -578,7 +677,16 @@ class PoleResidueMaterial(_DispersiveBase):
     ) -> None:
         super().__init__(name=name, metadata=metadata, **kwargs)
         self.eps_inf = float(eps_inf)
-        self.poles = tuple((complex(a), complex(c)) for a, c in poles)
+        validated: list[tuple[complex, complex]] = []
+        for a, c in poles:
+            a_c = complex(a)
+            c_c = complex(c)
+            if not np.isfinite([a_c.real, a_c.imag, c_c.real, c_c.imag]).all():
+                raise ValueError("PoleResidue poles/residues must be finite complex numbers.")
+            if np.real(a_c) <= 0:
+                raise ValueError("PoleResidue pole real part must be > 0 for passive stability.")
+            validated.append((a_c, c_c))
+        self.poles = tuple(validated)
 
     def epsilon(
         self,
@@ -592,6 +700,21 @@ class PoleResidueMaterial(_DispersiveBase):
             eps = eps - c / (1j * omega + a)
             eps = eps - np.conj(c) / (1j * omega + np.conj(a))
         return eps
+
+    def to_canonical_poles(self) -> CanonicalPoleSpec:
+        # Convert from omega-domain poles to f-domain canonical poles:
+        # c/(j*omega+a) = (c/2pi)/(j*f + a/2pi)
+        poles_hz: list[tuple[complex, complex]] = []
+        for a, c in self.poles:
+            a_hz = a / TWO_PI
+            c_hz = c / TWO_PI
+            poles_hz.append((a_hz, -c_hz))
+            poles_hz.append((np.conj(a_hz), -np.conj(c_hz)))
+        return CanonicalPoleSpec(
+            eps_inf=self.eps_inf,
+            conductivity=0.0,
+            poles=tuple(poles_hz),
+        )
 
 
 @dataclass
@@ -663,6 +786,7 @@ class AnisotropicMaterial:
 __all__ = [
     "Material",
     "CustomMaterial",
+    "CanonicalPoleSpec",
     "DispersiveMetadata",
     "SellmeierMaterial",
     "DrudeMaterial",

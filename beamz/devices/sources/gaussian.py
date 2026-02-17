@@ -75,7 +75,8 @@ class GaussianSource:
             self._init_spatial_profile(fields.Ez.shape, resolution, is_3d)
 
         signal_val = self._get_signal_value(t + 0.5 * dt, dt)
-        eps_region = fields.permittivity[self._grid_indices]
+        eps_ref = getattr(fields, "permittivity_ref", fields.permittivity)
+        eps_region = eps_ref[self._grid_indices]
 
         term = self._spatial_profile_ez * signal_val
         injection = -term * dt / (EPS_0 * eps_region)
