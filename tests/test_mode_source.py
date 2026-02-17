@@ -7,6 +7,8 @@ Tests verify:
 4. Polarization filtering works (TE/TM separation)
 """
 
+import inspect
+
 import numpy as np
 import pytest
 
@@ -23,6 +25,7 @@ from beamz import (
     um,
 )
 from beamz.devices.sources.solve import solve_modes
+from beamz.devices.sources import mode as mode_module
 from tests.utils import TEST_WAVELENGTH, compute_field_energy
 
 
@@ -129,6 +132,45 @@ def _build_3d_waveguide(axis, wavelength, n_core, n_clad, guide_width):
     design += core
     center = (width / 2, height / 2, depth / 2)
     return design, center
+
+
+class TestModeSourceDiscreteHelpers:
+    """Unit tests for deterministic discrete launch helpers."""
+
+    def test_numeric_k_satisfies_dispersion_identity(self):
+        wavelength = TEST_WAVELENGTH
+        omega = 2 * np.pi * LIGHT_SPEED / wavelength
+        d_axis = wavelength / 12.0
+        neff = 1.8
+        dt = 0.4 * d_axis / LIGHT_SPEED
+
+        k_num = mode_module._solve_numeric_k_axis(omega, dt, d_axis, neff)
+        S = LIGHT_SPEED * dt / (neff * d_axis)
+        lhs = np.sin(0.5 * omega * dt)
+        rhs = S * np.sin(0.5 * k_num * d_axis)
+
+        assert abs(lhs - rhs) < 1e-10, (
+            f"Discrete dispersion residual too large: lhs={lhs:.6e}, rhs={rhs:.6e}"
+        )
+
+    def test_numeric_phase_delay_monotonic(self):
+        wavelength = TEST_WAVELENGTH
+        omega = 2 * np.pi * LIGHT_SPEED / wavelength
+        d_axis = wavelength / 10.0
+        neff = 2.0
+        dt = 0.45 * d_axis / LIGHT_SPEED
+        k_num = mode_module._solve_numeric_k_axis(omega, dt, d_axis, neff)
+
+        dt_small = mode_module._numeric_phase_delay(omega, k_num, 0.5 * d_axis)
+        dt_large = mode_module._numeric_phase_delay(omega, k_num, 1.5 * d_axis)
+
+        assert dt_small > 0.0
+        assert dt_large > dt_small
+
+    def test_compute_dt_physical_has_no_empirical_multiplier(self):
+        src = inspect.getsource(ModeSource._compute_dt_physical)
+        assert "1.25" not in src and "1.50" not in src
+        assert "dt_scale" not in src
 
 
 @pytest.mark.simulation
@@ -1161,58 +1203,82 @@ class TestModeSourceDirectionality3D:
         axis_center_coord = center[{"x": 0, "y": 1, "z": 2}[axis]]
         center_idx = int(np.clip(np.round(axis_center_coord / dx - 0.5), 1, axis_len - 2))
         dir_sign = 1.0 if direction.startswith("+") else -1.0
-        offset_cells = (
-            1
-            if axis == "y"
-            else int(np.clip(round(0.4 * wavelength / dx), 2, max(2, axis_len // 5)))
-        )
+        near_offset_cells = max(2, int(round(0.4 * wavelength / dx)))
+        far_offset_cells = max(near_offset_cells + 2, int(round(1.0 * wavelength / dx)))
+
+        near_offset_cells = int(np.clip(near_offset_cells, 1, max(1, axis_len // 3)))
+        far_offset_cells = int(np.clip(far_offset_cells, near_offset_cells + 1, max(2, axis_len // 2)))
+
         if direction.startswith("+"):
-            forward_idx = min(axis_len - 1, center_idx + offset_cells)
-            backward_idx = max(0, center_idx - offset_cells)
+            near_forward_idx = min(axis_len - 1, center_idx + near_offset_cells)
+            near_backward_idx = max(0, center_idx - near_offset_cells)
+            far_forward_idx = min(axis_len - 1, center_idx + far_offset_cells)
+            far_backward_idx = max(0, center_idx - far_offset_cells)
         else:
-            forward_idx = max(0, center_idx - offset_cells)
-            backward_idx = min(axis_len - 1, center_idx + offset_cells)
+            near_forward_idx = max(0, center_idx - near_offset_cells)
+            near_backward_idx = min(axis_len - 1, center_idx + near_offset_cells)
+            far_forward_idx = max(0, center_idx - far_offset_cells)
+            far_backward_idx = min(axis_len - 1, center_idx + far_offset_cells)
 
         # Strict gate: fixed planes and steady-state time average.
         steady_start = max(1, int(0.75 * len(result["fields"]["Ex"])))
-        forward_vals = []
-        backward_vals = []
+        near_forward_vals = []
+        near_backward_vals = []
+        far_forward_vals = []
+        far_backward_vals = []
         for snap_idx in range(steady_start, len(result["fields"]["Ex"])):
             snapshot = {
                 name: np.asarray(result["fields"][name][snap_idx]) for name in save_fields
             }
             p_axis = _poynting_component_3d(snapshot, axis)
 
-            forward_raw = _plane_flux(p_axis, axis, forward_idx)
-            backward_raw = _plane_flux(p_axis, axis, backward_idx)
-            forward_vals.append(dir_sign * forward_raw)
-            backward_vals.append(max(0.0, -dir_sign * backward_raw))
+            near_forward_raw = _plane_flux(p_axis, axis, near_forward_idx)
+            near_backward_raw = _plane_flux(p_axis, axis, near_backward_idx)
+            far_forward_raw = _plane_flux(p_axis, axis, far_forward_idx)
+            far_backward_raw = _plane_flux(p_axis, axis, far_backward_idx)
 
-        forward_flux_mean = float(np.mean(forward_vals))
-        backward_flux_mean = float(np.mean(backward_vals))
+            near_forward_vals.append(dir_sign * near_forward_raw)
+            near_backward_vals.append(max(0.0, -dir_sign * near_backward_raw))
+            far_forward_vals.append(dir_sign * far_forward_raw)
+            far_backward_vals.append(max(0.0, -dir_sign * far_backward_raw))
+
+        near_forward_flux_mean = float(np.mean(near_forward_vals))
+        near_backward_flux_mean = float(np.mean(near_backward_vals))
+        far_forward_flux_mean = float(np.mean(far_forward_vals))
+        far_backward_flux_mean = float(np.mean(far_backward_vals))
         min_forward_flux = 0.5
-        forward_ratio = forward_flux_mean / (
-            forward_flux_mean + backward_flux_mean + 1e-30
+        near_forward_ratio = near_forward_flux_mean / (
+            near_forward_flux_mean + near_backward_flux_mean + 1e-30
         )
-        backward_ratio = backward_flux_mean / (forward_flux_mean + 1e-30)
+        far_forward_ratio = far_forward_flux_mean / (
+            far_forward_flux_mean + far_backward_flux_mean + 1e-30
+        )
+        far_backward_ratio = far_backward_flux_mean / (far_forward_flux_mean + 1e-30)
 
-        assert forward_flux_mean > min_forward_flux, (
+        assert far_forward_flux_mean > min_forward_flux, (
             f"Weak forward 3D flux for {direction}/{pol}: "
-            f"forward_flux_mean={forward_flux_mean:.3e}"
+            f"far_forward_flux_mean={far_forward_flux_mean:.3e}"
         )
-        assert forward_ratio > 0.90, (
-            f"Poor 3D forward dominance for {direction}/{pol}: "
-            f"forward_ratio={forward_ratio:.3f}, "
-            f"forward_flux_mean={forward_flux_mean:.3e}, "
-            f"backward_flux_mean={backward_flux_mean:.3e}, "
-            f"offset_cells={offset_cells}, steady_start={steady_start}"
+        assert near_forward_ratio > 0.985, (
+            f"Poor near-plane 3D forward dominance for {direction}/{pol}: "
+            f"near_forward_ratio={near_forward_ratio:.4f}, "
+            f"near_forward_flux_mean={near_forward_flux_mean:.3e}, "
+            f"near_backward_flux_mean={near_backward_flux_mean:.3e}, "
+            f"near_offset_cells={near_offset_cells}, steady_start={steady_start}"
         )
-        assert backward_ratio < 0.15, (
-            f"Excess backward 3D flux for {direction}/{pol}: "
-            f"backward_ratio={backward_ratio:.3f}, "
-            f"forward_flux_mean={forward_flux_mean:.3e}, "
-            f"backward_flux_mean={backward_flux_mean:.3e}, "
-            f"offset_cells={offset_cells}, steady_start={steady_start}"
+        assert far_forward_ratio > 0.99, (
+            f"Poor far-plane 3D forward dominance for {direction}/{pol}: "
+            f"far_forward_ratio={far_forward_ratio:.4f}, "
+            f"far_forward_flux_mean={far_forward_flux_mean:.3e}, "
+            f"far_backward_flux_mean={far_backward_flux_mean:.3e}, "
+            f"far_offset_cells={far_offset_cells}, steady_start={steady_start}"
+        )
+        assert far_backward_ratio < 1e-2, (
+            f"Excess far-plane backward 3D flux for {direction}/{pol}: "
+            f"far_backward_ratio={far_backward_ratio:.4e}, "
+            f"far_forward_flux_mean={far_forward_flux_mean:.3e}, "
+            f"far_backward_flux_mean={far_backward_flux_mean:.3e}, "
+            f"far_offset_cells={far_offset_cells}, steady_start={steady_start}"
         )
 
 
