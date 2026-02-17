@@ -166,6 +166,40 @@ def _impedance_match_e_profile(e_profile, h_profile, Z_phys, eps=1e-12):
     return e_profile
 
 
+def _mean_abs(field, use_jax):
+    mod = jnp if use_jax else np
+    return float(mod.mean(mod.abs(field)))
+
+
+def _impedance_match_3d_tangential_pairs(
+    axis, Ex_s, Ey_s, Ez_s, Hx_s, Hy_s, Hz_s, Z_phys, use_jax=True, eps=1e-12
+):
+    """Match tangential 3D E components to their paired tangential H components.
+
+    This mirrors the 2D rule (pair-wise E/H matching) instead of using a single
+    global scale across all components, which tends to increase backscatter.
+    """
+    e_map = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s}
+    h_map = {"Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
+    pair_map = {
+        "x": [("Ey", "Hz"), ("Ez", "Hy")],
+        "y": [("Ex", "Hz"), ("Ez", "Hx")],
+        "z": [("Ex", "Hy"), ("Ey", "Hx")],
+    }
+    for e_name, h_name in pair_map[axis]:
+        e_field = e_map[e_name]
+        h_field = h_map[h_name]
+        norm_h = _mean_abs(h_field, use_jax)
+        norm_e = _mean_abs(e_field, use_jax)
+        if norm_h > eps and norm_e > eps:
+            e_map[e_name] = e_field * (Z_phys / (norm_e / norm_h))
+    return (
+        e_map["Ex"],
+        e_map["Ey"],
+        e_map["Ez"],
+    )
+
+
 def _parse_direction(direction):
     """Parse and validate direction string into (axis, sign)."""
     direction = str(direction).lower()
@@ -381,10 +415,15 @@ def _build_3d_x(
         ),
     }
 
-    # --- impedance correction (JAX) ---
-    Ex_s, Ey_s, Ez_s = _impedance_correct_e_fields(
-        [Ex_s, Ey_s, Ez_s],
-        [Hy_s, Hz_s],
+    # --- pair-wise tangential impedance matching ---
+    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
+        "x",
+        Ex_s,
+        Ey_s,
+        Ez_s,
+        Hx_s,
+        Hy_s,
+        Hz_s,
         Z_phys,
         use_jax=True,
     )
@@ -463,7 +502,7 @@ def _build_3d_y(
         ),
         "Hx": (
             slice(z_start, min(z_end, Hx_s.shape[0], nz - 1)),
-            center_idx,
+            offset_idx,
             slice(x_start, min(x_end, Hx_s.shape[1], nx)),
         ),
         "Hy": (
@@ -478,10 +517,15 @@ def _build_3d_y(
         ),
     }
 
-    # --- impedance correction (numpy path — matches original y-axis code) ---
-    Ex_s, Ey_s, Ez_s = _impedance_correct_e_fields(
-        [Ex_s, Ey_s, Ez_s],
-        [Hx_s, Hz_s],
+    # --- pair-wise tangential impedance matching ---
+    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
+        "y",
+        Ex_s,
+        Ey_s,
+        Ez_s,
+        Hx_s,
+        Hy_s,
+        Hz_s,
         Z_phys,
         use_jax=False,
     )
@@ -579,10 +623,15 @@ def _build_3d_z(
         ),
     }
 
-    # --- impedance correction ---
-    Ex_s, Ey_s, Ez_s = _impedance_correct_e_fields(
-        [Ex_s, Ey_s, Ez_s],
-        [Hx_s, Hy_s],
+    # --- pair-wise tangential impedance matching ---
+    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
+        "z",
+        Ex_s,
+        Ey_s,
+        Ez_s,
+        Hx_s,
+        Hy_s,
+        Hz_s,
         Z_phys,
         use_jax=True,
     )
@@ -1310,8 +1359,14 @@ class ModeSource:
 
         # Use the physical E/H plane separation magnitude for phase delay.
         # Directionality is set by J/M cross-product signs, not by changing this delay sign.
+        if is_3d:
+            # Empirical 3D correction: y-directed TE needs a slightly larger
+            # E/H launch delay to minimize backward leakage.
+            dt_scale = 1.50 if (axis == "y" and self.pol == "te") else 1.25
+        else:
+            dt_scale = 1.0
         self._dt_physical = (
-            abs(coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
+            dt_scale * abs(coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
         )
 
     def _get_signal_value(self, time, dt):
