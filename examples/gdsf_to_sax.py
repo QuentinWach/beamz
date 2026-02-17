@@ -20,14 +20,17 @@ time = np.arange(0, TIME, DT)
 signal = ramped_cosine(time, amplitude=1.0, frequency=LIGHT_SPEED / WL, 
     ramp_duration=WL * 20 / LIGHT_SPEED, t_max=TIME / 2)
 
-# PLace the mode source at the input port
+# PLace the mode source at the input port & the monitors at the output ports
 source = ModeSource(grid=grid, center=(design.width/2, design.height/2),
     width=design.width/2, wavelength=WL, pol="tm", signal=signal, direction="+x")
+mon_in = Monitor(grid=grid, start=(design.width/2, design.height/2))
+mon_up = Monitor(grid=grid, start=(design.width/2, design.height/2))
+mon_down = Monitor(grid=grid, start=(design.width/2, design.height/2))
 
 # Setup the simulation
 sim = Simulation(
     design=design, # use rastered grid instead of rasterizing again
-    devices=[source], 
+    devices=[source, mon_in, mon_up, mon_down], 
     boundaries=[PML(edges='all', thickness=1.2*WL)],
     time=time,
     resolution=DX
