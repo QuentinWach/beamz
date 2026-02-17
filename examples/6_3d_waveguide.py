@@ -45,11 +45,11 @@ grid = design.rasterize(resolution=DX)
 # Using 0.8µm (slightly larger than waveguide height 0.5µm) to capture mode field
 source = ModeSource(
     grid=grid,
-    center=(1*WL, 3.25*µm, 2.11*µm),  # Z at waveguide center
-    width=1.5*µm,  # Closer to waveguide height (0.5µm) to better capture mode
+    center=(3.25*µm, 3.25*µm, 2.11*µm),  # Z at waveguide center
+    width=3.5*µm,  # Closer to waveguide height (0.5µm) to better capture mode
     height=0.8*µm,
     wavelength=WL,
-    pol="te",
+    pol="tm",
     signal=signal,
     direction="+x"
 )
@@ -59,7 +59,7 @@ source.initialize(grid.permittivity, DX)
 
 # Plot and save all mode field components (Ex, Ey, Ez, Hx, Hy, Hz)
 print("Plotting all mode field components...")
-source._plot_mode_profile_3d()
+source.show()
 print("Mode profile figure saved to mode_profile.png")
 
 # 4. Add Monitors
@@ -78,4 +78,9 @@ sim = Simulation(design=design, devices=[source, monitor_xy],
 boundaries=[PML(edges='all', thickness=0.75*WL)], time=time_steps, resolution=DX)
 
 # Run with live animation of the Ez field on the XY monitor
-results = sim.run(animate_live="Hy", animation_interval=5, clean_visualization=True, save_video="3d_waveguide.mp4")
+results = sim.run(animate_live="Ez",
+    animation_interval=15, 
+    #axis_scale=[-0.9e-4, 0.9e-4],
+    clean_visualization=True, 
+    save_video="3d_waveguide.mp4",
+    video_fps=40)

@@ -8,6 +8,8 @@ from beamz.devices.sources.solve import solve_modes
 
 logger = logging.getLogger(__name__)
 
+_VALID_DIRECTIONS = {"+x", "-x", "+y", "-y", "+z", "-z"}
+
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -115,42 +117,6 @@ def _compute_transverse_bounds(center_val, extent, resolution, grid_max):
     return max(0, center_idx - half_idx), min(grid_max, center_idx + half_idx)
 
 
-def _impedance_correct_e_fields(E_components, H_components, Z_phys, use_jax=True):
-    """Scale E-field profiles so E/H ratio matches physical impedance Z_phys.
-
-    Parameters
-    ----------
-    E_components : list of arrays
-        E-field profiles to scale.
-    H_components : list of arrays
-        H-field profiles used to measure current impedance.
-    Z_phys : float
-        Target impedance.
-    use_jax : bool
-        Whether to use JAX operations (True for 3D path) or numpy (False for 2D y-axis path).
-
-    Returns
-    -------
-    list of arrays
-        Corrected E-field profiles.
-    """
-    _mod = jnp if use_jax else np
-    eps = 1e-12
-
-    norm_E = eps
-    for e in E_components:
-        norm_E = max(norm_E, float(_mod.max(_mod.abs(e))))
-
-    norm_H = eps
-    for h in H_components:
-        norm_H = max(norm_H, float(_mod.max(_mod.abs(h))))
-
-    if norm_E > eps and norm_H > eps:
-        corr = Z_phys / (norm_E / norm_H)
-        return [e * corr for e in E_components]
-    return list(E_components)
-
-
 def _impedance_match_e_profile(e_profile, h_profile, Z_phys, eps=1e-12):
     """Match one E-profile to one H-profile with a shared 2D rule.
 
@@ -162,6 +128,222 @@ def _impedance_match_e_profile(e_profile, h_profile, Z_phys, eps=1e-12):
     if norm_h > eps and norm_e > eps:
         return e_profile * (Z_phys / (norm_e / norm_h))
     return e_profile
+
+
+def _solve_numeric_k_axis(omega, dt, d_axis, neff, eps=1e-30):
+    """Solve 1D Yee dispersion for k at a fixed omega (normal incidence)."""
+    neff_r = max(float(np.real(neff)), eps)
+    d = max(float(d_axis), eps)
+    dt_r = max(float(dt), eps)
+    omega_r = float(omega)
+    k_phys = omega_r * neff_r / LIGHT_SPEED
+
+    S = LIGHT_SPEED * dt_r / (neff_r * d)
+    if (not np.isfinite(S)) or S <= eps:
+        return k_phys
+
+    rhs = np.sin(0.5 * omega_r * dt_r) / S
+    rhs = float(np.clip(rhs, -1.0, 1.0))
+    k_num = (2.0 / d) * np.arcsin(rhs)
+    if (not np.isfinite(k_num)) or k_num <= eps:
+        return k_phys
+    return float(k_num)
+
+
+def _numeric_phase_delay(omega, k_num, delta_s, eps=1e-30):
+    """Convert numerical phase advance into a time delay."""
+    omega_r = max(abs(float(omega)), eps)
+    return float(max(0.0, float(k_num) * float(delta_s)) / omega_r)
+
+
+def _numeric_impedance_axis(omega, dt, d_axis, k_num, neff, mu_r=1.0, eps=1e-30):
+    """Discrete normal-incidence Yee impedance for one propagation axis."""
+    neff_r = max(float(np.real(neff)), eps)
+    eta0 = np.sqrt(MU_0 / EPS_0)
+
+    denom = np.sin(0.5 * float(k_num) * float(d_axis))
+    if abs(denom) <= eps or not np.isfinite(denom):
+        return float(eta0 / neff_r)
+
+    numer = (
+        float(mu_r)
+        * MU_0
+        * (float(d_axis) / max(float(dt), eps))
+        * np.sin(0.5 * float(omega) * float(dt))
+    )
+    z_num = abs(numer / denom)
+    if (not np.isfinite(z_num)) or z_num <= eps:
+        return float(eta0 / neff_r)
+    return float(z_num)
+
+
+def _axis_index_from_component_indices(indices, axis):
+    """Extract scalar axis index from a 3D component index tuple."""
+    if indices is None:
+        return None
+    axis_pos = {"x": 2, "y": 1, "z": 0}[axis]
+    val = indices[axis_pos]
+    if isinstance(val, slice):
+        return None
+    return int(val)
+
+
+def _component_axis_coord(component_name, axis_index, axis, dx, dy, dz):
+    """Yee-location coordinate along propagation axis for one component plane index."""
+    if axis_index is None:
+        return 0.0
+
+    d_axis = {"x": dx, "y": dy, "z": dz}[axis]
+    staggered_along_axis = {
+        "x": {"Ex", "Hy", "Hz"},
+        "y": {"Ey", "Hx", "Hz"},
+        "z": {"Ez", "Hx", "Hy"},
+    }
+    offset = 1.0 if component_name in staggered_along_axis[axis] else 0.5
+    return (axis_index + offset) * d_axis
+
+
+def _dominant_3d_pair(axis, pol):
+    """Dominant launch pair used for 3D delay extraction."""
+    pair = {
+        ("x", "tm"): ("Ez", "Hy"),
+        ("x", "te"): ("Ey", "Hz"),
+        ("y", "tm"): ("Ez", "Hx"),
+        ("y", "te"): ("Ex", "Hz"),
+        ("z", "tm"): ("Ey", "Hx"),
+        ("z", "te"): ("Ex", "Hy"),
+    }.get((axis, pol))
+    if pair is None:
+        raise ValueError(f"Unsupported 3D delay pair for axis={axis!r}, pol={pol!r}")
+    return pair
+
+
+def _weighted_local_index(eps_profile_2d, components, eps=1e-30):
+    """Field-energy-weighted refractive index over a 2D cross-section."""
+    eps_arr = np.asarray(eps_profile_2d)
+    if eps_arr.size == 0:
+        return 1.0
+
+    w_sum = 0.0
+    ew_sum = 0.0
+    for comp in components:
+        arr = np.asarray(comp)
+        if arr.ndim != 2 or arr.size == 0:
+            continue
+        z = min(eps_arr.shape[0], arr.shape[0])
+        t = min(eps_arr.shape[1], arr.shape[1])
+        if z <= 0 or t <= 0:
+            continue
+        sl_eps = eps_arr[:z, :t]
+        sl_arr = arr[:z, :t]
+        w = np.abs(sl_arr) ** 2
+        w_sum += float(np.sum(w))
+        ew_sum += float(np.sum(sl_eps * w))
+
+    if w_sum <= eps:
+        return float(np.sqrt(max(float(np.mean(eps_arr)), eps)))
+    return float(np.sqrt(max(ew_sum / w_sum, eps)))
+
+
+def _select_3d_impedance_index(axis, pol, eps_profile_2d, Ex, Ey, Ez, Hx, Hy, Hz):
+    """Pick a local modal index for 3D impedance targeting."""
+    if pol == "tm":
+        tangential = {
+            "x": (Hy, Hz),
+            "y": (Hx, Hz),
+            "z": (Hx, Hy),
+        }[axis]
+    else:
+        tangential = {
+            "x": (Ey, Ez),
+            "y": (Ex, Ez),
+            "z": (Ex, Ey),
+        }[axis]
+    return _weighted_local_index(eps_profile_2d, tangential)
+
+
+def _impedance_match_3d_tangential_pairs(
+    axis, Ex_s, Ey_s, Ez_s, Hx_s, Hy_s, Hz_s, Z_target, use_jax=True, eps=1e-12
+):
+    """Match tangential 3D E components to their paired tangential H components.
+
+    This mirrors the 2D rule (pair-wise E/H matching) instead of using a single
+    global scale across all components, which tends to increase backscatter.
+    """
+    mod = jnp if use_jax else np
+    e_map = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s}
+    h_map = {"Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
+    pair_map = {
+        "x": [("Ey", "Hz"), ("Ez", "Hy")],
+        "y": [("Ex", "Hz"), ("Ez", "Hx")],
+        "z": [("Ex", "Hy"), ("Ey", "Hx")],
+    }
+    for e_name, h_name in pair_map[axis]:
+        e_field = e_map[e_name]
+        h_field = h_map[h_name]
+        num = mod.sum(e_field * mod.conj(h_field))
+        den = mod.sum(mod.abs(h_field) ** 2) + eps
+        ratio = float(mod.abs(num / den))
+        if ratio > eps:
+            e_map[e_name] = e_field * (float(abs(Z_target)) / ratio)
+    return (
+        e_map["Ex"],
+        e_map["Ey"],
+        e_map["Ez"],
+    )
+
+
+def _parse_direction(direction):
+    """Parse and validate direction string into (axis, sign)."""
+    direction = str(direction).lower()
+    if direction not in _VALID_DIRECTIONS:
+        valid = ", ".join(sorted(_VALID_DIRECTIONS))
+        raise ValueError(f"direction must be one of {{{valid}}}, got {direction!r}")
+    axis = direction[1]
+    dir_sign = 1.0 if direction.startswith("+") else -1.0
+    return direction, axis, dir_sign
+
+
+def _remap_3d_solver_components(Ex, Ey, Ez, Hx, Hy, Hz, axis):
+    """Remap solver x-basis components to requested global propagation axis."""
+    if axis == "x":
+        return Ex, Ey, Ez, Hx, Hy, Hz
+    if axis == "y":
+        # Match the rotated-basis correction already used by 2D y-propagation.
+        return Ey, Ex, Ez, Hy, Hx, Hz
+    if axis == "z":
+        # Cyclic remap from x-basis -> z-basis.
+        return Ey, Ez, Ex, Hy, Hz, Hx
+    raise ValueError(f"Unsupported axis {axis!r} for 3D remap")
+
+
+def _select_3d_phase_ref(axis, pol, Ex, Ey, Ez, Hx, Hy, Hz):
+    """Select 3D phase-reference field using the same H-based convention as 2D."""
+    preferred = {
+        ("x", "tm"): Hy,
+        ("x", "te"): Hz,
+        ("y", "tm"): Hx,
+        ("y", "te"): Hz,
+        ("z", "tm"): Hx,
+        ("z", "te"): Hy,
+    }
+    tangential_h = {
+        "x": (Hy, Hz),
+        "y": (Hx, Hz),
+        "z": (Hx, Hy),
+    }
+    key = (axis, pol)
+    if key not in preferred:
+        raise ValueError(f"Unsupported 3D phase-reference mapping for {key!r}")
+
+    ref_field = preferred[key]
+    if float(jnp.max(jnp.abs(ref_field))) >= 1e-9:
+        return ref_field
+
+    # Fallback for near-cutoff/degenerate cases: pick strongest tangential H component.
+    candidates = tangential_h[axis]
+    strengths = [float(jnp.max(jnp.abs(comp))) for comp in candidates]
+    return candidates[int(np.argmax(strengths))]
 
 
 def _build_3d_profiles(
@@ -181,6 +363,9 @@ def _build_3d_profiles(
     grid_shape,
     resolution,
     neff,
+    impedance_neff,
+    omega,
+    dt,
 ):
     """Build staggered, windowed, impedance-corrected injection profiles for 3D.
 
@@ -192,9 +377,17 @@ def _build_3d_profiles(
         Mapping component name -> index tuple for field injection.
     """
     nz, ny, nx = grid_shape
+    # Apply direction sign once while building source profiles.
     dir_sign = 1.0 if direction.startswith("+") else -1.0
     ETA_0 = np.sqrt(MU_0 / EPS_0)
-    Z_phys = ETA_0 / max(np.real(neff), 1e-6)
+    neff_r = max(float(np.real(neff)), 1e-6)
+    neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
+    d_axis = resolution
+    if dt is not None:
+        k_num_imp = _solve_numeric_k_axis(omega, dt, d_axis, neff_imp_r)
+        Z_target = _numeric_impedance_axis(omega, dt, d_axis, k_num_imp, neff_imp_r)
+    else:
+        Z_target = ETA_0 / neff_imp_r
 
     if axis == "x":
         return _build_3d_x(
@@ -205,7 +398,7 @@ def _build_3d_profiles(
             Hy,
             Hz,
             dir_sign,
-            Z_phys,
+            Z_target,
             center,
             width,
             height,
@@ -216,7 +409,7 @@ def _build_3d_profiles(
             nx,
             resolution,
         )
-    else:
+    if axis == "y":
         return _build_3d_y(
             Ex,
             Ey,
@@ -225,7 +418,7 @@ def _build_3d_profiles(
             Hy,
             Hz,
             dir_sign,
-            Z_phys,
+            Z_target,
             center,
             width,
             height,
@@ -236,6 +429,27 @@ def _build_3d_profiles(
             nx,
             resolution,
         )
+    if axis == "z":
+        return _build_3d_z(
+            Ex,
+            Ey,
+            Ez,
+            Hx,
+            Hy,
+            Hz,
+            dir_sign,
+            Z_target,
+            center,
+            width,
+            height,
+            center_idx,
+            offset_idx,
+            nz,
+            ny,
+            nx,
+            resolution,
+        )
+    raise ValueError(f"Unsupported axis {axis!r} for 3D profile setup")
 
 
 def _build_3d_x(
@@ -246,7 +460,7 @@ def _build_3d_x(
     Hy,
     Hz,
     dir_sign,
-    Z_phys,
+    Z_target,
     center,
     width,
     height,
@@ -304,11 +518,16 @@ def _build_3d_x(
         ),
     }
 
-    # --- impedance correction (JAX) ---
-    Ex_s, Ey_s, Ez_s = _impedance_correct_e_fields(
-        [Ex_s, Ey_s, Ez_s],
-        [Hy_s, Hz_s],
-        Z_phys,
+    # --- pair-wise tangential impedance matching ---
+    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
+        "x",
+        Ex_s,
+        Ey_s,
+        Ez_s,
+        Hx_s,
+        Hy_s,
+        Hz_s,
+        Z_target,
         use_jax=True,
     )
 
@@ -343,7 +562,7 @@ def _build_3d_y(
     Hy,
     Hz,
     dir_sign,
-    Z_phys,
+    Z_target,
     center,
     width,
     height,
@@ -386,7 +605,7 @@ def _build_3d_y(
         ),
         "Hx": (
             slice(z_start, min(z_end, Hx_s.shape[0], nz - 1)),
-            center_idx,
+            offset_idx,
             slice(x_start, min(x_end, Hx_s.shape[1], nx)),
         ),
         "Hy": (
@@ -401,11 +620,16 @@ def _build_3d_y(
         ),
     }
 
-    # --- impedance correction (numpy path — matches original y-axis code) ---
-    Ex_s, Ey_s, Ez_s = _impedance_correct_e_fields(
-        [Ex_s, Ey_s, Ez_s],
-        [Hx_s, Hz_s],
-        Z_phys,
+    # --- pair-wise tangential impedance matching ---
+    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
+        "y",
+        Ex_s,
+        Ey_s,
+        Ez_s,
+        Hx_s,
+        Hy_s,
+        Hz_s,
+        Z_target,
         use_jax=False,
     )
 
@@ -426,6 +650,112 @@ def _build_3d_y(
         "_x_end": x_end,
         "_z_start": z_start,
         "_z_end": z_end,
+        "_h_component": "Hx",
+        "_e_component": "Ex",
+    }
+    return profiles, indices, extra
+
+
+def _build_3d_z(
+    Ex,
+    Ey,
+    Ez,
+    Hx,
+    Hy,
+    Hz,
+    dir_sign,
+    Z_target,
+    center,
+    width,
+    height,
+    center_idx,
+    offset_idx,
+    nz,
+    ny,
+    nx,
+    resolution,
+):
+    # --- stagger (z-propagation) ---
+    Ex_s = _stagger_half(Ex, axis=1)
+    Ey_s = _stagger_half(Ey, axis=0)
+    Ez_s = Ez
+    Hx_s = _stagger_half(Hx, axis=0)
+    Hy_s = _stagger_half(Hy, axis=1)
+    Hz_s = _stagger_both(Hz)
+
+    # --- transverse bounds ---
+    x_start, x_end = _compute_transverse_bounds(center[0], width, resolution, nx)
+    y_start, y_end = _compute_transverse_bounds(center[1], height, resolution, ny)
+
+    e_z_idx = int(np.clip(center_idx, 0, nz - 1))
+    h_z_idx = int(np.clip(offset_idx, 0, max(nz - 2, 0)))
+    ez_z_idx = int(np.clip(center_idx, 0, max(nz - 2, 0)))
+    hz_z_idx = int(np.clip(offset_idx, 0, nz - 1))
+
+    # --- indices  (z_index, y_slice, x_slice) ---
+    indices = {
+        "Ex": (
+            e_z_idx,
+            slice(y_start, min(y_end, Ex_s.shape[0], ny)),
+            slice(x_start, min(x_end, Ex_s.shape[1], nx - 1)),
+        ),
+        "Ey": (
+            e_z_idx,
+            slice(y_start, min(y_end, Ey_s.shape[0], ny - 1)),
+            slice(x_start, min(x_end, Ey_s.shape[1], nx)),
+        ),
+        "Ez": (
+            ez_z_idx,
+            slice(y_start, min(y_end, Ez_s.shape[0], ny)),
+            slice(x_start, min(x_end, Ez_s.shape[1], nx)),
+        ),
+        "Hx": (
+            h_z_idx,
+            slice(y_start, min(y_end, Hx_s.shape[0], ny - 1)),
+            slice(x_start, min(x_end, Hx_s.shape[1], nx)),
+        ),
+        "Hy": (
+            h_z_idx,
+            slice(y_start, min(y_end, Hy_s.shape[0], ny)),
+            slice(x_start, min(x_end, Hy_s.shape[1], nx - 1)),
+        ),
+        "Hz": (
+            hz_z_idx,
+            slice(y_start, min(y_end, Hz_s.shape[0], ny - 1)),
+            slice(x_start, min(x_end, Hz_s.shape[1], nx - 1)),
+        ),
+    }
+
+    # --- pair-wise tangential impedance matching ---
+    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
+        "z",
+        Ex_s,
+        Ey_s,
+        Ez_s,
+        Hx_s,
+        Hy_s,
+        Hz_s,
+        Z_target,
+        use_jax=True,
+    )
+
+    # --- crop & window ---
+    staggered = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s, "Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
+    profiles = _crop_and_window_all(
+        staggered,
+        y_start,
+        y_end,
+        x_start,
+        x_end,
+        dir_sign,
+        use_jax=True,
+    )
+
+    extra = {
+        "_x_start": x_start,
+        "_x_end": x_end,
+        "_y_start": y_start,
+        "_y_end": y_end,
         "_h_component": "Hx",
         "_e_component": "Ex",
     }
@@ -463,15 +793,35 @@ _HUYGENS_SIGNS = {
         "h": [("Hy", "Ez", -1), ("Hz", "Ey", +1)],
     },
     "y": {
-        "e": [("Ex", "Hz", +1), ("Ez", "Hx", -1)],
+        "e": [("Ex", "Hz", -1), ("Ez", "Hx", +1)],
         "h": [("Hx", "Ez", +1), ("Hz", "Ex", -1)],
+    },
+    "z": {
+        "e": [("Ex", "Hy", -1), ("Ey", "Hx", +1)],
+        "h": [("Hx", "Ey", +1), ("Hy", "Ex", -1)],
     },
 }
 
 
-def _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axis):
+def _get_3d_huygens_terms(axis, pol):
+    """Return 3D sign terms with TE gauge parity matched to 2D conventions."""
+    e_terms = list(_HUYGENS_SIGNS[axis]["e"])
+    h_terms = list(_HUYGENS_SIGNS[axis]["h"])
+    if pol == "te":
+        # TE in this codebase uses the opposite gauge class for one tangential pair.
+        e0 = list(e_terms[0])
+        h1 = list(h_terms[1])
+        e0[2] *= -1
+        h1[2] *= -1
+        e_terms[0] = tuple(e0)
+        h_terms[1] = tuple(h1)
+    return e_terms, h_terms
+
+
+def _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axis, pol):
     """Inject E-field components for 3D Huygens source (J = n x H), after E update."""
-    for e_comp, h_source, sign in _HUYGENS_SIGNS[axis]["e"]:
+    e_terms, _ = _get_3d_huygens_terms(axis, pol)
+    for e_comp, h_source, sign in e_terms:
         _inject_e_component(
             fields,
             e_comp,
@@ -485,9 +835,10 @@ def _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axi
         )
 
 
-def _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axis):
+def _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axis, pol):
     """Inject H-field components for 3D Huygens source (M = -n x E), after H update."""
-    for h_comp, e_source, sign in _HUYGENS_SIGNS[axis]["h"]:
+    _, h_terms = _get_3d_huygens_terms(axis, pol)
+    for h_comp, e_source, sign in h_terms:
         _inject_h_component(
             fields,
             h_comp,
@@ -502,11 +853,11 @@ def _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axi
 
 
 def _inject_3d_fields(
-    fields, profiles, indices, signal_e, signal_h, dt, resolution, axis="x"
+    fields, profiles, indices, signal_e, signal_h, dt, resolution, axis="x", pol="tm"
 ):
     """Inject all field components into a 3D field object (backward compat wrapper)."""
-    _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axis)
-    _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axis)
+    _inject_3d_h_fields(fields, profiles, indices, signal_h, dt, resolution, axis, pol)
+    _inject_3d_e_fields(fields, profiles, indices, signal_e, dt, resolution, axis, pol)
 
 
 def _inject_e_component(
@@ -585,7 +936,7 @@ def _match_shape(profile, target_shape):
 
 
 class ModeSource:
-    """Huygens mode source on Yee grid supporting ±x/±y propagation.
+    """Huygens mode source on Yee grid supporting ±x/±y in 2D and ±x/±y/±z in 3D.
 
     In 3D, injects all 6 field components (Ex, Ey, Ez, Hx, Hy, Hz) for accurate
     mode injection, accounting for proper Yee grid staggering.
@@ -605,7 +956,9 @@ class ModeSource:
         if self.pol not in {"te", "tm"}:
             raise ValueError(f"pol must be 'te' or 'tm', got {pol!r}")
         self.signal = signal
-        self.direction = direction
+        self.direction, self._direction_axis, self._direction_sign = _parse_direction(
+            direction
+        )
 
         # Storage for all 6 field component profiles (for 3D injection)
         self._Ex_profile = None
@@ -637,10 +990,12 @@ class ModeSource:
         self._h_component = None
         self._e_component = None
         self._neff = None
+        self._impedance_neff = None
         self._dt_physical = 0.0
+        self._launch_dt = None
         self._initialized = False
 
-    def initialize(self, permittivity, resolution):
+    def initialize(self, permittivity, resolution, dt=None):
         """Compute the mode and set up the source currents for all 6 components in 3D."""
         dx = dy = resolution
         is_3d = permittivity.ndim == 3
@@ -656,12 +1011,18 @@ class ModeSource:
         else:
             ny, nx = permittivity.shape
             nz = 1
+            dz = resolution
             self._grid_shape = (ny, nx)
             self.height = None
 
-        axis = "x" if self.direction in ("+x", "-x") else "y"
+        axis = self._direction_axis
+        if (not is_3d) and axis == "z":
+            raise ValueError(
+                "direction '+z'/'-z' requires a 3D permittivity grid; received 2D data"
+            )
         self._axis = axis
         self._dt_physical = 0.0
+        self._launch_dt = dt
 
         # 1. Get center index for injection plane
         if axis == "x":
@@ -678,7 +1039,7 @@ class ModeSource:
                 eps_profile = permittivity[:, center_idx]
                 self._eps_profile_2d = None
 
-        else:  # axis == "y"
+        elif axis == "y":
             center_idx = int(np.clip(np.round(self.center[1] / dy - 0.5), 0, ny - 1))
             if self.direction == "+y":
                 offset_idx = max(0, center_idx - 1)
@@ -692,15 +1053,33 @@ class ModeSource:
                 eps_profile = permittivity[center_idx, :]
                 self._eps_profile_2d = None
 
+        else:  # axis == "z" (3D only)
+            center_idx = int(np.clip(np.round(self.center[2] / dz - 0.5), 0, nz - 1))
+            if self.direction == "+z":
+                offset_idx = max(0, center_idx - 1)
+            else:
+                offset_idx = min(nz - 2, center_idx)
+
+            eps_profile = permittivity[center_idx, :, :]
+            self._eps_profile_2d = eps_profile
+
         # 2. Solve for mode fields
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         dL = dz if is_3d else (dy if axis == "x" else dx)
+        solver_direction = self.direction
+        if is_3d and axis in {"x", "y"}:
+            # 3D x/y cross-sections are solved in a rotated basis; flip +/- here so
+            # the resulting mode phase/gauge matches the 2D-corrected launch direction.
+            solver_direction = (
+                ("-" if self.direction.startswith("+") else "+") + axis
+            )
+
         neff_val, e_fields, h_fields, _ = solve_modes(
             eps=eps_profile,
             omega=omega,
             dL=dL,
             m=1,
-            direction=self.direction,
+            direction=solver_direction,
             filter_pol=self.pol,
             return_fields=True,
         )
@@ -716,10 +1095,24 @@ class ModeSource:
         Hy_raw = jnp.asarray(jnp.squeeze(H_mode[1]))
         Hz_raw = jnp.asarray(jnp.squeeze(H_mode[2]))
 
-        # 4. Phase align all components to dominant field (JAX-compatible)
-        if self.pol == "tm":
+        if is_3d:
+            Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw = _remap_3d_solver_components(
+                Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw, axis
+            )
+
+        # 4. Phase-align all components with the same H-based gauge convention as 2D.
+        if is_3d:
+            ref_field = _select_3d_phase_ref(
+                axis, self.pol, Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw
+            )
+        elif self.pol == "tm":
+            ex_max = jnp.max(jnp.abs(Ex_raw))
+            ey_max = jnp.max(jnp.abs(Ey_raw))
+            ez_max = jnp.max(jnp.abs(Ez_raw))
             ref_field = jnp.where(
-                jnp.max(jnp.abs(Ez_raw)) > jnp.max(jnp.abs(Ey_raw)), Ez_raw, Ey_raw
+                ex_max > ey_max,
+                jnp.where(ex_max > ez_max, Ex_raw, Ez_raw),
+                jnp.where(ey_max > ez_max, Ey_raw, Ez_raw),
             )
         else:
             ref_field = Ey_raw if axis == "x" else Ex_raw
@@ -737,6 +1130,17 @@ class ModeSource:
 
         # 5. Apply Yee grid staggering and set up indices
         if is_3d:
+            self._impedance_neff = _select_3d_impedance_index(
+                axis,
+                self.pol,
+                self._eps_profile_2d,
+                Ex_aligned,
+                Ey_aligned,
+                Ez_aligned,
+                Hx_aligned,
+                Hy_aligned,
+                Hz_aligned,
+            )
             self._setup_3d_injection(
                 Ex_aligned,
                 Ey_aligned,
@@ -751,13 +1155,16 @@ class ModeSource:
                 ny,
                 nx,
                 resolution,
+                omega=omega,
+                dt=dt,
             )
         else:
+            self._impedance_neff = None
             self._setup_2d_injection(
                 E_mode, H_mode, center_idx, offset_idx, axis, ny, nx, resolution
             )
 
-        self._compute_dt_physical(axis, is_3d, dx, dy)
+        self._compute_dt_physical(axis, is_3d, dx, dy, dz, dt=dt)
         self._initialized = True
 
     def _setup_3d_injection(
@@ -775,6 +1182,8 @@ class ModeSource:
         ny,
         nx,
         resolution,
+        omega,
+        dt,
     ):
         """Set up full 6-component injection for 3D simulations."""
         profiles, indices, extra = _build_3d_profiles(
@@ -794,6 +1203,9 @@ class ModeSource:
             grid_shape=(nz, ny, nx),
             resolution=resolution,
             neff=self._neff,
+            impedance_neff=self._impedance_neff if self._impedance_neff is not None else self._neff,
+            omega=omega,
+            dt=dt,
         )
 
         # Store profiles on self
@@ -1041,25 +1453,24 @@ class ModeSource:
             return tukey(width_cells, alpha=alpha)
         return np.ones(max(1, width_cells))
 
-    def _compute_dt_physical(self, axis, is_3d, dx, dy):
+    def _compute_dt_physical(self, axis, is_3d, dx, dy, dz=None, dt=None):
         """Compute physical time shift between E and H injection planes."""
         if self._neff is None:
             return
+        if dz is None:
+            dz = dx
 
         coord_e = 0.0
         coord_h = 0.0
 
         if is_3d:
-            if axis == "x":
-                if self._Ez_indices is not None:
-                    coord_e = (self._Ez_indices[2] + 0.5) * dx
-                if self._Hy_indices is not None:
-                    coord_h = (self._Hy_indices[2] + 1.0) * dx
-            else:
-                if self._Ez_indices is not None:
-                    coord_e = (self._Ez_indices[1] + 0.5) * dy
-                if self._Hx_indices is not None:
-                    coord_h = (self._Hx_indices[1] + 1.0) * dy
+            e_comp, h_comp = _dominant_3d_pair(axis, self.pol)
+            e_indices = getattr(self, f"_{e_comp}_indices", None)
+            h_indices = getattr(self, f"_{h_comp}_indices", None)
+            e_axis_idx = _axis_index_from_component_indices(e_indices, axis)
+            h_axis_idx = _axis_index_from_component_indices(h_indices, axis)
+            coord_e = _component_axis_coord(e_comp, e_axis_idx, axis, dx, dy, dz)
+            coord_h = _component_axis_coord(h_comp, h_axis_idx, axis, dx, dy, dz)
         else:
             if axis == "x":
                 if self.pol == "tm":
@@ -1080,11 +1491,14 @@ class ModeSource:
                 coord_e = (idx_e + 0.5) * dy
                 coord_h = (idx_h + 1.0) * dy
 
-        # Use the physical E/H plane separation magnitude for phase delay.
-        # Directionality is set by J/M cross-product signs, not by changing this delay sign.
-        self._dt_physical = (
-            abs(coord_e - coord_h) * float(np.real(self._neff)) / LIGHT_SPEED
-        )
+        delta_s = abs(coord_e - coord_h)
+        if is_3d and dt is not None:
+            omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
+            d_axis = {"x": dx, "y": dy, "z": dz}[axis]
+            k_num = _solve_numeric_k_axis(omega, dt, d_axis, self._neff)
+            self._dt_physical = _numeric_phase_delay(omega, k_num, delta_s)
+        else:
+            self._dt_physical = delta_s * float(np.real(self._neff)) / LIGHT_SPEED
 
     def _get_signal_value(self, time, dt):
         """Interpolate signal value at arbitrary time."""
@@ -1102,13 +1516,20 @@ class ModeSource:
 
     def inject_h(self, fields, t, dt, current_step, resolution, design):
         """Inject magnetic current (M) into H-fields after the H update."""
-        if (
+        needs_reinit = (
             (not self._initialized)
             or (self._grid_shape != fields.permittivity.shape)
             or (self._resolution is None)
             or (not np.isclose(self._resolution, resolution))
+        )
+        if (
+            (not needs_reinit)
+            and getattr(self, "_is_3d", False)
+            and ((self._launch_dt is None) or (not np.isclose(self._launch_dt, dt)))
         ):
-            self.initialize(fields.permittivity, resolution)
+            needs_reinit = True
+        if needs_reinit:
+            self.initialize(fields.permittivity, resolution, dt=dt)
 
         # M=-n×E is injected on the H update at the standard half-step time.
         signal_value_h = self._get_signal_value(t + 0.5 * dt, dt)
@@ -1120,16 +1541,28 @@ class ModeSource:
 
     def inject_e(self, fields, t, dt, current_step, resolution, design):
         """Inject electric current (J) into E-fields after the E update."""
-        if (
+        needs_reinit = (
             (not self._initialized)
             or (self._grid_shape != fields.permittivity.shape)
             or (self._resolution is None)
             or (not np.isclose(self._resolution, resolution))
+        )
+        if (
+            (not needs_reinit)
+            and getattr(self, "_is_3d", False)
+            and ((self._launch_dt is None) or (not np.isclose(self._launch_dt, dt)))
         ):
-            self.initialize(fields.permittivity, resolution)
+            needs_reinit = True
+        if needs_reinit:
+            self.initialize(fields.permittivity, resolution, dt=dt)
 
         # J=n×H is evaluated on the E update and needs the physical E/H plane offset.
-        signal_value_e = self._get_signal_value(t + 0.5 * dt + self._dt_physical, dt)
+        if self._is_3d:
+            # E is injected after the E-step, so use the full-step Yee timestamp.
+            signal_time_e = t + dt + self._dt_physical
+        else:
+            signal_time_e = t + 0.5 * dt + self._dt_physical
+        signal_value_e = self._get_signal_value(signal_time_e, dt)
 
         if self._Ex_profile is not None and self._is_3d:
             self._inject_3d_e(fields, signal_value_e, dt, resolution)
@@ -1166,14 +1599,14 @@ class ModeSource:
         """Inject H-field components for 3D Huygens source."""
         profiles, indices = self._get_3d_profiles_and_indices()
         _inject_3d_h_fields(
-            fields, profiles, indices, signal_h, dt, resolution, self._axis
+            fields, profiles, indices, signal_h, dt, resolution, self._axis, self.pol
         )
 
     def _inject_3d_e(self, fields, signal_e, dt, resolution):
         """Inject E-field components for 3D Huygens source."""
         profiles, indices = self._get_3d_profiles_and_indices()
         _inject_3d_e_fields(
-            fields, profiles, indices, signal_e, dt, resolution, self._axis
+            fields, profiles, indices, signal_e, dt, resolution, self._axis, self.pol
         )
 
     # -- 2D injection (split, with corrected signs) ---------------------
