@@ -37,3 +37,27 @@ material_library["Gold"].medium.show(wavelength_range_um=(0.45, 1.8))
 lno = material_library["LiNbO3"].medium("z")
 lno.show(wavelength_range_um=(0.5, 2.0))
 ```
+
+## Dispersion Validation
+Use the pulse-through-slab showcase to inspect time-domain behavior and compare
+extracted spectral response against analytic material models:
+
+```bash
+uv run python examples/7_dispersion_showcase.py --case all
+```
+
+Useful options:
+- `--case sellmeier|drude|debye|all`
+- `--fast` for shorter runs
+- `--save` to write figures/animations to `artifacts/dispersion_showcase/`
+
+Reading the plots:
+- Left panel: time-domain field evolution through the slab.
+- Right panels: extracted vs reference `n`, `k`, `Re(eps_r)`, `Im(eps_r)`.
+- The summary table reports RMSE and max absolute errors in passband.
+
+Caveats:
+- Coarse grids and short windows bias extracted values; trends are more reliable
+  than absolute metrology.
+- If source-driven ADE fields become non-finite for a case, the showcase falls
+  back to model-based spectral extraction and labels that mode in the summary.

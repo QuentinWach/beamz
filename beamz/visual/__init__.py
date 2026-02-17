@@ -21,6 +21,14 @@ from beamz.visual.helpers import (
     display_status,
     get_si_scale_and_label,
 )
+from beamz.visual.dispersion_validation import (
+    compute_error_metrics,
+    estimate_transfer_function,
+    extract_nk_from_transfer,
+    plot_dispersion_validation,
+    print_dispersion_metrics,
+    run_pulse_through_slab,
+)
 from beamz.visual.source_plots import plot_signal, show_mode_profile
 from beamz.visual.video import VideoRecorder
 
@@ -39,6 +47,12 @@ __all__ = [
     "get_si_scale_and_label",
     "check_fdtd_stability",
     "calc_optimal_fdtd_params",
+    "estimate_transfer_function",
+    "extract_nk_from_transfer",
+    "compute_error_metrics",
+    "run_pulse_through_slab",
+    "plot_dispersion_validation",
+    "print_dispersion_metrics",
     "plot_signal",
     "show_mode_profile",
 ]

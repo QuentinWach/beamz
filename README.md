@@ -18,7 +18,7 @@ pip install beamz
 - Modular architecture with a high-level API.
 - **GPU-accelerated** (but CPU-capable).
 - FDTD simulation in 2D and 3D.
-- Native dispersive ADE materials (Drude/Lorentz/Debye/Sellmeier/Pole-Residue).
+- (WIP) Native dispersive ADE materials (Drude/Lorentz/Debye/Sellmeier/Pole-Residue).
 - PML absorbing boundaries.
 - Sub-pixel smoothing.
 - Gaussian and mode sources with TE and TM polarization.
