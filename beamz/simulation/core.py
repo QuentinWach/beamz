@@ -482,13 +482,18 @@ class Simulation:
 
         return step_e_dispersive
 
-    def run_fast(
-        self, num_steps=None, record_interval=None, record_fields=None, progress=True
+    def run(
+        self,
+        num_steps=None,
+        record_interval=None,
+        record_fields=None,
+        progress=True,
+        **viz_kwargs,
     ):
-        """Run FDTD simulation with JIT-compiled loop for maximum performance.
+        """Run simulation using the unified API.
 
-        This method uses JAX's jax.lax.fori_loop for efficient time-stepping with full JIT compilation.
-        Sources are injected at each step (not JIT-compiled), but the field update is fully optimized.
+        - Core mode (no visualization kwargs): executes the JIT-accelerated core loop.
+        - Visualization mode (viz kwargs present): delegates to `visual.runner`.
 
         Args:
             num_steps: Number of steps to run (default: remaining steps)
@@ -501,9 +506,14 @@ class Simulation:
                 - 'fields': dict of recorded field arrays if record_interval was set
                 - 'monitors': list of Monitor objects with recorded data
         """
+        if viz_kwargs:
+            from beamz.visual.runner import run_with_visualization
+
+            return run_with_visualization(self, **viz_kwargs)
+
         if self.thermal is not None and getattr(self.thermal, "enabled", True):
             raise NotImplementedError(
-                "run_fast is not supported when thermal coupling is enabled."
+                "run is not supported when thermal coupling is enabled."
             )
         if num_steps is None:
             num_steps = self.num_steps - self.current_step
@@ -728,210 +738,7 @@ class Simulation:
         return result if result else None
 
     def run_jit_scan(self, num_steps=None, progress=True):
-        """Run FDTD simulation using jax.lax.scan for maximum performance.
-
-        This method is optimized for simulations WITHOUT sources or with sources
-        that can be pre-computed. It JIT-compiles the entire time loop.
-
-        For simulations WITH time-dependent sources, use run_fast() instead.
-
-        Args:
-            num_steps: Number of steps to run (default: remaining steps)
-            progress: Show compilation status (default: True)
-
-        Returns:
-            dict with final field state
-        """
-        if self.thermal is not None and getattr(self.thermal, "enabled", True):
-            raise NotImplementedError(
-                "run_jit_scan is not supported when thermal coupling is enabled."
-            )
-        if num_steps is None:
-            num_steps = self.num_steps - self.current_step
-
-        # Check if sources are present
-        has_sources = any(
-            hasattr(d, "inject")
-            or hasattr(d, "inject_h")
-            or hasattr(d, "inject_e")
-            or hasattr(d, "get_source_terms")
-            for d in self.devices
-        )
-        if self.fields.has_dispersion and has_sources:
-            if progress:
-                print(
-                    "● Warning: Sources detected. Dispersive run_jit_scan falls back to run_fast()."
-                )
-            return self.run_fast(num_steps=num_steps, progress=progress)
-        if has_sources:
-            print(
-                "● Warning: Sources detected. Using run_fast() instead for source injection support."
-            )
-            return self.run_fast(num_steps=num_steps, progress=progress)
-
-        if self.fields.has_dispersion:
-            jit_step_h = self._create_jit_step_h()
-            jit_step_e_dispersive = self._create_jit_step_e_dispersive()
-
-            @jax.jit
-            def run_scan_dispersive(init_state):
-                def scan_body(carry, _):
-                    Ex, Ey, Ez, Hx, Hy, Hz, psi_x, psi_y, psi_z = carry
-                    Hx_new, Hy_new, Hz_new = jit_step_h(Ex, Ey, Ez, Hx, Hy, Hz)
-                    (
-                        Ex_new,
-                        Ey_new,
-                        Ez_new,
-                        psi_x_new,
-                        psi_y_new,
-                        psi_z_new,
-                    ) = jit_step_e_dispersive(
-                        Ex,
-                        Ey,
-                        Ez,
-                        Hx_new,
-                        Hy_new,
-                        Hz_new,
-                        psi_x,
-                        psi_y,
-                        psi_z,
-                    )
-                    return (
-                        Ex_new,
-                        Ey_new,
-                        Ez_new,
-                        Hx_new,
-                        Hy_new,
-                        Hz_new,
-                        psi_x_new,
-                        psi_y_new,
-                        psi_z_new,
-                    ), None
-
-                final_state, _ = jax.lax.scan(
-                    scan_body, init_state, None, length=num_steps
-                )
-                return final_state
-
-            if progress:
-                print(
-                    f"● JIT compiling {num_steps}-step dispersive ADE scan...",
-                    end=" ",
-                    flush=True,
-                )
-
-            psi_x, psi_y, psi_z = self.fields.get_ade_state_tuple()
-            init_state = (
-                self.fields.Ex,
-                self.fields.Ey,
-                self.fields.Ez,
-                self.fields.Hx,
-                self.fields.Hy,
-                self.fields.Hz,
-                psi_x,
-                psi_y,
-                psi_z,
-            )
-            final_state = run_scan_dispersive(init_state)
-            (
-                self.fields.Ex,
-                self.fields.Ey,
-                self.fields.Ez,
-                self.fields.Hx,
-                self.fields.Hy,
-                self.fields.Hz,
-                psi_x,
-                psi_y,
-                psi_z,
-            ) = final_state
-            self.fields.set_ade_state_tuple(psi_x, psi_y, psi_z)
-
-            self.fields.Ez.block_until_ready()
-            if progress:
-                print("done!")
-
-            self.t += num_steps * self.dt
-            self.current_step += num_steps
-
-            return {
-                "Ex": np.array(self.fields.Ex),
-                "Ey": np.array(self.fields.Ey),
-                "Ez": np.array(self.fields.Ez),
-                "Hx": np.array(self.fields.Hx),
-                "Hy": np.array(self.fields.Hy),
-                "Hz": np.array(self.fields.Hz),
-            }
-
-        # Create pure FDTD step function for scan
-        jit_step = self._create_jit_step()
-
-        @jax.jit
-        def scan_body(carry, _):
-            Ex, Ey, Ez, Hx, Hy, Hz = carry
-            Ex, Ey, Ez, Hx, Hy, Hz = jit_step(Ex, Ey, Ez, Hx, Hy, Hz)
-            return (Ex, Ey, Ez, Hx, Hy, Hz), None
-
+        """Compatibility wrapper around the unified `run()` loop."""
         if progress:
-            print(
-                f"● JIT compiling {num_steps}-step FDTD loop with jax.lax.scan...",
-                end=" ",
-                flush=True,
-            )
-
-        # Pack initial state
-        init_state = (
-            self.fields.Ex,
-            self.fields.Ey,
-            self.fields.Ez,
-            self.fields.Hx,
-            self.fields.Hy,
-            self.fields.Hz,
-        )
-
-        # Run scan
-        final_state, _ = jax.lax.scan(scan_body, init_state, None, length=num_steps)
-
-        # Unpack final state
-        (
-            self.fields.Ex,
-            self.fields.Ey,
-            self.fields.Ez,
-            self.fields.Hx,
-            self.fields.Hy,
-            self.fields.Hz,
-        ) = final_state
-
-        # Block until done
-        self.fields.Ez.block_until_ready()
-
-        if progress:
-            print("done!")
-
-        # Update time tracking
-        self.t += num_steps * self.dt
-        self.current_step += num_steps
-
-        return {
-            "Ex": np.array(self.fields.Ex),
-            "Ey": np.array(self.fields.Ey),
-            "Ez": np.array(self.fields.Ez),
-            "Hx": np.array(self.fields.Hx),
-            "Hy": np.array(self.fields.Hy),
-            "Hz": np.array(self.fields.Hz),
-        }
-
-    def run(self, **kwargs):
-        """Run complete FDTD simulation with optional live field visualization.
-
-        Accepts all visualization parameters (animate_live, cmap, save_video, etc.).
-        See beamz.visual.runner.VizConfig for the full list of options.
-
-        Returns:
-            dict with keys:
-                - 'fields': dict of field histories if save_fields was provided
-                - 'monitors': list of Monitor objects with recorded data
-                - 'animation': JupyterAnimator object if running in Jupyter with animate_live
-        """
-        from beamz.visual.runner import run_with_visualization
-
-        return run_with_visualization(self, **kwargs)
+            print("● run_jit_scan is deprecated. Using run() core loop.")
+        return self.run(num_steps=num_steps, progress=progress)

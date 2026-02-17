@@ -15,10 +15,10 @@ Module to define complex structures parametrically and rasterize them into mater
 + io.py         / Import and export of designs as .gds, .gltf, etc.
 
 ## Notes
-- Dispersive models run natively in `Simulation.step()` and `Simulation.run_fast()`
-  through ADE updates.
-- `Simulation.run_jit_scan()` supports dispersive ADE for source-free runs and
-  falls back to `run_fast()` when sources are present.
+- Dispersive models run natively in `Simulation.step()` and the core
+  `Simulation.run()` loop through ADE updates.
+- `Simulation.run_jit_scan()` remains a compatibility wrapper and routes to
+  `run()`.
 - Thermal coupling with dispersive ADE materials is currently not supported.
 - The runtime material catalog is intentionally curated and minimal.
 
