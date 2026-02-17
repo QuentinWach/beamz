@@ -26,6 +26,111 @@ from beamz.devices.sources.solve import solve_modes
 from tests.utils import TEST_WAVELENGTH, compute_field_energy
 
 
+def _poynting_component_3d(fields, axis):
+    """Compute one Cartesian Poynting component from staggered 3D snapshots."""
+    Ex = np.asarray(fields["Ex"])
+    Ey = np.asarray(fields["Ey"])
+    Ez = np.asarray(fields["Ez"])
+    Hx = np.asarray(fields["Hx"])
+    Hy = np.asarray(fields["Hy"])
+    Hz = np.asarray(fields["Hz"])
+
+    if axis == "x":
+        nz = min(Ey.shape[0], Hz.shape[0], Ez.shape[0], Hy.shape[0])
+        ny = min(Ey.shape[1], Hz.shape[1], Ez.shape[1], Hy.shape[1])
+        nx = min(Ey.shape[2], Hz.shape[2], Ez.shape[2], Hy.shape[2])
+        return Ey[:nz, :ny, :nx] * Hz[:nz, :ny, :nx] - Ez[:nz, :ny, :nx] * Hy[:nz, :ny, :nx]
+    if axis == "y":
+        nz = min(Ez.shape[0], Hx.shape[0], Ex.shape[0], Hz.shape[0])
+        ny = min(Ez.shape[1], Hx.shape[1], Ex.shape[1], Hz.shape[1])
+        nx = min(Ez.shape[2], Hx.shape[2], Ex.shape[2], Hz.shape[2])
+        return Ez[:nz, :ny, :nx] * Hx[:nz, :ny, :nx] - Ex[:nz, :ny, :nx] * Hz[:nz, :ny, :nx]
+    if axis == "z":
+        nz = min(Ex.shape[0], Hy.shape[0], Ey.shape[0], Hx.shape[0])
+        ny = min(Ex.shape[1], Hy.shape[1], Ey.shape[1], Hx.shape[1])
+        nx = min(Ex.shape[2], Hy.shape[2], Ey.shape[2], Hx.shape[2])
+        return Ex[:nz, :ny, :nx] * Hy[:nz, :ny, :nx] - Ey[:nz, :ny, :nx] * Hx[:nz, :ny, :nx]
+    raise ValueError(f"Unsupported axis {axis!r}")
+
+
+def _plane_flux(p_component, axis, plane_idx):
+    """Integrate Poynting component through a plane normal to axis."""
+    if axis == "x":
+        idx = int(np.clip(plane_idx, 0, p_component.shape[2] - 1))
+        return float(np.sum(p_component[:, :, idx]))
+    if axis == "y":
+        idx = int(np.clip(plane_idx, 0, p_component.shape[1] - 1))
+        return float(np.sum(p_component[:, idx, :]))
+    if axis == "z":
+        idx = int(np.clip(plane_idx, 0, p_component.shape[0] - 1))
+        return float(np.sum(p_component[idx, :, :]))
+    raise ValueError(f"Unsupported axis {axis!r}")
+
+
+def _axis_size(arr, axis):
+    if axis == "x":
+        return arr.shape[2]
+    if axis == "y":
+        return arr.shape[1]
+    return arr.shape[0]
+
+
+def _profile_correlation(profile_a, profile_b):
+    """Return normalized real-valued profile correlation in [-1, 1]."""
+    a = np.real(np.asarray(profile_a)).ravel()
+    b = np.real(np.asarray(profile_b)).ravel()
+    n = min(a.size, b.size)
+    if n == 0:
+        return 0.0
+    a = a[:n]
+    b = b[:n]
+    denom = float(np.linalg.norm(a) * np.linalg.norm(b)) + 1e-30
+    return float(np.sum(a * b) / denom)
+
+
+def _build_3d_waveguide(axis, wavelength, n_core, n_clad, guide_width):
+    long_span = 4.0 * wavelength
+    transverse_span = 2.4 * wavelength
+
+    if axis == "x":
+        width, height, depth = long_span, transverse_span, transverse_span
+        core = Rectangle(
+            position=(0, height / 2 - guide_width / 2, depth / 2 - guide_width / 2),
+            width=width,
+            height=guide_width,
+            depth=guide_width,
+            material=Material(n_core**2),
+        )
+    elif axis == "y":
+        width, height, depth = transverse_span, long_span, transverse_span
+        core = Rectangle(
+            position=(width / 2 - guide_width / 2, 0, depth / 2 - guide_width / 2),
+            width=guide_width,
+            height=height,
+            depth=guide_width,
+            material=Material(n_core**2),
+        )
+    else:
+        width, height, depth = transverse_span, transverse_span, long_span
+        core = Rectangle(
+            position=(width / 2 - guide_width / 2, height / 2 - guide_width / 2, 0),
+            width=guide_width,
+            height=guide_width,
+            depth=depth,
+            material=Material(n_core**2),
+        )
+
+    design = Design(
+        width=width,
+        height=height,
+        depth=depth,
+        material=Material(permittivity=n_clad**2),
+    )
+    design += core
+    center = (width / 2, height / 2, depth / 2)
+    return design, center
+
+
 @pytest.mark.simulation
 class TestModeSourceEffectiveIndex:
     """Verify mode effective index computation."""
@@ -581,6 +686,111 @@ class TestModeSourcePolarization:
             float(np.max(np.abs(np.asarray(profile)))) > 1e-8
         ), f"{profile_attr} is near zero for +y/{pol}; check component mapping"
 
+    def test_invalid_direction_raises(self, waveguide_domain):
+        """ModeSource should reject directions outside ±x/±y/±z."""
+        design = waveguide_domain["design"]
+        dx = waveguide_domain["dx"]
+        wavelength = waveguide_domain["wavelength"]
+        dt = waveguide_domain["dt"]
+
+        grid = design.rasterize(resolution=dx)
+        signal = np.ones(max(2, int(5 * dt / dt)))
+        with pytest.raises(ValueError, match="direction"):
+            ModeSource(
+                grid=grid,
+                center=(wavelength * 2, design.height / 2),
+                width=waveguide_domain["core_width"] * 3,
+                wavelength=wavelength,
+                pol="tm",
+                signal=signal,
+                direction="north",
+            )
+
+    @pytest.mark.parametrize("direction", ["+z", "-z"])
+    def test_3d_z_direction_sets_axis(self, direction):
+        """3D z-directed initialization should set axis metadata to 'z'."""
+        wavelength = TEST_WAVELENGTH
+        n_core = 2.0
+        n_clad = 1.0
+        guide_w = 0.6 * wavelength
+
+        width = 3.0 * wavelength
+        height = 3.0 * wavelength
+        depth = 4.0 * wavelength
+        dx, dt = calc_optimal_fdtd_params(
+            wavelength,
+            n_core,
+            dims=3,
+            safety_factor=0.9,
+            points_per_wavelength=6,
+            width=width,
+            height=height,
+            depth=depth,
+        )
+
+        design = Design(width=width, height=height, depth=depth, material=Material(n_clad**2))
+        design += Rectangle(
+            position=(width / 2 - guide_w / 2, height / 2 - guide_w / 2, 0),
+            width=guide_w,
+            height=guide_w,
+            depth=depth,
+            material=Material(n_core**2),
+        )
+
+        freq = LIGHT_SPEED / wavelength
+        t_total = 4 / freq
+        time = np.arange(0, t_total, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=freq,
+            ramp_duration=1 / freq,
+            t_max=t_total * 0.5,
+        )
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=(width / 2, height / 2, depth / 2),
+            width=guide_w * 2.5,
+            height=guide_w * 2.5,
+            wavelength=wavelength,
+            pol="tm",
+            signal=signal,
+            direction=direction,
+        )
+        source.initialize(grid.permittivity, dx)
+        assert source._axis == "z"
+
+    def test_2d_z_direction_raises_on_initialize(self, waveguide_domain):
+        """z-directed source should reject 2D initialization."""
+        design = waveguide_domain["design"]
+        wavelength = waveguide_domain["wavelength"]
+        dx = waveguide_domain["dx"]
+        dt = waveguide_domain["dt"]
+
+        freq = LIGHT_SPEED / wavelength
+        t_total = 3 / freq
+        time = np.arange(0, t_total, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=freq,
+            ramp_duration=1 / freq,
+            t_max=t_total,
+        )
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=(wavelength * 2, design.height / 2),
+            width=waveguide_domain["core_width"] * 3,
+            wavelength=wavelength,
+            pol="tm",
+            signal=signal,
+            direction="+z",
+        )
+        with pytest.raises(ValueError, match="requires a 3D permittivity grid"):
+            source.initialize(grid.permittivity, dx)
+
     @pytest.mark.parametrize(
         ("direction", "pol"),
         [
@@ -688,6 +898,321 @@ class TestModeSourcePolarization:
         assert forward_fraction > min_forward, (
             f"Poor directionality for {direction}/{pol}: "
             f"forward_fraction={forward_fraction:.3f}"
+        )
+
+
+class TestModeSource3DSignGaugeParity:
+    """Fast initialization checks for 3D +/- direction sign parity."""
+
+    @pytest.mark.parametrize(
+        ("axis", "pol", "j_h_comp", "m_e_comp"),
+        [
+            ("x", "tm", "Hy", "Ez"),
+            ("x", "te", "Hz", "Ey"),
+            ("y", "tm", "Hx", "Ez"),
+            ("y", "te", "Hz", "Ex"),
+            ("z", "tm", "Hx", "Ey"),
+            ("z", "te", "Hy", "Ex"),
+        ],
+    )
+    def test_direction_sign_parity_profiles(self, axis, pol, j_h_comp, m_e_comp):
+        wavelength = TEST_WAVELENGTH
+        n_core = 2.0
+        n_clad = 1.0
+        guide_width = 0.6 * wavelength
+
+        design, center = _build_3d_waveguide(
+            axis, wavelength, n_core, n_clad, guide_width
+        )
+        dx, dt = calc_optimal_fdtd_params(
+            wavelength,
+            n_core,
+            dims=3,
+            safety_factor=0.9,
+            points_per_wavelength=6,
+            width=design.width,
+            height=design.height,
+            depth=design.depth,
+        )
+
+        freq = LIGHT_SPEED / wavelength
+        t_total = 3 / freq
+        time = np.arange(0, t_total, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=freq,
+            ramp_duration=1 / freq,
+            t_max=t_total,
+        )
+        grid = design.rasterize(resolution=dx)
+
+        source_plus = ModeSource(
+            grid=grid,
+            center=center,
+            width=guide_width * 2.5,
+            height=guide_width * 2.5,
+            wavelength=wavelength,
+            pol=pol,
+            signal=signal,
+            direction=f"+{axis}",
+        )
+        source_minus = ModeSource(
+            grid=grid,
+            center=center,
+            width=guide_width * 2.5,
+            height=guide_width * 2.5,
+            wavelength=wavelength,
+            pol=pol,
+            signal=signal,
+            direction=f"-{axis}",
+        )
+        source_plus.initialize(grid.permittivity, dx)
+        source_minus.initialize(grid.permittivity, dx)
+
+        h_plus = getattr(source_plus, f"_{j_h_comp}_profile")
+        h_minus = getattr(source_minus, f"_{j_h_comp}_profile")
+        e_plus = getattr(source_plus, f"_{m_e_comp}_profile")
+        e_minus = getattr(source_minus, f"_{m_e_comp}_profile")
+        assert h_plus is not None and h_minus is not None
+        assert e_plus is not None and e_minus is not None
+
+        corr_h = _profile_correlation(h_plus, h_minus)
+        corr_e = _profile_correlation(e_plus, e_minus)
+
+        assert corr_h < -0.60, (
+            f"{axis}/{pol} J-driving H profile should flip sign: corr={corr_h:.3f}"
+        )
+        assert corr_e > 0.60, (
+            f"{axis}/{pol} M-driving E profile should preserve sign: corr={corr_e:.3f}"
+        )
+
+
+@pytest.mark.simulation
+@pytest.mark.slow
+class TestModeSourceDirectionality3D:
+    """3D directionality checks for TE/TM across ±x/±y/±z."""
+
+    @staticmethod
+    def _build_3d_waveguide(axis, wavelength, n_core, n_clad, guide_width):
+        return _build_3d_waveguide(axis, wavelength, n_core, n_clad, guide_width)
+
+    @pytest.mark.parametrize(("direction", "pol"), [("+x", "tm"), ("-x", "tm"), ("+x", "te"), ("-x", "te")])
+    def test_x_slice_direction_regression(self, direction, pol):
+        """Regression for reported x-slice reversal: +x -> right, -x -> left."""
+        wavelength = TEST_WAVELENGTH
+        n_core = 2.0
+        n_clad = 1.0
+        guide_width = 0.6 * wavelength
+        axis = "x"
+
+        design, center = self._build_3d_waveguide(
+            axis, wavelength, n_core, n_clad, guide_width
+        )
+        dx, dt = calc_optimal_fdtd_params(
+            wavelength,
+            n_core,
+            dims=3,
+            safety_factor=0.9,
+            points_per_wavelength=6,
+            width=design.width,
+            height=design.height,
+            depth=design.depth,
+        )
+
+        freq = LIGHT_SPEED / wavelength
+        t_total = 6 / freq
+        time = np.arange(0, t_total, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=freq,
+            ramp_duration=1 / freq,
+            t_max=t_total,
+        )
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=center,
+            width=guide_width * 2.5,
+            height=guide_width * 2.5,
+            wavelength=wavelength,
+            pol=pol,
+            signal=signal,
+            direction=direction,
+        )
+        sim = Simulation(
+            design=design,
+            devices=[source],
+            boundaries=[PML(thickness=0.8 * wavelength)],
+            time=time,
+            resolution=dx,
+        )
+
+        field_name = "Ez" if pol == "tm" else "Hz"
+        result = sim.run(save_fields=[field_name], field_subsample=1)
+        snapshots = result["fields"][field_name]
+        start_idx = max(1, len(snapshots) // 2)
+        x_center = int(np.asarray(snapshots[0]).shape[-1] // 2)
+        y_half_band = max(2, int(round((guide_width / dx) * 1.2)))
+
+        left_vals = []
+        right_vals = []
+        for idx in range(start_idx, len(snapshots)):
+            field_3d = np.asarray(snapshots[idx])
+            z_mid = field_3d.shape[0] // 2
+            xy_slice = np.abs(field_3d[z_mid]) ** 2
+            y_mid = xy_slice.shape[0] // 2
+            y0 = max(0, y_mid - y_half_band)
+            y1 = min(xy_slice.shape[0], y_mid + y_half_band)
+            left_vals.append(float(np.sum(xy_slice[y0:y1, :x_center])))
+            right_vals.append(float(np.sum(xy_slice[y0:y1, x_center:])))
+
+        left_mean = float(np.mean(left_vals))
+        right_mean = float(np.mean(right_vals))
+        if direction == "+x":
+            assert right_mean > 1.10 * left_mean, (
+                f"Expected +x to launch right in xy slice for {pol}: "
+                f"right_mean={right_mean:.3e}, left_mean={left_mean:.3e}"
+            )
+        else:
+            assert left_mean > 1.10 * right_mean, (
+                f"Expected -x to launch left in xy slice for {pol}: "
+                f"left_mean={left_mean:.3e}, right_mean={right_mean:.3e}"
+            )
+
+    @pytest.mark.parametrize(
+        ("direction", "pol"),
+        [
+            ("+x", "tm"),
+            ("-x", "tm"),
+            ("+x", "te"),
+            ("-x", "te"),
+            ("+y", "tm"),
+            ("-y", "tm"),
+            ("+y", "te"),
+            ("-y", "te"),
+            ("+z", "tm"),
+            ("-z", "tm"),
+            ("+z", "te"),
+            ("-z", "te"),
+        ],
+    )
+    def test_flux_directionality_matrix_3d(self, direction, pol):
+        """ModeSource should direct 3D power flow predominantly into requested direction."""
+        wavelength = TEST_WAVELENGTH
+        n_core = 2.0
+        n_clad = 1.0
+        guide_width = 0.6 * wavelength
+        axis = direction[1]
+
+        design, center = self._build_3d_waveguide(
+            axis, wavelength, n_core, n_clad, guide_width
+        )
+        dx, dt = calc_optimal_fdtd_params(
+            wavelength,
+            n_core,
+            dims=3,
+            safety_factor=0.9,
+            points_per_wavelength=6,
+            width=design.width,
+            height=design.height,
+            depth=design.depth,
+        )
+
+        freq = LIGHT_SPEED / wavelength
+        t_total = 4 / freq
+        time = np.arange(0, t_total, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=freq,
+            ramp_duration=1 / freq,
+            t_max=t_total,
+        )
+
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=center,
+            width=guide_width * 2.5,
+            height=guide_width * 2.5,
+            wavelength=wavelength,
+            pol=pol,
+            signal=signal,
+            direction=direction,
+        )
+        sim = Simulation(
+            design=design,
+            devices=[source],
+            boundaries=[PML(thickness=0.8 * wavelength)],
+            time=time,
+            resolution=dx,
+        )
+
+        save_fields = ["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]
+        result = sim.run(save_fields=save_fields, field_subsample=1)
+        axis_len = _axis_size(
+            _poynting_component_3d(
+                {name: np.asarray(result["fields"][name][0]) for name in save_fields}, axis
+            ),
+            axis,
+        )
+        axis_center_coord = center[{"x": 0, "y": 1, "z": 2}[axis]]
+        center_idx = int(np.clip(np.round(axis_center_coord / dx - 0.5), 1, axis_len - 2))
+        dir_sign = 1.0 if direction.startswith("+") else -1.0
+        offset_cells = (
+            1
+            if axis == "y"
+            else int(np.clip(round(0.4 * wavelength / dx), 2, max(2, axis_len // 5)))
+        )
+        if direction.startswith("+"):
+            forward_idx = min(axis_len - 1, center_idx + offset_cells)
+            backward_idx = max(0, center_idx - offset_cells)
+        else:
+            forward_idx = max(0, center_idx - offset_cells)
+            backward_idx = min(axis_len - 1, center_idx + offset_cells)
+
+        # Strict gate: fixed planes and steady-state time average.
+        steady_start = max(1, int(0.75 * len(result["fields"]["Ex"])))
+        forward_vals = []
+        backward_vals = []
+        for snap_idx in range(steady_start, len(result["fields"]["Ex"])):
+            snapshot = {
+                name: np.asarray(result["fields"][name][snap_idx]) for name in save_fields
+            }
+            p_axis = _poynting_component_3d(snapshot, axis)
+
+            forward_raw = _plane_flux(p_axis, axis, forward_idx)
+            backward_raw = _plane_flux(p_axis, axis, backward_idx)
+            forward_vals.append(dir_sign * forward_raw)
+            backward_vals.append(max(0.0, -dir_sign * backward_raw))
+
+        forward_flux_mean = float(np.mean(forward_vals))
+        backward_flux_mean = float(np.mean(backward_vals))
+        min_forward_flux = 0.5
+        forward_ratio = forward_flux_mean / (
+            forward_flux_mean + backward_flux_mean + 1e-30
+        )
+        backward_ratio = backward_flux_mean / (forward_flux_mean + 1e-30)
+
+        assert forward_flux_mean > min_forward_flux, (
+            f"Weak forward 3D flux for {direction}/{pol}: "
+            f"forward_flux_mean={forward_flux_mean:.3e}"
+        )
+        assert forward_ratio > 0.90, (
+            f"Poor 3D forward dominance for {direction}/{pol}: "
+            f"forward_ratio={forward_ratio:.3f}, "
+            f"forward_flux_mean={forward_flux_mean:.3e}, "
+            f"backward_flux_mean={backward_flux_mean:.3e}, "
+            f"offset_cells={offset_cells}, steady_start={steady_start}"
+        )
+        assert backward_ratio < 0.15, (
+            f"Excess backward 3D flux for {direction}/{pol}: "
+            f"backward_ratio={backward_ratio:.3f}, "
+            f"forward_flux_mean={forward_flux_mean:.3e}, "
+            f"backward_flux_mean={backward_flux_mean:.3e}, "
+            f"offset_cells={offset_cells}, steady_start={steady_start}"
         )
 
 

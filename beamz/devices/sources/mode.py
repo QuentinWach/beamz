@@ -8,6 +8,8 @@ from beamz.devices.sources.solve import solve_modes
 
 logger = logging.getLogger(__name__)
 
+_VALID_DIRECTIONS = {"+x", "-x", "+y", "-y", "+z", "-z"}
+
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -164,6 +166,59 @@ def _impedance_match_e_profile(e_profile, h_profile, Z_phys, eps=1e-12):
     return e_profile
 
 
+def _parse_direction(direction):
+    """Parse and validate direction string into (axis, sign)."""
+    direction = str(direction).lower()
+    if direction not in _VALID_DIRECTIONS:
+        valid = ", ".join(sorted(_VALID_DIRECTIONS))
+        raise ValueError(f"direction must be one of {{{valid}}}, got {direction!r}")
+    axis = direction[1]
+    dir_sign = 1.0 if direction.startswith("+") else -1.0
+    return direction, axis, dir_sign
+
+
+def _remap_3d_solver_components(Ex, Ey, Ez, Hx, Hy, Hz, axis):
+    """Remap solver x-basis components to requested global propagation axis."""
+    if axis == "x":
+        return Ex, Ey, Ez, Hx, Hy, Hz
+    if axis == "y":
+        # Match the rotated-basis correction already used by 2D y-propagation.
+        return Ey, Ex, Ez, Hy, Hx, Hz
+    if axis == "z":
+        # Cyclic remap from x-basis -> z-basis.
+        return Ey, Ez, Ex, Hy, Hz, Hx
+    raise ValueError(f"Unsupported axis {axis!r} for 3D remap")
+
+
+def _select_3d_phase_ref(axis, pol, Ex, Ey, Ez, Hx, Hy, Hz):
+    """Select 3D phase-reference field using the same H-based convention as 2D."""
+    preferred = {
+        ("x", "tm"): Hy,
+        ("x", "te"): Hz,
+        ("y", "tm"): Hx,
+        ("y", "te"): Hz,
+        ("z", "tm"): Hx,
+        ("z", "te"): Hy,
+    }
+    tangential_h = {
+        "x": (Hy, Hz),
+        "y": (Hx, Hz),
+        "z": (Hx, Hy),
+    }
+    key = (axis, pol)
+    if key not in preferred:
+        raise ValueError(f"Unsupported 3D phase-reference mapping for {key!r}")
+
+    ref_field = preferred[key]
+    if float(jnp.max(jnp.abs(ref_field))) >= 1e-9:
+        return ref_field
+
+    # Fallback for near-cutoff/degenerate cases: pick strongest tangential H component.
+    candidates = tangential_h[axis]
+    strengths = [float(jnp.max(jnp.abs(comp))) for comp in candidates]
+    return candidates[int(np.argmax(strengths))]
+
+
 def _build_3d_profiles(
     Ex,
     Ey,
@@ -192,6 +247,7 @@ def _build_3d_profiles(
         Mapping component name -> index tuple for field injection.
     """
     nz, ny, nx = grid_shape
+    # Apply direction sign once while building source profiles.
     dir_sign = 1.0 if direction.startswith("+") else -1.0
     ETA_0 = np.sqrt(MU_0 / EPS_0)
     Z_phys = ETA_0 / max(np.real(neff), 1e-6)
@@ -216,7 +272,7 @@ def _build_3d_profiles(
             nx,
             resolution,
         )
-    else:
+    if axis == "y":
         return _build_3d_y(
             Ex,
             Ey,
@@ -236,6 +292,27 @@ def _build_3d_profiles(
             nx,
             resolution,
         )
+    if axis == "z":
+        return _build_3d_z(
+            Ex,
+            Ey,
+            Ez,
+            Hx,
+            Hy,
+            Hz,
+            dir_sign,
+            Z_phys,
+            center,
+            width,
+            height,
+            center_idx,
+            offset_idx,
+            nz,
+            ny,
+            nx,
+            resolution,
+        )
+    raise ValueError(f"Unsupported axis {axis!r} for 3D profile setup")
 
 
 def _build_3d_x(
@@ -432,6 +509,107 @@ def _build_3d_y(
     return profiles, indices, extra
 
 
+def _build_3d_z(
+    Ex,
+    Ey,
+    Ez,
+    Hx,
+    Hy,
+    Hz,
+    dir_sign,
+    Z_phys,
+    center,
+    width,
+    height,
+    center_idx,
+    offset_idx,
+    nz,
+    ny,
+    nx,
+    resolution,
+):
+    # --- stagger (z-propagation) ---
+    Ex_s = _stagger_half(Ex, axis=1)
+    Ey_s = _stagger_half(Ey, axis=0)
+    Ez_s = Ez
+    Hx_s = _stagger_half(Hx, axis=0)
+    Hy_s = _stagger_half(Hy, axis=1)
+    Hz_s = _stagger_both(Hz)
+
+    # --- transverse bounds ---
+    x_start, x_end = _compute_transverse_bounds(center[0], width, resolution, nx)
+    y_start, y_end = _compute_transverse_bounds(center[1], height, resolution, ny)
+
+    e_z_idx = int(np.clip(center_idx, 0, nz - 1))
+    h_z_idx = int(np.clip(offset_idx, 0, max(nz - 2, 0)))
+    ez_z_idx = int(np.clip(center_idx, 0, max(nz - 2, 0)))
+    hz_z_idx = int(np.clip(offset_idx, 0, nz - 1))
+
+    # --- indices  (z_index, y_slice, x_slice) ---
+    indices = {
+        "Ex": (
+            e_z_idx,
+            slice(y_start, min(y_end, Ex_s.shape[0], ny)),
+            slice(x_start, min(x_end, Ex_s.shape[1], nx - 1)),
+        ),
+        "Ey": (
+            e_z_idx,
+            slice(y_start, min(y_end, Ey_s.shape[0], ny - 1)),
+            slice(x_start, min(x_end, Ey_s.shape[1], nx)),
+        ),
+        "Ez": (
+            ez_z_idx,
+            slice(y_start, min(y_end, Ez_s.shape[0], ny)),
+            slice(x_start, min(x_end, Ez_s.shape[1], nx)),
+        ),
+        "Hx": (
+            h_z_idx,
+            slice(y_start, min(y_end, Hx_s.shape[0], ny - 1)),
+            slice(x_start, min(x_end, Hx_s.shape[1], nx)),
+        ),
+        "Hy": (
+            h_z_idx,
+            slice(y_start, min(y_end, Hy_s.shape[0], ny)),
+            slice(x_start, min(x_end, Hy_s.shape[1], nx - 1)),
+        ),
+        "Hz": (
+            hz_z_idx,
+            slice(y_start, min(y_end, Hz_s.shape[0], ny - 1)),
+            slice(x_start, min(x_end, Hz_s.shape[1], nx - 1)),
+        ),
+    }
+
+    # --- impedance correction ---
+    Ex_s, Ey_s, Ez_s = _impedance_correct_e_fields(
+        [Ex_s, Ey_s, Ez_s],
+        [Hx_s, Hy_s],
+        Z_phys,
+        use_jax=True,
+    )
+
+    # --- crop & window ---
+    staggered = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s, "Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
+    profiles = _crop_and_window_all(
+        staggered,
+        y_start,
+        y_end,
+        x_start,
+        x_end,
+        dir_sign,
+        use_jax=True,
+    )
+
+    extra = {
+        "_x_start": x_start,
+        "_x_end": x_end,
+        "_y_start": y_start,
+        "_y_end": y_end,
+        "_h_component": "Hx",
+        "_e_component": "Ex",
+    }
+    return profiles, indices, extra
+
+
 def _crop_and_window_all(staggered, z_start, z_end, t_start, t_end, dir_sign, use_jax):
     """Crop all six staggered profiles and multiply by a 2D Tukey window."""
     ref = next(iter(staggered.values()))
@@ -463,8 +641,12 @@ _HUYGENS_SIGNS = {
         "h": [("Hy", "Ez", -1), ("Hz", "Ey", +1)],
     },
     "y": {
-        "e": [("Ex", "Hz", +1), ("Ez", "Hx", -1)],
+        "e": [("Ex", "Hz", -1), ("Ez", "Hx", +1)],
         "h": [("Hx", "Ez", +1), ("Hz", "Ex", -1)],
+    },
+    "z": {
+        "e": [("Ex", "Hy", -1), ("Ey", "Hx", +1)],
+        "h": [("Hx", "Ey", +1), ("Hy", "Ex", -1)],
     },
 }
 
@@ -585,7 +767,7 @@ def _match_shape(profile, target_shape):
 
 
 class ModeSource:
-    """Huygens mode source on Yee grid supporting ±x/±y propagation.
+    """Huygens mode source on Yee grid supporting ±x/±y in 2D and ±x/±y/±z in 3D.
 
     In 3D, injects all 6 field components (Ex, Ey, Ez, Hx, Hy, Hz) for accurate
     mode injection, accounting for proper Yee grid staggering.
@@ -605,7 +787,9 @@ class ModeSource:
         if self.pol not in {"te", "tm"}:
             raise ValueError(f"pol must be 'te' or 'tm', got {pol!r}")
         self.signal = signal
-        self.direction = direction
+        self.direction, self._direction_axis, self._direction_sign = _parse_direction(
+            direction
+        )
 
         # Storage for all 6 field component profiles (for 3D injection)
         self._Ex_profile = None
@@ -656,10 +840,15 @@ class ModeSource:
         else:
             ny, nx = permittivity.shape
             nz = 1
+            dz = resolution
             self._grid_shape = (ny, nx)
             self.height = None
 
-        axis = "x" if self.direction in ("+x", "-x") else "y"
+        axis = self._direction_axis
+        if (not is_3d) and axis == "z":
+            raise ValueError(
+                "direction '+z'/'-z' requires a 3D permittivity grid; received 2D data"
+            )
         self._axis = axis
         self._dt_physical = 0.0
 
@@ -678,7 +867,7 @@ class ModeSource:
                 eps_profile = permittivity[:, center_idx]
                 self._eps_profile_2d = None
 
-        else:  # axis == "y"
+        elif axis == "y":
             center_idx = int(np.clip(np.round(self.center[1] / dy - 0.5), 0, ny - 1))
             if self.direction == "+y":
                 offset_idx = max(0, center_idx - 1)
@@ -692,15 +881,33 @@ class ModeSource:
                 eps_profile = permittivity[center_idx, :]
                 self._eps_profile_2d = None
 
+        else:  # axis == "z" (3D only)
+            center_idx = int(np.clip(np.round(self.center[2] / dz - 0.5), 0, nz - 1))
+            if self.direction == "+z":
+                offset_idx = max(0, center_idx - 1)
+            else:
+                offset_idx = min(nz - 2, center_idx)
+
+            eps_profile = permittivity[center_idx, :, :]
+            self._eps_profile_2d = eps_profile
+
         # 2. Solve for mode fields
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         dL = dz if is_3d else (dy if axis == "x" else dx)
+        solver_direction = self.direction
+        if is_3d and axis in {"x", "y"}:
+            # 3D x/y cross-sections are solved in a rotated basis; flip +/- here so
+            # the resulting mode phase/gauge matches the 2D-corrected launch direction.
+            solver_direction = (
+                ("-" if self.direction.startswith("+") else "+") + axis
+            )
+
         neff_val, e_fields, h_fields, _ = solve_modes(
             eps=eps_profile,
             omega=omega,
             dL=dL,
             m=1,
-            direction=self.direction,
+            direction=solver_direction,
             filter_pol=self.pol,
             return_fields=True,
         )
@@ -716,10 +923,24 @@ class ModeSource:
         Hy_raw = jnp.asarray(jnp.squeeze(H_mode[1]))
         Hz_raw = jnp.asarray(jnp.squeeze(H_mode[2]))
 
-        # 4. Phase align all components to dominant field (JAX-compatible)
-        if self.pol == "tm":
+        if is_3d:
+            Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw = _remap_3d_solver_components(
+                Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw, axis
+            )
+
+        # 4. Phase-align all components with the same H-based gauge convention as 2D.
+        if is_3d:
+            ref_field = _select_3d_phase_ref(
+                axis, self.pol, Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw
+            )
+        elif self.pol == "tm":
+            ex_max = jnp.max(jnp.abs(Ex_raw))
+            ey_max = jnp.max(jnp.abs(Ey_raw))
+            ez_max = jnp.max(jnp.abs(Ez_raw))
             ref_field = jnp.where(
-                jnp.max(jnp.abs(Ez_raw)) > jnp.max(jnp.abs(Ey_raw)), Ez_raw, Ey_raw
+                ex_max > ey_max,
+                jnp.where(ex_max > ez_max, Ex_raw, Ez_raw),
+                jnp.where(ey_max > ez_max, Ey_raw, Ez_raw),
             )
         else:
             ref_field = Ey_raw if axis == "x" else Ex_raw
@@ -757,7 +978,7 @@ class ModeSource:
                 E_mode, H_mode, center_idx, offset_idx, axis, ny, nx, resolution
             )
 
-        self._compute_dt_physical(axis, is_3d, dx, dy)
+        self._compute_dt_physical(axis, is_3d, dx, dy, dz)
         self._initialized = True
 
     def _setup_3d_injection(
@@ -1041,10 +1262,12 @@ class ModeSource:
             return tukey(width_cells, alpha=alpha)
         return np.ones(max(1, width_cells))
 
-    def _compute_dt_physical(self, axis, is_3d, dx, dy):
+    def _compute_dt_physical(self, axis, is_3d, dx, dy, dz=None):
         """Compute physical time shift between E and H injection planes."""
         if self._neff is None:
             return
+        if dz is None:
+            dz = dx
 
         coord_e = 0.0
         coord_h = 0.0
@@ -1055,11 +1278,16 @@ class ModeSource:
                     coord_e = (self._Ez_indices[2] + 0.5) * dx
                 if self._Hy_indices is not None:
                     coord_h = (self._Hy_indices[2] + 1.0) * dx
-            else:
+            elif axis == "y":
                 if self._Ez_indices is not None:
                     coord_e = (self._Ez_indices[1] + 0.5) * dy
                 if self._Hx_indices is not None:
                     coord_h = (self._Hx_indices[1] + 1.0) * dy
+            else:  # axis == "z"
+                if self._Ex_indices is not None:
+                    coord_e = (self._Ex_indices[0] + 0.5) * dz
+                if self._Hx_indices is not None:
+                    coord_h = (self._Hx_indices[0] + 1.0) * dz
         else:
             if axis == "x":
                 if self.pol == "tm":
