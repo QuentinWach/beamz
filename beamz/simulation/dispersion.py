@@ -135,3 +135,88 @@ def advance_e_field_dispersive(
     updated = _cn_update_region(field_region, curl_eff, conductivity, permittivity, dt)
     return field.at[region].set(updated), psi_new
 
+
+def advance_e_components_dispersive(
+    Ex: jnp.ndarray,
+    Ey: jnp.ndarray,
+    Ez: jnp.ndarray,
+    Hx: jnp.ndarray,
+    Hy: jnp.ndarray,
+    Hz: jnp.ndarray,
+    psi_x: jnp.ndarray | None,
+    psi_y: jnp.ndarray | None,
+    psi_z: jnp.ndarray | None,
+    dt: float,
+    resolution: float,
+    eps_x: jnp.ndarray,
+    sig_x: jnp.ndarray,
+    region_x: tuple[slice, ...],
+    pole_a_x: jnp.ndarray | None,
+    pole_c_x: jnp.ndarray | None,
+    eps_y: jnp.ndarray,
+    sig_y: jnp.ndarray,
+    region_y: tuple[slice, ...],
+    pole_a_y: jnp.ndarray | None,
+    pole_c_y: jnp.ndarray | None,
+    eps_z: jnp.ndarray,
+    sig_z: jnp.ndarray,
+    region_z: tuple[slice, ...],
+    pole_a_z: jnp.ndarray | None,
+    pole_c_z: jnp.ndarray | None,
+    *,
+    is_3d: bool,
+    plane_2d: str,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray | None, jnp.ndarray | None, jnp.ndarray | None]:
+    """Advance all E-components for one half-step using CN + ADE correction."""
+    if is_3d:
+        curlH_x, curlH_y, curlH_z = ops.curl_h_to_e_3d(
+            Hx,
+            Hy,
+            Hz,
+            resolution,
+            ex_shape=Ex.shape,
+            ey_shape=Ey.shape,
+            ez_shape=Ez.shape,
+        )
+    else:
+        curlH_x, curlH_y, curlH_z = ops.curl_h_to_e_2d(
+            (Hx, Hy, Hz),
+            resolution,
+            (Ex.shape, Ey.shape, Ez.shape),
+            plane=plane_2d,
+        )
+
+    Ex_new, psi_x_new = advance_e_field_dispersive(
+        Ex,
+        curlH_x,
+        sig_x,
+        eps_x,
+        dt,
+        region_x,
+        psi_x,
+        pole_a_x,
+        pole_c_x,
+    )
+    Ey_new, psi_y_new = advance_e_field_dispersive(
+        Ey,
+        curlH_y,
+        sig_y,
+        eps_y,
+        dt,
+        region_y,
+        psi_y,
+        pole_a_y,
+        pole_c_y,
+    )
+    Ez_new, psi_z_new = advance_e_field_dispersive(
+        Ez,
+        curlH_z,
+        sig_z,
+        eps_z,
+        dt,
+        region_z,
+        psi_z,
+        pole_a_z,
+        pole_c_z,
+    )
+    return Ex_new, Ey_new, Ez_new, psi_x_new, psi_y_new, psi_z_new

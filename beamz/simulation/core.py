@@ -6,6 +6,7 @@ from beamz.const import µm
 from beamz.design.core import Design
 from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML, Boundary
+from beamz.simulation.dispersion import advance_e_components_dispersive
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
 
@@ -407,6 +408,80 @@ class Simulation:
 
         return step_e
 
+    def _create_jit_step_e_dispersive(self):
+        """Create a JIT-compiled dispersive E-update function with ADE state."""
+        if not self.fields.has_dispersion:
+            raise ValueError(
+                "_create_jit_step_e_dispersive requires dispersive material grids."
+            )
+
+        resolution = self.resolution
+        dt = self.dt
+        plane_2d = self.plane_2d
+        is_3d = self.is_3d
+
+        eps_x, sig_x, region_x = (
+            self.fields.eps_x,
+            self.fields.sig_x,
+            self.fields.region_x,
+        )
+        eps_y, sig_y, region_y = (
+            self.fields.eps_y,
+            self.fields.sig_y,
+            self.fields.region_y,
+        )
+        eps_z, sig_z, region_z = (
+            self.fields.eps_z,
+            self.fields.sig_z,
+            self.fields.region_z,
+        )
+
+        pole_a_x, pole_a_y, pole_a_z = (
+            self.fields.pole_a_x,
+            self.fields.pole_a_y,
+            self.fields.pole_a_z,
+        )
+        pole_c_x, pole_c_y, pole_c_z = (
+            self.fields.pole_c_x,
+            self.fields.pole_c_y,
+            self.fields.pole_c_z,
+        )
+
+        @jax.jit
+        def step_e_dispersive(Ex, Ey, Ez, Hx, Hy, Hz, psi_x, psi_y, psi_z):
+            return advance_e_components_dispersive(
+                Ex,
+                Ey,
+                Ez,
+                Hx,
+                Hy,
+                Hz,
+                psi_x,
+                psi_y,
+                psi_z,
+                dt,
+                resolution,
+                eps_x,
+                sig_x,
+                region_x,
+                pole_a_x,
+                pole_c_x,
+                eps_y,
+                sig_y,
+                region_y,
+                pole_a_y,
+                pole_c_y,
+                eps_z,
+                sig_z,
+                region_z,
+                pole_a_z,
+                pole_c_z,
+                is_3d=is_3d,
+                plane_2d=plane_2d,
+            )
+
+        return step_e_dispersive
+
     def run_fast(
         self, num_steps=None, record_interval=None, record_fields=None, progress=True
     ):
@@ -438,10 +513,34 @@ class Simulation:
 
         if self.fields.has_dispersion:
             if progress:
-                print(
-                    "● Dispersive ADE detected: using mixed loop (JIT H-step + ADE E-step)."
-                )
+                print("● JIT compiling dispersive ADE kernels...", end=" ", flush=True)
             jit_step_h = self._create_jit_step_h()
+            jit_step_e_dispersive = self._create_jit_step_e_dispersive()
+
+            psi_x, psi_y, psi_z = self.fields.get_ade_state_tuple()
+            Hx, Hy, Hz = jit_step_h(
+                self.fields.Ex,
+                self.fields.Ey,
+                self.fields.Ez,
+                self.fields.Hx,
+                self.fields.Hy,
+                self.fields.Hz,
+            )
+            Ex, Ey, Ez, psi_x, psi_y, psi_z = jit_step_e_dispersive(
+                self.fields.Ex,
+                self.fields.Ey,
+                self.fields.Ez,
+                Hx,
+                Hy,
+                Hz,
+                psi_x,
+                psi_y,
+                psi_z,
+            )
+            Ex.block_until_ready()
+            if progress:
+                print("done!")
+
             field_history = {name: [] for name in record_fields}
             try:
                 for step_idx in range(num_steps):
@@ -459,7 +558,19 @@ class Simulation:
                         self.fields.Hz,
                     )
                     self._inject_h_sources()
-                    self.fields.update_e(self.dt)
+                    Ex, Ey, Ez, psi_x, psi_y, psi_z = jit_step_e_dispersive(
+                        self.fields.Ex,
+                        self.fields.Ey,
+                        self.fields.Ez,
+                        self.fields.Hx,
+                        self.fields.Hy,
+                        self.fields.Hz,
+                        psi_x,
+                        psi_y,
+                        psi_z,
+                    )
+                    self.fields.Ex, self.fields.Ey, self.fields.Ez = Ex, Ey, Ez
+                    self.fields.set_ade_state_tuple(psi_x, psi_y, psi_z)
                     self._inject_e_sources()
                     self._record_monitors()
 
@@ -640,12 +751,16 @@ class Simulation:
 
         # Check if sources are present
         has_sources = any(
-            hasattr(d, "inject") or hasattr(d, "get_source_terms") for d in self.devices
+            hasattr(d, "inject")
+            or hasattr(d, "inject_h")
+            or hasattr(d, "inject_e")
+            or hasattr(d, "get_source_terms")
+            for d in self.devices
         )
-        if self.fields.has_dispersion:
+        if self.fields.has_dispersion and has_sources:
             if progress:
                 print(
-                    "● Warning: Dispersive ADE detected. Falling back to run_fast() for this run."
+                    "● Warning: Sources detected. Dispersive run_jit_scan falls back to run_fast()."
                 )
             return self.run_fast(num_steps=num_steps, progress=progress)
         if has_sources:
@@ -653,6 +768,99 @@ class Simulation:
                 "● Warning: Sources detected. Using run_fast() instead for source injection support."
             )
             return self.run_fast(num_steps=num_steps, progress=progress)
+
+        if self.fields.has_dispersion:
+            jit_step_h = self._create_jit_step_h()
+            jit_step_e_dispersive = self._create_jit_step_e_dispersive()
+
+            @jax.jit
+            def run_scan_dispersive(init_state):
+                def scan_body(carry, _):
+                    Ex, Ey, Ez, Hx, Hy, Hz, psi_x, psi_y, psi_z = carry
+                    Hx_new, Hy_new, Hz_new = jit_step_h(Ex, Ey, Ez, Hx, Hy, Hz)
+                    (
+                        Ex_new,
+                        Ey_new,
+                        Ez_new,
+                        psi_x_new,
+                        psi_y_new,
+                        psi_z_new,
+                    ) = jit_step_e_dispersive(
+                        Ex,
+                        Ey,
+                        Ez,
+                        Hx_new,
+                        Hy_new,
+                        Hz_new,
+                        psi_x,
+                        psi_y,
+                        psi_z,
+                    )
+                    return (
+                        Ex_new,
+                        Ey_new,
+                        Ez_new,
+                        Hx_new,
+                        Hy_new,
+                        Hz_new,
+                        psi_x_new,
+                        psi_y_new,
+                        psi_z_new,
+                    ), None
+
+                final_state, _ = jax.lax.scan(
+                    scan_body, init_state, None, length=num_steps
+                )
+                return final_state
+
+            if progress:
+                print(
+                    f"● JIT compiling {num_steps}-step dispersive ADE scan...",
+                    end=" ",
+                    flush=True,
+                )
+
+            psi_x, psi_y, psi_z = self.fields.get_ade_state_tuple()
+            init_state = (
+                self.fields.Ex,
+                self.fields.Ey,
+                self.fields.Ez,
+                self.fields.Hx,
+                self.fields.Hy,
+                self.fields.Hz,
+                psi_x,
+                psi_y,
+                psi_z,
+            )
+            final_state = run_scan_dispersive(init_state)
+            (
+                self.fields.Ex,
+                self.fields.Ey,
+                self.fields.Ez,
+                self.fields.Hx,
+                self.fields.Hy,
+                self.fields.Hz,
+                psi_x,
+                psi_y,
+                psi_z,
+            ) = final_state
+            self.fields.set_ade_state_tuple(psi_x, psi_y, psi_z)
+
+            self.fields.Ez.block_until_ready()
+            if progress:
+                print("done!")
+
+            self.t += num_steps * self.dt
+            self.current_step += num_steps
+
+            return {
+                "Ex": np.array(self.fields.Ex),
+                "Ey": np.array(self.fields.Ey),
+                "Ez": np.array(self.fields.Ez),
+                "Hx": np.array(self.fields.Hx),
+                "Hy": np.array(self.fields.Hy),
+                "Hz": np.array(self.fields.Hz),
+            }
 
         # Create pure FDTD step function for scan
         jit_step = self._create_jit_step()

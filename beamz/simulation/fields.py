@@ -226,6 +226,14 @@ class Fields:
         """Return list of available field components."""
         return ["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]
 
+    def get_ade_state_tuple(self):
+        """Return ADE auxiliary state as a tuple for JIT runtime loops."""
+        return self.ade_state.psi_x, self.ade_state.psi_y, self.ade_state.psi_z
+
+    def set_ade_state_tuple(self, psi_x, psi_y, psi_z):
+        """Set ADE auxiliary state from a tuple-like triple."""
+        self.ade_state = ADEState(psi_x=psi_x, psi_y=psi_y, psi_z=psi_z)
+
     def update_h(self, dt, source_m=None):
         """Execute the H-field half of an FDTD time step."""
         is_3d = self.permittivity.ndim == 3
