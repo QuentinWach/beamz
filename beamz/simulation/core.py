@@ -623,6 +623,169 @@ class Simulation:
             "Hz": np.array(self.fields.Hz),
         }
 
+    def _get_monitor_trace(self, monitor, field_component="Ez", reduction="mean"):
+        """Reduce monitor field snapshots to a 1D time trace."""
+        if field_component not in monitor.fields:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has no field '{field_component}'. "
+                f"Available: {sorted(monitor.fields.keys())}"
+            )
+
+        raw = monitor.fields[field_component]
+        if raw is None or len(raw) == 0:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has no recorded '{field_component}' data."
+            )
+
+        values = np.asarray(raw)
+        if values.ndim == 1:
+            trace = values
+        else:
+            flattened = values.reshape(values.shape[0], -1)
+            reduction_key = str(reduction).lower()
+            if reduction_key == "mean":
+                trace = np.mean(flattened, axis=1)
+            elif reduction_key == "sum":
+                trace = np.sum(flattened, axis=1)
+            elif reduction_key == "max_abs":
+                trace = np.max(np.abs(flattened), axis=1)
+            else:
+                raise ValueError(
+                    f"Unsupported reduction '{reduction}'. "
+                    "Use one of {'mean', 'sum', 'max_abs'}."
+                )
+
+        time_values = np.asarray(monitor.fields.get("t", []), dtype=float)
+        if time_values.size < trace.shape[0]:
+            if hasattr(self, "time") and len(self.time) >= trace.shape[0]:
+                time_values = np.asarray(self.time[: trace.shape[0]], dtype=float)
+            else:
+                time_values = np.arange(trace.shape[0], dtype=float) * float(self.dt)
+
+        return np.asarray(trace), np.asarray(time_values)
+
+    def get_S_matrix(
+        self,
+        input_ports,
+        output_ports=None,
+        source_port=None,
+        frequencies=None,
+        field_component="Ez",
+        reduction="mean",
+        as_sax=True,
+    ):
+        """Extract one S-matrix column from monitor traces using FFT ratios.
+
+        Args:
+            input_ports: List of available source port names.
+            output_ports: Port names for S-out entries (defaults to input_ports).
+            source_port: Excited source port for this simulation run.
+            frequencies: Optional frequency array (Hz) to sample from FFT bins.
+            field_component: Monitor field component to use (for example ``Ez``).
+            reduction: Spatial reduction over monitor samples.
+            as_sax: Return ``sax.sdict(...)`` if True, otherwise plain dict.
+        """
+        if not input_ports:
+            raise ValueError("input_ports must contain at least one port name.")
+        if output_ports is None:
+            output_ports = list(input_ports)
+        if source_port is None:
+            if len(input_ports) != 1:
+                raise ValueError(
+                    "source_port is required when input_ports has more than one entry."
+                )
+            source_port = input_ports[0]
+        if source_port not in input_ports:
+            raise ValueError(
+                f"source_port '{source_port}' must be part of input_ports {input_ports}."
+            )
+
+        monitor_by_name = {
+            device.name: device
+            for device in self.devices
+            if isinstance(device, Monitor) and getattr(device, "name", None)
+        }
+        required_ports = list(dict.fromkeys([*input_ports, *output_ports]))
+        missing_ports = [name for name in required_ports if name not in monitor_by_name]
+        if missing_ports:
+            raise ValueError(
+                f"Missing named monitors for ports: {missing_ports}. "
+                "Each requested port must have a Monitor(name=port_name, ...)."
+            )
+
+        traces = {}
+        times = {}
+        min_len = None
+        for port_name in required_ports:
+            trace, time_values = self._get_monitor_trace(
+                monitor_by_name[port_name],
+                field_component=field_component,
+                reduction=reduction,
+            )
+            n = min(len(trace), len(time_values))
+            if n < 2:
+                raise ValueError(
+                    f"Monitor '{port_name}' does not contain enough samples for FFT."
+                )
+            traces[port_name] = np.asarray(trace[:n])
+            times[port_name] = np.asarray(time_values[:n])
+            min_len = n if min_len is None else min(min_len, n)
+
+        for port_name in required_ports:
+            traces[port_name] = traces[port_name][:min_len]
+            times[port_name] = times[port_name][:min_len]
+
+        source_time = times[source_port]
+        dt = (
+            float(np.mean(np.diff(source_time)))
+            if len(source_time) > 1
+            else float(self.dt)
+        )
+        if dt <= 0:
+            raise ValueError(f"Invalid time-step inferred from monitor data: dt={dt}")
+
+        fft_freqs = np.fft.rfftfreq(min_len, d=dt)
+        spectra = {
+            port_name: np.fft.rfft(np.asarray(trace, dtype=float))
+            for port_name, trace in traces.items()
+        }
+
+        if frequencies is None:
+            sample_indices = np.arange(len(fft_freqs), dtype=int)
+            sampled_frequencies = fft_freqs
+        else:
+            requested = np.atleast_1d(np.asarray(frequencies, dtype=float))
+            sample_indices = np.array(
+                [int(np.argmin(np.abs(fft_freqs - freq))) for freq in requested],
+                dtype=int,
+            )
+            sampled_frequencies = fft_freqs[sample_indices]
+
+        source_spectrum = spectra[source_port][sample_indices]
+        eps = 1e-18
+        s_matrix = {}
+        for out_port in output_ports:
+            out_spectrum = spectra[out_port][sample_indices]
+            ratio = np.zeros_like(out_spectrum, dtype=np.complex128)
+            valid = np.abs(source_spectrum) > eps
+            ratio[valid] = out_spectrum[valid] / source_spectrum[valid]
+            s_matrix[(out_port, source_port)] = ratio
+
+        self.s_matrix_frequencies = sampled_frequencies
+        if as_sax:
+            try:
+                import sax
+            except ImportError as exc:
+                raise ImportError(
+                    "sax is required for as_sax=True. Install it with `pip install sax`."
+                ) from exc
+            return sax.sdict(s_matrix)
+        return s_matrix
+
+    def get_s_matrix(self, *args, **kwargs):
+        """Snake_case alias of get_S_matrix."""
+        return self.get_S_matrix(*args, **kwargs)
+
     def run(self, **kwargs):
         """Run complete FDTD simulation with optional live field visualization.
 

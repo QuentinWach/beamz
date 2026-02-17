@@ -1,6 +1,126 @@
 import gdspy
+import numpy as np
 
 from beamz.visual.helpers import display_status
+
+
+def _orientation_to_inward_direction(orientation_deg: float) -> str:
+    """Map gdsfactory port orientation to inward BeamZ launch direction."""
+    orientation = int(round(orientation_deg / 90.0) * 90) % 360
+    direction_map = {
+        180: "+x",
+        0: "-x",
+        90: "-y",
+        270: "+y",
+    }
+    if orientation not in direction_map:
+        raise ValueError(
+            f"Unsupported port orientation {orientation_deg}. Expected multiples of 90°."
+        )
+    return direction_map[orientation]
+
+
+class _GDSFactoryNamespace:
+    """Namespace for gdsfactory-to-BeamZ import helpers."""
+
+    def load(
+        self,
+        cell: str = "mmi1x2",
+        layer: tuple[int, int] = (1, 0),
+        n_core: float = 2.0,
+        n_clad: float = 1.44,
+        padding: float = 3.0,
+        component_kwargs: dict | None = None,
+    ):
+        """Load a gdsfactory cell into a BeamZ design.
+
+        Args:
+            cell: Name of a gdsfactory component factory (for example ``mmi1x2``).
+            layer: Core geometry layer (layer, datatype) in gdsfactory.
+            n_core: Core refractive index.
+            n_clad: Cladding refractive index.
+            padding: Padding around imported geometry in microns.
+            component_kwargs: Optional kwargs forwarded to component factory.
+
+        Returns:
+            Tuple ``(design, ports)`` where ``ports`` maps port name to metadata.
+        """
+        from beamz.design.core import Design
+        from beamz.design.materials import Material
+        from beamz.design.structures import Polygon
+
+        try:
+            import gdsfactory as gf
+        except ImportError as exc:
+            raise ImportError(
+                "gdsfactory is required for design.io.gdsf.load(...). "
+                "Install it with `pip install gdsfactory`."
+            ) from exc
+
+        gf.gpdk.PDK.activate()
+        component_kwargs = component_kwargs or {}
+
+        if isinstance(cell, str):
+            factory = getattr(gf.components, cell, None)
+            if factory is None:
+                raise ValueError(
+                    f"Unknown gdsfactory component '{cell}'. "
+                    "Expected a factory in gdsfactory.components."
+                )
+            component = factory(**component_kwargs)
+        elif callable(cell):
+            component = cell(**component_kwargs)
+        else:
+            component = cell
+
+        polygons_by_layer = component.get_polygons_points(by="tuple")
+        if layer not in polygons_by_layer:
+            available = sorted(polygons_by_layer.keys())
+            raise ValueError(
+                f"Layer {layer} not found in component '{component.name}'. "
+                f"Available layers: {available}"
+            )
+
+        core_polygons = polygons_by_layer[layer]
+        if not core_polygons:
+            raise ValueError(f"Component '{component.name}' has no polygons on {layer}.")
+
+        all_points = np.vstack([np.asarray(poly)[:, :2] for poly in core_polygons])
+        xmin, ymin = np.min(all_points, axis=0)
+        xmax, ymax = np.max(all_points, axis=0)
+        pad_um = float(padding)
+        width = float((xmax - xmin + 2.0 * pad_um) * 1e-6)
+        height = float((ymax - ymin + 2.0 * pad_um) * 1e-6)
+
+        design = Design(width=width, height=height, depth=0, material=Material(n_clad**2))
+
+        for poly_points in core_polygons:
+            vertices = [
+                (
+                    float((point[0] - xmin + pad_um) * 1e-6),
+                    float((point[1] - ymin + pad_um) * 1e-6),
+                )
+                for point in poly_points
+            ]
+            design += Polygon(vertices=vertices, material=Material(n_core**2), depth=0)
+
+        ports = {}
+        for port in component.ports:
+            orientation = float(port.orientation) % 360.0
+            ports[port.name] = {
+                "center": (
+                    float((port.center[0] - xmin + pad_um) * 1e-6),
+                    float((port.center[1] - ymin + pad_um) * 1e-6),
+                ),
+                "width": float(port.width) * 1e-6,
+                "orientation": orientation,
+                "direction": _orientation_to_inward_direction(orientation),
+            }
+
+        return design, ports
+
+
+gdsf = _GDSFactoryNamespace()
 
 
 def import_gds(gds_file: str, default_depth=1e-6):

@@ -1,44 +1,121 @@
-from beamz import *
+import sys
+from pathlib import Path
+
 import numpy as np
-from beamz import dxdt
+import sax
 
-# Define 10 center wavelengeths we want to simulate
-WL = 1.55 * µm
-TIME = 60 * WL / LIGHT_SPEED
-DX, DT = dxdt(WL, safety_factor=0.999, points_per_wavelength=12)
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-# Create the design by importing a GDSFactory device
-design = design.io.gdsf.load("examples/data/gdsfactory_cell.gds")
-design.show()
+from beamz import *
 
-# Rasterize the design
-grid = design.rasterize(resolution=DX)
-grid.show(field="permittivity")
+WL0 = 1.55 * µm
+N_CORE, N_CLAD = 2.0, 1.44
+TIME = 18 * WL0 / LIGHT_SPEED
+DX, DT = dxdt(
+    WL0, n_max=N_CORE, safety_factor=0.95, points_per_wavelength=8, dims=2
+)
+WAVELENGTHS = np.linspace(1.50 * µm, 1.60 * µm, 41)
+FREQUENCIES = LIGHT_SPEED / WAVELENGTHS
+SOURCE_OFFSET = 0.35 * µm
+MONITOR_OFFSET = 0.80 * µm
+SPAN_FACTOR = 4.0
+MIN_SPAN = 2.0 * µm
 
-# Define 10 signal pulses with different center wavelengths and time-stepping
+
+def _inward_offset(port, distance):
+    """Move a point inward from a port along BeamZ direction."""
+    cx, cy = port["center"]
+    direction = port["direction"]
+    sign = 1.0 if direction.startswith("+") else -1.0
+    axis = direction[1]
+    if axis == "x":
+        return cx + sign * distance, cy
+    return cx, cy + sign * distance
+
+
+def _line_monitor_for_port(port, offset, span_factor=SPAN_FACTOR, min_span=MIN_SPAN):
+    """Create a monitor line orthogonal to the local propagation axis."""
+    cx, cy = _inward_offset(port, offset)
+    span = max(float(min_span), float(span_factor) * float(port["width"]))
+    axis = port["direction"][1]
+    if axis == "x":
+        start = (cx, cy - span / 2)
+        end = (cx, cy + span / 2)
+    else:
+        start = (cx - span / 2, cy)
+        end = (cx + span / 2, cy)
+    return start, end, span
+
+
+device_design, ports = design.io.gdsf.load(
+    "mmi1x2",
+    n_core=N_CORE,
+    n_clad=N_CLAD,
+    layer=(1, 0),
+    padding=3.0,
+)
+grid = device_design.rasterize(resolution=DX)
 time = np.arange(0, TIME, DT)
-signal = ramped_cosine(time, amplitude=1.0, frequency=LIGHT_SPEED / WL, 
-    ramp_duration=WL * 20 / LIGHT_SPEED, t_max=TIME / 2)
-
-# PLace the mode source at the input port & the monitors at the output ports
-source = ModeSource(grid=grid, center=(design.width/2, design.height/2),
-    width=design.width/2, wavelength=WL, pol="tm", signal=signal, direction="+x")
-mon_in = Monitor(grid=grid, start=(design.width/2, design.height/2))
-mon_up = Monitor(grid=grid, start=(design.width/2, design.height/2))
-mon_down = Monitor(grid=grid, start=(design.width/2, design.height/2))
-
-# Setup the simulation
-sim = Simulation(
-    design=design, # use rastered grid instead of rasterizing again
-    devices=[source, mon_in, mon_up, mon_down], 
-    boundaries=[PML(edges='all', thickness=1.2*WL)],
-    time=time,
-    resolution=DX
+signal = ramped_cosine(
+    time,
+    amplitude=1.0,
+    frequency=LIGHT_SPEED / WL0,
+    ramp_duration=WL0 * 4 / LIGHT_SPEED,
+    t_max=TIME / 2,
 )
 
-# Run the simulation
-sim.run(save_fields=['Ez', 'Hy', 'Hx'], record_interval=1, record_fields=True)
+port_names = sorted(ports.keys())
+s_full = {}
 
-# Calculate the S-matrix using FFT (freq. auto-calc. from time-stepping)
-S_matrix = sim.get_S_matrix(input_ports=[], output_ports=[])
-S_matrix.show()
+for source_port in port_names:
+    source_meta = ports[source_port]
+    src_center = _inward_offset(source_meta, SOURCE_OFFSET)
+    _monitor_start, _monitor_end, source_span = _line_monitor_for_port(
+        source_meta, SOURCE_OFFSET
+    )
+    source = ModeSource(
+        grid=grid,
+        center=src_center,
+        width=source_span,
+        wavelength=WL0,
+        pol="tm",
+        signal=signal,
+        direction=source_meta["direction"],
+    )
+
+    monitors = []
+    for port_name in port_names:
+        start, end, _ = _line_monitor_for_port(ports[port_name], MONITOR_OFFSET)
+        monitors.append(Monitor(start=start, end=end, name=port_name, record_fields=True))
+
+    sim = Simulation(
+        design=device_design,
+        devices=[source, *monitors],
+        boundaries=[PML(edges="all", thickness=1.0 * WL0)],
+        time=time,
+        resolution=DX,
+    )
+    sim.run()
+
+    s_column = sim.get_S_matrix(
+        input_ports=port_names,
+        output_ports=port_names,
+        source_port=source_port,
+        frequencies=FREQUENCIES,
+        field_component="Ez",
+        reduction="mean",
+        as_sax=False,
+    )
+    s_full.update(s_column)
+
+s_sax = sax.sdict(s_full)
+center_idx = int(np.argmin(np.abs(WAVELENGTHS - WL0)))
+print(f"Computed SAX S-matrix entries: {len(s_sax)} at {len(WAVELENGTHS)} wavelengths")
+for to_port, from_port in sorted(s_sax.keys()):
+    value = np.asarray(s_sax[(to_port, from_port)])[center_idx]
+    print(
+        f"S[{to_port},{from_port}] @ {WL0 / µm:.3f}um: "
+        f"|S|={np.abs(value):.3f}, phase={np.angle(value):.3f} rad"
+    )

@@ -128,6 +128,25 @@ def calc_optimal_fdtd_params(
     return resolution, dt
 
 
+def dxdt(
+    wavelength,
+    n_max=1.0,
+    dims=2,
+    safety_factor=0.999,
+    points_per_wavelength=10,
+    **kwargs,
+):
+    """Convenience alias returning (dx, dt) for FDTD setup."""
+    return calc_optimal_fdtd_params(
+        wavelength=wavelength,
+        n_max=n_max,
+        dims=dims,
+        safety_factor=safety_factor,
+        points_per_wavelength=points_per_wavelength,
+        **kwargs,
+    )
+
+
 # Initialize rich console
 console = Console()
 

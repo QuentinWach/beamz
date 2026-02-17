@@ -2,6 +2,8 @@
 BeamZ - A Python package for electromagnetic simulations.
 """
 
+import beamz.design as design
+
 # Import constants from the const module
 from beamz.const import (
     EPS_0,
@@ -63,6 +65,7 @@ from beamz.simulation.thermal import (
 from beamz.visual.helpers import (
     calc_optimal_fdtd_params,
     create_rich_progress,
+    dxdt,
     display_status,
     get_si_scale_and_label,
 )
@@ -84,6 +87,7 @@ _exports = {
     "Material": Material,
     "CustomMaterial": CustomMaterial,
     # Structures
+    "design": design,
     "Design": Design,
     "Rectangle": Rectangle,
     "Circle": Circle,
@@ -133,6 +137,7 @@ _exports = {
     "create_rich_progress": create_rich_progress,
     "get_si_scale_and_label": get_si_scale_and_label,
     "calc_optimal_fdtd_params": calc_optimal_fdtd_params,
+    "dxdt": dxdt,
 }
 
 # Update module's dictionary with our exports
