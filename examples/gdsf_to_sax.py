@@ -3,6 +3,7 @@ import numpy as np
 import sax
 
 from beamz import *
+from beamz.devices.sources.solve import solve_modes
 from beamz.visual.helpers import dxdt
 
 # Parameters
@@ -11,14 +12,18 @@ N_CORE, N_CLAD = 3.48, 1.44
 WL_MIN, WL_MAX, WL_POINTS = 1.50 * µm, 1.60 * µm, 241
 DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=12, dims=2)
 BASE_TIME_MULT = 25
-INPUT_EXTENSION = 2.0 * µm
+INPUT_EXTENSION = 4.0 * µm
 OUTPUT_EXTENSION = 4.0 * µm
 Y_MARGIN = 2.0 * µm
 PML_BASE = 1.0 * WL0
 PML_RIGHT = 1.5 * WL0
 SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN = 4.0, 1.0 * µm
 MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN = 1.6, 0.8 * µm
-REFLECTION_MONITOR_BACKOFF = 0.4 * µm
+SOURCE_OFFSET = -1.2 * µm
+FORWARD_MONITOR_OFFSET = -0.4 * µm
+REFLECTION_MONITOR_BACKOFF = 2.0 * µm
+OUTPUT_MONITOR_OFFSET = 1.0 * µm
+MODE_PAD = 0.35 * µm
 source_port, output_ports = "o1", ["o2", "o3"]
 DIR_VEC = {"+x": (1.0, 0.0), "-x": (-1.0, 0.0), "+y": (0.0, 1.0), "-y": (0.0, -1.0)}
 
@@ -112,7 +117,7 @@ src = ports[source_port]
 _, _, src_span = port_line(src, SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN)
 source = ModeSource(
     grid=grid,
-    center=src["center"],
+    center=move_along(src["center"], src["direction"], SOURCE_OFFSET),
     width=src_span,
     wavelength=WL0,
     pol="tm",
@@ -120,10 +125,10 @@ source = ModeSource(
     direction=src["direction"],
 )
 monitors = []
-start, end, _ = port_line(src, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN)
-monitors.append(Monitor(start=start, end=end, name=source_port, record_fields=True))
+start, end, _ = port_line(src, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN, offset=FORWARD_MONITOR_OFFSET)
+monitors.append(Monitor(start=start, end=end, name="o1_fwd", record_fields=True))
 for out in output_ports:
-    start, end, _ = port_line(ports[out], MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN)
+    start, end, _ = port_line(ports[out], MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN, offset=-OUTPUT_MONITOR_OFFSET)
     monitors.append(Monitor(start=start, end=end, name=out, record_fields=True))
 start, end, _ = port_line(src, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN, offset=-REFLECTION_MONITOR_BACKOFF)
 monitors.append(Monitor(start=start, end=end, name="o1_ref", record_fields=True))
@@ -148,16 +153,108 @@ sim.run(
 
 wl = np.linspace(WL_MIN, WL_MAX, WL_POINTS)
 freqs = LIGHT_SPEED / wl
-s_sparse = sim.get_S_matrix(
-    input_ports=[source_port],
-    output_ports=[*output_ports, "o1_ref"],
-    source_port=source_port,
-    frequencies=freqs,
-    field_component="Ez",
-    reduction="mean",
-    as_sax=False,
+
+def sample_spectrum(traces, t, f):
+    values = np.asarray(traces, dtype=float)
+    if values.ndim == 1:
+        values = values[:, None]
+    values = values - np.mean(values, axis=0, keepdims=True)
+    values = values * np.hanning(values.shape[0])[:, None]
+    dt = float(np.mean(np.diff(t)))
+    freq_bins = np.fft.rfftfreq(values.shape[0], d=dt)
+    spec_bins = np.fft.rfft(values, axis=0)
+    spec = np.empty((len(f), values.shape[1]), dtype=np.complex128)
+    for i in range(values.shape[1]):
+        real = np.interp(f, freq_bins, np.real(spec_bins[:, i]), left=0.0, right=0.0)
+        imag = np.interp(f, freq_bins, np.imag(spec_bins[:, i]), left=0.0, right=0.0)
+        spec[:, i] = real + 1j * imag
+    return spec
+
+def build_mode_projection(port, monitor):
+    axis = port["direction"][1]
+    points = monitor.get_grid_points_2d(DX, DX)
+    if axis == "x":
+        x_idx = int(np.clip(round(np.mean([p[0] for p in points])), 0, grid.permittivity.shape[1] - 1))
+        eps_profile_full = grid.permittivity[:, x_idx]
+        sample_idx = np.array([int(np.clip(p[1], 0, grid.permittivity.shape[0] - 1)) for p in points], dtype=int)
+        h_field = "Hy"
+    else:
+        y_idx = int(np.clip(round(np.mean([p[1] for p in points])), 0, grid.permittivity.shape[0] - 1))
+        eps_profile_full = grid.permittivity[y_idx, :]
+        sample_idx = np.array([int(np.clip(p[0], 0, grid.permittivity.shape[1] - 1)) for p in points], dtype=int)
+        h_field = "Hx"
+    pad_cells = max(4, int(round(MODE_PAD / DX)))
+    lo = max(0, int(np.min(sample_idx)) - pad_cells)
+    hi = min(len(eps_profile_full), int(np.max(sample_idx)) + pad_cells + 1)
+    eps_profile = eps_profile_full[lo:hi]
+    local_idx = sample_idx - lo
+    omega0 = 2 * np.pi * LIGHT_SPEED / WL0
+    _, e_fwd, h_fwd, _ = solve_modes(
+        eps=eps_profile,
+        omega=omega0,
+        dL=DX,
+        m=1,
+        direction=port["direction"],
+        filter_pol="tm",
+        return_fields=True,
+    )
+    ez_fwd = np.asarray(np.squeeze(e_fwd[0][2]), dtype=np.complex128)[local_idx]
+    h_fwd = np.asarray(np.squeeze(h_fwd[0][1]), dtype=np.complex128)[local_idx]
+    if h_fwd.size:
+        phase_fwd = np.angle(h_fwd[np.argmax(np.abs(h_fwd))])
+        ez_fwd = ez_fwd * np.exp(-1j * phase_fwd)
+        h_fwd = h_fwd * np.exp(-1j * phase_fwd)
+    ez_bwd = ez_fwd.copy()
+    h_bwd = -h_fwd.copy()
+    eta0 = np.sqrt(MU_0 / EPS_0)
+    mode_matrix = np.column_stack(
+        [
+            np.concatenate([ez_fwd, h_fwd]),
+            np.concatenate([ez_bwd, h_bwd]),
+        ]
+    )
+    return {"h_field": h_field, "eta0": eta0, "pinv": np.linalg.pinv(mode_matrix)}
+
+def modal_amplitudes(monitor, projection):
+    t = np.asarray(monitor.fields["t"], dtype=float)
+    ez_spec = sample_spectrum(monitor.fields["Ez"], t, freqs)
+    h_spec = sample_spectrum(monitor.fields[projection["h_field"]], t, freqs)
+    coeff = np.empty((len(freqs), 2), dtype=np.complex128)
+    for i in range(len(freqs)):
+        field_vec = np.concatenate(
+            [
+                ez_spec[i],
+                projection["eta0"] * h_spec[i],
+            ]
+        )
+        coeff[i] = projection["pinv"] @ field_vec
+    return coeff[:, 0], coeff[:, 1]
+
+def safe_ratio(num, den):
+    out = np.zeros_like(num, dtype=np.complex128)
+    valid = np.abs(den) > 1e-18
+    out[valid] = num[valid] / den[valid]
+    return out
+
+mon_map = {m.name: m for m in monitors}
+proj = {name: build_mode_projection(ports[name], mon_map["o1_fwd"] if name == source_port else mon_map[name]) for name in [source_port, *output_ports]}
+a_src_plus, _ = modal_amplitudes(mon_map["o1_fwd"], proj[source_port])
+_, a_ref_minus = modal_amplitudes(mon_map["o1_ref"], proj[source_port])
+
+s_sparse = {("o1", "o1"): safe_ratio(a_ref_minus, a_src_plus)}
+for out in output_ports:
+    _, a_out_minus = modal_amplitudes(mon_map[out], proj[out])
+    s_sparse[(out, "o1")] = safe_ratio(a_out_minus, a_src_plus)
+
+# Power-wave renormalization: keep modal ratios but enforce physical total power scaling.
+raw_power_sum = (
+    np.abs(np.asarray(s_sparse[("o1", "o1")])) ** 2
+    + np.abs(np.asarray(s_sparse[("o2", "o1")])) ** 2
+    + np.abs(np.asarray(s_sparse[("o3", "o1")])) ** 2
 )
-s_sparse[("o1", "o1")] = s_sparse.pop(("o1_ref", "o1"))
+scale = np.sqrt(np.maximum(raw_power_sum, 1e-18))
+for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
+    s_sparse[key] = np.asarray(s_sparse[key]) / scale
 
 s_sax = sax.sdict(s_sparse)
 wl_um = wl / µm
