@@ -1,7 +1,10 @@
+"""
+WARNING: This example likely give the correct ratios, but the absolute loss
+is not accounted for. This requires further development of the core tooling.
+"""
 import matplotlib.pyplot as plt
 import numpy as np
 import sax
-
 from beamz import *
 from beamz.devices.sources.solve import solve_modes
 from beamz.visual.helpers import dxdt
@@ -288,14 +291,17 @@ for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
     s0 = s_vals[np.argmin(np.abs(wl_um - WL0 / µm))]
     print(f"S[{key[0]},{key[1]}] @ {WL0 / µm:.3f}um: |S|={np.abs(s0):.3f}, phase={np.angle(s0):.3f} rad")
 
-plt.figure(figsize=(7, 4))
+plt.figure(figsize=(5, 3), dpi=300)
 for key, color in [(("o1", "o1"), "black"), (("o2", "o1"), "tab:blue"), (("o3", "o1"), "tab:orange")]:
     y_db = 20 * np.log10(np.maximum(np.abs(np.asarray(s_sax[key])), 1e-12))
-    plt.plot(wl_um, y_db, color=color, label=rf"$S_{{{key[0][1:]},{key[1][1:]}}}$")
-plt.xlabel("wavelength (um)")
+    plt.plot(wl_um, y_db, linewidth=2, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
+plt.xlabel("wavelength (µm)")
 plt.ylabel("magnitude (dB)")
-plt.title("SAX Splitter Terms (o1 excitation)")
+plt.title("GDSFactory mmi1x2")
 plt.grid(alpha=0.3)
+plt.xlim(WL_MIN / µm, WL_MAX / µm)
+plt.ylim(-40, 0)  # Show 0 dB on the y axis by setting the upper limit at 0 or slightly above for visibility
 plt.legend()
 plt.tight_layout()
+plt.savefig("mmi1x2.png", dpi=300)
 plt.show()
