@@ -10,11 +10,11 @@ from beamz.visual.helpers import dxdt
 WL0 = 1.55 * µm
 N_CORE, N_CLAD = 3.48, 1.44
 WL_MIN, WL_MAX, WL_POINTS = 1.50 * µm, 1.60 * µm, 241
-DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=12, dims=2)
+DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=20, dims=2)
 BASE_TIME_MULT = 25
 INPUT_EXTENSION = 4.0 * µm
 OUTPUT_EXTENSION = 4.0 * µm
-Y_MARGIN = 2.0 * µm
+Y_MARGIN = 3.0 * µm
 PML_BASE = 1.0 * WL0
 PML_RIGHT = 1.5 * WL0
 SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN = 4.0, 1.0 * µm
@@ -22,7 +22,7 @@ MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN = 1.6, 0.8 * µm
 SOURCE_OFFSET = -1.2 * µm
 FORWARD_MONITOR_OFFSET = -0.4 * µm
 REFLECTION_MONITOR_BACKOFF = 2.0 * µm
-OUTPUT_MONITOR_OFFSET = 1.0 * µm
+OUTPUT_MONITOR_OFFSET = 0.6 * µm
 MODE_PAD = 0.35 * µm
 source_port, output_ports = "o1", ["o2", "o3"]
 DIR_VEC = {"+x": (1.0, 0.0), "-x": (-1.0, 0.0), "+y": (0.0, 1.0), "-y": (0.0, -1.0)}
@@ -33,6 +33,9 @@ def move_along(center, direction, distance):
 
 def outward_direction(inward_direction):
     return ("-" if inward_direction.startswith("+") else "+") + inward_direction[1]
+
+def snap_to_grid(value):
+    return round(float(value) / DX) * DX
 
 # Load the GDS cell with no extra padding, then rebuild a compact domain
 imported_design, ports = design.io.gdsf.load(
@@ -127,9 +130,31 @@ source = ModeSource(
 monitors = []
 start, end, _ = port_line(src, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN, offset=FORWARD_MONITOR_OFFSET)
 monitors.append(Monitor(start=start, end=end, name="o1_fwd", record_fields=True))
+
+# Place output monitors on a mirrored, grid-snapped pair to avoid sampling asymmetry.
+src_y = ports[source_port]["center"][1]
+dy = 0.5 * (
+    abs(ports[output_ports[0]]["center"][1] - src_y)
+    + abs(ports[output_ports[1]]["center"][1] - src_y)
+)
+x_out = snap_to_grid(
+    move_along(ports[output_ports[0]]["center"], ports[output_ports[0]]["direction"], -OUTPUT_MONITOR_OFFSET)[0]
+)
+span_out = max(
+    float(MONITOR_MIN_SPAN),
+    MONITOR_SPAN_FACTOR
+    * 0.5
+    * (float(ports[output_ports[0]]["width"]) + float(ports[output_ports[1]]["width"])),
+)
+y_out = {
+    output_ports[0]: snap_to_grid(src_y + dy),
+    output_ports[1]: snap_to_grid(src_y - dy),
+}
 for out in output_ports:
-    start, end, _ = port_line(ports[out], MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN, offset=-OUTPUT_MONITOR_OFFSET)
+    yc = y_out[out]
+    start, end = (x_out, yc - span_out / 2), (x_out, yc + span_out / 2)
     monitors.append(Monitor(start=start, end=end, name=out, record_fields=True))
+
 start, end, _ = port_line(src, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN, offset=-REFLECTION_MONITOR_BACKOFF)
 monitors.append(Monitor(start=start, end=end, name="o1_ref", record_fields=True))
 
@@ -206,14 +231,13 @@ def build_mode_projection(port, monitor):
         h_fwd = h_fwd * np.exp(-1j * phase_fwd)
     ez_bwd = ez_fwd.copy()
     h_bwd = -h_fwd.copy()
-    eta0 = np.sqrt(MU_0 / EPS_0)
     mode_matrix = np.column_stack(
         [
             np.concatenate([ez_fwd, h_fwd]),
             np.concatenate([ez_bwd, h_bwd]),
         ]
     )
-    return {"h_field": h_field, "eta0": eta0, "pinv": np.linalg.pinv(mode_matrix)}
+    return {"h_field": h_field, "pinv": np.linalg.pinv(mode_matrix)}
 
 def modal_amplitudes(monitor, projection):
     t = np.asarray(monitor.fields["t"], dtype=float)
@@ -224,7 +248,7 @@ def modal_amplitudes(monitor, projection):
         field_vec = np.concatenate(
             [
                 ez_spec[i],
-                projection["eta0"] * h_spec[i],
+                h_spec[i],
             ]
         )
         coeff[i] = projection["pinv"] @ field_vec
