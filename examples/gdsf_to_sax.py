@@ -10,7 +10,7 @@ from beamz.visual.helpers import dxdt
 WL0 = 1.55 * µm
 N_CORE, N_CLAD = 3.48, 1.44
 WL_MIN, WL_MAX, WL_POINTS = 1.50 * µm, 1.60 * µm, 241
-DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=20, dims=2)
+DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=9, dims=2)
 BASE_TIME_MULT = 25
 INPUT_EXTENSION = 4.0 * µm
 OUTPUT_EXTENSION = 4.0 * µm
@@ -168,13 +168,7 @@ sim = Simulation(
     time=time,
     resolution=DX,
 )
-sim.run(
-    animate_live="Ez",
-    animation_interval=10,
-    axis_scale=[-5e-5, 5e-5],
-    cmap="twilight_zero",
-    clean_visualization=True,
-)
+sim.run()
 
 wl = np.linspace(WL_MIN, WL_MAX, WL_POINTS)
 freqs = LIGHT_SPEED / wl
