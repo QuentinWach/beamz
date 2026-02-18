@@ -3,8 +3,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 from beamz import *
 WL0, N_CORE, N_CLAD = 1.55 * µm, 3.48, 1.44
-DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.92, points_per_wavelength=6, dims=2)
-WAVELENGTHS = np.linspace(1.50 * µm, 1.60 * µm, 41); FREQUENCIES = LIGHT_SPEED / WAVELENGTHS
+DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=12, dims=2)
+WAVELENGTHS = np.linspace(1.50 * µm, 1.60 * µm, 41)
 BASE_TIME_MULT, SOURCE_OFFSET, MONITOR_OFFSET = 45, 1.2 * µm, 1.8 * µm
 SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN = 4.0, 1.0 * µm, 1.6, 0.8 * µm
 design_obj, ports = design.io.gdsf.load("mmi1x2", n_core=N_CORE, n_clad=N_CLAD, layer=(1, 0), padding=3.0); design_obj.show()
@@ -18,12 +18,12 @@ src = ports[source_port]; src_center = inside(src, SOURCE_OFFSET); _, _, src_spa
 source = ModeSource(grid=grid, center=src_center, width=src_span, wavelength=WL0, pol="tm", signal=signal, direction=src["direction"])
 monitors = [Monitor(start=monline(ports[p], MONITOR_OFFSET, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN)[0], end=monline(ports[p], MONITOR_OFFSET, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN)[1], name=p, record_fields=True) for p in output_ports]
 sim = Simulation(design=design_obj, devices=[source, *monitors], boundaries=[PML(edges="all", thickness=1.0 * WL0)], time=time, resolution=DX); sim.run()
-s_sparse = sim.get_S_matrix(input_ports=[source_port], output_ports=output_ports, source_port=source_port, frequencies=FREQUENCIES, field_component="Ez", reduction="mean", as_sax=False)
-s_sax = sax.sdict(s_sparse); center_idx = int(np.argmin(np.abs(WAVELENGTHS - WL0)))
+s_sparse = sim.get_S_matrix(input_ports=[source_port], output_ports=output_ports, source_port=source_port, frequencies=None, field_component="Ez", reduction="mean", as_sax=False)
+s_sax = sax.sdict(s_sparse); wl_um = LIGHT_SPEED / np.maximum(sim.s_matrix_frequencies, 1e-30) / µm
 for k in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
-    v = np.asarray(s_sax[k])[center_idx]; print(f"S[{k[0]},{k[1]}] @ {WL0 / µm:.3f}um: |S|={np.abs(v):.3f}, phase={np.angle(v):.3f} rad")
+    s = np.asarray(s_sax[k]); m = np.isfinite(wl_um); w = wl_um[m]; s = s[m]; s0 = s[np.argmin(np.abs(w - WL0 / µm))]; print(f"S[{k[0]},{k[1]}] @ {WL0 / µm:.3f}um: |S|={np.abs(s0):.3f}, phase={np.angle(s0):.3f} rad")
 plt.figure(figsize=(7, 4))
 for k, c in [(("o1", "o1"), "black"), (("o2", "o1"), "tab:blue"), (("o3", "o1"), "tab:orange")]:
-    plt.plot(WAVELENGTHS / µm, np.abs(np.asarray(s_sax[k])), color=c, label=f"|S[{k[0]},{k[1]}]|")
-plt.xlabel("wavelength (um)"); plt.ylabel("|S|"); plt.title("Splitter Terms for SAX (o1 excitation)"); plt.grid(alpha=0.3); plt.legend()
+    s = np.asarray(s_sax[k]); m = np.isfinite(wl_um) & (wl_um >= WAVELENGTHS.min() / µm) & (wl_um <= WAVELENGTHS.max() / µm); x = wl_um[m]; y = 20 * np.log10(np.maximum(np.abs(s[m]), 1e-12)); o = np.argsort(x); xd = np.linspace(WAVELENGTHS.min() / µm, WAVELENGTHS.max() / µm, 400); yd = np.interp(xd, x[o], y[o]); plt.plot(xd, yd, color=c, label=rf"$S_{{{k[0][1:]},{k[1][1:]}}}$")
+plt.xlabel("wavelength (um)"); plt.ylabel("magnitude (dB)"); plt.title("SAX Splitter Terms (o1 excitation)"); plt.grid(alpha=0.3); plt.legend()
 plt.tight_layout(); plt.show()
