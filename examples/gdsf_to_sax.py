@@ -12,17 +12,20 @@ if str(ROOT) not in sys.path:
 from beamz import *
 
 WL0 = 1.55 * µm
-N_CORE, N_CLAD = 2.0, 1.44
-TIME = 18 * WL0 / LIGHT_SPEED
+N_CORE, N_CLAD = 3.48, 1.44  # Silicon (Si) core, Silicon Oxide (SiO2) cladding
 DX, DT = dxdt(
-    WL0, n_max=N_CORE, safety_factor=0.95, points_per_wavelength=8, dims=2
+    WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=12, dims=2
 )
 WAVELENGTHS = np.linspace(1.50 * µm, 1.60 * µm, 41)
 FREQUENCIES = LIGHT_SPEED / WAVELENGTHS
-SOURCE_OFFSET = 0.35 * µm
-MONITOR_OFFSET = 0.80 * µm
-SPAN_FACTOR = 4.0
-MIN_SPAN = 2.0 * µm
+BASE_TIME_MULT = 60
+SOURCE_OFFSET = 1.20 * µm
+MONITOR_OFFSET = 1.80 * µm
+SOURCE_SPAN_FACTOR = 4.0
+SOURCE_MIN_SPAN = 1.00 * µm
+MONITOR_SPAN_FACTOR = 1.6
+MONITOR_MIN_SPAN = 0.80 * µm
+FULL_NXN = False  # Set True to excite all ports and build a full square matrix.
 
 
 def _show_plot():
@@ -44,7 +47,7 @@ def _inward_offset(port, distance):
     return cx, cy + sign * distance
 
 
-def _line_monitor_for_port(port, offset, span_factor=SPAN_FACTOR, min_span=MIN_SPAN):
+def _line_monitor_for_port(port, offset, span_factor, min_span):
     """Create a monitor line orthogonal to the local propagation axis."""
     cx, cy = _inward_offset(port, offset)
     span = max(float(min_span), float(span_factor) * float(port["width"]))
@@ -56,6 +59,24 @@ def _line_monitor_for_port(port, offset, span_factor=SPAN_FACTOR, min_span=MIN_S
         start = (cx - span / 2, cy)
         end = (cx + span / 2, cy)
     return start, end, span
+
+
+def _estimate_required_time(ports_dict, source_ports, output_ports, n_eff=2.0):
+    """Estimate a runtime long enough for the pulse to reach all requested monitors."""
+    max_distance = 0.0
+    for src_name in source_ports:
+        src_center = _inward_offset(ports_dict[src_name], SOURCE_OFFSET)
+        for out_name in output_ports:
+            out_center = _inward_offset(ports_dict[out_name], MONITOR_OFFSET)
+            max_distance = max(max_distance, float(np.hypot(
+                out_center[0] - src_center[0], out_center[1] - src_center[1]
+            )))
+
+    propagation_time = n_eff * max_distance / LIGHT_SPEED
+    return max(
+        BASE_TIME_MULT * WL0 / LIGHT_SPEED,
+        2.2 * propagation_time + 10.0 * WL0 / LIGHT_SPEED,
+    )
 
 
 def _plot_design_and_ports(design_obj, ports_dict):
@@ -183,10 +204,10 @@ def _plot_monitor_results(monitors, dt, source_port_name):
     _show_plot()
 
 
-def _plot_final_smatrix(s_sax_dict, wavelengths, port_names, center_idx):
-    matrix = np.zeros((len(port_names), len(port_names)))
-    for i, p_out in enumerate(port_names):
-        for j, p_in in enumerate(port_names):
+def _plot_final_smatrix(s_sax_dict, wavelengths, output_ports, input_ports, center_idx):
+    matrix = np.zeros((len(output_ports), len(input_ports)))
+    for i, p_out in enumerate(output_ports):
+        for j, p_in in enumerate(input_ports):
             key = (p_out, p_in)
             if key in s_sax_dict:
                 matrix[i, j] = np.abs(np.asarray(s_sax_dict[key])[center_idx])
@@ -194,17 +215,17 @@ def _plot_final_smatrix(s_sax_dict, wavelengths, port_names, center_idx):
     fig, (ax_hm, ax_sp) = plt.subplots(1, 2, figsize=(12, 4))
     ax_hm.set_title(f"|S| at {wavelengths[center_idx] / µm:.3f} um")
     im = ax_hm.imshow(matrix, cmap="magma", vmin=0.0, vmax=max(1.0, np.max(matrix)))
-    ax_hm.set_xticks(np.arange(len(port_names)))
-    ax_hm.set_yticks(np.arange(len(port_names)))
-    ax_hm.set_xticklabels(port_names)
-    ax_hm.set_yticklabels(port_names)
+    ax_hm.set_xticks(np.arange(len(input_ports)))
+    ax_hm.set_yticks(np.arange(len(output_ports)))
+    ax_hm.set_xticklabels(input_ports)
+    ax_hm.set_yticklabels(output_ports)
     ax_hm.set_xlabel("input port")
     ax_hm.set_ylabel("output port")
     fig.colorbar(im, ax=ax_hm, label="|S|")
 
     ax_sp.set_title("Broadband S-parameter Magnitudes")
-    for p_out in port_names:
-        for p_in in port_names:
+    for p_out in output_ports:
+        for p_in in input_ports:
             key = (p_out, p_in)
             if key in s_sax_dict:
                 ax_sp.plot(
@@ -232,24 +253,34 @@ _plot_design_and_ports(device_design, ports)
 grid = device_design.rasterize(resolution=DX)
 _plot_rasterized_permittivity(grid, device_design)
 
+port_names = sorted(ports.keys())
+excited_ports = port_names if FULL_NXN else ["o1"]
+TIME = _estimate_required_time(
+    ports_dict=ports,
+    source_ports=excited_ports,
+    output_ports=port_names,
+    n_eff=max(N_CORE, N_CLAD),
+)
+print(f"Using simulation time: {TIME * 1e15:.1f} fs")
+
 time = np.arange(0, TIME, DT)
 signal = ramped_cosine(
     time,
     amplitude=1.0,
     frequency=LIGHT_SPEED / WL0,
-    ramp_duration=WL0 * 4 / LIGHT_SPEED,
-    t_max=TIME / 2,
+    ramp_duration=WL0 * 6 / LIGHT_SPEED,
+    t_max=TIME * 0.30,
 )
 _plot_source_signal(time, signal)
 
-port_names = sorted(ports.keys())
 s_full = {}
+s_power = {}
 
-for source_port in port_names:
+for source_port in excited_ports:
     source_meta = ports[source_port]
     src_center = _inward_offset(source_meta, SOURCE_OFFSET)
     _monitor_start, _monitor_end, source_span = _line_monitor_for_port(
-        source_meta, SOURCE_OFFSET
+        source_meta, SOURCE_OFFSET, SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN
     )
     source = ModeSource(
         grid=grid,
@@ -263,7 +294,9 @@ for source_port in port_names:
 
     monitors = []
     for port_name in port_names:
-        start, end, _ = _line_monitor_for_port(ports[port_name], MONITOR_OFFSET)
+        start, end, _ = _line_monitor_for_port(
+            ports[port_name], MONITOR_OFFSET, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN
+        )
         monitors.append(
             Monitor(start=start, end=end, name=port_name, record_fields=True)
         )
@@ -287,6 +320,13 @@ for source_port in port_names:
     sim.run()
     _plot_monitor_results(monitors, DT, source_port_name=source_port)
 
+    energy_by_port = {
+        mon.name: float(np.sum(np.asarray(mon.power_history)) * DT) for mon in monitors
+    }
+    src_energy = max(energy_by_port.get(source_port, 0.0), 1e-30)
+    for out_name in port_names:
+        s_power[(out_name, source_port)] = energy_by_port.get(out_name, 0.0) / src_energy
+
     s_column = sim.get_S_matrix(
         input_ports=port_names,
         output_ports=port_names,
@@ -303,9 +343,18 @@ center_idx = int(np.argmin(np.abs(WAVELENGTHS - WL0)))
 print(f"Computed SAX S-matrix entries: {len(s_sax)} at {len(WAVELENGTHS)} wavelengths")
 for to_port, from_port in sorted(s_sax.keys()):
     value = np.asarray(s_sax[(to_port, from_port)])[center_idx]
+    power_est = float(np.abs(value) ** 2)
+    power_ratio = s_power.get((to_port, from_port), np.nan)
     print(
         f"S[{to_port},{from_port}] @ {WL0 / µm:.3f}um: "
-        f"|S|={np.abs(value):.3f}, phase={np.angle(value):.3f} rad"
+        f"|S|={np.abs(value):.3f}, |S|^2={power_est:.3f}, "
+        f"P-ratio={power_ratio:.3f}, phase={np.angle(value):.3f} rad"
     )
 
-_plot_final_smatrix(s_sax, WAVELENGTHS, port_names, center_idx)
+_plot_final_smatrix(
+    s_sax,
+    WAVELENGTHS,
+    output_ports=port_names,
+    input_ports=excited_ports,
+    center_idx=center_idx,
+)
