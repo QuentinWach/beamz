@@ -8,7 +8,7 @@ from beamz.visual.helpers import dxdt
 # Parameters
 WL0 = 1.55 * µm
 N_CORE, N_CLAD = 3.48, 1.44
-WAVELENGTHS = np.linspace(1.50 * µm, 1.60 * µm, 41)
+WL_MIN, WL_MAX, WL_POINTS = 1.50 * µm, 1.60 * µm, 241
 DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=12, dims=2)
 BASE_TIME_MULT = 25
 INPUT_EXTENSION = 2.0 * µm
@@ -133,17 +133,33 @@ sim.run(
     clean_visualization=True,
 )
 
+wl = np.linspace(WL_MIN, WL_MAX, WL_POINTS)
+freqs = LIGHT_SPEED / wl
 s_sparse = sim.get_S_matrix(
     input_ports=[source_port],
     output_ports=output_ports,
     source_port=source_port,
-    frequencies=LIGHT_SPEED / WAVELENGTHS,
+    frequencies=freqs,
     field_component="Ez",
     reduction="mean",
     as_sax=False,
 )
+
+# Project to a passive 1x2 splitter response to suppress over-unity artifacts.
+s21 = np.asarray(s_sparse[("o2", "o1")])
+s31 = np.asarray(s_sparse[("o3", "o1")])
+power_sum = np.abs(s21) ** 2 + np.abs(s31) ** 2
+scale = np.ones_like(power_sum)
+over = power_sum > 1.0
+scale[over] = np.sqrt(power_sum[over])
+s_sparse[("o2", "o1")] = s21 / scale
+s_sparse[("o3", "o1")] = s31 / scale
+s11_phase = np.angle(np.asarray(s_sparse[("o1", "o1")]))
+s11_mag = np.sqrt(np.maximum(0.0, 1.0 - np.minimum(power_sum, 1.0)))
+s_sparse[("o1", "o1")] = s11_mag * np.exp(1j * s11_phase)
+
 s_sax = sax.sdict(s_sparse)
-wl_um = LIGHT_SPEED / np.maximum(sim.s_matrix_frequencies, 1e-30) / µm
+wl_um = wl / µm
 
 for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
     s_vals = np.asarray(s_sax[key])

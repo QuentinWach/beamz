@@ -764,22 +764,28 @@ class Simulation:
             for port_name, trace in traces.items()
         }
 
+        sampled_spectra = {}
         if frequencies is None:
-            sample_indices = np.arange(len(fft_freqs), dtype=int)
             sampled_frequencies = fft_freqs
+            for port_name, spectrum in spectra.items():
+                sampled_spectra[port_name] = spectrum
         else:
             requested = np.atleast_1d(np.asarray(frequencies, dtype=float))
-            sample_indices = np.array(
-                [int(np.argmin(np.abs(fft_freqs - freq))) for freq in requested],
-                dtype=int,
-            )
-            sampled_frequencies = fft_freqs[sample_indices]
+            sampled_frequencies = requested
+            for port_name, spectrum in spectra.items():
+                real_part = np.interp(
+                    requested, fft_freqs, np.real(spectrum), left=0.0, right=0.0
+                )
+                imag_part = np.interp(
+                    requested, fft_freqs, np.imag(spectrum), left=0.0, right=0.0
+                )
+                sampled_spectra[port_name] = real_part + 1j * imag_part
 
-        source_spectrum = spectra[source_port][sample_indices]
+        source_spectrum = sampled_spectra[source_port]
         eps = 1e-18
         s_matrix = {}
         for out_port in output_ports:
-            out_spectrum = spectra[out_port][sample_indices]
+            out_spectrum = sampled_spectra[out_port]
             ratio = np.zeros_like(out_spectrum, dtype=np.complex128)
             valid = np.abs(source_spectrum) > eps
             ratio[valid] = out_spectrum[valid] / source_spectrum[valid]
