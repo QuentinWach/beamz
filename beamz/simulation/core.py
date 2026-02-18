@@ -59,11 +59,25 @@ class Simulation:
             # Create PML regions (do this once, not every timestep)
             pml_data = {}
             for pml in pml_boundaries:
-                pml_data.update(
-                    pml.create_pml_regions(
-                        self.fields, design, resolution, self.dt, plane_2d=self.plane_2d
-                    )
+                new_data = pml.create_pml_regions(
+                    self.fields, design, resolution, self.dt, plane_2d=self.plane_2d
                 )
+                if not pml_data:
+                    pml_data = dict(new_data)
+                    continue
+
+                if "mask" in new_data and "mask" in pml_data:
+                    pml_data["mask"] = pml_data["mask"] | new_data["mask"]
+                elif "mask" in new_data:
+                    pml_data["mask"] = new_data["mask"]
+
+                for key, value in new_data.items():
+                    if key == "mask":
+                        continue
+                    if key in pml_data:
+                        pml_data[key] = pml_data[key] + value
+                    else:
+                        pml_data[key] = value
             self.pml_data = pml_data
 
             # Set effective conductivity for PML

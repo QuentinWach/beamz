@@ -10,9 +10,12 @@ WL0 = 1.55 * µm
 N_CORE, N_CLAD = 3.48, 1.44
 WAVELENGTHS = np.linspace(1.50 * µm, 1.60 * µm, 41)
 DX, DT = dxdt(WL0, n_max=N_CORE, safety_factor=0.999, points_per_wavelength=12, dims=2)
-BASE_TIME_MULT = 45
-WG_EXTENSION = 2.0 * µm
+BASE_TIME_MULT = 25
+INPUT_EXTENSION = 2.0 * µm
+OUTPUT_EXTENSION = 4.0 * µm
 Y_MARGIN = 2.0 * µm
+PML_BASE = 1.0 * WL0
+PML_RIGHT = 1.5 * WL0
 SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN = 4.0, 1.0 * µm
 MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN = 1.6, 0.8 * µm
 
@@ -25,17 +28,17 @@ imported_design, ports = design.io.gdsf.load(
     padding=0.0,
 )
 design_obj = Design(
-    width=imported_design.width + 2.0 * WG_EXTENSION,
+    width=imported_design.width + INPUT_EXTENSION + OUTPUT_EXTENSION,
     height=imported_design.height + 2.0 * Y_MARGIN,
     depth=0,
     material=Material(N_CLAD**2),
 )
 for structure in imported_design.structures[1:]:
-    design_obj += structure.copy().shift(WG_EXTENSION, Y_MARGIN)
+    design_obj += structure.copy().shift(INPUT_EXTENSION, Y_MARGIN)
 ports = {
     name: {
         **port,
-        "center": (port["center"][0] + WG_EXTENSION, port["center"][1] + Y_MARGIN),
+        "center": (port["center"][0] + INPUT_EXTENSION, port["center"][1] + Y_MARGIN),
     }
     for name, port in ports.items()
 }
@@ -45,21 +48,22 @@ for port in ports.values():
     cx, cy = port["center"]
     width = float(port["width"])
     outward = -1.0 if port["direction"].startswith("+") else 1.0
+    extension = OUTPUT_EXTENSION if outward > 0 else INPUT_EXTENSION
     if port["direction"][1] == "x":
-        x0 = cx if outward > 0 else cx - WG_EXTENSION
+        x0 = cx if outward > 0 else cx - extension
         design_obj += Rectangle(
             position=(x0, cy - width / 2),
-            width=WG_EXTENSION,
+            width=extension,
             height=width,
             material=Material(N_CORE**2),
             depth=0,
         )
     else:
-        y0 = cy if outward > 0 else cy - WG_EXTENSION
+        y0 = cy if outward > 0 else cy - extension
         design_obj += Rectangle(
             position=(cx - width / 2, y0),
             width=width,
-            height=WG_EXTENSION,
+            height=extension,
             material=Material(N_CORE**2),
             depth=0,
         )
@@ -91,7 +95,7 @@ signal = ramped_cosine(
     amplitude=1.0,
     frequency=LIGHT_SPEED / WL0,
     ramp_duration=WL0 * 6 / LIGHT_SPEED,
-    t_max=TIME / 4,
+    t_max=TIME / 3,
 )
 plot_signal(signal, time)
 
@@ -114,7 +118,10 @@ for out in output_ports:
 sim = Simulation(
     design=design_obj,
     devices=[source, *monitors],
-    boundaries=[PML(edges="all", thickness=1.0 * WL0)],
+    boundaries=[
+        PML(edges=["left", "top", "bottom"], thickness=PML_BASE),
+        PML(edges="right", thickness=PML_RIGHT),
+    ],
     time=time,
     resolution=DX,
 )
