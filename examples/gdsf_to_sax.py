@@ -18,6 +18,16 @@ PML_BASE = 1.0 * WL0
 PML_RIGHT = 1.5 * WL0
 SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN = 4.0, 1.0 * µm
 MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN = 1.6, 0.8 * µm
+REFLECTION_MONITOR_BACKOFF = 0.4 * µm
+source_port, output_ports = "o1", ["o2", "o3"]
+DIR_VEC = {"+x": (1.0, 0.0), "-x": (-1.0, 0.0), "+y": (0.0, 1.0), "-y": (0.0, -1.0)}
+
+def move_along(center, direction, distance):
+    vx, vy = DIR_VEC[direction]
+    return center[0] + vx * float(distance), center[1] + vy * float(distance)
+
+def outward_direction(inward_direction):
+    return ("-" if inward_direction.startswith("+") else "+") + inward_direction[1]
 
 # Load the GDS cell with no extra padding, then rebuild a compact domain
 imported_design, ports = design.io.gdsf.load(
@@ -44,13 +54,13 @@ ports = {
 }
 
 # Add straight waveguide extensions from imported ports to the simulation edges (into PML)
-for port in ports.values():
+for name, port in ports.items():
     cx, cy = port["center"]
     width = float(port["width"])
-    outward = -1.0 if port["direction"].startswith("+") else 1.0
-    extension = OUTPUT_EXTENSION if outward > 0 else INPUT_EXTENSION
+    extension = INPUT_EXTENSION if name == source_port else OUTPUT_EXTENSION
+    ox, oy = move_along((cx, cy), outward_direction(port["direction"]), extension)
     if port["direction"][1] == "x":
-        x0 = cx if outward > 0 else cx - extension
+        x0 = min(cx, ox)
         design_obj += Rectangle(
             position=(x0, cy - width / 2),
             width=extension,
@@ -59,7 +69,7 @@ for port in ports.values():
             depth=0,
         )
     else:
-        y0 = cy if outward > 0 else cy - extension
+        y0 = min(cy, oy)
         design_obj += Rectangle(
             position=(cx - width / 2, y0),
             width=width,
@@ -72,10 +82,9 @@ design_obj.show()
 # Rasterize and define source/monitor lines directly at imported port centers
 grid = design_obj.rasterize(resolution=DX)
 grid.show(field="permittivity")
-source_port, output_ports = "o1", ["o1", "o2", "o3"]
 
-def port_line(port, span_factor, span_min):
-    cx, cy = port["center"]
+def port_line(port, span_factor, span_min, offset=0.0):
+    cx, cy = move_along(port["center"], port["direction"], offset)
     span = max(float(span_min), span_factor * float(port["width"]))
     if port["direction"][1] == "x":
         return (cx, cy - span / 2), (cx, cy + span / 2), span
@@ -111,9 +120,13 @@ source = ModeSource(
     direction=src["direction"],
 )
 monitors = []
+start, end, _ = port_line(src, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN)
+monitors.append(Monitor(start=start, end=end, name=source_port, record_fields=True))
 for out in output_ports:
     start, end, _ = port_line(ports[out], MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN)
     monitors.append(Monitor(start=start, end=end, name=out, record_fields=True))
+start, end, _ = port_line(src, MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN, offset=-REFLECTION_MONITOR_BACKOFF)
+monitors.append(Monitor(start=start, end=end, name="o1_ref", record_fields=True))
 
 sim = Simulation(
     design=design_obj,
@@ -137,29 +150,23 @@ wl = np.linspace(WL_MIN, WL_MAX, WL_POINTS)
 freqs = LIGHT_SPEED / wl
 s_sparse = sim.get_S_matrix(
     input_ports=[source_port],
-    output_ports=output_ports,
+    output_ports=[*output_ports, "o1_ref"],
     source_port=source_port,
     frequencies=freqs,
     field_component="Ez",
     reduction="mean",
     as_sax=False,
 )
-
-# Project to a passive 1x2 splitter response to suppress over-unity artifacts.
-s21 = np.asarray(s_sparse[("o2", "o1")])
-s31 = np.asarray(s_sparse[("o3", "o1")])
-power_sum = np.abs(s21) ** 2 + np.abs(s31) ** 2
-scale = np.ones_like(power_sum)
-over = power_sum > 1.0
-scale[over] = np.sqrt(power_sum[over])
-s_sparse[("o2", "o1")] = s21 / scale
-s_sparse[("o3", "o1")] = s31 / scale
-s11_phase = np.angle(np.asarray(s_sparse[("o1", "o1")]))
-s11_mag = np.sqrt(np.maximum(0.0, 1.0 - np.minimum(power_sum, 1.0)))
-s_sparse[("o1", "o1")] = s11_mag * np.exp(1j * s11_phase)
+s_sparse[("o1", "o1")] = s_sparse.pop(("o1_ref", "o1"))
 
 s_sax = sax.sdict(s_sparse)
 wl_um = wl / µm
+power_sum = (
+    np.abs(np.asarray(s_sax[("o1", "o1")])) ** 2
+    + np.abs(np.asarray(s_sax[("o2", "o1")])) ** 2
+    + np.abs(np.asarray(s_sax[("o3", "o1")])) ** 2
+)
+print(f"|S11|^2+|S21|^2+|S31|^2 @ {WL0 / µm:.3f}um: {power_sum[np.argmin(np.abs(wl_um - WL0 / µm))]:.3f}")
 
 for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
     s_vals = np.asarray(s_sax[key])
