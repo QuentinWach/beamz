@@ -13,8 +13,8 @@ from beamz.visual.helpers import dxdt
 # Parameters
 WL0 = 1.55 * µm
 N_CORE, N_CLAD = 3.48, 1.44
-WL_MIN, WL_MAX = 1.50 * µm, 1.60 * µm
-WL_POINTS = int(os.getenv("BEAMZ_SWEEP_POINTS", os.getenv("BEAMZ_DFT_POINTS", "31")))
+WL_MIN, WL_MAX = 1.30 * µm, 1.80 * µm
+WL_POINTS = 25
 POINTS_PER_WAVELENGTH = 9
 DX, DT = dxdt(
     WL0,
@@ -155,10 +155,12 @@ f_max = float(np.max(freqs))
 df = float(np.min(np.diff(np.sort(freqs)))) if WL_POINTS > 1 else f_min
 RAMP_CYCLES = 10
 SETTLE_CYCLES = 30
-AVG_CYCLES = 12
 ramp_time = RAMP_CYCLES / f_min
 dft_t_start = ramp_time + travel_time + SETTLE_CYCLES / f_min
-dft_t_end = dft_t_start + max(AVG_CYCLES / f_min, 1.5 / max(df, 1e6))
+# Use an orthogonal DFT window for the equally-spaced comb (T = 1/df),
+# which strongly suppresses inter-tone leakage in modal extraction.
+dft_window_time = 1.0 / max(df, 1e6)
+dft_t_end = dft_t_start + dft_window_time
 total_time = dft_t_end + 2.0 / f_min
 time0 = np.arange(0.0, total_time, DT)
 envelope = 1.0 - np.exp(-((time0 / max(ramp_time, 1e-18)) ** 2))
@@ -300,7 +302,7 @@ for key, color in [(("o1", "o1"), "black"), (("o2", "o1"), "tab:blue"), (("o3", 
     vals = np.asarray(s_sax[key], dtype=np.complex128)
     y_db = 20 * np.log10(np.maximum(np.abs(vals), 1e-12))
     y_db = np.where(valid_mask, y_db, np.nan)
-    plt.plot(wl_um, y_db, "-", linewidth=1.7, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
+    plt.plot(wl_um, y_db, "o-", linewidth=2, ms=5, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
 plt.xlabel("Wavelength (µm)")
 plt.ylabel("Magnitude (dB)")
 plt.title("GDSFactory MMI1x2")
