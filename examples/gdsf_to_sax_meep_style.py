@@ -22,7 +22,7 @@ WL0 = 1.55 * µm
 WL_MIN, WL_MAX = 1.50 * µm, 1.60 * µm
 WL_POINTS = int(os.getenv("BEAMZ_SWEEP_POINTS", "21"))
 N_CORE, N_CLAD = 3.48, 1.44
-POINTS_PER_WAVELENGTH = int(os.getenv("BEAMZ_PPW", "8"))
+POINTS_PER_WAVELENGTH = int(os.getenv("BEAMZ_PPW", "10"))
 DX, DT = dxdt(WL0, n_max=N_CORE, points_per_wavelength=POINTS_PER_WAVELENGTH, dims=2)
 INPUT_EXTENSION, OUTPUT_EXTENSION, Y_MARGIN = 4.0 * µm, 4.0 * µm, 3.0 * µm
 PML_BASE, PML_RIGHT = 1.0 * WL0, 1.5 * WL0
