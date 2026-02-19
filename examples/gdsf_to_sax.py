@@ -14,8 +14,8 @@ from beamz.visual.helpers import dxdt
 WL0 = 1.55 * µm
 N_CORE, N_CLAD = 3.48, 1.44
 WL_MIN, WL_MAX = 1.30 * µm, 1.80 * µm
-WL_POINTS = 25
-POINTS_PER_WAVELENGTH = 9
+WL_POINTS = int(os.getenv("BEAMZ_SWEEP_POINTS", os.getenv("BEAMZ_DFT_POINTS", "25")))
+POINTS_PER_WAVELENGTH = 12
 DX, DT = dxdt(
     WL0,
     n_max=N_CORE,
@@ -29,7 +29,7 @@ Y_MARGIN = 3.0 * µm
 PML_BASE = 1.0 * WL0
 PML_RIGHT = 1.5 * WL0
 SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN = 4.0, 1.0 * µm
-MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN = 1.6, 0.8 * µm
+MONITOR_SPAN_FACTOR, MONITOR_MIN_SPAN = 2.6, 1.2 * µm
 SOURCE_OFFSET = -1.2 * µm
 FORWARD_MONITOR_OFFSET = -0.4 * µm
 REFLECTION_MONITOR_BACKOFF = 2.0 * µm
@@ -151,16 +151,15 @@ output_lines = {
 freqs = np.linspace(LIGHT_SPEED / WL_MAX, LIGHT_SPEED / WL_MIN, WL_POINTS)
 wl = LIGHT_SPEED / freqs
 f_min = float(np.min(freqs))
-f_max = float(np.max(freqs))
 df = float(np.min(np.diff(np.sort(freqs)))) if WL_POINTS > 1 else f_min
 RAMP_CYCLES = 10
-SETTLE_CYCLES = 30
+SETTLE_CYCLES = 45
 ramp_time = RAMP_CYCLES / f_min
 dft_t_start = ramp_time + travel_time + SETTLE_CYCLES / f_min
 # Use an orthogonal DFT window for the equally-spaced comb (T = 1/df),
 # which strongly suppresses inter-tone leakage in modal extraction.
 dft_window_time = 1.0 / max(df, 1e6)
-dft_t_end = dft_t_start + dft_window_time
+dft_t_end = dft_t_start + 2.0 * dft_window_time
 total_time = dft_t_end + 2.0 / f_min
 time0 = np.arange(0.0, total_time, DT)
 envelope = 1.0 - np.exp(-((time0 / max(ramp_time, 1e-18)) ** 2))
@@ -218,8 +217,8 @@ monitor_cfg = dict(
     dft_frequencies=freqs,
     dft_components=("Ez", "Hx", "Hy"),
     dft_window="rect",
-    record_interval=2,
-    dft_record_every_step=False,
+    record_interval=1,
+    dft_record_every_step=True,
 )
 monitors = [
     Monitor(
@@ -291,6 +290,8 @@ idx0 = int(np.argmin(np.abs(wl_um - WL0 / µm)))
 print(f"|S11|^2+|S21|^2+|S31|^2 @ {WL0 / µm:.3f}um: {power_sum[idx0]:.3f}")
 print(f"guided_out_ratio @ {WL0 / µm:.3f}um: {guided_out_ratio[idx0]:.3f} (valid={bool(valid_mask[idx0])})")
 print(f"loss @ {WL0 / µm:.3f}um: {loss[idx0]:.3f}")
+over_unity = np.nanmax(np.where(valid_mask, power_sum - 1.0, np.nan))
+print(f"max(power_sum-1) over valid bins: {over_unity:.3e}")
 
 for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
     s_vals = np.asarray(s_sax[key])
