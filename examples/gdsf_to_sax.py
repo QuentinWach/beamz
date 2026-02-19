@@ -274,7 +274,7 @@ for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
 plt.figure(figsize=(5, 3), dpi=300)
 for key, color in [(("o1", "o1"), "black"), (("o2", "o1"), "tab:blue"), (("o3", "o1"), "tab:orange")]:
     y_db = 20 * np.log10(np.maximum(np.abs(np.asarray(s_sax[key])), 1e-12))
-    plt.plot(wl_um, y_db, "o-", linewidth=1.5, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
+    plt.plot(wl_um, y_db, "o-", linewidth=1.5, ms=2.5, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
 plt.xlabel("Wavelength (µm)")
 plt.ylabel("Magnitude (dB)")
 plt.title("GDSFactory MMI1x2")
