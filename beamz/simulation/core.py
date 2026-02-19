@@ -151,7 +151,14 @@ class Simulation:
     def _record_monitors(self):
         """Record data from Monitor devices during simulation."""
         for device in self.devices:
-            if isinstance(device, Monitor) and device.should_record(self.current_step):
+            if not isinstance(device, Monitor):
+                continue
+            should_record = device.should_record(self.current_step)
+            dft_every_step = bool(
+                getattr(device, "dft_enabled", False)
+                and getattr(device, "dft_record_every_step", True)
+            )
+            if should_record or dft_every_step:
                 if not self.is_3d:
                     device.record_fields_2d(
                         self.fields.Ez,
@@ -816,6 +823,34 @@ class Simulation:
             sampled[:, col] = real_part + 1j * imag_part
         return requested, sampled
 
+    @staticmethod
+    def _resample_complex_matrix(freq_src, values_src, freq_dst):
+        src = np.asarray(values_src, dtype=np.complex128)
+        if src.ndim == 1:
+            src = src[:, None]
+        if np.allclose(freq_src, freq_dst, rtol=1e-9, atol=0.0) and src.shape[0] == len(freq_dst):
+            return src
+        out = np.empty((len(freq_dst), src.shape[1]), dtype=np.complex128)
+        for col in range(src.shape[1]):
+            re = np.interp(freq_dst, freq_src, np.real(src[:, col]), left=0.0, right=0.0)
+            im = np.interp(freq_dst, freq_src, np.imag(src[:, col]), left=0.0, right=0.0)
+            out[:, col] = re + 1j * im
+        return out
+
+    def _sample_monitor_component_dft(self, monitor, component, frequencies):
+        if not hasattr(monitor, "get_dft_component"):
+            raise ValueError(
+                f"Monitor '{monitor.name}' does not support DFT accumulation."
+            )
+        freq_src = np.asarray(monitor.get_dft_frequencies(), dtype=float)
+        if freq_src.size == 0:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has no configured DFT frequencies."
+            )
+        values_src = np.asarray(monitor.get_dft_component(component), dtype=np.complex128)
+        freq_dst = np.atleast_1d(np.asarray(frequencies, dtype=float))
+        return freq_dst, self._resample_complex_matrix(freq_src, values_src, freq_dst)
+
     def _demodulate_monitor_component(
         self,
         monitor,
@@ -1008,6 +1043,8 @@ class Simulation:
         projection = {
             "e_component": parts["e_component"],
             "h_component": parts["h_component"],
+            "mode_matrix": mode_matrix,
+            "condition_number": float(np.linalg.cond(mode_matrix)),
             "pinv": np.linalg.pinv(mode_matrix),
         }
         cache[key] = projection
@@ -1118,6 +1155,219 @@ class Simulation:
 
             waves[spec.name] = port_waves
         return waves
+
+    def extract_port_waves_dft(
+        self,
+        ports,
+        frequencies,
+        min_incident_db=-40.0,
+        return_power=True,
+    ):
+        """Extract modal port waves from in-simulation DFT monitor accumulators."""
+        del min_incident_db  # Used in get_S_matrix_modal_dft validity masking.
+        if self.is_3d or self.plane_2d != "xy":
+            raise NotImplementedError(
+                "extract_port_waves_dft currently supports 2D simulations in the xy plane."
+            )
+
+        port_map = self._normalize_portspecs(ports)
+        freqs = np.atleast_1d(np.asarray(frequencies, dtype=float))
+        if freqs.size == 0:
+            raise ValueError("frequencies must contain at least one value.")
+        if np.any(freqs <= 0):
+            raise ValueError("frequencies must be strictly positive.")
+
+        monitor_by_name = self._named_monitors()
+        for spec in port_map.values():
+            main = monitor_by_name.get(spec.monitor_name)
+            if main is None:
+                raise ValueError(f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'.")
+            if not getattr(main, "dft_enabled", False):
+                raise ValueError(
+                    f"Monitor '{spec.monitor_name}' must be created with dft_enabled=True."
+                )
+            if spec.reference_monitor:
+                ref = monitor_by_name.get(spec.reference_monitor)
+                if ref is None:
+                    raise ValueError(
+                        f"Missing reference monitor '{spec.reference_monitor}' for port '{spec.name}'."
+                    )
+                if not getattr(ref, "dft_enabled", False):
+                    raise ValueError(
+                        f"Reference monitor '{spec.reference_monitor}' must have dft_enabled=True."
+                    )
+
+        dft_cache = {}
+        projection_cache = {}
+        waves = {}
+        for spec in port_map.values():
+            parts = self._mode_components_for_port(spec)
+            main_monitor = monitor_by_name[spec.monitor_name]
+            for comp in (parts["e_component"], parts["h_component"]):
+                key = (main_monitor.name, comp)
+                if key not in dft_cache:
+                    _, dft_cache[key] = self._sample_monitor_component_dft(
+                        main_monitor, comp, frequencies=freqs
+                    )
+
+            a_plus = np.zeros(freqs.size, dtype=np.complex128)
+            a_minus = np.zeros(freqs.size, dtype=np.complex128)
+            cond_main = np.zeros(freqs.size, dtype=float)
+            for idx, f in enumerate(freqs):
+                proj = self._build_port_projection(
+                    spec, main_monitor, float(f), projection_cache
+                )
+                field_vec = np.concatenate(
+                    [
+                        dft_cache[(main_monitor.name, proj["e_component"])][idx],
+                        dft_cache[(main_monitor.name, proj["h_component"])][idx],
+                    ]
+                )
+                coeff = proj["pinv"] @ field_vec
+                a_plus[idx], a_minus[idx] = coeff[0], coeff[1]
+                cond_main[idx] = float(proj.get("condition_number", np.nan))
+
+            port_waves = {
+                "a_plus": a_plus,
+                "a_minus": a_minus,
+                "condition_number": cond_main,
+            }
+            if return_power:
+                port_waves["P_plus"] = np.abs(a_plus) ** 2
+                port_waves["P_minus"] = np.abs(a_minus) ** 2
+
+            if spec.reference_monitor:
+                ref_monitor = monitor_by_name[spec.reference_monitor]
+                for comp in (parts["e_component"], parts["h_component"]):
+                    key = (ref_monitor.name, comp)
+                    if key not in dft_cache:
+                        _, dft_cache[key] = self._sample_monitor_component_dft(
+                            ref_monitor, comp, frequencies=freqs
+                        )
+                a_incident = np.zeros(freqs.size, dtype=np.complex128)
+                cond_ref = np.zeros(freqs.size, dtype=float)
+                for idx, f in enumerate(freqs):
+                    proj = self._build_port_projection(
+                        spec, ref_monitor, float(f), projection_cache
+                    )
+                    field_vec = np.concatenate(
+                        [
+                            dft_cache[(ref_monitor.name, proj["e_component"])][idx],
+                            dft_cache[(ref_monitor.name, proj["h_component"])][idx],
+                        ]
+                    )
+                    coeff = proj["pinv"] @ field_vec
+                    a_incident[idx] = coeff[0]
+                    cond_ref[idx] = float(proj.get("condition_number", np.nan))
+                port_waves["a_incident"] = a_incident
+                port_waves["reference_condition_number"] = cond_ref
+                if return_power:
+                    port_waves["P_incident"] = np.abs(a_incident) ** 2
+
+            waves[spec.name] = port_waves
+        return waves
+
+    def get_S_matrix_modal_dft(
+        self,
+        source_port,
+        ports,
+        output_ports=None,
+        frequencies=None,
+        as_sax=True,
+        return_diagnostics=True,
+        min_incident_db=-40.0,
+    ):
+        """Broadband modal S extraction from in-simulation DFT monitor accumulators."""
+        port_map = self._normalize_portspecs(ports)
+        if source_port not in port_map:
+            raise ValueError(f"source_port '{source_port}' not found in ports.")
+
+        monitor_by_name = self._named_monitors()
+        if frequencies is None:
+            src_spec = port_map[source_port]
+            ref_name = src_spec.reference_monitor or src_spec.monitor_name
+            src_monitor = monitor_by_name.get(ref_name)
+            if src_monitor is None:
+                raise ValueError(f"Missing source/reference monitor '{ref_name}'.")
+            frequencies = src_monitor.get_dft_frequencies()
+        frequencies = np.atleast_1d(np.asarray(frequencies, dtype=float))
+
+        waves = self.extract_port_waves_dft(
+            ports=port_map.values(),
+            frequencies=frequencies,
+            min_incident_db=min_incident_db,
+            return_power=True,
+        )
+
+        if output_ports is None:
+            output_ports = list(port_map.keys())
+        else:
+            output_ports = list(output_ports)
+        missing = [name for name in output_ports if name not in port_map]
+        if missing:
+            raise ValueError(f"output_ports contains unknown ports: {missing}")
+
+        a_incident = np.asarray(
+            waves[source_port].get("a_incident", waves[source_port]["a_plus"]),
+            dtype=np.complex128,
+        )
+        max_incident = float(np.max(np.abs(a_incident))) if a_incident.size else 0.0
+        rel_floor = max_incident * (10.0 ** (float(min_incident_db) / 20.0))
+        abs_floor = max(1e-18, rel_floor)
+        valid_mask = np.abs(a_incident) >= abs_floor
+
+        s_matrix = {}
+        for out_port in output_ports:
+            b_out = np.asarray(waves[out_port]["a_minus"], dtype=np.complex128)
+            ratio = self._safe_ratio(b_out, a_incident)
+            ratio = np.where(valid_mask, ratio, 0.0 + 0.0j)
+            s_matrix[(out_port, source_port)] = ratio
+
+        self.s_matrix_frequencies = np.asarray(frequencies, dtype=float)
+        if as_sax:
+            try:
+                import sax
+            except ImportError as exc:
+                raise ImportError(
+                    "sax is required for as_sax=True. Install it with `pip install sax`."
+                ) from exc
+            s_output = sax.sdict(s_matrix)
+        else:
+            s_output = s_matrix
+
+        if not return_diagnostics:
+            return s_output
+
+        p_in = np.abs(a_incident) ** 2
+        p_guided_out = np.zeros_like(p_in, dtype=float)
+        for out_port in output_ports:
+            p_guided_out += np.abs(waves[out_port]["a_minus"]) ** 2
+        power_sum = p_guided_out / np.maximum(p_in, 1e-18)
+        loss_est = 1.0 - power_sum
+        power_sum = np.where(valid_mask, power_sum, np.nan)
+        loss_est = np.where(valid_mask, loss_est, np.nan)
+
+        diagnostics = {
+            "frequencies": np.asarray(frequencies, dtype=float),
+            "source_port": source_port,
+            "output_ports": output_ports,
+            "waves": waves,
+            "P_in": p_in,
+            "P_guided_out": p_guided_out,
+            "power_sum": power_sum,
+            "loss_est": loss_est,
+            "valid_mask": valid_mask,
+            "condition_numbers": {
+                name: {
+                    "monitor": np.asarray(data.get("condition_number", []), dtype=float),
+                    "reference": np.asarray(
+                        data.get("reference_condition_number", []), dtype=float
+                    ),
+                }
+                for name, data in waves.items()
+            },
+        }
+        return {"s_matrix": s_output, "diagnostics": diagnostics}
 
     def extract_port_waves_cw(
         self,
@@ -1395,6 +1645,9 @@ class Simulation:
 
     def get_s_matrix_modal(self, *args, **kwargs):
         return self.get_S_matrix_modal(*args, **kwargs)
+
+    def get_s_matrix_modal_dft(self, *args, **kwargs):
+        return self.get_S_matrix_modal_dft(*args, **kwargs)
 
     def get_s_matrix_modal_cw(self, *args, **kwargs):
         return self.get_S_matrix_modal_cw(*args, **kwargs)

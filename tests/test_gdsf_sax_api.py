@@ -292,3 +292,175 @@ def test_get_S_matrix_modal_cw_shapes_and_keys(monkeypatch):
     assert set(s_matrix.keys()) == {("o1", "o1"), ("o2", "o1")}
     assert np.iscomplexobj(s_matrix[("o1", "o1")])
     assert isinstance(result["diagnostics"]["power_sum"], float)
+
+
+def test_monitor_dft_accum_recovers_known_sinusoid():
+    n = 2048
+    dt = 1e-15
+    k_bin = 31
+    freq = k_bin / (n * dt)
+    amp = 0.55
+    phase = 0.35
+    t = np.arange(n, dtype=float) * dt
+
+    mon = Monitor(
+        start=(0.0, 0.0),
+        end=(0.0, 0.0),
+        name="m_dft",
+        record_fields=False,
+        dft_enabled=True,
+        dft_frequencies=np.array([freq], dtype=float),
+        dft_t_start=float(t[0]),
+        dft_t_end=float(t[-1]),
+        dft_components=("Ez",),
+        dft_window="rect",
+    )
+    for i, ti in enumerate(t):
+        sample = amp * np.cos(2 * np.pi * freq * ti + phase)
+        mon.record_fields_2d(
+            Ez=np.array([[sample]], dtype=float),
+            Hx=np.zeros((1, 1), dtype=float),
+            Hy=np.zeros((1, 1), dtype=float),
+            t=float(ti),
+            dx=1.0,
+            dy=1.0,
+            step=i,
+        )
+
+    recovered = mon.get_dft_component("Ez")
+    assert recovered.shape == (1, 1)
+    z = recovered[0, 0]
+    assert np.isclose(np.abs(z), amp, rtol=0.03)
+    phase_err = np.angle(z / (amp * np.exp(1j * phase)))
+    assert abs(phase_err) < 0.08
+
+
+def test_extract_port_waves_dft_modal_coefficients_synthetic(monkeypatch):
+    freqs = np.array([1.0, 2.0], dtype=float)
+    mode_matrix = np.array([[1.0, 1.0], [1.0, -1.0]], dtype=np.complex128)
+    pinv = np.linalg.pinv(mode_matrix)
+
+    a_src = np.array([1.2 + 0.2j, 1.1 - 0.1j])
+    b_src = np.array([0.08 - 0.02j, 0.03 + 0.01j])
+    a_ref = np.array([1.4 + 0.0j, 1.5 + 0.0j])
+    b_ref = np.zeros_like(a_ref)
+    a_out = np.array([0.05 + 0.01j, -0.02 + 0.03j])
+    b_out = np.array([0.72 - 0.1j, 0.69 + 0.08j])
+
+    dft_map = {
+        ("m_src", "Ez"): (a_src + b_src)[:, None],
+        ("m_src", "Hy"): (a_src - b_src)[:, None],
+        ("m_ref", "Ez"): (a_ref + b_ref)[:, None],
+        ("m_ref", "Hy"): (a_ref - b_ref)[:, None],
+        ("m_out", "Ez"): (a_out + b_out)[:, None],
+        ("m_out", "Hy"): (a_out - b_out)[:, None],
+    }
+
+    def fake_sample(self, monitor, component, frequencies):
+        assert np.allclose(frequencies, freqs)
+        return np.asarray(frequencies, dtype=float), dft_map[(monitor.name, component)]
+
+    def fake_projection(self, spec, monitor, frequency, cache, mode_pad_cells=6):
+        return {
+            "e_component": "Ez",
+            "h_component": "Hy",
+            "pinv": pinv,
+            "condition_number": 1.0,
+        }
+
+    monkeypatch.setattr(Simulation, "_sample_monitor_component_dft", fake_sample)
+    monkeypatch.setattr(Simulation, "_build_port_projection", fake_projection)
+
+    sim = Simulation.__new__(Simulation)
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    sim.resolution = 1.0
+    sim.devices = [
+        Monitor(
+            start=(0.0, 0.0),
+            end=(0.0, 1.0),
+            name="m_src",
+            dft_enabled=True,
+            dft_frequencies=freqs,
+        ),
+        Monitor(
+            start=(0.0, 0.0),
+            end=(0.0, 1.0),
+            name="m_ref",
+            dft_enabled=True,
+            dft_frequencies=freqs,
+        ),
+        Monitor(
+            start=(1.0, 0.0),
+            end=(1.0, 1.0),
+            name="m_out",
+            dft_enabled=True,
+            dft_frequencies=freqs,
+        ),
+    ]
+
+    ports = [
+        PortSpec(
+            name="o1",
+            monitor_name="m_src",
+            reference_monitor="m_ref",
+            direction="+x",
+            polarization="tm",
+        ),
+        PortSpec(name="o2", monitor_name="m_out", direction="+x", polarization="tm"),
+    ]
+    waves = sim.extract_port_waves_dft(ports=ports, frequencies=freqs)
+    np.testing.assert_allclose(waves["o1"]["a_plus"], a_src, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(waves["o1"]["a_minus"], b_src, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(waves["o1"]["a_incident"], a_ref, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(waves["o2"]["a_plus"], a_out, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(waves["o2"]["a_minus"], b_out, rtol=1e-9, atol=1e-9)
+
+
+def test_get_S_matrix_modal_dft_keys_shapes_and_valid_mask(monkeypatch):
+    sim = Simulation.__new__(Simulation)
+    sim.devices = []
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    freqs = np.array([1.0, 2.0, 3.0], dtype=float)
+    waves = {
+        "o1": {
+            "a_plus": np.ones_like(freqs, dtype=np.complex128),
+            "a_minus": 0.1 * np.ones_like(freqs, dtype=np.complex128),
+            "a_incident": np.array([1.0, 1e-6, 1.0], dtype=np.complex128),
+            "condition_number": np.array([2.0, 2.0, 2.0], dtype=float),
+        },
+        "o2": {
+            "a_plus": np.zeros_like(freqs, dtype=np.complex128),
+            "a_minus": 0.7j * np.ones_like(freqs, dtype=np.complex128),
+            "condition_number": np.array([3.0, 3.0, 3.0], dtype=float),
+        },
+    }
+
+    def fake_extract(self, ports, frequencies, min_incident_db=-40.0, return_power=True):
+        assert np.allclose(frequencies, freqs)
+        return waves
+
+    monkeypatch.setattr(Simulation, "extract_port_waves_dft", fake_extract)
+    result = sim.get_S_matrix_modal_dft(
+        source_port="o1",
+        ports=[
+            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
+        ],
+        output_ports=["o1", "o2"],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-40.0,
+    )
+
+    s_matrix = result["s_matrix"]
+    diag = result["diagnostics"]
+    assert set(s_matrix.keys()) == {("o1", "o1"), ("o2", "o1")}
+    assert s_matrix[("o1", "o1")].shape == freqs.shape
+    assert s_matrix[("o2", "o1")].shape == freqs.shape
+    assert diag["valid_mask"].shape == freqs.shape
+    assert np.array_equal(diag["valid_mask"], np.array([True, False, True]))
+    assert s_matrix[("o2", "o1")][1] == 0.0j
+    assert np.isnan(diag["power_sum"][1])

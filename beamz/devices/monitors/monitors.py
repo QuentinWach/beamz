@@ -19,6 +19,13 @@ class Monitor:
         live_update=False,
         record_interval=1,
         max_history_steps=None,
+        dft_frequencies=None,
+        dft_t_start=0.0,
+        dft_t_end=None,
+        dft_enabled=False,
+        dft_components=None,
+        dft_record_every_step=True,
+        dft_window="rect",
         objective_function: Optional[Callable[["Monitor"], float]] = None,
         name: Optional[str] = None,
     ):
@@ -28,6 +35,26 @@ class Monitor:
         self.live_update = live_update
         self.record_interval = record_interval
         self.max_history_steps = max_history_steps
+        self.dft_enabled = bool(dft_enabled)
+        self.dft_record_every_step = bool(dft_record_every_step)
+        self.dft_t_start = float(dft_t_start) if dft_t_start is not None else 0.0
+        self.dft_t_end = None if dft_t_end is None else float(dft_t_end)
+        self.dft_window = str(dft_window).lower()
+        if self.dft_window in {"none", "rectangular"}:
+            self.dft_window = "rect"
+        if self.dft_window not in {"rect", "hann"}:
+            raise ValueError(
+                f"dft_window must be one of ['rect', 'hann'], got {dft_window!r}"
+            )
+        if dft_frequencies is None:
+            self.dft_frequencies = np.array([], dtype=float)
+        else:
+            self.dft_frequencies = np.atleast_1d(
+                np.asarray(dft_frequencies, dtype=float)
+            )
+        self.dft_components = (
+            tuple(str(c) for c in dft_components) if dft_components is not None else None
+        )
         self.objective_function = objective_function
         self.objective_value: Optional[float] = None
         self.name = name
@@ -67,6 +94,10 @@ class Monitor:
         self.update_interval = (
             10  # Update every N records (faster updates for visibility)
         )
+        # DFT accumulators: component -> complex[nf, npoints], plus scalar weight sum.
+        self._dft_accum = {}
+        self._dft_weight_sum = np.zeros(self.dft_frequencies.size, dtype=float)
+        self._dft_sample_count = 0
 
         if self.is_3d:
             self._init_3d_monitor(start, end, plane_normal, plane_position, size)
@@ -341,9 +372,68 @@ class Monitor:
         """Check if this step should be recorded based on interval."""
         return (step - self.last_record_step) >= self.record_interval
 
+    def _dft_should_accumulate(self, step, t):
+        if not self.dft_enabled or self.dft_frequencies.size == 0:
+            return False
+        if self.dft_t_end is not None and float(t) > self.dft_t_end:
+            return False
+        if float(t) < self.dft_t_start:
+            return False
+        if self.dft_record_every_step:
+            return True
+        return self.should_record(step)
+
+    def _dft_weight(self, t):
+        if self.dft_window == "hann" and self.dft_t_end is not None and self.dft_t_end > self.dft_t_start:
+            tau = (float(t) - self.dft_t_start) / (self.dft_t_end - self.dft_t_start)
+            tau = min(max(tau, 0.0), 1.0)
+            return 0.5 * (1.0 - np.cos(2.0 * np.pi * tau))
+        return 1.0
+
+    def _init_or_get_dft_accum(self, component, npoints):
+        arr = self._dft_accum.get(component)
+        shape = (self.dft_frequencies.size, int(npoints))
+        if arr is None or arr.shape != shape:
+            arr = np.zeros(shape, dtype=np.complex128)
+            self._dft_accum[component] = arr
+        return arr
+
+    def _update_dft(self, t, component_vectors):
+        if not component_vectors:
+            return
+        w = float(self._dft_weight(t))
+        if w <= 0.0:
+            return
+        phase = np.exp(-1j * 2.0 * np.pi * self.dft_frequencies * float(t))
+        self._dft_weight_sum = self._dft_weight_sum + w
+        self._dft_sample_count += 1
+        for comp, vec in component_vectors.items():
+            arr = np.asarray(vec, dtype=np.complex128).reshape(-1)
+            accum = self._init_or_get_dft_accum(comp, arr.size)
+            accum += (w * phase)[:, None] * arr[None, :]
+            self._dft_accum[comp] = accum
+
+    def reset_dft(self):
+        self._dft_accum = {}
+        self._dft_weight_sum = np.zeros(self.dft_frequencies.size, dtype=float)
+        self._dft_sample_count = 0
+
+    def get_dft_frequencies(self):
+        return np.asarray(self.dft_frequencies, dtype=float)
+
+    def get_dft_component(self, component: str):
+        comp = str(component)
+        if comp not in self._dft_accum:
+            raise ValueError(f"No DFT data recorded for component '{comp}'.")
+        accum = np.asarray(self._dft_accum[comp], dtype=np.complex128)
+        scale = np.maximum(self._dft_weight_sum, 1e-18)
+        return (2.0 / scale[:, None]) * accum
+
     def record_fields_2d(self, Ez, Hx, Hy, t, dx, dy, step=0, Ex=None, Ey=None, Hz=None):
         """Record 2D field data."""
-        if not self.should_record(step):
+        do_record = self.should_record(step)
+        do_dft = self._dft_should_accumulate(step, t)
+        if not do_record and not do_dft:
             return
         grid_points = self.get_grid_points_2d(dx, dy)
         Ez_values, Hx_values, Hy_values = [], [], []
@@ -386,7 +476,7 @@ class Monitor:
             else:
                 Hz_values.append(0.0)
 
-        if self.should_record_fields:
+        if do_record and self.should_record_fields:
             self.fields["Ex"].append(Ex_values)
             self.fields["Ey"].append(Ey_values)
             self.fields["Ez"].append(Ez_values)
@@ -395,18 +485,38 @@ class Monitor:
             self.fields["Hz"].append(Hz_values)
             self.fields["t"].append(t)
 
-        if self.accumulate_power:
+        if do_dft:
+            dft_components = self.dft_components or ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+            vectors = {}
+            if "Ex" in dft_components:
+                vectors["Ex"] = Ex_values
+            if "Ey" in dft_components:
+                vectors["Ey"] = Ey_values
+            if "Ez" in dft_components:
+                vectors["Ez"] = Ez_values
+            if "Hx" in dft_components:
+                vectors["Hx"] = Hx_values
+            if "Hy" in dft_components:
+                vectors["Hy"] = Hy_values
+            if "Hz" in dft_components:
+                vectors["Hz"] = Hz_values
+            self._update_dft(t, vectors)
+
+        if do_record and self.accumulate_power:
             self._calculate_power_2d(Ez_values, Hx_values, Hy_values, t, dx, dy)
 
-        self.last_record_step = step
+        if do_record:
+            self.last_record_step = step
         self._manage_memory()
 
-        if self.live_update and (len(self.fields["t"]) % self.update_interval == 0):
+        if do_record and self.live_update and (len(self.fields["t"]) % self.update_interval == 0):
             self._update_live_plot_2d()
 
     def record_fields_3d(self, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy, dz, step=0):
         """Record 3D field data from plane slice."""
-        if not self.should_record(step):
+        do_record = self.should_record(step)
+        do_dft = self._dft_should_accumulate(step, t)
+        if not do_record and not do_dft:
             return
 
         def slice_field(arr):
@@ -466,7 +576,7 @@ class Monitor:
         # print(f"● Monitor record step {step}: Ez_slice max={np.max(np.abs(Ez_slice)):.2e}")
         # print(f"● Monitor record step {step}: Ez_slice max={np.max(np.abs(Ez_slice)):.2e}")
 
-        if self.should_record_fields:
+        if do_record and self.should_record_fields:
             self.fields["Ex"].append(Ex_slice)
             self.fields["Ey"].append(Ey_slice)
             self.fields["Ez"].append(Ez_slice)
@@ -475,15 +585,33 @@ class Monitor:
             self.fields["Hz"].append(Hz_slice)
             self.fields["t"].append(t)
 
-        if self.accumulate_power:
+        if do_dft:
+            dft_components = self.dft_components or ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+            vectors = {}
+            if "Ex" in dft_components:
+                vectors["Ex"] = Ex_slice.reshape(-1)
+            if "Ey" in dft_components:
+                vectors["Ey"] = Ey_slice.reshape(-1)
+            if "Ez" in dft_components:
+                vectors["Ez"] = Ez_slice.reshape(-1)
+            if "Hx" in dft_components:
+                vectors["Hx"] = Hx_slice.reshape(-1)
+            if "Hy" in dft_components:
+                vectors["Hy"] = Hy_slice.reshape(-1)
+            if "Hz" in dft_components:
+                vectors["Hz"] = Hz_slice.reshape(-1)
+            self._update_dft(t, vectors)
+
+        if do_record and self.accumulate_power:
             self._calculate_power_3d(
                 Ex_slice, Ey_slice, Ez_slice, Hx_slice, Hy_slice, Hz_slice, t, dx, dy
             )
 
-        self.last_record_step = step
+        if do_record:
+            self.last_record_step = step
         self._manage_memory()
 
-        if self.live_update and (len(self.fields["t"]) % self.update_interval == 0):
+        if do_record and self.live_update and (len(self.fields["t"]) % self.update_interval == 0):
             self._update_live_plot_3d()
 
     def record_fields(self, *args, **kwargs):
@@ -930,6 +1058,13 @@ class Monitor:
                     live_update=self.live_update,
                     record_interval=self.record_interval,
                     max_history_steps=self.max_history_steps,
+                    dft_frequencies=self.dft_frequencies.copy(),
+                    dft_t_start=self.dft_t_start,
+                    dft_t_end=self.dft_t_end,
+                    dft_enabled=self.dft_enabled,
+                    dft_components=self.dft_components,
+                    dft_record_every_step=self.dft_record_every_step,
+                    dft_window=self.dft_window,
                 )
             else:
                 # Defined by plane normal and position
@@ -944,6 +1079,13 @@ class Monitor:
                     live_update=self.live_update,
                     record_interval=self.record_interval,
                     max_history_steps=self.max_history_steps,
+                    dft_frequencies=self.dft_frequencies.copy(),
+                    dft_t_start=self.dft_t_start,
+                    dft_t_end=self.dft_t_end,
+                    dft_enabled=self.dft_enabled,
+                    dft_components=self.dft_components,
+                    dft_record_every_step=self.dft_record_every_step,
+                    dft_window=self.dft_window,
                 )
         else:
             # 2D monitor
@@ -956,4 +1098,11 @@ class Monitor:
                 live_update=self.live_update,
                 record_interval=self.record_interval,
                 max_history_steps=self.max_history_steps,
+                dft_frequencies=self.dft_frequencies.copy(),
+                dft_t_start=self.dft_t_start,
+                dft_t_end=self.dft_t_end,
+                dft_enabled=self.dft_enabled,
+                dft_components=self.dft_components,
+                dft_record_every_step=self.dft_record_every_step,
+                dft_window=self.dft_window,
             )
