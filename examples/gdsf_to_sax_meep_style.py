@@ -8,6 +8,7 @@ Workflow:
 """
 
 import os
+import time as pytime
 import matplotlib.pyplot as plt
 import numpy as np
 import sax
@@ -19,9 +20,9 @@ except Exception: PchipInterpolator = None
 
 WL0 = 1.55 * µm
 WL_MIN, WL_MAX = 1.50 * µm, 1.60 * µm
-WL_POINTS = int(os.getenv("BEAMZ_SWEEP_POINTS", "10"))
+WL_POINTS = int(os.getenv("BEAMZ_SWEEP_POINTS", "21"))
 N_CORE, N_CLAD = 3.48, 1.44
-POINTS_PER_WAVELENGTH = int(os.getenv("BEAMZ_PPW", "10"))
+POINTS_PER_WAVELENGTH = int(os.getenv("BEAMZ_PPW", "8"))
 DX, DT = dxdt(WL0, n_max=N_CORE, points_per_wavelength=POINTS_PER_WAVELENGTH, dims=2)
 INPUT_EXTENSION, OUTPUT_EXTENSION, Y_MARGIN = 4.0 * µm, 4.0 * µm, 3.0 * µm
 PML_BASE, PML_RIGHT = 1.0 * WL0, 1.5 * WL0
@@ -91,17 +92,19 @@ for out in OUTPUT_PORTS:
 freqs = np.linspace(LIGHT_SPEED / WL_MAX, LIGHT_SPEED / WL_MIN, WL_POINTS)
 wl = LIGHT_SPEED / freqs
 fmin, fmax = float(np.min(freqs)), float(np.max(freqs))
+df = float(np.min(np.diff(np.sort(freqs)))) if len(freqs) > 1 else fmin
 fcen, fwidth = 0.5 * (fmin + fmax), max(fmax - fmin, 1e9)
-sigma_t = 0.30 / fwidth
-t0 = 6.0 * sigma_t
-t_end_pulse = t0 + 6.0 * sigma_t
-total_time = t_end_pulse + 2.8 * travel_time + 24.0 / fmin
+sigma_t = 0.20 / fwidth
+t0 = 4.0 * sigma_t
+t_end_pulse = t0 + 4.0 * sigma_t
+ringdown = max(4.0 / fmin, 0.5 / max(df, 1e6))
+total_time = t_end_pulse + 1.5 * travel_time + ringdown
 time = np.arange(0.0, total_time, DT)
 signal = gaussian_pulse(time, amplitude=1.0, center=t0, width=sigma_t, frequency=fcen, phase=0.0)
 plot_signal(signal, time)
 
 source = ModeSource(grid=grid, center=source_center, width=src_span, wavelength=float(WL0), pol="tm", signal=signal, direction=src["direction"])
-monitor_stride = int(os.getenv("BEAMZ_MONITOR_STRIDE", "1"))
+monitor_stride = int(os.getenv("BEAMZ_MONITOR_STRIDE", "3"))
 monitor_cfg = dict(
     record_fields=False,
     dft_enabled=True,
@@ -141,7 +144,9 @@ sim = Simulation(
     resolution=DX,
 )
 print(f"Running Meep-style pulse simulation ({WL_POINTS} wavelengths, one run)...")
+wall_t0 = pytime.time()
 sim.run_fast(progress=False)
+print(f"Simulation wall-time: {pytime.time() - wall_t0:.1f} s")
 
 result = sim.get_S_matrix_modal_dft(
     source_port=SOURCE_PORT,
@@ -150,7 +155,7 @@ result = sim.get_S_matrix_modal_dft(
     frequencies=freqs,
     as_sax=False,
     return_diagnostics=True,
-    min_incident_db=-45.0,
+    min_incident_db=-55.0,
 )
 s_sax = sax.sdict(result["s_matrix"])
 diag = result["diagnostics"]
@@ -166,7 +171,7 @@ for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
     print(f"S[{key[0]},{key[1]}] @ {WL0 / µm:.3f}um: |S|={np.abs(s0):.3f}, phase={np.angle(s0):.3f} rad")
 
 plt.figure(figsize=(5.5, 3.4), dpi=250)
-wl_dense = np.linspace(np.min(wl_um), np.max(wl_um), max(300, 8 * len(wl_um)))
+wl_dense = np.linspace(np.min(wl_um), np.max(wl_um), max(700, 20 * len(wl_um)))
 for key, color in [(("o1", "o1"), "black"), (("o2", "o1"), "tab:blue"), (("o3", "o1"), "tab:orange")]:
     y_db = 20 * np.log10(np.maximum(np.abs(np.asarray(s_sax[key], dtype=np.complex128)), 1e-12))
     y_db = np.where(valid, y_db, np.nan)
@@ -179,7 +184,7 @@ for key, color in [(("o1", "o1"), "black"), (("o2", "o1"), "tab:blue"), (("o3", 
             y = y[::-1]
         y_dense = PchipInterpolator(x, y)(wl_dense) if PchipInterpolator is not None else np.interp(wl_dense, x, y)
         plt.plot(wl_dense, y_dense, "-", linewidth=2.2, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
-        plt.plot(wl_um[finite], y_db[finite], "o", ms=3.0, color=color, alpha=1.0)
+        plt.plot(wl_um[finite], y_db[finite], "o", ms=2.6, color=color, alpha=0.45)
     else:
         plt.plot(wl_um, y_db, "o-", linewidth=2.2, ms=3.0, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
 plt.title("GDSFactory MMI1x2 (Meep-style Gaussian Pulse)")
