@@ -9,12 +9,16 @@ import numpy as np
 import sax
 from beamz import *
 from beamz.visual.helpers import dxdt
+try:
+    from scipy.interpolate import PchipInterpolator
+except Exception:
+    PchipInterpolator = None
 
 # Parameters
 WL0 = 1.55 * µm
 N_CORE, N_CLAD = 3.48, 1.44
-WL_MIN, WL_MAX = 1.30 * µm, 1.80 * µm
-WL_POINTS = int(os.getenv("BEAMZ_SWEEP_POINTS", os.getenv("BEAMZ_DFT_POINTS", "25")))
+WL_MIN, WL_MAX = 1.50 * µm, 1.60 * µm
+WL_POINTS = 10
 POINTS_PER_WAVELENGTH = 12
 DX, DT = dxdt(
     WL0,
@@ -217,8 +221,8 @@ monitor_cfg = dict(
     dft_frequencies=freqs,
     dft_components=("Ez", "Hx", "Hy"),
     dft_window="rect",
-    record_interval=1,
-    dft_record_every_step=True,
+    record_interval=2,
+    dft_record_every_step=False,
 )
 monitors = [
     Monitor(
@@ -299,11 +303,31 @@ for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
     print(f"S[{key[0]},{key[1]}] @ {WL0 / µm:.3f}um: |S|={np.abs(s0):.3f}, phase={np.angle(s0):.3f} rad")
 
 plt.figure(figsize=(5, 3), dpi=300)
+wl_dense = np.linspace(np.min(wl_um), np.max(wl_um), max(300, 8 * len(wl_um)))
 for key, color in [(("o1", "o1"), "black"), (("o2", "o1"), "tab:blue"), (("o3", "o1"), "tab:orange")]:
     vals = np.asarray(s_sax[key], dtype=np.complex128)
     y_db = 20 * np.log10(np.maximum(np.abs(vals), 1e-12))
     y_db = np.where(valid_mask, y_db, np.nan)
-    plt.plot(wl_um, y_db, "o-", linewidth=2, ms=5, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
+    finite = np.isfinite(y_db)
+    if np.count_nonzero(finite) >= 4:
+        x_plot = wl_um[finite]
+        y_plot = y_db[finite]
+        # PchipInterpolator and np.interp require strictly increasing x
+        order = np.argsort(x_plot)
+        x_plot = x_plot[order]
+        y_plot = y_plot[order]
+        # drop duplicate x (keep first occurrence)
+        unique = np.concatenate(([True], x_plot[1:] > x_plot[:-1]))
+        x_plot = x_plot[unique]
+        y_plot = y_plot[unique]
+        if PchipInterpolator is not None and len(x_plot) >= 4:
+            y_dense = PchipInterpolator(x_plot, y_plot)(wl_dense)
+        else:
+            y_dense = np.interp(wl_dense, x_plot, y_plot)
+        plt.plot(wl_dense, y_dense, "-", linewidth=3, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
+        #plt.plot(wl_um[finite], y_db[finite], "o", ms=3, color=color, alpha=0.55)
+    else:
+        plt.plot(wl_um, y_db, "-", linewidth=3, color=color, label=rf"$S_{{{key[0][1:]}{key[1][1:]}}}$")
 plt.xlabel("Wavelength (µm)")
 plt.ylabel("Magnitude (dB)")
 plt.title("GDSFactory MMI1x2")
