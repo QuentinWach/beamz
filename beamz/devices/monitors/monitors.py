@@ -48,8 +48,8 @@ class Monitor:
                 "t": [],
             }
         else:
-            # 2D fields: Ez, Hx, Hy
-            self.fields = {"Ez": [], "Hx": [], "Hy": [], "t": []}
+            # 2D fields: Ez, Hx, Hy and optional TE set Ex, Ey, Hz
+            self.fields = {"Ex": [], "Ey": [], "Ez": [], "Hx": [], "Hy": [], "Hz": [], "t": []}
 
         # Power and energy storage
         self.power_accumulated = None
@@ -341,12 +341,13 @@ class Monitor:
         """Check if this step should be recorded based on interval."""
         return (step - self.last_record_step) >= self.record_interval
 
-    def record_fields_2d(self, Ez, Hx, Hy, t, dx, dy, step=0):
+    def record_fields_2d(self, Ez, Hx, Hy, t, dx, dy, step=0, Ex=None, Ey=None, Hz=None):
         """Record 2D field data."""
         if not self.should_record(step):
             return
         grid_points = self.get_grid_points_2d(dx, dy)
         Ez_values, Hx_values, Hy_values = [], [], []
+        Ex_values, Ey_values, Hz_values = [], [], []
         for x_idx, y_idx in grid_points:
             # Ez values
             if 0 <= y_idx < Ez.shape[0] and 0 <= x_idx < Ez.shape[1]:
@@ -366,11 +367,32 @@ class Monitor:
                 Hy_values.append(complex(val) if np.iscomplexobj(val) else float(val))
             else:
                 Hy_values.append(0.0)
+            # Ex values (optional 2D TE component)
+            if Ex is not None and 0 <= y_idx < Ex.shape[0] and 0 <= x_idx < Ex.shape[1]:
+                val = Ex[y_idx, x_idx]
+                Ex_values.append(complex(val) if np.iscomplexobj(val) else float(val))
+            else:
+                Ex_values.append(0.0)
+            # Ey values (optional 2D TE component)
+            if Ey is not None and 0 <= y_idx < Ey.shape[0] and 0 <= x_idx < Ey.shape[1]:
+                val = Ey[y_idx, x_idx]
+                Ey_values.append(complex(val) if np.iscomplexobj(val) else float(val))
+            else:
+                Ey_values.append(0.0)
+            # Hz values (optional 2D TE component)
+            if Hz is not None and 0 <= y_idx < Hz.shape[0] and 0 <= x_idx < Hz.shape[1]:
+                val = Hz[y_idx, x_idx]
+                Hz_values.append(complex(val) if np.iscomplexobj(val) else float(val))
+            else:
+                Hz_values.append(0.0)
 
         if self.should_record_fields:
+            self.fields["Ex"].append(Ex_values)
+            self.fields["Ey"].append(Ey_values)
             self.fields["Ez"].append(Ez_values)
             self.fields["Hx"].append(Hx_values)
             self.fields["Hy"].append(Hy_values)
+            self.fields["Hz"].append(Hz_values)
             self.fields["t"].append(t)
 
         if self.accumulate_power:
@@ -837,6 +859,55 @@ class Monitor:
                 else 0
             ),
         }
+
+    def get_signed_flux_trace(self, normal_direction, field_pair=None):
+        """Return signed directional flux trace from recorded field components.
+
+        For 2D monitors:
+          - default +x/-x uses (Ez, Hy) with Sx = -Re(Ez * conj(Hy))
+          - default +y/-y uses (Ez, Hx) with Sy = +Re(Ez * conj(Hx))
+        """
+        direction = str(normal_direction).lower()
+        if direction not in {"+x", "-x", "+y", "-y"}:
+            raise ValueError(
+                f"normal_direction must be one of ['+x','-x','+y','-y'], got {normal_direction!r}"
+            )
+        axis = direction[1]
+        dir_sign = 1.0 if direction.startswith("+") else -1.0
+
+        if field_pair is None:
+            if axis == "x":
+                e_comp, h_comp, base_sign = "Ez", "Hy", -1.0
+            else:
+                e_comp, h_comp, base_sign = "Ez", "Hx", 1.0
+        else:
+            if len(field_pair) != 2:
+                raise ValueError("field_pair must be a tuple like ('Ez', 'Hy').")
+            e_comp, h_comp = field_pair
+            base_sign = 1.0
+
+        if e_comp not in self.fields or h_comp not in self.fields:
+            raise ValueError(
+                f"Requested components ({e_comp}, {h_comp}) are not recorded by this monitor."
+            )
+        if not self.fields[e_comp] or not self.fields[h_comp]:
+            raise ValueError(
+                f"No recorded data for ({e_comp}, {h_comp}) on monitor '{self.name}'."
+            )
+
+        e_arr = np.asarray(self.fields[e_comp], dtype=np.complex128)
+        h_arr = np.asarray(self.fields[h_comp], dtype=np.complex128)
+        if e_arr.ndim == 1:
+            e_arr = e_arr[:, None]
+        if h_arr.ndim == 1:
+            h_arr = h_arr[:, None]
+
+        n_t = min(e_arr.shape[0], h_arr.shape[0])
+        n_p = min(e_arr.shape[1], h_arr.shape[1])
+        signed_density = base_sign * np.real(
+            e_arr[:n_t, :n_p] * np.conjugate(h_arr[:n_t, :n_p])
+        )
+        return dir_sign * np.sum(signed_density, axis=1)
 
     def __str__(self):
         if not self.fields["t"]:

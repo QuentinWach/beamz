@@ -3,7 +3,7 @@ Simulation module for BEAMZ - Contains FDTD simulation and field operations.
 """
 
 from beamz.design.meshing import RegularGrid
-from beamz.simulation.core import Simulation
+from beamz.simulation.core import PortSpec, Simulation
 from beamz.simulation.thermal import (
     ConvectionBC,
     MZITuningResult,
@@ -24,6 +24,7 @@ from beamz.simulation.thermal import (
 __all__ = [
     "RegularGrid",
     "Simulation",
+    "PortSpec",
     "ThermalConfig",
     "ThermalCoupling",
     "StaticThermalConfig",

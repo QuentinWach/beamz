@@ -3,7 +3,14 @@ import importlib.util
 import numpy as np
 import pytest
 
-from beamz import Monitor, Simulation, calc_optimal_fdtd_params, design, dxdt
+from beamz import (
+    Monitor,
+    PortSpec,
+    Simulation,
+    calc_optimal_fdtd_params,
+    design,
+    dxdt,
+)
 
 
 def test_dxdt_alias_matches_calc_optimal_fdtd_params():
@@ -43,41 +50,245 @@ def test_gdsf_loader_mmi1x2_returns_materialized_design_and_ports():
         assert 0 <= cy <= loaded_design.height
 
 
-def test_get_S_matrix_fft_column_extraction():
-    n = 1024
-    dt = 1e-15
-    k_bin = 20
-    freq = k_bin / (n * dt)
-    phase = 0.7
-    amplitude = 0.4
-    time = np.arange(n) * dt
+def test_get_S_matrix_proxy_raises_and_points_to_modal_api():
+    sim = Simulation.__new__(Simulation)
+    with pytest.raises(RuntimeError, match="get_S_matrix_modal"):
+        sim.get_S_matrix(input_ports=["o1"], output_ports=["o1"], source_port="o1")
+    with pytest.raises(RuntimeError, match="get_s_matrix_modal"):
+        sim.get_s_matrix(input_ports=["o1"], output_ports=["o1"], source_port="o1")
 
-    trace_in = np.cos(2 * np.pi * freq * time)
-    trace_out = amplitude * np.cos(2 * np.pi * freq * time + phase)
 
-    mon_in = Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="o1", record_fields=True)
-    mon_out = Monitor(start=(1.0, 0.0), end=(1.0, 1.0), name="o2", record_fields=True)
-    mon_in.fields["Ez"] = [[v] for v in trace_in]
-    mon_out.fields["Ez"] = [[v] for v in trace_out]
-    mon_in.fields["t"] = list(time)
-    mon_out.fields["t"] = list(time)
+def test_extract_port_waves_modal_coefficients_synthetic(monkeypatch):
+    freqs = np.array([1.0, 2.0], dtype=float)
+    mode_matrix = np.array([[1.0, 1.0], [1.0, -1.0]], dtype=np.complex128)
+    pinv = np.linalg.pinv(mode_matrix)
+
+    a_src = np.array([1.5 + 0.1j, 1.6 - 0.2j])
+    b_src = np.array([0.1 - 0.02j, 0.05 + 0.03j])
+    a_ref = np.array([2.0 + 0.0j, 2.1 + 0.0j])
+    b_ref = np.zeros_like(a_ref)
+    a_out = np.array([0.02 + 0.01j, -0.01 + 0.02j])
+    b_out = np.array([0.7 - 0.2j, 0.6 + 0.1j])
+
+    spectral_map = {
+        ("m_src", "Ez"): (a_src + b_src)[:, None],
+        ("m_src", "Hy"): (a_src - b_src)[:, None],
+        ("m_ref", "Ez"): (a_ref + b_ref)[:, None],
+        ("m_ref", "Hy"): (a_ref - b_ref)[:, None],
+        ("m_out", "Ez"): (a_out + b_out)[:, None],
+        ("m_out", "Hy"): (a_out - b_out)[:, None],
+    }
+
+    def fake_sample(self, monitor, component, frequencies=None, window="hann"):
+        assert frequencies is not None
+        return np.asarray(frequencies, dtype=float), spectral_map[(monitor.name, component)]
+
+    def fake_projection(self, spec, monitor, frequency, cache, mode_pad_cells=6):
+        return {"e_component": "Ez", "h_component": "Hy", "pinv": pinv}
+
+    monkeypatch.setattr(Simulation, "_sample_monitor_component_spectrum", fake_sample)
+    monkeypatch.setattr(Simulation, "_build_port_projection", fake_projection)
 
     sim = Simulation.__new__(Simulation)
-    sim.devices = [mon_in, mon_out]
-    sim.dt = dt
-    sim.time = time
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    sim.resolution = 1.0
+    sim.devices = [
+        Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m_src"),
+        Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m_ref"),
+        Monitor(start=(1.0, 0.0), end=(1.0, 1.0), name="m_out"),
+    ]
 
-    s_matrix = sim.get_S_matrix(
-        input_ports=["o1", "o2"],
-        output_ports=["o2"],
+    ports = [
+        PortSpec(
+            name="o1",
+            monitor_name="m_src",
+            reference_monitor="m_ref",
+            direction="+x",
+            polarization="tm",
+        ),
+        PortSpec(name="o2", monitor_name="m_out", direction="+x", polarization="tm"),
+    ]
+    waves = sim.extract_port_waves(ports=ports, frequencies=freqs, mode_strategy="per_frequency")
+
+    np.testing.assert_allclose(waves["o1"]["a_plus"], a_src, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(waves["o1"]["a_minus"], b_src, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(waves["o1"]["a_incident"], a_ref, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(waves["o2"]["a_plus"], a_out, rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(waves["o2"]["a_minus"], b_out, rtol=1e-9, atol=1e-9)
+
+
+def test_get_S_matrix_modal_column_keys_and_shapes(monkeypatch):
+    sim = Simulation.__new__(Simulation)
+    sim.devices = []
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+
+    freqs = np.array([1.0, 2.0, 3.0], dtype=float)
+    waves = {
+        "o1": {
+            "a_plus": np.ones_like(freqs, dtype=np.complex128),
+            "a_minus": 0.1 * np.ones_like(freqs, dtype=np.complex128),
+            "a_incident": 2.0 * np.ones_like(freqs, dtype=np.complex128),
+        },
+        "o2": {
+            "a_plus": np.zeros_like(freqs, dtype=np.complex128),
+            "a_minus": 1.0j * np.ones_like(freqs, dtype=np.complex128),
+        },
+    }
+
+    def fake_extract(self, ports, frequencies, mode_strategy="per_frequency", window="hann", return_power=True):
+        return waves
+
+    monkeypatch.setattr(Simulation, "extract_port_waves", fake_extract)
+    result = sim.get_S_matrix_modal(
         source_port="o1",
-        frequencies=np.array([freq]),
+        ports=[
+            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
+        ],
+        output_ports=["o1", "o2"],
+        frequencies=freqs,
         as_sax=False,
+        return_diagnostics=True,
     )
-    s21 = s_matrix[("o2", "o1")]
-    assert s21.shape == (1,)
 
-    expected = amplitude * np.exp(1j * phase)
-    assert np.isclose(np.abs(s21[0]), np.abs(expected), rtol=0.05)
-    phase_error = np.angle(s21[0] / expected)
-    assert abs(phase_error) < 0.1
+    s_matrix = result["s_matrix"]
+    assert set(s_matrix.keys()) == {("o1", "o1"), ("o2", "o1")}
+    assert s_matrix[("o1", "o1")].shape == freqs.shape
+    assert s_matrix[("o2", "o1")].shape == freqs.shape
+    assert result["diagnostics"]["power_sum"].shape == freqs.shape
+
+
+def test_cw_demod_recovers_complex_amplitude():
+    n = 2048
+    dt = 1e-15
+    k_bin = 37
+    freq = k_bin / (n * dt)
+    amp = 0.65
+    phase = 0.42
+    t = np.arange(n) * dt
+    trace = amp * np.cos(2 * np.pi * freq * t + phase)
+
+    mon = Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m", record_fields=True)
+    mon.fields["Ez"] = [[v] for v in trace]
+    mon.fields["t"] = list(t)
+
+    sim = Simulation.__new__(Simulation)
+    demod = sim._demodulate_monitor_component(
+        mon,
+        "Ez",
+        frequency=freq,
+        t_start=None,
+        avg_cycles=30,
+        window="none",
+    )
+    assert demod.shape == (1,)
+    assert np.isclose(np.abs(demod[0]), amp, rtol=0.03)
+    phase_err = np.angle(demod[0] / (amp * np.exp(1j * phase)))
+    assert abs(phase_err) < 0.08
+
+
+def test_extract_port_waves_cw_modal_coefficients_synthetic(monkeypatch):
+    mode_matrix = np.array([[1.0, 1.0], [1.0, -1.0]], dtype=np.complex128)
+    pinv = np.linalg.pinv(mode_matrix)
+
+    a_src = 1.5 + 0.1j
+    b_src = 0.1 - 0.02j
+    a_ref = 2.0 + 0.0j
+    b_ref = 0.0 + 0.0j
+    a_out = 0.02 + 0.01j
+    b_out = 0.7 - 0.2j
+
+    demod_map = {
+        ("m_src", "Ez"): np.array([a_src + b_src], dtype=np.complex128),
+        ("m_src", "Hy"): np.array([a_src - b_src], dtype=np.complex128),
+        ("m_ref", "Ez"): np.array([a_ref + b_ref], dtype=np.complex128),
+        ("m_ref", "Hy"): np.array([a_ref - b_ref], dtype=np.complex128),
+        ("m_out", "Ez"): np.array([a_out + b_out], dtype=np.complex128),
+        ("m_out", "Hy"): np.array([a_out - b_out], dtype=np.complex128),
+    }
+
+    def fake_demod(
+        self, monitor, component, frequency, t_start=None, avg_cycles=12, window="hann"
+    ):
+        return demod_map[(monitor.name, component)]
+
+    def fake_projection(self, spec, monitor, frequency, cache, mode_pad_cells=6):
+        return {"e_component": "Ez", "h_component": "Hy", "pinv": pinv}
+
+    monkeypatch.setattr(Simulation, "_demodulate_monitor_component", fake_demod)
+    monkeypatch.setattr(Simulation, "_build_port_projection", fake_projection)
+
+    sim = Simulation.__new__(Simulation)
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    sim.resolution = 1.0
+    sim.devices = [
+        Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m_src"),
+        Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m_ref"),
+        Monitor(start=(1.0, 0.0), end=(1.0, 1.0), name="m_out"),
+    ]
+    ports = [
+        PortSpec(
+            name="o1",
+            monitor_name="m_src",
+            reference_monitor="m_ref",
+            direction="+x",
+            polarization="tm",
+        ),
+        PortSpec(name="o2", monitor_name="m_out", direction="+x", polarization="tm"),
+    ]
+    waves = sim.extract_port_waves_cw(
+        ports=ports,
+        frequency=200e12,
+        steady_start_time=None,
+        avg_cycles=12,
+        window="hann",
+        mode_strategy="per_frequency",
+    )
+    assert np.isclose(waves["o1"]["a_plus"], a_src)
+    assert np.isclose(waves["o1"]["a_minus"], b_src)
+    assert np.isclose(waves["o1"]["a_incident"], a_ref)
+    assert np.isclose(waves["o2"]["a_plus"], a_out)
+    assert np.isclose(waves["o2"]["a_minus"], b_out)
+
+
+def test_get_S_matrix_modal_cw_shapes_and_keys(monkeypatch):
+    sim = Simulation.__new__(Simulation)
+    sim.devices = []
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    waves = {
+        "o1": {"a_plus": 1.0 + 0j, "a_minus": 0.1 + 0j, "a_incident": 2.0 + 0j},
+        "o2": {"a_plus": 0.0 + 0j, "a_minus": 0.0 + 1.0j},
+    }
+
+    def fake_extract(
+        self,
+        ports,
+        frequency,
+        steady_start_time=None,
+        avg_cycles=12,
+        window="hann",
+        mode_strategy="per_frequency",
+        return_power=True,
+    ):
+        return waves
+
+    monkeypatch.setattr(Simulation, "extract_port_waves_cw", fake_extract)
+    result = sim.get_S_matrix_modal_cw(
+        source_port="o1",
+        ports=[
+            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
+        ],
+        output_ports=["o1", "o2"],
+        frequency=193.4e12,
+        as_sax=False,
+        return_diagnostics=True,
+    )
+    s_matrix = result["s_matrix"]
+    assert set(s_matrix.keys()) == {("o1", "o1"), ("o2", "o1")}
+    assert np.iscomplexobj(s_matrix[("o1", "o1")])
+    assert isinstance(result["diagnostics"]["power_sum"], float)

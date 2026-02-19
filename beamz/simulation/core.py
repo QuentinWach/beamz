@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -5,9 +8,20 @@ import numpy as np
 from beamz.const import µm
 from beamz.design.core import Design
 from beamz.devices.monitors.monitors import Monitor
+from beamz.devices.sources.solve import solve_modes
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
+
+
+@dataclass(frozen=True)
+class PortSpec:
+    name: str
+    monitor_name: str
+    direction: Literal["+x", "-x", "+y", "-y"]
+    polarization: Literal["tm", "te"]
+    mode_index: int = 0
+    reference_monitor: str | None = None
 
 
 class Simulation:
@@ -139,7 +153,7 @@ class Simulation:
         for device in self.devices:
             if isinstance(device, Monitor) and device.should_record(self.current_step):
                 if not self.is_3d:
-                    device.record_fields(
+                    device.record_fields_2d(
                         self.fields.Ez,
                         self.fields.Hx,
                         self.fields.Hy,
@@ -147,6 +161,9 @@ class Simulation:
                         self.resolution,
                         self.resolution,
                         self.current_step,
+                        Ex=self.fields.Ex,
+                        Ey=self.fields.Ey,
+                        Hz=self.fields.Hz,
                     )
                 else:
                     device.record_fields(
@@ -678,120 +695,592 @@ class Simulation:
 
         return np.asarray(trace), np.asarray(time_values)
 
-    def get_S_matrix(
-        self,
-        input_ports,
-        output_ports=None,
-        source_port=None,
-        frequencies=None,
-        field_component="Ez",
-        reduction="mean",
-        as_sax=True,
-    ):
-        """Extract one S-matrix column from monitor traces using FFT ratios.
+    @staticmethod
+    def _safe_ratio(num, den, eps=1e-18):
+        out = np.zeros_like(num, dtype=np.complex128)
+        valid = np.abs(den) > eps
+        out[valid] = num[valid] / den[valid]
+        return out
 
-        Args:
-            input_ports: List of available source port names.
-            output_ports: Port names for S-out entries (defaults to input_ports).
-            source_port: Excited source port for this simulation run.
-            frequencies: Optional frequency array (Hz) to sample from FFT bins.
-            field_component: Monitor field component to use (for example ``Ez``).
-            reduction: Spatial reduction over monitor samples.
-            as_sax: Return ``sax.sdict(...)`` if True, otherwise plain dict.
-        """
-        if not input_ports:
-            raise ValueError("input_ports must contain at least one port name.")
-        if output_ports is None:
-            output_ports = list(input_ports)
-        if source_port is None:
-            if len(input_ports) != 1:
-                raise ValueError(
-                    "source_port is required when input_ports has more than one entry."
+    @staticmethod
+    def _normalize_portspecs(ports):
+        if isinstance(ports, dict):
+            values = list(ports.values())
+        else:
+            values = list(ports)
+        if not values:
+            raise ValueError("ports must contain at least one PortSpec.")
+
+        normalized = {}
+        for item in values:
+            if isinstance(item, PortSpec):
+                spec = item
+            else:
+                spec = PortSpec(
+                    name=item["name"],
+                    monitor_name=item["monitor_name"],
+                    direction=item["direction"],
+                    polarization=item["polarization"],
+                    mode_index=int(item.get("mode_index", 0)),
+                    reference_monitor=item.get("reference_monitor"),
                 )
-            source_port = input_ports[0]
-        if source_port not in input_ports:
-            raise ValueError(
-                f"source_port '{source_port}' must be part of input_ports {input_ports}."
+            if spec.direction not in {"+x", "-x", "+y", "-y"}:
+                raise ValueError(f"Unsupported port direction '{spec.direction}'.")
+            pol = str(spec.polarization).lower()
+            if pol not in {"tm", "te"}:
+                raise ValueError(f"Unsupported polarization '{spec.polarization}'.")
+            normalized[spec.name] = PortSpec(
+                name=spec.name,
+                monitor_name=spec.monitor_name,
+                direction=spec.direction,
+                polarization=pol,
+                mode_index=int(spec.mode_index),
+                reference_monitor=spec.reference_monitor,
             )
+        return normalized
 
-        monitor_by_name = {
+    def _named_monitors(self):
+        return {
             device.name: device
             for device in self.devices
             if isinstance(device, Monitor) and getattr(device, "name", None)
         }
-        required_ports = list(dict.fromkeys([*input_ports, *output_ports]))
-        missing_ports = [name for name in required_ports if name not in monitor_by_name]
-        if missing_ports:
+
+    def _sample_monitor_component_spectrum(
+        self,
+        monitor,
+        component,
+        frequencies=None,
+        window="hann",
+    ):
+        if component not in monitor.fields:
             raise ValueError(
-                f"Missing named monitors for ports: {missing_ports}. "
-                "Each requested port must have a Monitor(name=port_name, ...)."
+                f"Monitor '{monitor.name}' has no field '{component}'. "
+                f"Available: {sorted(monitor.fields.keys())}"
             )
-
-        traces = {}
-        times = {}
-        min_len = None
-        for port_name in required_ports:
-            trace, time_values = self._get_monitor_trace(
-                monitor_by_name[port_name],
-                field_component=field_component,
-                reduction=reduction,
+        raw = monitor.fields[component]
+        if raw is None or len(raw) == 0:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has no recorded '{component}' data."
             )
-            n = min(len(trace), len(time_values))
-            if n < 2:
-                raise ValueError(
-                    f"Monitor '{port_name}' does not contain enough samples for FFT."
-                )
-            traces[port_name] = np.asarray(trace[:n])
-            times[port_name] = np.asarray(time_values[:n])
-            min_len = n if min_len is None else min(min_len, n)
+        values = np.asarray(raw)
+        if values.ndim == 1:
+            values = values[:, None]
+        elif values.ndim > 2:
+            values = values.reshape(values.shape[0], -1)
 
-        for port_name in required_ports:
-            traces[port_name] = traces[port_name][:min_len]
-            times[port_name] = times[port_name][:min_len]
+        t = np.asarray(monitor.fields.get("t", []), dtype=float)
+        n = min(values.shape[0], t.size)
+        if n < 2:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has insufficient samples for FFT extraction."
+            )
+        values = values[:n]
+        t = t[:n]
+        values = values - np.mean(values, axis=0, keepdims=True)
 
-        source_time = times[source_port]
-        dt = (
-            float(np.mean(np.diff(source_time)))
-            if len(source_time) > 1
-            else float(self.dt)
-        )
-        if dt <= 0:
-            raise ValueError(f"Invalid time-step inferred from monitor data: dt={dt}")
+        win_key = str(window).lower() if window is not None else "none"
+        if win_key in {"hann", "hanning"}:
+            w = np.hanning(n)
+        elif win_key in {"none", "rect", "rectangular"}:
+            w = np.ones(n, dtype=float)
+        else:
+            raise ValueError(f"Unsupported window '{window}'.")
+        values = values * w[:, None]
 
-        fft_freqs = np.fft.rfftfreq(min_len, d=dt)
-        spectra = {
-            port_name: np.fft.rfft(np.asarray(trace, dtype=float))
-            for port_name, trace in traces.items()
+        dt = float(np.mean(np.diff(t)))
+        if not np.isfinite(dt) or dt <= 0:
+            raise ValueError(f"Invalid dt inferred from monitor '{monitor.name}'.")
+        if np.iscomplexobj(values):
+            freq_bins = np.fft.fftfreq(n, d=dt)
+            spec_bins = np.fft.fft(values, axis=0)
+            keep = freq_bins >= 0
+            freq_bins = freq_bins[keep]
+            spec_bins = spec_bins[keep]
+        else:
+            freq_bins = np.fft.rfftfreq(n, d=dt)
+            spec_bins = np.fft.rfft(values, axis=0)
+
+        if frequencies is None:
+            return freq_bins, spec_bins
+
+        requested = np.atleast_1d(np.asarray(frequencies, dtype=float))
+        sampled = np.empty((len(requested), spec_bins.shape[1]), dtype=np.complex128)
+        for col in range(spec_bins.shape[1]):
+            real_part = np.interp(
+                requested, freq_bins, np.real(spec_bins[:, col]), left=0.0, right=0.0
+            )
+            imag_part = np.interp(
+                requested, freq_bins, np.imag(spec_bins[:, col]), left=0.0, right=0.0
+            )
+            sampled[:, col] = real_part + 1j * imag_part
+        return requested, sampled
+
+    def _demodulate_monitor_component(
+        self,
+        monitor,
+        component,
+        frequency,
+        t_start=None,
+        avg_cycles=12,
+        window="hann",
+    ):
+        """Demodulate one monitor component at a single CW frequency.
+
+        Returns the complex amplitude vector over monitor samples.
+        """
+        if component not in monitor.fields:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has no field '{component}'. "
+                f"Available: {sorted(monitor.fields.keys())}"
+            )
+        raw = monitor.fields[component]
+        if raw is None or len(raw) == 0:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has no recorded '{component}' data."
+            )
+        values = np.asarray(raw)
+        if values.ndim == 1:
+            values = values[:, None]
+        elif values.ndim > 2:
+            values = values.reshape(values.shape[0], -1)
+
+        t = np.asarray(monitor.fields.get("t", []), dtype=float)
+        n = min(values.shape[0], t.size)
+        if n < 2:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has insufficient samples for demodulation."
+            )
+        values = values[:n]
+        t = t[:n]
+        f0 = float(frequency)
+        if not np.isfinite(f0) or f0 <= 0:
+            raise ValueError(f"frequency must be positive, got {frequency!r}")
+
+        if t_start is None:
+            mask = np.ones(n, dtype=bool)
+        else:
+            mask = t >= float(t_start)
+        if np.count_nonzero(mask) < 2:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has insufficient post-transient samples."
+            )
+        t_sel = t[mask]
+        v_sel = values[mask]
+
+        if avg_cycles is not None:
+            cycles = float(avg_cycles)
+            if cycles > 0:
+                span = cycles / f0
+                t_end = t_sel[0] + span
+                keep = t_sel <= t_end
+                if np.count_nonzero(keep) >= 2:
+                    t_sel = t_sel[keep]
+                    v_sel = v_sel[keep]
+
+        n_sel = t_sel.size
+        if n_sel < 2:
+            raise ValueError(
+                f"Monitor '{monitor.name}' has insufficient samples in demod window."
+            )
+        win_key = str(window).lower() if window is not None else "none"
+        if win_key in {"hann", "hanning"}:
+            w = np.hanning(n_sel)
+        elif win_key in {"none", "rect", "rectangular"}:
+            w = np.ones(n_sel, dtype=float)
+        else:
+            raise ValueError(f"Unsupported window '{window}'.")
+
+        carrier = np.exp(-1j * 2.0 * np.pi * f0 * t_sel)[:, None]
+        denom = max(float(np.sum(w)), 1e-18)
+        demod = (2.0 / denom) * np.sum((w[:, None] * v_sel) * carrier, axis=0)
+        return np.asarray(demod, dtype=np.complex128)
+
+    @staticmethod
+    def _mode_components_for_port(spec):
+        axis = spec.direction[1]
+        if spec.polarization == "tm":
+            return {
+                "axis": axis,
+                "e_component": "Ez",
+                "h_component": "Hy" if axis == "x" else "Hx",
+                "e_mode_index": 2,
+                "h_mode_index": 1,
+                "signed_flux_sign": -1.0 if axis == "x" else 1.0,
+            }
+        return {
+            "axis": axis,
+            "e_component": "Ey" if axis == "x" else "Ex",
+            "h_component": "Hz",
+            "e_mode_index": 1,
+            "h_mode_index": 2,
+            "signed_flux_sign": 1.0 if axis == "x" else -1.0,
         }
 
-        sampled_spectra = {}
-        if frequencies is None:
-            sampled_frequencies = fft_freqs
-            for port_name, spectrum in spectra.items():
-                sampled_spectra[port_name] = spectrum
+    def _monitor_profile_slice(self, monitor, axis, pad_cells):
+        perm = np.asarray(self.fields.permittivity)
+        if perm.ndim != 2:
+            raise NotImplementedError("Modal extraction currently supports 2D only.")
+        points = monitor.get_grid_points_2d(self.resolution, self.resolution)
+        if not points:
+            raise ValueError(f"Monitor '{monitor.name}' contains no sample points.")
+        p = np.asarray(points, dtype=float)
+        if axis == "x":
+            x_idx = int(np.clip(round(float(np.mean(p[:, 0]))), 0, perm.shape[1] - 1))
+            eps_profile_full = perm[:, x_idx]
+            sample_idx = np.asarray(
+                [int(np.clip(pi[1], 0, perm.shape[0] - 1)) for pi in points], dtype=int
+            )
         else:
-            requested = np.atleast_1d(np.asarray(frequencies, dtype=float))
-            sampled_frequencies = requested
-            for port_name, spectrum in spectra.items():
-                real_part = np.interp(
-                    requested, fft_freqs, np.real(spectrum), left=0.0, right=0.0
-                )
-                imag_part = np.interp(
-                    requested, fft_freqs, np.imag(spectrum), left=0.0, right=0.0
-                )
-                sampled_spectra[port_name] = real_part + 1j * imag_part
+            y_idx = int(np.clip(round(float(np.mean(p[:, 1]))), 0, perm.shape[0] - 1))
+            eps_profile_full = perm[y_idx, :]
+            sample_idx = np.asarray(
+                [int(np.clip(pi[0], 0, perm.shape[1] - 1)) for pi in points], dtype=int
+            )
+        lo = max(0, int(np.min(sample_idx)) - int(pad_cells))
+        hi = min(len(eps_profile_full), int(np.max(sample_idx)) + int(pad_cells) + 1)
+        local_idx = np.clip(sample_idx - lo, 0, max(hi - lo - 1, 0))
+        if len(points) > 1:
+            step_idx = np.diff(np.asarray(points, dtype=float), axis=0)
+            dl = float(np.mean(np.linalg.norm(step_idx, axis=1))) * float(self.resolution)
+        else:
+            dl = float(self.resolution)
+        dl = max(dl, float(self.resolution) * 1e-9)
+        return np.asarray(eps_profile_full[lo:hi], dtype=np.complex128), local_idx, dl
 
-        source_spectrum = sampled_spectra[source_port]
-        eps = 1e-18
+    def _build_port_projection(self, spec, monitor, frequency, cache, mode_pad_cells=6):
+        key = (spec.name, monitor.name, float(frequency))
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
+        parts = self._mode_components_for_port(spec)
+        eps_profile, local_idx, dl = self._monitor_profile_slice(
+            monitor, parts["axis"], mode_pad_cells
+        )
+        omega = 2.0 * np.pi * float(frequency)
+        _, e_fields, h_fields, _ = solve_modes(
+            eps=eps_profile,
+            omega=omega,
+            dL=float(self.resolution),
+            m=spec.mode_index + 1,
+            direction=spec.direction,
+            filter_pol=spec.polarization,
+            return_fields=True,
+        )
+
+        mode = int(spec.mode_index)
+        e_fwd_full = np.asarray(
+            np.squeeze(e_fields[mode][parts["e_mode_index"]]), dtype=np.complex128
+        )
+        h_fwd_full = np.asarray(
+            np.squeeze(h_fields[mode][parts["h_mode_index"]]), dtype=np.complex128
+        )
+        if e_fwd_full.ndim > 1:
+            e_fwd_full = e_fwd_full[:, 0]
+        if h_fwd_full.ndim > 1:
+            h_fwd_full = h_fwd_full[:, 0]
+        e_fwd = e_fwd_full[local_idx]
+        h_fwd = h_fwd_full[local_idx]
+
+        if h_fwd.size:
+            i_max = int(np.argmax(np.abs(h_fwd)))
+            phase = np.angle(h_fwd[i_max])
+            phase_rot = np.exp(-1j * phase)
+            e_fwd = e_fwd * phase_rot
+            h_fwd = h_fwd * phase_rot
+
+        pm = 0.5 * np.real(
+            np.sum(parts["signed_flux_sign"] * e_fwd * np.conjugate(h_fwd)) * dl
+        )
+        norm = np.sqrt(max(abs(pm), 1e-30))
+        e_fwd = e_fwd / norm
+        h_fwd = h_fwd / norm
+        e_bwd = e_fwd.copy()
+        h_bwd = -h_fwd.copy()
+
+        mode_matrix = np.column_stack(
+            [
+                np.concatenate([e_fwd, h_fwd]),
+                np.concatenate([e_bwd, h_bwd]),
+            ]
+        )
+        projection = {
+            "e_component": parts["e_component"],
+            "h_component": parts["h_component"],
+            "pinv": np.linalg.pinv(mode_matrix),
+        }
+        cache[key] = projection
+        return projection
+
+    def extract_port_waves(
+        self,
+        ports,
+        frequencies,
+        mode_strategy="per_frequency",
+        window="hann",
+        return_power=True,
+    ):
+        """Broadband modal extraction using FFT bins.
+
+        Fast and convenient for sweeps, but less robust than CW demodulation
+        for strict passivity/loss assessment.
+        """
+        if self.is_3d or self.plane_2d != "xy":
+            raise NotImplementedError(
+                "extract_port_waves currently supports 2D simulations in the xy plane."
+            )
+
+        port_map = self._normalize_portspecs(ports)
+        freqs = np.atleast_1d(np.asarray(frequencies, dtype=float))
+        if freqs.size == 0:
+            raise ValueError("frequencies must contain at least one value.")
+        if np.any(freqs <= 0):
+            raise ValueError("frequencies must be strictly positive.")
+
+        strategy = str(mode_strategy).lower()
+        if strategy not in {"per_frequency", "single", "single_frequency", "center"}:
+            raise ValueError(
+                f"Unsupported mode_strategy '{mode_strategy}'. "
+                "Use 'per_frequency' or 'single'."
+            )
+        single_freq = float(np.median(freqs))
+
+        monitor_by_name = self._named_monitors()
+        for spec in port_map.values():
+            if spec.monitor_name not in monitor_by_name:
+                raise ValueError(f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'.")
+            if spec.reference_monitor and spec.reference_monitor not in monitor_by_name:
+                raise ValueError(
+                    f"Missing reference monitor '{spec.reference_monitor}' for port '{spec.name}'."
+                )
+
+        spectrum_cache = {}
+        projection_cache = {}
+        waves = {}
+        for spec in port_map.values():
+            main_monitor = monitor_by_name[spec.monitor_name]
+            parts = self._mode_components_for_port(spec)
+            for comp in (parts["e_component"], parts["h_component"]):
+                key = (main_monitor.name, comp)
+                if key not in spectrum_cache:
+                    _, spectrum_cache[key] = self._sample_monitor_component_spectrum(
+                        main_monitor, comp, frequencies=freqs, window=window
+                    )
+
+            a_plus = np.zeros(freqs.size, dtype=np.complex128)
+            a_minus = np.zeros(freqs.size, dtype=np.complex128)
+            for idx, f in enumerate(freqs):
+                f_mode = float(f if strategy == "per_frequency" else single_freq)
+                proj = self._build_port_projection(
+                    spec, main_monitor, f_mode, projection_cache
+                )
+                field_vec = np.concatenate(
+                    [
+                        spectrum_cache[(main_monitor.name, proj["e_component"])][idx],
+                        spectrum_cache[(main_monitor.name, proj["h_component"])][idx],
+                    ]
+                )
+                coeff = proj["pinv"] @ field_vec
+                a_plus[idx], a_minus[idx] = coeff[0], coeff[1]
+
+            port_waves = {"a_plus": a_plus, "a_minus": a_minus}
+            if return_power:
+                port_waves["P_plus"] = np.abs(a_plus) ** 2
+                port_waves["P_minus"] = np.abs(a_minus) ** 2
+
+            if spec.reference_monitor:
+                ref_monitor = monitor_by_name[spec.reference_monitor]
+                for comp in (parts["e_component"], parts["h_component"]):
+                    key = (ref_monitor.name, comp)
+                    if key not in spectrum_cache:
+                        _, spectrum_cache[key] = self._sample_monitor_component_spectrum(
+                            ref_monitor, comp, frequencies=freqs, window=window
+                        )
+
+                a_incident = np.zeros(freqs.size, dtype=np.complex128)
+                for idx, f in enumerate(freqs):
+                    f_mode = float(f if strategy == "per_frequency" else single_freq)
+                    proj = self._build_port_projection(
+                        spec, ref_monitor, f_mode, projection_cache
+                    )
+                    field_vec = np.concatenate(
+                        [
+                            spectrum_cache[(ref_monitor.name, proj["e_component"])][idx],
+                            spectrum_cache[(ref_monitor.name, proj["h_component"])][idx],
+                        ]
+                    )
+                    coeff = proj["pinv"] @ field_vec
+                    a_incident[idx] = coeff[0]
+                port_waves["a_incident"] = a_incident
+                if return_power:
+                    port_waves["P_incident"] = np.abs(a_incident) ** 2
+
+            waves[spec.name] = port_waves
+        return waves
+
+    def extract_port_waves_cw(
+        self,
+        ports,
+        frequency,
+        steady_start_time=None,
+        avg_cycles=12,
+        window="hann",
+        mode_strategy="per_frequency",
+        return_power=True,
+    ):
+        """CW modal extraction at one frequency using complex demodulation."""
+        if self.is_3d or self.plane_2d != "xy":
+            raise NotImplementedError(
+                "extract_port_waves_cw currently supports 2D simulations in the xy plane."
+            )
+
+        port_map = self._normalize_portspecs(ports)
+        f = float(frequency)
+        if not np.isfinite(f) or f <= 0:
+            raise ValueError(f"frequency must be positive, got {frequency!r}")
+
+        strategy = str(mode_strategy).lower()
+        if strategy not in {"per_frequency", "single", "single_frequency", "center"}:
+            raise ValueError(
+                f"Unsupported mode_strategy '{mode_strategy}'. "
+                "Use 'per_frequency' or 'single'."
+            )
+        f_mode = f
+
+        monitor_by_name = self._named_monitors()
+        for spec in port_map.values():
+            if spec.monitor_name not in monitor_by_name:
+                raise ValueError(f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'.")
+            if spec.reference_monitor and spec.reference_monitor not in monitor_by_name:
+                raise ValueError(
+                    f"Missing reference monitor '{spec.reference_monitor}' for port '{spec.name}'."
+                )
+
+        projection_cache = {}
+        waves = {}
+        for spec in port_map.values():
+            parts = self._mode_components_for_port(spec)
+            main_monitor = monitor_by_name[spec.monitor_name]
+            proj = self._build_port_projection(
+                spec,
+                main_monitor,
+                f_mode if strategy == "per_frequency" else f,
+                projection_cache,
+            )
+            e_main = self._demodulate_monitor_component(
+                main_monitor,
+                parts["e_component"],
+                frequency=f,
+                t_start=steady_start_time,
+                avg_cycles=avg_cycles,
+                window=window,
+            )
+            h_main = self._demodulate_monitor_component(
+                main_monitor,
+                parts["h_component"],
+                frequency=f,
+                t_start=steady_start_time,
+                avg_cycles=avg_cycles,
+                window=window,
+            )
+            coeff = proj["pinv"] @ np.concatenate([e_main, h_main])
+            a_plus = np.complex128(coeff[0])
+            a_minus = np.complex128(coeff[1])
+            port_waves = {"a_plus": a_plus, "a_minus": a_minus}
+            if return_power:
+                port_waves["P_plus"] = float(np.abs(a_plus) ** 2)
+                port_waves["P_minus"] = float(np.abs(a_minus) ** 2)
+
+            if spec.reference_monitor:
+                ref_monitor = monitor_by_name[spec.reference_monitor]
+                ref_proj = self._build_port_projection(
+                    spec,
+                    ref_monitor,
+                    f_mode if strategy == "per_frequency" else f,
+                    projection_cache,
+                )
+                e_ref = self._demodulate_monitor_component(
+                    ref_monitor,
+                    parts["e_component"],
+                    frequency=f,
+                    t_start=steady_start_time,
+                    avg_cycles=avg_cycles,
+                    window=window,
+                )
+                h_ref = self._demodulate_monitor_component(
+                    ref_monitor,
+                    parts["h_component"],
+                    frequency=f,
+                    t_start=steady_start_time,
+                    avg_cycles=avg_cycles,
+                    window=window,
+                )
+                ref_coeff = ref_proj["pinv"] @ np.concatenate([e_ref, h_ref])
+                a_incident = np.complex128(ref_coeff[0])
+                port_waves["a_incident"] = a_incident
+                if return_power:
+                    port_waves["P_incident"] = float(np.abs(a_incident) ** 2)
+
+            waves[spec.name] = port_waves
+        return waves
+
+    def get_S_matrix_modal(
+        self,
+        source_port,
+        ports,
+        output_ports=None,
+        frequencies=None,
+        mode_strategy="per_frequency",
+        as_sax=True,
+        return_diagnostics=True,
+    ):
+        """Broadband modal S-matrix extraction from FFT-sampled monitor spectra.
+
+        This method is fast and useful for exploratory sweeps. For strict
+        passivity/loss checks, prefer get_S_matrix_modal_cw(...).
+        """
+        port_map = self._normalize_portspecs(ports)
+        if source_port not in port_map:
+            raise ValueError(f"source_port '{source_port}' not found in ports.")
+
+        monitor_by_name = self._named_monitors()
+        if frequencies is None:
+            src_spec = port_map[source_port]
+            ref_name = src_spec.reference_monitor or src_spec.monitor_name
+            src_monitor = monitor_by_name.get(ref_name)
+            if src_monitor is None:
+                raise ValueError(f"Missing source/reference monitor '{ref_name}'.")
+            src_parts = self._mode_components_for_port(src_spec)
+            frequencies, _ = self._sample_monitor_component_spectrum(
+                src_monitor, src_parts["e_component"], frequencies=None, window="hann"
+            )
+        else:
+            frequencies = np.atleast_1d(np.asarray(frequencies, dtype=float))
+
+        waves = self.extract_port_waves(
+            ports=port_map.values(),
+            frequencies=frequencies,
+            mode_strategy=mode_strategy,
+            window="hann",
+            return_power=True,
+        )
+
+        if output_ports is None:
+            output_ports = list(port_map.keys())
+        else:
+            output_ports = list(output_ports)
+        missing = [name for name in output_ports if name not in port_map]
+        if missing:
+            raise ValueError(f"output_ports contains unknown ports: {missing}")
+
+        a_incident = waves[source_port].get("a_incident", waves[source_port]["a_plus"])
         s_matrix = {}
         for out_port in output_ports:
-            out_spectrum = sampled_spectra[out_port]
-            ratio = np.zeros_like(out_spectrum, dtype=np.complex128)
-            valid = np.abs(source_spectrum) > eps
-            ratio[valid] = out_spectrum[valid] / source_spectrum[valid]
-            s_matrix[(out_port, source_port)] = ratio
+            b_out = waves[out_port]["a_minus"]
+            s_matrix[(out_port, source_port)] = self._safe_ratio(b_out, a_incident)
 
-        self.s_matrix_frequencies = sampled_frequencies
+        self.s_matrix_frequencies = np.asarray(frequencies, dtype=float)
         if as_sax:
             try:
                 import sax
@@ -799,12 +1288,128 @@ class Simulation:
                 raise ImportError(
                     "sax is required for as_sax=True. Install it with `pip install sax`."
                 ) from exc
-            return sax.sdict(s_matrix)
-        return s_matrix
+            s_output = sax.sdict(s_matrix)
+        else:
+            s_output = s_matrix
+
+        if not return_diagnostics:
+            return s_output
+
+        p_in = np.abs(a_incident) ** 2
+        p_guided_out = np.zeros_like(p_in, dtype=float)
+        for out_port in output_ports:
+            p_guided_out += np.abs(waves[out_port]["a_minus"]) ** 2
+        power_sum = p_guided_out / np.maximum(p_in, 1e-18)
+        diagnostics = {
+            "frequencies": np.asarray(frequencies, dtype=float),
+            "source_port": source_port,
+            "output_ports": output_ports,
+            "waves": waves,
+            "P_in": p_in,
+            "P_guided_out": p_guided_out,
+            "power_sum": power_sum,
+            "loss_est": 1.0 - power_sum,
+        }
+        return {"s_matrix": s_output, "diagnostics": diagnostics}
+
+    def get_S_matrix_modal_cw(
+        self,
+        source_port,
+        ports,
+        output_ports=None,
+        frequency=None,
+        steady_start_time=None,
+        avg_cycles=12,
+        window="hann",
+        mode_strategy="per_frequency",
+        as_sax=True,
+        return_diagnostics=True,
+    ):
+        """CW modal S extraction for one source/one frequency.
+
+        Recommended when physically reliable passivity/loss diagnostics matter.
+        """
+        if frequency is None:
+            raise ValueError("frequency is required for get_S_matrix_modal_cw.")
+
+        port_map = self._normalize_portspecs(ports)
+        if source_port not in port_map:
+            raise ValueError(f"source_port '{source_port}' not found in ports.")
+
+        waves = self.extract_port_waves_cw(
+            ports=port_map.values(),
+            frequency=frequency,
+            steady_start_time=steady_start_time,
+            avg_cycles=avg_cycles,
+            window=window,
+            mode_strategy=mode_strategy,
+            return_power=True,
+        )
+
+        if output_ports is None:
+            output_ports = list(port_map.keys())
+        else:
+            output_ports = list(output_ports)
+        missing = [name for name in output_ports if name not in port_map]
+        if missing:
+            raise ValueError(f"output_ports contains unknown ports: {missing}")
+
+        a_incident = waves[source_port].get("a_incident", waves[source_port]["a_plus"])
+        s_matrix = {}
+        for out_port in output_ports:
+            b_out = waves[out_port]["a_minus"]
+            ratio = self._safe_ratio(np.asarray([b_out]), np.asarray([a_incident]))[0]
+            s_matrix[(out_port, source_port)] = np.complex128(ratio)
+
+        self.s_matrix_frequencies = np.asarray([float(frequency)], dtype=float)
+        if as_sax:
+            try:
+                import sax
+            except ImportError as exc:
+                raise ImportError(
+                    "sax is required for as_sax=True. Install it with `pip install sax`."
+                ) from exc
+            s_output = sax.sdict(s_matrix)
+        else:
+            s_output = s_matrix
+
+        if not return_diagnostics:
+            return s_output
+
+        p_in = float(np.abs(a_incident) ** 2)
+        p_guided_out = float(
+            np.sum([np.abs(waves[out]["a_minus"]) ** 2 for out in output_ports])
+        )
+        power_sum = p_guided_out / max(p_in, 1e-18)
+        diagnostics = {
+            "frequency": float(frequency),
+            "source_port": source_port,
+            "output_ports": output_ports,
+            "waves": waves,
+            "P_in": p_in,
+            "P_guided_out": p_guided_out,
+            "power_sum": power_sum,
+            "loss_est": 1.0 - power_sum,
+        }
+        return {"s_matrix": s_output, "diagnostics": diagnostics}
+
+    def get_s_matrix_modal(self, *args, **kwargs):
+        return self.get_S_matrix_modal(*args, **kwargs)
+
+    def get_s_matrix_modal_cw(self, *args, **kwargs):
+        return self.get_S_matrix_modal_cw(*args, **kwargs)
+
+    def get_S_matrix(self, *args, **kwargs):
+        raise RuntimeError(
+            "Simulation.get_S_matrix(...) is deprecated and removed. "
+            "Use Simulation.get_S_matrix_modal(...)."
+        )
 
     def get_s_matrix(self, *args, **kwargs):
-        """Snake_case alias of get_S_matrix."""
-        return self.get_S_matrix(*args, **kwargs)
+        raise RuntimeError(
+            "Simulation.get_s_matrix(...) is deprecated and removed. "
+            "Use Simulation.get_s_matrix_modal(...)."
+        )
 
     def run(self, **kwargs):
         """Run complete FDTD simulation with optional live field visualization.
