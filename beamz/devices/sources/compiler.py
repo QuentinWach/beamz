@@ -22,6 +22,66 @@ class CompiledSourceSpec:
     index: tuple[Any, ...]
     coeff: jnp.ndarray
     waveform: jnp.ndarray
+    is_slab: bool = False
+    slab_starts: tuple[int, ...] | None = None
+    slab_sizes: tuple[int, ...] | None = None
+
+
+def _as_slab_spec(
+    component: str,
+    timing: str,
+    index: tuple[Any, ...],
+    coeff,
+    waveform: jnp.ndarray,
+    target_shape: tuple[int, ...],
+) -> CompiledSourceSpec:
+    """Build a packed source spec, using slab metadata for slice/int indices."""
+    starts: list[int] = []
+    sizes: list[int] = []
+
+    if len(index) == len(target_shape):
+        for dim, key in enumerate(index):
+            if isinstance(key, slice):
+                start, stop, step = key.indices(target_shape[dim])
+                if step != 1:
+                    break
+                starts.append(int(start))
+                sizes.append(int(stop - start))
+                continue
+            if isinstance(key, (int, np.integer)):
+                idx = int(key)
+                if idx < 0:
+                    idx += int(target_shape[dim])
+                if idx < 0 or idx >= int(target_shape[dim]):
+                    break
+                starts.append(idx)
+                sizes.append(1)
+                continue
+            break
+        else:
+            coeff_np = np.asarray(coeff, dtype=np.float32)
+            slab_sizes = tuple(sizes)
+            expected = int(np.prod(slab_sizes))
+            if coeff_np.size == expected:
+                coeff_np = coeff_np.reshape(slab_sizes)
+                return CompiledSourceSpec(
+                    component=component,
+                    timing=timing,
+                    index=index,
+                    coeff=jnp.asarray(coeff_np, dtype=jnp.float32),
+                    waveform=waveform,
+                    is_slab=True,
+                    slab_starts=tuple(starts),
+                    slab_sizes=slab_sizes,
+                )
+
+    return CompiledSourceSpec(
+        component=component,
+        timing=timing,
+        index=index,
+        coeff=jnp.asarray(coeff, dtype=jnp.float32),
+        waveform=waveform,
+    )
 
 
 def _sample_waveform(get_signal_value, t0: float, dt: float, num_steps: int, offset_fn):
@@ -135,12 +195,13 @@ def _compile_gaussian_source(
     )
 
     return (
-        CompiledSourceSpec(
+        _as_slab_spec(
             component="Ez",
             timing="pre_e",
             index=idx,
-            coeff=jnp.asarray(coeff, dtype=jnp.float32),
+            coeff=coeff,
             waveform=waveform,
+            target_shape=tuple(fields.Ez.shape),
         ),
     )
 
@@ -242,12 +303,13 @@ def _compile_mode_source_2d(
                 scale_denom=MU_0 * mu * resolution,
             )
             specs.append(
-                CompiledSourceSpec(
+                _as_slab_spec(
                     component=comp,
                     timing="h",
                     index=idx,
                     coeff=coeff,
                     waveform=h_waveform,
+                    target_shape=tuple(getattr(fields, comp).shape),
                 )
             )
 
@@ -262,12 +324,13 @@ def _compile_mode_source_2d(
                 scale_denom=EPS_0 * eps * resolution,
             )
             specs.append(
-                CompiledSourceSpec(
+                _as_slab_spec(
                     component="Ez",
                     timing="e",
                     index=idx,
                     coeff=coeff,
                     waveform=e_waveform,
+                    target_shape=tuple(fields.Ez.shape),
                 )
             )
     else:
@@ -282,12 +345,13 @@ def _compile_mode_source_2d(
                 scale_denom=MU_0 * mu * resolution,
             )
             specs.append(
-                CompiledSourceSpec(
+                _as_slab_spec(
                     component="Hz",
                     timing="h",
                     index=idx,
                     coeff=coeff,
                     waveform=h_waveform,
+                    target_shape=tuple(fields.Hz.shape),
                 )
             )
 
@@ -305,12 +369,13 @@ def _compile_mode_source_2d(
                     scale_denom=EPS_0 * eps * resolution,
                 )
                 specs.append(
-                    CompiledSourceSpec(
+                    _as_slab_spec(
                         component=comp,
                         timing="e",
                         index=idx,
                         coeff=coeff,
                         waveform=e_waveform,
+                        target_shape=tuple(getattr(fields, comp).shape),
                     )
                 )
 
@@ -344,12 +409,13 @@ def _compile_mode_source_3d(
             scale_denom=MU_0 * mu * resolution,
         )
         specs.append(
-            CompiledSourceSpec(
+            _as_slab_spec(
                 component=h_comp,
                 timing="h",
                 index=idx,
                 coeff=coeff,
                 waveform=h_waveform,
+                target_shape=tuple(getattr(fields, h_comp).shape),
             )
         )
 
@@ -367,12 +433,13 @@ def _compile_mode_source_3d(
             scale_denom=EPS_0 * eps * resolution,
         )
         specs.append(
-            CompiledSourceSpec(
+            _as_slab_spec(
                 component=e_comp,
                 timing="e",
                 index=idx,
                 coeff=coeff,
                 waveform=e_waveform,
+                target_shape=tuple(getattr(fields, e_comp).shape),
             )
         )
 

@@ -105,7 +105,12 @@ class CompiledSimulation:
         out = arr
         for spec in specs:
             amp = spec.waveform[t_idx]
-            out = out.at[spec.index].add(spec.coeff * amp)
+            if spec.is_slab and spec.slab_starts is not None and spec.slab_sizes is not None:
+                patch = spec.coeff * amp
+                cur = jax.lax.dynamic_slice(out, spec.slab_starts, spec.slab_sizes)
+                out = jax.lax.dynamic_update_slice(out, cur + patch, spec.slab_starts)
+            else:
+                out = out.at[spec.index].add(spec.coeff * amp)
         return out
 
     def _monitor_power_2d(
