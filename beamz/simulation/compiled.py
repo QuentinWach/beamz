@@ -570,6 +570,27 @@ def _edge_full_thickness(mask: np.ndarray, axis: int) -> tuple[int, int]:
     return left, right
 
 
+def _region_offsets_and_sizes(
+    field_shape: tuple[int, ...],
+    region: tuple[slice, ...],
+) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    """Return region starts/sizes for slice-only regions with unit strides."""
+    if len(field_shape) != len(region):
+        return None
+
+    starts: list[int] = []
+    sizes: list[int] = []
+    for dim, key in zip(field_shape, region):
+        if not isinstance(key, slice):
+            return None
+        start, stop, step = key.indices(dim)
+        if step != 1:
+            return None
+        starts.append(int(start))
+        sizes.append(int(max(stop - start, 0)))
+    return tuple(starts), tuple(sizes)
+
+
 def _infer_lossy_shell_slabs(
     field_shape: tuple[int, ...],
     region: tuple[slice, ...],
@@ -583,17 +604,24 @@ def _infer_lossy_shell_slabs(
     if len(field_shape) != 3:
         return False, tuple()
 
-    full_mask = np.zeros(field_shape, dtype=bool)
-    full_mask[region] = np.asarray(conductivity_region) > 0.0
-
-    if not full_mask.any():
+    region_layout = _region_offsets_and_sizes(field_shape, region)
+    if region_layout is None:
+        return False, tuple()
+    region_starts, region_sizes = region_layout
+    if len(region_sizes) != 3 or any(s <= 0 for s in region_sizes):
         return False, tuple()
 
-    zL, zR = _edge_full_thickness(full_mask, axis=0)
-    yL, yR = _edge_full_thickness(full_mask, axis=1)
-    xL, xR = _edge_full_thickness(full_mask, axis=2)
+    local_mask = np.asarray(conductivity_region) > 0.0
+    if tuple(local_mask.shape) != tuple(region_sizes):
+        return False, tuple()
+    if not local_mask.any():
+        return False, tuple()
 
-    nz, ny, nx = field_shape
+    zL, zR = _edge_full_thickness(local_mask, axis=0)
+    yL, yR = _edge_full_thickness(local_mask, axis=1)
+    xL, xR = _edge_full_thickness(local_mask, axis=2)
+
+    nz, ny, nx = region_sizes
     z0, z1 = zL, nz - zR
     y0, y1 = yL, ny - yR
     x0, x1 = xL, nx - xR
@@ -617,15 +645,24 @@ def _infer_lossy_shell_slabs(
     if not slabs:
         return False, tuple()
 
-    recon = np.zeros(field_shape, dtype=bool)
+    recon = np.zeros(region_sizes, dtype=bool)
     for starts, sizes in slabs:
         z, y, x = starts
         dz, dy, dx = sizes
         recon[z : z + dz, y : y + dy, x : x + dx] = True
 
-    if not np.array_equal(recon, full_mask):
+    if not np.array_equal(recon, local_mask):
         return False, tuple()
-    return True, tuple(slabs)
+
+    z_off, y_off, x_off = region_starts
+    global_slabs = tuple(
+        (
+            (starts[0] + z_off, starts[1] + y_off, starts[2] + x_off),
+            sizes,
+        )
+        for starts, sizes in slabs
+    )
+    return True, global_slabs
 
 
 def _lossy_fraction(
@@ -721,6 +758,12 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
 
     e_shell_frac_threshold = 0.35
     h_shell_frac_threshold = 0.20
+    enable_e_shell_split = os.getenv("BEAMZ_ENABLE_E_SHELL_SPLIT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     enable_h_shell_split = os.getenv("BEAMZ_ENABLE_H_SHELL_SPLIT", "").strip().lower() in {
         "1",
         "true",
@@ -759,18 +802,21 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
             conductivity_region=fields.sigma_m_hz,
         )
 
-        e_use_lossy_shell_x = e_use_lossy_shell_x and (
-            _lossy_fraction(tuple(fields.Ex.shape), fields.region_x, fields.sig_x)
-            <= e_shell_frac_threshold
-        )
-        e_use_lossy_shell_y = e_use_lossy_shell_y and (
-            _lossy_fraction(tuple(fields.Ey.shape), fields.region_y, fields.sig_y)
-            <= e_shell_frac_threshold
-        )
-        e_use_lossy_shell_z = e_use_lossy_shell_z and (
-            _lossy_fraction(tuple(fields.Ez.shape), fields.region_z, fields.sig_z)
-            <= e_shell_frac_threshold
-        )
+        if enable_e_shell_split:
+            e_use_lossy_shell_x = e_use_lossy_shell_x and (
+                _lossy_fraction(tuple(fields.Ex.shape), fields.region_x, fields.sig_x)
+                <= e_shell_frac_threshold
+            )
+            e_use_lossy_shell_y = e_use_lossy_shell_y and (
+                _lossy_fraction(tuple(fields.Ey.shape), fields.region_y, fields.sig_y)
+                <= e_shell_frac_threshold
+            )
+            e_use_lossy_shell_z = e_use_lossy_shell_z and (
+                _lossy_fraction(tuple(fields.Ez.shape), fields.region_z, fields.sig_z)
+                <= e_shell_frac_threshold
+            )
+        else:
+            e_use_lossy_shell_x, e_use_lossy_shell_y, e_use_lossy_shell_z = False, False, False
         if enable_h_shell_split:
             h_use_lossy_shell_x = h_use_lossy_shell_x and (
                 _lossy_fraction(

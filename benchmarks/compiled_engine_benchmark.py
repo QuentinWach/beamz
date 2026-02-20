@@ -78,6 +78,11 @@ def _append_csv(
     tcups_py: float,
     tcups_split: float,
     tcups_compiled: float,
+    py_runs_s: list[float],
+    split_runs_s: list[float],
+    compiled_runs_s: list[float],
+    repeats: int,
+    warmup_jit: bool,
     hlo_stats: dict[str, int] | None = None,
 ):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +94,8 @@ def _append_csv(
         "git_commit",
         "grid_n",
         "steps",
+        "repeats",
+        "warmup_jit",
         "ppw",
         "target_memory_gb",
         "saturation_factor",
@@ -104,6 +111,9 @@ def _append_csv(
         "compiled_v3_scan_tcups",
         "compiled_vs_python_speedup_x",
         "compiled_vs_split_jit_speedup_x",
+        "legacy_python_step_runs_s",
+        "legacy_split_jit_runs_s",
+        "compiled_v3_scan_runs_s",
         "compiled_hlo_text_len",
         "compiled_hlo_fusion_count",
         "compiled_hlo_scatter_count",
@@ -136,6 +146,8 @@ def _append_csv(
         "git_commit": _git_commit(repo_root),
         "grid_n": cfg.grid_n,
         "steps": steps,
+        "repeats": int(repeats),
+        "warmup_jit": int(bool(warmup_jit)),
         "ppw": cfg.points_per_wavelength,
         "target_memory_gb": cfg.memory_gb,
         "saturation_factor": cfg.saturation_factor,
@@ -151,6 +163,9 @@ def _append_csv(
         "compiled_v3_scan_tcups": tcups_compiled,
         "compiled_vs_python_speedup_x": t_py / t_compiled,
         "compiled_vs_split_jit_speedup_x": t_split / t_compiled,
+        "legacy_python_step_runs_s": ";".join(f"{x:.9f}" for x in py_runs_s),
+        "legacy_split_jit_runs_s": ";".join(f"{x:.9f}" for x in split_runs_s),
+        "compiled_v3_scan_runs_s": ";".join(f"{x:.9f}" for x in compiled_runs_s),
         "compiled_hlo_text_len": None,
         "compiled_hlo_fusion_count": None,
         "compiled_hlo_scatter_count": None,
@@ -321,6 +336,28 @@ def run_compiled(sim: Simulation, steps: int) -> float:
     return t1 - t0
 
 
+def run_repeated(
+    sim_base: Simulation,
+    steps: int,
+    repeats: int,
+    runner,
+    *,
+    warmup: bool = False,
+) -> tuple[float, list[float]]:
+    """Run benchmark mode repeatedly from identical initial state and return median time."""
+    repeats = max(1, int(repeats))
+    if warmup:
+        # Warm caches (JAX/XLA/etc.) once so timing reflects steady-state kernel runtime.
+        sim_warm = copy.deepcopy(sim_base)
+        _ = runner(sim_warm, steps)
+
+    times: list[float] = []
+    for _ in range(repeats):
+        sim = copy.deepcopy(sim_base)
+        times.append(float(runner(sim, steps)))
+    return float(np.median(np.asarray(times, dtype=np.float64))), times
+
+
 def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
     """Collect simple operation counts from compiled v0.3 HLO text."""
     import jax.numpy as jnp
@@ -377,6 +414,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=120)
     parser.add_argument("--grid-n", type=int, default=0)
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Number of repeated runs per mode; report median time.",
+    )
     parser.add_argument("--memory-gb", type=float, default=24.0)
     parser.add_argument("--ppw", type=int, default=10)
     parser.add_argument(
@@ -397,6 +440,12 @@ def main():
         default=True,
         help="Collect compiled HLO op counts for CSV tracking.",
     )
+    parser.add_argument(
+        "--warmup-jit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run one unmeasured warmup pass for split-jit and compiled modes.",
+    )
     args = parser.parse_args()
 
     grid_n = args.grid_n or choose_grid_n(args.memory_gb, args.saturation_factor)
@@ -414,28 +463,46 @@ def main():
     est_ws = estimate_working_set_gb(cfg.grid_n, cfg.saturation_factor)
     print(f"estimated_working_set_gb~{est_ws:.2f}")
     print(f"steps={cfg.steps}")
+    print(f"repeats={max(1, int(args.repeats))}")
+    print(f"warmup_jit={bool(args.warmup_jit)}")
 
     sim_base, steps = make_simulation(cfg)
+    repeats = max(1, int(args.repeats))
 
-    # Benchmark each mode from identical initial state.
-    sim_py = copy.deepcopy(sim_base)
-    sim_split = copy.deepcopy(sim_base)
-    sim_compiled = copy.deepcopy(sim_base)
-    sim_hlo = copy.deepcopy(sim_base)
+    t_py, py_runs = run_repeated(
+        sim_base, steps, repeats, run_legacy_python_step, warmup=False
+    )
+    t_split, split_runs = run_repeated(
+        sim_base,
+        steps,
+        repeats,
+        run_legacy_split_jit,
+        warmup=bool(args.warmup_jit),
+    )
+    t_compiled, compiled_runs = run_repeated(
+        sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
+    )
+    hlo_stats = compiled_hlo_stats(copy.deepcopy(sim_base), steps) if args.hlo_stats else None
 
-    t_py = run_legacy_python_step(sim_py, steps)
-    t_split = run_legacy_split_jit(sim_split, steps)
-    t_compiled = run_compiled(sim_compiled, steps)
-    hlo_stats = compiled_hlo_stats(sim_hlo, steps) if args.hlo_stats else None
-
-    tcups_py = _tcups(sim_py, steps, t_py)
-    tcups_split = _tcups(sim_split, steps, t_split)
-    tcups_compiled = _tcups(sim_compiled, steps, t_compiled)
+    tcups_py = _tcups(sim_base, steps, t_py)
+    tcups_split = _tcups(sim_base, steps, t_split)
+    tcups_compiled = _tcups(sim_base, steps, t_compiled)
 
     print("\nResults")
-    print(f"legacy_python_step: {t_py:.6f}s, {t_py/steps:.6e}s/step, {tcups_py:.6e} TCUPS")
-    print(f"legacy_split_jit:   {t_split:.6f}s, {t_split/steps:.6e}s/step, {tcups_split:.6e} TCUPS")
-    print(f"compiled_v3_scan:   {t_compiled:.6f}s, {t_compiled/steps:.6e}s/step, {tcups_compiled:.6e} TCUPS")
+    print(
+        f"legacy_python_step (median): {t_py:.6f}s, {t_py/steps:.6e}s/step, {tcups_py:.6e} TCUPS"
+    )
+    print(
+        f"legacy_split_jit   (median): {t_split:.6f}s, {t_split/steps:.6e}s/step, {tcups_split:.6e} TCUPS"
+    )
+    print(
+        f"compiled_v3_scan   (median): {t_compiled:.6f}s, {t_compiled/steps:.6e}s/step, {tcups_compiled:.6e} TCUPS"
+    )
+    if repeats > 1:
+        print("\nPer-Run Times (s)")
+        print(f"legacy_python_step: {[round(x, 6) for x in py_runs]}")
+        print(f"legacy_split_jit:   {[round(x, 6) for x in split_runs]}")
+        print(f"compiled_v3_scan:   {[round(x, 6) for x in compiled_runs]}")
 
     print("\nSpeedups")
     print(f"compiled / legacy_python_step: {t_py / t_compiled:.2f}x")
@@ -468,6 +535,11 @@ def main():
         tcups_py=tcups_py,
         tcups_split=tcups_split,
         tcups_compiled=tcups_compiled,
+        py_runs_s=py_runs,
+        split_runs_s=split_runs,
+        compiled_runs_s=compiled_runs,
+        repeats=repeats,
+        warmup_jit=bool(args.warmup_jit),
         hlo_stats=hlo_stats,
     )
     print(f"\nCSV appended: {csv_path}")
