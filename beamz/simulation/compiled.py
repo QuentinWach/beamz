@@ -8,6 +8,7 @@ accumulation, and material model updates.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import NamedTuple
 
 import jax
@@ -51,10 +52,13 @@ class UpdateCoefficients(NamedTuple):
 
     h_decay_x: jnp.ndarray
     h_source_x: jnp.ndarray
+    h_source_lossless_x: jnp.ndarray
     h_decay_y: jnp.ndarray
     h_source_y: jnp.ndarray
+    h_source_lossless_y: jnp.ndarray
     h_decay_z: jnp.ndarray
     h_source_z: jnp.ndarray
+    h_source_lossless_z: jnp.ndarray
     e_decay_x: jnp.ndarray
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
@@ -97,10 +101,13 @@ class CompiledSimulation:
     # Static update coefficients (full-grid, dense updates; no per-step scatters)
     h_decay_x: jnp.ndarray
     h_source_x: jnp.ndarray
+    h_source_lossless_x: jnp.ndarray
     h_decay_y: jnp.ndarray
     h_source_y: jnp.ndarray
+    h_source_lossless_y: jnp.ndarray
     h_decay_z: jnp.ndarray
     h_source_z: jnp.ndarray
+    h_source_lossless_z: jnp.ndarray
     e_decay_x: jnp.ndarray
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
@@ -118,6 +125,12 @@ class CompiledSimulation:
     e_lossy_shell_y: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
     e_use_lossy_shell_z: bool
     e_lossy_shell_z: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
+    h_use_lossy_shell_x: bool
+    h_lossy_shell_x: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
+    h_use_lossy_shell_y: bool
+    h_lossy_shell_y: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
+    h_use_lossy_shell_z: bool
+    h_lossy_shell_z: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
 
     _compiled_scan: callable | None = None
     _compile_count: int = 0
@@ -127,10 +140,13 @@ class CompiledSimulation:
         return UpdateCoefficients(
             h_decay_x=self.h_decay_x,
             h_source_x=self.h_source_x,
+            h_source_lossless_x=self.h_source_lossless_x,
             h_decay_y=self.h_decay_y,
             h_source_y=self.h_source_y,
+            h_source_lossless_y=self.h_source_lossless_y,
             h_decay_z=self.h_decay_z,
             h_source_z=self.h_source_z,
+            h_source_lossless_z=self.h_source_lossless_z,
             e_decay_x=self.e_decay_x,
             e_source_x=self.e_source_x,
             e_source_lossless_x=self.e_source_lossless_x,
@@ -300,8 +316,11 @@ class CompiledSimulation:
             coeffs: UpdateCoefficients,
         ):
             h_decay_x, h_source_x = coeffs.h_decay_x, coeffs.h_source_x
+            h_source_lossless_x = coeffs.h_source_lossless_x
             h_decay_y, h_source_y = coeffs.h_decay_y, coeffs.h_source_y
+            h_source_lossless_y = coeffs.h_source_lossless_y
             h_decay_z, h_source_z = coeffs.h_decay_z, coeffs.h_source_z
+            h_source_lossless_z = coeffs.h_source_lossless_z
             e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
             e_source_lossless_x = coeffs.e_source_lossless_x
             e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
@@ -309,12 +328,18 @@ class CompiledSimulation:
             e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
             e_source_lossless_z = coeffs.e_source_lossless_z
 
-            use_lossy_shell_x = self.e_use_lossy_shell_x
-            use_lossy_shell_y = self.e_use_lossy_shell_y
-            use_lossy_shell_z = self.e_use_lossy_shell_z
-            lossy_shell_x = self.e_lossy_shell_x
-            lossy_shell_y = self.e_lossy_shell_y
-            lossy_shell_z = self.e_lossy_shell_z
+            use_lossy_shell_ex = self.e_use_lossy_shell_x
+            use_lossy_shell_ey = self.e_use_lossy_shell_y
+            use_lossy_shell_ez = self.e_use_lossy_shell_z
+            lossy_shell_ex = self.e_lossy_shell_x
+            lossy_shell_ey = self.e_lossy_shell_y
+            lossy_shell_ez = self.e_lossy_shell_z
+            use_lossy_shell_hx = self.h_use_lossy_shell_x
+            use_lossy_shell_hy = self.h_use_lossy_shell_y
+            use_lossy_shell_hz = self.h_use_lossy_shell_z
+            lossy_shell_hx = self.h_lossy_shell_x
+            lossy_shell_hy = self.h_lossy_shell_y
+            lossy_shell_hz = self.h_lossy_shell_z
 
             def body_with_coeffs(carry, t_idx):
                 eng, mon, mat = carry
@@ -335,9 +360,46 @@ class CompiledSimulation:
                         plane=plane_2d,
                     )
 
-                hx = h_decay_x * hx - h_source_x * curl_ex
-                hy = h_decay_y * hy - h_source_y * curl_ey
-                hz = h_decay_z * hz - h_source_z * curl_ez
+                hx_old, hy_old, hz_old = hx, hy, hz
+
+                if use_lossy_shell_hx:
+                    hx = hx_old - h_source_lossless_x * curl_ex
+                    hx = self._apply_lossy_shell(
+                        updated=hx,
+                        old=hx_old,
+                        curl=curl_ex,
+                        decay=h_decay_x,
+                        source=-h_source_x,
+                        slabs=lossy_shell_hx,
+                    )
+                else:
+                    hx = h_decay_x * hx_old - h_source_x * curl_ex
+
+                if use_lossy_shell_hy:
+                    hy = hy_old - h_source_lossless_y * curl_ey
+                    hy = self._apply_lossy_shell(
+                        updated=hy,
+                        old=hy_old,
+                        curl=curl_ey,
+                        decay=h_decay_y,
+                        source=-h_source_y,
+                        slabs=lossy_shell_hy,
+                    )
+                else:
+                    hy = h_decay_y * hy_old - h_source_y * curl_ey
+
+                if use_lossy_shell_hz:
+                    hz = hz_old - h_source_lossless_z * curl_ez
+                    hz = self._apply_lossy_shell(
+                        updated=hz,
+                        old=hz_old,
+                        curl=curl_ez,
+                        decay=h_decay_z,
+                        source=-h_source_z,
+                        slabs=lossy_shell_hz,
+                    )
+                else:
+                    hz = h_decay_z * hz_old - h_source_z * curl_ez
 
                 hx = self._apply_specs(hx, t_idx, h_specs_x)
                 hy = self._apply_specs(hy, t_idx, h_specs_y)
@@ -363,7 +425,7 @@ class CompiledSimulation:
 
                 ex_old, ey_old, ez_old = ex, ey, ez
 
-                if use_lossy_shell_x:
+                if use_lossy_shell_ex:
                     ex = ex_old + e_source_lossless_x * curl_hx
                     ex = self._apply_lossy_shell(
                         updated=ex,
@@ -371,12 +433,12 @@ class CompiledSimulation:
                         curl=curl_hx,
                         decay=e_decay_x,
                         source=e_source_x,
-                        slabs=lossy_shell_x,
+                        slabs=lossy_shell_ex,
                     )
                 else:
                     ex = e_decay_x * ex_old + e_source_x * curl_hx
 
-                if use_lossy_shell_y:
+                if use_lossy_shell_ey:
                     ey = ey_old + e_source_lossless_y * curl_hy
                     ey = self._apply_lossy_shell(
                         updated=ey,
@@ -384,12 +446,12 @@ class CompiledSimulation:
                         curl=curl_hy,
                         decay=e_decay_y,
                         source=e_source_y,
-                        slabs=lossy_shell_y,
+                        slabs=lossy_shell_ey,
                     )
                 else:
                     ey = e_decay_y * ey_old + e_source_y * curl_hy
 
-                if use_lossy_shell_z:
+                if use_lossy_shell_ez:
                     ez = ez_old + e_source_lossless_z * curl_hz
                     ez = self._apply_lossy_shell(
                         updated=ez,
@@ -397,7 +459,7 @@ class CompiledSimulation:
                         curl=curl_hz,
                         decay=e_decay_z,
                         source=e_source_z,
-                        slabs=lossy_shell_z,
+                        slabs=lossy_shell_ez,
                     )
                 else:
                     ez = e_decay_z * ez_old + e_source_z * curl_hz
@@ -566,6 +628,17 @@ def _infer_lossy_shell_slabs(
     return True, tuple(slabs)
 
 
+def _lossy_fraction(
+    field_shape: tuple[int, ...],
+    region: tuple[slice, ...],
+    conductivity_region: jnp.ndarray,
+) -> float:
+    """Fraction of lossy voxels for a field component."""
+    full_mask = np.zeros(field_shape, dtype=bool)
+    full_mask[region] = np.asarray(conductivity_region) > 0.0
+    return float(full_mask.mean())
+
+
 def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulation:
     """Build a CompiledSimulation from design/devices/boundaries and a run config.
 
@@ -614,9 +687,15 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         precision=getattr(run_cfg, "precision", "float32"),
     )
 
-    h_decay_x, h_source_x = ops.precompute_h_update_coefficients(fields.sigma_m_hx, dt)
-    h_decay_y, h_source_y = ops.precompute_h_update_coefficients(fields.sigma_m_hy, dt)
-    h_decay_z, h_source_z = ops.precompute_h_update_coefficients(fields.sigma_m_hz, dt)
+    h_decay_x, h_source_x, h_source_lossless_x = ops.precompute_h_update_coefficients(
+        fields.sigma_m_hx, dt
+    )
+    h_decay_y, h_source_y, h_source_lossless_y = ops.precompute_h_update_coefficients(
+        fields.sigma_m_hy, dt
+    )
+    h_decay_z, h_source_z, h_source_lossless_z = ops.precompute_h_update_coefficients(
+        fields.sigma_m_hz, dt
+    )
 
     e_decay_x, e_source_x, e_source_lossless_x = ops.precompute_e_update_coefficients(
         shape=fields.Ex.shape,
@@ -640,6 +719,14 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         region=fields.region_z,
     )
 
+    e_shell_frac_threshold = 0.35
+    h_shell_frac_threshold = 0.20
+    enable_h_shell_split = os.getenv("BEAMZ_ENABLE_H_SHELL_SPLIT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     if bool(run_cfg.is_3d):
         e_use_lossy_shell_x, e_lossy_shell_x = _infer_lossy_shell_slabs(
             field_shape=tuple(fields.Ex.shape),
@@ -656,10 +743,68 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
             region=fields.region_z,
             conductivity_region=fields.sig_z,
         )
+        h_use_lossy_shell_x, h_lossy_shell_x = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Hx.shape),
+            region=(slice(None), slice(None), slice(None)),
+            conductivity_region=fields.sigma_m_hx,
+        )
+        h_use_lossy_shell_y, h_lossy_shell_y = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Hy.shape),
+            region=(slice(None), slice(None), slice(None)),
+            conductivity_region=fields.sigma_m_hy,
+        )
+        h_use_lossy_shell_z, h_lossy_shell_z = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Hz.shape),
+            region=(slice(None), slice(None), slice(None)),
+            conductivity_region=fields.sigma_m_hz,
+        )
+
+        e_use_lossy_shell_x = e_use_lossy_shell_x and (
+            _lossy_fraction(tuple(fields.Ex.shape), fields.region_x, fields.sig_x)
+            <= e_shell_frac_threshold
+        )
+        e_use_lossy_shell_y = e_use_lossy_shell_y and (
+            _lossy_fraction(tuple(fields.Ey.shape), fields.region_y, fields.sig_y)
+            <= e_shell_frac_threshold
+        )
+        e_use_lossy_shell_z = e_use_lossy_shell_z and (
+            _lossy_fraction(tuple(fields.Ez.shape), fields.region_z, fields.sig_z)
+            <= e_shell_frac_threshold
+        )
+        if enable_h_shell_split:
+            h_use_lossy_shell_x = h_use_lossy_shell_x and (
+                _lossy_fraction(
+                    tuple(fields.Hx.shape),
+                    (slice(None), slice(None), slice(None)),
+                    fields.sigma_m_hx,
+                )
+                <= h_shell_frac_threshold
+            )
+            h_use_lossy_shell_y = h_use_lossy_shell_y and (
+                _lossy_fraction(
+                    tuple(fields.Hy.shape),
+                    (slice(None), slice(None), slice(None)),
+                    fields.sigma_m_hy,
+                )
+                <= h_shell_frac_threshold
+            )
+            h_use_lossy_shell_z = h_use_lossy_shell_z and (
+                _lossy_fraction(
+                    tuple(fields.Hz.shape),
+                    (slice(None), slice(None), slice(None)),
+                    fields.sigma_m_hz,
+                )
+                <= h_shell_frac_threshold
+            )
+        else:
+            h_use_lossy_shell_x, h_use_lossy_shell_y, h_use_lossy_shell_z = False, False, False
     else:
         e_use_lossy_shell_x, e_lossy_shell_x = False, tuple()
         e_use_lossy_shell_y, e_lossy_shell_y = False, tuple()
         e_use_lossy_shell_z, e_lossy_shell_z = False, tuple()
+        h_use_lossy_shell_x, h_lossy_shell_x = False, tuple()
+        h_use_lossy_shell_y, h_lossy_shell_y = False, tuple()
+        h_use_lossy_shell_z, h_lossy_shell_z = False, tuple()
 
     return CompiledSimulation(
         config=config,
@@ -669,10 +814,13 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         monitor_devices=monitor_devices,
         h_decay_x=h_decay_x,
         h_source_x=h_source_x,
+        h_source_lossless_x=h_source_lossless_x,
         h_decay_y=h_decay_y,
         h_source_y=h_source_y,
+        h_source_lossless_y=h_source_lossless_y,
         h_decay_z=h_decay_z,
         h_source_z=h_source_z,
+        h_source_lossless_z=h_source_lossless_z,
         e_decay_x=e_decay_x,
         e_source_x=e_source_x,
         e_source_lossless_x=e_source_lossless_x,
@@ -688,4 +836,10 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         e_lossy_shell_y=e_lossy_shell_y,
         e_use_lossy_shell_z=e_use_lossy_shell_z,
         e_lossy_shell_z=e_lossy_shell_z,
+        h_use_lossy_shell_x=h_use_lossy_shell_x,
+        h_lossy_shell_x=h_lossy_shell_x,
+        h_use_lossy_shell_y=h_use_lossy_shell_y,
+        h_lossy_shell_y=h_lossy_shell_y,
+        h_use_lossy_shell_z=h_use_lossy_shell_z,
+        h_lossy_shell_z=h_lossy_shell_z,
     )

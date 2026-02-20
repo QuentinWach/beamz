@@ -430,7 +430,8 @@ def precompute_h_update_coefficients(sigma_m, dt):
     denom = 1.0 + sigma_m * (dt / (2.0 * MU_0))
     decay = (1.0 - sigma_m * (dt / (2.0 * MU_0))) / denom
     source = (dt / MU_0) / denom
-    return decay.astype(jnp.float32), source.astype(jnp.float32)
+    source_lossless = jnp.full_like(sigma_m, dt / MU_0, dtype=jnp.float32)
+    return decay.astype(jnp.float32), source.astype(jnp.float32), source_lossless
 
 
 def precompute_e_update_coefficients(shape, conductivity, permittivity, dt, region):
