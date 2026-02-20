@@ -78,6 +78,7 @@ def _append_csv(
     tcups_py: float,
     tcups_split: float,
     tcups_compiled: float,
+    hlo_stats: dict[str, int] | None = None,
 ):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     headers = [
@@ -103,7 +104,28 @@ def _append_csv(
         "compiled_v3_scan_tcups",
         "compiled_vs_python_speedup_x",
         "compiled_vs_split_jit_speedup_x",
+        "compiled_hlo_text_len",
+        "compiled_hlo_fusion_count",
+        "compiled_hlo_scatter_count",
+        "compiled_hlo_dynamic_update_slice_count",
+        "compiled_hlo_slice_count",
+        "compiled_hlo_copy_count",
+        "compiled_hlo_while_count",
     ]
+
+    if csv_path.exists():
+        with csv_path.open("r", newline="") as f:
+            reader = csv.reader(f)
+            existing_headers = next(reader, None)
+        if existing_headers != headers:
+            with csv_path.open("r", newline="") as f:
+                old_rows = list(csv.DictReader(f))
+            with csv_path.open("w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                writer.writeheader()
+                for old_row in old_rows:
+                    migrated = {h: old_row.get(h, "") for h in headers}
+                    writer.writerow(migrated)
 
     repo_root = Path(__file__).resolve().parents[1]
     row = {
@@ -129,7 +151,24 @@ def _append_csv(
         "compiled_v3_scan_tcups": tcups_compiled,
         "compiled_vs_python_speedup_x": t_py / t_compiled,
         "compiled_vs_split_jit_speedup_x": t_split / t_compiled,
+        "compiled_hlo_text_len": None,
+        "compiled_hlo_fusion_count": None,
+        "compiled_hlo_scatter_count": None,
+        "compiled_hlo_dynamic_update_slice_count": None,
+        "compiled_hlo_slice_count": None,
+        "compiled_hlo_copy_count": None,
+        "compiled_hlo_while_count": None,
     }
+    if hlo_stats is not None:
+        row["compiled_hlo_text_len"] = int(hlo_stats.get("text_len", 0))
+        row["compiled_hlo_fusion_count"] = int(hlo_stats.get("fusion", 0))
+        row["compiled_hlo_scatter_count"] = int(hlo_stats.get("scatter", 0))
+        row["compiled_hlo_dynamic_update_slice_count"] = int(
+            hlo_stats.get("dynamic-update-slice", 0)
+        )
+        row["compiled_hlo_slice_count"] = int(hlo_stats.get("slice", 0))
+        row["compiled_hlo_copy_count"] = int(hlo_stats.get("copy", 0))
+        row["compiled_hlo_while_count"] = int(hlo_stats.get("while", 0))
 
     file_exists = csv_path.exists()
     with csv_path.open("a", newline="") as f:
@@ -282,6 +321,52 @@ def run_compiled(sim: Simulation, steps: int) -> float:
     return t1 - t0
 
 
+def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
+    """Collect simple operation counts from compiled v0.3 HLO text."""
+    import jax.numpy as jnp
+    from beamz.simulation.compiled import EngineState, MonitorState, monitor_state_size
+
+    program = sim.compile(num_steps=steps)
+    if program._compiled_scan is None:
+        program._build_scan()
+
+    if program.monitor_specs:
+        max_records = max(1, monitor_state_size(program.monitor_specs, steps))
+        monitor_state = MonitorState(
+            powers=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
+            timestamps=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
+            counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+        )
+    else:
+        monitor_state = MonitorState(
+            powers=jnp.zeros((0, 0), dtype=jnp.float32),
+            timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
+            counts=jnp.zeros((0,), dtype=jnp.int32),
+        )
+
+    engine_state = EngineState(
+        ex=sim.fields.Ex,
+        ey=sim.fields.Ey,
+        ez=sim.fields.Ez,
+        hx=sim.fields.Hx,
+        hy=sim.fields.Hy,
+        hz=sim.fields.Hz,
+        t=jnp.asarray(sim.t, dtype=jnp.float32),
+        current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
+    )
+
+    hlo_text = program._compiled_scan.lower(engine_state, monitor_state).compile().as_text().lower()
+    return {
+        "text_len": len(hlo_text),
+        "fusion": hlo_text.count("fusion"),
+        "scatter": hlo_text.count("scatter"),
+        "dynamic-update-slice": hlo_text.count("dynamic-update-slice"),
+        "slice": hlo_text.count("slice"),
+        "copy": hlo_text.count("copy"),
+        "while": hlo_text.count("while"),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=120)
@@ -299,6 +384,12 @@ def main():
         type=str,
         default="benchmarks/results/compiled_3d_results.csv",
         help="CSV file to append benchmark results to.",
+    )
+    parser.add_argument(
+        "--hlo-stats",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Collect compiled HLO op counts for CSV tracking.",
     )
     args = parser.parse_args()
 
@@ -324,10 +415,12 @@ def main():
     sim_py = copy.deepcopy(sim_base)
     sim_split = copy.deepcopy(sim_base)
     sim_compiled = copy.deepcopy(sim_base)
+    sim_hlo = copy.deepcopy(sim_base)
 
     t_py = run_legacy_python_step(sim_py, steps)
     t_split = run_legacy_split_jit(sim_split, steps)
     t_compiled = run_compiled(sim_compiled, steps)
+    hlo_stats = compiled_hlo_stats(sim_hlo, steps) if args.hlo_stats else None
 
     tcups_py = _tcups(sim_py, steps, t_py)
     tcups_split = _tcups(sim_split, steps, t_split)
@@ -341,6 +434,21 @@ def main():
     print("\nSpeedups")
     print(f"compiled / legacy_python_step: {t_py / t_compiled:.2f}x")
     print(f"compiled / legacy_split_jit:   {t_split / t_compiled:.2f}x")
+    if hlo_stats is not None:
+        print("\nCompiled HLO Stats")
+        print(
+            " ".join(
+                [
+                    f"text_len={hlo_stats['text_len']}",
+                    f"fusion={hlo_stats['fusion']}",
+                    f"scatter={hlo_stats['scatter']}",
+                    f"dynamic-update-slice={hlo_stats['dynamic-update-slice']}",
+                    f"slice={hlo_stats['slice']}",
+                    f"copy={hlo_stats['copy']}",
+                    f"while={hlo_stats['while']}",
+                ]
+            )
+        )
 
     csv_path = Path(args.csv)
     _append_csv(
@@ -354,6 +462,7 @@ def main():
         tcups_py=tcups_py,
         tcups_split=tcups_split,
         tcups_compiled=tcups_compiled,
+        hlo_stats=hlo_stats,
     )
     print(f"\nCSV appended: {csv_path}")
 

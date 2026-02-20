@@ -339,20 +339,32 @@ def curl_h_to_e_3d(hx, hy, hz, resolution, ex_shape=None, ey_shape=None, ez_shap
     if ez_shape is None:
         ez_shape = (hy.shape[0], hy.shape[1], hy.shape[2] + 1)
 
+    # Build full-size curl arrays without scatter updates:
     # Ex update: (∇×H)_x = ∂Hz/∂y - ∂Hy/∂z
-    curl_hx = jnp.zeros(ex_shape)
-    curl_hx = curl_hx.at[:, 1:-1, :].set((hz[:, 1:, :] - hz[:, :-1, :]) / resolution)
-    curl_hx = curl_hx.at[1:-1, :, :].add(-(hy[1:, :, :] - hy[:-1, :, :]) / resolution)
+    dHz_dy = (hz[:, 1:, :] - hz[:, :-1, :]) / resolution  # (nz, ny-2, nx-1)
+    dHy_dz = (hy[1:, :, :] - hy[:-1, :, :]) / resolution  # (nz-2, ny, nx-1)
+    curl_hx = jnp.pad(dHz_dy, ((0, 0), (1, 1), (0, 0))) - jnp.pad(
+        dHy_dz, ((1, 1), (0, 0), (0, 0))
+    )
 
     # Ey update: (∇×H)_y = ∂Hx/∂z - ∂Hz/∂x
-    curl_hy = jnp.zeros(ey_shape)
-    curl_hy = curl_hy.at[1:-1, :, :].set((hx[1:, :, :] - hx[:-1, :, :]) / resolution)
-    curl_hy = curl_hy.at[:, :, 1:-1].add(-(hz[:, :, 1:] - hz[:, :, :-1]) / resolution)
+    dHx_dz = (hx[1:, :, :] - hx[:-1, :, :]) / resolution  # (nz-2, ny-1, nx)
+    dHz_dx = (hz[:, :, 1:] - hz[:, :, :-1]) / resolution  # (nz, ny-1, nx-2)
+    curl_hy = jnp.pad(dHx_dz, ((1, 1), (0, 0), (0, 0))) - jnp.pad(
+        dHz_dx, ((0, 0), (0, 0), (1, 1))
+    )
 
     # Ez update: (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y
-    curl_hz = jnp.zeros(ez_shape)
-    curl_hz = curl_hz.at[:, :, 1:-1].set((hy[:, :, 1:] - hy[:, :, :-1]) / resolution)
-    curl_hz = curl_hz.at[:, 1:-1, :].add(-(hx[:, 1:, :] - hx[:, :-1, :]) / resolution)
+    dHy_dx = (hy[:, :, 1:] - hy[:, :, :-1]) / resolution  # (nz-1, ny, nx-2)
+    dHx_dy = (hx[:, 1:, :] - hx[:, :-1, :]) / resolution  # (nz-1, ny-2, nx)
+    curl_hz = jnp.pad(dHy_dx, ((0, 0), (0, 0), (1, 1))) - jnp.pad(
+        dHx_dy, ((0, 0), (1, 1), (0, 0))
+    )
+
+    # Preserve shape contracts when callers pass explicit target shapes.
+    assert curl_hx.shape == ex_shape, f"curl_hx shape mismatch: {curl_hx.shape} vs {ex_shape}"
+    assert curl_hy.shape == ey_shape, f"curl_hy shape mismatch: {curl_hy.shape} vs {ey_shape}"
+    assert curl_hz.shape == ez_shape, f"curl_hz shape mismatch: {curl_hz.shape} vs {ez_shape}"
 
     return (curl_hx, curl_hy, curl_hz)
 
@@ -411,6 +423,29 @@ def advance_e_field(field, curl, conductivity, permittivity, dt, region):
 
     # Use .at[].set() for functional update (JAX immutable arrays)
     return field.at[region].set(new_values)
+
+
+def precompute_h_update_coefficients(sigma_m, dt):
+    """Precompute static H update coefficients for dense in-loop updates."""
+    denom = 1.0 + sigma_m * (dt / (2.0 * MU_0))
+    decay = (1.0 - sigma_m * (dt / (2.0 * MU_0))) / denom
+    source = (dt / MU_0) / denom
+    return decay.astype(jnp.float32), source.astype(jnp.float32)
+
+
+def precompute_e_update_coefficients(shape, conductivity, permittivity, dt, region):
+    """Precompute full-grid E update coefficients with boundary-safe masks."""
+    dtype = jnp.float32
+    decay = jnp.ones(shape, dtype=dtype)
+    source = jnp.zeros(shape, dtype=dtype)
+
+    denom = 1.0 + conductivity * (dt / (2.0 * EPS_0 * permittivity))
+    local_decay = (1.0 - conductivity * (dt / (2.0 * EPS_0 * permittivity))) / denom
+    local_source = (dt / (EPS_0 * permittivity)) / denom
+
+    decay = decay.at[region].set(local_decay.astype(dtype))
+    source = source.at[region].set(local_source.astype(dtype))
+    return decay, source
 
 
 def material_slice_for_e_3d(permittivity, conductivity, orientation):

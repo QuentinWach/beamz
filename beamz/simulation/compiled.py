@@ -74,19 +74,19 @@ class CompiledSimulation:
     monitor_specs: tuple[CompiledMonitorSpec, ...]
     monitor_devices: tuple[Monitor, ...]
 
-    # Static material/update tensors
-    eps_x: jnp.ndarray
-    sig_x: jnp.ndarray
-    region_x: tuple
-    eps_y: jnp.ndarray
-    sig_y: jnp.ndarray
-    region_y: tuple
-    eps_z: jnp.ndarray
-    sig_z: jnp.ndarray
-    region_z: tuple
-    sigma_m_hx: jnp.ndarray
-    sigma_m_hy: jnp.ndarray
-    sigma_m_hz: jnp.ndarray
+    # Static update coefficients (full-grid, dense updates; no per-step scatters)
+    h_decay_x: jnp.ndarray
+    h_source_x: jnp.ndarray
+    h_decay_y: jnp.ndarray
+    h_source_y: jnp.ndarray
+    h_decay_z: jnp.ndarray
+    h_source_z: jnp.ndarray
+    e_decay_x: jnp.ndarray
+    e_source_x: jnp.ndarray
+    e_decay_y: jnp.ndarray
+    e_source_y: jnp.ndarray
+    e_decay_z: jnp.ndarray
+    e_source_z: jnp.ndarray
 
     _compiled_scan: callable | None = None
     _compile_count: int = 0
@@ -217,14 +217,12 @@ class CompiledSimulation:
         e_specs_y = self._sources_for("e", "Ey")
         e_specs_z = self._sources_for("e", "Ez")
 
-        eps_x, sig_x, region_x = self.eps_x, self.sig_x, self.region_x
-        eps_y, sig_y, region_y = self.eps_y, self.sig_y, self.region_y
-        eps_z, sig_z, region_z = self.eps_z, self.sig_z, self.region_z
-        sigma_m_hx, sigma_m_hy, sigma_m_hz = (
-            self.sigma_m_hx,
-            self.sigma_m_hy,
-            self.sigma_m_hz,
-        )
+        h_decay_x, h_source_x = self.h_decay_x, self.h_source_x
+        h_decay_y, h_source_y = self.h_decay_y, self.h_source_y
+        h_decay_z, h_source_z = self.h_decay_z, self.h_source_z
+        e_decay_x, e_source_x = self.e_decay_x, self.e_source_x
+        e_decay_y, e_source_y = self.e_decay_y, self.e_source_y
+        e_decay_z, e_source_z = self.e_decay_z, self.e_source_z
 
         def body(carry, t_idx):
             eng, mon, mat = carry
@@ -246,9 +244,9 @@ class CompiledSimulation:
                     plane=plane_2d,
                 )
 
-            hx = ops.advance_h_field(hx, curl_ex, sigma_m_hx, dt)
-            hy = ops.advance_h_field(hy, curl_ey, sigma_m_hy, dt)
-            hz = ops.advance_h_field(hz, curl_ez, sigma_m_hz, dt)
+            hx = h_decay_x * hx - h_source_x * curl_ex
+            hy = h_decay_y * hy - h_source_y * curl_ey
+            hz = h_decay_z * hz - h_source_z * curl_ez
 
             hx = self._apply_specs(hx, t_idx, h_specs_x)
             hy = self._apply_specs(hy, t_idx, h_specs_y)
@@ -272,9 +270,9 @@ class CompiledSimulation:
                     plane=plane_2d,
                 )
 
-            ex = ops.advance_e_field(ex, curl_hx, sig_x, eps_x, dt, region_x)
-            ey = ops.advance_e_field(ey, curl_hy, sig_y, eps_y, dt, region_y)
-            ez = ops.advance_e_field(ez, curl_hz, sig_z, eps_z, dt, region_z)
+            ex = e_decay_x * ex + e_source_x * curl_hx
+            ey = e_decay_y * ey + e_source_y * curl_hy
+            ez = e_decay_z * ez + e_source_z * curl_hz
 
             ex = self._apply_specs(ex, t_idx, e_specs_x)
             ey = self._apply_specs(ey, t_idx, e_specs_y)
@@ -412,22 +410,48 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         precision=getattr(run_cfg, "precision", "float32"),
     )
 
+    h_decay_x, h_source_x = ops.precompute_h_update_coefficients(fields.sigma_m_hx, dt)
+    h_decay_y, h_source_y = ops.precompute_h_update_coefficients(fields.sigma_m_hy, dt)
+    h_decay_z, h_source_z = ops.precompute_h_update_coefficients(fields.sigma_m_hz, dt)
+
+    e_decay_x, e_source_x = ops.precompute_e_update_coefficients(
+        shape=fields.Ex.shape,
+        conductivity=fields.sig_x,
+        permittivity=fields.eps_x,
+        dt=dt,
+        region=fields.region_x,
+    )
+    e_decay_y, e_source_y = ops.precompute_e_update_coefficients(
+        shape=fields.Ey.shape,
+        conductivity=fields.sig_y,
+        permittivity=fields.eps_y,
+        dt=dt,
+        region=fields.region_y,
+    )
+    e_decay_z, e_source_z = ops.precompute_e_update_coefficients(
+        shape=fields.Ez.shape,
+        conductivity=fields.sig_z,
+        permittivity=fields.eps_z,
+        dt=dt,
+        region=fields.region_z,
+    )
+
     return CompiledSimulation(
         config=config,
         material_spec=CompiledMaterialSpec(model_kind="linear"),
         source_specs=source_specs,
         monitor_specs=monitor_specs,
         monitor_devices=monitor_devices,
-        eps_x=fields.eps_x,
-        sig_x=fields.sig_x,
-        region_x=fields.region_x,
-        eps_y=fields.eps_y,
-        sig_y=fields.sig_y,
-        region_y=fields.region_y,
-        eps_z=fields.eps_z,
-        sig_z=fields.sig_z,
-        region_z=fields.region_z,
-        sigma_m_hx=fields.sigma_m_hx,
-        sigma_m_hy=fields.sigma_m_hy,
-        sigma_m_hz=fields.sigma_m_hz,
+        h_decay_x=h_decay_x,
+        h_source_x=h_source_x,
+        h_decay_y=h_decay_y,
+        h_source_y=h_source_y,
+        h_decay_z=h_decay_z,
+        h_source_z=h_source_z,
+        e_decay_x=e_decay_x,
+        e_source_x=e_source_x,
+        e_decay_y=e_decay_y,
+        e_source_y=e_source_y,
+        e_decay_z=e_decay_z,
+        e_source_z=e_source_z,
     )
