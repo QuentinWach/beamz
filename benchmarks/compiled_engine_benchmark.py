@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import os
+import platform
+import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +49,94 @@ class BenchmarkConfig:
     points_per_wavelength: int
     memory_gb: float
     saturation_factor: float
+
+
+def _git_commit(repo_root: Path) -> str:
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=repo_root,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            .strip()
+            .lower()
+        )
+    except Exception:
+        return "unknown"
+
+
+def _append_csv(
+    csv_path: Path,
+    cfg: BenchmarkConfig,
+    steps: int,
+    estimated_working_set_gb: float,
+    t_py: float,
+    t_split: float,
+    t_compiled: float,
+    tcups_py: float,
+    tcups_split: float,
+    tcups_compiled: float,
+):
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    headers = [
+        "timestamp_utc",
+        "hostname",
+        "platform",
+        "python_version",
+        "git_commit",
+        "grid_n",
+        "steps",
+        "ppw",
+        "target_memory_gb",
+        "saturation_factor",
+        "estimated_working_set_gb",
+        "legacy_python_step_s",
+        "legacy_split_jit_s",
+        "compiled_v3_scan_s",
+        "legacy_python_step_s_per_step",
+        "legacy_split_jit_s_per_step",
+        "compiled_v3_scan_s_per_step",
+        "legacy_python_step_tcups",
+        "legacy_split_jit_tcups",
+        "compiled_v3_scan_tcups",
+        "compiled_vs_python_speedup_x",
+        "compiled_vs_split_jit_speedup_x",
+    ]
+
+    repo_root = Path(__file__).resolve().parents[1]
+    row = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "hostname": platform.node(),
+        "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        "python_version": platform.python_version(),
+        "git_commit": _git_commit(repo_root),
+        "grid_n": cfg.grid_n,
+        "steps": steps,
+        "ppw": cfg.points_per_wavelength,
+        "target_memory_gb": cfg.memory_gb,
+        "saturation_factor": cfg.saturation_factor,
+        "estimated_working_set_gb": estimated_working_set_gb,
+        "legacy_python_step_s": t_py,
+        "legacy_split_jit_s": t_split,
+        "compiled_v3_scan_s": t_compiled,
+        "legacy_python_step_s_per_step": t_py / steps,
+        "legacy_split_jit_s_per_step": t_split / steps,
+        "compiled_v3_scan_s_per_step": t_compiled / steps,
+        "legacy_python_step_tcups": tcups_py,
+        "legacy_split_jit_tcups": tcups_split,
+        "compiled_v3_scan_tcups": tcups_compiled,
+        "compiled_vs_python_speedup_x": t_py / t_compiled,
+        "compiled_vs_split_jit_speedup_x": t_split / t_compiled,
+    }
+
+    file_exists = csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def estimate_working_set_gb(n: int, saturation_factor: float) -> float:
@@ -202,6 +294,12 @@ def main():
         default=4.0,
         help="Higher = more conservative memory estimate.",
     )
+    parser.add_argument(
+        "--csv",
+        type=str,
+        default="benchmarks/results/compiled_3d_results.csv",
+        help="CSV file to append benchmark results to.",
+    )
     args = parser.parse_args()
 
     grid_n = args.grid_n or choose_grid_n(args.memory_gb, args.saturation_factor)
@@ -216,9 +314,8 @@ def main():
     print("3D FDTD benchmark")
     print(f"target_memory_gb={cfg.memory_gb:.1f}")
     print(f"grid_n={cfg.grid_n}")
-    print(
-        f"estimated_working_set_gb~{estimate_working_set_gb(cfg.grid_n, cfg.saturation_factor):.2f}"
-    )
+    est_ws = estimate_working_set_gb(cfg.grid_n, cfg.saturation_factor)
+    print(f"estimated_working_set_gb~{est_ws:.2f}")
     print(f"steps={cfg.steps}")
 
     sim_base, steps = make_simulation(cfg)
@@ -244,6 +341,21 @@ def main():
     print("\nSpeedups")
     print(f"compiled / legacy_python_step: {t_py / t_compiled:.2f}x")
     print(f"compiled / legacy_split_jit:   {t_split / t_compiled:.2f}x")
+
+    csv_path = Path(args.csv)
+    _append_csv(
+        csv_path=csv_path,
+        cfg=cfg,
+        steps=steps,
+        estimated_working_set_gb=est_ws,
+        t_py=t_py,
+        t_split=t_split,
+        t_compiled=t_compiled,
+        tcups_py=tcups_py,
+        tcups_split=tcups_split,
+        tcups_compiled=tcups_compiled,
+    )
+    print(f"\nCSV appended: {csv_path}")
 
 
 if __name__ == "__main__":
