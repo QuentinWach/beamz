@@ -46,6 +46,23 @@ class MonitorState(NamedTuple):
     counts: jnp.ndarray
 
 
+class UpdateCoefficients(NamedTuple):
+    """Static update coefficients passed as runtime arguments to avoid constant capture."""
+
+    h_decay_x: jnp.ndarray
+    h_source_x: jnp.ndarray
+    h_decay_y: jnp.ndarray
+    h_source_y: jnp.ndarray
+    h_decay_z: jnp.ndarray
+    h_source_z: jnp.ndarray
+    e_decay_x: jnp.ndarray
+    e_source_x: jnp.ndarray
+    e_decay_y: jnp.ndarray
+    e_source_y: jnp.ndarray
+    e_decay_z: jnp.ndarray
+    e_source_z: jnp.ndarray
+
+
 class RunState(NamedTuple):
     """Auxiliary run counters."""
 
@@ -90,6 +107,23 @@ class CompiledSimulation:
 
     _compiled_scan: callable | None = None
     _compile_count: int = 0
+
+    def _update_coefficients(self) -> UpdateCoefficients:
+        """Build runtime coefficient container for jitted scan entrypoint."""
+        return UpdateCoefficients(
+            h_decay_x=self.h_decay_x,
+            h_source_x=self.h_source_x,
+            h_decay_y=self.h_decay_y,
+            h_source_y=self.h_source_y,
+            h_decay_z=self.h_decay_z,
+            h_source_z=self.h_source_z,
+            e_decay_x=self.e_decay_x,
+            e_source_x=self.e_source_x,
+            e_decay_y=self.e_decay_y,
+            e_source_y=self.e_source_y,
+            e_decay_z=self.e_decay_z,
+            e_source_z=self.e_source_z,
+        )
 
     def _sources_for(self, timing: str, component: str) -> tuple[CompiledSourceSpec, ...]:
         return tuple(
@@ -222,89 +256,92 @@ class CompiledSimulation:
         e_specs_y = self._sources_for("e", "Ey")
         e_specs_z = self._sources_for("e", "Ez")
 
-        h_decay_x, h_source_x = self.h_decay_x, self.h_source_x
-        h_decay_y, h_source_y = self.h_decay_y, self.h_source_y
-        h_decay_z, h_source_z = self.h_decay_z, self.h_source_z
-        e_decay_x, e_source_x = self.e_decay_x, self.e_source_x
-        e_decay_y, e_source_y = self.e_decay_y, self.e_source_y
-        e_decay_z, e_source_z = self.e_decay_z, self.e_source_z
-
-        def body(carry, t_idx):
-            eng, mon, mat = carry
-
-            ex, ey, ez = eng.ex, eng.ey, eng.ez
-            hx, hy, hz = eng.hx, eng.hy, eng.hz
-
-            # Optional pre-E injections (legacy soft electric sources packed as data).
-            ex = self._apply_specs(ex, t_idx, pre_e_ex)
-            ey = self._apply_specs(ey, t_idx, pre_e_ey)
-            ez = self._apply_specs(ez, t_idx, pre_e_ez)
-
-            if is_3d:
-                curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_3d(ex, ey, ez, resolution)
-            else:
-                curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_2d(
-                    (ex, ey, ez),
-                    resolution,
-                    plane=plane_2d,
-                )
-
-            hx = h_decay_x * hx - h_source_x * curl_ex
-            hy = h_decay_y * hy - h_source_y * curl_ey
-            hz = h_decay_z * hz - h_source_z * curl_ez
-
-            hx = self._apply_specs(hx, t_idx, h_specs_x)
-            hy = self._apply_specs(hy, t_idx, h_specs_y)
-            hz = self._apply_specs(hz, t_idx, h_specs_z)
-
-            if is_3d:
-                curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_3d(
-                    hx,
-                    hy,
-                    hz,
-                    resolution,
-                    ex_shape=ex.shape,
-                    ey_shape=ey.shape,
-                    ez_shape=ez.shape,
-                )
-            else:
-                curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_2d(
-                    (hx, hy, hz),
-                    resolution,
-                    (ex.shape, ey.shape, ez.shape),
-                    plane=plane_2d,
-                )
-
-            ex = e_decay_x * ex + e_source_x * curl_hx
-            ey = e_decay_y * ey + e_source_y * curl_hy
-            ez = e_decay_z * ez + e_source_z * curl_hz
-
-            ex = self._apply_specs(ex, t_idx, e_specs_x)
-            ey = self._apply_specs(ey, t_idx, e_specs_y)
-            ez = self._apply_specs(ez, t_idx, e_specs_z)
-
-            mat, _ = material_model.update(mat, ex, ey, ez, t_idx)
-
-            t_phys = eng.t
-            mon = self._update_monitors(mon, t_idx, t_phys, ex, ey, ez, hx, hy, hz)
-
-            new_eng = EngineState(
-                ex=ex,
-                ey=ey,
-                ez=ez,
-                hx=hx,
-                hy=hy,
-                hz=hz,
-                t=eng.t + dt,
-                current_step=eng.current_step + jnp.array(1, dtype=jnp.int32),
-            )
-            return (new_eng, mon, mat), None
-
         @jax.jit
-        def run_scan(engine_state: EngineState, monitor_state: MonitorState):
+        def run_scan(
+            engine_state: EngineState,
+            monitor_state: MonitorState,
+            coeffs: UpdateCoefficients,
+        ):
+            h_decay_x, h_source_x = coeffs.h_decay_x, coeffs.h_source_x
+            h_decay_y, h_source_y = coeffs.h_decay_y, coeffs.h_source_y
+            h_decay_z, h_source_z = coeffs.h_decay_z, coeffs.h_source_z
+            e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
+            e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
+            e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
+
+            def body_with_coeffs(carry, t_idx):
+                eng, mon, mat = carry
+
+                ex, ey, ez = eng.ex, eng.ey, eng.ez
+                hx, hy, hz = eng.hx, eng.hy, eng.hz
+
+                ex = self._apply_specs(ex, t_idx, pre_e_ex)
+                ey = self._apply_specs(ey, t_idx, pre_e_ey)
+                ez = self._apply_specs(ez, t_idx, pre_e_ez)
+
+                if is_3d:
+                    curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_3d(ex, ey, ez, resolution)
+                else:
+                    curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_2d(
+                        (ex, ey, ez),
+                        resolution,
+                        plane=plane_2d,
+                    )
+
+                hx = h_decay_x * hx - h_source_x * curl_ex
+                hy = h_decay_y * hy - h_source_y * curl_ey
+                hz = h_decay_z * hz - h_source_z * curl_ez
+
+                hx = self._apply_specs(hx, t_idx, h_specs_x)
+                hy = self._apply_specs(hy, t_idx, h_specs_y)
+                hz = self._apply_specs(hz, t_idx, h_specs_z)
+
+                if is_3d:
+                    curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_3d(
+                        hx,
+                        hy,
+                        hz,
+                        resolution,
+                        ex_shape=ex.shape,
+                        ey_shape=ey.shape,
+                        ez_shape=ez.shape,
+                    )
+                else:
+                    curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_2d(
+                        (hx, hy, hz),
+                        resolution,
+                        (ex.shape, ey.shape, ez.shape),
+                        plane=plane_2d,
+                    )
+
+                ex = e_decay_x * ex + e_source_x * curl_hx
+                ey = e_decay_y * ey + e_source_y * curl_hy
+                ez = e_decay_z * ez + e_source_z * curl_hz
+
+                ex = self._apply_specs(ex, t_idx, e_specs_x)
+                ey = self._apply_specs(ey, t_idx, e_specs_y)
+                ez = self._apply_specs(ez, t_idx, e_specs_z)
+
+                mat, _ = material_model.update(mat, ex, ey, ez, t_idx)
+
+                t_phys = eng.t
+                mon = self._update_monitors(mon, t_idx, t_phys, ex, ey, ez, hx, hy, hz)
+
+                new_eng = EngineState(
+                    ex=ex,
+                    ey=ey,
+                    ez=ez,
+                    hx=hx,
+                    hy=hy,
+                    hz=hz,
+                    t=eng.t + dt,
+                    current_step=eng.current_step + jnp.array(1, dtype=jnp.int32),
+                )
+                return (new_eng, mon, mat), None
+
             t_idxs = jnp.arange(self.config.num_steps, dtype=jnp.int32)
             (engine_final, monitor_final, material_final), _ = jax.lax.scan(
-                body,
+                body_with_coeffs,
                 (engine_state, monitor_state, material_state0),
                 t_idxs,
             )
@@ -341,7 +378,11 @@ class CompiledSimulation:
         if self._compiled_scan is None:
             self._build_scan()
 
-        eng, mon, mat = self._compiled_scan(engine_state, monitor_state)
+        eng, mon, mat = self._compiled_scan(
+            engine_state,
+            monitor_state,
+            self._update_coefficients(),
+        )
         return eng, mon, mat
 
     def apply_monitor_state(self, monitor_state: MonitorState):

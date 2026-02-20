@@ -355,7 +355,13 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
         current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
     )
 
-    hlo_text = program._compiled_scan.lower(engine_state, monitor_state).compile().as_text().lower()
+    hlo_text = (
+        program._compiled_scan
+        .lower(engine_state, monitor_state, program._update_coefficients())
+        .compile()
+        .as_text()
+        .lower()
+    )
     return {
         "text_len": len(hlo_text),
         "fusion": hlo_text.count("fusion"),
