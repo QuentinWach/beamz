@@ -1,11 +1,13 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+from types import SimpleNamespace
 
 from beamz.const import µm
 from beamz.design.core import Design
 from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML, Boundary
+from beamz.simulation.compiled import EngineState, compile_simulation
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
 
@@ -81,6 +83,10 @@ class Simulation:
         self.thermal = thermal
         if self.thermal is not None and getattr(self.thermal, "enabled", True):
             self.thermal.initialize(self)
+
+        # Compiled program cache for v0.3 packed-source/monitor execution.
+        self._compiled_program = None
+        self._compiled_program_signature = None
 
     def step(self):
         """Perform one FDTD time step with correct Huygens source timing.
@@ -384,244 +390,164 @@ class Simulation:
 
         return step_e
 
-    def run_fast(
+    def compile(self, num_steps=None):
+        """Compile the v0.3 packed-data simulation program."""
+        if num_steps is None:
+            num_steps = self.num_steps - self.current_step
+        num_steps = int(num_steps)
+        if num_steps <= 0:
+            raise ValueError("num_steps must be > 0")
+
+        signature = (
+            num_steps,
+            self.current_step,
+            float(self.t),
+            self.fields.permittivity.shape,
+            self.is_3d,
+            self.plane_2d,
+        )
+        if (
+            self._compiled_program is not None
+            and self._compiled_program_signature == signature
+        ):
+            return self._compiled_program
+
+        run_cfg = SimpleNamespace(
+            fields=self.fields,
+            resolution=self.resolution,
+            dt=self.dt,
+            num_steps=num_steps,
+            plane_2d=self.plane_2d,
+            is_3d=self.is_3d,
+            t0=self.t,
+            precision="float32",
+        )
+        self._compiled_program = compile_simulation(
+            design=self.design,
+            devices=self.devices,
+            boundaries=self.boundaries,
+            run_cfg=run_cfg,
+        )
+        self._compiled_program_signature = signature
+        return self._compiled_program
+
+    def run_compiled(
         self, num_steps=None, record_interval=None, record_fields=None, progress=True
     ):
-        """Run FDTD simulation with JIT-compiled loop for maximum performance.
+        """Run simulation using the v0.3 single-program compiled scan engine.
 
-        This method uses JAX's jax.lax.fori_loop for efficient time-stepping with full JIT compilation.
-        Sources are injected at each step (not JIT-compiled), but the field update is fully optimized.
-
-        Args:
-            num_steps: Number of steps to run (default: remaining steps)
-            record_interval: Record fields every N steps (default: None, don't record)
-            record_fields: List of field names to record (default: ['Ez'])
-            progress: Show progress bar (default: True)
-
-        Returns:
-            dict with:
-                - 'fields': dict of recorded field arrays if record_interval was set
-                - 'monitors': list of Monitor objects with recorded data
+        Notes:
+        - Source/monitor callbacks are compiled as packed specs.
+        - Monitor results are accumulated in-loop and written back to Monitor objects.
+        - Field history recording is optional and chunked via repeated compiled runs.
         """
         if self.thermal is not None and getattr(self.thermal, "enabled", True):
             raise NotImplementedError(
-                "run_fast is not supported when thermal coupling is enabled."
+                "run_compiled currently does not support thermal coupling."
             )
+
         if num_steps is None:
             num_steps = self.num_steps - self.current_step
+        num_steps = int(num_steps)
+        if num_steps <= 0:
+            return None
 
         if record_fields is None:
             record_fields = ["Ez"]
 
-        # Create split JIT-compiled step functions
-        jit_step_h = self._create_jit_step_h()
-        jit_step_e = self._create_jit_step_e()
+        field_history = {name: [] for name in record_fields} if record_interval else None
 
-        # Warm up JIT (compile on first call)
-        if progress:
-            print("● JIT compiling FDTD kernel...", end=" ", flush=True)
+        # Run in one chunk for max TCUPS by default. For field snapshots, run in equal chunks.
+        chunk_size = int(record_interval) if record_interval else num_steps
+        steps_remaining = num_steps
+        steps_done = 0
 
-        # Run one step to trigger compilation of both kernels
-        Hx, Hy, Hz = jit_step_h(
-            self.fields.Ex,
-            self.fields.Ey,
-            self.fields.Ez,
-            self.fields.Hx,
-            self.fields.Hy,
-            self.fields.Hz,
-        )
-        Ex, Ey, Ez = jit_step_e(
-            self.fields.Ex,
-            self.fields.Ey,
-            self.fields.Ez,
-            Hx,
-            Hy,
-            Hz,
-        )
-        Ex.block_until_ready()
+        while steps_remaining > 0:
+            this_chunk = min(chunk_size, steps_remaining)
+            program = self.compile(num_steps=this_chunk)
 
-        if progress:
-            print("done!")
+            if progress and steps_done == 0 and program.compile_count == 0:
+                print("● JIT compiling v0.3 packed FDTD program...", end=" ", flush=True)
 
-        # Initialize field history storage
-        field_history = {name: [] for name in record_fields}
+            engine_state = EngineState(
+                ex=self.fields.Ex,
+                ey=self.fields.Ey,
+                ez=self.fields.Ez,
+                hx=self.fields.Hx,
+                hy=self.fields.Hy,
+                hz=self.fields.Hz,
+                t=jnp.asarray(self.t, dtype=jnp.float32),
+                current_step=jnp.asarray(self.current_step, dtype=jnp.int32),
+            )
 
-        # Main simulation loop with correct Huygens timing
-        try:
-            for step_idx in range(num_steps):
-                # 0. Legacy sources (before update, preserves old timing)
-                self._inject_legacy_sources()
+            engine_state, monitor_state, _ = program.run(engine_state=engine_state)
+            engine_state.ez.block_until_ready()
 
-                # 1. H update (JIT)
-                (
-                    self.fields.Hx,
-                    self.fields.Hy,
-                    self.fields.Hz,
-                ) = jit_step_h(
-                    self.fields.Ex,
-                    self.fields.Ey,
-                    self.fields.Ez,
-                    self.fields.Hx,
-                    self.fields.Hy,
-                    self.fields.Hz,
+            if progress and steps_done == 0:
+                print("done!")
+
+            self.fields.Ex = engine_state.ex
+            self.fields.Ey = engine_state.ey
+            self.fields.Ez = engine_state.ez
+            self.fields.Hx = engine_state.hx
+            self.fields.Hy = engine_state.hy
+            self.fields.Hz = engine_state.hz
+            self.t = float(np.asarray(engine_state.t))
+            self.current_step = int(np.asarray(engine_state.current_step))
+
+            program.apply_monitor_state(monitor_state)
+
+            if field_history is not None:
+                for name in record_fields:
+                    if hasattr(self.fields, name):
+                        field_history[name].append(np.array(getattr(self.fields, name)))
+
+            steps_done += this_chunk
+            steps_remaining -= this_chunk
+            self._compiled_program = None
+            self._compiled_program_signature = None
+
+            if progress and num_steps > 0:
+                pct = 100.0 * steps_done / num_steps
+                print(
+                    f"\r● Progress: {pct:.0f}% ({steps_done}/{num_steps} steps)",
+                    end="",
+                    flush=True,
                 )
 
-                # 2. M injection (Python, after H update)
-                self._inject_h_sources()
-
-                # 3. E update (JIT, uses modified H)
-                (
-                    self.fields.Ex,
-                    self.fields.Ey,
-                    self.fields.Ez,
-                ) = jit_step_e(
-                    self.fields.Ex,
-                    self.fields.Ey,
-                    self.fields.Ez,
-                    self.fields.Hx,
-                    self.fields.Hy,
-                    self.fields.Hz,
-                )
-
-                # 4. J injection (Python, after E update)
-                self._inject_e_sources()
-
-                # Record monitor data
-                self._record_monitors()
-
-                # Update time and step counter
-                self.t += self.dt
-                self.current_step += 1
-
-                # Record fields if requested
-                if record_interval and self.current_step % record_interval == 0:
-                    for field_name in record_fields:
-                        if hasattr(self.fields, field_name):
-                            field_history[field_name].append(
-                                np.array(getattr(self.fields, field_name))
-                            )
-
-                # Show progress
-                if progress and (step_idx + 1) % max(1, num_steps // 20) == 0:
-                    pct = 100 * (step_idx + 1) / num_steps
-                    print(
-                        f"\r● Progress: {pct:.0f}% ({step_idx + 1}/{num_steps} steps)",
-                        end="",
-                        flush=True,
-                    )
-
-            if progress:
-                print()  # Newline after progress
-
-        except KeyboardInterrupt:
-            if progress:
-                print(f"\n● Simulation interrupted at step {self.current_step}")
-
-        # Collect monitor data
-        monitors = [device for device in self.devices if isinstance(device, Monitor)]
-
-        # Convert field history to numpy arrays
-        for name in field_history:
-            if field_history[name]:
-                field_history[name] = np.stack(field_history[name])
+        if progress:
+            print()
 
         result = {}
-        if record_interval:
-            result["fields"] = field_history
+        if field_history is not None:
+            result["fields"] = {
+                k: np.stack(v) if len(v) > 0 else np.zeros((0,))
+                for k, v in field_history.items()
+            }
+        monitors = [device for device in self.devices if isinstance(device, Monitor)]
         if monitors:
             result["monitors"] = monitors
-
         return result if result else None
 
+    def run_fast(
+        self, num_steps=None, record_interval=None, record_fields=None, progress=True
+    ):
+        """Backward-compatible alias to `run_compiled` in v0.3."""
+        return self.run_compiled(
+            num_steps=num_steps,
+            record_interval=record_interval,
+            record_fields=record_fields,
+            progress=progress,
+        )
+
     def run_jit_scan(self, num_steps=None, progress=True):
-        """Run FDTD simulation using jax.lax.scan for maximum performance.
-
-        This method is optimized for simulations WITHOUT sources or with sources
-        that can be pre-computed. It JIT-compiles the entire time loop.
-
-        For simulations WITH time-dependent sources, use run_fast() instead.
-
-        Args:
-            num_steps: Number of steps to run (default: remaining steps)
-            progress: Show compilation status (default: True)
-
-        Returns:
-            dict with final field state
-        """
-        if self.thermal is not None and getattr(self.thermal, "enabled", True):
-            raise NotImplementedError(
-                "run_jit_scan is not supported when thermal coupling is enabled."
-            )
-        if num_steps is None:
-            num_steps = self.num_steps - self.current_step
-
-        # Check if sources are present
-        has_sources = any(
-            hasattr(d, "inject") or hasattr(d, "get_source_terms") for d in self.devices
+        """Backward-compatible alias to `run_compiled` in v0.3."""
+        return self.run_compiled(
+            num_steps=num_steps,
+            record_interval=None,
+            record_fields=None,
+            progress=progress,
         )
-        if has_sources:
-            print(
-                "● Warning: Sources detected. Using run_fast() instead for source injection support."
-            )
-            return self.run_fast(num_steps=num_steps, progress=progress)
-
-        # Create pure FDTD step function for scan
-        jit_step = self._create_jit_step()
-
-        @jax.jit
-        def scan_body(carry, _):
-            Ex, Ey, Ez, Hx, Hy, Hz = carry
-            Ex, Ey, Ez, Hx, Hy, Hz = jit_step(Ex, Ey, Ez, Hx, Hy, Hz)
-            return (Ex, Ey, Ez, Hx, Hy, Hz), None
-
-        if progress:
-            print(
-                f"● JIT compiling {num_steps}-step FDTD loop with jax.lax.scan...",
-                end=" ",
-                flush=True,
-            )
-
-        # Pack initial state
-        init_state = (
-            self.fields.Ex,
-            self.fields.Ey,
-            self.fields.Ez,
-            self.fields.Hx,
-            self.fields.Hy,
-            self.fields.Hz,
-        )
-
-        # Run scan
-        final_state, _ = jax.lax.scan(scan_body, init_state, None, length=num_steps)
-
-        # Unpack final state
-        (
-            self.fields.Ex,
-            self.fields.Ey,
-            self.fields.Ez,
-            self.fields.Hx,
-            self.fields.Hy,
-            self.fields.Hz,
-        ) = final_state
-
-        # Block until done
-        self.fields.Ez.block_until_ready()
-
-        if progress:
-            print("done!")
-
-        # Update time tracking
-        self.t += num_steps * self.dt
-        self.current_step += num_steps
-
-        return {
-            "Ex": np.array(self.fields.Ex),
-            "Ey": np.array(self.fields.Ey),
-            "Ez": np.array(self.fields.Ez),
-            "Hx": np.array(self.fields.Hx),
-            "Hy": np.array(self.fields.Hy),
-            "Hz": np.array(self.fields.Hz),
-        }
 
     def run(self, **kwargs):
         """Run complete FDTD simulation with optional live field visualization.
@@ -635,6 +561,22 @@ class Simulation:
                 - 'monitors': list of Monitor objects with recorded data
                 - 'animation': JupyterAnimator object if running in Jupyter with animate_live
         """
+        # Default non-visual path uses the compiled engine in v0.3.
+        wants_live_viz = any(
+            kwargs.get(k) is not None for k in ("animate_live", "save_video", "jupyter_live")
+        )
+        if not wants_live_viz:
+            save_fields = kwargs.get("save_fields")
+            field_subsample = int(kwargs.get("field_subsample", 1))
+            progress = bool(kwargs.get("progress", False))
+            record_interval = field_subsample if save_fields else None
+            return self.run_compiled(
+                num_steps=None,
+                record_interval=record_interval,
+                record_fields=save_fields,
+                progress=progress,
+            )
+
         from beamz.visual.runner import run_with_visualization
 
         return run_with_visualization(self, **kwargs)
