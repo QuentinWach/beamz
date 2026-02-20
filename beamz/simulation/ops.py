@@ -438,14 +438,17 @@ def precompute_e_update_coefficients(shape, conductivity, permittivity, dt, regi
     dtype = jnp.float32
     decay = jnp.ones(shape, dtype=dtype)
     source = jnp.zeros(shape, dtype=dtype)
+    source_lossless = jnp.zeros(shape, dtype=dtype)
 
     denom = 1.0 + conductivity * (dt / (2.0 * EPS_0 * permittivity))
     local_decay = (1.0 - conductivity * (dt / (2.0 * EPS_0 * permittivity))) / denom
     local_source = (dt / (EPS_0 * permittivity)) / denom
+    local_source_lossless = dt / (EPS_0 * permittivity)
 
     decay = decay.at[region].set(local_decay.astype(dtype))
     source = source.at[region].set(local_source.astype(dtype))
-    return decay, source
+    source_lossless = source_lossless.at[region].set(local_source_lossless.astype(dtype))
+    return decay, source, source_lossless
 
 
 def material_slice_for_e_3d(permittivity, conductivity, orientation):

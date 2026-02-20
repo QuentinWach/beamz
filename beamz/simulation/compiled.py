@@ -57,10 +57,13 @@ class UpdateCoefficients(NamedTuple):
     h_source_z: jnp.ndarray
     e_decay_x: jnp.ndarray
     e_source_x: jnp.ndarray
+    e_source_lossless_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
+    e_source_lossless_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
+    e_source_lossless_z: jnp.ndarray
 
 
 class RunState(NamedTuple):
@@ -100,10 +103,21 @@ class CompiledSimulation:
     h_source_z: jnp.ndarray
     e_decay_x: jnp.ndarray
     e_source_x: jnp.ndarray
+    e_source_lossless_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
+    e_source_lossless_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
+    e_source_lossless_z: jnp.ndarray
+
+    # Optional boundary-shell slabs where lossy update differs from lossless one.
+    e_use_lossy_shell_x: bool
+    e_lossy_shell_x: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
+    e_use_lossy_shell_y: bool
+    e_lossy_shell_y: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
+    e_use_lossy_shell_z: bool
+    e_lossy_shell_z: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
 
     _compiled_scan: callable | None = None
     _compile_count: int = 0
@@ -119,10 +133,13 @@ class CompiledSimulation:
             h_source_z=self.h_source_z,
             e_decay_x=self.e_decay_x,
             e_source_x=self.e_source_x,
+            e_source_lossless_x=self.e_source_lossless_x,
             e_decay_y=self.e_decay_y,
             e_source_y=self.e_source_y,
+            e_source_lossless_y=self.e_source_lossless_y,
             e_decay_z=self.e_decay_z,
             e_source_z=self.e_source_z,
+            e_source_lossless_z=self.e_source_lossless_z,
         )
 
     def _sources_for(self, timing: str, component: str) -> tuple[CompiledSourceSpec, ...]:
@@ -145,6 +162,26 @@ class CompiledSimulation:
                 out = jax.lax.dynamic_update_slice(out, cur + patch, spec.slab_starts)
             else:
                 out = out.at[spec.index].add(spec.coeff * amp)
+        return out
+
+    def _apply_lossy_shell(
+        self,
+        updated: jnp.ndarray,
+        old: jnp.ndarray,
+        curl: jnp.ndarray,
+        decay: jnp.ndarray,
+        source: jnp.ndarray,
+        slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
+    ) -> jnp.ndarray:
+        """Apply lossy E update only on precomputed disjoint boundary slabs."""
+        out = updated
+        for starts, sizes in slabs:
+            old_s = jax.lax.dynamic_slice(old, starts, sizes)
+            curl_s = jax.lax.dynamic_slice(curl, starts, sizes)
+            decay_s = jax.lax.dynamic_slice(decay, starts, sizes)
+            source_s = jax.lax.dynamic_slice(source, starts, sizes)
+            lossy_s = decay_s * old_s + source_s * curl_s
+            out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
         return out
 
     def _monitor_power_2d(
@@ -266,8 +303,18 @@ class CompiledSimulation:
             h_decay_y, h_source_y = coeffs.h_decay_y, coeffs.h_source_y
             h_decay_z, h_source_z = coeffs.h_decay_z, coeffs.h_source_z
             e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
+            e_source_lossless_x = coeffs.e_source_lossless_x
             e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
+            e_source_lossless_y = coeffs.e_source_lossless_y
             e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
+            e_source_lossless_z = coeffs.e_source_lossless_z
+
+            use_lossy_shell_x = self.e_use_lossy_shell_x
+            use_lossy_shell_y = self.e_use_lossy_shell_y
+            use_lossy_shell_z = self.e_use_lossy_shell_z
+            lossy_shell_x = self.e_lossy_shell_x
+            lossy_shell_y = self.e_lossy_shell_y
+            lossy_shell_z = self.e_lossy_shell_z
 
             def body_with_coeffs(carry, t_idx):
                 eng, mon, mat = carry
@@ -314,9 +361,46 @@ class CompiledSimulation:
                         plane=plane_2d,
                     )
 
-                ex = e_decay_x * ex + e_source_x * curl_hx
-                ey = e_decay_y * ey + e_source_y * curl_hy
-                ez = e_decay_z * ez + e_source_z * curl_hz
+                ex_old, ey_old, ez_old = ex, ey, ez
+
+                if use_lossy_shell_x:
+                    ex = ex_old + e_source_lossless_x * curl_hx
+                    ex = self._apply_lossy_shell(
+                        updated=ex,
+                        old=ex_old,
+                        curl=curl_hx,
+                        decay=e_decay_x,
+                        source=e_source_x,
+                        slabs=lossy_shell_x,
+                    )
+                else:
+                    ex = e_decay_x * ex_old + e_source_x * curl_hx
+
+                if use_lossy_shell_y:
+                    ey = ey_old + e_source_lossless_y * curl_hy
+                    ey = self._apply_lossy_shell(
+                        updated=ey,
+                        old=ey_old,
+                        curl=curl_hy,
+                        decay=e_decay_y,
+                        source=e_source_y,
+                        slabs=lossy_shell_y,
+                    )
+                else:
+                    ey = e_decay_y * ey_old + e_source_y * curl_hy
+
+                if use_lossy_shell_z:
+                    ez = ez_old + e_source_lossless_z * curl_hz
+                    ez = self._apply_lossy_shell(
+                        updated=ez,
+                        old=ez_old,
+                        curl=curl_hz,
+                        decay=e_decay_z,
+                        source=e_source_z,
+                        slabs=lossy_shell_z,
+                    )
+                else:
+                    ez = e_decay_z * ez_old + e_source_z * curl_hz
 
                 ex = self._apply_specs(ex, t_idx, e_specs_x)
                 ey = self._apply_specs(ey, t_idx, e_specs_y)
@@ -408,6 +492,80 @@ def monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -
     )
 
 
+def _edge_full_thickness(mask: np.ndarray, axis: int) -> tuple[int, int]:
+    """Count leading/trailing planes that are fully lossy along a given axis."""
+    other_axes = tuple(i for i in range(mask.ndim) if i != axis)
+    plane_all = mask.all(axis=other_axes)
+
+    left = 0
+    n = plane_all.shape[0]
+    while left < n and bool(plane_all[left]):
+        left += 1
+
+    right = 0
+    while right < (n - left) and bool(plane_all[n - 1 - right]):
+        right += 1
+    return left, right
+
+
+def _infer_lossy_shell_slabs(
+    field_shape: tuple[int, ...],
+    region: tuple[slice, ...],
+    conductivity_region: jnp.ndarray,
+) -> tuple[bool, tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]]:
+    """Infer disjoint boundary-shell slabs from conductivity mask.
+
+    Returns (enabled, slabs). Enabled is True only if the lossy mask can be represented as
+    a standard disjoint shell decomposition in 3D.
+    """
+    if len(field_shape) != 3:
+        return False, tuple()
+
+    full_mask = np.zeros(field_shape, dtype=bool)
+    full_mask[region] = np.asarray(conductivity_region) > 0.0
+
+    if not full_mask.any():
+        return False, tuple()
+
+    zL, zR = _edge_full_thickness(full_mask, axis=0)
+    yL, yR = _edge_full_thickness(full_mask, axis=1)
+    xL, xR = _edge_full_thickness(full_mask, axis=2)
+
+    nz, ny, nx = field_shape
+    z0, z1 = zL, nz - zR
+    y0, y1 = yL, ny - yR
+    x0, x1 = xL, nx - xR
+    if z0 > z1 or y0 > y1 or x0 > x1:
+        return False, tuple()
+
+    slabs: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
+
+    def add_slab(starts: tuple[int, int, int], sizes: tuple[int, int, int]):
+        if all(s > 0 for s in sizes):
+            slabs.append((starts, sizes))
+
+    # Disjoint shell: z faces, then y faces within z-core, then x faces within yz-core.
+    add_slab((0, 0, 0), (zL, ny, nx))
+    add_slab((z1, 0, 0), (zR, ny, nx))
+    add_slab((z0, 0, 0), (max(z1 - z0, 0), yL, nx))
+    add_slab((z0, y1, 0), (max(z1 - z0, 0), yR, nx))
+    add_slab((z0, y0, 0), (max(z1 - z0, 0), max(y1 - y0, 0), xL))
+    add_slab((z0, y0, x1), (max(z1 - z0, 0), max(y1 - y0, 0), xR))
+
+    if not slabs:
+        return False, tuple()
+
+    recon = np.zeros(field_shape, dtype=bool)
+    for starts, sizes in slabs:
+        z, y, x = starts
+        dz, dy, dx = sizes
+        recon[z : z + dz, y : y + dy, x : x + dx] = True
+
+    if not np.array_equal(recon, full_mask):
+        return False, tuple()
+    return True, tuple(slabs)
+
+
 def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulation:
     """Build a CompiledSimulation from design/devices/boundaries and a run config.
 
@@ -460,27 +618,48 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
     h_decay_y, h_source_y = ops.precompute_h_update_coefficients(fields.sigma_m_hy, dt)
     h_decay_z, h_source_z = ops.precompute_h_update_coefficients(fields.sigma_m_hz, dt)
 
-    e_decay_x, e_source_x = ops.precompute_e_update_coefficients(
+    e_decay_x, e_source_x, e_source_lossless_x = ops.precompute_e_update_coefficients(
         shape=fields.Ex.shape,
         conductivity=fields.sig_x,
         permittivity=fields.eps_x,
         dt=dt,
         region=fields.region_x,
     )
-    e_decay_y, e_source_y = ops.precompute_e_update_coefficients(
+    e_decay_y, e_source_y, e_source_lossless_y = ops.precompute_e_update_coefficients(
         shape=fields.Ey.shape,
         conductivity=fields.sig_y,
         permittivity=fields.eps_y,
         dt=dt,
         region=fields.region_y,
     )
-    e_decay_z, e_source_z = ops.precompute_e_update_coefficients(
+    e_decay_z, e_source_z, e_source_lossless_z = ops.precompute_e_update_coefficients(
         shape=fields.Ez.shape,
         conductivity=fields.sig_z,
         permittivity=fields.eps_z,
         dt=dt,
         region=fields.region_z,
     )
+
+    if bool(run_cfg.is_3d):
+        e_use_lossy_shell_x, e_lossy_shell_x = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Ex.shape),
+            region=fields.region_x,
+            conductivity_region=fields.sig_x,
+        )
+        e_use_lossy_shell_y, e_lossy_shell_y = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Ey.shape),
+            region=fields.region_y,
+            conductivity_region=fields.sig_y,
+        )
+        e_use_lossy_shell_z, e_lossy_shell_z = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Ez.shape),
+            region=fields.region_z,
+            conductivity_region=fields.sig_z,
+        )
+    else:
+        e_use_lossy_shell_x, e_lossy_shell_x = False, tuple()
+        e_use_lossy_shell_y, e_lossy_shell_y = False, tuple()
+        e_use_lossy_shell_z, e_lossy_shell_z = False, tuple()
 
     return CompiledSimulation(
         config=config,
@@ -496,8 +675,17 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         h_source_z=h_source_z,
         e_decay_x=e_decay_x,
         e_source_x=e_source_x,
+        e_source_lossless_x=e_source_lossless_x,
         e_decay_y=e_decay_y,
         e_source_y=e_source_y,
+        e_source_lossless_y=e_source_lossless_y,
         e_decay_z=e_decay_z,
         e_source_z=e_source_z,
+        e_source_lossless_z=e_source_lossless_z,
+        e_use_lossy_shell_x=e_use_lossy_shell_x,
+        e_lossy_shell_x=e_lossy_shell_x,
+        e_use_lossy_shell_y=e_use_lossy_shell_y,
+        e_lossy_shell_y=e_lossy_shell_y,
+        e_use_lossy_shell_z=e_use_lossy_shell_z,
+        e_lossy_shell_z=e_lossy_shell_z,
     )
