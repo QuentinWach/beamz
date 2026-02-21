@@ -43,20 +43,24 @@ from beamz import (
 OUT_DIR = Path("benchmarks/results/mmi_3d")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Match 2D geometry in x/y; extend with finite depth.
-X, Y, Z = 20 * µm, 10 * µm, 1.5 * µm
+# Match 2D geometry in x/y; extend to a realistic 3D stack in z:
+# substrate + cladding + air with enough buffer to keep core away from PML.
+X, Y = 20 * µm, 10 * µm
+Z_SUBSTRATE = 3.0 * µm
+Z_CLADDING = 2.0 * µm
+Z_AIR = 3.0 * µm
+Z = Z_SUBSTRATE + Z_CLADDING + Z_AIR
 WL = 1.55 * µm
 TIME = 40 * WL / LIGHT_SPEED
-N_CORE, N_CLAD = 2.04, 1.444
+N_CORE, N_CLAD, N_AIR = 2.04, 1.444, 1.0
 WG_W = 0.565 * µm
 H, W, OFFSET = 3.5 * µm, 9 * µm, 1.05 * µm
 MMI_TAPER = 1.5 * µm
-# For a "pure 2D -> 3D extension", extrude the 2D geometry through full depth.
-WG_T = Z
+# Silicon-like core thickness inside the cladding region.
+WG_T = 0.22 * µm
+WG_Z0 = Z_SUBSTRATE + 0.9 * µm
 PML_THICKNESS = 1.2 * WL
-# For this quasi-2D extrusion, keep PML on x/y only; z-PML over-absorbs
-# the launched field because the structure is intentionally z-invariant.
-PML_EDGES = ["left", "right", "top", "bottom"]
+PML_EDGES = "all"
 
 # Use DX/DT helper directly and set 12 points/wavelength as requested.
 DX, DT = calc_optimal_fdtd_params(
@@ -70,10 +74,27 @@ DX, DT = calc_optimal_fdtd_params(
     depth=Z,
 )
 
-# Build 3D design with the same 2D MMI layout, extruded to thickness WG_T.
-design = Design(width=X, height=Y, depth=Z, material=Material(N_CLAD**2))
-z0 = 0.0
+# Build 3D design with explicit material stack in z.
+design = Design(width=X, height=Y, depth=Z, material=Material(N_AIR**2))
+z0 = WG_Z0
 mmi_body_start = X / 2 - W / 2 + MMI_TAPER
+
+# Bottom substrate
+design += Rectangle(
+    position=(0, 0, 0),
+    width=X,
+    height=Y,
+    depth=Z_SUBSTRATE,
+    material=Material(N_CLAD**2),
+)
+# Middle cladding slab (core sits inside this region)
+design += Rectangle(
+    position=(0, 0, Z_SUBSTRATE),
+    width=X,
+    height=Y,
+    depth=Z_CLADDING,
+    material=Material(N_CLAD**2),
+)
 
 design += Rectangle(
     position=(0, Y / 2 - WG_W / 2, z0),
@@ -122,9 +143,10 @@ signal = ramped_cosine(
     t_max=TIME / 2,
 )
 
-source_center = (PML_THICKNESS + 1.5 * µm, Y / 2, z0 + WG_T / 2)
+source_center = (PML_THICKNESS + 1.5 * µm, Y / 2, WG_Z0 + WG_T / 2)
 source_width = WG_W * 3.5
-source_height = 0.95 * Z
+# Include core and surrounding cladding in the mode solve window.
+source_height = 2.4 * µm
 source = ModeSource(
     grid=grid,
     center=source_center,
@@ -143,8 +165,10 @@ source.initialize(grid.permittivity, DX, dt=DT)
 eps = np.asarray(grid.permittivity)
 core_mask = eps > (N_CLAD**2 + 1e-6)
 xy = core_mask.max(axis=0)  # y,x
-xz = core_mask.max(axis=1)  # z,x
-yz = core_mask.max(axis=2)  # z,y
+y_mid_idx = int(np.clip(round(source_center[1] / DX), 0, eps.shape[1] - 1))
+x_src_idx = int(np.clip(round(source_center[0] / DX), 0, eps.shape[2] - 1))
+xz = eps[:, y_mid_idx, :]  # z,x permittivity slice
+yz = eps[:, :, x_src_idx]  # z,y permittivity slice
 
 fig, axes = plt.subplots(1, 3, figsize=(14, 4.3))
 axes[0].imshow(
@@ -171,11 +195,13 @@ axes[0].add_patch(
 axes[1].imshow(
     xz,
     origin="lower",
-    cmap="Greys",
+    cmap="viridis",
     extent=[0, X / um, 0, Z / um],
+    vmin=N_AIR**2,
+    vmax=N_CORE**2,
     aspect="equal",
 )
-axes[1].set_title("XZ Projection (Side)")
+axes[1].set_title("XZ Permittivity Slice (Side)")
 axes[1].set_xlabel("x (um)")
 axes[1].set_ylabel("z (um)")
 axes[1].add_patch(
@@ -192,11 +218,13 @@ axes[1].add_patch(
 axes[2].imshow(
     yz,
     origin="lower",
-    cmap="Greys",
+    cmap="viridis",
     extent=[0, Y / um, 0, Z / um],
+    vmin=N_AIR**2,
+    vmax=N_CORE**2,
     aspect="equal",
 )
-axes[2].set_title("YZ Projection (Input Cross-Section)")
+axes[2].set_title("YZ Permittivity Slice (Input Cross-Section)")
 axes[2].set_xlabel("y (um)")
 axes[2].set_ylabel("z (um)")
 axes[2].add_patch(
@@ -224,6 +252,14 @@ for ax in axes:
         ha="left",
         fontsize=8,
         color="red",
+    )
+for ax in (axes[1], axes[2]):
+    ax.axhline(Z_SUBSTRATE / um, color="cyan", linestyle="--", linewidth=1.0)
+    ax.axhline(
+        (Z_SUBSTRATE + Z_CLADDING) / um,
+        color="cyan",
+        linestyle="--",
+        linewidth=1.0,
     )
 
 fig.tight_layout()
@@ -287,10 +323,17 @@ mode_json.write_text(
 # -----------------------------------------------------------------------------
 flux_monitor = Monitor(
     design=design,
-    start=(X - PML_THICKNESS - 1.4 * um, 0.30 * um, 0.10 * um),
+    start=(
+        X - PML_THICKNESS - 1.4 * um,
+        PML_THICKNESS + 0.25 * um,
+        PML_THICKNESS + 0.25 * um,
+    ),
     plane_normal="x",
     plane_position=X - PML_THICKNESS - 1.4 * um,
-    size=(Y - 0.60 * um, Z - 0.20 * um),
+    size=(
+        Y - 2 * (PML_THICKNESS + 0.25 * um),
+        Z - 2 * (PML_THICKNESS + 0.25 * um),
+    ),
     record_fields=False,
     accumulate_power=True,
     record_interval=1,
@@ -430,6 +473,13 @@ summary = {
     "points_per_wavelength": 12,
     "pml_thickness_um": PML_THICKNESS / um,
     "pml_edges": PML_EDGES,
+    "z_stack_um": {
+        "substrate": Z_SUBSTRATE / um,
+        "cladding": Z_CLADDING / um,
+        "air": Z_AIR / um,
+        "core_z0": WG_Z0 / um,
+        "core_thickness": WG_T / um,
+    },
     "resolved_steps": int(len(time_steps)),
     "grid_shape_zyx": list(sim.fields.permittivity.shape),
     "elapsed_s": float(elapsed_s),

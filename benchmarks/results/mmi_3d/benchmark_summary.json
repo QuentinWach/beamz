@@ -2,7 +2,7 @@
   "domain_um": [
     20.0,
     10.0,
-    1.5
+    8.0
   ],
   "wavelength_um": 1.55,
   "time_fs": 206.80973902285427,
@@ -10,21 +10,23 @@
   "dt_fs": 0.12181603026693759,
   "points_per_wavelength": 12,
   "pml_thickness_um": 1.86,
-  "pml_edges": [
-    "left",
-    "right",
-    "top",
-    "bottom"
-  ],
+  "pml_edges": "all",
+  "z_stack_um": {
+    "substrate": 3.0,
+    "cladding": 2.0,
+    "air": 3.0,
+    "core_z0": 3.9,
+    "core_thickness": 0.22
+  },
   "resolved_steps": 1698,
   "grid_shape_zyx": [
-    23,
+    126,
     157,
     315
   ],
-  "elapsed_s": 6.837794041959569,
-  "s_per_step": 0.004026969400447332,
-  "tcups": 0.0016947707621622044,
+  "elapsed_s": 29.65085120894946,
+  "s_per_step": 0.017462220971112757,
+  "tcups": 0.0021410781630727183,
   "design_projection_png": "benchmarks/results/mmi_3d/design_projections_xyz.png",
   "mode_fields_png": "benchmarks/results/mmi_3d/mode_fields.png",
   "mid_ez_snapshot_png": "benchmarks/results/mmi_3d/ez_snapshot_mid_step_849.png",

@@ -1,14 +1,14 @@
 {
   "direction": "+x",
   "pol": "tm",
-  "neff_real": 1.709700890108596,
+  "neff_real": 1.4765590736719627,
   "neff_imag": 0.0,
-  "impedance_neff": 1.990715217447461,
+  "impedance_neff": 1.60943916182026,
   "source_center_um": [
     3.3600000000000003,
     5.0,
-    0.75
+    4.01
   ],
   "source_width_um": 1.9774999999999998,
-  "source_height_um": 1.425
+  "source_height_um": 2.4
 }
