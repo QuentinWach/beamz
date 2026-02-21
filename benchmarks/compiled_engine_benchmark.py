@@ -46,11 +46,17 @@ from beamz import (
 
 @dataclass
 class BenchmarkConfig:
-    grid_n: int
-    steps: int
+    grid_nx: int
+    grid_ny: int
+    grid_nz: int
+    steps: int | None
     points_per_wavelength: int
     memory_gb: float
     saturation_factor: float
+    domain_um: tuple[float, float, float] | None = None
+    resolution_nm: float | None = None
+    courant_factor: float | None = None
+    sim_time_fs: float | None = None
 
 
 def parse_modes(spec: str) -> tuple[str, ...]:
@@ -83,6 +89,28 @@ def parse_modes(spec: str) -> tuple[str, ...]:
 
     order = ("python", "split_jit", "compiled")
     return tuple(m for m in order if m in selected)
+
+
+def parse_triplet_floats(spec: str, name: str) -> tuple[float, float, float]:
+    try:
+        vals = tuple(float(x.strip()) for x in spec.split(","))
+    except Exception as exc:
+        raise ValueError(f"Invalid {name} '{spec}'. Use 'a,b,c'.") from exc
+    if len(vals) != 3:
+        raise ValueError(f"Invalid {name} '{spec}'. Use exactly 3 comma-separated values.")
+    return vals
+
+
+def parse_triplet_ints(spec: str, name: str) -> tuple[int, int, int]:
+    try:
+        vals = tuple(int(x.strip()) for x in spec.split(","))
+    except Exception as exc:
+        raise ValueError(f"Invalid {name} '{spec}'. Use 'a,b,c'.") from exc
+    if len(vals) != 3:
+        raise ValueError(f"Invalid {name} '{spec}'. Use exactly 3 comma-separated values.")
+    if any(v <= 0 for v in vals):
+        raise ValueError(f"{name} values must be > 0.")
+    return vals
 
 
 def _safe_div(num: float, den: float) -> float:
@@ -133,6 +161,10 @@ def _append_csv(
     csv_path: Path,
     cfg: BenchmarkConfig,
     steps: int,
+    resolution_nm_used: float,
+    courant_factor_used: float,
+    sim_time_fs_used: float,
+    domain_um_used: tuple[float, float, float],
     estimated_working_set_gb: float,
     t_py: float,
     t_split: float,
@@ -160,6 +192,16 @@ def _append_csv(
         "python_version",
         "git_commit",
         "grid_n",
+        "grid_nx",
+        "grid_ny",
+        "grid_nz",
+        "num_cells",
+        "domain_x_um",
+        "domain_y_um",
+        "domain_z_um",
+        "resolution_nm",
+        "courant_factor",
+        "sim_time_fs",
         "steps",
         "repeats",
         "warmup_jit",
@@ -216,7 +258,17 @@ def _append_csv(
         "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
         "python_version": platform.python_version(),
         "git_commit": _git_commit(repo_root),
-        "grid_n": cfg.grid_n,
+        "grid_n": cfg.grid_nx if (cfg.grid_nx == cfg.grid_ny == cfg.grid_nz) else "",
+        "grid_nx": cfg.grid_nx,
+        "grid_ny": cfg.grid_ny,
+        "grid_nz": cfg.grid_nz,
+        "num_cells": int(cfg.grid_nx * cfg.grid_ny * cfg.grid_nz),
+        "domain_x_um": float(domain_um_used[0]),
+        "domain_y_um": float(domain_um_used[1]),
+        "domain_z_um": float(domain_um_used[2]),
+        "resolution_nm": float(resolution_nm_used),
+        "courant_factor": float(courant_factor_used),
+        "sim_time_fs": float(sim_time_fs_used),
         "steps": steps,
         "repeats": int(repeats),
         "warmup_jit": int(bool(warmup_jit)),
@@ -270,13 +322,13 @@ def _append_csv(
         writer.writerow(row)
 
 
-def estimate_working_set_gb(n: int, saturation_factor: float) -> float:
+def estimate_working_set_gb(nx: int, ny: int, nz: int, saturation_factor: float) -> float:
     """Crude working-set estimator for 3D FDTD in float32.
 
     Uses ~24 arrays worth of storage per voxel (fields + materials + coeffs + intermediates),
     then multiplies by a saturation factor to approximate temporary buffers and overhead.
     """
-    voxels = float(n**3)
+    voxels = float(nx * ny * nz)
     bytes_per_voxel = 24.0 * 4.0
     return voxels * bytes_per_voxel * saturation_factor / 1e9
 
@@ -285,26 +337,50 @@ def choose_grid_n(memory_gb: float, saturation_factor: float) -> int:
     candidates = [384, 352, 320, 288, 256, 224, 192]
     budget = memory_gb * 0.8
     for n in candidates:
-        if estimate_working_set_gb(n, saturation_factor) <= budget:
+        if estimate_working_set_gb(n, n, n, saturation_factor) <= budget:
             return n
     return 160
 
 
-def make_simulation(cfg: BenchmarkConfig) -> tuple[Simulation, int]:
-    wl = 1.55 * um
+def make_simulation(
+    cfg: BenchmarkConfig,
+) -> tuple[Simulation, int, float, float, tuple[float, float, float], float, float]:
     n_bg = 1.0
-    dx, dt = calc_optimal_fdtd_params(
-        wl,
-        n_bg,
-        dims=3,
-        safety_factor=0.95,
-        points_per_wavelength=cfg.points_per_wavelength,
-    )
 
-    n = cfg.grid_n
-    width = n * dx
-    height = n * dx
-    depth = n * dx
+    if cfg.resolution_nm is not None:
+        dx = float(cfg.resolution_nm) / 1e9
+    else:
+        wl_ref = 1.55 * um
+        dx, _ = calc_optimal_fdtd_params(
+            wl_ref,
+            n_bg,
+            dims=3,
+            safety_factor=0.95,
+            points_per_wavelength=cfg.points_per_wavelength,
+        )
+
+    if cfg.courant_factor is not None:
+        courant_used = float(cfg.courant_factor)
+        dt = courant_used * dx / (LIGHT_SPEED * np.sqrt(3.0))
+    else:
+        wl_ref = 1.55 * um
+        _, dt = calc_optimal_fdtd_params(
+            wl_ref,
+            n_bg,
+            dims=3,
+            safety_factor=0.95,
+            points_per_wavelength=cfg.points_per_wavelength,
+        )
+        courant_used = float(dt * LIGHT_SPEED * np.sqrt(3.0) / dx)
+
+    if cfg.domain_um is not None:
+        domain_um = tuple(float(v) for v in cfg.domain_um)
+        width, height, depth = (domain_um[0] * um, domain_um[1] * um, domain_um[2] * um)
+    else:
+        width = cfg.grid_nx * dx
+        height = cfg.grid_ny * dx
+        depth = cfg.grid_nz * dx
+        domain_um = (width / um, height / um, depth / um)
 
     design = Design(
         width=width,
@@ -313,8 +389,19 @@ def make_simulation(cfg: BenchmarkConfig) -> tuple[Simulation, int]:
         material=Material(permittivity=n_bg**2),
     )
 
-    t_arr = np.arange(0, cfg.steps * dt, dt)
-    freq = LIGHT_SPEED / wl
+    if cfg.sim_time_fs is not None:
+        sim_time_fs_used = float(cfg.sim_time_fs)
+        steps = int(np.floor((sim_time_fs_used * 1e-15) / dt))
+    else:
+        if cfg.steps is None:
+            raise ValueError("steps must be provided when sim_time_fs is not set.")
+        steps = int(cfg.steps)
+        sim_time_fs_used = float(steps * dt * 1e15)
+    steps = max(1, steps)
+
+    t_arr = dt * np.arange(steps, dtype=np.float64)
+    wl_eff = cfg.points_per_wavelength * dx
+    freq = LIGHT_SPEED / wl_eff
     signal = ramped_cosine(
         t_arr,
         amplitude=1.0,
@@ -325,18 +412,21 @@ def make_simulation(cfg: BenchmarkConfig) -> tuple[Simulation, int]:
 
     source = GaussianSource(
         position=(0.35 * width, 0.5 * height, 0.5 * depth),
-        width=wl / 6,
+        width=wl_eff / 6,
         signal=signal,
     )
+
+    # Keep PML proportional to physical domain size to avoid degenerate cases.
+    pml_thickness = max(4 * dx, 0.08 * min(width, height, depth))
 
     sim = Simulation(
         design=design,
         devices=[source],
-        boundaries=[PML(edges="all", thickness=1.0 * wl)],
+        boundaries=[PML(edges="all", thickness=pml_thickness)],
         time=t_arr,
         resolution=dx,
     )
-    return sim, cfg.steps
+    return sim, steps, dx, dt, domain_um, courant_used, sim_time_fs_used
 
 
 def _tcups(sim: Simulation, steps: int, elapsed_s: float) -> float:
@@ -587,6 +677,30 @@ def main():
     parser.add_argument("--steps", type=int, default=120)
     parser.add_argument("--grid-n", type=int, default=0)
     parser.add_argument(
+        "--grid-shape",
+        type=str,
+        default=None,
+        help="Non-cubic grid shape as 'nx,ny,nz'. Overrides --grid-n.",
+    )
+    parser.add_argument(
+        "--domain-um",
+        type=str,
+        default=None,
+        help="Physical domain in micrometers as 'x_um,y_um,z_um'.",
+    )
+    parser.add_argument(
+        "--resolution-nm",
+        type=float,
+        default=None,
+        help="Explicit Yee-grid resolution in nanometers.",
+    )
+    parser.add_argument(
+        "--sim-time-fs",
+        type=float,
+        default=None,
+        help="Physical simulation duration in femtoseconds (overrides --steps).",
+    )
+    parser.add_argument(
         "--repeats",
         type=int,
         default=1,
@@ -599,6 +713,12 @@ def main():
         type=float,
         default=4.0,
         help="Higher = more conservative memory estimate.",
+    )
+    parser.add_argument(
+        "--courant-factor",
+        type=float,
+        default=None,
+        help="Explicit Courant factor for dt = courant * dx / (c*sqrt(3)).",
     )
     parser.add_argument(
         "--csv",
@@ -708,21 +828,47 @@ def main():
     if not modes:
         raise ValueError("No benchmark modes selected. Choose at least one mode.")
 
-    grid_n = args.grid_n or choose_grid_n(args.memory_gb, args.saturation_factor)
+    domain_um = parse_triplet_floats(args.domain_um, "domain-um") if args.domain_um else None
+    if args.grid_shape:
+        nx, ny, nz = parse_triplet_ints(args.grid_shape, "grid-shape")
+    elif args.grid_n:
+        nx = ny = nz = int(args.grid_n)
+    elif (domain_um is not None) and (args.resolution_nm is not None):
+        nx = max(1, int(round((domain_um[0] * 1000.0) / float(args.resolution_nm))))
+        ny = max(1, int(round((domain_um[1] * 1000.0) / float(args.resolution_nm))))
+        nz = max(1, int(round((domain_um[2] * 1000.0) / float(args.resolution_nm))))
+    else:
+        n_auto = choose_grid_n(args.memory_gb, args.saturation_factor)
+        nx = ny = nz = int(n_auto)
+
     cfg = BenchmarkConfig(
-        grid_n=grid_n,
+        grid_nx=nx,
+        grid_ny=ny,
+        grid_nz=nz,
         steps=args.steps,
         points_per_wavelength=args.ppw,
         memory_gb=args.memory_gb,
         saturation_factor=args.saturation_factor,
+        domain_um=domain_um,
+        resolution_nm=args.resolution_nm,
+        courant_factor=args.courant_factor,
+        sim_time_fs=args.sim_time_fs,
     )
 
     print("3D FDTD benchmark")
     print(f"target_memory_gb={cfg.memory_gb:.1f}")
-    print(f"grid_n={cfg.grid_n}")
-    est_ws = estimate_working_set_gb(cfg.grid_n, cfg.saturation_factor)
+    print(f"grid_shape={cfg.grid_nx}x{cfg.grid_ny}x{cfg.grid_nz}")
+    est_ws = estimate_working_set_gb(cfg.grid_nx, cfg.grid_ny, cfg.grid_nz, cfg.saturation_factor)
     print(f"estimated_working_set_gb~{est_ws:.2f}")
-    print(f"steps={cfg.steps}")
+    if cfg.domain_um is not None:
+        print(f"domain_um={cfg.domain_um[0]:.6g},{cfg.domain_um[1]:.6g},{cfg.domain_um[2]:.6g}")
+    if cfg.resolution_nm is not None:
+        print(f"resolution_nm={cfg.resolution_nm:.6g}")
+    if cfg.courant_factor is not None:
+        print(f"courant_factor={cfg.courant_factor:.6g}")
+    if cfg.sim_time_fs is not None:
+        print(f"sim_time_fs={cfg.sim_time_fs:.6g}")
+    print(f"steps={'auto' if cfg.sim_time_fs is not None else cfg.steps}")
     print(f"repeats={max(1, int(args.repeats))}")
     print(f"warmup_jit={bool(args.warmup_jit)}")
     print(f"modes={','.join(modes)}")
@@ -733,7 +879,20 @@ def main():
     if e_shell_split or h_shell_split:
         print("warning: shell-split is currently slower on M4 in our measurements.")
 
-    sim_base, steps = make_simulation(cfg)
+    (
+        sim_base,
+        steps,
+        dx_used,
+        dt_used,
+        domain_um_used,
+        courant_used,
+        sim_time_fs_used,
+    ) = make_simulation(cfg)
+    print(f"resolved_domain_um={domain_um_used[0]:.6g},{domain_um_used[1]:.6g},{domain_um_used[2]:.6g}")
+    print(f"resolved_resolution_nm={dx_used * 1e9:.6g}")
+    print(f"resolved_dt_fs={dt_used * 1e15:.6g}")
+    print(f"resolved_courant_factor={courant_used:.6g}")
+    print(f"resolved_steps={steps}")
     repeats = max(1, int(args.repeats))
 
     t_py, py_runs = float("nan"), []
@@ -852,6 +1011,10 @@ def main():
         csv_path=csv_path,
         cfg=cfg,
         steps=steps,
+        resolution_nm_used=dx_used * 1e9,
+        courant_factor_used=courant_used,
+        sim_time_fs_used=sim_time_fs_used,
+        domain_um_used=domain_um_used,
         estimated_working_set_gb=est_ws,
         t_py=t_py,
         t_split=t_split,
