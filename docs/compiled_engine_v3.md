@@ -58,9 +58,21 @@ python benchmarks/compiled_engine_benchmark.py \
   --resolution-nm 25 \
   --courant-factor 0.99 \
   --sim-time-fs 200 \
+  --with-xy-monitor \
+  --monitor-record-interval 1 \
+  --physics-output-dir benchmarks/results/physics \
+  --physics-export-ez-snapshot \
+  --physics-snapshot-step mid \
   --modes split_jit,compiled \
   --csv benchmarks/results/compiled_3d_results.csv
 ```
+
+When `--physics-output-dir` is set, each source case also emits:
+
+- `xy_power_monitor_power.csv/.npz/.png` for integrated XY-plane monitor power.
+- `mode_source_*.npz/.json` with modal profiles (`Ex`/`Ey`/`Ez`/`Hx`/`Hy`/`Hz`) and `neff`.
+- `ez_snapshot_step_*.png/.npz` for mid-run Ez field validation.
+- `physics_summary.json` with monitor and mode diagnostics.
 
 This writes:
 

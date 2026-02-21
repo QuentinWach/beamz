@@ -1,0 +1,34 @@
+{
+  "scenario": "fdtdx_coupler",
+  "source_kind": "mode",
+  "monitor_count": 1,
+  "monitor_records_max": 23,
+  "monitors": [
+    {
+      "name": "xy_power_monitor",
+      "plane_normal": "z",
+      "plane_position": 2.5e-07,
+      "records": 23,
+      "power_mean": 5.198915818159627e-20,
+      "power_max": 1.0141923196254011e-19,
+      "power_min": 2.1102821761125436e-20,
+      "energy_trapz": 1.009785725764574e-34,
+      "csv": "benchmarks/results/physics_smoke/20260221T143601Z/fdtdx_coupler_source_mode/xy_power_monitor_power.csv",
+      "npz": "benchmarks/results/physics_smoke/20260221T143601Z/fdtdx_coupler_source_mode/xy_power_monitor_power.npz",
+      "png": "benchmarks/results/physics_smoke/20260221T143601Z/fdtdx_coupler_source_mode/xy_power_monitor_power.png"
+    }
+  ],
+  "mode_source_count": 1,
+  "mode_sources": [
+    {
+      "source_index": 0,
+      "direction": "+x",
+      "pol": "tm",
+      "neff_real": 1.1281312078115149,
+      "neff_imag": 0.0,
+      "impedance_neff": 1.683454163384642,
+      "npz": "benchmarks/results/physics_smoke/20260221T143601Z/fdtdx_coupler_source_mode/mode_source_0.npz",
+      "json": "benchmarks/results/physics_smoke/20260221T143601Z/fdtdx_coupler_source_mode/mode_source_0.json"
+    }
+  ]
+}

@@ -33,6 +33,7 @@ import numpy as np
 
 from beamz import (
     LIGHT_SPEED,
+    Monitor,
     PML,
     Design,
     GaussianSource,
@@ -61,6 +62,9 @@ class BenchmarkConfig:
     sim_time_fs: float | None = None
     scenario: str = "gaussian_box"
     source_kind: str = "auto"
+    with_xy_monitor: bool = False
+    monitor_record_interval: int = 1
+    monitor_plane_z_um: float | None = None
 
 
 def parse_modes(spec: str) -> tuple[str, ...]:
@@ -145,6 +149,271 @@ def _hlo_op_counts(hlo_text: str) -> dict[str, int]:
     return counts
 
 
+def _slug(text: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", text.strip())
+    return s.strip("_") or "unnamed"
+
+
+def _index_to_str(idx) -> str:
+    if isinstance(idx, slice):
+        start = "" if idx.start is None else str(int(idx.start))
+        stop = "" if idx.stop is None else str(int(idx.stop))
+        step = "" if idx.step is None else str(int(idx.step))
+        return f"{start}:{stop}:{step}"
+    return str(int(idx))
+
+
+def _index_tuple_to_str(idx_tuple) -> str:
+    if idx_tuple is None:
+        return ""
+    return ",".join(_index_to_str(v) for v in idx_tuple)
+
+
+def _export_monitor_artifacts(
+    sim: Simulation,
+    out_dir: Path,
+    save_plot: bool,
+) -> dict[str, object]:
+    monitors = [d for d in sim.devices if isinstance(d, Monitor)]
+    monitor_info: list[dict[str, object]] = []
+    max_records = 0
+
+    for i, mon in enumerate(monitors):
+        name = _slug(mon.name or f"monitor_{i}")
+        ts = np.asarray(mon.power_timestamps, dtype=np.float64)
+        power = np.asarray(mon.power_history, dtype=np.float64)
+        if ts.size == 0 and power.size > 0:
+            ts = np.arange(power.size, dtype=np.float64) * float(sim.dt)
+        if power.size == 0:
+            continue
+
+        step_idx = np.arange(power.size, dtype=np.int32)
+        csv_path = out_dir / f"{name}_power.csv"
+        npz_path = out_dir / f"{name}_power.npz"
+
+        with csv_path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["sample_idx", "time_s", "time_fs", "power"])
+            for j in range(power.size):
+                t_s = float(ts[j]) if j < ts.size else float(j * sim.dt)
+                writer.writerow([int(step_idx[j]), t_s, t_s * 1e15, float(power[j])])
+
+        np.savez(
+            npz_path,
+            sample_idx=step_idx,
+            time_s=ts,
+            time_fs=ts * 1e15,
+            power=power,
+        )
+
+        png_path = out_dir / f"{name}_power.png"
+        wrote_plot = False
+        if save_plot:
+            try:
+                import matplotlib.pyplot as plt
+
+                fig, ax = plt.subplots(figsize=(7.0, 3.5))
+                ax.plot(ts * 1e15, power, lw=1.6)
+                ax.set_xlabel("Time (fs)")
+                ax.set_ylabel("Integrated |S| Power")
+                ax.set_title(f"Monitor Power: {mon.name or name}")
+                ax.grid(alpha=0.3)
+                fig.tight_layout()
+                fig.savefig(png_path, dpi=160)
+                plt.close(fig)
+                wrote_plot = True
+            except Exception:
+                wrote_plot = False
+
+        max_records = max(max_records, int(power.size))
+        monitor_info.append(
+            {
+                "name": mon.name or name,
+                "plane_normal": getattr(mon, "plane_normal", ""),
+                "plane_position": float(getattr(mon, "plane_position", 0.0)),
+                "records": int(power.size),
+                "power_mean": float(np.mean(power)),
+                "power_max": float(np.max(power)),
+                "power_min": float(np.min(power)),
+                "energy_trapz": float(np.trapezoid(power, ts)) if ts.size >= 2 else 0.0,
+                "csv": str(csv_path),
+                "npz": str(npz_path),
+                "png": str(png_path) if wrote_plot else "",
+            }
+        )
+
+    return {
+        "monitor_count": len(monitors),
+        "monitor_records_max": max_records,
+        "monitors": monitor_info,
+    }
+
+
+def _export_mode_source_artifacts(sim: Simulation, out_dir: Path) -> dict[str, object]:
+    mode_sources = [d for d in sim.devices if isinstance(d, ModeSource)]
+    entries: list[dict[str, object]] = []
+
+    for i, src in enumerate(mode_sources):
+        base = out_dir / f"mode_source_{i}"
+        payload: dict[str, np.ndarray] = {}
+        comp_summary: dict[str, dict[str, object]] = {}
+        for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+            prof = getattr(src, f"_{comp}_profile", None)
+            idx = getattr(src, f"_{comp}_indices", None)
+            if prof is None:
+                continue
+            arr = np.asarray(prof, dtype=np.float32)
+            payload[f"{comp}_profile"] = arr
+            comp_summary[comp] = {
+                "shape": list(arr.shape),
+                "l2_norm": float(np.linalg.norm(arr)),
+                "max_abs": float(np.max(np.abs(arr))) if arr.size else 0.0,
+                "index": _index_tuple_to_str(idx),
+            }
+
+        meta = {
+            "direction": str(getattr(src, "direction", "")),
+            "axis": str(getattr(src, "_axis", "")),
+            "pol": str(getattr(src, "pol", "")),
+            "wavelength_m": float(getattr(src, "wavelength", np.nan)),
+            "neff_real": float(np.real(getattr(src, "_neff", np.nan))),
+            "neff_imag": float(np.imag(getattr(src, "_neff", np.nan))),
+            "impedance_neff": float(
+                np.real(getattr(src, "_impedance_neff", np.nan))
+                if getattr(src, "_impedance_neff", None) is not None
+                else np.nan
+            ),
+            "dt_physical_s": float(getattr(src, "_dt_physical", 0.0)),
+            "components": comp_summary,
+        }
+
+        npz_path = Path(str(base) + ".npz")
+        np.savez(npz_path, **payload)
+        json_path = Path(str(base) + ".json")
+        json_path.write_text(json.dumps(meta, indent=2))
+
+        entries.append(
+            {
+                "source_index": i,
+                "direction": meta["direction"],
+                "pol": meta["pol"],
+                "neff_real": meta["neff_real"],
+                "neff_imag": meta["neff_imag"],
+                "impedance_neff": meta["impedance_neff"],
+                "npz": str(npz_path),
+                "json": str(json_path),
+            }
+        )
+
+    return {"mode_source_count": len(mode_sources), "mode_sources": entries}
+
+
+def _resolve_snapshot_step(snapshot_step: str, steps: int) -> int:
+    spec = str(snapshot_step).strip().lower()
+    if spec in {"mid", "middle", "half"}:
+        return max(1, int(steps // 2))
+    try:
+        val = int(spec)
+    except ValueError:
+        return max(1, int(steps // 2))
+    return int(max(1, min(steps, val)))
+
+
+def _export_ez_snapshot_artifact(
+    sim: Simulation,
+    out_dir: Path,
+    *,
+    label: str,
+) -> dict[str, object]:
+    ez = np.asarray(sim.fields.Ez, dtype=np.float32)
+    if ez.ndim == 3:
+        z_idx = int(ez.shape[0] // 2)
+        plane = ez[z_idx]
+        plane_axis = "z"
+        plane_index = z_idx
+    elif ez.ndim == 2:
+        plane = ez
+        plane_axis = "2d"
+        plane_index = 0
+    else:
+        plane = ez.reshape((1, -1))
+        plane_axis = "flat"
+        plane_index = 0
+
+    npz_path = out_dir / f"ez_snapshot_{label}.npz"
+    np.savez(
+        npz_path,
+        ez_plane=plane,
+        ez_shape=np.asarray(ez.shape, dtype=np.int32),
+        step=np.asarray(sim.current_step, dtype=np.int32),
+        time_s=np.asarray(sim.t, dtype=np.float64),
+        plane_axis=np.asarray(plane_axis),
+        plane_index=np.asarray(plane_index, dtype=np.int32),
+    )
+
+    png_path = out_dir / f"ez_snapshot_{label}.png"
+    wrote_plot = False
+    try:
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(6.5, 4.8))
+        im = ax.imshow(plane, cmap="RdBu", origin="lower")
+        ax.set_title(
+            f"Ez Snapshot ({label}) step={sim.current_step} t={sim.t * 1e15:.3f} fs"
+        )
+        ax.set_xlabel("x index")
+        ax.set_ylabel("y index")
+        cbar = fig.colorbar(im, ax=ax, shrink=0.9)
+        cbar.set_label("Ez")
+        fig.tight_layout()
+        fig.savefig(png_path, dpi=170)
+        plt.close(fig)
+        wrote_plot = True
+    except Exception:
+        wrote_plot = False
+
+    return {
+        "label": label,
+        "step": int(sim.current_step),
+        "time_s": float(sim.t),
+        "plane_axis": plane_axis,
+        "plane_index": int(plane_index),
+        "npz": str(npz_path),
+        "png": str(png_path) if wrote_plot else "",
+    }
+
+
+def export_physics_artifacts(
+    sim: Simulation,
+    out_dir: Path,
+    *,
+    scenario: str,
+    source_kind: str,
+    save_power_plot: bool,
+    export_mode_profiles: bool,
+    ez_snapshot: dict[str, object] | None = None,
+) -> dict[str, object]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    monitor_data = _export_monitor_artifacts(sim, out_dir, save_plot=save_power_plot)
+    mode_data = (
+        _export_mode_source_artifacts(sim, out_dir)
+        if export_mode_profiles
+        else {"mode_source_count": 0, "mode_sources": []}
+    )
+
+    summary = {
+        "scenario": scenario,
+        "source_kind": source_kind,
+        **monitor_data,
+        **mode_data,
+    }
+    if ez_snapshot is not None:
+        summary["ez_snapshot"] = ez_snapshot
+    (out_dir / "physics_summary.json").write_text(json.dumps(summary, indent=2))
+    return summary
+
+
 def _git_commit(repo_root: Path) -> str:
     try:
         return (
@@ -189,6 +458,13 @@ def _append_csv(
     h_shell_split: bool,
     source_single_slab_dense: bool,
     hlo_stats: dict[str, int] | None = None,
+    physics_artifact_dir: str | None = None,
+    physics_monitor_count: int | None = None,
+    physics_monitor_records_max: int | None = None,
+    physics_mode_source_count: int | None = None,
+    physics_ez_snapshot_step: int | None = None,
+    physics_ez_snapshot_png: str | None = None,
+    physics_ez_snapshot_npz: str | None = None,
 ):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     headers = [
@@ -243,6 +519,13 @@ def _append_csv(
         "compiled_hlo_slice_count",
         "compiled_hlo_copy_count",
         "compiled_hlo_while_count",
+        "physics_artifact_dir",
+        "physics_monitor_count",
+        "physics_monitor_records_max",
+        "physics_mode_source_count",
+        "physics_ez_snapshot_step",
+        "physics_ez_snapshot_png",
+        "physics_ez_snapshot_npz",
     ]
 
     if csv_path.exists():
@@ -312,6 +595,23 @@ def _append_csv(
         "compiled_hlo_slice_count": None,
         "compiled_hlo_copy_count": None,
         "compiled_hlo_while_count": None,
+        "physics_artifact_dir": physics_artifact_dir or "",
+        "physics_monitor_count": (
+            int(physics_monitor_count) if physics_monitor_count is not None else ""
+        ),
+        "physics_monitor_records_max": (
+            int(physics_monitor_records_max)
+            if physics_monitor_records_max is not None
+            else ""
+        ),
+        "physics_mode_source_count": (
+            int(physics_mode_source_count) if physics_mode_source_count is not None else ""
+        ),
+        "physics_ez_snapshot_step": (
+            int(physics_ez_snapshot_step) if physics_ez_snapshot_step is not None else ""
+        ),
+        "physics_ez_snapshot_png": physics_ez_snapshot_png or "",
+        "physics_ez_snapshot_npz": physics_ez_snapshot_npz or "",
     }
     if hlo_stats is not None:
         row["compiled_hlo_text_len"] = int(hlo_stats.get("text_len", 0))
@@ -530,6 +830,25 @@ def make_simulation(
                 direction="+x",
             )
         ]
+
+    if bool(cfg.with_xy_monitor):
+        z_um_req = float(cfg.monitor_plane_z_um) if cfg.monitor_plane_z_um is not None else (
+            float(depth / um) * 0.5
+        )
+        z_pos = float(np.clip(z_um_req * um, 0.0, max(depth - dx, 0.0)))
+        devices.append(
+            Monitor(
+                design=design,
+                start=(0.0, 0.0, z_pos),
+                plane_normal="z",
+                plane_position=z_pos,
+                size=(width, height),
+                record_fields=False,
+                accumulate_power=True,
+                record_interval=max(1, int(cfg.monitor_record_interval)),
+                name="xy_power_monitor",
+            )
+        )
 
     # Keep PML proportional to physical domain size to avoid degenerate cases.
     pml_thickness = max(4 * dx, 0.08 * min(width, height, depth))
@@ -856,6 +1175,54 @@ def main():
         help="Run source isolation matrix across none, gaussian, mode on same scenario.",
     )
     parser.add_argument(
+        "--with-xy-monitor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Attach a compiled XY-plane power monitor for physics sanity outputs.",
+    )
+    parser.add_argument(
+        "--monitor-record-interval",
+        type=int,
+        default=1,
+        help="Record every N steps for compiled monitor accumulation.",
+    )
+    parser.add_argument(
+        "--monitor-plane-z-um",
+        type=float,
+        default=None,
+        help="XY monitor z position in um (default: mid-plane).",
+    )
+    parser.add_argument(
+        "--physics-output-dir",
+        type=str,
+        default=None,
+        help="Directory for physics artifacts (monitor power traces/plots and mode profiles).",
+    )
+    parser.add_argument(
+        "--physics-save-power-plot",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write PNG power traces for monitor outputs when physics output is enabled.",
+    )
+    parser.add_argument(
+        "--physics-export-mode-profiles",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Export ModeSource modal profiles and metadata when physics output is enabled.",
+    )
+    parser.add_argument(
+        "--physics-export-ez-snapshot",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Export an Ez field snapshot image/npz for physics validation.",
+    )
+    parser.add_argument(
+        "--physics-snapshot-step",
+        type=str,
+        default="mid",
+        help="Snapshot step for Ez export (integer, or 'mid').",
+    )
+    parser.add_argument(
         "--csv",
         type=str,
         default="benchmarks/results/compiled_3d_results.csv",
@@ -990,6 +1357,9 @@ def main():
         sim_time_fs=args.sim_time_fs,
         scenario=args.scenario,
         source_kind=args.source_kind,
+        with_xy_monitor=bool(args.with_xy_monitor),
+        monitor_record_interval=max(1, int(args.monitor_record_interval)),
+        monitor_plane_z_um=args.monitor_plane_z_um,
     )
 
     print("3D FDTD benchmark")
@@ -1012,6 +1382,16 @@ def main():
     print(f"scenario={cfg.scenario}")
     print(f"source_kind={cfg.source_kind}")
     print(f"source_sweep={bool(args.source_sweep)}")
+    print(f"with_xy_monitor={cfg.with_xy_monitor}")
+    if cfg.with_xy_monitor:
+        print(f"monitor_record_interval={cfg.monitor_record_interval}")
+        if cfg.monitor_plane_z_um is not None:
+            print(f"monitor_plane_z_um={cfg.monitor_plane_z_um:.6g}")
+    print(f"physics_output_dir={args.physics_output_dir or ''}")
+    print(f"physics_save_power_plot={bool(args.physics_save_power_plot)}")
+    print(f"physics_export_mode_profiles={bool(args.physics_export_mode_profiles)}")
+    print(f"physics_export_ez_snapshot={bool(args.physics_export_ez_snapshot)}")
+    print(f"physics_snapshot_step={args.physics_snapshot_step}")
     print(f"compiled_loop_kind={compiled_loop_kind}")
     print(f"e_shell_split={e_shell_split}")
     print(f"h_shell_split={h_shell_split}")
@@ -1024,6 +1404,12 @@ def main():
     source_cases = ("none", "gaussian", "mode") if args.source_sweep else (cfg.source_kind,)
     repeats = max(1, int(args.repeats))
     csv_path = Path(args.csv)
+    physics_run_dir: Path | None = None
+    if args.physics_output_dir:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        physics_run_dir = Path(args.physics_output_dir) / stamp
+        physics_run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"physics_run_dir={physics_run_dir}")
 
     for source_req in source_cases:
         cfg_case = copy.deepcopy(cfg)
@@ -1160,6 +1546,59 @@ def main():
                 )
             )
 
+        physics_summary: dict[str, object] | None = None
+        physics_artifact_dir: str | None = None
+        ez_snapshot_info: dict[str, object] | None = None
+        if physics_run_dir is not None:
+            physics_case_dir = physics_run_dir / f"{cfg_case.scenario}_source_{source_kind_used}"
+            physics_case_dir.mkdir(parents=True, exist_ok=True)
+            physics_sim = copy.deepcopy(sim_base)
+            physics_elapsed = run_compiled(physics_sim, steps)
+            if bool(args.physics_export_ez_snapshot):
+                snap_step = _resolve_snapshot_step(args.physics_snapshot_step, steps)
+                snap_sim = copy.deepcopy(sim_base)
+                snap_elapsed = run_compiled(snap_sim, snap_step)
+                ez_snapshot_info = _export_ez_snapshot_artifact(
+                    snap_sim,
+                    physics_case_dir,
+                    label=f"step_{snap_step}",
+                )
+            else:
+                snap_elapsed = 0.0
+            physics_summary = export_physics_artifacts(
+                physics_sim,
+                physics_case_dir,
+                scenario=cfg_case.scenario,
+                source_kind=source_kind_used,
+                save_power_plot=bool(args.physics_save_power_plot),
+                export_mode_profiles=bool(args.physics_export_mode_profiles),
+                ez_snapshot=ez_snapshot_info,
+            )
+            physics_artifact_dir = str(physics_case_dir)
+            print(
+                "Physics Artifacts "
+                + f"(compiled_validation_s={physics_elapsed:.6f}, "
+                + f"snapshot_s={snap_elapsed:.6f}, "
+                + f"monitor_count={physics_summary.get('monitor_count', 0)}, "
+                + f"mode_source_count={physics_summary.get('mode_source_count', 0)})"
+            )
+            if ez_snapshot_info is not None:
+                print(
+                    "  "
+                    + f"ez_snapshot: step={ez_snapshot_info.get('step', -1)} "
+                    + f"time_fs={float(ez_snapshot_info.get('time_s', 0.0)) * 1e15:.3f} "
+                    + f"png={ez_snapshot_info.get('png', '')}"
+                )
+            for mode_meta in physics_summary.get("mode_sources", []):
+                print(
+                    "  "
+                    + f"mode_source[{mode_meta.get('source_index', 0)}]: "
+                    + f"neff={mode_meta.get('neff_real', np.nan):.6f}"
+                    + f"+{mode_meta.get('neff_imag', np.nan):.3e}j "
+                    + f"pol={mode_meta.get('pol', '')} "
+                    + f"direction={mode_meta.get('direction', '')}"
+                )
+
         _append_csv(
             csv_path=csv_path,
             cfg=cfg_case,
@@ -1188,6 +1627,33 @@ def main():
             h_shell_split=h_shell_split,
             source_single_slab_dense=source_single_slab_dense,
             hlo_stats=hlo_stats,
+            physics_artifact_dir=physics_artifact_dir,
+            physics_monitor_count=(
+                int(physics_summary.get("monitor_count", 0))
+                if physics_summary is not None
+                else None
+            ),
+            physics_monitor_records_max=(
+                int(physics_summary.get("monitor_records_max", 0))
+                if physics_summary is not None
+                else None
+            ),
+            physics_mode_source_count=(
+                int(physics_summary.get("mode_source_count", 0))
+                if physics_summary is not None
+                else None
+            ),
+            physics_ez_snapshot_step=(
+                int(ez_snapshot_info.get("step", 0))
+                if ez_snapshot_info is not None
+                else None
+            ),
+            physics_ez_snapshot_png=(
+                str(ez_snapshot_info.get("png", "")) if ez_snapshot_info is not None else None
+            ),
+            physics_ez_snapshot_npz=(
+                str(ez_snapshot_info.get("npz", "")) if ez_snapshot_info is not None else None
+            ),
         )
         print(f"CSV appended: {csv_path}")
 
