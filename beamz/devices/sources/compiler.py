@@ -139,7 +139,7 @@ def _sample_waveform(
     get_signal_value, t0: float, dt: float, num_steps: int, offset_fn, total_steps: int | None = None
 ):
     n = total_steps if total_steps is not None else num_steps
-    start = 0.0 if total_steps is not None else t0
+    start = float(t0)
     vals = np.zeros((n,), dtype=np.float32)
     for i in range(n):
         t = start + i * dt

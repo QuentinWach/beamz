@@ -7,7 +7,12 @@ from beamz.const import µm
 from beamz.design.core import Design
 from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML, Boundary
-from beamz.simulation.compiled import EngineState, compile_simulation
+from beamz.simulation.compiled import (
+    EngineState,
+    MonitorState,
+    compile_simulation,
+    monitor_state_size,
+)
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
 
@@ -41,7 +46,7 @@ class Simulation:
         if time is None or len(time) < 2:
             raise ValueError("FDTD requires a time array with at least two entries")
         self.time, self.dt, self.num_steps = time, float(time[1] - time[0]), len(time)
-        self.t, self.current_step = 0, 0
+        self.t, self.current_step = float(time[0]), 0
 
         # Check for PML boundaries before creating fields (to avoid double material init)
         pml_boundaries = [b for b in boundaries if isinstance(b, PML)]
@@ -87,6 +92,7 @@ class Simulation:
         # Compiled program cache for v0.3 packed-source/monitor execution.
         self._compiled_program = None
         self._compiled_program_signature = None
+        self._compiled_program_cache = {}
 
     def step(self):
         """Perform one FDTD time step with correct Huygens source timing.
@@ -404,11 +410,11 @@ class Simulation:
             self.is_3d,
             self.plane_2d,
         )
-        if (
-            self._compiled_program is not None
-            and self._compiled_program_signature == signature
-        ):
-            return self._compiled_program
+        cached = self._compiled_program_cache.get(signature)
+        if cached is not None:
+            self._compiled_program = cached
+            self._compiled_program_signature = signature
+            return cached
 
         run_cfg = SimpleNamespace(
             fields=self.fields,
@@ -418,16 +424,19 @@ class Simulation:
             plane_2d=self.plane_2d,
             is_3d=self.is_3d,
             total_steps=self.num_steps,
+            t0=float(self.time[0]),
             precision="float32",
         )
-        self._compiled_program = compile_simulation(
+        program = compile_simulation(
             design=self.design,
             devices=self.devices,
             boundaries=self.boundaries,
             run_cfg=run_cfg,
         )
+        self._compiled_program_cache[signature] = program
+        self._compiled_program = program
         self._compiled_program_signature = signature
-        return self._compiled_program
+        return program
 
     def run_compiled(
         self, num_steps=None, record_interval=None, record_fields=None, progress=True
@@ -459,6 +468,7 @@ class Simulation:
         chunk_size = int(record_interval) if record_interval else num_steps
         steps_remaining = num_steps
         steps_done = 0
+        monitor_state: MonitorState | None = None
 
         while steps_remaining > 0:
             this_chunk = min(chunk_size, steps_remaining)
@@ -478,7 +488,29 @@ class Simulation:
                 current_step=jnp.asarray(self.current_step, dtype=jnp.int32),
             )
 
-            engine_state, monitor_state, _ = program.run(engine_state=engine_state)
+            if monitor_state is None:
+                if program.monitor_specs:
+                    max_records = max(1, monitor_state_size(program.monitor_specs, num_steps))
+                    monitor_state = MonitorState(
+                        powers=jnp.zeros(
+                            (len(program.monitor_specs), max_records), dtype=jnp.float32
+                        ),
+                        timestamps=jnp.zeros(
+                            (len(program.monitor_specs), max_records), dtype=jnp.float32
+                        ),
+                        counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+                    )
+                else:
+                    monitor_state = MonitorState(
+                        powers=jnp.zeros((0, 0), dtype=jnp.float32),
+                        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
+                        counts=jnp.zeros((0,), dtype=jnp.int32),
+                    )
+
+            engine_state, monitor_state, _ = program.run(
+                engine_state=engine_state,
+                monitor_state=monitor_state,
+            )
             engine_state.ez.block_until_ready()
 
             if progress and steps_done == 0:
@@ -492,8 +524,6 @@ class Simulation:
             self.fields.Hz = engine_state.hz
             self.t = float(np.asarray(engine_state.t))
             self.current_step = int(np.asarray(engine_state.current_step))
-
-            program.apply_monitor_state(monitor_state)
 
             if field_history is not None:
                 for name in record_fields:
@@ -513,6 +543,9 @@ class Simulation:
 
         if progress:
             print()
+
+        if monitor_state is not None:
+            program.apply_monitor_state(monitor_state)
 
         result = {}
         if field_history is not None:

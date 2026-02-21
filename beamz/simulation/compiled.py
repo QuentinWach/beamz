@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import pathlib
+import platform
+import sys
 from typing import NamedTuple
 
 import jax
@@ -38,11 +40,45 @@ from beamz.simulation.material_models import (
 
 
 def _init_persistent_cache():
+    if os.environ.get("BEAMZ_ENABLE_JAX_PERSISTENT_CACHE", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+
+    if os.environ.get("BEAMZ_DISABLE_JAX_PERSISTENT_CACHE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+
+    py_tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+    backend = jax.default_backend()
+    arch = platform.machine() or "unknown"
     cache_dir = os.environ.get(
         "BEAMZ_JAX_CACHE_DIR",
-        str(pathlib.Path.home() / ".cache" / "beamz" / "jax_cache"),
+        str(
+            pathlib.Path.home()
+            / ".cache"
+            / "beamz"
+            / "jax_cache"
+            / f"jax-{jax.__version__}"
+            / backend
+            / arch
+            / py_tag
+        ),
     )
-    if not os.environ.get("JAX_COMPILATION_CACHE_DIR"):
+    if os.environ.get("JAX_COMPILATION_CACHE_DIR"):
+        return
+    try:
+        from jax.experimental.compilation_cache import compilation_cache as cc
+
+        cc.set_cache_dir(cache_dir)
+    except Exception:
         jax.config.update("jax_compilation_cache_dir", cache_dir)
 
 
@@ -845,6 +881,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
     - is_3d
     Optional:
     - total_steps: full simulation length for absolute waveform indexing
+    - t0: simulation time origin used when sampling source waveforms
     """
     del design, boundaries
 
@@ -853,6 +890,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
     dt = float(run_cfg.dt)
     num_steps = int(run_cfg.num_steps)
     total_steps = int(getattr(run_cfg, "total_steps", num_steps))
+    t0 = float(getattr(run_cfg, "t0", 0.0))
 
     source_specs = compile_source_specs(
         devices=devices,
@@ -860,7 +898,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         dt=dt,
         resolution=resolution,
         num_steps=num_steps,
-        t0=0.0,
+        t0=t0,
         total_steps=total_steps,
     )
 

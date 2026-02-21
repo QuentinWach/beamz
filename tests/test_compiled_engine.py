@@ -99,6 +99,58 @@ def test_compiled_monitor_power_is_populated(small_sim_params):
     assert np.isfinite(np.asarray(monitor.power_history)).all()
 
 
+def test_compiled_monitor_accumulates_across_chunks(small_sim_params):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+
+    source_a = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    monitor_a = Monitor(
+        start=(domain * 0.35, domain * 0.35),
+        end=(domain * 0.35, domain * 0.65),
+        record_interval=3,
+    )
+    sim_full = Simulation(
+        design=design.copy(),
+        devices=[source_a, monitor_a],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    source_b = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    monitor_b = Monitor(
+        start=(domain * 0.35, domain * 0.35),
+        end=(domain * 0.35, domain * 0.65),
+        record_interval=3,
+    )
+    sim_chunked = Simulation(
+        design=design.copy(),
+        devices=[source_b, monitor_b],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    sim_full.run_compiled(num_steps=40, progress=False)
+    sim_chunked.run_compiled(
+        num_steps=40,
+        record_interval=10,  # force chunked execution path
+        record_fields=["Ez"],
+        progress=False,
+    )
+
+    p_full = np.asarray(monitor_a.power_history)
+    p_chunked = np.asarray(monitor_b.power_history)
+    t_full = np.asarray(monitor_a.power_timestamps)
+    t_chunked = np.asarray(monitor_b.power_timestamps)
+
+    assert p_full.size > 0
+    assert p_chunked.size == p_full.size
+    assert t_chunked.size == t_full.size
+    assert np.allclose(p_chunked, p_full, rtol=5e-3, atol=5e-5)
+    assert np.allclose(t_chunked, t_full, rtol=0.0, atol=0.0)
+
+
 def test_compiled_program_compiles_once(small_sim_params):
     _wl, _dx, _dt, _domain, _steps, _t, _signal = small_sim_params
 
