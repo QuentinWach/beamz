@@ -7,7 +7,9 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
-from matplotlib.patches import Rectangle as MplRect
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Rectangle as MplRect
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -144,9 +146,12 @@ signal = ramped_cosine(
 )
 
 source_center = (PML_THICKNESS + 1.5 * µm, Y / 2, WG_Z0 + WG_T / 2)
-source_width = WG_W * 3.5
+source_width_base = WG_W * 3.5
 # Include core and surrounding cladding in the mode solve window.
-source_height = 2.4 * µm
+source_height_base = 2.4 * µm
+source_size = 1.5 * max(source_width_base, source_height_base)
+source_width = source_size
+source_height = source_size
 source = ModeSource(
     grid=grid,
     center=source_center,
@@ -163,22 +168,33 @@ source.initialize(grid.permittivity, DX, dt=DT)
 # Plot geometry projections and mark source.
 # -----------------------------------------------------------------------------
 eps = np.asarray(grid.permittivity)
-core_mask = eps > (N_CLAD**2 + 1e-6)
-xy = core_mask.max(axis=0)  # y,x
+eps_levels = np.asarray([N_AIR**2, N_CLAD**2, N_CORE**2], dtype=np.float32)
+material_names = ("Air", "Cladding", "Core")
+material_colors = ("C0", "C1", "C2")
+material_cmap = ListedColormap(material_colors)
+material_norm = BoundaryNorm(np.arange(-0.5, len(eps_levels) + 0.5, 1), material_cmap.N)
+
+eps_expanded = eps[..., None]
+material_idx = np.argmin(np.abs(eps_expanded - eps_levels[None, None, None, :]), axis=-1)
+
+z_core_idx = int(np.clip(round((WG_Z0 + 0.5 * WG_T) / DX), 0, eps.shape[0] - 1))
+xy = material_idx[z_core_idx]  # y,x material classes at core mid-z
 y_mid_idx = int(np.clip(round(source_center[1] / DX), 0, eps.shape[1] - 1))
 x_src_idx = int(np.clip(round(source_center[0] / DX), 0, eps.shape[2] - 1))
-xz = eps[:, y_mid_idx, :]  # z,x permittivity slice
-yz = eps[:, :, x_src_idx]  # z,y permittivity slice
+xz = material_idx[:, y_mid_idx, :]  # z,x material slice
+yz = material_idx[:, :, x_src_idx]  # z,y material slice
 
 fig, axes = plt.subplots(1, 3, figsize=(14, 4.3))
 axes[0].imshow(
     xy,
     origin="lower",
-    cmap="Greys",
+    cmap=material_cmap,
+    norm=material_norm,
+    interpolation="nearest",
     extent=[0, X / um, 0, Y / um],
     aspect="equal",
 )
-axes[0].set_title("XY Projection (Top)")
+axes[0].set_title(f"XY Material Slice (z={((WG_Z0 + 0.5 * WG_T) / um):.2f} um)")
 axes[0].set_xlabel("x (um)")
 axes[0].set_ylabel("y (um)")
 axes[0].add_patch(
@@ -195,13 +211,13 @@ axes[0].add_patch(
 axes[1].imshow(
     xz,
     origin="lower",
-    cmap="viridis",
+    cmap=material_cmap,
+    norm=material_norm,
+    interpolation="nearest",
     extent=[0, X / um, 0, Z / um],
-    vmin=N_AIR**2,
-    vmax=N_CORE**2,
     aspect="equal",
 )
-axes[1].set_title("XZ Permittivity Slice (Side)")
+axes[1].set_title("XZ Material Slice (Side)")
 axes[1].set_xlabel("x (um)")
 axes[1].set_ylabel("z (um)")
 axes[1].add_patch(
@@ -218,13 +234,13 @@ axes[1].add_patch(
 axes[2].imshow(
     yz,
     origin="lower",
-    cmap="viridis",
+    cmap=material_cmap,
+    norm=material_norm,
+    interpolation="nearest",
     extent=[0, Y / um, 0, Z / um],
-    vmin=N_AIR**2,
-    vmax=N_CORE**2,
     aspect="equal",
 )
-axes[2].set_title("YZ Permittivity Slice (Input Cross-Section)")
+axes[2].set_title("YZ Material Slice (Input Cross-Section)")
 axes[2].set_xlabel("y (um)")
 axes[2].set_ylabel("z (um)")
 axes[2].add_patch(
@@ -262,7 +278,24 @@ for ax in (axes[1], axes[2]):
         linewidth=1.0,
     )
 
-fig.tight_layout()
+legend_handles = [
+    Patch(
+        facecolor=material_colors[i],
+        edgecolor="black",
+        label=f"{material_names[i]} (eps={eps_levels[i]:.3f})",
+    )
+    for i in range(len(material_names))
+]
+legend_handles.append(Line2D([0], [0], color="red", lw=2.0, label="ModeSource window"))
+fig.legend(
+    handles=legend_handles,
+    loc="lower center",
+    ncol=2,
+    frameon=True,
+    fontsize=8,
+    bbox_to_anchor=(0.5, -0.02),
+)
+fig.tight_layout(rect=[0, 0.08, 1, 1])
 design_proj_png = OUT_DIR / "design_projections_xyz.png"
 fig.savefig(design_proj_png, dpi=170)
 plt.close(fig)
