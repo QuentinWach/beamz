@@ -1,8 +1,8 @@
 """v0.3 compiled FDTD engine.
 
 This module provides a packed-data simulation path where one compiled
-`jax.lax.scan` step performs field updates, source injection, monitor
-accumulation, and material model updates.
+loop (`jax.lax.scan` or `jax.lax.fori_loop`) performs field updates,
+source injection, monitor accumulation, and material model updates.
 """
 
 from __future__ import annotations
@@ -145,6 +145,7 @@ class CompiledRunConfig:
     plane_2d: str
     is_3d: bool
     precision: str = "float32"
+    loop_kind: str = "scan"
 
 
 @dataclass
@@ -249,6 +250,26 @@ class CompiledSimulation:
         """Apply stacked slab sources via fori_loop (constant HLO size)."""
         safe_idx = jnp.clip(abs_step, 0, group.waveforms.shape[1] - 1)
         ndim = len(group.max_sizes)
+
+        # Common hot path for benchmarks and many production setups:
+        # one slab source only (e.g., single Gaussian source). Avoid nested
+        # fori_loop overhead in the timestep kernel.
+        if group.n == 1:
+            amp = group.waveforms[0, safe_idx]
+            patch = group.coeffs[0] * amp
+            starts_0 = group.starts_tuple[0]
+            cur = jax.lax.dynamic_slice(arr, starts_0, group.max_sizes)
+            return jax.lax.dynamic_update_slice(arr, cur + patch, starts_0)
+
+        if group.n == 2:
+            def apply_one(out, i: int):
+                amp_i = group.waveforms[i, safe_idx]
+                patch_i = group.coeffs[i] * amp_i
+                starts_i = group.starts_tuple[i]
+                cur_i = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
+                return jax.lax.dynamic_update_slice(out, cur_i + patch_i, starts_i)
+
+            return apply_one(apply_one(arr, 0), 1)
 
         def body(i, out):
             amp = group.waveforms[i, safe_idx]
@@ -501,7 +522,7 @@ class CompiledSimulation:
             lossy_shell_hy = self.h_lossy_shell_y
             lossy_shell_hz = self.h_lossy_shell_z
 
-            def body_with_coeffs(carry, _unused):
+            def body_with_coeffs(carry):
                 eng, mon, mat = carry
                 abs_step = eng.current_step
 
@@ -676,14 +697,26 @@ class CompiledSimulation:
                     t=eng.t + dt,
                     current_step=eng.current_step + jnp.array(1, dtype=jnp.int32),
                 )
-                return (new_eng, mon, mat), None
+                return (new_eng, mon, mat)
 
-            xs = jnp.arange(self.config.num_steps, dtype=jnp.int32)
-            (engine_final, monitor_final, material_final), _ = jax.lax.scan(
-                body_with_coeffs,
-                (engine_state, monitor_state, material_state0),
-                xs,
-            )
+            if self.config.loop_kind == "scan":
+                def _scan_body(carry, _unused):
+                    return body_with_coeffs(carry), None
+
+                (engine_final, monitor_final, material_final), _ = jax.lax.scan(
+                    _scan_body,
+                    (engine_state, monitor_state, material_state0),
+                    xs=None,
+                    length=self.config.num_steps,
+                )
+            else:
+                init_carry = (engine_state, monitor_state, material_state0)
+                engine_final, monitor_final, material_final = jax.lax.fori_loop(
+                    0,
+                    self.config.num_steps,
+                    lambda _i, c: body_with_coeffs(c),
+                    init_carry,
+                )
             return engine_final, monitor_final, material_final
 
         self._compiled_scan = run_scan
@@ -912,6 +945,22 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
 
     monitor_devices = tuple(d for d in devices if isinstance(d, Monitor))
 
+    loop_kind_raw = str(
+        getattr(
+            run_cfg,
+            "loop_kind",
+            os.getenv("BEAMZ_COMPILED_LOOP_KIND", "scan"),
+        )
+    ).strip().lower()
+    if loop_kind_raw in {"fori", "fori_loop", "fori-loop"}:
+        loop_kind = "fori_loop"
+    elif loop_kind_raw in {"scan"}:
+        loop_kind = "scan"
+    else:
+        raise ValueError(
+            "Invalid compiled loop kind. Use one of: scan, fori_loop."
+        )
+
     config = CompiledRunConfig(
         resolution=resolution,
         dt=dt,
@@ -919,6 +968,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         plane_2d=run_cfg.plane_2d,
         is_3d=bool(run_cfg.is_3d),
         precision=getattr(run_cfg, "precision", "float32"),
+        loop_kind=loop_kind,
     )
 
     h_decay_x, h_source_x, h_source_lossless_x = ops.precompute_h_update_coefficients(

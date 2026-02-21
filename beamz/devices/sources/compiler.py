@@ -24,6 +24,7 @@ class BatchedSlabGroup:
     waveforms: jnp.ndarray  # (n, total_steps)
     coeffs: jnp.ndarray  # (n, *max_sizes)
     starts: jnp.ndarray  # (n, ndim) int32
+    starts_tuple: tuple[tuple[int, ...], ...]  # static starts for tiny-n fast paths
     max_sizes: tuple[int, ...]  # static — used for dynamic_slice
     n: int  # static — number of specs
 
@@ -57,6 +58,7 @@ def batch_slab_specs(
             starts=jnp.array(
                 [list(s.slab_starts) for s in slab], dtype=jnp.int32
             ),
+            starts_tuple=tuple(tuple(int(v) for v in s.slab_starts) for s in slab),
             max_sizes=max_sizes,
             n=len(slab),
         ),

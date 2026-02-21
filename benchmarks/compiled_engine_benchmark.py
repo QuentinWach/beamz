@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -89,6 +91,28 @@ def _safe_div(num: float, den: float) -> float:
     return num / den
 
 
+def _hlo_op_counts(hlo_text: str) -> dict[str, int]:
+    """Count real HLO ops from instruction lines (ignore metadata substrings)."""
+    counts = {
+        "fusion": 0,
+        "scatter": 0,
+        "dynamic-update-slice": 0,
+        "slice": 0,
+        "copy": 0,
+        "while": 0,
+    }
+    pat = re.compile(r"=\s+.*?\b([a-z][a-z0-9-]*)\(")
+    for line in hlo_text.splitlines():
+        code = line.split("metadata=", 1)[0]
+        m = pat.search(code)
+        if not m:
+            continue
+        op = m.group(1)
+        if op in counts:
+            counts[op] += 1
+    return counts
+
+
 def _git_commit(repo_root: Path) -> str:
     try:
         return (
@@ -122,6 +146,9 @@ def _append_csv(
     repeats: int,
     warmup_jit: bool,
     modes: tuple[str, ...],
+    compiled_loop_kind: str,
+    e_shell_split: bool,
+    h_shell_split: bool,
     hlo_stats: dict[str, int] | None = None,
 ):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +163,9 @@ def _append_csv(
         "repeats",
         "warmup_jit",
         "modes",
+        "compiled_loop_kind",
+        "compiled_e_shell_split",
+        "compiled_h_shell_split",
         "ppw",
         "target_memory_gb",
         "saturation_factor",
@@ -189,6 +219,9 @@ def _append_csv(
         "repeats": int(repeats),
         "warmup_jit": int(bool(warmup_jit)),
         "modes": ";".join(modes),
+        "compiled_loop_kind": compiled_loop_kind,
+        "compiled_e_shell_split": int(bool(e_shell_split)),
+        "compiled_h_shell_split": int(bool(h_shell_split)),
         "ppw": cfg.points_per_wavelength,
         "target_memory_gb": cfg.memory_gb,
         "saturation_factor": cfg.saturation_factor,
@@ -403,8 +436,67 @@ def run_repeated(
 
 def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
     """Collect simple operation counts from compiled v0.3 HLO text."""
+    import jax
     import jax.numpy as jnp
     from beamz.simulation.compiled import EngineState, MonitorState, monitor_state_size
+
+    def _compiled_inputs():
+        program = sim.compile(num_steps=steps)
+        if program._compiled_scan is None:
+            program._build_scan()
+
+        if program.monitor_specs:
+            max_records = max(1, monitor_state_size(program.monitor_specs, steps))
+            monitor_state = MonitorState(
+                powers=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
+                timestamps=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
+                counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+            )
+        else:
+            monitor_state = MonitorState(
+                powers=jnp.zeros((0, 0), dtype=jnp.float32),
+                timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
+                counts=jnp.zeros((0,), dtype=jnp.int32),
+            )
+
+        engine_state = EngineState(
+            ex=sim.fields.Ex,
+            ey=sim.fields.Ey,
+            ez=sim.fields.Ez,
+            hx=sim.fields.Hx,
+            hy=sim.fields.Hy,
+            hz=sim.fields.Hz,
+            t=jnp.asarray(sim.t, dtype=jnp.float32),
+            current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
+        )
+        coeffs = program._update_coefficients()
+        return program, engine_state, monitor_state, coeffs
+
+    program, engine_state, monitor_state, coeffs = _compiled_inputs()
+    hlo_text = (
+        program._compiled_scan
+        .lower(engine_state, monitor_state, coeffs)
+        .compile()
+        .as_text()
+        .lower()
+    )
+    return {"text_len": len(hlo_text), **_hlo_op_counts(hlo_text)}
+
+
+def dump_compiled_ir_artifacts(
+    sim: Simulation,
+    steps: int,
+    out_dir: Path,
+    *,
+    include_dot: bool = True,
+    include_optimized_hlo: bool = True,
+) -> dict[str, int]:
+    """Write JAXPR/HLO artifacts for deep debugging and return optimized-HLO stats."""
+    import jax
+    import jax.numpy as jnp
+    from beamz.simulation.compiled import EngineState, MonitorState, monitor_state_size
+
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     program = sim.compile(num_steps=steps)
     if program._compiled_scan is None:
@@ -434,23 +526,57 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
         t=jnp.asarray(sim.t, dtype=jnp.float32),
         current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
     )
+    coeffs = program._update_coefficients()
+    lowered = program._compiled_scan.lower(engine_state, monitor_state, coeffs)
+    hlo_comp = lowered.compiler_ir(dialect="hlo")
 
-    hlo_text = (
-        program._compiled_scan
-        .lower(engine_state, monitor_state, program._update_coefficients())
-        .compile()
-        .as_text()
-        .lower()
-    )
-    return {
-        "text_len": len(hlo_text),
-        "fusion": hlo_text.count("fusion"),
-        "scatter": hlo_text.count("scatter"),
-        "dynamic-update-slice": hlo_text.count("dynamic-update-slice"),
-        "slice": hlo_text.count("slice"),
-        "copy": hlo_text.count("copy"),
-        "while": hlo_text.count("while"),
-    }
+    # Graph-level view before XLA optimization.
+    jaxpr = jax.make_jaxpr(program._compiled_scan)(engine_state, monitor_state, coeffs)
+    (out_dir / "compiled_jaxpr.txt").write_text(str(jaxpr))
+
+    # Pre-optimization HLO and optional graph.
+    hlo_unopt = hlo_comp.as_hlo_text()
+    (out_dir / "compiled_hlo_unoptimized.txt").write_text(hlo_unopt)
+    if include_dot:
+        (out_dir / "compiled_hlo_unoptimized.dot").write_text(hlo_comp.as_hlo_dot_graph())
+
+    opt_text = ""
+    if include_optimized_hlo:
+        opt_text = lowered.compile().as_text()
+        (out_dir / "compiled_hlo_optimized.txt").write_text(opt_text)
+
+    stats_text = (opt_text or hlo_unopt).lower()
+    stats = {"text_len": len(stats_text), **_hlo_op_counts(stats_text)}
+    (out_dir / "compiled_hlo_stats.json").write_text(json.dumps(stats, indent=2))
+    return stats
+
+
+def hlo_diagnostics(hlo_stats: dict[str, int]) -> list[str]:
+    """Return actionable diagnostics from simple HLO op counts."""
+    notes: list[str] = []
+    if hlo_stats.get("scatter", 0) > 0:
+        notes.append(
+            "Scatter ops detected: remove `.at[idx].add/set` in hot path when possible."
+        )
+    if hlo_stats.get("dynamic-update-slice", 0) > 0:
+        notes.append(
+            "dynamic-update-slice present: source/monitor updates likely creating extra memory passes."
+        )
+    if hlo_stats.get("slice", 0) > 120:
+        notes.append(
+            "High slice count: likely many shifted views/pads; target fewer stencil passes."
+        )
+    if hlo_stats.get("copy", 0) > 20:
+        notes.append(
+            "High copy count: investigate layout conversions and temporary arrays."
+        )
+    if hlo_stats.get("while", 0) > 2:
+        notes.append(
+            "Multiple while loops in HLO: nested loop primitives may be adding overhead."
+        )
+    if not notes:
+        notes.append("No major red flags from coarse op counts; profile runtime kernels next.")
+    return notes
 
 
 def main():
@@ -501,7 +627,67 @@ def main():
         default=None,
         help="Directory for JAX profiler trace output (compiled mode only).",
     )
+    parser.add_argument(
+        "--dump-ir-dir",
+        type=str,
+        default=None,
+        help="Directory to write compiled JAXPR/HLO artifacts (compiled mode only).",
+    )
+    parser.add_argument(
+        "--ir-dot",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When dumping IR, also emit HLO dot graph.",
+    )
+    parser.add_argument(
+        "--hlo-diagnostics",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print action-oriented diagnostics from HLO op counts.",
+    )
+    parser.add_argument(
+        "--compiled-loop-kind",
+        type=str,
+        default="auto",
+        choices=("auto", "fori_loop", "scan"),
+        help="Compiled engine loop primitive override (auto keeps env/default).",
+    )
+    parser.add_argument(
+        "--enable-e-shell-split",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override BEAMZ_ENABLE_E_SHELL_SPLIT for this benchmark run.",
+    )
+    parser.add_argument(
+        "--enable-h-shell-split",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override BEAMZ_ENABLE_H_SHELL_SPLIT for this benchmark run.",
+    )
     args = parser.parse_args()
+    if args.compiled_loop_kind != "auto":
+        os.environ["BEAMZ_COMPILED_LOOP_KIND"] = args.compiled_loop_kind
+    if args.enable_e_shell_split is not None:
+        os.environ["BEAMZ_ENABLE_E_SHELL_SPLIT"] = "1" if args.enable_e_shell_split else "0"
+    if args.enable_h_shell_split is not None:
+        os.environ["BEAMZ_ENABLE_H_SHELL_SPLIT"] = "1" if args.enable_h_shell_split else "0"
+
+    compiled_loop_kind = os.environ.get("BEAMZ_COMPILED_LOOP_KIND", "scan").strip().lower()
+    if compiled_loop_kind in {"fori", "fori-loop"}:
+        compiled_loop_kind = "fori_loop"
+    e_shell_split = os.environ.get("BEAMZ_ENABLE_E_SHELL_SPLIT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    h_shell_split = os.environ.get("BEAMZ_ENABLE_H_SHELL_SPLIT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     modes = parse_modes(args.modes)
     if not modes:
         raise ValueError("No benchmark modes selected. Choose at least one mode.")
@@ -524,6 +710,11 @@ def main():
     print(f"repeats={max(1, int(args.repeats))}")
     print(f"warmup_jit={bool(args.warmup_jit)}")
     print(f"modes={','.join(modes)}")
+    print(f"compiled_loop_kind={compiled_loop_kind}")
+    print(f"e_shell_split={e_shell_split}")
+    print(f"h_shell_split={h_shell_split}")
+    if e_shell_split or h_shell_split:
+        print("warning: shell-split is currently slower on M4 in our measurements.")
 
     sim_base, steps = make_simulation(cfg)
     repeats = max(1, int(args.repeats))
@@ -610,6 +801,34 @@ def main():
                 ]
             )
         )
+        if args.hlo_diagnostics:
+            print("Compiled HLO Diagnostics")
+            for note in hlo_diagnostics(hlo_stats):
+                print(f"- {note}")
+
+    if args.dump_ir_dir and ("compiled" in modes):
+        ir_dir = Path(args.dump_ir_dir)
+        ir_stats = dump_compiled_ir_artifacts(
+            copy.deepcopy(sim_base),
+            steps,
+            ir_dir,
+            include_dot=bool(args.ir_dot),
+            include_optimized_hlo=True,
+        )
+        print(f"\nIR artifacts written: {ir_dir}")
+        print(
+            " ".join(
+                [
+                    f"text_len={ir_stats['text_len']}",
+                    f"fusion={ir_stats['fusion']}",
+                    f"scatter={ir_stats['scatter']}",
+                    f"dynamic-update-slice={ir_stats['dynamic-update-slice']}",
+                    f"slice={ir_stats['slice']}",
+                    f"copy={ir_stats['copy']}",
+                    f"while={ir_stats['while']}",
+                ]
+            )
+        )
 
     csv_path = Path(args.csv)
     _append_csv(
@@ -629,6 +848,9 @@ def main():
         repeats=repeats,
         warmup_jit=bool(args.warmup_jit),
         modes=modes,
+        compiled_loop_kind=compiled_loop_kind,
+        e_shell_split=e_shell_split,
+        h_shell_split=h_shell_split,
         hlo_stats=hlo_stats,
     )
     print(f"\nCSV appended: {csv_path}")

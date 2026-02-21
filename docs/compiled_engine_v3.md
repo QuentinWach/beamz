@@ -2,7 +2,7 @@
 
 BEAMZ v0.3 introduces a packed-data compiled simulation path:
 
-- One compiled `jax.lax.scan` step over the full timestep loop.
+- One compiled loop (`jax.lax.scan` by default) over the full timestep loop.
 - Sources compiled to static injection specs (`CompiledSourceSpec`).
 - Monitors compiled to static accumulation specs (`CompiledMonitorSpec`).
 - Material updates routed through compiled model interfaces (`CompiledMaterialSpec`).
@@ -23,8 +23,43 @@ BEAMZ v0.3 introduces a packed-data compiled simulation path:
 ## Default behavior
 
 - Default precision is `float32`.
+- Default compiled loop primitive is `scan` (`BEAMZ_COMPILED_LOOP_KIND=scan`).
+- Lossy shell split is disabled by default (`BEAMZ_ENABLE_E_SHELL_SPLIT=0`, `BEAMZ_ENABLE_H_SHELL_SPLIT=0`).
 - Monitor accumulation stores compressed outputs (`power_history`) by default.
 - The legacy split-kernel path (`run_fast` / `run_jit_scan`) now delegates to `run_compiled`.
+
+## Performance debugging workflow
+
+Use the benchmark runner to export IR and profile artifacts:
+
+```bash
+python benchmarks/compiled_engine_benchmark.py \
+  --grid-n 352 \
+  --steps 120 \
+  --modes split_jit,compiled \
+  --compiled-loop-kind scan \
+  --no-enable-e-shell-split \
+  --no-enable-h-shell-split \
+  --dump-ir-dir benchmarks/results/ir/latest \
+  --profile-dir benchmarks/results/trace/latest \
+  --hlo-stats \
+  --hlo-diagnostics \
+  --csv benchmarks/results/compiled_3d_results.csv
+```
+
+This writes:
+
+- `compiled_jaxpr.txt`
+- `compiled_hlo_unoptimized.txt`
+- `compiled_hlo_unoptimized.dot`
+- `compiled_hlo_optimized.txt`
+- `compiled_hlo_stats.json`
+
+Use this to prioritize optimization work:
+
+- Reduce `scatter` and `dynamic-update-slice`.
+- Lower total `slice` count in the optimized HLO.
+- Keep the compiled timestep path to one dominant fused kernel family.
 
 ## Current scope
 

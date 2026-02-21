@@ -1,3 +1,4 @@
+import os
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -404,11 +405,34 @@ class Simulation:
         if num_steps <= 0:
             raise ValueError("num_steps must be > 0")
 
+        loop_kind_env = os.getenv("BEAMZ_COMPILED_LOOP_KIND", "scan").strip().lower()
+        if loop_kind_env in {"fori", "fori_loop", "fori-loop"}:
+            loop_kind = "fori_loop"
+        elif loop_kind_env == "scan":
+            loop_kind = "scan"
+        else:
+            raise ValueError("Invalid BEAMZ_COMPILED_LOOP_KIND (use: scan, fori_loop).")
+        e_shell_split = os.getenv("BEAMZ_ENABLE_E_SHELL_SPLIT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        h_shell_split = os.getenv("BEAMZ_ENABLE_H_SHELL_SPLIT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
         signature = (
             num_steps,
             self.fields.permittivity.shape,
             self.is_3d,
             self.plane_2d,
+            loop_kind,
+            e_shell_split,
+            h_shell_split,
         )
         cached = self._compiled_program_cache.get(signature)
         if cached is not None:
@@ -426,6 +450,7 @@ class Simulation:
             total_steps=self.num_steps,
             t0=float(self.time[0]),
             precision="float32",
+            loop_kind=loop_kind,
         )
         program = compile_simulation(
             design=self.design,
@@ -462,10 +487,14 @@ class Simulation:
         if record_fields is None:
             record_fields = ["Ez"]
 
-        field_history = {name: [] for name in record_fields} if record_interval else None
+        record_every = int(record_interval) if record_interval else None
+        if record_every is not None and record_every <= 0:
+            raise ValueError("record_interval must be a positive integer")
+
+        field_history = {name: [] for name in record_fields} if record_every else None
 
         # Run in one chunk for max TCUPS by default. For field snapshots, run in equal chunks.
-        chunk_size = int(record_interval) if record_interval else num_steps
+        chunk_size = record_every if record_every else num_steps
         steps_remaining = num_steps
         steps_done = 0
         monitor_state: MonitorState | None = None
@@ -525,7 +554,7 @@ class Simulation:
             self.t = float(np.asarray(engine_state.t))
             self.current_step = int(np.asarray(engine_state.current_step))
 
-            if field_history is not None:
+            if field_history is not None and (self.current_step % record_every == 0):
                 for name in record_fields:
                     if hasattr(self.fields, name):
                         field_history[name].append(np.array(getattr(self.fields, name)))
