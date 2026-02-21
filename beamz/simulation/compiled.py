@@ -327,6 +327,36 @@ class CompiledSimulation:
             out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
         return out
 
+    def _apply_lossy_shell_from_lossless(
+        self,
+        updated_lossless: jnp.ndarray,
+        old: jnp.ndarray,
+        decay: jnp.ndarray,
+        source: jnp.ndarray,
+        source_lossless: jnp.ndarray,
+        slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
+    ) -> jnp.ndarray:
+        """Apply lossy correction on shell slabs using old/lossless fields only.
+
+        Given:
+            lossless = old +/- source_lossless * curl
+            lossy    = decay * old +/- source * curl
+        we can eliminate curl on the shell via:
+            beta = source / source_lossless
+            lossy = (decay - beta) * old + beta * lossless
+        """
+        out = updated_lossless
+        for starts, sizes in slabs:
+            old_s = jax.lax.dynamic_slice(old, starts, sizes)
+            lossless_s = jax.lax.dynamic_slice(updated_lossless, starts, sizes)
+            decay_s = jax.lax.dynamic_slice(decay, starts, sizes)
+            source_s = jax.lax.dynamic_slice(source, starts, sizes)
+            source_ll_s = jax.lax.dynamic_slice(source_lossless, starts, sizes)
+            beta = source_s / source_ll_s
+            lossy_s = (decay_s - beta) * old_s + beta * lossless_s
+            out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
+        return out
+
     def _monitor_power_2d(
         self,
         spec: CompiledMonitorSpec,
@@ -549,26 +579,40 @@ class CompiledSimulation:
                 if is_3d:
                     any_h_shell = use_lossy_shell_hx or use_lossy_shell_hy or use_lossy_shell_hz
                     if any_h_shell:
-                        # Shell path: need explicit curl for shell corrections
-                        curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_3d(ex, ey, ez, resolution)
+                        # Shell path: lossless fused update, then lossy shell correction
+                        # without explicit curl arrays.
                         hx_old, hy_old, hz_old = hx, hy, hz
-                        hx = hx_old - h_source_lossless_x * curl_ex
-                        hy = hy_old - h_source_lossless_y * curl_ey
-                        hz = hz_old - h_source_lossless_z * curl_ez
+                        hx, hy, hz = ops.fused_update_h_lossless_3d(
+                            ex, ey, ez, hx, hy, hz,
+                            h_source_lossless_x, h_source_lossless_y, h_source_lossless_z,
+                            resolution,
+                        )
                         if use_lossy_shell_hx:
-                            hx = self._apply_lossy_shell(
-                                updated=hx, old=hx_old, curl=curl_ex,
-                                decay=h_decay_x, source=-h_source_x, slabs=lossy_shell_hx,
+                            hx = self._apply_lossy_shell_from_lossless(
+                                updated_lossless=hx,
+                                old=hx_old,
+                                decay=h_decay_x,
+                                source=h_source_x,
+                                source_lossless=h_source_lossless_x,
+                                slabs=lossy_shell_hx,
                             )
                         if use_lossy_shell_hy:
-                            hy = self._apply_lossy_shell(
-                                updated=hy, old=hy_old, curl=curl_ey,
-                                decay=h_decay_y, source=-h_source_y, slabs=lossy_shell_hy,
+                            hy = self._apply_lossy_shell_from_lossless(
+                                updated_lossless=hy,
+                                old=hy_old,
+                                decay=h_decay_y,
+                                source=h_source_y,
+                                source_lossless=h_source_lossless_y,
+                                slabs=lossy_shell_hy,
                             )
                         if use_lossy_shell_hz:
-                            hz = self._apply_lossy_shell(
-                                updated=hz, old=hz_old, curl=curl_ez,
-                                decay=h_decay_z, source=-h_source_z, slabs=lossy_shell_hz,
+                            hz = self._apply_lossy_shell_from_lossless(
+                                updated_lossless=hz,
+                                old=hz_old,
+                                decay=h_decay_z,
+                                source=h_source_z,
+                                source_lossless=h_source_lossless_z,
+                                slabs=lossy_shell_hz,
                             )
                     else:
                         # Fused path: no intermediate curl arrays
@@ -620,29 +664,40 @@ class CompiledSimulation:
                 if is_3d:
                     any_e_shell = use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
                     if any_e_shell:
-                        # Shell path: need explicit curl for shell corrections
-                        curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_3d(
-                            hx, hy, hz, resolution,
-                            ex_shape=ex.shape, ey_shape=ey.shape, ez_shape=ez.shape,
-                        )
+                        # Shell path: lossless fused update, then lossy shell correction
+                        # without explicit curl arrays.
                         ex_old, ey_old, ez_old = ex, ey, ez
-                        ex = ex_old + e_source_lossless_x * curl_hx
-                        ey = ey_old + e_source_lossless_y * curl_hy
-                        ez = ez_old + e_source_lossless_z * curl_hz
+                        ex, ey, ez = ops.fused_update_e_lossless_3d(
+                            hx, hy, hz, ex, ey, ez,
+                            e_source_lossless_x, e_source_lossless_y, e_source_lossless_z,
+                            resolution,
+                        )
                         if use_lossy_shell_ex:
-                            ex = self._apply_lossy_shell(
-                                updated=ex, old=ex_old, curl=curl_hx,
-                                decay=e_decay_x, source=e_source_x, slabs=lossy_shell_ex,
+                            ex = self._apply_lossy_shell_from_lossless(
+                                updated_lossless=ex,
+                                old=ex_old,
+                                decay=e_decay_x,
+                                source=e_source_x,
+                                source_lossless=e_source_lossless_x,
+                                slabs=lossy_shell_ex,
                             )
                         if use_lossy_shell_ey:
-                            ey = self._apply_lossy_shell(
-                                updated=ey, old=ey_old, curl=curl_hy,
-                                decay=e_decay_y, source=e_source_y, slabs=lossy_shell_ey,
+                            ey = self._apply_lossy_shell_from_lossless(
+                                updated_lossless=ey,
+                                old=ey_old,
+                                decay=e_decay_y,
+                                source=e_source_y,
+                                source_lossless=e_source_lossless_y,
+                                slabs=lossy_shell_ey,
                             )
                         if use_lossy_shell_ez:
-                            ez = self._apply_lossy_shell(
-                                updated=ez, old=ez_old, curl=curl_hz,
-                                decay=e_decay_z, source=e_source_z, slabs=lossy_shell_ez,
+                            ez = self._apply_lossy_shell_from_lossless(
+                                updated_lossless=ez,
+                                old=ez_old,
+                                decay=e_decay_z,
+                                source=e_source_z,
+                                source_lossless=e_source_lossless_z,
+                                slabs=lossy_shell_ez,
                             )
                     else:
                         # Fused path: no intermediate curl arrays
