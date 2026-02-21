@@ -51,6 +51,44 @@ class BenchmarkConfig:
     saturation_factor: float
 
 
+def parse_modes(spec: str) -> tuple[str, ...]:
+    alias = {
+        "python": "python",
+        "legacy_python_step": "python",
+        "split": "split_jit",
+        "split_jit": "split_jit",
+        "split-jit": "split_jit",
+        "legacy_split_jit": "split_jit",
+        "compiled": "compiled",
+        "compiled_v3_scan": "compiled",
+    }
+    if not spec or spec.strip().lower() == "all":
+        return ("python", "split_jit", "compiled")
+
+    selected: set[str] = set()
+    for raw in spec.split(","):
+        token = raw.strip().lower()
+        if not token:
+            continue
+        if token == "all":
+            return ("python", "split_jit", "compiled")
+        mode = alias.get(token)
+        if mode is None:
+            raise ValueError(
+                f"Unknown mode '{raw}'. Valid modes: python, split_jit, compiled, all."
+            )
+        selected.add(mode)
+
+    order = ("python", "split_jit", "compiled")
+    return tuple(m for m in order if m in selected)
+
+
+def _safe_div(num: float, den: float) -> float:
+    if den <= 0 or (not np.isfinite(num)) or (not np.isfinite(den)):
+        return float("nan")
+    return num / den
+
+
 def _git_commit(repo_root: Path) -> str:
     try:
         return (
@@ -83,6 +121,7 @@ def _append_csv(
     compiled_runs_s: list[float],
     repeats: int,
     warmup_jit: bool,
+    modes: tuple[str, ...],
     hlo_stats: dict[str, int] | None = None,
 ):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +135,7 @@ def _append_csv(
         "steps",
         "repeats",
         "warmup_jit",
+        "modes",
         "ppw",
         "target_memory_gb",
         "saturation_factor",
@@ -148,6 +188,7 @@ def _append_csv(
         "steps": steps,
         "repeats": int(repeats),
         "warmup_jit": int(bool(warmup_jit)),
+        "modes": ";".join(modes),
         "ppw": cfg.points_per_wavelength,
         "target_memory_gb": cfg.memory_gb,
         "saturation_factor": cfg.saturation_factor,
@@ -155,14 +196,14 @@ def _append_csv(
         "legacy_python_step_s": t_py,
         "legacy_split_jit_s": t_split,
         "compiled_v3_scan_s": t_compiled,
-        "legacy_python_step_s_per_step": t_py / steps,
-        "legacy_split_jit_s_per_step": t_split / steps,
-        "compiled_v3_scan_s_per_step": t_compiled / steps,
+        "legacy_python_step_s_per_step": _safe_div(t_py, steps),
+        "legacy_split_jit_s_per_step": _safe_div(t_split, steps),
+        "compiled_v3_scan_s_per_step": _safe_div(t_compiled, steps),
         "legacy_python_step_tcups": tcups_py,
         "legacy_split_jit_tcups": tcups_split,
         "compiled_v3_scan_tcups": tcups_compiled,
-        "compiled_vs_python_speedup_x": t_py / t_compiled,
-        "compiled_vs_split_jit_speedup_x": t_split / t_compiled,
+        "compiled_vs_python_speedup_x": _safe_div(t_py, t_compiled),
+        "compiled_vs_split_jit_speedup_x": _safe_div(t_split, t_compiled),
         "legacy_python_step_runs_s": ";".join(f"{x:.9f}" for x in py_runs_s),
         "legacy_split_jit_runs_s": ";".join(f"{x:.9f}" for x in split_runs_s),
         "compiled_v3_scan_runs_s": ";".join(f"{x:.9f}" for x in compiled_runs_s),
@@ -263,6 +304,8 @@ def make_simulation(cfg: BenchmarkConfig) -> tuple[Simulation, int]:
 
 
 def _tcups(sim: Simulation, steps: int, elapsed_s: float) -> float:
+    if elapsed_s <= 0 or not np.isfinite(elapsed_s):
+        return float("nan")
     voxels = int(np.prod(sim.fields.permittivity.shape))
     updates = 6 * voxels * steps
     return updates / elapsed_s / 1e12
@@ -446,7 +489,16 @@ def main():
         default=True,
         help="Run one unmeasured warmup pass for split-jit and compiled modes.",
     )
+    parser.add_argument(
+        "--modes",
+        type=str,
+        default="python,split_jit,compiled",
+        help="Comma-separated benchmark modes: python, split_jit, compiled (or all).",
+    )
     args = parser.parse_args()
+    modes = parse_modes(args.modes)
+    if not modes:
+        raise ValueError("No benchmark modes selected. Choose at least one mode.")
 
     grid_n = args.grid_n or choose_grid_n(args.memory_gb, args.saturation_factor)
     cfg = BenchmarkConfig(
@@ -465,48 +517,68 @@ def main():
     print(f"steps={cfg.steps}")
     print(f"repeats={max(1, int(args.repeats))}")
     print(f"warmup_jit={bool(args.warmup_jit)}")
+    print(f"modes={','.join(modes)}")
 
     sim_base, steps = make_simulation(cfg)
     repeats = max(1, int(args.repeats))
 
-    t_py, py_runs = run_repeated(
-        sim_base, steps, repeats, run_legacy_python_step, warmup=False
+    t_py, py_runs = float("nan"), []
+    t_split, split_runs = float("nan"), []
+    t_compiled, compiled_runs = float("nan"), []
+    if "python" in modes:
+        t_py, py_runs = run_repeated(
+            sim_base, steps, repeats, run_legacy_python_step, warmup=False
+        )
+    if "split_jit" in modes:
+        t_split, split_runs = run_repeated(
+            sim_base,
+            steps,
+            repeats,
+            run_legacy_split_jit,
+            warmup=bool(args.warmup_jit),
+        )
+    if "compiled" in modes:
+        t_compiled, compiled_runs = run_repeated(
+            sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
+        )
+    hlo_stats = (
+        compiled_hlo_stats(copy.deepcopy(sim_base), steps)
+        if args.hlo_stats and ("compiled" in modes)
+        else None
     )
-    t_split, split_runs = run_repeated(
-        sim_base,
-        steps,
-        repeats,
-        run_legacy_split_jit,
-        warmup=bool(args.warmup_jit),
-    )
-    t_compiled, compiled_runs = run_repeated(
-        sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
-    )
-    hlo_stats = compiled_hlo_stats(copy.deepcopy(sim_base), steps) if args.hlo_stats else None
 
     tcups_py = _tcups(sim_base, steps, t_py)
     tcups_split = _tcups(sim_base, steps, t_split)
     tcups_compiled = _tcups(sim_base, steps, t_compiled)
 
     print("\nResults")
-    print(
-        f"legacy_python_step (median): {t_py:.6f}s, {t_py/steps:.6e}s/step, {tcups_py:.6e} TCUPS"
-    )
-    print(
-        f"legacy_split_jit   (median): {t_split:.6f}s, {t_split/steps:.6e}s/step, {tcups_split:.6e} TCUPS"
-    )
-    print(
-        f"compiled_v3_scan   (median): {t_compiled:.6f}s, {t_compiled/steps:.6e}s/step, {tcups_compiled:.6e} TCUPS"
-    )
+    if "python" in modes:
+        print(
+            f"legacy_python_step (median): {t_py:.6f}s, {_safe_div(t_py, steps):.6e}s/step, {tcups_py:.6e} TCUPS"
+        )
+    if "split_jit" in modes:
+        print(
+            f"legacy_split_jit   (median): {t_split:.6f}s, {_safe_div(t_split, steps):.6e}s/step, {tcups_split:.6e} TCUPS"
+        )
+    if "compiled" in modes:
+        print(
+            f"compiled_v3_scan   (median): {t_compiled:.6f}s, {_safe_div(t_compiled, steps):.6e}s/step, {tcups_compiled:.6e} TCUPS"
+        )
     if repeats > 1:
         print("\nPer-Run Times (s)")
-        print(f"legacy_python_step: {[round(x, 6) for x in py_runs]}")
-        print(f"legacy_split_jit:   {[round(x, 6) for x in split_runs]}")
-        print(f"compiled_v3_scan:   {[round(x, 6) for x in compiled_runs]}")
+        if "python" in modes:
+            print(f"legacy_python_step: {[round(x, 6) for x in py_runs]}")
+        if "split_jit" in modes:
+            print(f"legacy_split_jit:   {[round(x, 6) for x in split_runs]}")
+        if "compiled" in modes:
+            print(f"compiled_v3_scan:   {[round(x, 6) for x in compiled_runs]}")
 
-    print("\nSpeedups")
-    print(f"compiled / legacy_python_step: {t_py / t_compiled:.2f}x")
-    print(f"compiled / legacy_split_jit:   {t_split / t_compiled:.2f}x")
+    if "compiled" in modes and (("python" in modes) or ("split_jit" in modes)):
+        print("\nSpeedups")
+        if "python" in modes:
+            print(f"compiled / legacy_python_step: {_safe_div(t_py, t_compiled):.2f}x")
+        if "split_jit" in modes:
+            print(f"compiled / legacy_split_jit:   {_safe_div(t_split, t_compiled):.2f}x")
     if hlo_stats is not None:
         print("\nCompiled HLO Stats")
         print(
@@ -540,6 +612,7 @@ def main():
         compiled_runs_s=compiled_runs,
         repeats=repeats,
         warmup_jit=bool(args.warmup_jit),
+        modes=modes,
         hlo_stats=hlo_stats,
     )
     print(f"\nCSV appended: {csv_path}")
