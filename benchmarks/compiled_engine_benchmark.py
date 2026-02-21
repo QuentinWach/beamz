@@ -37,6 +37,8 @@ from beamz import (
     Design,
     GaussianSource,
     Material,
+    ModeSource,
+    Rectangle,
     Simulation,
     calc_optimal_fdtd_params,
     ramped_cosine,
@@ -57,6 +59,7 @@ class BenchmarkConfig:
     resolution_nm: float | None = None
     courant_factor: float | None = None
     sim_time_fs: float | None = None
+    scenario: str = "gaussian_box"
 
 
 def parse_modes(spec: str) -> tuple[str, ...]:
@@ -161,6 +164,7 @@ def _append_csv(
     csv_path: Path,
     cfg: BenchmarkConfig,
     steps: int,
+    scenario: str,
     resolution_nm_used: float,
     courant_factor_used: float,
     sim_time_fs_used: float,
@@ -191,6 +195,7 @@ def _append_csv(
         "platform",
         "python_version",
         "git_commit",
+        "scenario",
         "grid_n",
         "grid_nx",
         "grid_ny",
@@ -258,6 +263,7 @@ def _append_csv(
         "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
         "python_version": platform.python_version(),
         "git_commit": _git_commit(repo_root),
+        "scenario": scenario,
         "grid_n": cfg.grid_nx if (cfg.grid_nx == cfg.grid_ny == cfg.grid_nz) else "",
         "grid_nx": cfg.grid_nx,
         "grid_ny": cfg.grid_ny,
@@ -410,11 +416,80 @@ def make_simulation(
         t_max=t_arr[-1] * 0.5,
     )
 
-    source = GaussianSource(
-        position=(0.35 * width, 0.5 * height, 0.5 * depth),
-        width=wl_eff / 6,
-        signal=signal,
-    )
+    if cfg.scenario == "fdtdx_coupler":
+        # Silicon-on-silica corner/coupler-style setup inspired by FDTDx examples.
+        eps_sio2 = 1.45**2
+        eps_si = 3.5**2
+        h_sub = min(0.5 * um, depth * 0.45)
+        h_si = min(0.4 * um, max(depth - h_sub - 2 * dx, 0.1 * um))
+        z_si = h_sub
+
+        # Substrate
+        design += Rectangle(
+            position=(0.0, 0.0, 0.0),
+            width=width,
+            height=height,
+            depth=h_sub,
+            material=Material(permittivity=eps_sio2),
+        )
+
+        # Waveguides + coupling region
+        wg_w = min(0.4 * um, 0.12 * min(width, height))
+        y_mid = 0.5 * height
+        x_corner = 0.56 * width
+        y_corner = 0.56 * height
+        coupling_w = min(1.6 * um, 0.35 * width)
+        coupling_h = min(1.6 * um, 0.45 * height)
+
+        # Input waveguide along +x
+        design += Rectangle(
+            position=(0.0, y_mid - 0.5 * wg_w, z_si),
+            width=min(x_corner + 0.5 * coupling_w, width),
+            height=wg_w,
+            depth=h_si,
+            material=Material(permittivity=eps_si),
+        )
+
+        # Output waveguide along -y (turning corner)
+        design += Rectangle(
+            position=(x_corner - 0.5 * wg_w, 0.0, z_si),
+            width=wg_w,
+            height=min(y_corner + 0.5 * coupling_h, height),
+            depth=h_si,
+            material=Material(permittivity=eps_si),
+        )
+
+        # Coupling block (acts as silicon coupling element proxy)
+        design += Rectangle(
+            position=(
+                max(0.0, x_corner - 0.5 * coupling_w),
+                max(0.0, y_corner - 0.5 * coupling_h),
+                z_si,
+            ),
+            width=min(coupling_w, width),
+            height=min(coupling_h, height),
+            depth=h_si,
+            material=Material(permittivity=eps_si),
+        )
+
+        # Mode source on input arm.
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=(0.16 * width, y_mid, z_si + 0.5 * h_si),
+            width=min(1.2 * um, 0.35 * height),
+            height=min(1.2 * um, 0.8 * depth),
+            wavelength=1.55 * um,
+            pol="tm",
+            signal=signal,
+            direction="+x",
+        )
+    else:
+        source = GaussianSource(
+            position=(0.35 * width, 0.5 * height, 0.5 * depth),
+            width=wl_eff / 6,
+            signal=signal,
+        )
 
     # Keep PML proportional to physical domain size to avoid degenerate cases.
     pml_thickness = max(4 * dx, 0.08 * min(width, height, depth))
@@ -721,6 +796,13 @@ def main():
         help="Explicit Courant factor for dt = courant * dx / (c*sqrt(3)).",
     )
     parser.add_argument(
+        "--scenario",
+        type=str,
+        default="gaussian_box",
+        choices=("gaussian_box", "fdtdx_coupler"),
+        help="Benchmark scenario: simple Gaussian box or silicon coupler-style setup.",
+    )
+    parser.add_argument(
         "--csv",
         type=str,
         default="benchmarks/results/compiled_3d_results.csv",
@@ -853,6 +935,7 @@ def main():
         resolution_nm=args.resolution_nm,
         courant_factor=args.courant_factor,
         sim_time_fs=args.sim_time_fs,
+        scenario=args.scenario,
     )
 
     print("3D FDTD benchmark")
@@ -872,6 +955,7 @@ def main():
     print(f"repeats={max(1, int(args.repeats))}")
     print(f"warmup_jit={bool(args.warmup_jit)}")
     print(f"modes={','.join(modes)}")
+    print(f"scenario={cfg.scenario}")
     print(f"compiled_loop_kind={compiled_loop_kind}")
     print(f"e_shell_split={e_shell_split}")
     print(f"h_shell_split={h_shell_split}")
@@ -1011,6 +1095,7 @@ def main():
         csv_path=csv_path,
         cfg=cfg,
         steps=steps,
+        scenario=cfg.scenario,
         resolution_nm_used=dx_used * 1e9,
         courant_factor_used=courant_used,
         sim_time_fs_used=sim_time_fs_used,
