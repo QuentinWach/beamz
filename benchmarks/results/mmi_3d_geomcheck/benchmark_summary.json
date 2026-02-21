@@ -1,0 +1,91 @@
+{
+  "domain_um": [
+    20.0,
+    10.0,
+    1.5
+  ],
+  "resolution_nm": 100.0,
+  "courant_factor": 0.99,
+  "sim_time_fs": 206.80973902285427,
+  "resolved_steps": 1084,
+  "elapsed_s": 2.641056959051639,
+  "s_per_step": 0.002436399408719224,
+  "tcups": 0.0007387951226544712,
+  "grid_shape": [
+    15,
+    100,
+    200
+  ],
+  "output_dir": "benchmarks/results/mmi_3d_geomcheck",
+  "mode_export": {
+    "png": "benchmarks/results/mmi_3d_geomcheck/mode_fields.png",
+    "npz": "benchmarks/results/mmi_3d_geomcheck/mode_fields.npz",
+    "json": "benchmarks/results/mmi_3d_geomcheck/mode_fields.json",
+    "direction": "+x",
+    "pol": "tm",
+    "neff_real": 1.4567493146755541,
+    "neff_imag": 0.0,
+    "impedance_neff": 1.6672825066753862,
+    "components": {
+      "Ex": {
+        "shape": [
+          8,
+          20
+        ],
+        "l2_norm": 0.0,
+        "max_abs": 0.0
+      },
+      "Ey": {
+        "shape": [
+          8,
+          20
+        ],
+        "l2_norm": 31.561691284179688,
+        "max_abs": 9.394283294677734
+      },
+      "Ez": {
+        "shape": [
+          8,
+          20
+        ],
+        "l2_norm": 247.5855255126953,
+        "max_abs": 44.789676666259766
+      },
+      "Hx": {
+        "shape": [
+          8,
+          20
+        ],
+        "l2_norm": 0.0,
+        "max_abs": 0.0
+      },
+      "Hy": {
+        "shape": [
+          8,
+          20
+        ],
+        "l2_norm": 1.095616102218628,
+        "max_abs": 0.2258598506450653
+      },
+      "Hz": {
+        "shape": [
+          8,
+          20
+        ],
+        "l2_norm": 0.04997936636209488,
+        "max_abs": 0.014833510853350163
+      }
+    }
+  },
+  "mid_snapshot": {
+    "png": "benchmarks/results/mmi_3d_geomcheck/ez_snapshot_mid_step_542.png",
+    "npz": "benchmarks/results/mmi_3d_geomcheck/ez_snapshot_mid_step_542.npz",
+    "step": 542,
+    "time_fs": 103.33612221122279
+  },
+  "flux_export": {
+    "png": "benchmarks/results/mmi_3d_geomcheck/flux_cumulative_normalized.png",
+    "csv": "benchmarks/results/mmi_3d_geomcheck/flux_time_series.csv",
+    "npz": "benchmarks/results/mmi_3d_geomcheck/flux_time_series.npz"
+  }
+}

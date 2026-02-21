@@ -297,24 +297,17 @@ def _compile_mode_source(
     )
 
     dt_physical = float(getattr(device, "_dt_physical", 0.0))
-    if is_3d:
-        e_waveform = _sample_waveform(
-            device._get_signal_value,
-            t0=t0,
-            dt=dt,
-            num_steps=num_steps,
-            offset_fn=lambda t, dt_: t + dt_ + dt_physical,
-            total_steps=total_steps,
-        )
-    else:
-        e_waveform = _sample_waveform(
-            device._get_signal_value,
-            t0=t0,
-            dt=dt,
-            num_steps=num_steps,
-            offset_fn=lambda t, dt_: t + 0.5 * dt_ + dt_physical,
-            total_steps=total_steps,
-        )
+    # E injection is applied after the E update within each Yee step; use the
+    # same half-step base time as H plus physical plane delay to keep the 3D
+    # Huygens pair phase-consistent with the 2D implementation.
+    e_waveform = _sample_waveform(
+        device._get_signal_value,
+        t0=t0,
+        dt=dt,
+        num_steps=num_steps,
+        offset_fn=lambda t, dt_: t + 0.5 * dt_ + dt_physical,
+        total_steps=total_steps,
+    )
 
     if is_3d:
         return _compile_mode_source_3d(

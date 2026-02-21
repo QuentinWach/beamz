@@ -111,9 +111,9 @@ def compute_mode_polarization_fraction(
         # - TM: dominant orthogonal transverse E component.
         #
         # For +x propagation this maps to TE~Ey and TM~Ez.
-        numerator = np.sum(np.abs(E2) ** 2)
-    elif pol == "tm":
         numerator = np.sum(np.abs(E1) ** 2)
+    elif pol == "tm":
+        numerator = np.sum(np.abs(E2) ** 2)
     else:
         raise ValueError(f"pol must be 'te' or 'tm', but got {pol}")
 
@@ -210,7 +210,11 @@ def compute_mode(
     else:
         permeability_squeezed = 1 / inv_permeabilities.item()
 
-    tangential_axes_map = {0: (1, 2), 1: (0, 2), 2: (0, 1)}
+    # The mode solver returns fields in a local basis where the first two E
+    # components correspond to the tangential pair used for TE/TM filtering.
+    # Keep TE/TM ranking consistent with the global conventions used by
+    # ModeSource setup (e.g. +x: TE~Ey/Hz, TM~Ez/Hy).
+    tangential_axes_map = {0: (0, 1), 1: (0, 1), 2: (0, 1)}
 
     modes = tidy3d_mode_computation_wrapper(
         frequency=frequency,

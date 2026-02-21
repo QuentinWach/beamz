@@ -281,11 +281,19 @@ def _impedance_match_3d_tangential_pairs(
     for e_name, h_name in pair_map[axis]:
         e_field = e_map[e_name]
         h_field = h_map[h_name]
-        num = mod.sum(e_field * mod.conj(h_field))
-        den = mod.sum(mod.abs(h_field) ** 2) + eps
-        ratio = float(mod.abs(num / den))
-        if ratio > eps:
-            e_map[e_name] = e_field * (float(abs(Z_target)) / ratio)
+        # Use an L2 norm ratio (||E||/||H||), which is far more stable than
+        # complex cross-correlation for near-orthogonal/degenerate fields.
+        # This keeps source scaling finite and avoids pathological blow-ups.
+        e_norm = mod.sqrt(mod.sum(mod.abs(e_field) ** 2) + eps)
+        h_norm = mod.sqrt(mod.sum(mod.abs(h_field) ** 2) + eps)
+        ratio = float(e_norm / (h_norm + eps))
+        if not np.isfinite(ratio) or ratio <= eps:
+            continue
+        z_abs = float(abs(Z_target))
+        scale = z_abs / ratio
+        max_scale = max(10.0, 4.0 * z_abs)
+        scale = float(np.clip(scale, 1.0 / max_scale, max_scale))
+        e_map[e_name] = e_field * scale
     return (
         e_map["Ex"],
         e_map["Ey"],
@@ -541,6 +549,7 @@ def _build_3d_x(
         y_end,
         dir_sign,
         use_jax=True,
+        alpha=0.0,
     )
 
     extra = {
@@ -643,6 +652,7 @@ def _build_3d_y(
         x_end,
         dir_sign,
         use_jax=False,
+        alpha=0.0,
     )
 
     extra = {
@@ -749,6 +759,7 @@ def _build_3d_z(
         x_end,
         dir_sign,
         use_jax=True,
+        alpha=0.0,
     )
 
     extra = {
@@ -762,7 +773,16 @@ def _build_3d_z(
     return profiles, indices, extra
 
 
-def _crop_and_window_all(staggered, z_start, z_end, t_start, t_end, dir_sign, use_jax):
+def _crop_and_window_all(
+    staggered,
+    z_start,
+    z_end,
+    t_start,
+    t_end,
+    dir_sign,
+    use_jax,
+    alpha=0.3,
+):
     """Crop all six staggered profiles and multiply by a 2D Tukey window."""
     ref = next(iter(staggered.values()))
     pz_end = min(z_end, ref.shape[0])
@@ -770,7 +790,7 @@ def _crop_and_window_all(staggered, z_start, z_end, t_start, t_end, dir_sign, us
     h_cells = pz_end - z_start
     w_cells = pt_end - t_start
 
-    window = _make_tukey_window_2d(h_cells, w_cells, alpha=0.3, use_jax=use_jax)
+    window = _make_tukey_window_2d(h_cells, w_cells, alpha=alpha, use_jax=use_jax)
 
     profiles = {}
     for name, field in staggered.items():
