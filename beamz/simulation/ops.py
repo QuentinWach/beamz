@@ -369,6 +369,72 @@ def curl_h_to_e_3d(hx, hy, hz, resolution, ex_shape=None, ey_shape=None, ez_shap
     return (curl_hx, curl_hy, curl_hz)
 
 
+def fused_update_h_lossless_3d(ex, ey, ez, hx, hy, hz,
+                                h_src_ll_x, h_src_ll_y, h_src_ll_z, resolution):
+    """H_new = H_old - source_lossless * curl_E (no intermediate curl arrays)."""
+    inv_res = 1.0 / resolution
+    hx = hx - h_src_ll_x * ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])) * inv_res
+    hy = hy - h_src_ll_y * ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])) * inv_res
+    hz = hz - h_src_ll_z * ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])) * inv_res
+    return hx, hy, hz
+
+
+def fused_update_h_lossy_3d(ex, ey, ez, hx, hy, hz,
+                             h_decay_x, h_src_x, h_decay_y, h_src_y,
+                             h_decay_z, h_src_z, resolution):
+    """H_new = decay * H_old - source * curl_E (no intermediate curl arrays)."""
+    inv_res = 1.0 / resolution
+    curl_ex = ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])) * inv_res
+    hx = h_decay_x * hx - h_src_x * curl_ex
+    curl_ey = ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])) * inv_res
+    hy = h_decay_y * hy - h_src_y * curl_ey
+    curl_ez = ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])) * inv_res
+    hz = h_decay_z * hz - h_src_z * curl_ez
+    return hx, hy, hz
+
+
+def fused_update_e_lossless_3d(hx, hy, hz, ex, ey, ez,
+                                e_src_ll_x, e_src_ll_y, e_src_ll_z, resolution):
+    """E_new = E_old + source_lossless * curl_H (inline pad, no named curl arrays)."""
+    inv_res = 1.0 / resolution
+    ex = ex + e_src_ll_x * (
+        jnp.pad((hz[:, 1:, :] - hz[:, :-1, :]) * inv_res, ((0, 0), (1, 1), (0, 0)))
+        - jnp.pad((hy[1:, :, :] - hy[:-1, :, :]) * inv_res, ((1, 1), (0, 0), (0, 0)))
+    )
+    ey = ey + e_src_ll_y * (
+        jnp.pad((hx[1:, :, :] - hx[:-1, :, :]) * inv_res, ((1, 1), (0, 0), (0, 0)))
+        - jnp.pad((hz[:, :, 1:] - hz[:, :, :-1]) * inv_res, ((0, 0), (0, 0), (1, 1)))
+    )
+    ez = ez + e_src_ll_z * (
+        jnp.pad((hy[:, :, 1:] - hy[:, :, :-1]) * inv_res, ((0, 0), (0, 0), (1, 1)))
+        - jnp.pad((hx[:, 1:, :] - hx[:, :-1, :]) * inv_res, ((0, 0), (1, 1), (0, 0)))
+    )
+    return ex, ey, ez
+
+
+def fused_update_e_lossy_3d(hx, hy, hz, ex, ey, ez,
+                             e_decay_x, e_src_x, e_decay_y, e_src_y,
+                             e_decay_z, e_src_z, resolution):
+    """E_new = decay * E_old + source * curl_H (inline pad, no named curl arrays)."""
+    inv_res = 1.0 / resolution
+    curl_hx = (
+        jnp.pad((hz[:, 1:, :] - hz[:, :-1, :]) * inv_res, ((0, 0), (1, 1), (0, 0)))
+        - jnp.pad((hy[1:, :, :] - hy[:-1, :, :]) * inv_res, ((1, 1), (0, 0), (0, 0)))
+    )
+    ex = e_decay_x * ex + e_src_x * curl_hx
+    curl_hy = (
+        jnp.pad((hx[1:, :, :] - hx[:-1, :, :]) * inv_res, ((1, 1), (0, 0), (0, 0)))
+        - jnp.pad((hz[:, :, 1:] - hz[:, :, :-1]) * inv_res, ((0, 0), (0, 0), (1, 1)))
+    )
+    ey = e_decay_y * ey + e_src_y * curl_hy
+    curl_hz = (
+        jnp.pad((hy[:, :, 1:] - hy[:, :, :-1]) * inv_res, ((0, 0), (0, 0), (1, 1)))
+        - jnp.pad((hx[:, 1:, :] - hx[:, :-1, :]) * inv_res, ((0, 0), (1, 1), (0, 0)))
+    )
+    ez = e_decay_z * ez + e_src_z * curl_hz
+    return ex, ey, ez
+
+
 def magnetic_conductivity_terms_3d(
     conductivity, permeability, hx_shape, hy_shape, hz_shape
 ):

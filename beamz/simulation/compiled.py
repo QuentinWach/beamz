@@ -367,7 +367,36 @@ class CompiledSimulation:
                 ez = self._apply_specs(ez, abs_step, pre_e_ez)
 
                 if is_3d:
-                    curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_3d(ex, ey, ez, resolution)
+                    any_h_shell = use_lossy_shell_hx or use_lossy_shell_hy or use_lossy_shell_hz
+                    if any_h_shell:
+                        # Shell path: need explicit curl for shell corrections
+                        curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_3d(ex, ey, ez, resolution)
+                        hx_old, hy_old, hz_old = hx, hy, hz
+                        hx = hx_old - h_source_lossless_x * curl_ex
+                        hy = hy_old - h_source_lossless_y * curl_ey
+                        hz = hz_old - h_source_lossless_z * curl_ez
+                        if use_lossy_shell_hx:
+                            hx = self._apply_lossy_shell(
+                                updated=hx, old=hx_old, curl=curl_ex,
+                                decay=h_decay_x, source=-h_source_x, slabs=lossy_shell_hx,
+                            )
+                        if use_lossy_shell_hy:
+                            hy = self._apply_lossy_shell(
+                                updated=hy, old=hy_old, curl=curl_ey,
+                                decay=h_decay_y, source=-h_source_y, slabs=lossy_shell_hy,
+                            )
+                        if use_lossy_shell_hz:
+                            hz = self._apply_lossy_shell(
+                                updated=hz, old=hz_old, curl=curl_ez,
+                                decay=h_decay_z, source=-h_source_z, slabs=lossy_shell_hz,
+                            )
+                    else:
+                        # Fused path: no intermediate curl arrays
+                        hx, hy, hz = ops.fused_update_h_lossy_3d(
+                            ex, ey, ez, hx, hy, hz,
+                            h_decay_x, h_source_x, h_decay_y, h_source_y,
+                            h_decay_z, h_source_z, resolution,
+                        )
                 else:
                     curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_2d(
                         (ex, ey, ez),
@@ -375,61 +404,73 @@ class CompiledSimulation:
                         plane=plane_2d,
                     )
 
-                hx_old, hy_old, hz_old = hx, hy, hz
+                    hx_old, hy_old, hz_old = hx, hy, hz
 
-                if use_lossy_shell_hx:
-                    hx = hx_old - h_source_lossless_x * curl_ex
-                    hx = self._apply_lossy_shell(
-                        updated=hx,
-                        old=hx_old,
-                        curl=curl_ex,
-                        decay=h_decay_x,
-                        source=-h_source_x,
-                        slabs=lossy_shell_hx,
-                    )
-                else:
-                    hx = h_decay_x * hx_old - h_source_x * curl_ex
+                    if use_lossy_shell_hx:
+                        hx = hx_old - h_source_lossless_x * curl_ex
+                        hx = self._apply_lossy_shell(
+                            updated=hx, old=hx_old, curl=curl_ex,
+                            decay=h_decay_x, source=-h_source_x, slabs=lossy_shell_hx,
+                        )
+                    else:
+                        hx = h_decay_x * hx_old - h_source_x * curl_ex
 
-                if use_lossy_shell_hy:
-                    hy = hy_old - h_source_lossless_y * curl_ey
-                    hy = self._apply_lossy_shell(
-                        updated=hy,
-                        old=hy_old,
-                        curl=curl_ey,
-                        decay=h_decay_y,
-                        source=-h_source_y,
-                        slabs=lossy_shell_hy,
-                    )
-                else:
-                    hy = h_decay_y * hy_old - h_source_y * curl_ey
+                    if use_lossy_shell_hy:
+                        hy = hy_old - h_source_lossless_y * curl_ey
+                        hy = self._apply_lossy_shell(
+                            updated=hy, old=hy_old, curl=curl_ey,
+                            decay=h_decay_y, source=-h_source_y, slabs=lossy_shell_hy,
+                        )
+                    else:
+                        hy = h_decay_y * hy_old - h_source_y * curl_ey
 
-                if use_lossy_shell_hz:
-                    hz = hz_old - h_source_lossless_z * curl_ez
-                    hz = self._apply_lossy_shell(
-                        updated=hz,
-                        old=hz_old,
-                        curl=curl_ez,
-                        decay=h_decay_z,
-                        source=-h_source_z,
-                        slabs=lossy_shell_hz,
-                    )
-                else:
-                    hz = h_decay_z * hz_old - h_source_z * curl_ez
+                    if use_lossy_shell_hz:
+                        hz = hz_old - h_source_lossless_z * curl_ez
+                        hz = self._apply_lossy_shell(
+                            updated=hz, old=hz_old, curl=curl_ez,
+                            decay=h_decay_z, source=-h_source_z, slabs=lossy_shell_hz,
+                        )
+                    else:
+                        hz = h_decay_z * hz_old - h_source_z * curl_ez
 
                 hx = self._apply_specs(hx, abs_step, h_specs_x)
                 hy = self._apply_specs(hy, abs_step, h_specs_y)
                 hz = self._apply_specs(hz, abs_step, h_specs_z)
 
                 if is_3d:
-                    curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_3d(
-                        hx,
-                        hy,
-                        hz,
-                        resolution,
-                        ex_shape=ex.shape,
-                        ey_shape=ey.shape,
-                        ez_shape=ez.shape,
-                    )
+                    any_e_shell = use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
+                    if any_e_shell:
+                        # Shell path: need explicit curl for shell corrections
+                        curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_3d(
+                            hx, hy, hz, resolution,
+                            ex_shape=ex.shape, ey_shape=ey.shape, ez_shape=ez.shape,
+                        )
+                        ex_old, ey_old, ez_old = ex, ey, ez
+                        ex = ex_old + e_source_lossless_x * curl_hx
+                        ey = ey_old + e_source_lossless_y * curl_hy
+                        ez = ez_old + e_source_lossless_z * curl_hz
+                        if use_lossy_shell_ex:
+                            ex = self._apply_lossy_shell(
+                                updated=ex, old=ex_old, curl=curl_hx,
+                                decay=e_decay_x, source=e_source_x, slabs=lossy_shell_ex,
+                            )
+                        if use_lossy_shell_ey:
+                            ey = self._apply_lossy_shell(
+                                updated=ey, old=ey_old, curl=curl_hy,
+                                decay=e_decay_y, source=e_source_y, slabs=lossy_shell_ey,
+                            )
+                        if use_lossy_shell_ez:
+                            ez = self._apply_lossy_shell(
+                                updated=ez, old=ez_old, curl=curl_hz,
+                                decay=e_decay_z, source=e_source_z, slabs=lossy_shell_ez,
+                            )
+                    else:
+                        # Fused path: no intermediate curl arrays
+                        ex, ey, ez = ops.fused_update_e_lossy_3d(
+                            hx, hy, hz, ex, ey, ez,
+                            e_decay_x, e_source_x, e_decay_y, e_source_y,
+                            e_decay_z, e_source_z, resolution,
+                        )
                 else:
                     curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_2d(
                         (hx, hy, hz),
@@ -438,46 +479,34 @@ class CompiledSimulation:
                         plane=plane_2d,
                     )
 
-                ex_old, ey_old, ez_old = ex, ey, ez
+                    ex_old, ey_old, ez_old = ex, ey, ez
 
-                if use_lossy_shell_ex:
-                    ex = ex_old + e_source_lossless_x * curl_hx
-                    ex = self._apply_lossy_shell(
-                        updated=ex,
-                        old=ex_old,
-                        curl=curl_hx,
-                        decay=e_decay_x,
-                        source=e_source_x,
-                        slabs=lossy_shell_ex,
-                    )
-                else:
-                    ex = e_decay_x * ex_old + e_source_x * curl_hx
+                    if use_lossy_shell_ex:
+                        ex = ex_old + e_source_lossless_x * curl_hx
+                        ex = self._apply_lossy_shell(
+                            updated=ex, old=ex_old, curl=curl_hx,
+                            decay=e_decay_x, source=e_source_x, slabs=lossy_shell_ex,
+                        )
+                    else:
+                        ex = e_decay_x * ex_old + e_source_x * curl_hx
 
-                if use_lossy_shell_ey:
-                    ey = ey_old + e_source_lossless_y * curl_hy
-                    ey = self._apply_lossy_shell(
-                        updated=ey,
-                        old=ey_old,
-                        curl=curl_hy,
-                        decay=e_decay_y,
-                        source=e_source_y,
-                        slabs=lossy_shell_ey,
-                    )
-                else:
-                    ey = e_decay_y * ey_old + e_source_y * curl_hy
+                    if use_lossy_shell_ey:
+                        ey = ey_old + e_source_lossless_y * curl_hy
+                        ey = self._apply_lossy_shell(
+                            updated=ey, old=ey_old, curl=curl_hy,
+                            decay=e_decay_y, source=e_source_y, slabs=lossy_shell_ey,
+                        )
+                    else:
+                        ey = e_decay_y * ey_old + e_source_y * curl_hy
 
-                if use_lossy_shell_ez:
-                    ez = ez_old + e_source_lossless_z * curl_hz
-                    ez = self._apply_lossy_shell(
-                        updated=ez,
-                        old=ez_old,
-                        curl=curl_hz,
-                        decay=e_decay_z,
-                        source=e_source_z,
-                        slabs=lossy_shell_ez,
-                    )
-                else:
-                    ez = e_decay_z * ez_old + e_source_z * curl_hz
+                    if use_lossy_shell_ez:
+                        ez = ez_old + e_source_lossless_z * curl_hz
+                        ez = self._apply_lossy_shell(
+                            updated=ez, old=ez_old, curl=curl_hz,
+                            decay=e_decay_z, source=e_source_z, slabs=lossy_shell_ez,
+                        )
+                    else:
+                        ez = e_decay_z * ez_old + e_source_z * curl_hz
 
                 ex = self._apply_specs(ex, abs_step, e_specs_x)
                 ey = self._apply_specs(ey, abs_step, e_specs_y)
