@@ -14,6 +14,57 @@ from beamz.devices.sources.mode import ModeSource, _get_3d_huygens_terms
 
 
 @dataclass(frozen=True)
+class BatchedSlabGroup:
+    """Stacked slab sources for a single (timing, component) group.
+
+    Enables fori_loop-based application that keeps HLO size constant
+    regardless of source count.
+    """
+
+    waveforms: jnp.ndarray  # (n, total_steps)
+    coeffs: jnp.ndarray  # (n, *max_sizes)
+    starts: jnp.ndarray  # (n, ndim) int32
+    max_sizes: tuple[int, ...]  # static — used for dynamic_slice
+    n: int  # static — number of specs
+
+
+def batch_slab_specs(
+    specs: tuple[CompiledSourceSpec, ...],
+) -> tuple[BatchedSlabGroup | None, tuple[CompiledSourceSpec, ...]]:
+    """Split specs into a batched slab group and remaining non-slab specs."""
+    slab = [
+        s
+        for s in specs
+        if s.is_slab and s.slab_starts is not None and s.slab_sizes is not None
+    ]
+    rest = tuple(
+        s
+        for s in specs
+        if not (s.is_slab and s.slab_starts is not None and s.slab_sizes is not None)
+    )
+    if not slab:
+        return None, specs
+    ndim = len(slab[0].slab_sizes)
+    max_sizes = tuple(max(s.slab_sizes[d] for s in slab) for d in range(ndim))
+    padded = []
+    for s in slab:
+        pad_width = tuple((0, max_sizes[d] - s.slab_sizes[d]) for d in range(ndim))
+        padded.append(jnp.pad(s.coeff, pad_width))
+    return (
+        BatchedSlabGroup(
+            waveforms=jnp.stack([s.waveform for s in slab]),
+            coeffs=jnp.stack(padded),
+            starts=jnp.array(
+                [list(s.slab_starts) for s in slab], dtype=jnp.int32
+            ),
+            max_sizes=max_sizes,
+            n=len(slab),
+        ),
+        rest,
+    )
+
+
+@dataclass(frozen=True)
 class CompiledSourceSpec:
     """Single packed source term consumed by compiled step kernels."""
 

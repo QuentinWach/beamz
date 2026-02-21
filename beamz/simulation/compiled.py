@@ -16,9 +16,19 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.devices.monitors.compiler import CompiledMonitorSpec, compile_monitor_specs
+from beamz.devices.monitors.compiler import (
+    BatchedMonitorData,
+    CompiledMonitorSpec,
+    compile_batched_monitor_data,
+    compile_monitor_specs,
+)
 from beamz.devices.monitors.monitors import Monitor
-from beamz.devices.sources.compiler import CompiledSourceSpec, compile_source_specs
+from beamz.devices.sources.compiler import (
+    BatchedSlabGroup,
+    CompiledSourceSpec,
+    batch_slab_specs,
+    compile_source_specs,
+)
 from beamz.simulation import ops
 from beamz.simulation.material_models import (
     CompiledMaterialSpec,
@@ -194,6 +204,39 @@ class CompiledSimulation:
                 out = out.at[spec.index].add(spec.coeff * amp)
         return out
 
+    def _apply_batched_slabs(
+        self,
+        arr: jnp.ndarray,
+        abs_step: jnp.ndarray,
+        group: BatchedSlabGroup,
+    ) -> jnp.ndarray:
+        """Apply stacked slab sources via fori_loop (constant HLO size)."""
+        safe_idx = jnp.clip(abs_step, 0, group.waveforms.shape[1] - 1)
+        ndim = len(group.max_sizes)
+
+        def body(i, out):
+            amp = group.waveforms[i, safe_idx]
+            patch = group.coeffs[i] * amp
+            starts_i = [group.starts[i, d] for d in range(ndim)]
+            cur = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
+            return jax.lax.dynamic_update_slice(out, cur + patch, starts_i)
+
+        return jax.lax.fori_loop(0, group.n, body, arr)
+
+    def _apply_source_group(
+        self,
+        arr: jnp.ndarray,
+        abs_step: jnp.ndarray,
+        batch: BatchedSlabGroup | None,
+        rest: tuple[CompiledSourceSpec, ...],
+    ) -> jnp.ndarray:
+        """Apply batched slab sources then remaining non-slab sources."""
+        if batch is not None:
+            arr = self._apply_batched_slabs(arr, abs_step, batch)
+        if rest:
+            arr = self._apply_specs(arr, abs_step, rest)
+        return arr
+
     def _apply_lossy_shell(
         self,
         updated: jnp.ndarray,
@@ -264,6 +307,8 @@ class CompiledSimulation:
         hx: jnp.ndarray,
         hy: jnp.ndarray,
         hz: jnp.ndarray,
+        batched_mon: BatchedMonitorData | None = None,
+        monitors_2d: tuple[CompiledMonitorSpec, ...] = (),
     ) -> MonitorState:
         if not self.monitor_specs:
             return monitor_state
@@ -273,16 +318,63 @@ class CompiledSimulation:
         counts = monitor_state.counts
         max_records = powers.shape[1]
 
-        for mon in self.monitor_specs:
+        # Batched 3D monitors via fori_loop (constant HLO size)
+        if batched_mon is not None:
+            bm = batched_mon
+            ex_flat = ex.ravel()
+            ey_flat = ey.ravel()
+            ez_flat = ez.ravel()
+            hx_flat = hx.ravel()
+            hy_flat = hy.ravel()
+            hz_flat = hz.ravel()
+
+            def _mon_body(i, carry):
+                pwr, ts, cnt = carry
+                mi = bm.monitor_indices[i]
+
+                should_record = (abs_step % bm.record_intervals[i]) == 0
+                can_record = cnt[mi] < max_records
+                do_record = should_record & can_record & bm.accumulate_flags[i]
+
+                mask = bm.valid_mask[i]
+                exs = ex_flat[bm.ex_flat_idx[i]] * mask
+                eys = ey_flat[bm.ey_flat_idx[i]] * mask
+                ezs = ez_flat[bm.ez_flat_idx[i]] * mask
+                hxs = hx_flat[bm.hx_flat_idx[i]] * mask
+                hys = hy_flat[bm.hy_flat_idx[i]] * mask
+                hzs = hz_flat[bm.hz_flat_idx[i]] * mask
+
+                sx = eys * hzs - ezs * hys
+                sy = ezs * hxs - exs * hzs
+                sz = exs * hys - eys * hxs
+                power_val = (
+                    jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz))
+                    * bm.power_scales[i]
+                )
+
+                slot = jnp.minimum(cnt[mi], max_records - 1)
+                pwr = pwr.at[mi, slot].set(
+                    jnp.where(do_record, power_val, pwr[mi, slot])
+                )
+                ts = ts.at[mi, slot].set(
+                    jnp.where(do_record, t_phys, ts[mi, slot])
+                )
+                cnt = cnt.at[mi].set(cnt[mi] + jnp.where(do_record, 1, 0))
+                return pwr, ts, cnt
+
+            powers, timestamps, counts = jax.lax.fori_loop(
+                0, bm.n_monitors, _mon_body, (powers, timestamps, counts)
+            )
+
+        # Remaining 2D monitors (Python loop — typically 0 in 3D sims)
+        for mon in monitors_2d:
             should_record = (abs_step % mon.record_interval) == 0
             can_record = counts[mon.monitor_index] < max_records
             do_record = should_record & can_record & mon.accumulate_power
 
             power_val = jnp.where(
                 do_record,
-                self._monitor_power_3d(mon, ex, ey, ez, hx, hy, hz)
-                if mon.is_3d
-                else self._monitor_power_2d(mon, ez, hx, hy),
+                self._monitor_power_2d(mon, ez, hx, hy),
                 jnp.array(0.0, dtype=jnp.float32),
             )
 
@@ -311,17 +403,35 @@ class CompiledSimulation:
         plane_2d = self.config.plane_2d
         is_3d = self.config.is_3d
 
-        pre_e_ex = self._sources_for("pre_e", "Ex")
-        pre_e_ey = self._sources_for("pre_e", "Ey")
-        pre_e_ez = self._sources_for("pre_e", "Ez")
+        # Batch slab sources by (timing, component) for fori_loop application
+        pre_e_ex_batch, pre_e_ex_rest = batch_slab_specs(self._sources_for("pre_e", "Ex"))
+        pre_e_ey_batch, pre_e_ey_rest = batch_slab_specs(self._sources_for("pre_e", "Ey"))
+        pre_e_ez_batch, pre_e_ez_rest = batch_slab_specs(self._sources_for("pre_e", "Ez"))
 
-        h_specs_x = self._sources_for("h", "Hx")
-        h_specs_y = self._sources_for("h", "Hy")
-        h_specs_z = self._sources_for("h", "Hz")
+        h_batch_x, h_rest_x = batch_slab_specs(self._sources_for("h", "Hx"))
+        h_batch_y, h_rest_y = batch_slab_specs(self._sources_for("h", "Hy"))
+        h_batch_z, h_rest_z = batch_slab_specs(self._sources_for("h", "Hz"))
 
-        e_specs_x = self._sources_for("e", "Ex")
-        e_specs_y = self._sources_for("e", "Ey")
-        e_specs_z = self._sources_for("e", "Ez")
+        e_batch_x, e_rest_x = batch_slab_specs(self._sources_for("e", "Ex"))
+        e_batch_y, e_rest_y = batch_slab_specs(self._sources_for("e", "Ey"))
+        e_batch_z, e_rest_z = batch_slab_specs(self._sources_for("e", "Ez"))
+
+        # Batch 3D monitors for fori_loop power computation
+        batched_mon = None
+        monitors_2d: tuple[CompiledMonitorSpec, ...] = ()
+        if self.monitor_specs and is_3d:
+            field_shapes = {
+                "Ex": tuple(self.e_source_x.shape),
+                "Ey": tuple(self.e_source_y.shape),
+                "Ez": tuple(self.e_source_z.shape),
+                "Hx": tuple(self.h_source_x.shape),
+                "Hy": tuple(self.h_source_y.shape),
+                "Hz": tuple(self.h_source_z.shape),
+            }
+            batched_mon = compile_batched_monitor_data(self.monitor_specs, field_shapes)
+            monitors_2d = tuple(s for s in self.monitor_specs if not s.is_3d)
+        elif self.monitor_specs:
+            monitors_2d = tuple(self.monitor_specs)
 
         @jax.jit(donate_argnums=(0, 1))
         def run_scan(
@@ -362,9 +472,9 @@ class CompiledSimulation:
                 ex, ey, ez = eng.ex, eng.ey, eng.ez
                 hx, hy, hz = eng.hx, eng.hy, eng.hz
 
-                ex = self._apply_specs(ex, abs_step, pre_e_ex)
-                ey = self._apply_specs(ey, abs_step, pre_e_ey)
-                ez = self._apply_specs(ez, abs_step, pre_e_ez)
+                ex = self._apply_source_group(ex, abs_step, pre_e_ex_batch, pre_e_ex_rest)
+                ey = self._apply_source_group(ey, abs_step, pre_e_ey_batch, pre_e_ey_rest)
+                ez = self._apply_source_group(ez, abs_step, pre_e_ez_batch, pre_e_ez_rest)
 
                 if is_3d:
                     any_h_shell = use_lossy_shell_hx or use_lossy_shell_hy or use_lossy_shell_hz
@@ -433,9 +543,9 @@ class CompiledSimulation:
                     else:
                         hz = h_decay_z * hz_old - h_source_z * curl_ez
 
-                hx = self._apply_specs(hx, abs_step, h_specs_x)
-                hy = self._apply_specs(hy, abs_step, h_specs_y)
-                hz = self._apply_specs(hz, abs_step, h_specs_z)
+                hx = self._apply_source_group(hx, abs_step, h_batch_x, h_rest_x)
+                hy = self._apply_source_group(hy, abs_step, h_batch_y, h_rest_y)
+                hz = self._apply_source_group(hz, abs_step, h_batch_z, h_rest_z)
 
                 if is_3d:
                     any_e_shell = use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
@@ -508,14 +618,17 @@ class CompiledSimulation:
                     else:
                         ez = e_decay_z * ez_old + e_source_z * curl_hz
 
-                ex = self._apply_specs(ex, abs_step, e_specs_x)
-                ey = self._apply_specs(ey, abs_step, e_specs_y)
-                ez = self._apply_specs(ez, abs_step, e_specs_z)
+                ex = self._apply_source_group(ex, abs_step, e_batch_x, e_rest_x)
+                ey = self._apply_source_group(ey, abs_step, e_batch_y, e_rest_y)
+                ez = self._apply_source_group(ez, abs_step, e_batch_z, e_rest_z)
 
                 mat, _ = material_model.update(mat, ex, ey, ez, abs_step)
 
                 t_phys = eng.t
-                mon = self._update_monitors(mon, abs_step, t_phys, ex, ey, ez, hx, hy, hz)
+                mon = self._update_monitors(
+                    mon, abs_step, t_phys, ex, ey, ez, hx, hy, hz,
+                    batched_mon=batched_mon, monitors_2d=monitors_2d,
+                )
 
                 new_eng = EngineState(
                     ex=ex,

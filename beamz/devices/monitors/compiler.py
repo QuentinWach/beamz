@@ -45,6 +45,99 @@ class CompiledMonitorSpec:
     min_dim1: int = 0
 
 
+@dataclass(frozen=True)
+class BatchedMonitorData:
+    """Stacked 3D monitor data for fori_loop-based power computation.
+
+    Pre-computed raveled indices allow uniform gather ops inside a
+    fori_loop body, keeping HLO size constant regardless of monitor count.
+    """
+
+    n_monitors: int
+    monitor_indices: jnp.ndarray  # (n,) int32 — maps batch idx → monitor_state row
+    record_intervals: jnp.ndarray  # (n,) int32
+    accumulate_flags: jnp.ndarray  # (n,) bool
+    power_scales: jnp.ndarray  # (n,) float32
+    # Raveled indices per component: (n, max_points) int32
+    ex_flat_idx: jnp.ndarray
+    ey_flat_idx: jnp.ndarray
+    ez_flat_idx: jnp.ndarray
+    hx_flat_idx: jnp.ndarray
+    hy_flat_idx: jnp.ndarray
+    hz_flat_idx: jnp.ndarray
+    valid_mask: jnp.ndarray  # (n, max_points) float32
+
+
+def compile_batched_monitor_data(
+    specs: tuple[CompiledMonitorSpec, ...],
+    field_shapes: dict[str, tuple[int, ...]],
+) -> BatchedMonitorData | None:
+    """Compile 3D monitors into batched form for fori_loop update."""
+    specs_3d = [s for s in specs if s.is_3d]
+    if not specs_3d:
+        return None
+
+    n = len(specs_3d)
+    components = [
+        ("Ex", "ex_idx"),
+        ("Ey", "ey_idx"),
+        ("Ez", "ez_idx"),
+        ("Hx", "hx_idx"),
+        ("Hy", "hy_idx"),
+        ("Hz", "hz_idx"),
+    ]
+
+    all_flat: dict[str, list[np.ndarray]] = {c: [] for c, _ in components}
+    all_n_points: list[int] = []
+
+    for spec in specs_3d:
+        n_pts = spec.min_dim0 * spec.min_dim1
+        all_n_points.append(n_pts)
+        for comp, attr in components:
+            shape = field_shapes[comp]
+            idx = getattr(spec, attr)
+            dummy = np.arange(int(np.prod(shape)), dtype=np.int32).reshape(shape)
+            sliced = dummy[idx][: spec.min_dim0, : spec.min_dim1]
+            all_flat[comp].append(sliced.ravel())
+
+    max_points = max(all_n_points) if all_n_points else 0
+    if max_points == 0:
+        return None
+
+    def _pad_stack(flat_list: list[np.ndarray]) -> jnp.ndarray:
+        padded = []
+        for flat in flat_list:
+            p = np.zeros(max_points, dtype=np.int32)
+            p[: len(flat)] = flat
+            padded.append(p)
+        return jnp.array(np.stack(padded))
+
+    valid = np.zeros((n, max_points), dtype=np.float32)
+    for i, n_pts in enumerate(all_n_points):
+        valid[i, :n_pts] = 1.0
+
+    return BatchedMonitorData(
+        n_monitors=n,
+        monitor_indices=jnp.array(
+            [s.monitor_index for s in specs_3d], dtype=jnp.int32
+        ),
+        record_intervals=jnp.array(
+            [s.record_interval for s in specs_3d], dtype=jnp.int32
+        ),
+        accumulate_flags=jnp.array([s.accumulate_power for s in specs_3d]),
+        power_scales=jnp.array(
+            [s.power_scale for s in specs_3d], dtype=jnp.float32
+        ),
+        ex_flat_idx=_pad_stack(all_flat["Ex"]),
+        ey_flat_idx=_pad_stack(all_flat["Ey"]),
+        ez_flat_idx=_pad_stack(all_flat["Ez"]),
+        hx_flat_idx=_pad_stack(all_flat["Hx"]),
+        hy_flat_idx=_pad_stack(all_flat["Hy"]),
+        hz_flat_idx=_pad_stack(all_flat["Hz"]),
+        valid_mask=jnp.array(valid),
+    )
+
+
 def _clip_indices(x_idx: np.ndarray, y_idx: np.ndarray, shape: tuple[int, int]):
     h, w = shape
     valid = (x_idx >= 0) & (x_idx < w) & (y_idx >= 0) & (y_idx < h)
