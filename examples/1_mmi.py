@@ -111,7 +111,7 @@ sim = Simulation(
 )
 sim.run(
     animate_live="Ez",
-    animation_interval=12,
+    animation_interval=15,
     axis_scale=[-7e-5, 7e-5],
     clean_visualization=True,
     line_color="gray",
