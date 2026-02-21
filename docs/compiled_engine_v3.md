@@ -48,6 +48,20 @@ python benchmarks/compiled_engine_benchmark.py \
   --csv benchmarks/results/compiled_3d_results.csv
 ```
 
+Run source-isolation sweeps on a fixed 3D problem:
+
+```bash
+python benchmarks/compiled_engine_benchmark.py \
+  --scenario fdtdx_coupler \
+  --source-sweep \
+  --domain-um 6,4,1.5 \
+  --resolution-nm 25 \
+  --courant-factor 0.99 \
+  --sim-time-fs 200 \
+  --modes split_jit,compiled \
+  --csv benchmarks/results/compiled_3d_results.csv
+```
+
 This writes:
 
 - `compiled_jaxpr.txt`

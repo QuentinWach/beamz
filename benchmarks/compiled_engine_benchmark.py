@@ -60,6 +60,7 @@ class BenchmarkConfig:
     courant_factor: float | None = None
     sim_time_fs: float | None = None
     scenario: str = "gaussian_box"
+    source_kind: str = "auto"
 
 
 def parse_modes(spec: str) -> tuple[str, ...]:
@@ -165,6 +166,7 @@ def _append_csv(
     cfg: BenchmarkConfig,
     steps: int,
     scenario: str,
+    source_kind: str,
     resolution_nm_used: float,
     courant_factor_used: float,
     sim_time_fs_used: float,
@@ -196,6 +198,7 @@ def _append_csv(
         "python_version",
         "git_commit",
         "scenario",
+        "source_kind",
         "grid_n",
         "grid_nx",
         "grid_ny",
@@ -264,6 +267,7 @@ def _append_csv(
         "python_version": platform.python_version(),
         "git_commit": _git_commit(repo_root),
         "scenario": scenario,
+        "source_kind": source_kind,
         "grid_n": cfg.grid_nx if (cfg.grid_nx == cfg.grid_ny == cfg.grid_nz) else "",
         "grid_nx": cfg.grid_nx,
         "grid_ny": cfg.grid_ny,
@@ -350,7 +354,16 @@ def choose_grid_n(memory_gb: float, saturation_factor: float) -> int:
 
 def make_simulation(
     cfg: BenchmarkConfig,
-) -> tuple[Simulation, int, float, float, tuple[float, float, float], float, float]:
+) -> tuple[
+    Simulation,
+    int,
+    float,
+    float,
+    tuple[float, float, float],
+    float,
+    float,
+    str,
+]:
     n_bg = 1.0
 
     if cfg.resolution_nm is not None:
@@ -472,36 +485,63 @@ def make_simulation(
             material=Material(permittivity=eps_si),
         )
 
-        # Mode source on input arm.
+    source_kind = cfg.source_kind.strip().lower()
+    if source_kind == "auto":
+        source_kind = "mode" if cfg.scenario == "fdtdx_coupler" else "gaussian"
+    if source_kind not in {"none", "gaussian", "mode"}:
+        raise ValueError(
+            f"Unsupported source_kind='{cfg.source_kind}'. Use auto|none|gaussian|mode."
+        )
+
+    devices = []
+    if source_kind == "gaussian":
+        if cfg.scenario == "fdtdx_coupler":
+            gauss_center = (0.16 * width, y_mid, z_si + 0.5 * h_si)
+            gauss_width = min(0.20 * um, 0.20 * min(width, height))
+        else:
+            gauss_center = (0.35 * width, 0.5 * height, 0.5 * depth)
+            gauss_width = wl_eff / 6
+        devices = [
+            GaussianSource(
+                position=gauss_center,
+                width=gauss_width,
+                signal=signal,
+            )
+        ]
+    elif source_kind == "mode":
         grid = design.rasterize(resolution=dx)
-        source = ModeSource(
-            grid=grid,
-            center=(0.16 * width, y_mid, z_si + 0.5 * h_si),
-            width=min(1.2 * um, 0.35 * height),
-            height=min(1.2 * um, 0.8 * depth),
-            wavelength=1.55 * um,
-            pol="tm",
-            signal=signal,
-            direction="+x",
-        )
-    else:
-        source = GaussianSource(
-            position=(0.35 * width, 0.5 * height, 0.5 * depth),
-            width=wl_eff / 6,
-            signal=signal,
-        )
+        if cfg.scenario == "fdtdx_coupler":
+            mode_center = (0.16 * width, y_mid, z_si + 0.5 * h_si)
+            mode_width = min(1.2 * um, 0.35 * height)
+            mode_height = min(1.2 * um, 0.8 * depth)
+        else:
+            mode_center = (0.20 * width, 0.5 * height, 0.5 * depth)
+            mode_width = min(1.2 * um, 0.35 * height)
+            mode_height = min(1.2 * um, 0.35 * depth)
+        devices = [
+            ModeSource(
+                grid=grid,
+                center=mode_center,
+                width=mode_width,
+                height=mode_height,
+                wavelength=1.55 * um,
+                pol="tm",
+                signal=signal,
+                direction="+x",
+            )
+        ]
 
     # Keep PML proportional to physical domain size to avoid degenerate cases.
     pml_thickness = max(4 * dx, 0.08 * min(width, height, depth))
 
     sim = Simulation(
         design=design,
-        devices=[source],
+        devices=devices,
         boundaries=[PML(edges="all", thickness=pml_thickness)],
         time=t_arr,
         resolution=dx,
     )
-    return sim, steps, dx, dt, domain_um, courant_used, sim_time_fs_used
+    return sim, steps, dx, dt, domain_um, courant_used, sim_time_fs_used, source_kind
 
 
 def _tcups(sim: Simulation, steps: int, elapsed_s: float) -> float:
@@ -803,6 +843,19 @@ def main():
         help="Benchmark scenario: simple Gaussian box or silicon coupler-style setup.",
     )
     parser.add_argument(
+        "--source-kind",
+        type=str,
+        default="auto",
+        choices=("auto", "none", "gaussian", "mode"),
+        help="Source model override. 'auto' uses scenario default.",
+    )
+    parser.add_argument(
+        "--source-sweep",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run source isolation matrix across none, gaussian, mode on same scenario.",
+    )
+    parser.add_argument(
         "--csv",
         type=str,
         default="benchmarks/results/compiled_3d_results.csv",
@@ -936,6 +989,7 @@ def main():
         courant_factor=args.courant_factor,
         sim_time_fs=args.sim_time_fs,
         scenario=args.scenario,
+        source_kind=args.source_kind,
     )
 
     print("3D FDTD benchmark")
@@ -956,170 +1010,186 @@ def main():
     print(f"warmup_jit={bool(args.warmup_jit)}")
     print(f"modes={','.join(modes)}")
     print(f"scenario={cfg.scenario}")
+    print(f"source_kind={cfg.source_kind}")
+    print(f"source_sweep={bool(args.source_sweep)}")
     print(f"compiled_loop_kind={compiled_loop_kind}")
     print(f"e_shell_split={e_shell_split}")
     print(f"h_shell_split={h_shell_split}")
     print(f"source_single_slab_dense={source_single_slab_dense}")
     if e_shell_split or h_shell_split:
         print("warning: shell-split is currently slower on M4 in our measurements.")
+    if args.source_sweep and (cfg.source_kind != "auto"):
+        print("note: --source-sweep overrides explicit --source-kind.")
 
-    (
-        sim_base,
-        steps,
-        dx_used,
-        dt_used,
-        domain_um_used,
-        courant_used,
-        sim_time_fs_used,
-    ) = make_simulation(cfg)
-    print(f"resolved_domain_um={domain_um_used[0]:.6g},{domain_um_used[1]:.6g},{domain_um_used[2]:.6g}")
-    print(f"resolved_resolution_nm={dx_used * 1e9:.6g}")
-    print(f"resolved_dt_fs={dt_used * 1e15:.6g}")
-    print(f"resolved_courant_factor={courant_used:.6g}")
-    print(f"resolved_steps={steps}")
+    source_cases = ("none", "gaussian", "mode") if args.source_sweep else (cfg.source_kind,)
     repeats = max(1, int(args.repeats))
+    csv_path = Path(args.csv)
 
-    t_py, py_runs = float("nan"), []
-    t_split, split_runs = float("nan"), []
-    t_compiled, compiled_runs = float("nan"), []
-    if "python" in modes:
-        t_py, py_runs = run_repeated(
-            sim_base, steps, repeats, run_legacy_python_step, warmup=False
-        )
-    if "split_jit" in modes:
-        t_split, split_runs = run_repeated(
+    for source_req in source_cases:
+        cfg_case = copy.deepcopy(cfg)
+        cfg_case.source_kind = source_req
+
+        (
             sim_base,
             steps,
-            repeats,
-            run_legacy_split_jit,
-            warmup=bool(args.warmup_jit),
-        )
-    if "compiled" in modes:
-        if args.profile_dir:
-            import jax
+            dx_used,
+            dt_used,
+            domain_um_used,
+            courant_used,
+            sim_time_fs_used,
+            source_kind_used,
+        ) = make_simulation(cfg_case)
 
-            profile_path = Path(args.profile_dir)
-            profile_path.mkdir(parents=True, exist_ok=True)
-            with jax.profiler.trace(str(profile_path)):
+        print(f"\n=== Case: source_kind={source_kind_used} ===")
+        print(
+            f"resolved_domain_um={domain_um_used[0]:.6g},{domain_um_used[1]:.6g},{domain_um_used[2]:.6g}"
+        )
+        print(f"resolved_resolution_nm={dx_used * 1e9:.6g}")
+        print(f"resolved_dt_fs={dt_used * 1e15:.6g}")
+        print(f"resolved_courant_factor={courant_used:.6g}")
+        print(f"resolved_steps={steps}")
+
+        t_py, py_runs = float("nan"), []
+        t_split, split_runs = float("nan"), []
+        t_compiled, compiled_runs = float("nan"), []
+        if "python" in modes:
+            t_py, py_runs = run_repeated(
+                sim_base, steps, repeats, run_legacy_python_step, warmup=False
+            )
+        if "split_jit" in modes:
+            t_split, split_runs = run_repeated(
+                sim_base,
+                steps,
+                repeats,
+                run_legacy_split_jit,
+                warmup=bool(args.warmup_jit),
+            )
+        if "compiled" in modes:
+            if args.profile_dir:
+                import jax
+
+                profile_path = Path(args.profile_dir) / f"source_{source_kind_used}"
+                profile_path.mkdir(parents=True, exist_ok=True)
+                with jax.profiler.trace(str(profile_path)):
+                    t_compiled, compiled_runs = run_repeated(
+                        sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
+                    )
+            else:
                 t_compiled, compiled_runs = run_repeated(
                     sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
                 )
-        else:
-            t_compiled, compiled_runs = run_repeated(
-                sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
-            )
-    hlo_stats = (
-        compiled_hlo_stats(copy.deepcopy(sim_base), steps)
-        if args.hlo_stats and ("compiled" in modes)
-        else None
-    )
+        hlo_stats = (
+            compiled_hlo_stats(copy.deepcopy(sim_base), steps)
+            if args.hlo_stats and ("compiled" in modes)
+            else None
+        )
 
-    tcups_py = _tcups(sim_base, steps, t_py)
-    tcups_split = _tcups(sim_base, steps, t_split)
-    tcups_compiled = _tcups(sim_base, steps, t_compiled)
+        tcups_py = _tcups(sim_base, steps, t_py)
+        tcups_split = _tcups(sim_base, steps, t_split)
+        tcups_compiled = _tcups(sim_base, steps, t_compiled)
 
-    print("\nResults")
-    if "python" in modes:
-        print(
-            f"legacy_python_step (median): {t_py:.6f}s, {_safe_div(t_py, steps):.6e}s/step, {tcups_py:.6e} TCUPS"
-        )
-    if "split_jit" in modes:
-        print(
-            f"legacy_split_jit   (median): {t_split:.6f}s, {_safe_div(t_split, steps):.6e}s/step, {tcups_split:.6e} TCUPS"
-        )
-    if "compiled" in modes:
-        print(
-            f"compiled_v3_scan   (median): {t_compiled:.6f}s, {_safe_div(t_compiled, steps):.6e}s/step, {tcups_compiled:.6e} TCUPS"
-        )
-    if repeats > 1:
-        print("\nPer-Run Times (s)")
+        print("Results")
         if "python" in modes:
-            print(f"legacy_python_step: {[round(x, 6) for x in py_runs]}")
+            print(
+                f"legacy_python_step (median): {t_py:.6f}s, {_safe_div(t_py, steps):.6e}s/step, {tcups_py:.6e} TCUPS"
+            )
         if "split_jit" in modes:
-            print(f"legacy_split_jit:   {[round(x, 6) for x in split_runs]}")
+            print(
+                f"legacy_split_jit   (median): {t_split:.6f}s, {_safe_div(t_split, steps):.6e}s/step, {tcups_split:.6e} TCUPS"
+            )
         if "compiled" in modes:
-            print(f"compiled_v3_scan:   {[round(x, 6) for x in compiled_runs]}")
-
-    if "compiled" in modes and (("python" in modes) or ("split_jit" in modes)):
-        print("\nSpeedups")
-        if "python" in modes:
-            print(f"compiled / legacy_python_step: {_safe_div(t_py, t_compiled):.2f}x")
-        if "split_jit" in modes:
-            print(f"compiled / legacy_split_jit:   {_safe_div(t_split, t_compiled):.2f}x")
-    if hlo_stats is not None:
-        print("\nCompiled HLO Stats")
-        print(
-            " ".join(
-                [
-                    f"text_len={hlo_stats['text_len']}",
-                    f"fusion={hlo_stats['fusion']}",
-                    f"scatter={hlo_stats['scatter']}",
-                    f"dynamic-update-slice={hlo_stats['dynamic-update-slice']}",
-                    f"slice={hlo_stats['slice']}",
-                    f"copy={hlo_stats['copy']}",
-                    f"while={hlo_stats['while']}",
-                ]
+            print(
+                f"compiled_v3_scan   (median): {t_compiled:.6f}s, {_safe_div(t_compiled, steps):.6e}s/step, {tcups_compiled:.6e} TCUPS"
             )
-        )
-        if args.hlo_diagnostics:
-            print("Compiled HLO Diagnostics")
-            for note in hlo_diagnostics(hlo_stats):
-                print(f"- {note}")
+        if repeats > 1:
+            print("Per-Run Times (s)")
+            if "python" in modes:
+                print(f"legacy_python_step: {[round(x, 6) for x in py_runs]}")
+            if "split_jit" in modes:
+                print(f"legacy_split_jit:   {[round(x, 6) for x in split_runs]}")
+            if "compiled" in modes:
+                print(f"compiled_v3_scan:   {[round(x, 6) for x in compiled_runs]}")
 
-    if args.dump_ir_dir and ("compiled" in modes):
-        ir_dir = Path(args.dump_ir_dir)
-        ir_stats = dump_compiled_ir_artifacts(
-            copy.deepcopy(sim_base),
-            steps,
-            ir_dir,
-            include_dot=bool(args.ir_dot),
-            include_optimized_hlo=True,
-        )
-        print(f"\nIR artifacts written: {ir_dir}")
-        print(
-            " ".join(
-                [
-                    f"text_len={ir_stats['text_len']}",
-                    f"fusion={ir_stats['fusion']}",
-                    f"scatter={ir_stats['scatter']}",
-                    f"dynamic-update-slice={ir_stats['dynamic-update-slice']}",
-                    f"slice={ir_stats['slice']}",
-                    f"copy={ir_stats['copy']}",
-                    f"while={ir_stats['while']}",
-                ]
+        if "compiled" in modes and (("python" in modes) or ("split_jit" in modes)):
+            print("Speedups")
+            if "python" in modes:
+                print(f"compiled / legacy_python_step: {_safe_div(t_py, t_compiled):.2f}x")
+            if "split_jit" in modes:
+                print(f"compiled / legacy_split_jit:   {_safe_div(t_split, t_compiled):.2f}x")
+        if hlo_stats is not None:
+            print("Compiled HLO Stats")
+            print(
+                " ".join(
+                    [
+                        f"text_len={hlo_stats['text_len']}",
+                        f"fusion={hlo_stats['fusion']}",
+                        f"scatter={hlo_stats['scatter']}",
+                        f"dynamic-update-slice={hlo_stats['dynamic-update-slice']}",
+                        f"slice={hlo_stats['slice']}",
+                        f"copy={hlo_stats['copy']}",
+                        f"while={hlo_stats['while']}",
+                    ]
+                )
             )
-        )
+            if args.hlo_diagnostics:
+                print("Compiled HLO Diagnostics")
+                for note in hlo_diagnostics(hlo_stats):
+                    print(f"- {note}")
 
-    csv_path = Path(args.csv)
-    _append_csv(
-        csv_path=csv_path,
-        cfg=cfg,
-        steps=steps,
-        scenario=cfg.scenario,
-        resolution_nm_used=dx_used * 1e9,
-        courant_factor_used=courant_used,
-        sim_time_fs_used=sim_time_fs_used,
-        domain_um_used=domain_um_used,
-        estimated_working_set_gb=est_ws,
-        t_py=t_py,
-        t_split=t_split,
-        t_compiled=t_compiled,
-        tcups_py=tcups_py,
-        tcups_split=tcups_split,
-        tcups_compiled=tcups_compiled,
-        py_runs_s=py_runs,
-        split_runs_s=split_runs,
-        compiled_runs_s=compiled_runs,
-        repeats=repeats,
-        warmup_jit=bool(args.warmup_jit),
-        modes=modes,
-        compiled_loop_kind=compiled_loop_kind,
-        e_shell_split=e_shell_split,
-        h_shell_split=h_shell_split,
-        source_single_slab_dense=source_single_slab_dense,
-        hlo_stats=hlo_stats,
-    )
-    print(f"\nCSV appended: {csv_path}")
+        if args.dump_ir_dir and ("compiled" in modes):
+            ir_dir = Path(args.dump_ir_dir) / f"source_{source_kind_used}"
+            ir_stats = dump_compiled_ir_artifacts(
+                copy.deepcopy(sim_base),
+                steps,
+                ir_dir,
+                include_dot=bool(args.ir_dot),
+                include_optimized_hlo=True,
+            )
+            print(f"IR artifacts written: {ir_dir}")
+            print(
+                " ".join(
+                    [
+                        f"text_len={ir_stats['text_len']}",
+                        f"fusion={ir_stats['fusion']}",
+                        f"scatter={ir_stats['scatter']}",
+                        f"dynamic-update-slice={ir_stats['dynamic-update-slice']}",
+                        f"slice={ir_stats['slice']}",
+                        f"copy={ir_stats['copy']}",
+                        f"while={ir_stats['while']}",
+                    ]
+                )
+            )
+
+        _append_csv(
+            csv_path=csv_path,
+            cfg=cfg_case,
+            steps=steps,
+            scenario=cfg_case.scenario,
+            source_kind=source_kind_used,
+            resolution_nm_used=dx_used * 1e9,
+            courant_factor_used=courant_used,
+            sim_time_fs_used=sim_time_fs_used,
+            domain_um_used=domain_um_used,
+            estimated_working_set_gb=est_ws,
+            t_py=t_py,
+            t_split=t_split,
+            t_compiled=t_compiled,
+            tcups_py=tcups_py,
+            tcups_split=tcups_split,
+            tcups_compiled=tcups_compiled,
+            py_runs_s=py_runs,
+            split_runs_s=split_runs,
+            compiled_runs_s=compiled_runs,
+            repeats=repeats,
+            warmup_jit=bool(args.warmup_jit),
+            modes=modes,
+            compiled_loop_kind=compiled_loop_kind,
+            e_shell_split=e_shell_split,
+            h_shell_split=h_shell_split,
+            source_single_slab_dense=source_single_slab_dense,
+            hlo_stats=hlo_stats,
+        )
+        print(f"CSV appended: {csv_path}")
 
 
 if __name__ == "__main__":
