@@ -25,6 +25,7 @@ BEAMZ v0.3 introduces a packed-data compiled simulation path:
 - Default precision is `float32`.
 - Default compiled loop primitive is `scan` (`BEAMZ_COMPILED_LOOP_KIND=scan`).
 - Lossy shell split is disabled by default (`BEAMZ_ENABLE_E_SHELL_SPLIT=0`, `BEAMZ_ENABLE_H_SHELL_SPLIT=0`).
+- Default source slab injection uses `dynamic_update_slice` (`BEAMZ_SOURCE_SINGLE_SLAB_DENSE=0`).
 - Monitor accumulation stores compressed outputs (`power_history`) by default.
 - The legacy split-kernel path (`run_fast` / `run_jit_scan`) now delegates to `run_compiled`.
 
@@ -60,6 +61,10 @@ Use this to prioritize optimization work:
 - Reduce `scatter` and `dynamic-update-slice`.
 - Lower total `slice` count in the optimized HLO.
 - Keep the compiled timestep path to one dominant fused kernel family.
+
+`BEAMZ_SOURCE_SINGLE_SLAB_DENSE=1` removes `dynamic-update-slice` for single-slab sources,
+but may reduce throughput on memory-bound CPU runs. Use it for IR experiments, not as the
+default performance mode.
 
 ## Current scope
 

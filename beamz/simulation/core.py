@@ -424,6 +424,9 @@ class Simulation:
             "yes",
             "on",
         }
+        source_single_slab_dense = os.getenv(
+            "BEAMZ_SOURCE_SINGLE_SLAB_DENSE", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
 
         signature = (
             num_steps,
@@ -433,6 +436,7 @@ class Simulation:
             loop_kind,
             e_shell_split,
             h_shell_split,
+            source_single_slab_dense,
         )
         cached = self._compiled_program_cache.get(signature)
         if cached is not None:
@@ -451,6 +455,7 @@ class Simulation:
             t0=float(self.time[0]),
             precision="float32",
             loop_kind=loop_kind,
+            source_single_slab_dense=source_single_slab_dense,
         )
         program = compile_simulation(
             design=self.design,

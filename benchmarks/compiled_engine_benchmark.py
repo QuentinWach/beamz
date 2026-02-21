@@ -149,6 +149,7 @@ def _append_csv(
     compiled_loop_kind: str,
     e_shell_split: bool,
     h_shell_split: bool,
+    source_single_slab_dense: bool,
     hlo_stats: dict[str, int] | None = None,
 ):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,6 +167,7 @@ def _append_csv(
         "compiled_loop_kind",
         "compiled_e_shell_split",
         "compiled_h_shell_split",
+        "compiled_source_single_slab_dense",
         "ppw",
         "target_memory_gb",
         "saturation_factor",
@@ -222,6 +224,7 @@ def _append_csv(
         "compiled_loop_kind": compiled_loop_kind,
         "compiled_e_shell_split": int(bool(e_shell_split)),
         "compiled_h_shell_split": int(bool(h_shell_split)),
+        "compiled_source_single_slab_dense": int(bool(source_single_slab_dense)),
         "ppw": cfg.points_per_wavelength,
         "target_memory_gb": cfg.memory_gb,
         "saturation_factor": cfg.saturation_factor,
@@ -664,6 +667,12 @@ def main():
         default=None,
         help="Override BEAMZ_ENABLE_H_SHELL_SPLIT for this benchmark run.",
     )
+    parser.add_argument(
+        "--source-single-slab-dense",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override BEAMZ_SOURCE_SINGLE_SLAB_DENSE for compiled source injection.",
+    )
     args = parser.parse_args()
     if args.compiled_loop_kind != "auto":
         os.environ["BEAMZ_COMPILED_LOOP_KIND"] = args.compiled_loop_kind
@@ -671,6 +680,10 @@ def main():
         os.environ["BEAMZ_ENABLE_E_SHELL_SPLIT"] = "1" if args.enable_e_shell_split else "0"
     if args.enable_h_shell_split is not None:
         os.environ["BEAMZ_ENABLE_H_SHELL_SPLIT"] = "1" if args.enable_h_shell_split else "0"
+    if args.source_single_slab_dense is not None:
+        os.environ["BEAMZ_SOURCE_SINGLE_SLAB_DENSE"] = (
+            "1" if args.source_single_slab_dense else "0"
+        )
 
     compiled_loop_kind = os.environ.get("BEAMZ_COMPILED_LOOP_KIND", "scan").strip().lower()
     if compiled_loop_kind in {"fori", "fori-loop"}:
@@ -687,6 +700,9 @@ def main():
         "yes",
         "on",
     }
+    source_single_slab_dense = os.environ.get(
+        "BEAMZ_SOURCE_SINGLE_SLAB_DENSE", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
     modes = parse_modes(args.modes)
     if not modes:
@@ -713,6 +729,7 @@ def main():
     print(f"compiled_loop_kind={compiled_loop_kind}")
     print(f"e_shell_split={e_shell_split}")
     print(f"h_shell_split={h_shell_split}")
+    print(f"source_single_slab_dense={source_single_slab_dense}")
     if e_shell_split or h_shell_split:
         print("warning: shell-split is currently slower on M4 in our measurements.")
 
@@ -851,6 +868,7 @@ def main():
         compiled_loop_kind=compiled_loop_kind,
         e_shell_split=e_shell_split,
         h_shell_split=h_shell_split,
+        source_single_slab_dense=source_single_slab_dense,
         hlo_stats=hlo_stats,
     )
     print(f"\nCSV appended: {csv_path}")

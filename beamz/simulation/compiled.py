@@ -146,6 +146,7 @@ class CompiledRunConfig:
     is_3d: bool
     precision: str = "float32"
     loop_kind: str = "scan"
+    source_single_slab_dense: bool = False
 
 
 @dataclass
@@ -256,8 +257,20 @@ class CompiledSimulation:
         # fori_loop overhead in the timestep kernel.
         if group.n == 1:
             amp = group.waveforms[0, safe_idx]
-            patch = group.coeffs[0] * amp
             starts_0 = group.starts_tuple[0]
+            if self.config.source_single_slab_dense:
+                # Optional DUS-free path for diagnostics: materialize a full-grid
+                # coefficient tensor once and inject via dense add.
+                pad_width = tuple(
+                    (
+                        starts_0[d],
+                        int(arr.shape[d]) - starts_0[d] - group.max_sizes[d],
+                    )
+                    for d in range(ndim)
+                )
+                dense_coeff = jnp.pad(group.coeffs[0], pad_width)
+                return arr + dense_coeff * amp
+            patch = group.coeffs[0] * amp
             cur = jax.lax.dynamic_slice(arr, starts_0, group.max_sizes)
             return jax.lax.dynamic_update_slice(arr, cur + patch, starts_0)
 
@@ -960,6 +973,10 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         raise ValueError(
             "Invalid compiled loop kind. Use one of: scan, fori_loop."
         )
+    source_single_slab_dense = os.getenv(
+        "BEAMZ_SOURCE_SINGLE_SLAB_DENSE",
+        str(getattr(run_cfg, "source_single_slab_dense", False)),
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
     config = CompiledRunConfig(
         resolution=resolution,
@@ -969,6 +986,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         is_3d=bool(run_cfg.is_3d),
         precision=getattr(run_cfg, "precision", "float32"),
         loop_kind=loop_kind,
+        source_single_slab_dense=source_single_slab_dense,
     )
 
     h_decay_x, h_source_x, h_source_lossless_x = ops.precompute_h_update_coefficients(
