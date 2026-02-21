@@ -495,6 +495,12 @@ def main():
         default="python,split_jit,compiled",
         help="Comma-separated benchmark modes: python, split_jit, compiled (or all).",
     )
+    parser.add_argument(
+        "--profile-dir",
+        type=str,
+        default=None,
+        help="Directory for JAX profiler trace output (compiled mode only).",
+    )
     args = parser.parse_args()
     modes = parse_modes(args.modes)
     if not modes:
@@ -538,9 +544,19 @@ def main():
             warmup=bool(args.warmup_jit),
         )
     if "compiled" in modes:
-        t_compiled, compiled_runs = run_repeated(
-            sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
-        )
+        if args.profile_dir:
+            import jax
+
+            profile_path = Path(args.profile_dir)
+            profile_path.mkdir(parents=True, exist_ok=True)
+            with jax.profiler.trace(str(profile_path)):
+                t_compiled, compiled_runs = run_repeated(
+                    sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
+                )
+        else:
+            t_compiled, compiled_runs = run_repeated(
+                sim_base, steps, repeats, run_compiled, warmup=bool(args.warmup_jit)
+            )
     hlo_stats = (
         compiled_hlo_stats(copy.deepcopy(sim_base), steps)
         if args.hlo_stats and ("compiled" in modes)

@@ -400,8 +400,6 @@ class Simulation:
 
         signature = (
             num_steps,
-            self.current_step,
-            float(self.t),
             self.fields.permittivity.shape,
             self.is_3d,
             self.plane_2d,
@@ -419,7 +417,7 @@ class Simulation:
             num_steps=num_steps,
             plane_2d=self.plane_2d,
             is_3d=self.is_3d,
-            t0=self.t,
+            total_steps=self.num_steps,
             precision="float32",
         )
         self._compiled_program = compile_simulation(
@@ -504,8 +502,6 @@ class Simulation:
 
             steps_done += this_chunk
             steps_remaining -= this_chunk
-            self._compiled_program = None
-            self._compiled_program_signature = None
 
             if progress and num_steps > 0:
                 pct = 100.0 * steps_done / num_steps

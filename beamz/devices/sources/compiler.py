@@ -84,10 +84,14 @@ def _as_slab_spec(
     )
 
 
-def _sample_waveform(get_signal_value, t0: float, dt: float, num_steps: int, offset_fn):
-    vals = np.zeros((num_steps,), dtype=np.float32)
-    for i in range(num_steps):
-        t = t0 + i * dt
+def _sample_waveform(
+    get_signal_value, t0: float, dt: float, num_steps: int, offset_fn, total_steps: int | None = None
+):
+    n = total_steps if total_steps is not None else num_steps
+    start = 0.0 if total_steps is not None else t0
+    vals = np.zeros((n,), dtype=np.float32)
+    for i in range(n):
+        t = start + i * dt
         vals[i] = float(get_signal_value(offset_fn(t, dt), dt))
     return jnp.asarray(vals)
 
@@ -134,6 +138,7 @@ def compile_source_specs(
     resolution: float,
     num_steps: int,
     t0: float,
+    total_steps: int | None = None,
 ) -> tuple[CompiledSourceSpec, ...]:
     """Compile source devices into packed source specs.
 
@@ -151,6 +156,7 @@ def compile_source_specs(
                     num_steps=num_steps,
                     t0=t0,
                     resolution=resolution,
+                    total_steps=total_steps,
                 )
             )
         elif isinstance(device, ModeSource):
@@ -162,6 +168,7 @@ def compile_source_specs(
                     num_steps=num_steps,
                     t0=t0,
                     resolution=resolution,
+                    total_steps=total_steps,
                 )
             )
 
@@ -175,6 +182,7 @@ def _compile_gaussian_source(
     num_steps: int,
     t0: float,
     resolution: float,
+    total_steps: int | None = None,
 ) -> tuple[CompiledSourceSpec, ...]:
     # Initialize spatial profile once.
     is_3d = len(device.position) >= 3 if hasattr(device.position, "__len__") else False
@@ -192,6 +200,7 @@ def _compile_gaussian_source(
         dt=dt,
         num_steps=num_steps,
         offset_fn=lambda t, dt_: t + 0.5 * dt_,
+        total_steps=total_steps,
     )
 
     return (
@@ -213,6 +222,7 @@ def _compile_mode_source(
     num_steps: int,
     t0: float,
     resolution: float,
+    total_steps: int | None = None,
 ) -> tuple[CompiledSourceSpec, ...]:
     if (
         (not getattr(device, "_initialized", False))
@@ -230,6 +240,7 @@ def _compile_mode_source(
         dt=dt,
         num_steps=num_steps,
         offset_fn=lambda t, dt_: t + 0.5 * dt_,
+        total_steps=total_steps,
     )
 
     dt_physical = float(getattr(device, "_dt_physical", 0.0))
@@ -240,6 +251,7 @@ def _compile_mode_source(
             dt=dt,
             num_steps=num_steps,
             offset_fn=lambda t, dt_: t + dt_ + dt_physical,
+            total_steps=total_steps,
         )
     else:
         e_waveform = _sample_waveform(
@@ -248,6 +260,7 @@ def _compile_mode_source(
             dt=dt,
             num_steps=num_steps,
             offset_fn=lambda t, dt_: t + 0.5 * dt_ + dt_physical,
+            total_steps=total_steps,
         )
 
     if is_3d:

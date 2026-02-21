@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import pathlib
 from typing import NamedTuple
 
 import jax
@@ -24,6 +25,18 @@ from beamz.simulation.material_models import (
     MaterialState,
     create_material_model,
 )
+
+
+def _init_persistent_cache():
+    cache_dir = os.environ.get(
+        "BEAMZ_JAX_CACHE_DIR",
+        str(pathlib.Path.home() / ".cache" / "beamz" / "jax_cache"),
+    )
+    if not os.environ.get("JAX_COMPILATION_CACHE_DIR"):
+        jax.config.update("jax_compilation_cache_dir", cache_dir)
+
+
+_init_persistent_cache()
 
 
 class EngineState(NamedTuple):
@@ -166,12 +179,13 @@ class CompiledSimulation:
     def _apply_specs(
         self,
         arr: jnp.ndarray,
-        t_idx: jnp.ndarray,
+        abs_step: jnp.ndarray,
         specs: tuple[CompiledSourceSpec, ...],
     ) -> jnp.ndarray:
         out = arr
         for spec in specs:
-            amp = spec.waveform[t_idx]
+            safe_idx = jnp.clip(abs_step, 0, spec.waveform.shape[0] - 1)
+            amp = spec.waveform[safe_idx]
             if spec.is_slab and spec.slab_starts is not None and spec.slab_sizes is not None:
                 patch = spec.coeff * amp
                 cur = jax.lax.dynamic_slice(out, spec.slab_starts, spec.slab_sizes)
@@ -242,7 +256,7 @@ class CompiledSimulation:
     def _update_monitors(
         self,
         monitor_state: MonitorState,
-        t_idx: jnp.ndarray,
+        abs_step: jnp.ndarray,
         t_phys: jnp.ndarray,
         ex: jnp.ndarray,
         ey: jnp.ndarray,
@@ -260,7 +274,7 @@ class CompiledSimulation:
         max_records = powers.shape[1]
 
         for mon in self.monitor_specs:
-            should_record = (t_idx % mon.record_interval) == 0
+            should_record = (abs_step % mon.record_interval) == 0
             can_record = counts[mon.monitor_index] < max_records
             do_record = should_record & can_record & mon.accumulate_power
 
@@ -309,7 +323,7 @@ class CompiledSimulation:
         e_specs_y = self._sources_for("e", "Ey")
         e_specs_z = self._sources_for("e", "Ez")
 
-        @jax.jit
+        @jax.jit(donate_argnums=(0, 1))
         def run_scan(
             engine_state: EngineState,
             monitor_state: MonitorState,
@@ -341,15 +355,16 @@ class CompiledSimulation:
             lossy_shell_hy = self.h_lossy_shell_y
             lossy_shell_hz = self.h_lossy_shell_z
 
-            def body_with_coeffs(carry, t_idx):
+            def body_with_coeffs(carry, _unused):
                 eng, mon, mat = carry
+                abs_step = eng.current_step
 
                 ex, ey, ez = eng.ex, eng.ey, eng.ez
                 hx, hy, hz = eng.hx, eng.hy, eng.hz
 
-                ex = self._apply_specs(ex, t_idx, pre_e_ex)
-                ey = self._apply_specs(ey, t_idx, pre_e_ey)
-                ez = self._apply_specs(ez, t_idx, pre_e_ez)
+                ex = self._apply_specs(ex, abs_step, pre_e_ex)
+                ey = self._apply_specs(ey, abs_step, pre_e_ey)
+                ez = self._apply_specs(ez, abs_step, pre_e_ez)
 
                 if is_3d:
                     curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_3d(ex, ey, ez, resolution)
@@ -401,9 +416,9 @@ class CompiledSimulation:
                 else:
                     hz = h_decay_z * hz_old - h_source_z * curl_ez
 
-                hx = self._apply_specs(hx, t_idx, h_specs_x)
-                hy = self._apply_specs(hy, t_idx, h_specs_y)
-                hz = self._apply_specs(hz, t_idx, h_specs_z)
+                hx = self._apply_specs(hx, abs_step, h_specs_x)
+                hy = self._apply_specs(hy, abs_step, h_specs_y)
+                hz = self._apply_specs(hz, abs_step, h_specs_z)
 
                 if is_3d:
                     curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_3d(
@@ -464,14 +479,14 @@ class CompiledSimulation:
                 else:
                     ez = e_decay_z * ez_old + e_source_z * curl_hz
 
-                ex = self._apply_specs(ex, t_idx, e_specs_x)
-                ey = self._apply_specs(ey, t_idx, e_specs_y)
-                ez = self._apply_specs(ez, t_idx, e_specs_z)
+                ex = self._apply_specs(ex, abs_step, e_specs_x)
+                ey = self._apply_specs(ey, abs_step, e_specs_y)
+                ez = self._apply_specs(ez, abs_step, e_specs_z)
 
-                mat, _ = material_model.update(mat, ex, ey, ez, t_idx)
+                mat, _ = material_model.update(mat, ex, ey, ez, abs_step)
 
                 t_phys = eng.t
-                mon = self._update_monitors(mon, t_idx, t_phys, ex, ey, ez, hx, hy, hz)
+                mon = self._update_monitors(mon, abs_step, t_phys, ex, ey, ez, hx, hy, hz)
 
                 new_eng = EngineState(
                     ex=ex,
@@ -485,11 +500,11 @@ class CompiledSimulation:
                 )
                 return (new_eng, mon, mat), None
 
-            t_idxs = jnp.arange(self.config.num_steps, dtype=jnp.int32)
+            xs = jnp.arange(self.config.num_steps, dtype=jnp.int32)
             (engine_final, monitor_final, material_final), _ = jax.lax.scan(
                 body_with_coeffs,
                 (engine_state, monitor_state, material_state0),
-                t_idxs,
+                xs,
             )
             return engine_final, monitor_final, material_final
 
@@ -686,7 +701,8 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
     - num_steps
     - plane_2d
     - is_3d
-    - t0
+    Optional:
+    - total_steps: full simulation length for absolute waveform indexing
     """
     del design, boundaries
 
@@ -694,7 +710,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
     resolution = float(run_cfg.resolution)
     dt = float(run_cfg.dt)
     num_steps = int(run_cfg.num_steps)
-    t0 = float(run_cfg.t0)
+    total_steps = int(getattr(run_cfg, "total_steps", num_steps))
 
     source_specs = compile_source_specs(
         devices=devices,
@@ -702,7 +718,8 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         dt=dt,
         resolution=resolution,
         num_steps=num_steps,
-        t0=t0,
+        t0=0.0,
+        total_steps=total_steps,
     )
 
     monitor_specs, _ = compile_monitor_specs(
