@@ -147,7 +147,13 @@ xz = core_mask.max(axis=1)  # z,x
 yz = core_mask.max(axis=2)  # z,y
 
 fig, axes = plt.subplots(1, 3, figsize=(14, 4.3))
-axes[0].imshow(xy, origin="lower", cmap="Greys", extent=[0, X / um, 0, Y / um], aspect="auto")
+axes[0].imshow(
+    xy,
+    origin="lower",
+    cmap="Greys",
+    extent=[0, X / um, 0, Y / um],
+    aspect="equal",
+)
 axes[0].set_title("XY Projection (Top)")
 axes[0].set_xlabel("x (um)")
 axes[0].set_ylabel("y (um)")
@@ -162,7 +168,13 @@ axes[0].add_patch(
     )
 )
 
-axes[1].imshow(xz, origin="lower", cmap="Greys", extent=[0, X / um, 0, Z / um], aspect="auto")
+axes[1].imshow(
+    xz,
+    origin="lower",
+    cmap="Greys",
+    extent=[0, X / um, 0, Z / um],
+    aspect="equal",
+)
 axes[1].set_title("XZ Projection (Side)")
 axes[1].set_xlabel("x (um)")
 axes[1].set_ylabel("z (um)")
@@ -177,7 +189,13 @@ axes[1].add_patch(
     )
 )
 
-axes[2].imshow(yz, origin="lower", cmap="Greys", extent=[0, Y / um, 0, Z / um], aspect="auto")
+axes[2].imshow(
+    yz,
+    origin="lower",
+    cmap="Greys",
+    extent=[0, Y / um, 0, Z / um],
+    aspect="equal",
+)
 axes[2].set_title("YZ Projection (Input Cross-Section)")
 axes[2].set_xlabel("y (um)")
 axes[2].set_ylabel("z (um)")
