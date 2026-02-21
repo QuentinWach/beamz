@@ -32,6 +32,7 @@ from beamz import (
     um,
     µm,
 )
+from beamz.const import BLUE, GREEN, ORANGE, RED
 
 # -----------------------------------------------------------------------------
 # 3D extension of examples/1_mmi.py with matching x/y geometry and timespan.
@@ -170,7 +171,7 @@ source.initialize(grid.permittivity, DX, dt=DT)
 eps = np.asarray(grid.permittivity)
 eps_levels = np.asarray([N_AIR**2, N_CLAD**2, N_CORE**2], dtype=np.float32)
 material_names = ("Air", "Cladding", "Core")
-material_colors = ("C0", "C1", "C2")
+material_colors = (BLUE, GREEN, ORANGE)
 material_cmap = ListedColormap(material_colors)
 material_norm = BoundaryNorm(np.arange(-0.5, len(eps_levels) + 0.5, 1), material_cmap.N)
 
@@ -183,6 +184,7 @@ y_mid_idx = int(np.clip(round(source_center[1] / DX), 0, eps.shape[1] - 1))
 x_src_idx = int(np.clip(round(source_center[0] / DX), 0, eps.shape[2] - 1))
 xz = material_idx[:, y_mid_idx, :]  # z,x material slice
 yz = material_idx[:, :, x_src_idx]  # z,y material slice
+outline_levels = np.arange(0.5, len(eps_levels) - 0.5, 1.0)
 
 fig, axes = plt.subplots(1, 3, figsize=(14, 4.3))
 axes[0].imshow(
@@ -203,9 +205,17 @@ axes[0].add_patch(
         0.06,
         source_width / um,
         fill=False,
-        edgecolor="red",
+        edgecolor=RED,
         linewidth=2.0,
     )
+)
+axes[0].contour(
+    xy,
+    levels=outline_levels,
+    colors="black",
+    linewidths=1.1,
+    origin="lower",
+    extent=[0, X / um, 0, Y / um],
 )
 
 axes[1].imshow(
@@ -226,9 +236,17 @@ axes[1].add_patch(
         0.06,
         source_height / um,
         fill=False,
-        edgecolor="red",
+        edgecolor=RED,
         linewidth=2.0,
     )
+)
+axes[1].contour(
+    xz,
+    levels=outline_levels,
+    colors="black",
+    linewidths=1.1,
+    origin="lower",
+    extent=[0, X / um, 0, Z / um],
 )
 
 axes[2].imshow(
@@ -252,9 +270,17 @@ axes[2].add_patch(
         source_width / um,
         source_height / um,
         fill=False,
-        edgecolor="red",
+        edgecolor=RED,
         linewidth=2.0,
     )
+)
+axes[2].contour(
+    yz,
+    levels=outline_levels,
+    colors="black",
+    linewidths=1.1,
+    origin="lower",
+    extent=[0, Y / um, 0, Z / um],
 )
 
 for ax in axes:
@@ -267,16 +293,19 @@ for ax in axes:
         va="top",
         ha="left",
         fontsize=8,
-        color="red",
+        color=RED,
     )
-for ax in (axes[1], axes[2]):
-    ax.axhline(Z_SUBSTRATE / um, color="cyan", linestyle="--", linewidth=1.0)
-    ax.axhline(
-        (Z_SUBSTRATE + Z_CLADDING) / um,
-        color="cyan",
-        linestyle="--",
-        linewidth=1.0,
-    )
+def draw_pml_lines(ax, x_len_um: float, y_len_um: float, pml_um: float):
+    ax.axvline(pml_um, color="black", linestyle="--", linewidth=1.0)
+    ax.axvline(x_len_um - pml_um, color="black", linestyle="--", linewidth=1.0)
+    ax.axhline(pml_um, color="black", linestyle="--", linewidth=1.0)
+    ax.axhline(y_len_um - pml_um, color="black", linestyle="--", linewidth=1.0)
+
+
+pml_um = PML_THICKNESS / um
+draw_pml_lines(axes[0], X / um, Y / um, pml_um)
+draw_pml_lines(axes[1], X / um, Z / um, pml_um)
+draw_pml_lines(axes[2], Y / um, Z / um, pml_um)
 
 legend_handles = [
     Patch(
@@ -286,11 +315,17 @@ legend_handles = [
     )
     for i in range(len(material_names))
 ]
-legend_handles.append(Line2D([0], [0], color="red", lw=2.0, label="ModeSource window"))
+legend_handles.append(Line2D([0], [0], color=RED, lw=2.0, label="ModeSource window"))
+legend_handles.append(
+    Line2D([0], [0], color="black", lw=1.2, label="Material boundaries")
+)
+legend_handles.append(
+    Line2D([0], [0], color="black", lw=1.0, linestyle="--", label="PML boundaries")
+)
 fig.legend(
     handles=legend_handles,
     loc="lower center",
-    ncol=2,
+    ncol=4,
     frameon=True,
     fontsize=8,
     bbox_to_anchor=(0.5, -0.02),
@@ -478,8 +513,8 @@ np.savez(
 flux_png = OUT_DIR / "flux_cumulative_normalized.png"
 fig, axs = plt.subplots(2, 1, figsize=(9, 6.5), sharex=True)
 if power.size > 0:
-    axs[0].plot(time_s * 1e15, instant_norm, color="tab:blue", lw=1.2)
-    axs[1].plot(time_s * 1e15, cumulative_flux_norm, color="tab:orange", lw=1.6)
+    axs[0].plot(time_s * 1e15, instant_norm, color=BLUE, lw=1.2)
+    axs[1].plot(time_s * 1e15, cumulative_flux_norm, color=ORANGE, lw=1.6)
 axs[0].set_ylabel("Instantaneous Flux (norm.)")
 axs[1].set_ylabel("Cumulative Flux (norm.)")
 axs[1].set_xlabel("Time (fs)")

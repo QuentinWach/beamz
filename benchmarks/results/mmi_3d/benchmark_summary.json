@@ -24,9 +24,9 @@
     157,
     315
   ],
-  "elapsed_s": 40.88063987484202,
-  "s_per_step": 0.024075759643605428,
-  "tcups": 0.0015529304393072526,
+  "elapsed_s": 40.992542332969606,
+  "s_per_step": 0.024141662151336635,
+  "tcups": 0.001548691211302117,
   "design_projection_png": "benchmarks/results/mmi_3d/design_projections_xyz.png",
   "mode_fields_png": "benchmarks/results/mmi_3d/mode_fields.png",
   "mid_ez_snapshot_png": "benchmarks/results/mmi_3d/ez_snapshot_mid_step_849.png",
