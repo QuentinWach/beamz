@@ -6,3 +6,8 @@ pip install beamz
 ```
 
 > **Note**: _BEAMZ is currently in a premature state and not publically advertised. If you're a friend of Quentin Wach, feel free to get a first peek, otherwise, consider this package yet to be released._
+
+## Engine Docs
+
+- [Compiled FDTD Engine (v0.3)](compiled_engine_v3.md)
+- [Migration Guide v0.2 -> v0.3](migration_v03.md)

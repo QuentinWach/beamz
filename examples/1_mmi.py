@@ -1,24 +1,81 @@
-from beamz import *
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
 import numpy as np
 
+# Ensure local workspace package import when running from examples/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from beamz import (
+    LIGHT_SPEED,
+    Design,
+    Material,
+    ModeSource,
+    PML,
+    Rectangle,
+    Simulation,
+    Taper,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    µm,
+)
+
+# 2D MMI example.
+# For the benchmark-oriented 3D version with artifact export, use examples/1_mmi_3d.py.
+
 # Parameters
-X, Y = 20*µm, 10*µm # domain width, height
-WL = 1.55*µm # wavelength
-TIME = 40*WL/LIGHT_SPEED # total simulation duration
-N_CORE, N_CLAD = 2.04, 1.444 # Si3N4, SiO2
-WG_W = 0.565*µm # width of the waveguide
-H, W, OFFSET = 3.5*µm, 9*µm, 1.05*µm # height, length, offset of the MMI
-MMI_TAPER = 1.5*µm # smooth input transition to reduce physical reflection at MMI entrance
-DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=20) 
+X, Y = 20 * µm, 10 * µm
+WL = 1.55 * µm
+TIME = 40 * WL / LIGHT_SPEED
+N_CORE, N_CLAD = 2.04, 1.444
+WG_W = 0.565 * µm
+H, W, OFFSET = 3.5 * µm, 9 * µm, 1.05 * µm
+MMI_TAPER = 1.5 * µm
+
+DX, DT = calc_optimal_fdtd_params(
+    WL,
+    max(N_CORE, N_CLAD),
+    dims=2,
+    safety_factor=0.999,
+    points_per_wavelength=20,
+)
 
 # Design the MMI with input and output waveguides
 design = Design(width=X, height=Y, material=Material(N_CLAD**2))
-mmi_body_start = X/2 - W/2 + MMI_TAPER
-design += Rectangle(position=(0, Y/2-WG_W/2), width=mmi_body_start, height=WG_W, material=Material(N_CORE**2))
-design += Taper(position=(mmi_body_start, Y/2), input_width=WG_W, output_width=H, length=MMI_TAPER, material=Material(N_CORE**2))
-design += Rectangle(position=(mmi_body_start + MMI_TAPER, Y/2-H/2), width=W - MMI_TAPER, height=H, material=Material(N_CORE**2))
-design += Rectangle(position=(X/2, Y/2 + OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
-design += Rectangle(position=(X/2, Y/2 - OFFSET - WG_W/2), width=X/2, height=WG_W, material=Material(N_CORE**2))
+mmi_body_start = X / 2 - W / 2 + MMI_TAPER
+design += Rectangle(
+    position=(0, Y / 2 - WG_W / 2),
+    width=mmi_body_start,
+    height=WG_W,
+    material=Material(N_CORE**2),
+)
+design += Taper(
+    position=(mmi_body_start, Y / 2),
+    input_width=WG_W,
+    output_width=H,
+    length=MMI_TAPER,
+    material=Material(N_CORE**2),
+)
+design += Rectangle(
+    position=(mmi_body_start + MMI_TAPER, Y / 2 - H / 2),
+    width=W - MMI_TAPER,
+    height=H,
+    material=Material(N_CORE**2),
+)
+design += Rectangle(
+    position=(X / 2, Y / 2 + OFFSET - WG_W / 2),
+    width=X / 2,
+    height=WG_W,
+    material=Material(N_CORE**2),
+)
+design += Rectangle(
+    position=(X / 2, Y / 2 - OFFSET - WG_W / 2),
+    width=X / 2,
+    height=WG_W,
+    material=Material(N_CORE**2),
+)
 design.show()
 
 # Rasterize the design
@@ -27,15 +84,35 @@ grid.show(field="permittivity")
 
 # Define the source
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=WL*6/LIGHT_SPEED, t_max=TIME/2)
-#plot_signal(signal, time_steps)
-# Use TM polarization (Ez/H) and restrict transverse width to avoid exciting higher-order lobes
-source = ModeSource(grid=grid, center=(3*µm, Y/2), width=WG_W * 3.5, wavelength=WL, pol="tm", signal=signal, direction="+x")
+signal = ramped_cosine(
+    time_steps,
+    amplitude=1.0,
+    frequency=LIGHT_SPEED / WL,
+    ramp_duration=WL * 6 / LIGHT_SPEED,
+    t_max=TIME / 2,
+)
+source = ModeSource(
+    grid=grid,
+    center=(3 * µm, Y / 2),
+    width=WG_W * 3.5,
+    wavelength=WL,
+    pol="tm",
+    signal=signal,
+    direction="+x",
+)
 
-# Run the simulation and show results
-sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', thickness=1.2*WL)], time=time_steps, resolution=DX)
-sim.run(animate_live="Ez",
-    animation_interval=12,
+# Run the simulation
+sim = Simulation(
+    design=design,
+    devices=[source],
+    boundaries=[PML(edges="all", thickness=1.2 * WL)],
+    time=time_steps,
+    resolution=DX,
+)
+sim.run(
+    animate_live="Ez",
+    animation_interval=15,
     axis_scale=[-7e-5, 7e-5],
     clean_visualization=True,
-    line_color="gray")
+    line_color="gray",
+)

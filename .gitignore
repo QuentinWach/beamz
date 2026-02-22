@@ -74,6 +74,8 @@ project_ideas/
 MARKETING_2.md
 !BEAMZ_logo.png
 *.npy
+benchmarks/results/ir/
+benchmarks/results/trace/
 
 beamz/devices/reference/
 notes/
