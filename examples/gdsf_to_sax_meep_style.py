@@ -49,6 +49,7 @@ SHOW_SIGNAL = env_bool("BEAMZ_SHOW_SIGNAL", not FAST_MODE)
 SHOW_FINAL = env_bool("BEAMZ_SHOW_FINAL", not FAST_MODE)
 DEBUG_DFT = env_bool("BEAMZ_DEBUG_DFT", False)
 CALIBRATE_PORT_SCALE = env_bool("BEAMZ_CALIBRATE_PORT_SCALE", False)
+AUTO_SELECT_OUTPUT_WAVE = env_bool("BEAMZ_AUTO_SELECT_OUTPUT_WAVE", True)
 POLARIZATION = str(os.getenv("BEAMZ_POLARIZATION", "tm")).strip().lower()
 if POLARIZATION not in {"te", "tm"}:
     raise ValueError(
@@ -499,6 +500,20 @@ def safe_ratio(num, den, eps=1e-18):
     valid = np.abs(den) > eps
     out[valid] = num[valid] / den[valid]
     return out
+
+
+def select_output_wave(port_name, waves_dict, auto_select=True):
+    a_plus = np.asarray(waves_dict[port_name]["a_plus"], dtype=np.complex128)
+    a_minus = np.asarray(waves_dict[port_name]["a_minus"], dtype=np.complex128)
+    p_plus = float(np.mean(np.abs(a_plus) ** 2)) if a_plus.size else 0.0
+    p_minus = float(np.mean(np.abs(a_minus) ** 2)) if a_minus.size else 0.0
+    if auto_select:
+        use_plus = p_plus > p_minus
+    else:
+        use_plus = False
+    selected = "a_plus" if use_plus else "a_minus"
+    coeff = a_plus if use_plus else a_minus
+    return coeff, selected, p_plus, p_minus
 
 
 def trapz(y, x):
@@ -1407,8 +1422,12 @@ else:
     a_incident = np.asarray(waves_inc["o1_inc"]["a_plus"], dtype=np.complex128)
 
 b_o1 = np.asarray(waves_dev[SOURCE_PORT]["a_minus"], dtype=np.complex128)
-b_o2 = np.asarray(waves_dev["o2"]["a_minus"], dtype=np.complex128)
-b_o3 = np.asarray(waves_dev["o3"]["a_minus"], dtype=np.complex128)
+b_o2, sel_o2, p2_plus, p2_minus = select_output_wave(
+    "o2", waves_dev, auto_select=AUTO_SELECT_OUTPUT_WAVE
+)
+b_o3, sel_o3, p3_plus, p3_minus = select_output_wave(
+    "o3", waves_dev, auto_select=AUTO_SELECT_OUTPUT_WAVE
+)
 if DEBUG_DFT:
     print(
         "Device wave diagnostics: "
@@ -1416,6 +1435,18 @@ if DEBUG_DFT:
         f"max|b_o2|={np.max(np.abs(b_o2)):.3e}, "
         f"max|b_o3|={np.max(np.abs(b_o3)):.3e}"
     )
+print(
+    "Output-wave selection: "
+    f"o2={sel_o2} (mean|a+|^2={p2_plus:.3e}, mean|a-|^2={p2_minus:.3e}), "
+    f"o3={sel_o3} (mean|a+|^2={p3_plus:.3e}, mean|a-|^2={p3_minus:.3e})"
+)
+for port_name in [SOURCE_PORT, "o2", "o3"]:
+    cond = np.asarray(waves_dev[port_name].get("condition_number", []), dtype=float)
+    if cond.size:
+        print(
+            f"[modal conditioning] {port_name}: "
+            f"min={np.min(cond):.2e}, median={np.median(cond):.2e}, max={np.max(cond):.2e}"
+        )
 
 if CALIBRATE_PORT_SCALE:
     cal_freq = env_float("BEAMZ_CALIBRATION_FREQUENCY_HZ", fcen)
