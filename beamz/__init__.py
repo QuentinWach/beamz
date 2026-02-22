@@ -44,6 +44,14 @@ from beamz.optimization.topology import (
 )
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.core import PortSpec, Simulation
+from beamz.simulation.compiled import (
+    CompiledRunConfig,
+    CompiledSimulation,
+    EngineState,
+    MonitorState,
+    RunState,
+    compile_simulation,
+)
 from beamz.simulation.thermal import (
     ConvectionBC,
     MZITuningResult,
@@ -110,6 +118,12 @@ _exports = {
     "RegularGrid": RegularGrid,
     "Simulation": Simulation,
     "PortSpec": PortSpec,
+    "CompiledRunConfig": CompiledRunConfig,
+    "CompiledSimulation": CompiledSimulation,
+    "EngineState": EngineState,
+    "MonitorState": MonitorState,
+    "RunState": RunState,
+    "compile_simulation": compile_simulation,
     # Thermal (new primary API)
     "ThermalConfig": ThermalConfig,
     "ThermalCoupling": ThermalCoupling,

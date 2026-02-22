@@ -1,0 +1,43 @@
+{
+  "scenario": "fdtdx_coupler",
+  "source_kind": "mode",
+  "monitor_count": 1,
+  "monitor_records_max": 4196,
+  "monitors": [
+    {
+      "name": "xy_power_monitor",
+      "plane_normal": "z",
+      "plane_position": 7.5e-07,
+      "records": 4196,
+      "power_mean": 1.1054353084918222e-13,
+      "power_max": 1.800501615205688e-13,
+      "power_min": 1.7699038163955083e-20,
+      "energy_trapz": 2.2105411932132442e-26,
+      "csv": "benchmarks/results/physics/20260221T144416Z/fdtdx_coupler_source_mode/xy_power_monitor_power.csv",
+      "npz": "benchmarks/results/physics/20260221T144416Z/fdtdx_coupler_source_mode/xy_power_monitor_power.npz",
+      "png": "benchmarks/results/physics/20260221T144416Z/fdtdx_coupler_source_mode/xy_power_monitor_power.png"
+    }
+  ],
+  "mode_source_count": 1,
+  "mode_sources": [
+    {
+      "source_index": 0,
+      "direction": "+x",
+      "pol": "tm",
+      "neff_real": 2.599418480724871,
+      "neff_imag": 0.0,
+      "impedance_neff": 3.391225039248568,
+      "npz": "benchmarks/results/physics/20260221T144416Z/fdtdx_coupler_source_mode/mode_source_0.npz",
+      "json": "benchmarks/results/physics/20260221T144416Z/fdtdx_coupler_source_mode/mode_source_0.json"
+    }
+  ],
+  "ez_snapshot": {
+    "label": "step_2098",
+    "step": 2098,
+    "time_s": 9.999958489308874e-14,
+    "plane_axis": "z",
+    "plane_index": 29,
+    "npz": "benchmarks/results/physics/20260221T144416Z/fdtdx_coupler_source_mode/ez_snapshot_step_2098.npz",
+    "png": "benchmarks/results/physics/20260221T144416Z/fdtdx_coupler_source_mode/ez_snapshot_step_2098.png"
+  }
+}

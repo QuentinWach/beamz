@@ -1,0 +1,91 @@
+{
+  "domain_um": [
+    2.0,
+    1.5,
+    0.8
+  ],
+  "resolution_nm": 50.0,
+  "courant_factor": 0.9,
+  "sim_time_fs": 2.0,
+  "resolved_steps": 23,
+  "elapsed_s": 1.4878863331396133,
+  "s_per_step": 0.06469071013650493,
+  "tcups": 1.7807811934188788e-06,
+  "grid_shape": [
+    16,
+    30,
+    40
+  ],
+  "output_dir": "benchmarks/results/mmi_3d_smoke",
+  "mode_export": {
+    "png": "benchmarks/results/mmi_3d_smoke/mode_fields.png",
+    "npz": "benchmarks/results/mmi_3d_smoke/mode_fields.npz",
+    "json": "benchmarks/results/mmi_3d_smoke/mode_fields.json",
+    "direction": "+x",
+    "pol": "tm",
+    "neff_real": 1.4518282590266434,
+    "neff_imag": 0.0,
+    "impedance_neff": 1.7908509833760735,
+    "components": {
+      "Ex": {
+        "shape": [
+          12,
+          30
+        ],
+        "l2_norm": 0.0,
+        "max_abs": 0.0
+      },
+      "Ey": {
+        "shape": [
+          12,
+          29
+        ],
+        "l2_norm": 7.498817443847656,
+        "max_abs": 1.3995025157928467
+      },
+      "Ez": {
+        "shape": [
+          12,
+          30
+        ],
+        "l2_norm": 222.10809326171875,
+        "max_abs": 21.306379318237305
+      },
+      "Hx": {
+        "shape": [
+          12,
+          29
+        ],
+        "l2_norm": 0.0,
+        "max_abs": 0.0
+      },
+      "Hy": {
+        "shape": [
+          12,
+          30
+        ],
+        "l2_norm": 1.0882644653320312,
+        "max_abs": 0.10506115853786469
+      },
+      "Hz": {
+        "shape": [
+          12,
+          29
+        ],
+        "l2_norm": 0.03807888925075531,
+        "max_abs": 0.005489964038133621
+      }
+    }
+  },
+  "mid_snapshot": {
+    "png": "benchmarks/results/mmi_3d_smoke/ez_snapshot_mid_step_11.png",
+    "npz": "benchmarks/results/mmi_3d_smoke/ez_snapshot_mid_step_11.npz",
+    "step": 11,
+    "time_fs": 0.9532874071358399
+  },
+  "flux_export": {
+    "png": "benchmarks/results/mmi_3d_smoke/flux_cumulative_normalized.png",
+    "csv": "benchmarks/results/mmi_3d_smoke/flux_time_series.csv",
+    "npz": "benchmarks/results/mmi_3d_smoke/flux_time_series.npz"
+  }
+}
