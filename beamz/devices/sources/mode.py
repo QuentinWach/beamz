@@ -270,7 +270,7 @@ def _impedance_match_3d_tangential_pairs(
     This mirrors the 2D rule (pair-wise E/H matching) instead of using a single
     global scale across all components, which tends to increase backscatter.
     """
-    mod = jnp if use_jax else np
+    del use_jax
     e_map = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s}
     h_map = {"Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
     pair_map = {
@@ -279,19 +279,34 @@ def _impedance_match_3d_tangential_pairs(
         "z": [("Ex", "Hy"), ("Ey", "Hx")],
     }
     for e_name, h_name in pair_map[axis]:
-        e_field = e_map[e_name]
-        h_field = h_map[h_name]
-        # Use an L2 norm ratio (||E||/||H||), which is far more stable than
-        # complex cross-correlation for near-orthogonal/degenerate fields.
-        # This keeps source scaling finite and avoids pathological blow-ups.
-        e_norm = mod.sqrt(mod.sum(mod.abs(e_field) ** 2) + eps)
-        h_norm = mod.sqrt(mod.sum(mod.abs(h_field) ** 2) + eps)
-        ratio = float(e_norm / (h_norm + eps))
+        e_field = np.asarray(e_map[e_name])
+        h_field = np.asarray(h_map[h_name])
+        abs_e = np.abs(e_field)
+        abs_h = np.abs(h_field)
+
+        # Robust local impedance estimate: use pointwise |E|/|H| over the strong-field
+        # support of H to avoid tail-dominated or near-orthogonal global statistics.
+        h_peak = float(np.max(abs_h))
+        if h_peak > eps:
+            mask = abs_h > (0.05 * h_peak)
+            if np.any(mask):
+                local_ratio = abs_e[mask] / (abs_h[mask] + eps)
+                ratio = float(np.median(local_ratio))
+            else:
+                ratio = 0.0
+        else:
+            ratio = 0.0
+
+        if not np.isfinite(ratio) or ratio <= eps:
+            e_norm = float(np.sqrt(np.sum(abs_e**2) + eps))
+            h_norm = float(np.sqrt(np.sum(abs_h**2) + eps))
+            ratio = e_norm / (h_norm + eps)
+
         if not np.isfinite(ratio) or ratio <= eps:
             continue
         z_abs = float(abs(Z_target))
         scale = z_abs / ratio
-        max_scale = max(10.0, 4.0 * z_abs)
+        max_scale = max(20.0, 8.0 * z_abs)
         scale = float(np.clip(scale, 1.0 / max_scale, max_scale))
         e_map[e_name] = e_field * scale
     return (
@@ -549,8 +564,9 @@ def _build_3d_x(
         y_end,
         dir_sign,
         use_jax=True,
-        alpha=0.0,
+        alpha=0.2,
     )
+    profiles = _normalize_3d_profiles_by_flux(profiles, axis="x")
 
     extra = {
         "_y_start": y_start,
@@ -652,8 +668,9 @@ def _build_3d_y(
         x_end,
         dir_sign,
         use_jax=False,
-        alpha=0.0,
+        alpha=0.2,
     )
+    profiles = _normalize_3d_profiles_by_flux(profiles, axis="y")
 
     extra = {
         "_x_start": x_start,
@@ -759,8 +776,9 @@ def _build_3d_z(
         x_end,
         dir_sign,
         use_jax=True,
-        alpha=0.0,
+        alpha=0.2,
     )
+    profiles = _normalize_3d_profiles_by_flux(profiles, axis="z")
 
     extra = {
         "_x_start": x_start,
@@ -799,6 +817,53 @@ def _crop_and_window_all(
         profiles[name] = dir_sign * np.real(
             _crop_and_window_2d(field, z_start, fe, t_start, te, window)
         )
+    return profiles
+
+
+def _normalize_3d_profiles_by_flux(profiles, axis, eps=1e-18):
+    """Normalize 3D source profiles to a stable unit-flux scale."""
+    ex = profiles.get("Ex")
+    ey = profiles.get("Ey")
+    ez = profiles.get("Ez")
+    hx = profiles.get("Hx")
+    hy = profiles.get("Hy")
+    hz = profiles.get("Hz")
+    if any(v is None for v in (ex, ey, ez, hx, hy, hz)):
+        return profiles
+
+    ex = np.asarray(ex)
+    ey = np.asarray(ey)
+    ez = np.asarray(ez)
+    hx = np.asarray(hx)
+    hy = np.asarray(hy)
+    hz = np.asarray(hz)
+    ny = min(ex.shape[0], ey.shape[0], ez.shape[0], hx.shape[0], hy.shape[0], hz.shape[0])
+    nx = min(ex.shape[1], ey.shape[1], ez.shape[1], hx.shape[1], hy.shape[1], hz.shape[1])
+    if ny <= 0 or nx <= 0:
+        return profiles
+
+    ex = ex[:ny, :nx]
+    ey = ey[:ny, :nx]
+    ez = ez[:ny, :nx]
+    hx = hx[:ny, :nx]
+    hy = hy[:ny, :nx]
+    hz = hz[:ny, :nx]
+
+    if axis == "x":
+        s_axis = ey * hz - ez * hy
+    elif axis == "y":
+        s_axis = ez * hx - ex * hz
+    else:
+        s_axis = ex * hy - ey * hx
+
+    flux_l1 = float(np.sum(np.abs(s_axis)))
+    if (not np.isfinite(flux_l1)) or flux_l1 <= eps:
+        return profiles
+
+    scale = float(np.sqrt(1.0 / max(flux_l1, eps)))
+    scale = float(np.clip(scale, 1e-6, 1e6))
+    for key, value in profiles.items():
+        profiles[key] = np.asarray(value) * scale
     return profiles
 
 
@@ -1094,6 +1159,14 @@ class ModeSource:
                 ("-" if self.direction.startswith("+") else "+") + axis
             )
 
+        eps_profile_arr = np.asarray(eps_profile)
+        n_local_max = float(
+            np.sqrt(max(float(np.max(np.real(eps_profile_arr))), 1e-12))
+        )
+        # Bias the solver toward the guided branch in large windows where cladding-like
+        # continuum modes can otherwise dominate the sort order.
+        target_neff = 0.98 * n_local_max
+
         neff_val, e_fields, h_fields, _ = solve_modes(
             eps=eps_profile,
             omega=omega,
@@ -1101,6 +1174,7 @@ class ModeSource:
             m=1,
             direction=solver_direction,
             filter_pol=self.pol,
+            target_neff=target_neff,
             return_fields=True,
         )
         self._neff = neff_val[0]

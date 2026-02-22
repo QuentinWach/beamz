@@ -1,11 +1,11 @@
 {
   "direction": "+x",
   "pol": "tm",
-  "neff_real": 1.4765590736719627,
+  "neff_real": 1.476559073671963,
   "neff_imag": 0.0,
   "impedance_neff": 1.60943916182026,
   "source_center_um": [
-    3.3600000000000003,
+    4.36,
     5.0,
     4.01
   ],
