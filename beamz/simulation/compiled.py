@@ -104,6 +104,10 @@ class MonitorState(NamedTuple):
     powers: jnp.ndarray
     timestamps: jnp.ndarray
     counts: jnp.ndarray
+    freq_flux_re: jnp.ndarray
+    freq_flux_im: jnp.ndarray
+    freq_phase_re: jnp.ndarray
+    freq_phase_im: jnp.ndarray
 
 
 class UpdateCoefficients(NamedTuple):
@@ -219,9 +223,13 @@ class CompiledSimulation:
             e_source_lossless_z=self.e_source_lossless_z,
         )
 
-    def _sources_for(self, timing: str, component: str) -> tuple[CompiledSourceSpec, ...]:
+    def _sources_for(
+        self, timing: str, component: str
+    ) -> tuple[CompiledSourceSpec, ...]:
         return tuple(
-            s for s in self.source_specs if s.timing == timing and s.component == component
+            s
+            for s in self.source_specs
+            if s.timing == timing and s.component == component
         )
 
     def _apply_specs(
@@ -234,7 +242,11 @@ class CompiledSimulation:
         for spec in specs:
             safe_idx = jnp.clip(abs_step, 0, spec.waveform.shape[0] - 1)
             amp = spec.waveform[safe_idx]
-            if spec.is_slab and spec.slab_starts is not None and spec.slab_sizes is not None:
+            if (
+                spec.is_slab
+                and spec.slab_starts is not None
+                and spec.slab_sizes is not None
+            ):
                 patch = spec.coeff * amp
                 cur = jax.lax.dynamic_slice(out, spec.slab_starts, spec.slab_sizes)
                 out = jax.lax.dynamic_update_slice(out, cur + patch, spec.slab_starts)
@@ -275,6 +287,7 @@ class CompiledSimulation:
             return jax.lax.dynamic_update_slice(arr, cur + patch, starts_0)
 
         if group.n == 2:
+
             def apply_one(out, i: int):
                 amp_i = group.waveforms[i, safe_idx]
                 patch_i = group.coeffs[i] * amp_i
@@ -401,6 +414,7 @@ class CompiledSimulation:
         monitor_state: MonitorState,
         abs_step: jnp.ndarray,
         t_phys: jnp.ndarray,
+        dt_scalar: jnp.ndarray,
         ex: jnp.ndarray,
         ey: jnp.ndarray,
         ez: jnp.ndarray,
@@ -416,6 +430,10 @@ class CompiledSimulation:
         powers = monitor_state.powers
         timestamps = monitor_state.timestamps
         counts = monitor_state.counts
+        freq_flux_re = monitor_state.freq_flux_re
+        freq_flux_im = monitor_state.freq_flux_im
+        freq_phase_re = monitor_state.freq_phase_re
+        freq_phase_im = monitor_state.freq_phase_im
         max_records = powers.shape[1]
 
         # Batched 3D monitors via fori_loop (constant HLO size)
@@ -429,7 +447,7 @@ class CompiledSimulation:
             hz_flat = hz.ravel()
 
             def _mon_body(i, carry):
-                pwr, ts, cnt = carry
+                pwr, ts, cnt, f_re, f_im, ph_re, ph_im = carry
                 mi = bm.monitor_indices[i]
 
                 should_record = (abs_step % bm.record_intervals[i]) == 0
@@ -448,22 +466,66 @@ class CompiledSimulation:
                 sy = ezs * hxs - exs * hzs
                 sz = exs * hys - eys * hxs
                 power_val = (
-                    jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz))
+                    jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz)) * bm.power_scales[i]
+                )
+                axis_i = bm.normal_axes[i]
+                normal_flux = (
+                    jnp.sum(jnp.where(axis_i == 0, sx, jnp.where(axis_i == 1, sy, sz)))
                     * bm.power_scales[i]
                 )
+                flux_sample = jnp.where(axis_i < 0, power_val, normal_flux)
 
                 slot = jnp.minimum(cnt[mi], max_records - 1)
                 pwr = pwr.at[mi, slot].set(
                     jnp.where(do_record, power_val, pwr[mi, slot])
                 )
-                ts = ts.at[mi, slot].set(
-                    jnp.where(do_record, t_phys, ts[mi, slot])
-                )
+                ts = ts.at[mi, slot].set(jnp.where(do_record, t_phys, ts[mi, slot]))
                 cnt = cnt.at[mi].set(cnt[mi] + jnp.where(do_record, 1, 0))
-                return pwr, ts, cnt
+                do_freq = bm.freq_enabled[i] & (
+                    (abs_step % bm.freq_record_intervals[i]) == 0
+                )
+                mask_f = bm.freq_mask[i]
+                row_f_re = f_re[mi]
+                row_f_im = f_im[mi]
+                row_ph_re = ph_re[mi]
+                row_ph_im = ph_im[mi]
+                delta_re = flux_sample * dt_scalar * row_ph_re * mask_f
+                delta_im = flux_sample * dt_scalar * row_ph_im * mask_f
+                row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
+                row_f_im = row_f_im + jnp.where(do_freq, delta_im, 0.0)
+                rot_re = bm.freq_rot_re[i]
+                rot_im = bm.freq_rot_im[i]
+                next_ph_re = row_ph_re * rot_re - row_ph_im * rot_im
+                next_ph_im = row_ph_re * rot_im + row_ph_im * rot_re
+                row_ph_re = jnp.where(do_freq, next_ph_re, row_ph_re)
+                row_ph_im = jnp.where(do_freq, next_ph_im, row_ph_im)
+                f_re = f_re.at[mi].set(row_f_re)
+                f_im = f_im.at[mi].set(row_f_im)
+                ph_re = ph_re.at[mi].set(row_ph_re)
+                ph_im = ph_im.at[mi].set(row_ph_im)
+                return pwr, ts, cnt, f_re, f_im, ph_re, ph_im
 
-            powers, timestamps, counts = jax.lax.fori_loop(
-                0, bm.n_monitors, _mon_body, (powers, timestamps, counts)
+            (
+                powers,
+                timestamps,
+                counts,
+                freq_flux_re,
+                freq_flux_im,
+                freq_phase_re,
+                freq_phase_im,
+            ) = jax.lax.fori_loop(
+                0,
+                bm.n_monitors,
+                _mon_body,
+                (
+                    powers,
+                    timestamps,
+                    counts,
+                    freq_flux_re,
+                    freq_flux_im,
+                    freq_phase_re,
+                    freq_phase_im,
+                ),
             )
 
         # Remaining 2D monitors (Python loop — typically 0 in 3D sims)
@@ -471,11 +533,20 @@ class CompiledSimulation:
             should_record = (abs_step % mon.record_interval) == 0
             can_record = counts[mon.monitor_index] < max_records
             do_record = should_record & can_record & mon.accumulate_power
+            do_freq = (
+                (abs_step % mon.freq_record_interval) == 0
+                if mon.accumulate_frequency and mon.freq_count > 0
+                else jnp.array(False)
+            )
+            need_sample = do_record | do_freq
 
-            power_val = jnp.where(
-                do_record,
+            power_sample = jnp.where(
+                need_sample,
                 self._monitor_power_2d(mon, ez, hx, hy),
                 jnp.array(0.0, dtype=jnp.float32),
+            )
+            power_val = jnp.where(
+                do_record, power_sample, jnp.array(0.0, dtype=jnp.float32)
             )
 
             slot = jnp.minimum(counts[mon.monitor_index], max_records - 1)
@@ -491,8 +562,34 @@ class CompiledSimulation:
             counts = counts.at[mon.monitor_index].set(
                 counts[mon.monitor_index] + jnp.where(do_record, 1, 0)
             )
+            if mon.accumulate_frequency and mon.freq_count > 0:
+                mi = mon.monitor_index
+                row_f_re = freq_flux_re[mi, : mon.freq_count]
+                row_f_im = freq_flux_im[mi, : mon.freq_count]
+                row_ph_re = freq_phase_re[mi, : mon.freq_count]
+                row_ph_im = freq_phase_im[mi, : mon.freq_count]
+                delta_re = power_sample * dt_scalar * row_ph_re
+                delta_im = power_sample * dt_scalar * row_ph_im
+                row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
+                row_f_im = row_f_im + jnp.where(do_freq, delta_im, 0.0)
+                next_ph_re = row_ph_re * mon.freq_rot_re - row_ph_im * mon.freq_rot_im
+                next_ph_im = row_ph_re * mon.freq_rot_im + row_ph_im * mon.freq_rot_re
+                row_ph_re = jnp.where(do_freq, next_ph_re, row_ph_re)
+                row_ph_im = jnp.where(do_freq, next_ph_im, row_ph_im)
+                freq_flux_re = freq_flux_re.at[mi, : mon.freq_count].set(row_f_re)
+                freq_flux_im = freq_flux_im.at[mi, : mon.freq_count].set(row_f_im)
+                freq_phase_re = freq_phase_re.at[mi, : mon.freq_count].set(row_ph_re)
+                freq_phase_im = freq_phase_im.at[mi, : mon.freq_count].set(row_ph_im)
 
-        return MonitorState(powers=powers, timestamps=timestamps, counts=counts)
+        return MonitorState(
+            powers=powers,
+            timestamps=timestamps,
+            counts=counts,
+            freq_flux_re=freq_flux_re,
+            freq_flux_im=freq_flux_im,
+            freq_phase_re=freq_phase_re,
+            freq_phase_im=freq_phase_im,
+        )
 
     def _build_scan(self):
         material_model = create_material_model(self.material_spec)
@@ -500,13 +597,20 @@ class CompiledSimulation:
 
         resolution = float(self.config.resolution)
         dt = float(self.config.dt)
+        dt_scalar = jnp.asarray(dt, dtype=jnp.float32)
         plane_2d = self.config.plane_2d
         is_3d = self.config.is_3d
 
         # Batch slab sources by (timing, component) for fori_loop application
-        pre_e_ex_batch, pre_e_ex_rest = batch_slab_specs(self._sources_for("pre_e", "Ex"))
-        pre_e_ey_batch, pre_e_ey_rest = batch_slab_specs(self._sources_for("pre_e", "Ey"))
-        pre_e_ez_batch, pre_e_ez_rest = batch_slab_specs(self._sources_for("pre_e", "Ez"))
+        pre_e_ex_batch, pre_e_ex_rest = batch_slab_specs(
+            self._sources_for("pre_e", "Ex")
+        )
+        pre_e_ey_batch, pre_e_ey_rest = batch_slab_specs(
+            self._sources_for("pre_e", "Ey")
+        )
+        pre_e_ez_batch, pre_e_ez_rest = batch_slab_specs(
+            self._sources_for("pre_e", "Ez")
+        )
 
         h_batch_x, h_rest_x = batch_slab_specs(self._sources_for("h", "Hx"))
         h_batch_y, h_rest_y = batch_slab_specs(self._sources_for("h", "Hy"))
@@ -572,19 +676,34 @@ class CompiledSimulation:
                 ex, ey, ez = eng.ex, eng.ey, eng.ez
                 hx, hy, hz = eng.hx, eng.hy, eng.hz
 
-                ex = self._apply_source_group(ex, abs_step, pre_e_ex_batch, pre_e_ex_rest)
-                ey = self._apply_source_group(ey, abs_step, pre_e_ey_batch, pre_e_ey_rest)
-                ez = self._apply_source_group(ez, abs_step, pre_e_ez_batch, pre_e_ez_rest)
+                ex = self._apply_source_group(
+                    ex, abs_step, pre_e_ex_batch, pre_e_ex_rest
+                )
+                ey = self._apply_source_group(
+                    ey, abs_step, pre_e_ey_batch, pre_e_ey_rest
+                )
+                ez = self._apply_source_group(
+                    ez, abs_step, pre_e_ez_batch, pre_e_ez_rest
+                )
 
                 if is_3d:
-                    any_h_shell = use_lossy_shell_hx or use_lossy_shell_hy or use_lossy_shell_hz
+                    any_h_shell = (
+                        use_lossy_shell_hx or use_lossy_shell_hy or use_lossy_shell_hz
+                    )
                     if any_h_shell:
                         # Shell path: lossless fused update, then lossy shell correction
                         # without explicit curl arrays.
                         hx_old, hy_old, hz_old = hx, hy, hz
                         hx, hy, hz = ops.fused_update_h_lossless_3d(
-                            ex, ey, ez, hx, hy, hz,
-                            h_source_lossless_x, h_source_lossless_y, h_source_lossless_z,
+                            ex,
+                            ey,
+                            ez,
+                            hx,
+                            hy,
+                            hz,
+                            h_source_lossless_x,
+                            h_source_lossless_y,
+                            h_source_lossless_z,
                             resolution,
                         )
                         if use_lossy_shell_hx:
@@ -617,9 +736,19 @@ class CompiledSimulation:
                     else:
                         # Fused path: no intermediate curl arrays
                         hx, hy, hz = ops.fused_update_h_lossy_3d(
-                            ex, ey, ez, hx, hy, hz,
-                            h_decay_x, h_source_x, h_decay_y, h_source_y,
-                            h_decay_z, h_source_z, resolution,
+                            ex,
+                            ey,
+                            ez,
+                            hx,
+                            hy,
+                            hz,
+                            h_decay_x,
+                            h_source_x,
+                            h_decay_y,
+                            h_source_y,
+                            h_decay_z,
+                            h_source_z,
+                            resolution,
                         )
                 else:
                     curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_2d(
@@ -633,8 +762,12 @@ class CompiledSimulation:
                     if use_lossy_shell_hx:
                         hx = hx_old - h_source_lossless_x * curl_ex
                         hx = self._apply_lossy_shell(
-                            updated=hx, old=hx_old, curl=curl_ex,
-                            decay=h_decay_x, source=-h_source_x, slabs=lossy_shell_hx,
+                            updated=hx,
+                            old=hx_old,
+                            curl=curl_ex,
+                            decay=h_decay_x,
+                            source=-h_source_x,
+                            slabs=lossy_shell_hx,
                         )
                     else:
                         hx = h_decay_x * hx_old - h_source_x * curl_ex
@@ -642,8 +775,12 @@ class CompiledSimulation:
                     if use_lossy_shell_hy:
                         hy = hy_old - h_source_lossless_y * curl_ey
                         hy = self._apply_lossy_shell(
-                            updated=hy, old=hy_old, curl=curl_ey,
-                            decay=h_decay_y, source=-h_source_y, slabs=lossy_shell_hy,
+                            updated=hy,
+                            old=hy_old,
+                            curl=curl_ey,
+                            decay=h_decay_y,
+                            source=-h_source_y,
+                            slabs=lossy_shell_hy,
                         )
                     else:
                         hy = h_decay_y * hy_old - h_source_y * curl_ey
@@ -651,8 +788,12 @@ class CompiledSimulation:
                     if use_lossy_shell_hz:
                         hz = hz_old - h_source_lossless_z * curl_ez
                         hz = self._apply_lossy_shell(
-                            updated=hz, old=hz_old, curl=curl_ez,
-                            decay=h_decay_z, source=-h_source_z, slabs=lossy_shell_hz,
+                            updated=hz,
+                            old=hz_old,
+                            curl=curl_ez,
+                            decay=h_decay_z,
+                            source=-h_source_z,
+                            slabs=lossy_shell_hz,
                         )
                     else:
                         hz = h_decay_z * hz_old - h_source_z * curl_ez
@@ -662,14 +803,23 @@ class CompiledSimulation:
                 hz = self._apply_source_group(hz, abs_step, h_batch_z, h_rest_z)
 
                 if is_3d:
-                    any_e_shell = use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
+                    any_e_shell = (
+                        use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
+                    )
                     if any_e_shell:
                         # Shell path: lossless fused update, then lossy shell correction
                         # without explicit curl arrays.
                         ex_old, ey_old, ez_old = ex, ey, ez
                         ex, ey, ez = ops.fused_update_e_lossless_3d(
-                            hx, hy, hz, ex, ey, ez,
-                            e_source_lossless_x, e_source_lossless_y, e_source_lossless_z,
+                            hx,
+                            hy,
+                            hz,
+                            ex,
+                            ey,
+                            ez,
+                            e_source_lossless_x,
+                            e_source_lossless_y,
+                            e_source_lossless_z,
                             resolution,
                         )
                         if use_lossy_shell_ex:
@@ -702,9 +852,19 @@ class CompiledSimulation:
                     else:
                         # Fused path: no intermediate curl arrays
                         ex, ey, ez = ops.fused_update_e_lossy_3d(
-                            hx, hy, hz, ex, ey, ez,
-                            e_decay_x, e_source_x, e_decay_y, e_source_y,
-                            e_decay_z, e_source_z, resolution,
+                            hx,
+                            hy,
+                            hz,
+                            ex,
+                            ey,
+                            ez,
+                            e_decay_x,
+                            e_source_x,
+                            e_decay_y,
+                            e_source_y,
+                            e_decay_z,
+                            e_source_z,
+                            resolution,
                         )
                 else:
                     curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_2d(
@@ -719,8 +879,12 @@ class CompiledSimulation:
                     if use_lossy_shell_ex:
                         ex = ex_old + e_source_lossless_x * curl_hx
                         ex = self._apply_lossy_shell(
-                            updated=ex, old=ex_old, curl=curl_hx,
-                            decay=e_decay_x, source=e_source_x, slabs=lossy_shell_ex,
+                            updated=ex,
+                            old=ex_old,
+                            curl=curl_hx,
+                            decay=e_decay_x,
+                            source=e_source_x,
+                            slabs=lossy_shell_ex,
                         )
                     else:
                         ex = e_decay_x * ex_old + e_source_x * curl_hx
@@ -728,8 +892,12 @@ class CompiledSimulation:
                     if use_lossy_shell_ey:
                         ey = ey_old + e_source_lossless_y * curl_hy
                         ey = self._apply_lossy_shell(
-                            updated=ey, old=ey_old, curl=curl_hy,
-                            decay=e_decay_y, source=e_source_y, slabs=lossy_shell_ey,
+                            updated=ey,
+                            old=ey_old,
+                            curl=curl_hy,
+                            decay=e_decay_y,
+                            source=e_source_y,
+                            slabs=lossy_shell_ey,
                         )
                     else:
                         ey = e_decay_y * ey_old + e_source_y * curl_hy
@@ -737,8 +905,12 @@ class CompiledSimulation:
                     if use_lossy_shell_ez:
                         ez = ez_old + e_source_lossless_z * curl_hz
                         ez = self._apply_lossy_shell(
-                            updated=ez, old=ez_old, curl=curl_hz,
-                            decay=e_decay_z, source=e_source_z, slabs=lossy_shell_ez,
+                            updated=ez,
+                            old=ez_old,
+                            curl=curl_hz,
+                            decay=e_decay_z,
+                            source=e_source_z,
+                            slabs=lossy_shell_ez,
                         )
                     else:
                         ez = e_decay_z * ez_old + e_source_z * curl_hz
@@ -751,8 +923,18 @@ class CompiledSimulation:
 
                 t_phys = eng.t
                 mon = self._update_monitors(
-                    mon, abs_step, t_phys, ex, ey, ez, hx, hy, hz,
-                    batched_mon=batched_mon, monitors_2d=monitors_2d,
+                    mon,
+                    abs_step,
+                    t_phys,
+                    dt_scalar,
+                    ex,
+                    ey,
+                    ez,
+                    hx,
+                    hy,
+                    hz,
+                    batched_mon=batched_mon,
+                    monitors_2d=monitors_2d,
                 )
 
                 new_eng = EngineState(
@@ -768,6 +950,7 @@ class CompiledSimulation:
                 return (new_eng, mon, mat)
 
             if self.config.loop_kind == "scan":
+
                 def _scan_body(carry, _unused):
                     return body_with_coeffs(carry), None
 
@@ -802,17 +985,40 @@ class CompiledSimulation:
         """Execute the compiled simulation loop."""
         if monitor_state is None:
             if self.monitor_specs:
-                max_records = max(1, monitor_state_size(self.monitor_specs, self.config.num_steps))
+                max_records = max(
+                    1, monitor_state_size(self.monitor_specs, self.config.num_steps)
+                )
+                max_freq = monitor_frequency_size(self.monitor_specs)
                 monitor_state = MonitorState(
-                    powers=jnp.zeros((len(self.monitor_specs), max_records), dtype=jnp.float32),
-                    timestamps=jnp.zeros((len(self.monitor_specs), max_records), dtype=jnp.float32),
+                    powers=jnp.zeros(
+                        (len(self.monitor_specs), max_records), dtype=jnp.float32
+                    ),
+                    timestamps=jnp.zeros(
+                        (len(self.monitor_specs), max_records), dtype=jnp.float32
+                    ),
                     counts=jnp.zeros((len(self.monitor_specs),), dtype=jnp.int32),
+                    freq_flux_re=jnp.zeros(
+                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
+                    ),
+                    freq_flux_im=jnp.zeros(
+                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
+                    ),
+                    freq_phase_re=jnp.ones(
+                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
+                    ),
+                    freq_phase_im=jnp.zeros(
+                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
+                    ),
                 )
             else:
                 monitor_state = MonitorState(
                     powers=jnp.zeros((0, 0), dtype=jnp.float32),
                     timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
                     counts=jnp.zeros((0,), dtype=jnp.int32),
+                    freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                    freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                    freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                    freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
                 )
 
         if self._compiled_scan is None:
@@ -830,12 +1036,28 @@ class CompiledSimulation:
         for spec in self.monitor_specs:
             dev = self.monitor_devices[spec.monitor_index]
             count = int(np.asarray(monitor_state.counts[spec.monitor_index]))
-            powers = np.asarray(monitor_state.powers[spec.monitor_index, :count], dtype=float)
-            ts = np.asarray(monitor_state.timestamps[spec.monitor_index, :count], dtype=float)
+            powers = np.asarray(
+                monitor_state.powers[spec.monitor_index, :count], dtype=float
+            )
+            ts = np.asarray(
+                monitor_state.timestamps[spec.monitor_index, :count], dtype=float
+            )
 
             dev.power_history = list(powers.tolist())
             dev.power_timestamps = list(ts.tolist())
             dev.power_accumulation_count = count
+            if spec.freq_count > 0:
+                re = np.asarray(
+                    monitor_state.freq_flux_re[spec.monitor_index, : spec.freq_count],
+                    dtype=np.float32,
+                )
+                im = np.asarray(
+                    monitor_state.freq_flux_im[spec.monitor_index, : spec.freq_count],
+                    dtype=np.float32,
+                )
+                dev.frequency_flux_spectrum = (re + 1j * im).astype(np.complex64)
+            else:
+                dev.frequency_flux_spectrum = np.zeros((0,), dtype=np.complex64)
 
 
 def monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -> int:
@@ -843,9 +1065,16 @@ def monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -
         return 0
     return int(
         max(
-            int(np.ceil(num_steps / max(1, int(spec.record_interval)))) for spec in specs
+            int(np.ceil(num_steps / max(1, int(spec.record_interval))))
+            for spec in specs
         )
     )
+
+
+def monitor_frequency_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
+    if not specs:
+        return 0
+    return int(max(int(spec.freq_count) for spec in specs))
 
 
 def _edge_full_thickness(mask: np.ndarray, axis: int) -> tuple[int, int]:
@@ -1013,21 +1242,23 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
 
     monitor_devices = tuple(d for d in devices if isinstance(d, Monitor))
 
-    loop_kind_raw = str(
-        getattr(
-            run_cfg,
-            "loop_kind",
-            os.getenv("BEAMZ_COMPILED_LOOP_KIND", "scan"),
+    loop_kind_raw = (
+        str(
+            getattr(
+                run_cfg,
+                "loop_kind",
+                os.getenv("BEAMZ_COMPILED_LOOP_KIND", "scan"),
+            )
         )
-    ).strip().lower()
+        .strip()
+        .lower()
+    )
     if loop_kind_raw in {"fori", "fori_loop", "fori-loop"}:
         loop_kind = "fori_loop"
     elif loop_kind_raw in {"scan"}:
         loop_kind = "scan"
     else:
-        raise ValueError(
-            "Invalid compiled loop kind. Use one of: scan, fori_loop."
-        )
+        raise ValueError("Invalid compiled loop kind. Use one of: scan, fori_loop.")
     source_single_slab_dense = os.getenv(
         "BEAMZ_SOURCE_SINGLE_SLAB_DENSE",
         str(getattr(run_cfg, "source_single_slab_dense", False)),
@@ -1078,13 +1309,17 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
 
     e_shell_frac_threshold = 0.35
     h_shell_frac_threshold = 0.20
-    enable_e_shell_split = os.getenv("BEAMZ_ENABLE_E_SHELL_SPLIT", "").strip().lower() in {
+    enable_e_shell_split = os.getenv(
+        "BEAMZ_ENABLE_E_SHELL_SPLIT", ""
+    ).strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
-    enable_h_shell_split = os.getenv("BEAMZ_ENABLE_H_SHELL_SPLIT", "").strip().lower() in {
+    enable_h_shell_split = os.getenv(
+        "BEAMZ_ENABLE_H_SHELL_SPLIT", ""
+    ).strip().lower() in {
         "1",
         "true",
         "yes",
@@ -1136,7 +1371,11 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
                 <= e_shell_frac_threshold
             )
         else:
-            e_use_lossy_shell_x, e_use_lossy_shell_y, e_use_lossy_shell_z = False, False, False
+            e_use_lossy_shell_x, e_use_lossy_shell_y, e_use_lossy_shell_z = (
+                False,
+                False,
+                False,
+            )
         if enable_h_shell_split:
             h_use_lossy_shell_x = h_use_lossy_shell_x and (
                 _lossy_fraction(
@@ -1163,7 +1402,11 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
                 <= h_shell_frac_threshold
             )
         else:
-            h_use_lossy_shell_x, h_use_lossy_shell_y, h_use_lossy_shell_z = False, False, False
+            h_use_lossy_shell_x, h_use_lossy_shell_y, h_use_lossy_shell_z = (
+                False,
+                False,
+                False,
+            )
     else:
         e_use_lossy_shell_x, e_lossy_shell_x = False, tuple()
         e_use_lossy_shell_y, e_lossy_shell_y = False, tuple()

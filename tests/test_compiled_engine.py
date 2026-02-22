@@ -44,8 +44,12 @@ def test_run_compiled_matches_python_step_path(small_sim_params):
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
 
-    source_a = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
-    source_b = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    source_a = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    source_b = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
 
     sim_python = Simulation(
         design=design.copy(),
@@ -77,7 +81,9 @@ def test_compiled_monitor_power_is_populated(small_sim_params):
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
 
-    source = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
     monitor = Monitor(
         start=(domain * 0.35, domain * 0.35),
         end=(domain * 0.35, domain * 0.65),
@@ -103,7 +109,9 @@ def test_compiled_monitor_accumulates_across_chunks(small_sim_params):
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
 
-    source_a = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    source_a = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
     monitor_a = Monitor(
         start=(domain * 0.35, domain * 0.35),
         end=(domain * 0.35, domain * 0.65),
@@ -117,7 +125,9 @@ def test_compiled_monitor_accumulates_across_chunks(small_sim_params):
         resolution=dx,
     )
 
-    source_b = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    source_b = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
     monitor_b = Monitor(
         start=(domain * 0.35, domain * 0.35),
         end=(domain * 0.35, domain * 0.65),
@@ -149,6 +159,156 @@ def test_compiled_monitor_accumulates_across_chunks(small_sim_params):
     assert t_chunked.size == t_full.size
     assert np.allclose(p_chunked, p_full, rtol=5e-3, atol=5e-5)
     assert np.allclose(t_chunked, t_full, rtol=0.0, atol=0.0)
+
+
+def test_compiled_frequency_monitor_matches_direct_sum(small_sim_params):
+    wl, dx, dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    freq = LIGHT_SPEED / wl
+    monitor = Monitor(
+        start=(domain * 0.35, domain * 0.35),
+        end=(domain * 0.35, domain * 0.65),
+        record_interval=1,
+        frequency_points=[freq],
+        frequency_record_interval=1,
+    )
+
+    sim = Simulation(
+        design=design,
+        devices=[source, monitor],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+    sim.run_compiled(num_steps=60, progress=False)
+
+    assert monitor.frequency_flux_spectrum.shape == (1,)
+    assert np.isfinite(monitor.frequency_flux_spectrum).all()
+
+    power = np.asarray(monitor.power_history, dtype=np.float64)
+    ts = np.asarray(monitor.power_timestamps, dtype=np.float64)
+    direct = np.sum(power * np.exp(-1j * 2.0 * np.pi * freq * ts)) * dt
+    assert np.allclose(
+        monitor.frequency_flux_spectrum[0],
+        direct,
+        rtol=5e-3,
+        atol=5e-6,
+    )
+
+
+def test_compiled_frequency_monitor_accumulates_across_chunks(small_sim_params):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    freqs = [LIGHT_SPEED / wl, 1.1 * LIGHT_SPEED / wl]
+
+    source_a = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    monitor_a = Monitor(
+        start=(domain * 0.35, domain * 0.35),
+        end=(domain * 0.35, domain * 0.65),
+        record_interval=2,
+        frequency_points=freqs,
+        frequency_record_interval=1,
+    )
+    sim_full = Simulation(
+        design=design.copy(),
+        devices=[source_a, monitor_a],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    source_b = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    monitor_b = Monitor(
+        start=(domain * 0.35, domain * 0.35),
+        end=(domain * 0.35, domain * 0.65),
+        record_interval=2,
+        frequency_points=freqs,
+        frequency_record_interval=1,
+    )
+    sim_chunked = Simulation(
+        design=design.copy(),
+        devices=[source_b, monitor_b],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    sim_full.run_compiled(num_steps=50, progress=False)
+    sim_chunked.run_compiled(
+        num_steps=50,
+        record_interval=10,
+        record_fields=["Ez"],
+        progress=False,
+    )
+
+    s_full = np.asarray(monitor_a.frequency_flux_spectrum)
+    s_chunked = np.asarray(monitor_b.frequency_flux_spectrum)
+    assert s_full.shape == (2,)
+    assert s_chunked.shape == s_full.shape
+    assert np.allclose(s_chunked, s_full, rtol=5e-3, atol=5e-6)
+
+
+def test_compiled_frequency_monitor_3d_populated():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=6
+    )
+    domain = 2.0 * wl
+    depth = 1.5 * wl
+    t = np.arange(0, 24 * dt, dt)
+    freq = LIGHT_SPEED / wl
+    signal = ramped_cosine(
+        t,
+        amplitude=1.0,
+        frequency=freq,
+        ramp_duration=2 / freq,
+        t_max=t[-1] * 0.6,
+    )
+
+    design = Design(
+        width=domain,
+        height=domain,
+        depth=depth,
+        material=Material(permittivity=1.0),
+    )
+    source = GaussianSource(
+        position=(domain * 0.45, domain * 0.5, depth * 0.5),
+        width=wl / 5,
+        signal=signal,
+    )
+    monitor = Monitor(
+        design=design,
+        start=(domain * 0.65, domain * 0.2, depth * 0.2),
+        plane_normal="x",
+        plane_position=domain * 0.65,
+        size=(domain * 0.6, depth * 0.6),
+        record_interval=2,
+        frequency_points=[freq],
+        frequency_record_interval=1,
+        record_fields=False,
+    )
+    sim = Simulation(
+        design=design,
+        devices=[source, monitor],
+        boundaries=[PML(thickness=0.6 * wl, edges="all")],
+        time=t,
+        resolution=dx,
+    )
+    sim.run_compiled(num_steps=12, progress=False)
+
+    spec = np.asarray(monitor.frequency_flux_spectrum)
+    assert spec.shape == (1,)
+    assert np.isfinite(spec).all()
+    assert len(monitor.power_history) > 0
+    assert np.isfinite(np.asarray(monitor.power_history)).all()
 
 
 def test_compiled_program_compiles_once(small_sim_params):
@@ -186,6 +346,10 @@ def test_compiled_program_compiles_once(small_sim_params):
         powers=jnp.zeros((0, 0), dtype=jnp.float32),
         timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
         counts=jnp.zeros((0,), dtype=jnp.int32),
+        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
     )
 
     eng1, _, _ = program.run(eng0, mon0)
@@ -206,6 +370,10 @@ def test_compiled_program_compiles_once(small_sim_params):
         powers=jnp.zeros((0, 0), dtype=jnp.float32),
         timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
         counts=jnp.zeros((0,), dtype=jnp.int32),
+        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
     )
     program.run(eng1_input, mon1)
     assert program.compile_count == 1
@@ -214,7 +382,9 @@ def test_compiled_program_compiles_once(small_sim_params):
 def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-    source = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
 
     sim = Simulation(
         design=design,
@@ -239,10 +409,16 @@ def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
         powers=jnp.zeros((0, 0), dtype=jnp.float32),
         timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
         counts=jnp.zeros((0,), dtype=jnp.int32),
+        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
     )
 
     program._build_scan()
-    jaxpr = jax.make_jaxpr(program._compiled_scan)(eng0, mon0, program._update_coefficients())
+    jaxpr = jax.make_jaxpr(program._compiled_scan)(
+        eng0, mon0, program._update_coefficients()
+    )
     assert "host_callback" not in str(jaxpr).lower()
 
 
@@ -258,7 +434,9 @@ def test_compile_mode_source_builds_e_and_h_specs():
     height = 5 * wl
     wg_w = 0.8 * wl
 
-    design = Design(width=width, height=height, material=Material(permittivity=n_clad**2))
+    design = Design(
+        width=width, height=height, material=Material(permittivity=n_clad**2)
+    )
     design += Rectangle(
         position=(width / 2, height / 2),
         width=width,
@@ -306,7 +484,9 @@ def test_cache_reuse_across_equal_chunks(small_sim_params):
     """Equal-sized chunks should reuse the same compiled program (compile_count == 1)."""
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-    source = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
 
     sim = Simulation(
         design=design,
@@ -330,8 +510,12 @@ def test_waveform_absolute_indexing_correctness(small_sim_params):
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
 
-    source_a = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
-    source_b = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    source_a = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    source_b = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
 
     sim_single = Simulation(
         design=design.copy(),

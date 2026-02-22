@@ -22,6 +22,12 @@ class CompiledMonitorSpec:
     record_interval: int
     accumulate_power: bool
     power_scale: float
+    normal_axis: int = -1
+    accumulate_frequency: bool = False
+    freq_record_interval: int = 1
+    freq_count: int = 0
+    freq_rot_re: jnp.ndarray | None = None
+    freq_rot_im: jnp.ndarray | None = None
 
     # 2D fields
     x_ez: jnp.ndarray | None = None
@@ -66,6 +72,13 @@ class BatchedMonitorData:
     hy_flat_idx: jnp.ndarray
     hz_flat_idx: jnp.ndarray
     valid_mask: jnp.ndarray  # (n, max_points) float32
+    normal_axes: jnp.ndarray  # (n,) int32; 0=x,1=y,2=z, -1=unknown
+    # Frequency-domain in-loop accumulation metadata
+    freq_enabled: jnp.ndarray  # (n,) bool
+    freq_record_intervals: jnp.ndarray  # (n,) int32
+    freq_rot_re: jnp.ndarray  # (n, max_freq) float32
+    freq_rot_im: jnp.ndarray  # (n, max_freq) float32
+    freq_mask: jnp.ndarray  # (n, max_freq) float32
 
 
 def compile_batched_monitor_data(
@@ -104,6 +117,8 @@ def compile_batched_monitor_data(
     if max_points == 0:
         return None
 
+    max_freq = max(int(s.freq_count) for s in specs_3d) if specs_3d else 0
+
     def _pad_stack(flat_list: list[np.ndarray]) -> jnp.ndarray:
         padded = []
         for flat in flat_list:
@@ -116,18 +131,28 @@ def compile_batched_monitor_data(
     for i, n_pts in enumerate(all_n_points):
         valid[i, :n_pts] = 1.0
 
+    freq_mask = np.zeros((n, max_freq), dtype=np.float32)
+    freq_rot_re = np.ones((n, max_freq), dtype=np.float32)
+    freq_rot_im = np.zeros((n, max_freq), dtype=np.float32)
+    for i, spec in enumerate(specs_3d):
+        if (
+            spec.freq_count > 0
+            and spec.freq_rot_re is not None
+            and spec.freq_rot_im is not None
+        ):
+            cnt = int(spec.freq_count)
+            freq_mask[i, :cnt] = 1.0
+            freq_rot_re[i, :cnt] = np.asarray(spec.freq_rot_re, dtype=np.float32)[:cnt]
+            freq_rot_im[i, :cnt] = np.asarray(spec.freq_rot_im, dtype=np.float32)[:cnt]
+
     return BatchedMonitorData(
         n_monitors=n,
-        monitor_indices=jnp.array(
-            [s.monitor_index for s in specs_3d], dtype=jnp.int32
-        ),
+        monitor_indices=jnp.array([s.monitor_index for s in specs_3d], dtype=jnp.int32),
         record_intervals=jnp.array(
             [s.record_interval for s in specs_3d], dtype=jnp.int32
         ),
         accumulate_flags=jnp.array([s.accumulate_power for s in specs_3d]),
-        power_scales=jnp.array(
-            [s.power_scale for s in specs_3d], dtype=jnp.float32
-        ),
+        power_scales=jnp.array([s.power_scale for s in specs_3d], dtype=jnp.float32),
         ex_flat_idx=_pad_stack(all_flat["Ex"]),
         ey_flat_idx=_pad_stack(all_flat["Ey"]),
         ez_flat_idx=_pad_stack(all_flat["Ez"]),
@@ -135,6 +160,14 @@ def compile_batched_monitor_data(
         hy_flat_idx=_pad_stack(all_flat["Hy"]),
         hz_flat_idx=_pad_stack(all_flat["Hz"]),
         valid_mask=jnp.array(valid),
+        normal_axes=jnp.array([int(s.normal_axis) for s in specs_3d], dtype=jnp.int32),
+        freq_enabled=jnp.array([bool(s.accumulate_frequency) for s in specs_3d]),
+        freq_record_intervals=jnp.array(
+            [max(1, int(s.freq_record_interval)) for s in specs_3d], dtype=jnp.int32
+        ),
+        freq_rot_re=jnp.array(freq_rot_re, dtype=jnp.float32),
+        freq_rot_im=jnp.array(freq_rot_im, dtype=jnp.float32),
+        freq_mask=jnp.array(freq_mask, dtype=jnp.float32),
     )
 
 
@@ -156,7 +189,9 @@ def _clamp_3d_index(idx, limit: int):
     return slice(start, stop)
 
 
-def _compile_monitor_3d_indices(monitor: Monitor, resolution: float, shape_3d: dict[str, tuple[int, ...]]):
+def _compile_monitor_3d_indices(
+    monitor: Monitor, resolution: float, shape_3d: dict[str, tuple[int, ...]]
+):
     idx_map: dict[str, tuple[Any, ...]] = {}
     dim0 = []
     dim1 = []
@@ -213,6 +248,16 @@ def compile_monitor_specs(
         records = int(math.ceil(num_steps / interval))
         max_records = max(max_records, records)
 
+        freq_points = np.asarray(
+            getattr(monitor, "frequency_points", np.zeros((0,))), dtype=np.float64
+        ).ravel()
+        if freq_points.size > 0 and not np.all(np.isfinite(freq_points)):
+            raise ValueError("Monitor frequency_points must be finite values in Hz")
+        freq_interval = max(1, int(getattr(monitor, "frequency_record_interval", 1)))
+        theta = -2.0 * np.pi * freq_points * float(dt) * float(freq_interval)
+        freq_rot_re = np.cos(theta).astype(np.float32, copy=False)
+        freq_rot_im = np.sin(theta).astype(np.float32, copy=False)
+
         if not monitor.is_3d:
             points = monitor.get_grid_points_2d(resolution, resolution)
             if points:
@@ -234,6 +279,12 @@ def compile_monitor_specs(
                     record_interval=interval,
                     accumulate_power=bool(monitor.accumulate_power),
                     power_scale=float(resolution * resolution),
+                    normal_axis=-1,
+                    accumulate_frequency=bool(freq_points.size > 0),
+                    freq_record_interval=freq_interval,
+                    freq_count=int(freq_points.size),
+                    freq_rot_re=jnp.asarray(freq_rot_re),
+                    freq_rot_im=jnp.asarray(freq_rot_im),
                     x_ez=jnp.asarray(x_ez),
                     y_ez=jnp.asarray(y_ez),
                     valid_ez=jnp.asarray(v_ez),
@@ -268,6 +319,14 @@ def compile_monitor_specs(
                     record_interval=interval,
                     accumulate_power=bool(monitor.accumulate_power),
                     power_scale=float(resolution * resolution),
+                    normal_axis={"x": 0, "y": 1, "z": 2}.get(
+                        str(getattr(monitor, "plane_normal", "z")).lower(), -1
+                    ),
+                    accumulate_frequency=bool(freq_points.size > 0),
+                    freq_record_interval=freq_interval,
+                    freq_count=int(freq_points.size),
+                    freq_rot_re=jnp.asarray(freq_rot_re),
+                    freq_rot_im=jnp.asarray(freq_rot_im),
                     ex_idx=idx_map["Ex"],
                     ey_idx=idx_map["Ey"],
                     ez_idx=idx_map["Ez"],
@@ -279,5 +338,4 @@ def compile_monitor_specs(
                 )
             )
 
-    del dt
     return tuple(specs), max_records

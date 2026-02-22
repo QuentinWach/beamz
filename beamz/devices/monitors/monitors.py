@@ -21,6 +21,8 @@ class Monitor:
         max_history_steps=None,
         objective_function: Optional[Callable[["Monitor"], float]] = None,
         name: Optional[str] = None,
+        frequency_points=None,
+        frequency_record_interval=1,
     ):
         self.design = design
         self.should_record_fields = record_fields
@@ -28,6 +30,22 @@ class Monitor:
         self.live_update = live_update
         self.record_interval = record_interval
         self.max_history_steps = max_history_steps
+        if frequency_points is None:
+            freq_arr = np.zeros((0,), dtype=np.float64)
+        else:
+            freq_arr = np.asarray(frequency_points, dtype=np.float64).ravel()
+            if freq_arr.ndim != 1:
+                raise ValueError(
+                    "frequency_points must be a 1D sequence of frequencies in Hz"
+                )
+            if np.any(freq_arr < 0.0):
+                raise ValueError(
+                    "frequency_points must be non-negative frequencies in Hz"
+                )
+        self.frequency_points = freq_arr
+        self.frequency_record_interval = max(1, int(frequency_record_interval))
+        self.accumulate_frequency = bool(freq_arr.size > 0)
+        self.frequency_flux_spectrum = np.zeros(freq_arr.shape, dtype=np.complex64)
         self.objective_function = objective_function
         self.objective_value: Optional[float] = None
         self.name = name
@@ -678,6 +696,8 @@ class Monitor:
                 fields=self.fields,
                 power_history=self.power_history,
                 power_timestamps=self.power_timestamps,
+                frequency_points=self.frequency_points,
+                frequency_flux_spectrum=self.frequency_flux_spectrum,
                 monitor_info={"type": self.monitor_type, "is_3d": self.is_3d},
             )
         else:
@@ -692,6 +712,14 @@ class Monitor:
             self.power_timestamps = list(data["power_timestamps"])
         else:
             self.power_timestamps = list(range(len(self.power_history)))
+        if "frequency_points" in data:
+            self.frequency_points = np.asarray(
+                data["frequency_points"], dtype=np.float64
+            )
+        if "frequency_flux_spectrum" in data:
+            self.frequency_flux_spectrum = np.asarray(
+                data["frequency_flux_spectrum"], dtype=np.complex64
+            )
 
     def add_to_plot(
         self, ax, facecolor="none", edgecolor="navy", alpha=1, linestyle="-"

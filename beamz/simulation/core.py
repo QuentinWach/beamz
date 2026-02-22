@@ -12,6 +12,7 @@ from beamz.simulation.compiled import (
     EngineState,
     MonitorState,
     compile_simulation,
+    monitor_frequency_size,
     monitor_state_size,
 )
 from beamz.simulation.fields import Fields
@@ -509,7 +510,9 @@ class Simulation:
             program = self.compile(num_steps=this_chunk)
 
             if progress and steps_done == 0 and program.compile_count == 0:
-                print("● JIT compiling v0.3 packed FDTD program...", end=" ", flush=True)
+                print(
+                    "● JIT compiling v0.3 packed FDTD program...", end=" ", flush=True
+                )
 
             engine_state = EngineState(
                 ex=self.fields.Ex,
@@ -524,7 +527,10 @@ class Simulation:
 
             if monitor_state is None:
                 if program.monitor_specs:
-                    max_records = max(1, monitor_state_size(program.monitor_specs, num_steps))
+                    max_records = max(
+                        1, monitor_state_size(program.monitor_specs, num_steps)
+                    )
+                    max_freq = monitor_frequency_size(program.monitor_specs)
                     monitor_state = MonitorState(
                         powers=jnp.zeros(
                             (len(program.monitor_specs), max_records), dtype=jnp.float32
@@ -532,13 +538,31 @@ class Simulation:
                         timestamps=jnp.zeros(
                             (len(program.monitor_specs), max_records), dtype=jnp.float32
                         ),
-                        counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+                        counts=jnp.zeros(
+                            (len(program.monitor_specs),), dtype=jnp.int32
+                        ),
+                        freq_flux_re=jnp.zeros(
+                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                        ),
+                        freq_flux_im=jnp.zeros(
+                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                        ),
+                        freq_phase_re=jnp.ones(
+                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                        ),
+                        freq_phase_im=jnp.zeros(
+                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                        ),
                     )
                 else:
                     monitor_state = MonitorState(
                         powers=jnp.zeros((0, 0), dtype=jnp.float32),
                         timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
                         counts=jnp.zeros((0,), dtype=jnp.int32),
+                        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
                     )
 
             engine_state, monitor_state, _ = program.run(
@@ -626,7 +650,8 @@ class Simulation:
         """
         # Default non-visual path uses the compiled engine in v0.3.
         wants_live_viz = any(
-            kwargs.get(k) is not None for k in ("animate_live", "save_video", "jupyter_live")
+            kwargs.get(k) is not None
+            for k in ("animate_live", "save_video", "jupyter_live")
         )
         if not wants_live_viz:
             save_fields = kwargs.get("save_fields")
