@@ -177,7 +177,9 @@ material_cmap = ListedColormap(material_colors)
 material_norm = BoundaryNorm(np.arange(-0.5, len(eps_levels) + 0.5, 1), material_cmap.N)
 
 eps_expanded = eps[..., None]
-material_idx = np.argmin(np.abs(eps_expanded - eps_levels[None, None, None, :]), axis=-1)
+material_idx = np.argmin(
+    np.abs(eps_expanded - eps_levels[None, None, None, :]), axis=-1
+)
 
 z_core_idx = int(np.clip(round((WG_Z0 + 0.5 * WG_T) / DX), 0, eps.shape[0] - 1))
 xy = material_idx[z_core_idx]  # y,x material classes at core mid-z
@@ -233,7 +235,10 @@ axes[1].set_xlabel("x (um)")
 axes[1].set_ylabel("z (um)")
 axes[1].add_patch(
     MplRect(
-        (source_center[0] / um - 0.03, source_center[2] / um - source_height / (2 * um)),
+        (
+            source_center[0] / um - 0.03,
+            source_center[2] / um - source_height / (2 * um),
+        ),
         0.06,
         source_height / um,
         fill=False,
@@ -296,7 +301,11 @@ for ax in axes:
         fontsize=8,
         color=RED,
     )
-def draw_pml_lines(ax, x_len_um: float, y_len_um: float, pml_um: float, color: str = "black"):
+
+
+def draw_pml_lines(
+    ax, x_len_um: float, y_len_um: float, pml_um: float, color: str = "black"
+):
     ax.axvline(pml_um, color=color, linestyle="--", linewidth=1.0)
     ax.axvline(x_len_um - pml_um, color=color, linestyle="--", linewidth=1.0)
     ax.axhline(pml_um, color=color, linestyle="--", linewidth=1.0)
@@ -471,19 +480,7 @@ np.savez(
 # -----------------------------------------------------------------------------
 # XY-slice monitor and time-integrated flux map (Poynting accumulation).
 # -----------------------------------------------------------------------------
-xy_flux_plane_z = WG_Z0 + 0.5 * WG_T
 pml_inner_margin = PML_THICKNESS + 0.25 * um
-xy_flux_monitor = Monitor(
-    design=design,
-    start=(pml_inner_margin, pml_inner_margin, xy_flux_plane_z),
-    plane_normal="z",
-    plane_position=xy_flux_plane_z,
-    size=(X - 2 * pml_inner_margin, Y - 2 * pml_inner_margin),
-    record_fields=False,
-    accumulate_power=True,
-    record_interval=1,
-    name="mmi_xy_flux_plane",
-)
 xy_flux_source = ModeSource(
     grid=grid,
     center=source_center,
@@ -496,7 +493,7 @@ xy_flux_source = ModeSource(
 )
 sim_xy_flux = Simulation(
     design=design,
-    devices=[xy_flux_source, xy_flux_monitor],
+    devices=[xy_flux_source],
     boundaries=[PML(edges=PML_EDGES, thickness=PML_THICKNESS)],
     time=time_steps,
     resolution=DX,
@@ -518,17 +515,19 @@ total_steps = len(time_steps)
 probe_offset = 1.2 * um
 x_probe_right = min(source_center[0] + probe_offset, mmi_body_start - 0.4 * um)
 x_probe_left = max(source_center[0] - probe_offset, pml_inner_margin + 0.4 * um)
-insertion_time_s = []
-insertion_p_right_total = []
-insertion_p_right_mode = []
-insertion_p_right_outside = []
-insertion_p_left_backward = []
-insertion_p_left_forward = []
 insertion_masks_ready = False
 roi_mask = None
 mode_mask = None
 x_probe_right_idx = None
 x_probe_left_idx = None
+record_idx = 0
+
+ins_time_buf = np.zeros(total_steps, dtype=np.float64)
+ins_right_total_buf = np.zeros(total_steps, dtype=np.float64)
+ins_right_mode_buf = np.zeros(total_steps, dtype=np.float64)
+ins_right_outside_buf = np.zeros(total_steps, dtype=np.float64)
+ins_left_backward_buf = np.zeros(total_steps, dtype=np.float64)
+ins_left_forward_buf = np.zeros(total_steps, dtype=np.float64)
 
 while steps_done < total_steps:
     this_chunk = min(flux_chunk_steps, total_steps - steps_done)
@@ -548,9 +547,30 @@ while steps_done < total_steps:
         hy_i = f["Hy"][i]
         hz_i = f["Hz"][i]
 
-        nz = min(ex_i.shape[0], ey_i.shape[0], ez_i.shape[0], hx_i.shape[0], hy_i.shape[0], hz_i.shape[0])
-        ny = min(ex_i.shape[1], ey_i.shape[1], ez_i.shape[1], hx_i.shape[1], hy_i.shape[1], hz_i.shape[1])
-        nx = min(ex_i.shape[2], ey_i.shape[2], ez_i.shape[2], hx_i.shape[2], hy_i.shape[2], hz_i.shape[2])
+        nz = min(
+            ex_i.shape[0],
+            ey_i.shape[0],
+            ez_i.shape[0],
+            hx_i.shape[0],
+            hy_i.shape[0],
+            hz_i.shape[0],
+        )
+        ny = min(
+            ex_i.shape[1],
+            ey_i.shape[1],
+            ez_i.shape[1],
+            hx_i.shape[1],
+            hy_i.shape[1],
+            hz_i.shape[1],
+        )
+        nx = min(
+            ex_i.shape[2],
+            ey_i.shape[2],
+            ez_i.shape[2],
+            hx_i.shape[2],
+            hy_i.shape[2],
+            hz_i.shape[2],
+        )
 
         ex = np.asarray(ex_i[:nz, :ny, :nx], dtype=np.float64)
         ey = np.asarray(ey_i[:nz, :ny, :nx], dtype=np.float64)
@@ -586,7 +606,9 @@ while steps_done < total_steps:
             y_mode_lo = max(pml_inner_margin, source_center[1] - 0.5 * source_width)
             y_mode_hi = min(Y - pml_inner_margin, source_center[1] + 0.5 * source_width)
             z_mode_lo = max(pml_inner_margin, source_center[2] - 0.5 * source_height)
-            z_mode_hi = min(Z - pml_inner_margin, source_center[2] + 0.5 * source_height)
+            z_mode_hi = min(
+                Z - pml_inner_margin, source_center[2] + 0.5 * source_height
+            )
             ym0 = _idx_for_pos(y_cells, y_mode_lo, Y)
             ym1 = _idx_for_pos(y_cells, y_mode_hi, Y)
             zm0 = _idx_for_pos(z_cells, z_mode_lo, Z)
@@ -611,13 +633,15 @@ while steps_done < total_steps:
         p_right_outside = max(0.0, p_right_total - p_right_mode)
         p_left_backward = np.sum(np.maximum(-sx_left_plane[roi_mask], 0.0)) * area
         p_left_forward = np.sum(np.maximum(sx_left_plane[roi_mask], 0.0)) * area
-        t_s = (steps_done + i + 1) * DT
-        insertion_time_s.append(float(t_s))
-        insertion_p_right_total.append(float(p_right_total))
-        insertion_p_right_mode.append(float(p_right_mode))
-        insertion_p_right_outside.append(float(p_right_outside))
-        insertion_p_left_backward.append(float(p_left_backward))
-        insertion_p_left_forward.append(float(p_left_forward))
+        if record_idx < total_steps:
+            t_s = (steps_done + i + 1) * DT
+            ins_time_buf[record_idx] = float(t_s)
+            ins_right_total_buf[record_idx] = float(p_right_total)
+            ins_right_mode_buf[record_idx] = float(p_right_mode)
+            ins_right_outside_buf[record_idx] = float(p_right_outside)
+            ins_left_backward_buf[record_idx] = float(p_left_backward)
+            ins_left_forward_buf[record_idx] = float(p_left_forward)
+            record_idx += 1
 
         # Integrate across the full z-direction so the XY map captures all vertical leakage.
         sx = np.sum(sx_3d, axis=0) * DX
@@ -698,12 +722,12 @@ np.savez(
 # -----------------------------------------------------------------------------
 # Insertion-loss diagnostics and visualization.
 # -----------------------------------------------------------------------------
-ins_t = np.asarray(insertion_time_s, dtype=np.float64)
-ins_right_total = np.asarray(insertion_p_right_total, dtype=np.float64)
-ins_right_mode = np.asarray(insertion_p_right_mode, dtype=np.float64)
-ins_right_outside = np.asarray(insertion_p_right_outside, dtype=np.float64)
-ins_left_backward = np.asarray(insertion_p_left_backward, dtype=np.float64)
-ins_left_forward = np.asarray(insertion_p_left_forward, dtype=np.float64)
+ins_t = ins_time_buf[:record_idx]
+ins_right_total = ins_right_total_buf[:record_idx]
+ins_right_mode = ins_right_mode_buf[:record_idx]
+ins_right_outside = ins_right_outside_buf[:record_idx]
+ins_left_backward = ins_left_backward_buf[:record_idx]
+ins_left_forward = ins_left_forward_buf[:record_idx]
 
 ins_e_right_total = np.sum(ins_right_total) * DT
 ins_e_right_mode = np.sum(ins_right_mode) * DT
@@ -730,6 +754,15 @@ cum_den = np.where(cum_emitted > 0.0, cum_emitted, 1.0)
 cum_guided_frac = cum_right_mode / cum_den
 cum_radiative_frac = cum_right_out / cum_den
 cum_reflected_frac = cum_left_back / cum_den
+
+# Suppress unstable early-time ratios before meaningful emitted energy exists.
+emit_floor = max(
+    1e-30, 1e-6 * float(cum_emitted[-1]) if cum_emitted.size > 0 else 1e-30
+)
+valid_frac = cum_emitted >= emit_floor
+cum_guided_plot = np.where(valid_frac, cum_guided_frac, np.nan)
+cum_radiative_plot = np.where(valid_frac, cum_radiative_frac, np.nan)
+cum_reflected_plot = np.where(valid_frac, cum_reflected_frac, np.nan)
 
 ins_csv = OUT_DIR / "insertion_flux_timeseries.csv"
 if ins_t.size > 0:
@@ -789,13 +822,39 @@ if ins_t.size > 0:
     )
     norm_den = norm_den if norm_den > 0 else 1.0
     t_fs = ins_t * 1e15
-    axs[0].plot(t_fs, ins_right_total / norm_den, color=BLUE, lw=1.4, label="Right +Sx (total)")
-    axs[0].plot(t_fs, ins_right_mode / norm_den, color=GREEN, lw=1.2, label="Right +Sx (mode window)")
-    axs[0].plot(t_fs, ins_right_outside / norm_den, color=ORANGE, lw=1.2, label="Right +Sx (outside window)")
-    axs[0].plot(t_fs, ins_left_backward / norm_den, color=RED, lw=1.2, label="Left -Sx (backward)")
-    axs[1].plot(t_fs, cum_guided_frac, color=GREEN, lw=1.6, label="Guided fraction")
-    axs[1].plot(t_fs, cum_radiative_frac, color=ORANGE, lw=1.4, label="Radiative/outside fraction")
-    axs[1].plot(t_fs, cum_reflected_frac, color=RED, lw=1.4, label="Reflected fraction")
+    axs[0].plot(
+        t_fs, ins_right_total / norm_den, color=BLUE, lw=1.4, label="Right +Sx (total)"
+    )
+    axs[0].plot(
+        t_fs,
+        ins_right_mode / norm_den,
+        color=GREEN,
+        lw=1.2,
+        label="Right +Sx (mode window)",
+    )
+    axs[0].plot(
+        t_fs,
+        ins_right_outside / norm_den,
+        color=ORANGE,
+        lw=1.2,
+        label="Right +Sx (outside window)",
+    )
+    axs[0].plot(
+        t_fs,
+        ins_left_backward / norm_den,
+        color=RED,
+        lw=1.2,
+        label="Left -Sx (backward)",
+    )
+    axs[1].plot(t_fs, cum_guided_plot, color=GREEN, lw=1.6, label="Guided fraction")
+    axs[1].plot(
+        t_fs,
+        cum_radiative_plot,
+        color=ORANGE,
+        lw=1.4,
+        label="Radiative/outside fraction",
+    )
+    axs[1].plot(t_fs, cum_reflected_plot, color=RED, lw=1.4, label="Reflected fraction")
 axs[0].set_ylabel("Instantaneous Flux (norm.)")
 axs[1].set_ylabel("Cumulative Energy Fraction")
 axs[1].set_xlabel("Time (fs)")
@@ -828,8 +887,12 @@ if time_s.size == 0 and power.size > 0:
     time_s = np.arange(power.size, dtype=np.float64) * DT
 
 cumulative_flux = np.cumsum(np.maximum(power, 0.0)) * DT
-cum_den = cumulative_flux[-1] if cumulative_flux.size > 0 and cumulative_flux[-1] > 0 else 1.0
-cumulative_flux_norm = cumulative_flux / cum_den if cumulative_flux.size > 0 else cumulative_flux
+cum_den = (
+    cumulative_flux[-1] if cumulative_flux.size > 0 and cumulative_flux[-1] > 0 else 1.0
+)
+cumulative_flux_norm = (
+    cumulative_flux / cum_den if cumulative_flux.size > 0 else cumulative_flux
+)
 instant_norm = power / (np.max(np.abs(power)) + 1e-30) if power.size > 0 else power
 
 flux_csv = OUT_DIR / "flux_time_series.csv"
@@ -922,6 +985,7 @@ summary = {
     "insertion_energy_right_outside": float(ins_e_right_outside),
     "insertion_energy_left_backward": float(ins_e_left_backward),
     "insertion_energy_left_forward": float(ins_e_left_forward),
+    "insertion_samples": int(record_idx),
     "xy_time_integrated_flux_png": str(xy_flux_png),
     "xy_time_integrated_flux_npz": str(xy_flux_npz),
     "xy_flux_mode": "z_integrated",
@@ -930,9 +994,13 @@ summary_path = OUT_DIR / "benchmark_summary.json"
 summary_path.write_text(json.dumps(summary, indent=2))
 
 print("3D MMI benchmark complete")
-print(f"dx_nm={summary['dx_nm']:.6f}, dt_fs={summary['dt_fs']:.6f}, steps={summary['resolved_steps']}")
+print(
+    f"dx_nm={summary['dx_nm']:.6f}, dt_fs={summary['dt_fs']:.6f}, steps={summary['resolved_steps']}"
+)
 print(f"grid_shape_zyx={summary['grid_shape_zyx']}")
-print(f"elapsed_s={summary['elapsed_s']:.6f}, s_per_step={summary['s_per_step']:.6e}, tcups={summary['tcups']:.6e}")
+print(
+    f"elapsed_s={summary['elapsed_s']:.6f}, s_per_step={summary['s_per_step']:.6e}, tcups={summary['tcups']:.6e}"
+)
 print(f"design_projection_png={design_proj_png}")
 print(f"mode_fields_png={mode_png}")
 print(f"mid_ez_snapshot_png={ez_mid_png}")

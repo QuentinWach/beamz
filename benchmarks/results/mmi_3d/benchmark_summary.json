@@ -24,9 +24,9 @@
     157,
     315
   ],
-  "elapsed_s": 25.76414258289151,
-  "s_per_step": 0.015173228847403715,
-  "tcups": 0.0024640754038582524,
+  "elapsed_s": 25.992805166868493,
+  "s_per_step": 0.015307894680134566,
+  "tcups": 0.0024423985650044557,
   "design_projection_png": "benchmarks/results/mmi_3d/design_projections_xyz.png",
   "mode_fields_png": "benchmarks/results/mmi_3d/mode_fields.png",
   "mid_ez_snapshot_png": "benchmarks/results/mmi_3d/ez_snapshot_mid_step_849.png",
@@ -44,6 +44,7 @@
   "insertion_energy_right_outside": 3.080722259278902e-31,
   "insertion_energy_left_backward": 1.195327749772545e-30,
   "insertion_energy_left_forward": 1.8800779810628828e-33,
+  "insertion_samples": 1698,
   "xy_time_integrated_flux_png": "benchmarks/results/mmi_3d/xy_time_integrated_flux.png",
   "xy_time_integrated_flux_npz": "benchmarks/results/mmi_3d/xy_time_integrated_flux.npz",
   "xy_flux_mode": "z_integrated"

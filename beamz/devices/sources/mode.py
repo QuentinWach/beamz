@@ -263,14 +263,13 @@ def _select_3d_impedance_index(axis, pol, eps_profile_2d, Ex, Ey, Ez, Hx, Hy, Hz
 
 
 def _impedance_match_3d_tangential_pairs(
-    axis, Ex_s, Ey_s, Ez_s, Hx_s, Hy_s, Hz_s, Z_target, use_jax=True, eps=1e-12
+    axis, Ex_s, Ey_s, Ez_s, Hx_s, Hy_s, Hz_s, Z_target, eps=1e-12
 ):
     """Match tangential 3D E components to their paired tangential H components.
 
     This mirrors the 2D rule (pair-wise E/H matching) instead of using a single
     global scale across all components, which tends to increase backscatter.
     """
-    del use_jax
     e_map = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s}
     h_map = {"Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
     pair_map = {
@@ -385,7 +384,6 @@ def _build_3d_profiles(
     offset_idx,
     grid_shape,
     resolution,
-    neff,
     impedance_neff,
     omega,
     dt,
@@ -403,7 +401,6 @@ def _build_3d_profiles(
     # Apply direction sign once while building source profiles.
     dir_sign = 1.0 if direction.startswith("+") else -1.0
     ETA_0 = np.sqrt(MU_0 / EPS_0)
-    neff_r = max(float(np.real(neff)), 1e-6)
     neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
     d_axis = resolution
     if dt is not None:
@@ -551,7 +548,6 @@ def _build_3d_x(
         Hy_s,
         Hz_s,
         Z_target,
-        use_jax=True,
     )
 
     # --- crop & window ---
@@ -655,7 +651,6 @@ def _build_3d_y(
         Hy_s,
         Hz_s,
         Z_target,
-        use_jax=False,
     )
 
     # --- crop & window ---
@@ -763,7 +758,6 @@ def _build_3d_z(
         Hy_s,
         Hz_s,
         Z_target,
-        use_jax=True,
     )
 
     # --- crop & window ---
@@ -837,8 +831,12 @@ def _normalize_3d_profiles_by_flux(profiles, axis, eps=1e-18):
     hx = np.asarray(hx)
     hy = np.asarray(hy)
     hz = np.asarray(hz)
-    ny = min(ex.shape[0], ey.shape[0], ez.shape[0], hx.shape[0], hy.shape[0], hz.shape[0])
-    nx = min(ex.shape[1], ey.shape[1], ez.shape[1], hx.shape[1], hy.shape[1], hz.shape[1])
+    ny = min(
+        ex.shape[0], ey.shape[0], ez.shape[0], hx.shape[0], hy.shape[0], hz.shape[0]
+    )
+    nx = min(
+        ex.shape[1], ey.shape[1], ez.shape[1], hx.shape[1], hy.shape[1], hz.shape[1]
+    )
     if ny <= 0 or nx <= 0:
         return profiles
 
@@ -1155,9 +1153,7 @@ class ModeSource:
         if is_3d and axis in {"x", "y"}:
             # 3D x/y cross-sections are solved in a rotated basis; flip +/- here so
             # the resulting mode phase/gauge matches the 2D-corrected launch direction.
-            solver_direction = (
-                ("-" if self.direction.startswith("+") else "+") + axis
-            )
+            solver_direction = ("-" if self.direction.startswith("+") else "+") + axis
 
         eps_profile_arr = np.asarray(eps_profile)
         n_local_max = float(
@@ -1190,8 +1186,10 @@ class ModeSource:
         Hz_raw = jnp.asarray(jnp.squeeze(H_mode[2]))
 
         if is_3d:
-            Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw = _remap_3d_solver_components(
-                Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw, axis
+            Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw = (
+                _remap_3d_solver_components(
+                    Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw, axis
+                )
             )
 
         # 4. Phase-align all components with the same H-based gauge convention as 2D.
@@ -1296,8 +1294,9 @@ class ModeSource:
             offset_idx=offset_idx,
             grid_shape=(nz, ny, nx),
             resolution=resolution,
-            neff=self._neff,
-            impedance_neff=self._impedance_neff if self._impedance_neff is not None else self._neff,
+            impedance_neff=(
+                self._impedance_neff if self._impedance_neff is not None else self._neff
+            ),
             omega=omega,
             dt=dt,
         )
