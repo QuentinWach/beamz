@@ -991,6 +991,12 @@ class Simulation:
         e_comp, h_comp, e_idx, h_idx, sign = (
             tm_map[axis] if spec.polarization == "tm" else te_map[axis]
         )
+        if axis == "x":
+            proj_components = ("Ey", "Ez", "Hy", "Hz")
+        elif axis == "y":
+            proj_components = ("Ex", "Ez", "Hx", "Hz")
+        else:
+            proj_components = ("Ex", "Ey", "Hx", "Hy")
         return {
             "axis": axis,
             "e_component": e_comp,
@@ -998,6 +1004,7 @@ class Simulation:
             "e_mode_index": e_idx,
             "h_mode_index": h_idx,
             "signed_flux_sign": sign,
+            "projection_components": proj_components,
         }
 
     @staticmethod
@@ -1116,29 +1123,30 @@ class Simulation:
                     parts["axis"],
                 )
             )
-            e_lookup = {"Ex": ex_full, "Ey": ey_full, "Ez": ez_full}
-            h_lookup = {"Hx": hx_full, "Hy": hy_full, "Hz": hz_full}
-            e_fwd_full = e_lookup[parts["e_component"]]
-            h_fwd_full = h_lookup[parts["h_component"]]
-        else:
-            e_fwd_full = np.asarray(
-                np.squeeze(e_fields[mode][parts["e_mode_index"]]), dtype=np.complex128
+            comp_full = {
+                "Ex": ex_full,
+                "Ey": ey_full,
+                "Ez": ez_full,
+                "Hx": hx_full,
+                "Hy": hy_full,
+                "Hz": hz_full,
+            }
+            for name in tuple(comp_full.keys()):
+                arr = np.asarray(comp_full[name], dtype=np.complex128)
+                if arr.ndim == 1:
+                    arr = arr[:, None]
+                comp_full[name] = arr
+            proj_components = tuple(
+                parts.get(
+                    "projection_components",
+                    (parts["e_component"], parts["h_component"]),
+                )
             )
-            h_fwd_full = np.asarray(
-                np.squeeze(h_fields[mode][parts["h_mode_index"]]), dtype=np.complex128
-            )
-        if self.is_3d:
-            if e_fwd_full.ndim == 1:
-                e_fwd_full = e_fwd_full[:, None]
-            if h_fwd_full.ndim == 1:
-                h_fwd_full = h_fwd_full[:, None]
-            e_flat = e_fwd_full.reshape(-1)
-            h_flat = h_fwd_full.reshape(-1)
-            n_target = min(e_flat.size, h_flat.size)
+            n_target = min(int(comp_full[c].size) for c in proj_components)
             try:
                 n_monitor = int(
                     np.asarray(
-                        monitor.get_dft_component(parts["e_component"]),
+                        monitor.get_dft_component(proj_components[0]),
                         dtype=np.complex128,
                     ).shape[1]
                 )
@@ -1148,8 +1156,57 @@ class Simulation:
             idx = np.asarray(local_idx, dtype=int)
             if idx.size > n_target:
                 idx = idx[:n_target]
-            e_fwd = e_flat[idx]
-            h_fwd = h_flat[idx]
+            if idx.size == 0 and n_target > 0:
+                idx = np.arange(n_target, dtype=int)
+            comp_samples = {
+                name: comp_full[name].reshape(-1)[idx] for name in comp_full.keys()
+            }
+        else:
+            e_fwd_full = np.asarray(
+                np.squeeze(e_fields[mode][parts["e_mode_index"]]), dtype=np.complex128
+            )
+            h_fwd_full = np.asarray(
+                np.squeeze(h_fields[mode][parts["h_mode_index"]]), dtype=np.complex128
+            )
+            if e_fwd_full.ndim > 1:
+                e_fwd_full = e_fwd_full[:, 0]
+            if h_fwd_full.ndim > 1:
+                h_fwd_full = h_fwd_full[:, 0]
+            e_fwd = e_fwd_full[local_idx]
+            h_fwd = h_fwd_full[local_idx]
+            proj_components = (parts["e_component"], parts["h_component"])
+            comp_samples = {parts["e_component"]: e_fwd, parts["h_component"]: h_fwd}
+
+        if self.is_3d:
+            h_ref = comp_samples.get(parts["h_component"], np.zeros((0,), dtype=np.complex128))
+        else:
+            h_ref = h_fwd
+        if h_ref.size:
+            i_max = int(np.argmax(np.abs(h_ref)))
+            phase = np.angle(h_ref[i_max])
+            phase_rot = np.exp(-1j * phase)
+            for name in tuple(comp_samples.keys()):
+                comp_samples[name] = comp_samples[name] * phase_rot
+
+        if self.is_3d:
+            axis = parts["axis"]
+            if axis == "x":
+                s_axis = comp_samples["Ey"] * np.conjugate(comp_samples["Hz"]) - comp_samples["Ez"] * np.conjugate(comp_samples["Hy"])
+            elif axis == "y":
+                s_axis = comp_samples["Ez"] * np.conjugate(comp_samples["Hx"]) - comp_samples["Ex"] * np.conjugate(comp_samples["Hz"])
+            else:
+                s_axis = comp_samples["Ex"] * np.conjugate(comp_samples["Hy"]) - comp_samples["Ey"] * np.conjugate(comp_samples["Hx"])
+            pm = 0.5 * np.real(np.sum(s_axis) * dl)
+            if abs(pm) <= 1e-30:
+                pm = 0.5 * np.sum(np.abs(s_axis)) * dl
+            norm = np.sqrt(max(abs(pm), 1e-30))
+            for name in tuple(comp_samples.keys()):
+                comp_samples[name] = comp_samples[name] / norm
+            fwd_vec = np.concatenate([comp_samples[c] for c in proj_components])
+            bwd_vec = np.concatenate(
+                [(-comp_samples[c] if c.startswith("H") else comp_samples[c]) for c in proj_components]
+            )
+            mode_matrix = np.column_stack([fwd_vec, bwd_vec])
         else:
             if e_fwd_full.ndim > 1:
                 e_fwd_full = e_fwd_full[:, 0]
@@ -1157,32 +1214,24 @@ class Simulation:
                 h_fwd_full = h_fwd_full[:, 0]
             e_fwd = e_fwd_full[local_idx]
             h_fwd = h_fwd_full[local_idx]
-
-        if h_fwd.size:
-            i_max = int(np.argmax(np.abs(h_fwd)))
-            phase = np.angle(h_fwd[i_max])
-            phase_rot = np.exp(-1j * phase)
-            e_fwd = e_fwd * phase_rot
-            h_fwd = h_fwd * phase_rot
-
-        pm = 0.5 * np.real(
-            np.sum(parts["signed_flux_sign"] * e_fwd * np.conjugate(h_fwd)) * dl
-        )
-        norm = np.sqrt(max(abs(pm), 1e-30))
-        e_fwd = e_fwd / norm
-        h_fwd = h_fwd / norm
-        e_bwd = e_fwd.copy()
-        h_bwd = -h_fwd.copy()
-
-        mode_matrix = np.column_stack(
-            [
-                np.concatenate([e_fwd, h_fwd]),
-                np.concatenate([e_bwd, h_bwd]),
-            ]
-        )
+            pm = 0.5 * np.real(
+                np.sum(parts["signed_flux_sign"] * e_fwd * np.conjugate(h_fwd)) * dl
+            )
+            norm = np.sqrt(max(abs(pm), 1e-30))
+            e_fwd = e_fwd / norm
+            h_fwd = h_fwd / norm
+            e_bwd = e_fwd.copy()
+            h_bwd = -h_fwd.copy()
+            mode_matrix = np.column_stack(
+                [
+                    np.concatenate([e_fwd, h_fwd]),
+                    np.concatenate([e_bwd, h_bwd]),
+                ]
+            )
         projection = {
             "e_component": parts["e_component"],
             "h_component": parts["h_component"],
+            "components": tuple(proj_components),
             "mode_matrix": mode_matrix,
             "condition_number": float(np.linalg.cond(mode_matrix)),
             "pinv": np.linalg.pinv(mode_matrix),
@@ -1238,7 +1287,12 @@ class Simulation:
         for spec in port_map.values():
             main_monitor = monitor_by_name[spec.monitor_name]
             parts = self._mode_components_for_port(spec)
-            for comp in (parts["e_component"], parts["h_component"]):
+            wanted_components = (
+                parts.get("projection_components", (parts["e_component"], parts["h_component"]))
+                if self.is_3d
+                else (parts["e_component"], parts["h_component"])
+            )
+            for comp in wanted_components:
                 key = (main_monitor.name, comp)
                 if key not in spectrum_cache:
                     _, spectrum_cache[key] = self._sample_monitor_component_spectrum(
@@ -1252,10 +1306,13 @@ class Simulation:
                 proj = self._build_port_projection(
                     spec, main_monitor, f_mode, projection_cache
                 )
+                proj_components = tuple(
+                    proj.get("components", (proj["e_component"], proj["h_component"]))
+                )
                 field_vec = np.concatenate(
                     [
-                        spectrum_cache[(main_monitor.name, proj["e_component"])][idx],
-                        spectrum_cache[(main_monitor.name, proj["h_component"])][idx],
+                        spectrum_cache[(main_monitor.name, comp)][idx]
+                        for comp in proj_components
                     ]
                 )
                 coeff = proj["pinv"] @ field_vec
@@ -1268,7 +1325,7 @@ class Simulation:
 
             if spec.reference_monitor:
                 ref_monitor = monitor_by_name[spec.reference_monitor]
-                for comp in (parts["e_component"], parts["h_component"]):
+                for comp in wanted_components:
                     key = (ref_monitor.name, comp)
                     if key not in spectrum_cache:
                         _, spectrum_cache[key] = self._sample_monitor_component_spectrum(
@@ -1281,10 +1338,13 @@ class Simulation:
                     proj = self._build_port_projection(
                         spec, ref_monitor, f_mode, projection_cache
                     )
+                    proj_components = tuple(
+                        proj.get("components", (proj["e_component"], proj["h_component"]))
+                    )
                     field_vec = np.concatenate(
                         [
-                            spectrum_cache[(ref_monitor.name, proj["e_component"])][idx],
-                            spectrum_cache[(ref_monitor.name, proj["h_component"])][idx],
+                            spectrum_cache[(ref_monitor.name, comp)][idx]
+                            for comp in proj_components
                         ]
                     )
                     coeff = proj["pinv"] @ field_vec
@@ -1343,7 +1403,12 @@ class Simulation:
         for spec in port_map.values():
             parts = self._mode_components_for_port(spec)
             main_monitor = monitor_by_name[spec.monitor_name]
-            for comp in (parts["e_component"], parts["h_component"]):
+            wanted_components = (
+                parts.get("projection_components", (parts["e_component"], parts["h_component"]))
+                if self.is_3d
+                else (parts["e_component"], parts["h_component"])
+            )
+            for comp in wanted_components:
                 key = (main_monitor.name, comp)
                 if key not in dft_cache:
                     _, dft_cache[key] = self._sample_monitor_component_dft(
@@ -1357,11 +1422,11 @@ class Simulation:
                 proj = self._build_port_projection(
                     spec, main_monitor, float(f), projection_cache
                 )
+                proj_components = tuple(
+                    proj.get("components", (proj["e_component"], proj["h_component"]))
+                )
                 field_vec = np.concatenate(
-                    [
-                        dft_cache[(main_monitor.name, proj["e_component"])][idx],
-                        dft_cache[(main_monitor.name, proj["h_component"])][idx],
-                    ]
+                    [dft_cache[(main_monitor.name, comp)][idx] for comp in proj_components]
                 )
                 coeff = proj["pinv"] @ field_vec
                 a_plus[idx], a_minus[idx] = coeff[0], coeff[1]
@@ -1378,7 +1443,7 @@ class Simulation:
 
             if spec.reference_monitor:
                 ref_monitor = monitor_by_name[spec.reference_monitor]
-                for comp in (parts["e_component"], parts["h_component"]):
+                for comp in wanted_components:
                     key = (ref_monitor.name, comp)
                     if key not in dft_cache:
                         _, dft_cache[key] = self._sample_monitor_component_dft(
@@ -1390,10 +1455,13 @@ class Simulation:
                     proj = self._build_port_projection(
                         spec, ref_monitor, float(f), projection_cache
                     )
+                    proj_components = tuple(
+                        proj.get("components", (proj["e_component"], proj["h_component"]))
+                    )
                     field_vec = np.concatenate(
                         [
-                            dft_cache[(ref_monitor.name, proj["e_component"])][idx],
-                            dft_cache[(ref_monitor.name, proj["h_component"])][idx],
+                            dft_cache[(ref_monitor.name, comp)][idx]
+                            for comp in proj_components
                         ]
                     )
                     coeff = proj["pinv"] @ field_vec

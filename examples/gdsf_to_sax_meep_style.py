@@ -49,7 +49,7 @@ SHOW_SIGNAL = env_bool("BEAMZ_SHOW_SIGNAL", not FAST_MODE)
 SHOW_FINAL = env_bool("BEAMZ_SHOW_FINAL", not FAST_MODE)
 DEBUG_DFT = env_bool("BEAMZ_DEBUG_DFT", False)
 CALIBRATE_PORT_SCALE = env_bool("BEAMZ_CALIBRATE_PORT_SCALE", False)
-AUTO_SELECT_OUTPUT_WAVE = env_bool("BEAMZ_AUTO_SELECT_OUTPUT_WAVE", True)
+FLUX_RENORMALIZE_S = env_bool("BEAMZ_FLUX_RENORMALIZE_S", False)
 POLARIZATION = str(os.getenv("BEAMZ_POLARIZATION", "tm")).strip().lower()
 if POLARIZATION not in {"te", "tm"}:
     raise ValueError(
@@ -109,7 +109,12 @@ MONITOR_Z_MIN = PML_Z + MONITOR_Z_MARGIN
 MONITOR_Z_MAX = DEVICE_DEPTH - PML_Z - MONITOR_Z_MARGIN
 
 SOURCE_OFFSET = -1.2 * µm
-FORWARD_MONITOR_OFFSET = env_float("BEAMZ_FORWARD_MONITOR_OFFSET", 2.0 * µm)
+FORWARD_MONITOR_OFFSET_ENV = os.getenv("BEAMZ_FORWARD_MONITOR_OFFSET")
+FORWARD_MONITOR_OFFSET = (
+    float(FORWARD_MONITOR_OFFSET_ENV)
+    if FORWARD_MONITOR_OFFSET_ENV is not None
+    else None
+)
 REFLECTION_MONITOR_BACKOFF = 2.0 * µm
 OUTPUT_MONITOR_OFFSET = env_float("BEAMZ_OUTPUT_MONITOR_OFFSET", 1.2 * µm)
 OUTPUT_MONITOR_SEARCH_RADIUS = env_float(
@@ -162,6 +167,15 @@ def dft_components_for_port(direction, polarization="tm"):
     if pol == "tm":
         return {"x": ("Ez", "Hy"), "y": ("Ez", "Hx"), "z": ("Ey", "Hx")}[axis]
     return {"x": ("Ey", "Hz"), "y": ("Ex", "Hz"), "z": ("Ex", "Hy")}[axis]
+
+
+def dft_projection_components_for_port(direction):
+    axis = direction[1]
+    if axis == "x":
+        return ("Ey", "Ez", "Hy", "Hz")
+    if axis == "y":
+        return ("Ex", "Ez", "Hx", "Hz")
+    return ("Ex", "Ey", "Hx", "Hy")
 
 
 def monitor_center(start, end):
@@ -502,24 +516,36 @@ def safe_ratio(num, den, eps=1e-18):
     return out
 
 
-def select_output_wave(port_name, waves_dict, auto_select=True):
-    a_plus = np.asarray(waves_dict[port_name]["a_plus"], dtype=np.complex128)
-    a_minus = np.asarray(waves_dict[port_name]["a_minus"], dtype=np.complex128)
-    p_plus = float(np.mean(np.abs(a_plus) ** 2)) if a_plus.size else 0.0
-    p_minus = float(np.mean(np.abs(a_minus) ** 2)) if a_minus.size else 0.0
-    if auto_select:
-        use_plus = p_plus > p_minus
-    else:
-        use_plus = False
-    selected = "a_plus" if use_plus else "a_minus"
-    coeff = a_plus if use_plus else a_minus
-    return coeff, selected, p_plus, p_minus
-
-
 def trapz(y, x):
     if hasattr(np, "trapezoid"):
         return np.trapezoid(y, x)
     return np.trapz(y, x)
+
+
+def dft_signed_flux_spectrum(monitor_obj, axis):
+    axis = str(axis).lower()
+    if axis == "x":
+        e1 = np.asarray(monitor_obj.get_dft_component("Ey"), dtype=np.complex128)
+        e2 = np.asarray(monitor_obj.get_dft_component("Ez"), dtype=np.complex128)
+        h1 = np.asarray(monitor_obj.get_dft_component("Hz"), dtype=np.complex128)
+        h2 = np.asarray(monitor_obj.get_dft_component("Hy"), dtype=np.complex128)
+        p = e1 * np.conjugate(h1) - e2 * np.conjugate(h2)
+    elif axis == "y":
+        e1 = np.asarray(monitor_obj.get_dft_component("Ez"), dtype=np.complex128)
+        e2 = np.asarray(monitor_obj.get_dft_component("Ex"), dtype=np.complex128)
+        h1 = np.asarray(monitor_obj.get_dft_component("Hx"), dtype=np.complex128)
+        h2 = np.asarray(monitor_obj.get_dft_component("Hz"), dtype=np.complex128)
+        p = e1 * np.conjugate(h1) - e2 * np.conjugate(h2)
+    else:
+        e1 = np.asarray(monitor_obj.get_dft_component("Ex"), dtype=np.complex128)
+        e2 = np.asarray(monitor_obj.get_dft_component("Ey"), dtype=np.complex128)
+        h1 = np.asarray(monitor_obj.get_dft_component("Hy"), dtype=np.complex128)
+        h2 = np.asarray(monitor_obj.get_dft_component("Hx"), dtype=np.complex128)
+        p = e1 * np.conjugate(h1) - e2 * np.conjugate(h2)
+    if p.ndim != 2 or p.size == 0:
+        return np.zeros((0,), dtype=np.complex128)
+    # Complex frequency-domain Poynting estimate from monitor DFT phasors.
+    return 0.5 * np.sum(p, axis=1) * (DX * DX)
 
 
 def build_mode_source_with_autofit(
@@ -639,7 +665,7 @@ def run_modal_gain_calibration(
         dft_frequencies=np.asarray([float(cal_frequency)], dtype=float),
         dft_t_start=t_start,
         dft_t_end=t_end,
-        dft_components=dft_components_for_port(port_direction, polarization=polarization),
+        dft_components=dft_projection_components_for_port(port_direction),
         dft_window=os.getenv("BEAMZ_DFT_WINDOW", "hann"),
         record_interval=max(1, int(record_interval)),
         dft_record_every_step=(int(record_interval) <= 1),
@@ -713,6 +739,15 @@ ports = {
     for name, p in ports.items()
 }
 
+if FORWARD_MONITOR_OFFSET is None:
+    src_port = ports[SOURCE_PORT]
+    scatter_x_est = float(np.median([ports[p]["center"][0] for p in OUTPUT_PORTS]))
+    if src_port["direction"][1] == "x":
+        delta = abs(scatter_x_est - float(src_port["center"][0]))
+        FORWARD_MONITOR_OFFSET = float(np.clip(0.55 * delta, 2.0 * µm, 10.0 * µm))
+    else:
+        FORWARD_MONITOR_OFFSET = 2.0 * µm
+
 for name, port in ports.items():
     cx, cy, width = *port["center"], float(port["width"])
     extension = INPUT_EXTENSION if name == SOURCE_PORT else OUTPUT_EXTENSION
@@ -746,6 +781,7 @@ source_xy = move_along(src["center"], src["direction"], SOURCE_OFFSET)
 source_center = (source_xy[0], source_xy[1], CORE_ZC)
 source_width = port_span(src, SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN)
 source_height = max(SOURCE_MIN_HEIGHT, SOURCE_HEIGHT_FACTOR * source_width)
+print(f"Forward monitor offset: {FORWARD_MONITOR_OFFSET/µm:.2f} um")
 
 o1_fwd_start, o1_fwd_end, _, _ = port_plane(
     src,
@@ -905,9 +941,7 @@ if PLOT_SOURCE_MODE:
     print(f"Saved mode diagnostics plot: {MODE_PLOT_PATH}")
 
 monitor_stride = env_int("BEAMZ_MONITOR_STRIDE", 3)
-source_dft_components = dft_components_for_port(
-    src["direction"], polarization=POLARIZATION
-)
+source_dft_components = dft_projection_components_for_port(src["direction"])
 
 monitor_cfg = dict(
     record_fields=False,
@@ -947,6 +981,7 @@ for out in OUTPUT_PORTS:
     comps = dft_components_for_port(
         ports[out]["direction"], polarization=POLARIZATION
     )
+    comps = dft_projection_components_for_port(ports[out]["direction"])
     t0_m, t1_m = dft_window[out]
     device_monitors.append(
         Monitor(
@@ -998,6 +1033,7 @@ sim_device = Simulation(
     time=time,
     resolution=DX,
 )
+monitor_by_name = {m.name: m for m in device_monitors}
 
 for mon_name, mon_start, mon_end in [
     ("o1_fwd", o1_fwd_start, o1_fwd_end),
@@ -1295,24 +1331,28 @@ if (
         fig.savefig(DEBUG_OUT_DIR / "fullrun_power_traces.png", dpi=300)
         plt.close(fig)
 
-# Extract modal waves from device run.
+# Extract modal waves from device run using physical propagation directions.
+src_in_dir = ports[SOURCE_PORT]["direction"]
+src_out_dir = outward_direction(src_in_dir)
+out_dir = {p: outward_direction(ports[p]["direction"]) for p in OUTPUT_PORTS}
+
 device_port_specs = [
     PortSpec(
-        name=SOURCE_PORT,
+        name="o1_refl",
         monitor_name="o1_ref",
-        direction=ports[SOURCE_PORT]["direction"],
+        direction=src_out_dir,
         polarization=POLARIZATION,
     ),
     PortSpec(
-        name="o2",
+        name="o2_out",
         monitor_name="o2",
-        direction=ports["o2"]["direction"],
+        direction=out_dir["o2"],
         polarization=POLARIZATION,
     ),
     PortSpec(
-        name="o3",
+        name="o3_out",
         monitor_name="o3",
-        direction=ports["o3"]["direction"],
+        direction=out_dir["o3"],
         polarization=POLARIZATION,
     ),
 ]
@@ -1394,7 +1434,7 @@ if USE_TWO_RUN_NORM:
             PortSpec(
                 name="o1_inc",
                 monitor_name="o1_norm",
-                direction=ports[SOURCE_PORT]["direction"],
+                direction=src_in_dir,
                 polarization=POLARIZATION,
             )
         ],
@@ -1409,7 +1449,7 @@ else:
         PortSpec(
             name="o1_inc",
             monitor_name="o1_fwd",
-            direction=ports[SOURCE_PORT]["direction"],
+            direction=src_in_dir,
             polarization=POLARIZATION,
         )
     ]
@@ -1421,13 +1461,9 @@ else:
     )
     a_incident = np.asarray(waves_inc["o1_inc"]["a_plus"], dtype=np.complex128)
 
-b_o1 = np.asarray(waves_dev[SOURCE_PORT]["a_minus"], dtype=np.complex128)
-b_o2, sel_o2, p2_plus, p2_minus = select_output_wave(
-    "o2", waves_dev, auto_select=AUTO_SELECT_OUTPUT_WAVE
-)
-b_o3, sel_o3, p3_plus, p3_minus = select_output_wave(
-    "o3", waves_dev, auto_select=AUTO_SELECT_OUTPUT_WAVE
-)
+b_o1 = np.asarray(waves_dev["o1_refl"]["a_plus"], dtype=np.complex128)
+b_o2 = np.asarray(waves_dev["o2_out"]["a_plus"], dtype=np.complex128)
+b_o3 = np.asarray(waves_dev["o3_out"]["a_plus"], dtype=np.complex128)
 if DEBUG_DFT:
     print(
         "Device wave diagnostics: "
@@ -1435,12 +1471,16 @@ if DEBUG_DFT:
         f"max|b_o2|={np.max(np.abs(b_o2)):.3e}, "
         f"max|b_o3|={np.max(np.abs(b_o3)):.3e}"
     )
-print(
-    "Output-wave selection: "
-    f"o2={sel_o2} (mean|a+|^2={p2_plus:.3e}, mean|a-|^2={p2_minus:.3e}), "
-    f"o3={sel_o3} (mean|a+|^2={p3_plus:.3e}, mean|a-|^2={p3_minus:.3e})"
-)
-for port_name in [SOURCE_PORT, "o2", "o3"]:
+for port_name in ["o1_refl", "o2_out", "o3_out"]:
+    a_p = np.asarray(waves_dev[port_name]["a_plus"], dtype=np.complex128)
+    a_m = np.asarray(waves_dev[port_name]["a_minus"], dtype=np.complex128)
+    p_p = float(np.mean(np.abs(a_p) ** 2)) if a_p.size else 0.0
+    p_m = float(np.mean(np.abs(a_m) ** 2)) if a_m.size else 0.0
+    print(
+        f"[wave split] {port_name}: "
+        f"mean|a+|^2={p_p:.3e}, mean|a-|^2={p_m:.3e}"
+    )
+for port_name in ["o1_refl", "o2_out", "o3_out"]:
     cond = np.asarray(waves_dev[port_name].get("condition_number", []), dtype=float)
     if cond.size:
         print(
@@ -1537,6 +1577,41 @@ s_matrix = {
     ("o2", "o1"): safe_ratio(b_o2, a_incident),
     ("o3", "o1"): safe_ratio(b_o3, a_incident),
 }
+
+if "o1_fwd" in monitor_by_name:
+    try:
+        f_in = dft_signed_flux_spectrum(monitor_by_name["o1_fwd"], axis=src["direction"][1])
+        f_r = dft_signed_flux_spectrum(monitor_by_name["o1_ref"], axis=src["direction"][1])
+        f_2 = dft_signed_flux_spectrum(monitor_by_name["o2"], axis=ports["o2"]["direction"][1])
+        f_3 = dft_signed_flux_spectrum(monitor_by_name["o3"], axis=ports["o3"]["direction"][1])
+        n = min(len(f_in), len(f_r), len(f_2), len(f_3), len(freqs))
+        if n > 0:
+            fin = np.maximum(np.abs(f_in[:n]), 1e-18)
+            p2 = np.abs(f_2[:n])
+            p3 = np.abs(f_3[:n])
+            pref = np.abs(f_r[:n])
+            mag11 = np.sqrt(np.clip(pref / fin, 0.0, np.inf))
+            mag21 = np.sqrt(np.clip(p2 / fin, 0.0, np.inf))
+            mag31 = np.sqrt(np.clip(p3 / fin, 0.0, np.inf))
+            i0_loc = int(np.argmin(np.abs((LIGHT_SPEED / freqs[:n]) / µm - (WL0 / µm))))
+            print(
+                "[dft flux closure] "
+                f"R={mag11[i0_loc]**2:.3f}, T2={mag21[i0_loc]**2:.3f}, T3={mag31[i0_loc]**2:.3f}, "
+                f"sum={mag11[i0_loc]**2 + mag21[i0_loc]**2 + mag31[i0_loc]**2:.3f}"
+            )
+            if FLUX_RENORMALIZE_S:
+                s11 = np.asarray(s_matrix[("o1", "o1")], dtype=np.complex128)
+                s21 = np.asarray(s_matrix[("o2", "o1")], dtype=np.complex128)
+                s31 = np.asarray(s_matrix[("o3", "o1")], dtype=np.complex128)
+                s11[:n] = mag11 * np.exp(1j * np.angle(s11[:n]))
+                s21[:n] = mag21 * np.exp(1j * np.angle(s21[:n]))
+                s31[:n] = mag31 * np.exp(1j * np.angle(s31[:n]))
+                s_matrix[("o1", "o1")] = s11
+                s_matrix[("o2", "o1")] = s21
+                s_matrix[("o3", "o1")] = s31
+                print("[dft flux renorm] Applied magnitude renormalization to S-parameters.")
+    except Exception as exc:
+        print(f"[flux renorm] skipped: {exc}")
 
 min_incident_db = env_float("BEAMZ_MIN_INCIDENT_DB", -55.0)
 max_inc = float(np.max(np.abs(a_incident))) if a_incident.size else 0.0
