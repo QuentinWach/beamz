@@ -1000,6 +1000,17 @@ class Simulation:
             "signed_flux_sign": sign,
         }
 
+    @staticmethod
+    def _remap_3d_solver_components(ex, ey, ez, hx, hy, hz, axis):
+        """Match solve_modes x-basis output to the requested global propagation axis."""
+        if axis == "x":
+            return ex, ey, ez, hx, hy, hz
+        if axis == "y":
+            return ey, ex, ez, hy, hx, hz
+        if axis == "z":
+            return ey, ez, ex, hy, hz, hx
+        raise ValueError(f"Unsupported axis {axis!r} for 3D mode remap.")
+
     def _monitor_profile_slice(self, monitor, axis, pad_cells):
         perm = np.asarray(self.fields.permittivity)
         if perm.ndim == 3:
@@ -1069,24 +1080,53 @@ class Simulation:
         eps_profile, local_idx, dl = self._monitor_profile_slice(
             monitor, parts["axis"], mode_pad_cells
         )
+        solver_direction = spec.direction
+        if self.is_3d and parts["axis"] in {"x", "y"}:
+            # Keep monitor-side modal basis aligned with ModeSource.initialize(...)
+            solver_direction = (
+                ("-" if spec.direction.startswith("+") else "+") + parts["axis"]
+            )
         omega = 2.0 * np.pi * float(frequency)
         _, e_fields, h_fields, _ = solve_modes(
             eps=eps_profile,
             omega=omega,
             dL=float(self.resolution),
             m=spec.mode_index + 1,
-            direction=spec.direction,
+            direction=solver_direction,
             filter_pol=spec.polarization,
             return_fields=True,
         )
 
         mode = int(spec.mode_index)
-        e_fwd_full = np.asarray(
-            np.squeeze(e_fields[mode][parts["e_mode_index"]]), dtype=np.complex128
-        )
-        h_fwd_full = np.asarray(
-            np.squeeze(h_fields[mode][parts["h_mode_index"]]), dtype=np.complex128
-        )
+        if self.is_3d:
+            ex_full = np.asarray(np.squeeze(e_fields[mode][0]), dtype=np.complex128)
+            ey_full = np.asarray(np.squeeze(e_fields[mode][1]), dtype=np.complex128)
+            ez_full = np.asarray(np.squeeze(e_fields[mode][2]), dtype=np.complex128)
+            hx_full = np.asarray(np.squeeze(h_fields[mode][0]), dtype=np.complex128)
+            hy_full = np.asarray(np.squeeze(h_fields[mode][1]), dtype=np.complex128)
+            hz_full = np.asarray(np.squeeze(h_fields[mode][2]), dtype=np.complex128)
+            ex_full, ey_full, ez_full, hx_full, hy_full, hz_full = (
+                self._remap_3d_solver_components(
+                    ex_full,
+                    ey_full,
+                    ez_full,
+                    hx_full,
+                    hy_full,
+                    hz_full,
+                    parts["axis"],
+                )
+            )
+            e_lookup = {"Ex": ex_full, "Ey": ey_full, "Ez": ez_full}
+            h_lookup = {"Hx": hx_full, "Hy": hy_full, "Hz": hz_full}
+            e_fwd_full = e_lookup[parts["e_component"]]
+            h_fwd_full = h_lookup[parts["h_component"]]
+        else:
+            e_fwd_full = np.asarray(
+                np.squeeze(e_fields[mode][parts["e_mode_index"]]), dtype=np.complex128
+            )
+            h_fwd_full = np.asarray(
+                np.squeeze(h_fields[mode][parts["h_mode_index"]]), dtype=np.complex128
+            )
         if self.is_3d:
             if e_fwd_full.ndim == 1:
                 e_fwd_full = e_fwd_full[:, None]
