@@ -965,7 +965,13 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
     """Collect simple operation counts from compiled v0.3 HLO text."""
     import jax
     import jax.numpy as jnp
-    from beamz.simulation.compiled import EngineState, MonitorState, monitor_state_size
+    from beamz.simulation.compiled import (
+        EngineState,
+        MonitorState,
+        monitor_dft_point_size,
+        monitor_frequency_size,
+        monitor_state_size,
+    )
 
     def _compiled_inputs():
         program = sim.compile(num_steps=steps)
@@ -974,16 +980,32 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
 
         if program.monitor_specs:
             max_records = max(1, monitor_state_size(program.monitor_specs, steps))
+            max_freq = monitor_frequency_size(program.monitor_specs)
+            max_points = monitor_dft_point_size(program.monitor_specs)
             monitor_state = MonitorState(
                 powers=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
                 timestamps=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
                 counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+                freq_flux_re=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+                freq_flux_im=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+                freq_phase_re=jnp.ones((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+                freq_phase_im=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+                dft_vec_re=jnp.zeros((len(program.monitor_specs), 6, max_freq, max_points), dtype=jnp.float32),
+                dft_vec_im=jnp.zeros((len(program.monitor_specs), 6, max_freq, max_points), dtype=jnp.float32),
+                dft_weight_sum=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
             )
         else:
             monitor_state = MonitorState(
                 powers=jnp.zeros((0, 0), dtype=jnp.float32),
                 timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
                 counts=jnp.zeros((0,), dtype=jnp.int32),
+                freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+                dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+                dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
             )
 
         engine_state = EngineState(
@@ -1021,7 +1043,13 @@ def dump_compiled_ir_artifacts(
     """Write JAXPR/HLO artifacts for deep debugging and return optimized-HLO stats."""
     import jax
     import jax.numpy as jnp
-    from beamz.simulation.compiled import EngineState, MonitorState, monitor_state_size
+    from beamz.simulation.compiled import (
+        EngineState,
+        MonitorState,
+        monitor_dft_point_size,
+        monitor_frequency_size,
+        monitor_state_size,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1031,16 +1059,32 @@ def dump_compiled_ir_artifacts(
 
     if program.monitor_specs:
         max_records = max(1, monitor_state_size(program.monitor_specs, steps))
+        max_freq = monitor_frequency_size(program.monitor_specs)
+        max_points = monitor_dft_point_size(program.monitor_specs)
         monitor_state = MonitorState(
             powers=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
             timestamps=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
             counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+            freq_flux_re=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_flux_im=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_phase_re=jnp.ones((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_phase_im=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+            dft_vec_re=jnp.zeros((len(program.monitor_specs), 6, max_freq, max_points), dtype=jnp.float32),
+            dft_vec_im=jnp.zeros((len(program.monitor_specs), 6, max_freq, max_points), dtype=jnp.float32),
+            dft_weight_sum=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
         )
     else:
         monitor_state = MonitorState(
             powers=jnp.zeros((0, 0), dtype=jnp.float32),
             timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
             counts=jnp.zeros((0,), dtype=jnp.int32),
+            freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+            freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+            freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+            freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+            dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+            dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+            dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
         )
 
     engine_state = EngineState(

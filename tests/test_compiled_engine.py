@@ -311,6 +311,46 @@ def test_compiled_frequency_monitor_3d_populated():
     assert np.isfinite(np.asarray(monitor.power_history)).all()
 
 
+def test_compiled_dft_component_monitor_populated(small_sim_params):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    freq = LIGHT_SPEED / wl
+    monitor = Monitor(
+        start=(domain * 0.35, domain * 0.35),
+        end=(domain * 0.35, domain * 0.65),
+        record_fields=False,
+        dft_enabled=True,
+        dft_frequencies=[freq],
+        dft_components=("Ez", "Hy"),
+        dft_t_start=0.0,
+        dft_t_end=float(t[-1]),
+        dft_window="rect",
+        dft_record_every_step=True,
+        record_interval=2,
+    )
+    sim = Simulation(
+        design=design,
+        devices=[source, monitor],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+    sim.run_compiled(num_steps=60, progress=False)
+
+    ez_dft = np.asarray(monitor.get_dft_component("Ez"))
+    hy_dft = np.asarray(monitor.get_dft_component("Hy"))
+    assert ez_dft.shape[0] == 1
+    assert hy_dft.shape == ez_dft.shape
+    assert ez_dft.shape[1] > 0
+    assert np.isfinite(ez_dft).all()
+    assert np.isfinite(hy_dft).all()
+    assert np.max(np.abs(ez_dft)) > 0.0
+    assert np.max(np.abs(hy_dft)) > 0.0
+
+
 def test_compiled_program_compiles_once(small_sim_params):
     _wl, _dx, _dt, _domain, _steps, _t, _signal = small_sim_params
 
@@ -350,6 +390,9 @@ def test_compiled_program_compiles_once(small_sim_params):
         freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
         freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
         freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
     )
 
     eng1, _, _ = program.run(eng0, mon0)
@@ -374,6 +417,9 @@ def test_compiled_program_compiles_once(small_sim_params):
         freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
         freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
         freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
     )
     program.run(eng1_input, mon1)
     assert program.compile_count == 1
@@ -413,6 +459,9 @@ def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
         freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
         freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
         freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
     )
 
     program._build_scan()

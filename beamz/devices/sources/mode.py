@@ -854,11 +854,22 @@ def _normalize_3d_profiles_by_flux(profiles, axis, eps=1e-18):
     else:
         s_axis = ex * hy - ey * hx
 
+    # Use signed net flux as the primary normalization target so source strength
+    # does not collapse with larger monitor windows that mostly contain near-zero tails.
+    flux_signed = float(np.abs(np.sum(s_axis)))
     flux_l1 = float(np.sum(np.abs(s_axis)))
-    if (not np.isfinite(flux_l1)) or flux_l1 <= eps:
+    if (not np.isfinite(flux_signed)) or flux_signed <= eps:
+        flux = flux_l1
+    elif flux_l1 > 0.0 and flux_signed < 0.01 * flux_l1:
+        # Degenerate cancellation fallback.
+        flux = flux_l1
+    else:
+        flux = flux_signed
+
+    if (not np.isfinite(flux)) or flux <= eps:
         return profiles
 
-    scale = float(np.sqrt(1.0 / max(flux_l1, eps)))
+    scale = float(np.sqrt(1.0 / max(flux, eps)))
     scale = float(np.clip(scale, 1e-6, 1e6))
     for key, value in profiles.items():
         profiles[key] = np.asarray(value) * scale

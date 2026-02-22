@@ -16,6 +16,7 @@ from beamz.simulation.compiled import (
     EngineState,
     MonitorState,
     compile_simulation,
+    monitor_dft_point_size,
     monitor_frequency_size,
     monitor_state_size,
 )
@@ -27,7 +28,7 @@ from beamz.simulation.ops import advance_e_field, advance_h_field
 class PortSpec:
     name: str
     monitor_name: str
-    direction: Literal["+x", "-x", "+y", "-y"]
+    direction: Literal["+x", "-x", "+y", "-y", "+z", "-z"]
     polarization: Literal["tm", "te"]
     mode_index: int = 0
     reference_monitor: str | None = None
@@ -123,6 +124,7 @@ class Simulation:
         self._compiled_program = None
         self._compiled_program_signature = None
         self._compiled_program_cache = {}
+        self._compiled_monitor_state = None
 
     def step(self):
         """Perform one FDTD time step with correct Huygens source timing.
@@ -536,6 +538,8 @@ class Simulation:
             raise ValueError("record_interval must be a positive integer")
 
         field_history = {name: [] for name in record_fields} if record_every else None
+        if self.current_step == 0:
+            self._compiled_monitor_state = None
 
         # Run in one chunk for max TCUPS by default. For field snapshots, run in equal chunks.
         chunk_size = record_every if record_every else num_steps
@@ -564,11 +568,20 @@ class Simulation:
             )
 
             if monitor_state is None:
-                if program.monitor_specs:
+                if (
+                    self._compiled_monitor_state is not None
+                    and program.monitor_specs
+                    and int(np.asarray(self._compiled_monitor_state.counts.shape[0]))
+                    == len(program.monitor_specs)
+                ):
+                    monitor_state = self._compiled_monitor_state
+                elif program.monitor_specs:
+                    records_horizon = max(1, int(self.num_steps - self.current_step))
                     max_records = max(
-                        1, monitor_state_size(program.monitor_specs, num_steps)
+                        1, monitor_state_size(program.monitor_specs, records_horizon)
                     )
                     max_freq = monitor_frequency_size(program.monitor_specs)
+                    max_points = monitor_dft_point_size(program.monitor_specs)
                     monitor_state = MonitorState(
                         powers=jnp.zeros(
                             (len(program.monitor_specs), max_records), dtype=jnp.float32
@@ -591,6 +604,17 @@ class Simulation:
                         freq_phase_im=jnp.zeros(
                             (len(program.monitor_specs), max_freq), dtype=jnp.float32
                         ),
+                        dft_vec_re=jnp.zeros(
+                            (len(program.monitor_specs), 6, max_freq, max_points),
+                            dtype=jnp.float32,
+                        ),
+                        dft_vec_im=jnp.zeros(
+                            (len(program.monitor_specs), 6, max_freq, max_points),
+                            dtype=jnp.float32,
+                        ),
+                        dft_weight_sum=jnp.zeros(
+                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                        ),
                     )
                 else:
                     monitor_state = MonitorState(
@@ -601,13 +625,18 @@ class Simulation:
                         freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
                         freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
                         freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+                        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+                        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
                     )
+            self._compiled_monitor_state = monitor_state
 
             engine_state, monitor_state, _ = program.run(
                 engine_state=engine_state,
                 monitor_state=monitor_state,
             )
             engine_state.ez.block_until_ready()
+            self._compiled_monitor_state = monitor_state
 
             if progress and steps_done == 0:
                 print("done!")
@@ -744,7 +773,7 @@ class Simulation:
                     mode_index=int(item.get("mode_index", 0)),
                     reference_monitor=item.get("reference_monitor"),
                 )
-            if spec.direction not in {"+x", "-x", "+y", "-y"}:
+            if spec.direction not in {"+x", "-x", "+y", "-y", "+z", "-z"}:
                 raise ValueError(f"Unsupported port direction '{spec.direction}'.")
             pol = str(spec.polarization).lower()
             if pol not in {"tm", "te"}:
@@ -947,28 +976,62 @@ class Simulation:
     @staticmethod
     def _mode_components_for_port(spec):
         axis = spec.direction[1]
-        if spec.polarization == "tm":
-            return {
-                "axis": axis,
-                "e_component": "Ez",
-                "h_component": "Hy" if axis == "x" else "Hx",
-                "e_mode_index": 2,
-                "h_mode_index": 1,
-                "signed_flux_sign": -1.0 if axis == "x" else 1.0,
-            }
+        tm_map = {
+            "x": ("Ez", "Hy", 2, 1, -1.0),
+            "y": ("Ez", "Hx", 2, 0, 1.0),
+            "z": ("Ey", "Hx", 1, 0, -1.0),
+        }
+        te_map = {
+            "x": ("Ey", "Hz", 1, 2, 1.0),
+            "y": ("Ex", "Hz", 0, 2, -1.0),
+            "z": ("Ex", "Hy", 0, 1, 1.0),
+        }
+        if axis not in {"x", "y", "z"}:
+            raise ValueError(f"Unsupported port axis '{axis}'.")
+        e_comp, h_comp, e_idx, h_idx, sign = (
+            tm_map[axis] if spec.polarization == "tm" else te_map[axis]
+        )
         return {
             "axis": axis,
-            "e_component": "Ey" if axis == "x" else "Ex",
-            "h_component": "Hz",
-            "e_mode_index": 1,
-            "h_mode_index": 2,
-            "signed_flux_sign": 1.0 if axis == "x" else -1.0,
+            "e_component": e_comp,
+            "h_component": h_comp,
+            "e_mode_index": e_idx,
+            "h_mode_index": h_idx,
+            "signed_flux_sign": sign,
         }
 
     def _monitor_profile_slice(self, monitor, axis, pad_cells):
         perm = np.asarray(self.fields.permittivity)
+        if perm.ndim == 3:
+            z_idx, y_idx, x_idx = monitor.get_grid_slice_3d(
+                self.resolution,
+                self.resolution,
+                self.resolution,
+                perm.shape,
+            )
+
+            def _clamp(idx, limit):
+                if isinstance(idx, slice):
+                    start = 0 if idx.start is None else int(idx.start)
+                    stop = limit if idx.stop is None else int(idx.stop)
+                    start = max(0, min(start, max(limit - 1, 0)))
+                    stop = max(start + 1, min(stop, limit))
+                    return slice(start, stop)
+                ii = int(idx)
+                return max(0, min(ii, limit - 1))
+
+            z_idx = _clamp(z_idx, perm.shape[0])
+            y_idx = _clamp(y_idx, perm.shape[1])
+            x_idx = _clamp(x_idx, perm.shape[2])
+            eps_slice = np.asarray(perm[z_idx, y_idx, x_idx], dtype=np.complex128)
+            if eps_slice.ndim != 2:
+                eps_slice = np.atleast_2d(eps_slice)
+            npts = int(eps_slice.size)
+            local_idx = np.arange(npts, dtype=int)
+            d_area = float(self.resolution) * float(self.resolution)
+            return eps_slice, local_idx, d_area
         if perm.ndim != 2:
-            raise NotImplementedError("Modal extraction currently supports 2D only.")
+            raise NotImplementedError("Modal extraction supports 2D or 3D only.")
         points = monitor.get_grid_points_2d(self.resolution, self.resolution)
         if not points:
             raise ValueError(f"Monitor '{monitor.name}' contains no sample points.")
@@ -1024,12 +1087,36 @@ class Simulation:
         h_fwd_full = np.asarray(
             np.squeeze(h_fields[mode][parts["h_mode_index"]]), dtype=np.complex128
         )
-        if e_fwd_full.ndim > 1:
-            e_fwd_full = e_fwd_full[:, 0]
-        if h_fwd_full.ndim > 1:
-            h_fwd_full = h_fwd_full[:, 0]
-        e_fwd = e_fwd_full[local_idx]
-        h_fwd = h_fwd_full[local_idx]
+        if self.is_3d:
+            if e_fwd_full.ndim == 1:
+                e_fwd_full = e_fwd_full[:, None]
+            if h_fwd_full.ndim == 1:
+                h_fwd_full = h_fwd_full[:, None]
+            e_flat = e_fwd_full.reshape(-1)
+            h_flat = h_fwd_full.reshape(-1)
+            n_target = min(e_flat.size, h_flat.size)
+            try:
+                n_monitor = int(
+                    np.asarray(
+                        monitor.get_dft_component(parts["e_component"]),
+                        dtype=np.complex128,
+                    ).shape[1]
+                )
+                n_target = min(n_target, n_monitor)
+            except Exception:
+                pass
+            idx = np.asarray(local_idx, dtype=int)
+            if idx.size > n_target:
+                idx = idx[:n_target]
+            e_fwd = e_flat[idx]
+            h_fwd = h_flat[idx]
+        else:
+            if e_fwd_full.ndim > 1:
+                e_fwd_full = e_fwd_full[:, 0]
+            if h_fwd_full.ndim > 1:
+                h_fwd_full = h_fwd_full[:, 0]
+            e_fwd = e_fwd_full[local_idx]
+            h_fwd = h_fwd_full[local_idx]
 
         if h_fwd.size:
             i_max = int(np.argmax(np.abs(h_fwd)))
@@ -1076,7 +1163,7 @@ class Simulation:
         Fast and convenient for sweeps, but less robust than CW demodulation
         for strict passivity/loss assessment.
         """
-        if self.is_3d or self.plane_2d != "xy":
+        if (not self.is_3d) and self.plane_2d != "xy":
             raise NotImplementedError(
                 "extract_port_waves currently supports 2D simulations in the xy plane."
             )
@@ -1178,7 +1265,7 @@ class Simulation:
     ):
         """Extract modal port waves from in-simulation DFT monitor accumulators."""
         del min_incident_db  # Used in get_S_matrix_modal_dft validity masking.
-        if self.is_3d or self.plane_2d != "xy":
+        if (not self.is_3d) and self.plane_2d != "xy":
             raise NotImplementedError(
                 "extract_port_waves_dft currently supports 2D simulations in the xy plane."
             )

@@ -26,10 +26,24 @@ class CompiledMonitorSpec:
     accumulate_frequency: bool = False
     freq_record_interval: int = 1
     freq_count: int = 0
+    freq_hz: jnp.ndarray | None = None
     freq_rot_re: jnp.ndarray | None = None
     freq_rot_im: jnp.ndarray | None = None
+    dft_enabled: bool = False
+    dft_record_interval: int = 1
+    dft_t_start: float = 0.0
+    dft_t_end: float = np.inf
+    dft_window_code: int = 0  # 0=rect, 1=hann
+    dft_point_count: int = 0
+    dft_component_mask: jnp.ndarray | None = None
 
     # 2D fields
+    x_ex: jnp.ndarray | None = None
+    y_ex: jnp.ndarray | None = None
+    valid_ex: jnp.ndarray | None = None
+    x_ey: jnp.ndarray | None = None
+    y_ey: jnp.ndarray | None = None
+    valid_ey: jnp.ndarray | None = None
     x_ez: jnp.ndarray | None = None
     y_ez: jnp.ndarray | None = None
     valid_ez: jnp.ndarray | None = None
@@ -39,6 +53,9 @@ class CompiledMonitorSpec:
     x_hy: jnp.ndarray | None = None
     y_hy: jnp.ndarray | None = None
     valid_hy: jnp.ndarray | None = None
+    x_hz: jnp.ndarray | None = None
+    y_hz: jnp.ndarray | None = None
+    valid_hz: jnp.ndarray | None = None
 
     # 3D fields
     ex_idx: tuple[Any, ...] | None = None
@@ -76,9 +93,16 @@ class BatchedMonitorData:
     # Frequency-domain in-loop accumulation metadata
     freq_enabled: jnp.ndarray  # (n,) bool
     freq_record_intervals: jnp.ndarray  # (n,) int32
+    freq_hz: jnp.ndarray  # (n, max_freq) float32
     freq_rot_re: jnp.ndarray  # (n, max_freq) float32
     freq_rot_im: jnp.ndarray  # (n, max_freq) float32
     freq_mask: jnp.ndarray  # (n, max_freq) float32
+    dft_enabled: jnp.ndarray  # (n,) bool
+    dft_record_intervals: jnp.ndarray  # (n,) int32
+    dft_t_start: jnp.ndarray  # (n,) float32
+    dft_t_end: jnp.ndarray  # (n,) float32
+    dft_window_code: jnp.ndarray  # (n,) int32
+    dft_component_mask: jnp.ndarray  # (n, 6) float32
 
 
 def compile_batched_monitor_data(
@@ -132,18 +156,36 @@ def compile_batched_monitor_data(
         valid[i, :n_pts] = 1.0
 
     freq_mask = np.zeros((n, max_freq), dtype=np.float32)
+    freq_hz = np.zeros((n, max_freq), dtype=np.float32)
     freq_rot_re = np.ones((n, max_freq), dtype=np.float32)
     freq_rot_im = np.zeros((n, max_freq), dtype=np.float32)
+    dft_enabled = np.zeros((n,), dtype=bool)
+    dft_record_intervals = np.ones((n,), dtype=np.int32)
+    dft_t_start = np.zeros((n,), dtype=np.float32)
+    dft_t_end = np.full((n,), np.inf, dtype=np.float32)
+    dft_window_code = np.zeros((n,), dtype=np.int32)
+    dft_component_mask = np.zeros((n, 6), dtype=np.float32)
     for i, spec in enumerate(specs_3d):
         if (
             spec.freq_count > 0
+            and spec.freq_hz is not None
             and spec.freq_rot_re is not None
             and spec.freq_rot_im is not None
         ):
             cnt = int(spec.freq_count)
             freq_mask[i, :cnt] = 1.0
+            freq_hz[i, :cnt] = np.asarray(spec.freq_hz, dtype=np.float32)[:cnt]
             freq_rot_re[i, :cnt] = np.asarray(spec.freq_rot_re, dtype=np.float32)[:cnt]
             freq_rot_im[i, :cnt] = np.asarray(spec.freq_rot_im, dtype=np.float32)[:cnt]
+        dft_enabled[i] = bool(spec.dft_enabled and spec.freq_count > 0)
+        dft_record_intervals[i] = int(max(1, spec.dft_record_interval))
+        dft_t_start[i] = float(spec.dft_t_start)
+        dft_t_end[i] = float(spec.dft_t_end)
+        dft_window_code[i] = int(spec.dft_window_code)
+        if spec.dft_component_mask is not None:
+            dft_component_mask[i, :] = np.asarray(
+                spec.dft_component_mask, dtype=np.float32
+            )[:6]
 
     return BatchedMonitorData(
         n_monitors=n,
@@ -165,9 +207,16 @@ def compile_batched_monitor_data(
         freq_record_intervals=jnp.array(
             [max(1, int(s.freq_record_interval)) for s in specs_3d], dtype=jnp.int32
         ),
+        freq_hz=jnp.array(freq_hz, dtype=jnp.float32),
         freq_rot_re=jnp.array(freq_rot_re, dtype=jnp.float32),
         freq_rot_im=jnp.array(freq_rot_im, dtype=jnp.float32),
         freq_mask=jnp.array(freq_mask, dtype=jnp.float32),
+        dft_enabled=jnp.array(dft_enabled),
+        dft_record_intervals=jnp.array(dft_record_intervals, dtype=jnp.int32),
+        dft_t_start=jnp.array(dft_t_start, dtype=jnp.float32),
+        dft_t_end=jnp.array(dft_t_end, dtype=jnp.float32),
+        dft_window_code=jnp.array(dft_window_code, dtype=jnp.int32),
+        dft_component_mask=jnp.array(dft_component_mask, dtype=jnp.float32),
     )
 
 
@@ -248,15 +297,49 @@ def compile_monitor_specs(
         records = int(math.ceil(num_steps / interval))
         max_records = max(max_records, records)
 
-        freq_points = np.asarray(
+        dft_enabled = bool(getattr(monitor, "dft_enabled", False))
+        dft_freqs = np.asarray(
+            getattr(monitor, "dft_frequencies", np.zeros((0,))), dtype=np.float64
+        ).ravel()
+        if dft_freqs.size > 0 and not np.all(np.isfinite(dft_freqs)):
+            raise ValueError("Monitor dft_frequencies must be finite values in Hz")
+        if dft_freqs.size > 0 and np.any(dft_freqs <= 0.0):
+            raise ValueError("Monitor dft_frequencies must be strictly positive")
+
+        flux_freqs = np.asarray(
             getattr(monitor, "frequency_points", np.zeros((0,))), dtype=np.float64
         ).ravel()
-        if freq_points.size > 0 and not np.all(np.isfinite(freq_points)):
+        if flux_freqs.size > 0 and not np.all(np.isfinite(flux_freqs)):
             raise ValueError("Monitor frequency_points must be finite values in Hz")
-        freq_interval = max(1, int(getattr(monitor, "frequency_record_interval", 1)))
+        if dft_enabled and dft_freqs.size > 0:
+            freq_points = dft_freqs
+            freq_interval = 1 if bool(getattr(monitor, "dft_record_every_step", True)) else interval
+        else:
+            freq_points = flux_freqs
+            freq_interval = max(1, int(getattr(monitor, "frequency_record_interval", 1)))
         theta = -2.0 * np.pi * freq_points * float(dt) * float(freq_interval)
         freq_rot_re = np.cos(theta).astype(np.float32, copy=False)
         freq_rot_im = np.sin(theta).astype(np.float32, copy=False)
+        dft_window = str(getattr(monitor, "dft_window", "rect")).lower()
+        if dft_window in {"none", "rectangular"}:
+            dft_window = "rect"
+        dft_window_code = 1 if dft_window == "hann" else 0
+        dft_t_end_val = float(
+            np.inf
+            if getattr(monitor, "dft_t_end", None) is None
+            else getattr(monitor, "dft_t_end")
+        )
+        if dft_window_code == 1 and not np.isfinite(dft_t_end_val):
+            dft_window_code = 0
+        dft_components = getattr(monitor, "dft_components", None)
+        if dft_components is None:
+            dft_component_mask = np.ones((6,), dtype=np.float32)
+        else:
+            wanted = {str(c) for c in dft_components}
+            ordered = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+            dft_component_mask = np.asarray(
+                [1.0 if c in wanted else 0.0 for c in ordered], dtype=np.float32
+            )
 
         if not monitor.is_3d:
             points = monitor.get_grid_points_2d(resolution, resolution)
@@ -267,9 +350,12 @@ def compile_monitor_specs(
                 x_raw = np.zeros((0,), dtype=np.int32)
                 y_raw = np.zeros((0,), dtype=np.int32)
 
+            x_ex, y_ex, v_ex = _clip_indices(x_raw, y_raw, tuple(fields.Ex.shape))
+            x_ey, y_ey, v_ey = _clip_indices(x_raw, y_raw, tuple(fields.Ey.shape))
             x_ez, y_ez, v_ez = _clip_indices(x_raw, y_raw, tuple(fields.Ez.shape))
             x_hx, y_hx, v_hx = _clip_indices(x_raw, y_raw, tuple(fields.Hx.shape))
             x_hy, y_hy, v_hy = _clip_indices(x_raw, y_raw, tuple(fields.Hy.shape))
+            x_hz, y_hz, v_hz = _clip_indices(x_raw, y_raw, tuple(fields.Hz.shape))
 
             specs.append(
                 CompiledMonitorSpec(
@@ -283,8 +369,28 @@ def compile_monitor_specs(
                     accumulate_frequency=bool(freq_points.size > 0),
                     freq_record_interval=freq_interval,
                     freq_count=int(freq_points.size),
+                    freq_hz=jnp.asarray(freq_points.astype(np.float32, copy=False)),
                     freq_rot_re=jnp.asarray(freq_rot_re),
                     freq_rot_im=jnp.asarray(freq_rot_im),
+                    dft_enabled=bool(dft_enabled and dft_freqs.size > 0),
+                    dft_record_interval=(
+                        1
+                        if bool(getattr(monitor, "dft_record_every_step", True))
+                        else interval
+                    ),
+                    dft_t_start=float(getattr(monitor, "dft_t_start", 0.0)),
+                    dft_t_end=float(
+                        dft_t_end_val
+                    ),
+                    dft_window_code=dft_window_code,
+                    dft_point_count=int(x_ez.size),
+                    dft_component_mask=jnp.asarray(dft_component_mask),
+                    x_ex=jnp.asarray(x_ex),
+                    y_ex=jnp.asarray(y_ex),
+                    valid_ex=jnp.asarray(v_ex),
+                    x_ey=jnp.asarray(x_ey),
+                    y_ey=jnp.asarray(y_ey),
+                    valid_ey=jnp.asarray(v_ey),
                     x_ez=jnp.asarray(x_ez),
                     y_ez=jnp.asarray(y_ez),
                     valid_ez=jnp.asarray(v_ez),
@@ -294,6 +400,9 @@ def compile_monitor_specs(
                     x_hy=jnp.asarray(x_hy),
                     y_hy=jnp.asarray(y_hy),
                     valid_hy=jnp.asarray(v_hy),
+                    x_hz=jnp.asarray(x_hz),
+                    y_hz=jnp.asarray(y_hz),
+                    valid_hz=jnp.asarray(v_hz),
                 )
             )
         else:
@@ -325,8 +434,22 @@ def compile_monitor_specs(
                     accumulate_frequency=bool(freq_points.size > 0),
                     freq_record_interval=freq_interval,
                     freq_count=int(freq_points.size),
+                    freq_hz=jnp.asarray(freq_points.astype(np.float32, copy=False)),
                     freq_rot_re=jnp.asarray(freq_rot_re),
                     freq_rot_im=jnp.asarray(freq_rot_im),
+                    dft_enabled=bool(dft_enabled and dft_freqs.size > 0),
+                    dft_record_interval=(
+                        1
+                        if bool(getattr(monitor, "dft_record_every_step", True))
+                        else interval
+                    ),
+                    dft_t_start=float(getattr(monitor, "dft_t_start", 0.0)),
+                    dft_t_end=float(
+                        dft_t_end_val
+                    ),
+                    dft_window_code=dft_window_code,
+                    dft_point_count=int(min_dim0 * min_dim1),
+                    dft_component_mask=jnp.asarray(dft_component_mask),
                     ex_idx=idx_map["Ex"],
                     ey_idx=idx_map["Ey"],
                     ez_idx=idx_map["Ez"],

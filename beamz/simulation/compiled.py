@@ -108,6 +108,9 @@ class MonitorState(NamedTuple):
     freq_flux_im: jnp.ndarray
     freq_phase_re: jnp.ndarray
     freq_phase_im: jnp.ndarray
+    dft_vec_re: jnp.ndarray
+    dft_vec_im: jnp.ndarray
+    dft_weight_sum: jnp.ndarray
 
 
 class UpdateCoefficients(NamedTuple):
@@ -434,6 +437,9 @@ class CompiledSimulation:
         freq_flux_im = monitor_state.freq_flux_im
         freq_phase_re = monitor_state.freq_phase_re
         freq_phase_im = monitor_state.freq_phase_im
+        dft_vec_re = monitor_state.dft_vec_re
+        dft_vec_im = monitor_state.dft_vec_im
+        dft_weight_sum = monitor_state.dft_weight_sum
         max_records = powers.shape[1]
 
         # Batched 3D monitors via fori_loop (constant HLO size)
@@ -447,7 +453,7 @@ class CompiledSimulation:
             hz_flat = hz.ravel()
 
             def _mon_body(i, carry):
-                pwr, ts, cnt, f_re, f_im, ph_re, ph_im = carry
+                pwr, ts, cnt, f_re, f_im, ph_re, ph_im, d_re, d_im, d_w = carry
                 mi = bm.monitor_indices[i]
 
                 should_record = (abs_step % bm.record_intervals[i]) == 0
@@ -503,7 +509,46 @@ class CompiledSimulation:
                 f_im = f_im.at[mi].set(row_f_im)
                 ph_re = ph_re.at[mi].set(row_ph_re)
                 ph_im = ph_im.at[mi].set(row_ph_im)
-                return pwr, ts, cnt, f_re, f_im, ph_re, ph_im
+                do_dft = (
+                    bm.dft_enabled[i]
+                    & ((abs_step % bm.dft_record_intervals[i]) == 0)
+                    & (t_phys >= bm.dft_t_start[i])
+                    & (t_phys <= bm.dft_t_end[i])
+                )
+                two_pi = jnp.asarray(2.0 * np.pi, dtype=jnp.float32)
+                span = jnp.maximum(bm.dft_t_end[i] - bm.dft_t_start[i], 1e-30)
+                tau = jnp.clip((t_phys - bm.dft_t_start[i]) / span, 0.0, 1.0)
+                w_hann = 0.5 * (1.0 - jnp.cos(two_pi * tau))
+                w = jnp.where(
+                    bm.dft_window_code[i] == 1,
+                    w_hann,
+                    jnp.asarray(1.0, dtype=jnp.float32),
+                )
+                w = jnp.where(do_dft, w, jnp.asarray(0.0, dtype=jnp.float32))
+
+                f_hz = bm.freq_hz[i]
+                mask_f = bm.freq_mask[i]
+                phi = -two_pi * f_hz * t_phys
+                ph_vec_re = jnp.cos(phi) * mask_f
+                ph_vec_im = jnp.sin(phi) * mask_f
+
+                vecs = jnp.stack((exs, eys, ezs, hxs, hys, hzs), axis=0)
+                comp_mask = bm.dft_component_mask[i][:, None, None]
+                delta_re_3d = (
+                    w
+                    * comp_mask
+                    * jnp.einsum("f,cp->cfp", ph_vec_re, vecs)
+                )
+                delta_im_3d = (
+                    w
+                    * comp_mask
+                    * jnp.einsum("f,cp->cfp", ph_vec_im, vecs)
+                )
+                d_re = d_re.at[mi].add(delta_re_3d)
+                d_im = d_im.at[mi].add(delta_im_3d)
+                d_w = d_w.at[mi].add(w * mask_f)
+
+                return pwr, ts, cnt, f_re, f_im, ph_re, ph_im, d_re, d_im, d_w
 
             (
                 powers,
@@ -513,6 +558,9 @@ class CompiledSimulation:
                 freq_flux_im,
                 freq_phase_re,
                 freq_phase_im,
+                dft_vec_re,
+                dft_vec_im,
+                dft_weight_sum,
             ) = jax.lax.fori_loop(
                 0,
                 bm.n_monitors,
@@ -525,10 +573,13 @@ class CompiledSimulation:
                     freq_flux_im,
                     freq_phase_re,
                     freq_phase_im,
+                    dft_vec_re,
+                    dft_vec_im,
+                    dft_weight_sum,
                 ),
             )
 
-        # Remaining 2D monitors (Python loop — typically 0 in 3D sims)
+        # Remaining static monitor specs (2D or 3D).
         for mon in monitors_2d:
             should_record = (abs_step % mon.record_interval) == 0
             can_record = counts[mon.monitor_index] < max_records
@@ -542,7 +593,9 @@ class CompiledSimulation:
 
             power_sample = jnp.where(
                 need_sample,
-                self._monitor_power_2d(mon, ez, hx, hy),
+                self._monitor_power_3d(mon, ex, ey, ez, hx, hy, hz)
+                if mon.is_3d
+                else self._monitor_power_2d(mon, ez, hx, hy),
                 jnp.array(0.0, dtype=jnp.float32),
             )
             power_val = jnp.where(
@@ -580,6 +633,62 @@ class CompiledSimulation:
                 freq_flux_im = freq_flux_im.at[mi, : mon.freq_count].set(row_f_im)
                 freq_phase_re = freq_phase_re.at[mi, : mon.freq_count].set(row_ph_re)
                 freq_phase_im = freq_phase_im.at[mi, : mon.freq_count].set(row_ph_im)
+            if mon.dft_enabled and mon.freq_count > 0 and mon.dft_point_count > 0:
+                do_dft = (
+                    ((abs_step % mon.dft_record_interval) == 0)
+                    & (t_phys >= mon.dft_t_start)
+                    & (t_phys <= mon.dft_t_end)
+                )
+                two_pi = jnp.asarray(2.0 * np.pi, dtype=jnp.float32)
+                span = jnp.maximum(mon.dft_t_end - mon.dft_t_start, 1e-30)
+                tau = jnp.clip((t_phys - mon.dft_t_start) / span, 0.0, 1.0)
+                w_hann = 0.5 * (1.0 - jnp.cos(two_pi * tau))
+                w = jnp.where(
+                    mon.dft_window_code == 1,
+                    w_hann,
+                    jnp.asarray(1.0, dtype=jnp.float32),
+                )
+                w = jnp.where(do_dft, w, jnp.asarray(0.0, dtype=jnp.float32))
+
+                if mon.is_3d:
+                    ex_vals = ex[mon.ex_idx][: mon.min_dim0, : mon.min_dim1].reshape(-1)
+                    ey_vals = ey[mon.ey_idx][: mon.min_dim0, : mon.min_dim1].reshape(-1)
+                    ez_vals = ez[mon.ez_idx][: mon.min_dim0, : mon.min_dim1].reshape(-1)
+                    hx_vals = hx[mon.hx_idx][: mon.min_dim0, : mon.min_dim1].reshape(-1)
+                    hy_vals = hy[mon.hy_idx][: mon.min_dim0, : mon.min_dim1].reshape(-1)
+                    hz_vals = hz[mon.hz_idx][: mon.min_dim0, : mon.min_dim1].reshape(-1)
+                else:
+                    ex_vals = ex[mon.y_ex, mon.x_ex] * mon.valid_ex
+                    ey_vals = ey[mon.y_ey, mon.x_ey] * mon.valid_ey
+                    ez_vals = ez[mon.y_ez, mon.x_ez] * mon.valid_ez
+                    hx_vals = hx[mon.y_hx, mon.x_hx] * mon.valid_hx
+                    hy_vals = hy[mon.y_hy, mon.x_hy] * mon.valid_hy
+                    hz_vals = hz[mon.y_hz, mon.x_hz] * mon.valid_hz
+                vecs = jnp.stack(
+                    (ex_vals, ey_vals, ez_vals, hx_vals, hy_vals, hz_vals), axis=0
+                )
+                phase = -two_pi * mon.freq_hz * t_phys
+                ph_re = jnp.cos(phase)
+                ph_im = jnp.sin(phase)
+                comp_mask = mon.dft_component_mask[:, None, None]
+                delta_re = (
+                    w
+                    * comp_mask
+                    * jnp.einsum("f,cp->cfp", ph_re, vecs)
+                )
+                delta_im = (
+                    w
+                    * comp_mask
+                    * jnp.einsum("f,cp->cfp", ph_im, vecs)
+                )
+                mi = mon.monitor_index
+                dft_vec_re = dft_vec_re.at[
+                    mi, :, : mon.freq_count, : mon.dft_point_count
+                ].add(delta_re[:, : mon.freq_count, : mon.dft_point_count])
+                dft_vec_im = dft_vec_im.at[
+                    mi, :, : mon.freq_count, : mon.dft_point_count
+                ].add(delta_im[:, : mon.freq_count, : mon.dft_point_count])
+                dft_weight_sum = dft_weight_sum.at[mi, : mon.freq_count].add(w)
 
         return MonitorState(
             powers=powers,
@@ -589,6 +698,9 @@ class CompiledSimulation:
             freq_flux_im=freq_flux_im,
             freq_phase_re=freq_phase_re,
             freq_phase_im=freq_phase_im,
+            dft_vec_re=dft_vec_re,
+            dft_vec_im=dft_vec_im,
+            dft_weight_sum=dft_weight_sum,
         )
 
     def _build_scan(self):
@@ -624,16 +736,27 @@ class CompiledSimulation:
         batched_mon = None
         monitors_2d: tuple[CompiledMonitorSpec, ...] = ()
         if self.monitor_specs and is_3d:
-            field_shapes = {
-                "Ex": tuple(self.e_source_x.shape),
-                "Ey": tuple(self.e_source_y.shape),
-                "Ez": tuple(self.e_source_z.shape),
-                "Hx": tuple(self.h_source_x.shape),
-                "Hy": tuple(self.h_source_y.shape),
-                "Hz": tuple(self.h_source_z.shape),
-            }
-            batched_mon = compile_batched_monitor_data(self.monitor_specs, field_shapes)
-            monitors_2d = tuple(s for s in self.monitor_specs if not s.is_3d)
+            has_dft_monitor = any(
+                bool(getattr(s, "dft_enabled", False)) for s in self.monitor_specs
+            )
+            if has_dft_monitor:
+                # Keep monitor path simple and deterministic for per-component DFT
+                # accumulation in 3D modal extraction.
+                batched_mon = None
+                monitors_2d = tuple(self.monitor_specs)
+            else:
+                field_shapes = {
+                    "Ex": tuple(self.e_source_x.shape),
+                    "Ey": tuple(self.e_source_y.shape),
+                    "Ez": tuple(self.e_source_z.shape),
+                    "Hx": tuple(self.h_source_x.shape),
+                    "Hy": tuple(self.h_source_y.shape),
+                    "Hz": tuple(self.h_source_z.shape),
+                }
+                batched_mon = compile_batched_monitor_data(
+                    self.monitor_specs, field_shapes
+                )
+                monitors_2d = tuple(s for s in self.monitor_specs if not s.is_3d)
         elif self.monitor_specs:
             monitors_2d = tuple(self.monitor_specs)
 
@@ -989,6 +1112,7 @@ class CompiledSimulation:
                     1, monitor_state_size(self.monitor_specs, self.config.num_steps)
                 )
                 max_freq = monitor_frequency_size(self.monitor_specs)
+                max_points = monitor_dft_point_size(self.monitor_specs)
                 monitor_state = MonitorState(
                     powers=jnp.zeros(
                         (len(self.monitor_specs), max_records), dtype=jnp.float32
@@ -1009,6 +1133,17 @@ class CompiledSimulation:
                     freq_phase_im=jnp.zeros(
                         (len(self.monitor_specs), max_freq), dtype=jnp.float32
                     ),
+                    dft_vec_re=jnp.zeros(
+                        (len(self.monitor_specs), 6, max_freq, max_points),
+                        dtype=jnp.float32,
+                    ),
+                    dft_vec_im=jnp.zeros(
+                        (len(self.monitor_specs), 6, max_freq, max_points),
+                        dtype=jnp.float32,
+                    ),
+                    dft_weight_sum=jnp.zeros(
+                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
+                    ),
                 )
             else:
                 monitor_state = MonitorState(
@@ -1019,6 +1154,9 @@ class CompiledSimulation:
                     freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
                     freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
                     freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                    dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+                    dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+                    dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
                 )
 
         if self._compiled_scan is None:
@@ -1059,6 +1197,45 @@ class CompiledSimulation:
             else:
                 dev.frequency_flux_spectrum = np.zeros((0,), dtype=np.complex64)
 
+            if spec.dft_enabled and spec.freq_count > 0 and spec.dft_point_count > 0:
+                comp_names = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+                comp_mask = (
+                    np.asarray(spec.dft_component_mask, dtype=np.float32)
+                    if spec.dft_component_mask is not None
+                    else np.ones((6,), dtype=np.float32)
+                )
+                weight_sum = np.asarray(
+                    monitor_state.dft_weight_sum[spec.monitor_index, : spec.freq_count],
+                    dtype=np.float64,
+                )
+                dev._dft_weight_sum = weight_sum
+                dev._dft_accum = {}
+                for comp_i, comp_name in enumerate(comp_names):
+                    if comp_mask[comp_i] <= 0.0:
+                        continue
+                    re = np.asarray(
+                        monitor_state.dft_vec_re[
+                            spec.monitor_index,
+                            comp_i,
+                            : spec.freq_count,
+                            : spec.dft_point_count,
+                        ],
+                        dtype=np.float64,
+                    )
+                    im = np.asarray(
+                        monitor_state.dft_vec_im[
+                            spec.monitor_index,
+                            comp_i,
+                            : spec.freq_count,
+                            : spec.dft_point_count,
+                        ],
+                        dtype=np.float64,
+                    )
+                    dev._dft_accum[comp_name] = re + 1j * im
+            else:
+                dev._dft_weight_sum = np.zeros((0,), dtype=np.float64)
+                dev._dft_accum = {}
+
 
 def monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -> int:
     if not specs:
@@ -1075,6 +1252,12 @@ def monitor_frequency_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
     if not specs:
         return 0
     return int(max(int(spec.freq_count) for spec in specs))
+
+
+def monitor_dft_point_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
+    if not specs:
+        return 0
+    return int(max(int(getattr(spec, "dft_point_count", 0)) for spec in specs))
 
 
 def _edge_full_thickness(mask: np.ndarray, axis: int) -> tuple[int, int]:
