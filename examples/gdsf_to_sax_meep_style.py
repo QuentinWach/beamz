@@ -43,13 +43,19 @@ def env_int(name: str, default: int) -> int:
 
 
 FAST_MODE = env_bool("BEAMZ_FAST", True)
-USE_TWO_RUN_NORM = env_bool("BEAMZ_TWO_RUN_NORM", False)
+# Single-run normalization is faster but often non-passive in broadband 3D.
+USE_TWO_RUN_NORM = env_bool("BEAMZ_TWO_RUN_NORM", True)
 SHOW_LAYOUT = env_bool("BEAMZ_SHOW_LAYOUT", not FAST_MODE)
 SHOW_SIGNAL = env_bool("BEAMZ_SHOW_SIGNAL", not FAST_MODE)
 SHOW_FINAL = env_bool("BEAMZ_SHOW_FINAL", not FAST_MODE)
 DEBUG_DFT = env_bool("BEAMZ_DEBUG_DFT", False)
 CALIBRATE_PORT_SCALE = env_bool("BEAMZ_CALIBRATE_PORT_SCALE", False)
 FLUX_RENORMALIZE_S = env_bool("BEAMZ_FLUX_RENORMALIZE_S", False)
+USE_FLUX_MAG_FOR_S = env_bool("BEAMZ_USE_FLUX_MAG_FOR_S", False)
+GLOBAL_DFT_WINDOW = env_bool("BEAMZ_GLOBAL_DFT_WINDOW", False)
+ENFORCE_PASSIVITY = env_bool("BEAMZ_ENFORCE_PASSIVITY", True)
+PASSIVITY_TOL = env_float("BEAMZ_PASSIVITY_TOL", 1e-3)
+PASSIVITY_USE_PROXY_CAP = env_bool("BEAMZ_PASSIVITY_USE_PROXY_CAP", True)
 POLARIZATION = str(os.getenv("BEAMZ_POLARIZATION", "tm")).strip().lower()
 if POLARIZATION not in {"te", "tm"}:
     raise ValueError(
@@ -104,6 +110,11 @@ MONITOR_MIN_SPAN = env_float("BEAMZ_MONITOR_MIN_SPAN", 0.8 * µm)
 MONITOR_Z_SPAN = max(
     env_float("BEAMZ_MONITOR_Z_SPAN", 0.7 * µm), 3.0 * CORE_THICKNESS
 )
+MODAL_MONITOR_SPAN_FACTOR = env_float("BEAMZ_MODAL_MONITOR_SPAN_FACTOR", 1.25)
+MODAL_MONITOR_MIN_SPAN = env_float("BEAMZ_MODAL_MONITOR_MIN_SPAN", 0.55 * µm)
+MODAL_MONITOR_Z_SPAN = max(
+    env_float("BEAMZ_MODAL_MONITOR_Z_SPAN", 0.38 * µm), 1.6 * CORE_THICKNESS
+)
 MONITOR_Z_MARGIN = env_float("BEAMZ_MONITOR_Z_MARGIN", 0.25 * µm)
 MONITOR_Z_MIN = PML_Z + MONITOR_Z_MARGIN
 MONITOR_Z_MAX = DEVICE_DEPTH - PML_Z - MONITOR_Z_MARGIN
@@ -118,9 +129,9 @@ FORWARD_MONITOR_OFFSET = (
 REFLECTION_MONITOR_BACKOFF = 2.0 * µm
 OUTPUT_MONITOR_OFFSET = env_float("BEAMZ_OUTPUT_MONITOR_OFFSET", 1.2 * µm)
 OUTPUT_MONITOR_SEARCH_RADIUS = env_float(
-    "BEAMZ_OUTPUT_MONITOR_SEARCH_RADIUS", 2.2 * µm
+    "BEAMZ_OUTPUT_MONITOR_SEARCH_RADIUS", 0.6 * µm
 )
-OUTPUT_MONITOR_SEARCH_STEPS = env_int("BEAMZ_OUTPUT_MONITOR_SEARCH_STEPS", 17)
+OUTPUT_MONITOR_SEARCH_STEPS = env_int("BEAMZ_OUTPUT_MONITOR_SEARCH_STEPS", 9)
 
 SOURCE_PORT, OUTPUT_PORTS = "o1", ["o2", "o3"]
 DIR_VEC = {
@@ -405,6 +416,7 @@ def select_plane_offset_for_core(
     offset_center,
     offset_radius,
     n_steps,
+    core_thickness,
 ):
     offsets = np.linspace(
         float(offset_center) - float(offset_radius),
@@ -416,15 +428,86 @@ def select_plane_offset_for_core(
     best_start = None
     best_end = None
     for off in offsets:
-        s, e, _, _ = port_plane(port, span_factor, span_min, z_span, offset=float(off))
+        s, e, span_here, zspan_here = port_plane(
+            port, span_factor, span_min, z_span, offset=float(off)
+        )
         mon = Monitor(start=s, end=e, name="candidate")
         core_frac, _, eps_max = monitor_core_overlap_from_arrays(eps, resolution, mon)
-        score = core_frac + (1e-6 * eps_max)
+        plane_area = max(float(span_here) * float(zspan_here), 1e-18)
+        target_frac = float(
+            np.clip((float(port["width"]) * float(core_thickness)) / plane_area, 0.0, 1.0)
+        )
+        score = -abs(core_frac - target_frac)
+        # Penalize monitor choices that likely cut through widened/tapered regions.
+        if core_frac > 1.35 * max(target_frac, 1e-6):
+            score -= 3.0 * (core_frac - 1.35 * target_frac)
+        # Mild tie-breaker: stay near requested outward offset.
+        score -= 1e-3 * abs(float(off) - float(offset_center)) / float(µm)
+        score += 1e-6 * eps_max
         if score > best_core:
             best_core = score
             best_offset = float(off)
             best_start, best_end = s, e
     return best_offset, best_start, best_end
+
+
+def auto_forward_monitor_offset_from_geometry(
+    *,
+    eps,
+    src_port,
+    source_center,
+    dx,
+    wl0,
+    n_core,
+    n_clad,
+):
+    """Auto-place forward monitor between source plane and first discontinuity."""
+    direction = str(src_port["direction"]).strip().lower()
+    if direction[1] != "x":
+        # Keep a conservative default for non-x ports.
+        return float(SOURCE_OFFSET + max(0.8 * µm, 0.5 * wl0))
+
+    dir_sign = 1.0 if direction[0] == "+" else -1.0
+    x_src = float(source_center[0])
+    x_port = float(src_port["center"][0])
+
+    core_mask = np.asarray(eps, dtype=float) > (0.5 * (n_core**2 + n_clad**2))
+    area_x = np.asarray(core_mask.sum(axis=(0, 1)), dtype=float)
+    if area_x.size < 8:
+        target_x = x_src + dir_sign * max(1.5 * µm, 0.9 * wl0)
+        return float(dir_sign * (target_x - x_port))
+
+    src_idx = int(np.clip(round(x_src / dx), 0, area_x.size - 1))
+    n_base = max(6, int(round((0.9 * µm) / dx)))
+    guard = max(3, int(round((0.2 * µm) / dx)))
+
+    if dir_sign > 0:
+        vec = area_x[src_idx + 1 :]
+        idx_to_abs = lambda rel: src_idx + 1 + int(rel)
+    else:
+        vec = area_x[:src_idx][::-1]
+        idx_to_abs = lambda rel: src_idx - 1 - int(rel)
+
+    if vec.size == 0:
+        target_x = x_src + dir_sign * max(1.5 * µm, 0.9 * wl0)
+        return float(dir_sign * (target_x - x_port))
+
+    base = float(np.median(vec[: min(vec.size, n_base)]))
+    thresh = max(base * 1.30, base + 4.0)
+    change_rel = np.where(vec > thresh)[0]
+    if change_rel.size:
+        change_idx = idx_to_abs(change_rel[0])
+        x_change = float(change_idx) * float(dx)
+        target_x = x_src + 0.62 * (x_change - x_src)
+        target_x = x_src + dir_sign * max(abs(target_x - x_src), max(1.5 * µm, 0.9 * wl0))
+        if dir_sign > 0:
+            target_x = min(target_x, x_change - guard * float(dx))
+        else:
+            target_x = max(target_x, x_change + guard * float(dx))
+    else:
+        target_x = x_src + dir_sign * max(1.6 * µm, 1.0 * wl0)
+
+    return float(dir_sign * (target_x - x_port))
 
 
 def signed_sx_timeseries_from_monitor(monitor_obj, dx):
@@ -546,6 +629,24 @@ def dft_signed_flux_spectrum(monitor_obj, axis):
         return np.zeros((0,), dtype=np.complex128)
     # Complex frequency-domain Poynting estimate from monitor DFT phasors.
     return 0.5 * np.sum(p, axis=1) * (DX * DX)
+
+
+def dft_directional_power_spectrum(monitor_obj, direction):
+    """Directional real power spectrum from monitor DFT fields.
+
+    Positive values correspond to power flowing along `direction`.
+    """
+    direction = str(direction).strip().lower()
+    if len(direction) != 2 or direction[0] not in {"+", "-"}:
+        raise ValueError(f"Invalid direction {direction!r}; expected like '+x' or '-x'.")
+    axis = direction[1]
+    sign = 1.0 if direction[0] == "+" else -1.0
+    s_complex = dft_signed_flux_spectrum(monitor_obj, axis=axis)
+    if s_complex.size == 0:
+        return np.zeros((0,), dtype=float)
+    # Time-averaged real Poynting power through monitor plane.
+    p_dir = sign * np.real(s_complex)
+    return np.maximum(p_dir, 0.0)
 
 
 def build_mode_source_with_autofit(
@@ -739,15 +840,6 @@ ports = {
     for name, p in ports.items()
 }
 
-if FORWARD_MONITOR_OFFSET is None:
-    src_port = ports[SOURCE_PORT]
-    scatter_x_est = float(np.median([ports[p]["center"][0] for p in OUTPUT_PORTS]))
-    if src_port["direction"][1] == "x":
-        delta = abs(scatter_x_est - float(src_port["center"][0]))
-        FORWARD_MONITOR_OFFSET = float(np.clip(0.55 * delta, 2.0 * µm, 10.0 * µm))
-    else:
-        FORWARD_MONITOR_OFFSET = 2.0 * µm
-
 for name, port in ports.items():
     cx, cy, width = *port["center"], float(port["width"])
     extension = INPUT_EXTENSION if name == SOURCE_PORT else OUTPUT_EXTENSION
@@ -781,20 +873,34 @@ source_xy = move_along(src["center"], src["direction"], SOURCE_OFFSET)
 source_center = (source_xy[0], source_xy[1], CORE_ZC)
 source_width = port_span(src, SOURCE_SPAN_FACTOR, SOURCE_MIN_SPAN)
 source_height = max(SOURCE_MIN_HEIGHT, SOURCE_HEIGHT_FACTOR * source_width)
+if FORWARD_MONITOR_OFFSET is None:
+    FORWARD_MONITOR_OFFSET = auto_forward_monitor_offset_from_geometry(
+        eps=np.asarray(grid.permittivity),
+        src_port=src,
+        source_center=source_center,
+        dx=DX,
+        wl0=WL0,
+        n_core=N_CORE,
+        n_clad=N_CLAD,
+    )
+    # Keep the auto-selected normalization plane in a robust pre-scatter corridor.
+    FORWARD_MONITOR_OFFSET = float(
+        np.clip(FORWARD_MONITOR_OFFSET, 0.2 * µm, 0.8 * µm)
+    )
 print(f"Forward monitor offset: {FORWARD_MONITOR_OFFSET/µm:.2f} um")
 
 o1_fwd_start, o1_fwd_end, _, _ = port_plane(
     src,
-    MONITOR_SPAN_FACTOR,
-    MONITOR_MIN_SPAN,
-    MONITOR_Z_SPAN,
+    MODAL_MONITOR_SPAN_FACTOR,
+    MODAL_MONITOR_MIN_SPAN,
+    MODAL_MONITOR_Z_SPAN,
     offset=FORWARD_MONITOR_OFFSET,
 )
 o1_ref_start, o1_ref_end, _, _ = port_plane(
     src,
-    MONITOR_SPAN_FACTOR,
-    MONITOR_MIN_SPAN,
-    MONITOR_Z_SPAN,
+    MODAL_MONITOR_SPAN_FACTOR,
+    MODAL_MONITOR_MIN_SPAN,
+    MODAL_MONITOR_Z_SPAN,
     offset=-REFLECTION_MONITOR_BACKOFF,
 )
 
@@ -802,16 +908,21 @@ out_planes = {}
 out_offsets = {}
 eps_grid = np.asarray(grid.permittivity)
 for out in OUTPUT_PORTS:
+    # GDS ports on the right side commonly have direction "-x" (into device).
+    # For monitor placement we want the outgoing side, so we search along outward dir.
+    out_port = dict(ports[out])
+    out_port["direction"] = outward_direction(out_port["direction"])
     best_offset, best_start, best_end = select_plane_offset_for_core(
-        ports[out],
+        out_port,
         eps_grid,
         DX,
-        span_factor=MONITOR_SPAN_FACTOR,
-        span_min=MONITOR_MIN_SPAN,
-        z_span=MONITOR_Z_SPAN,
+        span_factor=MODAL_MONITOR_SPAN_FACTOR,
+        span_min=MODAL_MONITOR_MIN_SPAN,
+        z_span=MODAL_MONITOR_Z_SPAN,
         offset_center=OUTPUT_MONITOR_OFFSET,
         offset_radius=OUTPUT_MONITOR_SEARCH_RADIUS,
         n_steps=OUTPUT_MONITOR_SEARCH_STEPS,
+        core_thickness=CORE_THICKNESS,
     )
     out_offsets[out] = best_offset
     out_planes[out] = (best_start, best_end)
@@ -897,6 +1008,12 @@ dft_window = {
 for out in OUTPUT_PORTS:
     a = arr_out[out]
     dft_window[out] = (max(0.0, a - window_pre), a + window_post)
+
+if GLOBAL_DFT_WINDOW:
+    global_start = max(0.0, min(v[0] for v in dft_window.values()))
+    global_end = max(v[1] for v in dft_window.values())
+    for key in tuple(dft_window.keys()):
+        dft_window[key] = (global_start, global_end)
 
 # Upper bound simulation horizon; adaptive runner stops earlier.
 max_arr = max([arr_fwd, arr_ref, *arr_out.values()])
@@ -1000,6 +1117,14 @@ power_diag_monitors = [
         start=o1_fwd_start,
         end=o1_fwd_end,
         name="diag_o1_fwd_power",
+        record_fields=False,
+        accumulate_power=True,
+        record_interval=max(1, monitor_stride),
+    ),
+    Monitor(
+        start=o1_ref_start,
+        end=o1_ref_end,
+        name="diag_o1_ref_power",
         record_fields=False,
         accumulate_power=True,
         record_interval=max(1, monitor_stride),
@@ -1275,6 +1400,7 @@ device_wall = pytime.time() - wall_t0
 print(f"Device run wall-time: {device_wall:.1f} s (steps={stop_steps_device})")
 
 diag_power_data = {}
+passivity_proxy_cap = 1.0
 for mon in power_diag_monitors:
     tt = np.asarray(mon.power_timestamps, dtype=float)
     pw = np.asarray(mon.power_history, dtype=float)
@@ -1302,8 +1428,17 @@ if (
     p3 = float(
         trapz(diag_power_data["diag_o3_power"][1], diag_power_data["diag_o3_power"][0])
     ) if diag_power_data["diag_o3_power"][0].size else 0.0
+    pref = float(
+        trapz(diag_power_data["diag_o1_ref_power"][1], diag_power_data["diag_o1_ref_power"][0])
+    ) if diag_power_data.get("diag_o1_ref_power", (np.zeros((0,)), np.zeros((0,))))[0].size else 0.0
     if pin > 0.0:
         print(f"[full-run transmission proxy] (o2+o3)/in = {(p2 + p3) / pin:.3f}")
+        proxy_closure = (p2 + p3 + pref) / pin
+        passivity_proxy_cap = float(np.clip(proxy_closure, 0.0, 1.0))
+        print(
+            f"[full-run closure proxy] (refl+o2+o3)/in = {proxy_closure:.3f}, "
+            f"cap={passivity_proxy_cap:.3f}"
+        )
     if WRITE_DEBUG_PLOTS:
         fig, ax = plt.subplots(2, 1, figsize=(8.0, 5.8), dpi=220, sharex=True)
         cmap = {
@@ -1364,6 +1499,7 @@ waves_dev = sim_device.extract_port_waves_dft(
 )
 
 # Incident normalization from a dedicated straight-waveguide reference run.
+incident_monitor_obj = monitor_by_name.get("o1_fwd")
 if USE_TWO_RUN_NORM:
     ref_design = build_reference_design_like(device_design, src)
     ref_grid = ref_design.rasterize(resolution=DX)
@@ -1443,6 +1579,7 @@ if USE_TWO_RUN_NORM:
         return_power=True,
     )
     a_incident = np.asarray(waves_ref["o1_inc"]["a_plus"], dtype=np.complex128)
+    incident_monitor_obj = ref_monitor
 else:
     # Fallback to single-run normalization from forward monitor in device sim.
     single_norm_spec = [
@@ -1486,6 +1623,13 @@ for port_name in ["o1_refl", "o2_out", "o3_out"]:
         print(
             f"[modal conditioning] {port_name}: "
             f"min={np.min(cond):.2e}, median={np.median(cond):.2e}, max={np.max(cond):.2e}"
+        )
+for port_name in ["o1_refl", "o2_out", "o3_out"]:
+    neff_arr = np.asarray(waves_dev[port_name].get("mode_neff", []), dtype=float)
+    if neff_arr.size:
+        print(
+            f"[modal neff] {port_name}: "
+            f"min={np.nanmin(neff_arr):.4f}, median={np.nanmedian(neff_arr):.4f}, max={np.nanmax(neff_arr):.4f}"
         )
 
 if CALIBRATE_PORT_SCALE:
@@ -1578,6 +1722,38 @@ s_matrix = {
     ("o3", "o1"): safe_ratio(b_o3, a_incident),
 }
 
+# Flux-based magnitude correction: use directional real Poynting spectra for
+# physically meaningful |S|, keep modal phase from overlap coefficients.
+if USE_FLUX_MAG_FOR_S and incident_monitor_obj is not None:
+    try:
+        p_in = dft_directional_power_spectrum(incident_monitor_obj, src_in_dir)
+        p_r = dft_directional_power_spectrum(monitor_by_name["o1_ref"], src_out_dir)
+        p_2 = dft_directional_power_spectrum(monitor_by_name["o2"], out_dir["o2"])
+        p_3 = dft_directional_power_spectrum(monitor_by_name["o3"], out_dir["o3"])
+        n = min(len(p_in), len(p_r), len(p_2), len(p_3), len(freqs))
+        if n > 0:
+            pin = np.maximum(np.asarray(p_in[:n], dtype=float), 1e-30)
+            mag11 = np.sqrt(np.clip(np.asarray(p_r[:n], dtype=float) / pin, 0.0, np.inf))
+            mag21 = np.sqrt(np.clip(np.asarray(p_2[:n], dtype=float) / pin, 0.0, np.inf))
+            mag31 = np.sqrt(np.clip(np.asarray(p_3[:n], dtype=float) / pin, 0.0, np.inf))
+            s11 = np.asarray(s_matrix[("o1", "o1")], dtype=np.complex128)
+            s21 = np.asarray(s_matrix[("o2", "o1")], dtype=np.complex128)
+            s31 = np.asarray(s_matrix[("o3", "o1")], dtype=np.complex128)
+            s11[:n] = mag11 * np.exp(1j * np.angle(s11[:n]))
+            s21[:n] = mag21 * np.exp(1j * np.angle(s21[:n]))
+            s31[:n] = mag31 * np.exp(1j * np.angle(s31[:n]))
+            s_matrix[("o1", "o1")] = s11
+            s_matrix[("o2", "o1")] = s21
+            s_matrix[("o3", "o1")] = s31
+            i0_loc = int(np.argmin(np.abs((LIGHT_SPEED / freqs[:n]) / µm - (WL0 / µm))))
+            print(
+                "[flux-mag S] "
+                f"R={mag11[i0_loc]**2:.3f}, T2={mag21[i0_loc]**2:.3f}, "
+                f"T3={mag31[i0_loc]**2:.3f}, sum={mag11[i0_loc]**2 + mag21[i0_loc]**2 + mag31[i0_loc]**2:.3f}"
+            )
+    except Exception as exc:
+        print(f"[flux-mag S] skipped: {exc}")
+
 if "o1_fwd" in monitor_by_name:
     try:
         f_in = dft_signed_flux_spectrum(monitor_by_name["o1_fwd"], axis=src["direction"][1])
@@ -1626,6 +1802,28 @@ print(
 for key in list(s_matrix.keys()):
     s_matrix[key] = np.where(valid, s_matrix[key], 0.0 + 0.0j)
 
+raw_power_sum = (
+    np.abs(np.asarray(s_matrix[("o1", "o1")])) ** 2
+    + np.abs(np.asarray(s_matrix[("o2", "o1")])) ** 2
+    + np.abs(np.asarray(s_matrix[("o3", "o1")])) ** 2
+)
+if ENFORCE_PASSIVITY:
+    power_cap = 1.0
+    if PASSIVITY_USE_PROXY_CAP:
+        power_cap = float(np.clip(passivity_proxy_cap, 0.0, 1.0))
+    over = valid & (raw_power_sum > (power_cap + float(PASSIVITY_TOL)))
+    n_over = int(np.count_nonzero(over))
+    if n_over > 0:
+        scale = np.ones_like(raw_power_sum, dtype=float)
+        scale[over] = np.sqrt(power_cap / np.maximum(raw_power_sum[over], 1e-18))
+        s_matrix[("o1", "o1")] = np.asarray(s_matrix[("o1", "o1")]) * scale
+        s_matrix[("o2", "o1")] = np.asarray(s_matrix[("o2", "o1")]) * scale
+        s_matrix[("o3", "o1")] = np.asarray(s_matrix[("o3", "o1")]) * scale
+        print(
+            f"[passivity projection] corrected {n_over}/{int(np.count_nonzero(valid))} bins "
+            f"(cap={power_cap:.3f}, tol={PASSIVITY_TOL:.1e})"
+        )
+
 s_sax = sax.sdict(s_matrix)
 
 power_sum = (
@@ -1636,6 +1834,17 @@ power_sum = (
 loss_est = 1.0 - power_sum
 power_sum = np.where(valid, power_sum, np.nan)
 loss_est = np.where(valid, loss_est, np.nan)
+if np.any(valid):
+    ps_valid = power_sum[valid]
+    wl_valid = wl_um[valid]
+    worst_idx = int(np.argmax(ps_valid))
+    over_count = int(np.count_nonzero(ps_valid > (1.0 + 1e-6)))
+    print(
+        "Closure diagnostics: "
+        f"min={np.min(ps_valid):.3f}, max={np.max(ps_valid):.3f}, "
+        f"bins_over_1={over_count}/{ps_valid.size}, "
+        f"worst_wl={wl_valid[worst_idx]:.4f}um"
+    )
 
 i0 = int(np.argmin(np.abs(wl_um - WL0 / µm)))
 print(f"|S11|^2+|S21|^2+|S31|^2 @ {WL0 / µm:.3f}um: {power_sum[i0]:.3f}")

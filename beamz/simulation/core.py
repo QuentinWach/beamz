@@ -1094,13 +1094,19 @@ class Simulation:
                 ("-" if spec.direction.startswith("+") else "+") + parts["axis"]
             )
         omega = 2.0 * np.pi * float(frequency)
-        _, e_fields, h_fields, _ = solve_modes(
+        eps_profile_arr = np.asarray(eps_profile)
+        n_local_max = float(
+            np.sqrt(max(float(np.max(np.real(eps_profile_arr))), 1e-12))
+        )
+        target_neff = 0.98 * n_local_max
+        neff_vals, e_fields, h_fields, _ = solve_modes(
             eps=eps_profile,
             omega=omega,
             dL=float(self.resolution),
             m=spec.mode_index + 1,
             direction=solver_direction,
             filter_pol=spec.polarization,
+            target_neff=target_neff,
             return_fields=True,
         )
 
@@ -1235,9 +1241,48 @@ class Simulation:
             "mode_matrix": mode_matrix,
             "condition_number": float(np.linalg.cond(mode_matrix)),
             "pinv": np.linalg.pinv(mode_matrix),
+            "mode_neff": float(np.real(np.asarray(neff_vals[mode]))),
         }
+        if self.is_3d:
+            projection["mode_components"] = {
+                name: np.asarray(comp_samples[name], dtype=np.complex128)
+                for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+                if name in comp_samples
+            }
+            projection["axis"] = parts["axis"]
+            projection["d_area"] = float(dl)
+            projection["power_norm"] = 1.0
         cache[key] = projection
         return projection
+
+    @staticmethod
+    def _project_modal_coefficients_3d(field_components, projection):
+        axis = projection.get("axis", "x")
+        d_area = float(projection.get("d_area", 1.0))
+        p_norm = float(projection.get("power_norm", 1.0))
+        if abs(p_norm) <= 1e-18:
+            p_norm = 1.0
+        mode = projection.get("mode_components", {})
+
+        def _arr(name):
+            return np.asarray(field_components[name], dtype=np.complex128)
+
+        def _mode(name):
+            return np.asarray(mode[name], dtype=np.complex128)
+
+        if axis == "x":
+            a_ov = 0.5 * np.sum(_arr("Ey") * np.conjugate(_mode("Hz")) - _arr("Ez") * np.conjugate(_mode("Hy"))) * d_area
+            b_ov = 0.5 * np.sum(_mode("Ey") * np.conjugate(_arr("Hz")) - _mode("Ez") * np.conjugate(_arr("Hy"))) * d_area
+        elif axis == "y":
+            a_ov = 0.5 * np.sum(_arr("Ez") * np.conjugate(_mode("Hx")) - _arr("Ex") * np.conjugate(_mode("Hz"))) * d_area
+            b_ov = 0.5 * np.sum(_mode("Ez") * np.conjugate(_arr("Hx")) - _mode("Ex") * np.conjugate(_arr("Hz"))) * d_area
+        else:
+            a_ov = 0.5 * np.sum(_arr("Ex") * np.conjugate(_mode("Hy")) - _arr("Ey") * np.conjugate(_mode("Hx"))) * d_area
+            b_ov = 0.5 * np.sum(_mode("Ex") * np.conjugate(_arr("Hy")) - _mode("Ey") * np.conjugate(_arr("Hx"))) * d_area
+
+        a_plus = (a_ov + b_ov) / (2.0 * p_norm)
+        a_minus = (a_ov - b_ov) / (2.0 * p_norm)
+        return np.complex128(a_plus), np.complex128(a_minus)
 
     def extract_port_waves(
         self,
@@ -1301,11 +1346,18 @@ class Simulation:
 
             a_plus = np.zeros(freqs.size, dtype=np.complex128)
             a_minus = np.zeros(freqs.size, dtype=np.complex128)
+            last_valid_proj = None
             for idx, f in enumerate(freqs):
                 f_mode = float(f if strategy == "per_frequency" else single_freq)
                 proj = self._build_port_projection(
                     spec, main_monitor, f_mode, projection_cache
                 )
+                proj_neff = float(proj.get("mode_neff", np.nan))
+                if (not np.isfinite(proj_neff)) or (proj_neff <= 1e-6):
+                    if last_valid_proj is not None:
+                        proj = last_valid_proj
+                else:
+                    last_valid_proj = proj
                 proj_components = tuple(
                     proj.get("components", (proj["e_component"], proj["h_component"]))
                 )
@@ -1333,11 +1385,18 @@ class Simulation:
                         )
 
                 a_incident = np.zeros(freqs.size, dtype=np.complex128)
+                last_valid_ref_proj = None
                 for idx, f in enumerate(freqs):
                     f_mode = float(f if strategy == "per_frequency" else single_freq)
                     proj = self._build_port_projection(
                         spec, ref_monitor, f_mode, projection_cache
                     )
+                    proj_neff = float(proj.get("mode_neff", np.nan))
+                    if (not np.isfinite(proj_neff)) or (proj_neff <= 1e-6):
+                        if last_valid_ref_proj is not None:
+                            proj = last_valid_ref_proj
+                    else:
+                        last_valid_ref_proj = proj
                     proj_components = tuple(
                         proj.get("components", (proj["e_component"], proj["h_component"]))
                     )
@@ -1418,24 +1477,37 @@ class Simulation:
             a_plus = np.zeros(freqs.size, dtype=np.complex128)
             a_minus = np.zeros(freqs.size, dtype=np.complex128)
             cond_main = np.zeros(freqs.size, dtype=float)
+            neff_main = np.full(freqs.size, np.nan, dtype=float)
+            last_valid_proj = None
             for idx, f in enumerate(freqs):
                 proj = self._build_port_projection(
                     spec, main_monitor, float(f), projection_cache
                 )
+                proj_neff = float(proj.get("mode_neff", np.nan))
+                if (not np.isfinite(proj_neff)) or (proj_neff <= 1e-6):
+                    if last_valid_proj is not None:
+                        proj = last_valid_proj
+                else:
+                    last_valid_proj = proj
                 proj_components = tuple(
                     proj.get("components", (proj["e_component"], proj["h_component"]))
                 )
                 field_vec = np.concatenate(
-                    [dft_cache[(main_monitor.name, comp)][idx] for comp in proj_components]
+                    [
+                        dft_cache[(main_monitor.name, comp)][idx]
+                        for comp in proj_components
+                    ]
                 )
                 coeff = proj["pinv"] @ field_vec
                 a_plus[idx], a_minus[idx] = coeff[0], coeff[1]
                 cond_main[idx] = float(proj.get("condition_number", np.nan))
+                neff_main[idx] = float(proj.get("mode_neff", np.nan))
 
             port_waves = {
                 "a_plus": a_plus,
                 "a_minus": a_minus,
                 "condition_number": cond_main,
+                "mode_neff": neff_main,
             }
             if return_power:
                 port_waves["P_plus"] = np.abs(a_plus) ** 2
@@ -1451,10 +1523,18 @@ class Simulation:
                         )
                 a_incident = np.zeros(freqs.size, dtype=np.complex128)
                 cond_ref = np.zeros(freqs.size, dtype=float)
+                neff_ref = np.full(freqs.size, np.nan, dtype=float)
+                last_valid_ref_proj = None
                 for idx, f in enumerate(freqs):
                     proj = self._build_port_projection(
                         spec, ref_monitor, float(f), projection_cache
                     )
+                    proj_neff = float(proj.get("mode_neff", np.nan))
+                    if (not np.isfinite(proj_neff)) or (proj_neff <= 1e-6):
+                        if last_valid_ref_proj is not None:
+                            proj = last_valid_ref_proj
+                    else:
+                        last_valid_ref_proj = proj
                     proj_components = tuple(
                         proj.get("components", (proj["e_component"], proj["h_component"]))
                     )
@@ -1467,8 +1547,10 @@ class Simulation:
                     coeff = proj["pinv"] @ field_vec
                     a_incident[idx] = coeff[0]
                     cond_ref[idx] = float(proj.get("condition_number", np.nan))
+                    neff_ref[idx] = float(proj.get("mode_neff", np.nan))
                 port_waves["a_incident"] = a_incident
                 port_waves["reference_condition_number"] = cond_ref
+                port_waves["reference_mode_neff"] = neff_ref
                 if return_power:
                     port_waves["P_incident"] = np.abs(a_incident) ** 2
 
