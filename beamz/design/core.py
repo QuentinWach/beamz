@@ -1,3 +1,9 @@
+import hashlib
+import json
+import os
+import time
+from pathlib import Path
+
 import numpy as np
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
@@ -169,6 +175,203 @@ def _rebuild_structure_list(
     return rebuilt
 
 
+RASTER_CACHE_VERSION = "v2"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _to_jsonable(value):
+    """Convert arbitrary values into deterministic JSON-safe primitives."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return float(f"{value:.16g}")
+    if isinstance(value, np.generic):
+        return _to_jsonable(value.item())
+    if isinstance(value, np.ndarray):
+        arr = np.asarray(value)
+        if arr.size <= 1024:
+            return [_to_jsonable(v) for v in arr.reshape(-1).tolist()]
+        digest = hashlib.sha256(arr.tobytes()).hexdigest()
+        return {
+            "__ndarray__": {
+                "shape": list(arr.shape),
+                "dtype": str(arr.dtype),
+                "sha256": digest,
+            }
+        }
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in sorted(value.items())}
+    return repr(value)
+
+
+def _material_signature(material):
+    if material is None:
+        return None
+    keys = (
+        "permittivity",
+        "permeability",
+        "conductivity",
+        "k",
+        "rho",
+        "cp",
+        "dn_dT",
+        "T0",
+    )
+    return {k: _to_jsonable(getattr(material, k, None)) for k in keys}
+
+
+def _structure_signature(structure):
+    sig = {
+        "type": type(structure).__name__,
+        "bbox": _to_jsonable(structure.get_bounding_box())
+        if hasattr(structure, "get_bounding_box")
+        else None,
+        "material": _material_signature(getattr(structure, "material", None)),
+    }
+    keys = (
+        "position",
+        "width",
+        "height",
+        "depth",
+        "z",
+        "radius",
+        "inner_radius",
+        "outer_radius",
+        "is_pml",
+        "optimize",
+    )
+    for key in keys:
+        if hasattr(structure, key):
+            sig[key] = _to_jsonable(getattr(structure, key))
+    if hasattr(structure, "vertices"):
+        sig["vertices"] = _to_jsonable(getattr(structure, "vertices"))
+    if hasattr(structure, "interiors"):
+        sig["interiors"] = _to_jsonable(getattr(structure, "interiors"))
+    return sig
+
+
+def _boundary_signature(boundary):
+    if boundary is None:
+        return None
+    raw = {}
+    for key, val in getattr(boundary, "__dict__", {}).items():
+        if key.startswith("_"):
+            continue
+        raw[key] = _to_jsonable(val)
+    return {"type": type(boundary).__name__, "attrs": raw}
+
+
+def _grid_kind_for_request(design_obj, grid_type, kwargs):
+    if isinstance(grid_type, str):
+        gt = grid_type.lower()
+        if gt in {"regular3d", "3d"}:
+            return "3d"
+        if gt in {"regular", "regulargrid", "2d"}:
+            return "2d"
+        if gt in {"auto", "auto-select", "autoselect"}:
+            force_3d = bool(kwargs.get("force_3d", False))
+            auto_select = bool(kwargs.get("auto_select", True))
+            if force_3d or (auto_select and design_obj.is_3d and design_obj.depth > 0):
+                return "3d"
+            return "2d"
+    return "3d" if (design_obj.is_3d and design_obj.depth > 0) else "2d"
+
+
+def _design_cache_key(design_obj, resolution, grid_kind, resolution_z):
+    raster_env = {
+        "fast_3d": os.getenv("BEAMZ_RASTER_FAST_3D"),
+        "fast_min_voxels": os.getenv("BEAMZ_RASTER_FAST_MIN_VOXELS", "1000000"),
+    }
+    payload = {
+        "version": RASTER_CACHE_VERSION,
+        "grid_kind": grid_kind,
+        "resolution_xy": _to_jsonable(float(resolution)),
+        "resolution_z": _to_jsonable(float(resolution_z)),
+        "raster_env": raster_env,
+        "domain": {
+            "width": _to_jsonable(float(design_obj.width)),
+            "height": _to_jsonable(float(design_obj.height)),
+            "depth": _to_jsonable(float(design_obj.depth)),
+            "is_3d": bool(design_obj.is_3d),
+        },
+        "structures": [_structure_signature(s) for s in design_obj.structures],
+        "boundaries": [_boundary_signature(b) for b in getattr(design_obj, "boundaries", [])],
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _raster_cache_dir():
+    default_dir = Path(".beamz_cache") / "raster"
+    return Path(os.getenv("BEAMZ_RASTER_CACHE_DIR", str(default_dir)))
+
+
+def _raster_cache_path(cache_key):
+    return _raster_cache_dir() / f"{cache_key}.npz"
+
+
+def _save_grid_to_cache(grid, cache_path: Path):
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        cache_path,
+        permittivity=np.asarray(grid.permittivity),
+        permeability=np.asarray(grid.permeability),
+        conductivity=np.asarray(grid.conductivity),
+        k=np.asarray(grid.k),
+        rho=np.asarray(grid.rho),
+        cp=np.asarray(grid.cp),
+        dn_dT=np.asarray(grid.dn_dT),
+        T0=np.asarray(grid.T0),
+    )
+
+
+def _build_grid_from_cached_arrays(
+    *,
+    design_obj,
+    resolution,
+    resolution_z,
+    grid_kind,
+    arrays,
+):
+    from beamz.design.meshing import RegularGrid, RegularGrid3D
+
+    if grid_kind == "3d":
+        grid = object.__new__(RegularGrid3D)
+        grid.design = design_obj
+        grid.resolution = resolution
+        grid.resolution_xy = resolution
+        grid.resolution_z = resolution_z
+        grid.is_3d = True
+        grid.dx = resolution
+        grid.dy = resolution
+        grid.dz = resolution_z
+        grid.width = design_obj.width
+        grid.height = design_obj.height
+        grid.depth = design_obj.depth
+    else:
+        grid = object.__new__(RegularGrid)
+        grid.design = design_obj
+        grid.resolution = resolution
+        grid.is_3d = False
+        grid.dx = resolution
+        grid.dy = resolution
+        grid.width = design_obj.width
+        grid.height = design_obj.height
+
+    for name in ("permittivity", "permeability", "conductivity", "k", "rho", "cp", "dn_dT", "T0"):
+        setattr(grid, name, np.asarray(arrays[name]))
+    grid.shape = grid.permittivity.shape
+    return grid
+
+
 class Design:
     def __init__(
         self,
@@ -266,8 +469,9 @@ class Design:
         force_recompute: bool = False,
         **kwargs,
     ):
-        """Rasterize the design into a mesh grid at specified resolution and cache it internally."""
+        """Rasterize design into a mesh grid with in-memory and optional disk cache."""
         from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
+        from beamz.visual.helpers import display_status
 
         # Return cached grid if resolution matches and no force recompute
         if (
@@ -278,6 +482,46 @@ class Design:
             if self._grid_resolution == resolution:
                 return self._grid
 
+        timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
+        disk_cache_enabled = _env_bool("BEAMZ_RASTER_CACHE", True)
+        t_total_start = time.perf_counter()
+        requested_resolution_z = float(kwargs.get("resolution_z", resolution))
+        grid_kind = _grid_kind_for_request(self, grid_type, kwargs)
+
+        cache_path = None
+        if disk_cache_enabled and not force_recompute:
+            cache_key = _design_cache_key(
+                self,
+                resolution=float(resolution),
+                grid_kind=grid_kind,
+                resolution_z=requested_resolution_z,
+            )
+            cache_path = _raster_cache_path(cache_key)
+            if cache_path.exists():
+                t_load = time.perf_counter()
+                arrays = np.load(cache_path)
+                try:
+                    self._grid = _build_grid_from_cached_arrays(
+                        design_obj=self,
+                        resolution=float(resolution),
+                        resolution_z=requested_resolution_z,
+                        grid_kind=grid_kind,
+                        arrays=arrays,
+                    )
+                    self._grid_resolution = resolution
+                finally:
+                    arrays.close()
+                if timing_enabled:
+                    display_status(
+                        (
+                            f"Raster cache hit ({grid_kind}): {cache_path.name} | "
+                            f"load={time.perf_counter() - t_load:.2f}s"
+                        ),
+                        "success",
+                    )
+                return self._grid
+
+        t_raster_start = time.perf_counter()
         if isinstance(grid_type, str):
             gt = grid_type.lower()
             if gt in {"regular", "regulargrid", "2d"}:
@@ -287,6 +531,38 @@ class Design:
             elif gt in {"auto", "auto-select", "autoselect"}:
                 self._grid = create_mesh(self, resolution, **kwargs)
                 self._grid_resolution = resolution
+                t_raster_end = time.perf_counter()
+                if disk_cache_enabled:
+                    if cache_path is None:
+                        cache_key = _design_cache_key(
+                            self,
+                            resolution=float(resolution),
+                            grid_kind="3d"
+                            if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
+                            else "2d",
+                            resolution_z=float(
+                                getattr(self._grid, "resolution_z", resolution)
+                            ),
+                        )
+                        cache_path = _raster_cache_path(cache_key)
+                    t_save = time.perf_counter()
+                    _save_grid_to_cache(self._grid, cache_path)
+                    if timing_enabled:
+                        display_status(
+                            (
+                                f"Raster cache saved: {cache_path.name} | "
+                                f"save={time.perf_counter() - t_save:.2f}s"
+                            ),
+                            "info",
+                        )
+                if timing_enabled:
+                    display_status(
+                        (
+                            f"Rasterize wall-time: {t_raster_end - t_raster_start:.2f}s | "
+                            f"total={time.perf_counter() - t_total_start:.2f}s"
+                        ),
+                        "info",
+                    )
                 return self._grid
             else:
                 return None
@@ -303,6 +579,39 @@ class Design:
         else:
             self._grid = grid_cls(self, resolution, **kwargs)
             self._grid_resolution = resolution
+
+        t_raster_end = time.perf_counter()
+
+        if disk_cache_enabled:
+            if cache_path is None:
+                cache_key = _design_cache_key(
+                    self,
+                    resolution=float(resolution),
+                    grid_kind="3d"
+                    if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
+                    else "2d",
+                    resolution_z=float(getattr(self._grid, "resolution_z", resolution)),
+                )
+                cache_path = _raster_cache_path(cache_key)
+            t_save = time.perf_counter()
+            _save_grid_to_cache(self._grid, cache_path)
+            if timing_enabled:
+                display_status(
+                    (
+                        f"Raster cache saved: {cache_path.name} | "
+                        f"save={time.perf_counter() - t_save:.2f}s"
+                    ),
+                    "info",
+                )
+
+        if timing_enabled:
+            display_status(
+                (
+                    f"Rasterize wall-time: {t_raster_end - t_raster_start:.2f}s | "
+                    f"total={time.perf_counter() - t_total_start:.2f}s"
+                ),
+                "info",
+            )
 
         return self._grid
 
