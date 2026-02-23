@@ -15,8 +15,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import sax
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Rectangle as MplRect
 
 from beamz import *
+from beamz.const import BLUE, GREEN, ORANGE, PURPLE, RED
 from beamz.devices.sources.signals import gaussian_pulse
 from beamz.visual.helpers import dxdt
 
@@ -266,11 +270,24 @@ def save_mode_diagnostics(mode_source, out_path):
     plt.close(fig)
 
 
-def draw_pml_lines(ax, x_max_um, y_max_um, pml_x_um, pml_y_um):
-    ax.axvline(pml_x_um, color="white", linestyle="--", linewidth=1.0, alpha=0.8)
-    ax.axvline(x_max_um - pml_x_um, color="white", linestyle="--", linewidth=1.0, alpha=0.8)
-    ax.axhline(pml_y_um, color="white", linestyle="--", linewidth=1.0, alpha=0.8)
-    ax.axhline(y_max_um - pml_y_um, color="white", linestyle="--", linewidth=1.0, alpha=0.8)
+def draw_pml_lines(
+    ax,
+    x_max_um,
+    y_max_um,
+    pml_x_um,
+    pml_y_um,
+    *,
+    color="white",
+    alpha=0.85,
+):
+    ax.axvline(pml_x_um, color=color, linestyle="--", linewidth=1.0, alpha=alpha)
+    ax.axvline(
+        x_max_um - pml_x_um, color=color, linestyle="--", linewidth=1.0, alpha=alpha
+    )
+    ax.axhline(pml_y_um, color=color, linestyle="--", linewidth=1.0, alpha=alpha)
+    ax.axhline(
+        y_max_um - pml_y_um, color=color, linestyle="--", linewidth=1.0, alpha=alpha
+    )
 
 
 def save_design_debug_plots(
@@ -283,77 +300,173 @@ def save_design_debug_plots(
     out_path,
 ):
     eps = np.asarray(permittivity, dtype=float)
-    core_mask = eps > (0.5 * (N_CORE**2 + N_CLAD**2))
+    material_eps = [N_CLAD**2, N_CORE**2]
+    material_names = ["Cladding", "Core"]
+    material_colors = [GREEN, ORANGE]
+
+    eps_floor = float(np.min(eps))
+    if eps_floor < (0.9 * (N_CLAD**2)):
+        material_eps.insert(0, eps_floor)
+        material_names.insert(0, "Background")
+        material_colors.insert(0, BLUE)
+
+    eps_ref = np.asarray(material_eps, dtype=float)
+    eps_expanded = eps[..., None]
+    material_idx = np.argmin(np.abs(eps_expanded - eps_ref[None, None, None, :]), axis=-1)
+    cmap = ListedColormap(material_colors)
+    norm = BoundaryNorm(np.arange(-0.5, len(material_eps) + 0.5, 1.0), cmap.N)
 
     z_mid = int(np.clip(round(source_ctr[2] / DX), 0, eps.shape[0] - 1))
     y_mid = int(np.clip(round(source_ctr[1] / DX), 0, eps.shape[1] - 1))
     x_src = int(np.clip(round(source_ctr[0] / DX), 0, eps.shape[2] - 1))
 
-    xy = core_mask[z_mid]
-    xz = core_mask[:, y_mid, :]
-    yz = core_mask[:, :, x_src]
+    xy = material_idx[z_mid]
+    xz = material_idx[:, y_mid, :]
+    yz = material_idx[:, :, x_src]
+    boundary_levels = np.arange(0.5, len(material_eps) - 0.5, 1.0)
+
+    monitor_colors = {
+        "o1_fwd": BLUE,
+        "o1_ref": PURPLE,
+        "o2": GREEN,
+        "o3": ORANGE,
+    }
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), dpi=200)
     axes[0].imshow(
         xy,
         origin="lower",
-        cmap="gray_r",
+        cmap=cmap,
+        norm=norm,
+        interpolation="nearest",
         extent=[0, design_obj.width / µm, 0, design_obj.height / µm],
         aspect="equal",
     )
-    axes[0].set_title(f"XY Core Mask (z={source_ctr[2]/µm:.2f} um)")
+    axes[0].set_title(f"XY Material Slice (z={source_ctr[2]/µm:.2f} um)")
     axes[0].set_xlabel("x (um)")
     axes[0].set_ylabel("y (um)")
+    if boundary_levels.size:
+        axes[0].contour(
+            xy,
+            levels=boundary_levels,
+            colors="black",
+            linewidths=0.9,
+            origin="lower",
+            extent=[0, design_obj.width / µm, 0, design_obj.height / µm],
+        )
 
     axes[1].imshow(
         xz,
         origin="lower",
-        cmap="gray_r",
+        cmap=cmap,
+        norm=norm,
+        interpolation="nearest",
         extent=[0, design_obj.width / µm, 0, design_obj.depth / µm],
         aspect="equal",
     )
-    axes[1].set_title(f"XZ Core Mask (y={source_ctr[1]/µm:.2f} um)")
+    axes[1].set_title(f"XZ Material Slice (y={source_ctr[1]/µm:.2f} um)")
     axes[1].set_xlabel("x (um)")
     axes[1].set_ylabel("z (um)")
+    if boundary_levels.size:
+        axes[1].contour(
+            xz,
+            levels=boundary_levels,
+            colors="black",
+            linewidths=0.9,
+            origin="lower",
+            extent=[0, design_obj.width / µm, 0, design_obj.depth / µm],
+        )
 
     axes[2].imshow(
         yz,
         origin="lower",
-        cmap="gray_r",
+        cmap=cmap,
+        norm=norm,
+        interpolation="nearest",
         extent=[0, design_obj.height / µm, 0, design_obj.depth / µm],
         aspect="equal",
     )
-    axes[2].set_title(f"YZ Core Mask (x={source_ctr[0]/µm:.2f} um)")
+    axes[2].set_title(f"YZ Material Slice (x={source_ctr[0]/µm:.2f} um)")
     axes[2].set_xlabel("y (um)")
     axes[2].set_ylabel("z (um)")
+    if boundary_levels.size:
+        axes[2].contour(
+            yz,
+            levels=boundary_levels,
+            colors="black",
+            linewidths=0.9,
+            origin="lower",
+            extent=[0, design_obj.height / µm, 0, design_obj.depth / µm],
+        )
 
     # Source window overlays.
-    axes[0].plot(
-        [source_ctr[0] / µm, source_ctr[0] / µm],
-        [(source_ctr[1] - 0.5 * src_w) / µm, (source_ctr[1] + 0.5 * src_w) / µm],
-        color="red",
-        linewidth=2.0,
+    axes[0].add_patch(
+        MplRect(
+            (
+                source_ctr[0] / µm - 0.03,
+                (source_ctr[1] - 0.5 * src_w) / µm,
+            ),
+            0.06,
+            src_w / µm,
+            fill=False,
+            edgecolor=RED,
+            linewidth=2.0,
+        )
     )
-    axes[1].plot(
-        [source_ctr[0] / µm, source_ctr[0] / µm],
-        [(source_ctr[2] - 0.5 * src_h) / µm, (source_ctr[2] + 0.5 * src_h) / µm],
-        color="red",
-        linewidth=2.0,
+    axes[1].add_patch(
+        MplRect(
+            (
+                source_ctr[0] / µm - 0.03,
+                (source_ctr[2] - 0.5 * src_h) / µm,
+            ),
+            0.06,
+            src_h / µm,
+            fill=False,
+            edgecolor=RED,
+            linewidth=2.0,
+        )
     )
-    axes[2].plot(
-        [(source_ctr[1] - 0.5 * src_w) / µm, (source_ctr[1] + 0.5 * src_w) / µm],
-        [(source_ctr[2] - 0.5 * src_h) / µm, (source_ctr[2] + 0.5 * src_h) / µm],
-        color="red",
-        linewidth=2.0,
+    axes[2].add_patch(
+        MplRect(
+            (
+                (source_ctr[1] - 0.5 * src_w) / µm,
+                (source_ctr[2] - 0.5 * src_h) / µm,
+            ),
+            src_w / µm,
+            src_h / µm,
+            fill=False,
+            edgecolor=RED,
+            linewidth=2.0,
+        )
     )
 
-    # Monitor window center lines.
+    # Monitor window overlays.
     for name, (s, e) in port_planes.items():
         x0, y0, z0 = s
         x1, y1, z1 = e
-        axes[0].plot([x0 / µm, x1 / µm], [0.5 * (y0 + y1) / µm, 0.5 * (y0 + y1) / µm], linewidth=1.2, label=name)
-        axes[1].plot([x0 / µm, x1 / µm], [0.5 * (z0 + z1) / µm, 0.5 * (z0 + z1) / µm], linewidth=1.2, label=name)
-        axes[2].plot([0.5 * (y0 + y1) / µm, 0.5 * (y0 + y1) / µm], [z0 / µm, z1 / µm], linewidth=1.2, label=name)
+        color = monitor_colors.get(name, "tab:cyan")
+        axes[0].plot(
+            [x0 / µm, x1 / µm],
+            [0.5 * (y0 + y1) / µm, 0.5 * (y0 + y1) / µm],
+            color=color,
+            linewidth=1.6,
+        )
+        axes[1].plot(
+            [x0 / µm, x1 / µm],
+            [0.5 * (z0 + z1) / µm, 0.5 * (z0 + z1) / µm],
+            color=color,
+            linewidth=1.6,
+        )
+        axes[2].add_patch(
+            MplRect(
+                (min(y0, y1) / µm, min(z0, z1) / µm),
+                abs(y1 - y0) / µm,
+                abs(z1 - z0) / µm,
+                fill=False,
+                edgecolor=color,
+                linewidth=1.3,
+            )
+        )
 
     draw_pml_lines(
         axes[0],
@@ -361,6 +474,7 @@ def save_design_debug_plots(
         design_obj.height / µm,
         PML_XY / µm,
         PML_XY / µm,
+        color="white",
     )
     draw_pml_lines(
         axes[1],
@@ -368,6 +482,7 @@ def save_design_debug_plots(
         design_obj.depth / µm,
         PML_XY / µm,
         PML_Z / µm,
+        color="white",
     )
     draw_pml_lines(
         axes[2],
@@ -375,11 +490,37 @@ def save_design_debug_plots(
         design_obj.depth / µm,
         PML_XY / µm,
         PML_Z / µm,
+        color="white",
     )
     for ax in axes:
         ax.grid(alpha=0.2, linestyle="--")
-    axes[0].legend(loc="lower right", fontsize=8)
-    fig.tight_layout()
+
+    material_handles = [
+        Patch(
+            facecolor=material_colors[i],
+            edgecolor="black",
+            label=f"{material_names[i]} (eps={material_eps[i]:.3f})",
+        )
+        for i in range(len(material_eps))
+    ]
+    monitor_handles = [
+        Line2D([0], [0], color=monitor_colors[k], lw=1.8, label=k)
+        for k in ["o1_fwd", "o1_ref", "o2", "o3"]
+        if k in port_planes
+    ]
+    extra_handles = [
+        Line2D([0], [0], color=RED, lw=2.0, label="Mode source"),
+        Line2D([0], [0], color="white", lw=1.0, linestyle="--", label="PML boundaries"),
+    ]
+    fig.legend(
+        handles=[*material_handles, *monitor_handles, *extra_handles],
+        loc="lower center",
+        ncol=4,
+        fontsize=8,
+        framealpha=0.9,
+        bbox_to_anchor=(0.5, -0.02),
+    )
+    fig.tight_layout(rect=[0.0, 0.08, 1.0, 1.0])
     fig.savefig(out_path, dpi=260)
     plt.close(fig)
 
