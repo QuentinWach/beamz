@@ -52,16 +52,19 @@ SHOW_FINAL = env_bool("BEAMZ_SHOW_FINAL", not FAST_MODE)
 DEBUG_DFT = env_bool("BEAMZ_DEBUG_DFT", False)
 # Keep S-parameters tied to this single device run (no extra normalization runs).
 CALIBRATE_PORT_SCALE = False
-FLUX_RENORMALIZE_S = env_bool("BEAMZ_FLUX_RENORMALIZE_S", False)
-USE_FLUX_MAG_FOR_S = True
 GLOBAL_DFT_WINDOW = env_bool("BEAMZ_GLOBAL_DFT_WINDOW", False)
 ENFORCE_PASSIVITY = env_bool("BEAMZ_ENFORCE_PASSIVITY", True)
 PASSIVITY_TOL = env_float("BEAMZ_PASSIVITY_TOL", 1e-3)
 PASSIVITY_USE_PROXY_CAP = env_bool("BEAMZ_PASSIVITY_USE_PROXY_CAP", True)
-POLARIZATION = str(os.getenv("BEAMZ_POLARIZATION", "tm")).strip().lower()
+POLARIZATION = str(os.getenv("BEAMZ_POLARIZATION", "te")).strip().lower()
 if POLARIZATION not in {"te", "tm"}:
     raise ValueError(
         f"Unsupported BEAMZ_POLARIZATION={POLARIZATION!r}; use 'te' or 'tm'."
+    )
+if POLARIZATION == "tm":
+    print(
+        "[note] BEAMZ_POLARIZATION=tm selected; gdsfactory mmi1x2 is typically TE-optimized, "
+        "so higher radiation/splitting loss is expected."
     )
 
 PLOT_SOURCE_MODE = env_bool("BEAMZ_PLOT_SOURCE_MODE", True)
@@ -1856,78 +1859,11 @@ if CALIBRATE_PORT_SCALE:
     b_o2 = b_o2 / max(g_o2, 1e-18)
     b_o3 = b_o3 / max(g_o3, 1e-18)
 
-s_matrix = {
+s_guided = {
     ("o1", "o1"): safe_ratio(b_o1, a_incident),
     ("o2", "o1"): safe_ratio(b_o2, a_incident),
     ("o3", "o1"): safe_ratio(b_o3, a_incident),
 }
-
-# Flux-based magnitude correction: use directional real Poynting spectra for
-# physically meaningful |S|, keep modal phase from overlap coefficients.
-if USE_FLUX_MAG_FOR_S and incident_monitor_obj is not None:
-    try:
-        p_in = dft_directional_power_spectrum(incident_monitor_obj, src_in_dir)
-        p_r = dft_directional_power_spectrum(monitor_by_name["o1_ref"], src_out_dir)
-        p_2 = dft_directional_power_spectrum(monitor_by_name["o2"], out_dir["o2"])
-        p_3 = dft_directional_power_spectrum(monitor_by_name["o3"], out_dir["o3"])
-        n = min(len(p_in), len(p_r), len(p_2), len(p_3), len(freqs))
-        if n > 0:
-            pin = np.maximum(np.asarray(p_in[:n], dtype=float), 1e-30)
-            mag11 = np.sqrt(np.clip(np.asarray(p_r[:n], dtype=float) / pin, 0.0, np.inf))
-            mag21 = np.sqrt(np.clip(np.asarray(p_2[:n], dtype=float) / pin, 0.0, np.inf))
-            mag31 = np.sqrt(np.clip(np.asarray(p_3[:n], dtype=float) / pin, 0.0, np.inf))
-            s11 = np.asarray(s_matrix[("o1", "o1")], dtype=np.complex128)
-            s21 = np.asarray(s_matrix[("o2", "o1")], dtype=np.complex128)
-            s31 = np.asarray(s_matrix[("o3", "o1")], dtype=np.complex128)
-            s11[:n] = mag11 * np.exp(1j * np.angle(s11[:n]))
-            s21[:n] = mag21 * np.exp(1j * np.angle(s21[:n]))
-            s31[:n] = mag31 * np.exp(1j * np.angle(s31[:n]))
-            s_matrix[("o1", "o1")] = s11
-            s_matrix[("o2", "o1")] = s21
-            s_matrix[("o3", "o1")] = s31
-            i0_loc = int(np.argmin(np.abs((LIGHT_SPEED / freqs[:n]) / µm - (WL0 / µm))))
-            print(
-                "[flux-mag S] "
-                f"R={mag11[i0_loc]**2:.3f}, T2={mag21[i0_loc]**2:.3f}, "
-                f"T3={mag31[i0_loc]**2:.3f}, sum={mag11[i0_loc]**2 + mag21[i0_loc]**2 + mag31[i0_loc]**2:.3f}"
-            )
-    except Exception as exc:
-        print(f"[flux-mag S] skipped: {exc}")
-
-if "o1_fwd" in monitor_by_name:
-    try:
-        f_in = dft_signed_flux_spectrum(monitor_by_name["o1_fwd"], axis=src["direction"][1])
-        f_r = dft_signed_flux_spectrum(monitor_by_name["o1_ref"], axis=src["direction"][1])
-        f_2 = dft_signed_flux_spectrum(monitor_by_name["o2"], axis=ports["o2"]["direction"][1])
-        f_3 = dft_signed_flux_spectrum(monitor_by_name["o3"], axis=ports["o3"]["direction"][1])
-        n = min(len(f_in), len(f_r), len(f_2), len(f_3), len(freqs))
-        if n > 0:
-            fin = np.maximum(np.abs(f_in[:n]), 1e-18)
-            p2 = np.abs(f_2[:n])
-            p3 = np.abs(f_3[:n])
-            pref = np.abs(f_r[:n])
-            mag11 = np.sqrt(np.clip(pref / fin, 0.0, np.inf))
-            mag21 = np.sqrt(np.clip(p2 / fin, 0.0, np.inf))
-            mag31 = np.sqrt(np.clip(p3 / fin, 0.0, np.inf))
-            i0_loc = int(np.argmin(np.abs((LIGHT_SPEED / freqs[:n]) / µm - (WL0 / µm))))
-            print(
-                "[dft flux closure] "
-                f"R={mag11[i0_loc]**2:.3f}, T2={mag21[i0_loc]**2:.3f}, T3={mag31[i0_loc]**2:.3f}, "
-                f"sum={mag11[i0_loc]**2 + mag21[i0_loc]**2 + mag31[i0_loc]**2:.3f}"
-            )
-            if FLUX_RENORMALIZE_S:
-                s11 = np.asarray(s_matrix[("o1", "o1")], dtype=np.complex128)
-                s21 = np.asarray(s_matrix[("o2", "o1")], dtype=np.complex128)
-                s31 = np.asarray(s_matrix[("o3", "o1")], dtype=np.complex128)
-                s11[:n] = mag11 * np.exp(1j * np.angle(s11[:n]))
-                s21[:n] = mag21 * np.exp(1j * np.angle(s21[:n]))
-                s31[:n] = mag31 * np.exp(1j * np.angle(s31[:n]))
-                s_matrix[("o1", "o1")] = s11
-                s_matrix[("o2", "o1")] = s21
-                s_matrix[("o3", "o1")] = s31
-                print("[dft flux renorm] Applied magnitude renormalization to S-parameters.")
-    except Exception as exc:
-        print(f"[flux renorm] skipped: {exc}")
 
 min_incident_db = env_float("BEAMZ_MIN_INCIDENT_DB", -55.0)
 max_inc = float(np.max(np.abs(a_incident))) if a_incident.size else 0.0
@@ -1939,64 +1875,103 @@ print(
     f"min={np.min(np.abs(a_incident)):.3e}, "
     f"valid_bins={int(np.count_nonzero(valid))}/{len(valid)}"
 )
-for key in list(s_matrix.keys()):
-    s_matrix[key] = np.where(valid, s_matrix[key], 0.0 + 0.0j)
+for key in list(s_guided.keys()):
+    s_guided[key] = np.where(valid, s_guided[key], 0.0 + 0.0j)
 
-raw_power_sum = (
-    np.abs(np.asarray(s_matrix[("o1", "o1")])) ** 2
-    + np.abs(np.asarray(s_matrix[("o2", "o1")])) ** 2
-    + np.abs(np.asarray(s_matrix[("o3", "o1")])) ** 2
+guided_power_sum_raw = (
+    np.abs(np.asarray(s_guided[("o1", "o1")])) ** 2
+    + np.abs(np.asarray(s_guided[("o2", "o1")])) ** 2
+    + np.abs(np.asarray(s_guided[("o3", "o1")])) ** 2
 )
 if ENFORCE_PASSIVITY:
+    # Keep guided S physically bounded, independent of time-domain proxy monitors.
     power_cap = 1.0
-    if PASSIVITY_USE_PROXY_CAP:
-        power_cap = float(np.clip(passivity_proxy_cap, 0.0, 1.0))
-    over = valid & (raw_power_sum > (power_cap + float(PASSIVITY_TOL)))
+    over = valid & (guided_power_sum_raw > (power_cap + float(PASSIVITY_TOL)))
     n_over = int(np.count_nonzero(over))
     if n_over > 0:
-        scale = np.ones_like(raw_power_sum, dtype=float)
-        scale[over] = np.sqrt(power_cap / np.maximum(raw_power_sum[over], 1e-18))
-        s_matrix[("o1", "o1")] = np.asarray(s_matrix[("o1", "o1")]) * scale
-        s_matrix[("o2", "o1")] = np.asarray(s_matrix[("o2", "o1")]) * scale
-        s_matrix[("o3", "o1")] = np.asarray(s_matrix[("o3", "o1")]) * scale
+        scale = np.ones_like(guided_power_sum_raw, dtype=float)
+        scale[over] = np.sqrt(power_cap / np.maximum(guided_power_sum_raw[over], 1e-18))
+        s_guided[("o1", "o1")] = np.asarray(s_guided[("o1", "o1")]) * scale
+        s_guided[("o2", "o1")] = np.asarray(s_guided[("o2", "o1")]) * scale
+        s_guided[("o3", "o1")] = np.asarray(s_guided[("o3", "o1")]) * scale
         print(
-            f"[passivity projection] corrected {n_over}/{int(np.count_nonzero(valid))} bins "
-            f"(cap={power_cap:.3f}, tol={PASSIVITY_TOL:.1e})"
+            f"[guided passivity projection] corrected {n_over}/{int(np.count_nonzero(valid))} bins "
+            f"(cap=1.000, tol={PASSIVITY_TOL:.1e})"
         )
 
-s_sax = sax.sdict(s_matrix)
+s_sax = sax.sdict(s_guided)
 
-power_sum = (
+guided_power_sum = (
     np.abs(np.asarray(s_sax[("o1", "o1")])) ** 2
     + np.abs(np.asarray(s_sax[("o2", "o1")])) ** 2
     + np.abs(np.asarray(s_sax[("o3", "o1")])) ** 2
 )
-loss_est = 1.0 - power_sum
-power_sum = np.where(valid, power_sum, np.nan)
-loss_est = np.where(valid, loss_est, np.nan)
+guided_loss_est = 1.0 - guided_power_sum
+guided_power_sum = np.where(valid, guided_power_sum, np.nan)
+guided_loss_est = np.where(valid, guided_loss_est, np.nan)
+
+# Separate total-power (all modes/radiation through monitor planes) from guided S.
+flux_r = np.full(len(freqs), np.nan, dtype=float)
+flux_t2 = np.full(len(freqs), np.nan, dtype=float)
+flux_t3 = np.full(len(freqs), np.nan, dtype=float)
+if incident_monitor_obj is not None:
+    try:
+        p_in = dft_directional_power_spectrum(incident_monitor_obj, src_in_dir)
+        p_r = dft_directional_power_spectrum(monitor_by_name["o1_ref"], src_out_dir)
+        p_2 = dft_directional_power_spectrum(monitor_by_name["o2"], out_dir["o2"])
+        p_3 = dft_directional_power_spectrum(monitor_by_name["o3"], out_dir["o3"])
+        n_flux = min(len(p_in), len(p_r), len(p_2), len(p_3), len(freqs))
+        if n_flux > 0:
+            p_in = np.asarray(p_in[:n_flux], dtype=float)
+            p_r = np.asarray(p_r[:n_flux], dtype=float)
+            p_2 = np.asarray(p_2[:n_flux], dtype=float)
+            p_3 = np.asarray(p_3[:n_flux], dtype=float)
+            pin = np.maximum(p_in, 1e-30)
+            flux_r[:n_flux] = np.clip(p_r / pin, 0.0, np.inf)
+            flux_t2[:n_flux] = np.clip(p_2 / pin, 0.0, np.inf)
+            flux_t3[:n_flux] = np.clip(p_3 / pin, 0.0, np.inf)
+    except Exception as exc:
+        print(f"[total flux] skipped: {exc}")
+
+flux_power_sum = flux_r + flux_t2 + flux_t3
+flux_loss_est = 1.0 - flux_power_sum
+
 if np.any(valid):
-    ps_valid = power_sum[valid]
+    ps_valid = guided_power_sum[valid]
     wl_valid = wl_um[valid]
     worst_idx = int(np.argmax(ps_valid))
     over_count = int(np.count_nonzero(ps_valid > (1.0 + 1e-6)))
     print(
-        "Closure diagnostics: "
+        "Guided closure diagnostics: "
         f"min={np.min(ps_valid):.3f}, max={np.max(ps_valid):.3f}, "
         f"bins_over_1={over_count}/{ps_valid.size}, "
         f"worst_wl={wl_valid[worst_idx]:.4f}um"
     )
+if np.any(np.isfinite(flux_power_sum)):
+    flux_valid = np.isfinite(flux_power_sum)
+    ps_valid = flux_power_sum[flux_valid]
+    wl_valid = wl_um[flux_valid]
+    worst_idx = int(np.argmax(ps_valid))
+    print(
+        "Total flux closure diagnostics: "
+        f"min={np.min(ps_valid):.3f}, max={np.max(ps_valid):.3f}, "
+        f"worst_wl={wl_valid[worst_idx]:.4f}um"
+    )
 
 i0 = int(np.argmin(np.abs(wl_um - WL0 / µm)))
-print(f"|S11|^2+|S21|^2+|S31|^2 @ {WL0 / µm:.3f}um: {power_sum[i0]:.3f}")
-print(f"loss @ {WL0 / µm:.3f}um: {loss_est[i0]:.3f} (valid={bool(valid[i0])})")
+print(f"[guided] |S11|^2+|S21|^2+|S31|^2 @ {WL0 / µm:.3f}um: {guided_power_sum[i0]:.3f}")
+print(f"[guided] loss @ {WL0 / µm:.3f}um: {guided_loss_est[i0]:.3f} (valid={bool(valid[i0])})")
+if np.isfinite(flux_power_sum[i0]):
+    print(f"[total flux] R+T2+T3 @ {WL0 / µm:.3f}um: {flux_power_sum[i0]:.3f}")
+    print(f"[total flux] loss @ {WL0 / µm:.3f}um: {flux_loss_est[i0]:.3f}")
 for key in [("o1", "o1"), ("o2", "o1"), ("o3", "o1")]:
     s0 = np.asarray(s_sax[key])[i0]
     print(
-        f"S[{key[0]},{key[1]}] @ {WL0 / µm:.3f}um: |S|={np.abs(s0):.3f}, "
+        f"[guided] S[{key[0]},{key[1]}] @ {WL0 / µm:.3f}um: |S|={np.abs(s0):.3f}, "
         f"phase={np.angle(s0):.3f} rad"
     )
 
-# Final diagnostics figure: raw samples only + closure diagnostics.
+# Final diagnostics figure: guided S and separate total-flux closure.
 fig, (ax_s, ax_c) = plt.subplots(2, 1, figsize=(6.0, 5.2), dpi=250, sharex=True)
 for key, color in [
     (("o1", "o1"), "black"),
@@ -2012,10 +1987,13 @@ ax_s.set_ylabel("Magnitude (dB)")
 ax_s.set_ylim(-45, 1)
 ax_s.grid(alpha=0.3)
 ax_s.legend(loc="best")
-ax_s.set_title("GDSFactory MMI1x2 (3D Compiled DFT, Raw Bins)")
+ax_s.set_title("GDSFactory MMI1x2 (3D Guided S + Total Flux Split)")
 
-ax_c.plot(wl_um, power_sum, "o-", ms=3.0, lw=1.8, color="tab:green", label="closure: |S11|^2+|S21|^2+|S31|^2")
-ax_c.plot(wl_um, loss_est, "o-", ms=3.0, lw=1.8, color="tab:red", label="1 - closure")
+ax_c.plot(wl_um, guided_power_sum, "o-", ms=3.0, lw=1.8, color="tab:green", label="guided closure")
+ax_c.plot(wl_um, guided_loss_est, "o-", ms=3.0, lw=1.8, color="tab:red", label="guided 1 - closure")
+if np.any(np.isfinite(flux_power_sum)):
+    ax_c.plot(wl_um, flux_power_sum, "s--", ms=2.7, lw=1.3, color="tab:purple", label="total flux closure")
+    ax_c.plot(wl_um, flux_loss_est, "s--", ms=2.7, lw=1.3, color="tab:orange", label="total flux 1 - closure")
 ax_c.axhline(1.0, color="k", lw=1.0, ls="--", alpha=0.6)
 ax_c.set_xlabel("Wavelength (um)")
 ax_c.set_ylabel("Power")
