@@ -84,3 +84,4 @@ notes/
 .python_cache/
 .venv/
 reference/
+.beamz_cache/
