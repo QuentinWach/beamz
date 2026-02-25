@@ -1030,12 +1030,11 @@ class Simulation:
         e_comp, h_comp, e_idx, h_idx, sign = (
             tm_map[axis] if spec.polarization == "tm" else te_map[axis]
         )
-        if axis == "x":
-            proj_components = ("Ey", "Ez", "Hy", "Hz")
-        elif axis == "y":
-            proj_components = ("Ex", "Ez", "Hx", "Hz")
-        else:
-            proj_components = ("Ex", "Ey", "Hx", "Hy")
+        proj_components_3d = {
+            "x": ("Ey", "Ez", "Hy", "Hz"),
+            "y": ("Ex", "Ez", "Hx", "Hz"),
+            "z": ("Ex", "Ey", "Hx", "Hy"),
+        }[axis]
         return {
             "axis": axis,
             "e_component": e_comp,
@@ -1043,7 +1042,8 @@ class Simulation:
             "e_mode_index": e_idx,
             "h_mode_index": h_idx,
             "signed_flux_sign": sign,
-            "projection_components": proj_components,
+            "projection_components": (e_comp, h_comp),
+            "projection_components_3d": proj_components_3d,
         }
 
     @staticmethod
@@ -1128,10 +1128,12 @@ class Simulation:
         )
         solver_direction = spec.direction
         if self.is_3d and parts["axis"] in {"x", "y"}:
-            # Keep monitor-side modal basis aligned with ModeSource.initialize(...)
+            # Keep monitor-side mode orientation consistent with ModeSource's
+            # 3D axis convention, otherwise forward/backward coefficients become
+            # poorly separated (a_plus ~= a_minus).
             solver_direction = (
-                ("-" if spec.direction.startswith("+") else "+") + parts["axis"]
-            )
+                "-" if spec.direction.startswith("+") else "+"
+            ) + parts["axis"]
         omega = 2.0 * np.pi * float(frequency)
         eps_profile_arr = np.asarray(eps_profile)
         n_local_max = float(
@@ -1181,13 +1183,56 @@ class Simulation:
                 if arr.ndim == 1:
                     arr = arr[:, None]
                 comp_full[name] = arr
-            proj_components = tuple(
-                parts.get(
-                    "projection_components",
-                    (parts["e_component"], parts["h_component"]),
-                )
-            )
-            n_target = min(int(comp_full[c].size) for c in proj_components)
+            proj_components = tuple(parts.get("projection_components_3d", ()))
+            # Match compiled monitor flattening: crop each component to common
+            # (min_dim0, min_dim1) then row-major flatten.
+            mon_dim0 = 0
+            mon_dim1 = 0
+            try:
+                shape_map = {
+                    "Ex": tuple(np.asarray(self.fields.Ex).shape),
+                    "Ey": tuple(np.asarray(self.fields.Ey).shape),
+                    "Ez": tuple(np.asarray(self.fields.Ez).shape),
+                    "Hx": tuple(np.asarray(self.fields.Hx).shape),
+                    "Hy": tuple(np.asarray(self.fields.Hy).shape),
+                    "Hz": tuple(np.asarray(self.fields.Hz).shape),
+                }
+
+                def _clamp_idx(idx, limit):
+                    if isinstance(idx, slice):
+                        start = 0 if idx.start is None else int(idx.start)
+                        stop = limit if idx.stop is None else int(idx.stop)
+                        start = max(0, min(start, max(limit - 1, 0)))
+                        stop = max(start + 1, min(stop, limit))
+                        return slice(start, stop)
+                    ii = int(idx)
+                    return max(0, min(ii, limit - 1))
+
+                dims0 = []
+                dims1 = []
+                for cname in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+                    shp = shape_map[cname]
+                    z_idx, y_idx, x_idx = monitor.get_grid_slice_3d(
+                        self.resolution,
+                        self.resolution,
+                        self.resolution,
+                        shp,
+                    )
+                    z_idx = _clamp_idx(z_idx, shp[0])
+                    y_idx = _clamp_idx(y_idx, shp[1])
+                    x_idx = _clamp_idx(x_idx, shp[2])
+                    view = np.zeros(shp, dtype=np.float32)[z_idx, y_idx, x_idx]
+                    if view.ndim != 2:
+                        view = np.atleast_2d(view)
+                    dims0.append(int(view.shape[0]))
+                    dims1.append(int(view.shape[1]))
+                mon_dim0 = min(dims0)
+                mon_dim1 = min(dims1)
+            except Exception:
+                mon_dim0 = min(int(comp_full[c].shape[0]) for c in proj_components)
+                mon_dim1 = min(int(comp_full[c].shape[1]) for c in proj_components)
+
+            # Guard against any mismatch between monitor buffers and inferred dims.
             try:
                 n_monitor = min(
                     int(
@@ -1198,17 +1243,40 @@ class Simulation:
                     )
                     for comp_name in proj_components
                 )
-                n_target = min(n_target, n_monitor)
+                if mon_dim0 > 0 and mon_dim1 > 0:
+                    n_monitor = min(n_monitor, int(mon_dim0 * mon_dim1))
+                if mon_dim0 > 0:
+                    mon_dim1 = max(1, min(mon_dim1, int(n_monitor // max(mon_dim0, 1))))
+                if mon_dim1 > 0:
+                    mon_dim0 = max(1, min(mon_dim0, int(n_monitor // max(mon_dim1, 1))))
             except Exception:
-                pass
-            idx = np.asarray(local_idx, dtype=int)
-            if idx.size > n_target:
-                idx = idx[:n_target]
-            if idx.size == 0 and n_target > 0:
-                idx = np.arange(n_target, dtype=int)
-            comp_samples = {
-                name: comp_full[name].reshape(-1)[idx] for name in comp_full.keys()
-            }
+                n_monitor = int(mon_dim0 * mon_dim1)
+
+            crop_dim0 = int(min(mon_dim0, *(comp_full[c].shape[0] for c in proj_components)))
+            crop_dim1 = int(min(mon_dim1, *(comp_full[c].shape[1] for c in proj_components)))
+            if crop_dim0 <= 0 or crop_dim1 <= 0:
+                crop_dim0 = int(min(comp_full[c].shape[0] for c in proj_components))
+                crop_dim1 = int(min(comp_full[c].shape[1] for c in proj_components))
+            n_target = int(crop_dim0 * crop_dim1)
+            if n_monitor > 0:
+                n_target = min(n_target, n_monitor)
+            if n_target <= 0:
+                raise ValueError(
+                    f"Monitor '{monitor.name}' has zero 3D projection points."
+                )
+
+            # Keep rectangular crop consistent with n_target.
+            crop_dim1 = max(1, min(crop_dim1, n_target))
+            crop_dim0 = max(1, min(crop_dim0, n_target // crop_dim1))
+            n_target = int(crop_dim0 * crop_dim1)
+
+            comp_samples = {}
+            for name, arr in comp_full.items():
+                a = np.asarray(arr, dtype=np.complex128)
+                if a.ndim == 1:
+                    a = a[:, None]
+                a = a[:crop_dim0, :crop_dim1]
+                comp_samples[name] = a.reshape(-1)[:n_target]
         else:
             e_fwd_full = np.asarray(
                 np.squeeze(e_fields[mode][parts["e_mode_index"]]), dtype=np.complex128
@@ -1249,7 +1317,11 @@ class Simulation:
             fwd_vec = np.concatenate([comp_samples[c] for c in proj_components])
             bwd_vec = np.concatenate(
                 [
-                    (-comp_samples[c] if c.startswith("H") else comp_samples[c])
+                    (
+                        -np.conjugate(comp_samples[c])
+                        if c.startswith("H")
+                        else np.conjugate(comp_samples[c])
+                    )
                     for c in proj_components
                 ]
             )
@@ -1323,6 +1395,61 @@ class Simulation:
 
     @staticmethod
     def _project_modal_coefficients_3d(field_components, projection, apply_calibration=True):
+        mode_components = projection.get("mode_components", None)
+        axis = str(projection.get("axis", "")).lower()
+        d_area = float(projection.get("d_area", 1.0))
+        if isinstance(mode_components, dict) and axis in {"x", "y", "z"}:
+            if axis == "x":
+                e1, e2, h1, h2 = "Ey", "Ez", "Hz", "Hy"
+            elif axis == "y":
+                e1, e2, h1, h2 = "Ez", "Ex", "Hx", "Hz"
+            else:
+                e1, e2, h1, h2 = "Ex", "Ey", "Hy", "Hx"
+            needed = (e1, e2, h1, h2)
+
+            try:
+                arrays = {}
+                n_common = None
+                for name in needed:
+                    f_arr = np.asarray(field_components[name], dtype=np.complex128).reshape(-1)
+                    m_arr = np.asarray(mode_components[name], dtype=np.complex128).reshape(-1)
+                    n_local = int(min(f_arr.size, m_arr.size))
+                    if n_local <= 0:
+                        raise ValueError("empty component")
+                    n_common = n_local if n_common is None else min(n_common, n_local)
+                    arrays[name] = (f_arr, m_arr)
+                n_common = int(max(0, n_common or 0))
+                if n_common > 0:
+                    ef1 = arrays[e1][0][:n_common]
+                    ef2 = arrays[e2][0][:n_common]
+                    hf1 = arrays[h1][0][:n_common]
+                    hf2 = arrays[h2][0][:n_common]
+                    em1 = arrays[e1][1][:n_common]
+                    em2 = arrays[e2][1][:n_common]
+                    hm1 = arrays[h1][1][:n_common]
+                    hm2 = arrays[h2][1][:n_common]
+
+                    s1 = 0.5 * np.sum(ef1 * np.conjugate(hm1) - ef2 * np.conjugate(hm2)) * d_area
+                    s2 = 0.5 * np.sum(np.conjugate(em1) * hf1 - np.conjugate(em2) * hf2) * d_area
+                    q1 = 0.5 * np.sum(em1 * np.conjugate(hm1) - em2 * np.conjugate(hm2)) * d_area
+                    q2 = 0.5 * np.sum(np.conjugate(em1) * hm1 - np.conjugate(em2) * hm2) * d_area
+
+                    if np.abs(q1) > 1e-30 and np.abs(q2) > 1e-30:
+                        x = s1 / q1
+                        y = s2 / q2
+                        a_plus = np.complex128(0.5 * (x + y))
+                        a_minus = np.complex128(0.5 * (x - y))
+                        if apply_calibration:
+                            corr = projection.get("coeff_correction", None)
+                            if corr is not None:
+                                vec = np.asarray([a_plus, a_minus], dtype=np.complex128)
+                                vec = np.asarray(corr, dtype=np.complex128) @ vec
+                                a_plus, a_minus = vec[0], vec[1]
+                        return np.complex128(a_plus), np.complex128(a_minus)
+            except Exception:
+                # Fall back to pseudo-inverse extraction if overlap inputs are incomplete.
+                pass
+
         components = tuple(projection.get("components", ()))
         if len(components) == 0:
             raise ValueError("3D projection missing component list.")
@@ -1403,7 +1530,10 @@ class Simulation:
             main_monitor = monitor_by_name[spec.monitor_name]
             parts = self._mode_components_for_port(spec)
             wanted_components = (
-                parts.get("projection_components", (parts["e_component"], parts["h_component"]))
+                parts.get(
+                    "projection_components_3d",
+                    (parts["e_component"], parts["h_component"]),
+                )
                 if self.is_3d
                 else (parts["e_component"], parts["h_component"])
             )
@@ -1533,7 +1663,10 @@ class Simulation:
             parts = self._mode_components_for_port(spec)
             main_monitor = monitor_by_name[spec.monitor_name]
             wanted_components = (
-                parts.get("projection_components", (parts["e_component"], parts["h_component"]))
+                parts.get(
+                    "projection_components_3d",
+                    (parts["e_component"], parts["h_component"]),
+                )
                 if self.is_3d
                 else (parts["e_component"], parts["h_component"])
             )

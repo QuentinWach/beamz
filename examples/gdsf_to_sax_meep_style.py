@@ -50,6 +50,10 @@ SHOW_LAYOUT = env_bool("BEAMZ_SHOW_LAYOUT", not FAST_MODE)
 SHOW_SIGNAL = env_bool("BEAMZ_SHOW_SIGNAL", not FAST_MODE)
 SHOW_FINAL = env_bool("BEAMZ_SHOW_FINAL", not FAST_MODE)
 DEBUG_DFT = env_bool("BEAMZ_DEBUG_DFT", False)
+# Optional half-step H-phase correction for DFT flux from component phasors.
+# Disabled by default because compiled monitor DFT already tracks synchronized
+# field samples for this workflow; enabling can over-rotate spectral flux.
+DFT_H_PHASE_CORR = env_bool("BEAMZ_DFT_H_PHASE_CORR", False)
 # Keep S-parameters tied to this single device run (no extra normalization runs).
 CALIBRATE_PORT_SCALE = False
 GLOBAL_DFT_WINDOW = env_bool("BEAMZ_GLOBAL_DFT_WINDOW", False)
@@ -83,7 +87,7 @@ WL0 = 1.55 * µm
 WL_MIN, WL_MAX = 1.50 * µm, 1.60 * µm
 WL_POINTS = env_int("BEAMZ_SWEEP_POINTS", 11)
 N_CORE, N_CLAD = 3.48, 1.44
-POINTS_PER_WAVELENGTH = env_int("BEAMZ_PPW", 12)
+POINTS_PER_WAVELENGTH = env_int("BEAMZ_PPW", 20)
 DX, DT = dxdt(
     WL0,
     n_max=N_CORE,
@@ -827,7 +831,7 @@ def dft_signed_flux_spectrum(monitor_obj, axis):
 
     def _comp(name: str):
         arr = np.asarray(monitor_obj.get_dft_component(name), dtype=np.complex128)
-        if name.startswith("H") and arr.ndim >= 1 and freqs.size:
+        if DFT_H_PHASE_CORR and name.startswith("H") and arr.ndim >= 1 and freqs.size:
             phase = np.exp(1j * 2.0 * np.pi * freqs * (0.5 * float(DT)))
             arr = arr * phase[:, None]
         return arr
@@ -1784,6 +1788,12 @@ out_dir_flux = {p: outward_direction(ports[p]["direction"]) for p in OUTPUT_PORT
 
 device_port_specs = [
     PortSpec(
+        name="o1_fwd",
+        monitor_name="o1_fwd_modal",
+        direction=src_in_dir,
+        polarization=POLARIZATION,
+    ),
+    PortSpec(
         name="o1_inc",
         monitor_name="o1_inc_modal",
         direction=src_in_dir,
@@ -1809,7 +1819,7 @@ device_port_specs = [
     ),
 ]
 modal_result = sim_device.get_S_matrix_modal_dft(
-    source_port="o1_inc",
+    source_port="o1_fwd",
     ports=device_port_specs,
     output_ports=["o1_refl", "o2_out", "o3_out"],
     frequencies=freqs,
@@ -1818,11 +1828,11 @@ modal_result = sim_device.get_S_matrix_modal_dft(
     min_incident_db=-55.0,
 )
 waves_dev = modal_result["diagnostics"]["waves"]
-a_incident = np.asarray(waves_dev["o1_inc"]["a_plus"], dtype=np.complex128)
+a_incident = np.asarray(waves_dev["o1_fwd"]["a_plus"], dtype=np.complex128)
 valid = np.asarray(modal_result["diagnostics"]["valid_mask"], dtype=bool)
 incident_monitor_obj = monitor_by_name.get("o1_fwd")
 
-for port_name in ["o1_inc", "o1_refl", "o2_out", "o3_out"]:
+for port_name in ["o1_fwd", "o1_inc", "o1_refl", "o2_out", "o3_out"]:
     a_p = np.asarray(waves_dev[port_name]["a_plus"], dtype=np.complex128)
     a_m = np.asarray(waves_dev[port_name]["a_minus"], dtype=np.complex128)
     p_p = float(np.mean(np.abs(a_p) ** 2)) if a_p.size else 0.0
@@ -1847,9 +1857,9 @@ for port_name in ["o1_refl", "o2_out", "o3_out"]:
         )
 
 s_guided = {
-    ("o1", "o1"): np.asarray(modal_result["s_matrix"][("o1_refl", "o1_inc")], dtype=np.complex128),
-    ("o2", "o1"): np.asarray(modal_result["s_matrix"][("o2_out", "o1_inc")], dtype=np.complex128),
-    ("o3", "o1"): np.asarray(modal_result["s_matrix"][("o3_out", "o1_inc")], dtype=np.complex128),
+    ("o1", "o1"): np.asarray(modal_result["s_matrix"][("o1_refl", "o1_fwd")], dtype=np.complex128),
+    ("o2", "o1"): np.asarray(modal_result["s_matrix"][("o2_out", "o1_fwd")], dtype=np.complex128),
+    ("o3", "o1"): np.asarray(modal_result["s_matrix"][("o3_out", "o1_fwd")], dtype=np.complex128),
 }
 
 print(

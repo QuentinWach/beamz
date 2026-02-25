@@ -393,11 +393,21 @@ def test_project_modal_coefficients_3d_recovers_forward_backward_modes():
     components = ("Ey", "Ez", "Hy", "Hz")
     fwd_vec = np.concatenate([mode_components[c] for c in components])
     bwd_vec = np.concatenate(
-        [(-mode_components[c] if c.startswith("H") else mode_components[c]) for c in components]
+        [
+            (
+                -np.conjugate(mode_components[c])
+                if c.startswith("H")
+                else np.conjugate(mode_components[c])
+            )
+            for c in components
+        ]
     )
     mode_matrix = np.column_stack([fwd_vec, bwd_vec])
     projection = {
         "components": components,
+        "axis": "x",
+        "d_area": 1.0,
+        "mode_components": mode_components,
         "pinv": np.linalg.pinv(mode_matrix),
     }
 
@@ -405,12 +415,17 @@ def test_project_modal_coefficients_3d_recovers_forward_backward_modes():
     np.testing.assert_allclose(a_p, 1.0 + 0.0j, rtol=1e-10, atol=1e-10)
     np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
 
-    bwd_fields = {
-        k: (-v if k.startswith("H") else v) for k, v in mode_components.items()
-    }
-    a_p2, a_m2 = Simulation._project_modal_coefficients_3d(bwd_fields, projection)
-    np.testing.assert_allclose(a_p2, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
-    np.testing.assert_allclose(a_m2, 1.0 + 0.0j, rtol=1e-10, atol=1e-10)
+    a_true = 0.7 - 0.3j
+    b_true = 0.25 + 0.15j
+    mixed_fields = {}
+    for k, v in mode_components.items():
+        if k.startswith("H"):
+            mixed_fields[k] = a_true * v - b_true * v
+        else:
+            mixed_fields[k] = a_true * v + b_true * v
+    a_p2, a_m2 = Simulation._project_modal_coefficients_3d(mixed_fields, projection)
+    np.testing.assert_allclose(a_p2, a_true, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(a_m2, b_true, rtol=1e-10, atol=1e-10)
 
 
 def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
@@ -422,8 +437,26 @@ def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
         "Hz": np.array([0.4 + 0.05j], dtype=np.complex128),
     }
     fwd_vec = np.concatenate([base[c] for c in components])
-    bwd_vec = np.concatenate([(-base[c] if c.startswith("H") else base[c]) for c in components])
-    projection = {"components": components, "pinv": np.linalg.pinv(np.column_stack([fwd_vec, bwd_vec]))}
+    bwd_vec = np.concatenate(
+        [
+            (-np.conjugate(base[c]) if c.startswith("H") else np.conjugate(base[c]))
+            for c in components
+        ]
+    )
+    projection = {
+        "components": components,
+        "axis": "x",
+        "d_area": 1.0,
+        "mode_components": {
+            "Ex": np.zeros((1,), dtype=np.complex128),
+            "Ey": base["Ey"].copy(),
+            "Ez": base["Ez"].copy(),
+            "Hx": np.zeros((1,), dtype=np.complex128),
+            "Hy": base["Hy"].copy(),
+            "Hz": base["Hz"].copy(),
+        },
+        "pinv": np.linalg.pinv(np.column_stack([fwd_vec, bwd_vec])),
+    }
 
     scale = 2.75 - 0.4j
     scaled = {k: scale * v for k, v in base.items()}
