@@ -381,6 +381,57 @@ def test_resample_complex_matrix_flattens_trailing_spatial_dims():
     np.testing.assert_allclose(out, src.reshape(2, 6), rtol=1e-12, atol=1e-12)
 
 
+def test_project_modal_coefficients_3d_recovers_forward_backward_modes():
+    mode_components = {
+        "Ey": np.array([1.0 + 0.0j, 0.5 + 0.2j], dtype=np.complex128),
+        "Ez": np.array([0.2 + 0.1j, -0.1 + 0.3j], dtype=np.complex128),
+        "Hy": np.array([0.6 - 0.1j, -0.2 + 0.2j], dtype=np.complex128),
+        "Hz": np.array([0.4 + 0.3j, 0.1 - 0.2j], dtype=np.complex128),
+        "Ex": np.zeros((2,), dtype=np.complex128),
+        "Hx": np.zeros((2,), dtype=np.complex128),
+    }
+    components = ("Ey", "Ez", "Hy", "Hz")
+    fwd_vec = np.concatenate([mode_components[c] for c in components])
+    bwd_vec = np.concatenate(
+        [(-mode_components[c] if c.startswith("H") else mode_components[c]) for c in components]
+    )
+    mode_matrix = np.column_stack([fwd_vec, bwd_vec])
+    projection = {
+        "components": components,
+        "pinv": np.linalg.pinv(mode_matrix),
+    }
+
+    a_p, a_m = Simulation._project_modal_coefficients_3d(mode_components, projection)
+    np.testing.assert_allclose(a_p, 1.0 + 0.0j, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
+
+    bwd_fields = {
+        k: (-v if k.startswith("H") else v) for k, v in mode_components.items()
+    }
+    a_p2, a_m2 = Simulation._project_modal_coefficients_3d(bwd_fields, projection)
+    np.testing.assert_allclose(a_p2, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(a_m2, 1.0 + 0.0j, rtol=1e-10, atol=1e-10)
+
+
+def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
+    components = ("Ey", "Ez", "Hy", "Hz")
+    base = {
+        "Ey": np.array([1.0 + 0.0j], dtype=np.complex128),
+        "Ez": np.array([0.5 + 0.2j], dtype=np.complex128),
+        "Hy": np.array([0.3 - 0.1j], dtype=np.complex128),
+        "Hz": np.array([0.4 + 0.05j], dtype=np.complex128),
+    }
+    fwd_vec = np.concatenate([base[c] for c in components])
+    bwd_vec = np.concatenate([(-base[c] if c.startswith("H") else base[c]) for c in components])
+    projection = {"components": components, "pinv": np.linalg.pinv(np.column_stack([fwd_vec, bwd_vec]))}
+
+    scale = 2.75 - 0.4j
+    scaled = {k: scale * v for k, v in base.items()}
+    a_p, a_m = Simulation._project_modal_coefficients_3d(scaled, projection)
+    np.testing.assert_allclose(a_p, scale, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
+
+
 def test_extract_port_waves_dft_modal_coefficients_synthetic(monkeypatch):
     freqs = np.array([1.0, 2.0], dtype=float)
     mode_matrix = np.array([[1.0, 1.0], [1.0, -1.0]], dtype=np.complex128)

@@ -1189,11 +1189,14 @@ class Simulation:
             )
             n_target = min(int(comp_full[c].size) for c in proj_components)
             try:
-                n_monitor = int(
-                    np.asarray(
-                        monitor.get_dft_component(proj_components[0]),
-                        dtype=np.complex128,
-                    ).shape[1]
+                n_monitor = min(
+                    int(
+                        np.asarray(
+                            monitor.get_dft_component(comp_name),
+                            dtype=np.complex128,
+                        ).shape[1]
+                    )
+                    for comp_name in proj_components
                 )
                 n_target = min(n_target, n_monitor)
             except Exception:
@@ -1234,9 +1237,21 @@ class Simulation:
                 comp_samples[name] = comp_samples[name] * phase_rot
 
         if self.is_3d:
+            mode_components = {
+                name: np.asarray(comp_samples[name], dtype=np.complex128).reshape(-1)
+                for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+                if name in comp_samples
+            }
+            p_mode = self._modal_power_3d(mode_components, parts["axis"], float(dl))
+            norm = np.sqrt(max(abs(float(p_mode)), 1e-30))
+            mode_components = {name: arr / norm for name, arr in mode_components.items()}
+            comp_samples = mode_components
             fwd_vec = np.concatenate([comp_samples[c] for c in proj_components])
             bwd_vec = np.concatenate(
-                [(-comp_samples[c] if c.startswith("H") else comp_samples[c]) for c in proj_components]
+                [
+                    (-comp_samples[c] if c.startswith("H") else comp_samples[c])
+                    for c in proj_components
+                ]
             )
             mode_matrix = np.column_stack([fwd_vec, bwd_vec])
         else:
@@ -1278,58 +1293,59 @@ class Simulation:
             projection["axis"] = parts["axis"]
             projection["d_area"] = float(dl)
             projection["power_norm"] = 1.0
-            # Calibrate extraction so forward/backward basis vectors map to (1,0)/(0,1)
-            # on this exact monitor discretization.
-            mode_fwd = {
-                k: np.asarray(v, dtype=np.complex128)
-                for k, v in projection["mode_components"].items()
-            }
-            mode_bwd = {
-                k: (-np.asarray(v, dtype=np.complex128) if k.startswith("H") else np.asarray(v, dtype=np.complex128))
-                for k, v in mode_fwd.items()
-            }
-            c_fwd = self._project_modal_coefficients_3d(mode_fwd, projection, apply_calibration=False)
-            c_bwd = self._project_modal_coefficients_3d(mode_bwd, projection, apply_calibration=False)
-            calib = np.asarray(
-                [[c_fwd[0], c_bwd[0]], [c_fwd[1], c_bwd[1]]], dtype=np.complex128
-            )
-            try:
-                if np.all(np.isfinite(calib)) and np.linalg.cond(calib) < 1e8:
-                    projection["coeff_correction"] = np.linalg.inv(calib)
-                else:
-                    projection["coeff_correction"] = np.eye(2, dtype=np.complex128)
-            except np.linalg.LinAlgError:
-                projection["coeff_correction"] = np.eye(2, dtype=np.complex128)
         cache[key] = projection
         return projection
 
     @staticmethod
-    def _project_modal_coefficients_3d(field_components, projection, apply_calibration=True):
-        axis = projection.get("axis", "x")
-        d_area = float(projection.get("d_area", 1.0))
-        p_norm = float(projection.get("power_norm", 1.0))
-        if abs(p_norm) <= 1e-18:
-            p_norm = 1.0
-        mode = projection.get("mode_components", {})
-
-        def _arr(name):
-            return np.asarray(field_components[name], dtype=np.complex128)
-
-        def _mode(name):
-            return np.asarray(mode[name], dtype=np.complex128)
-
+    def _modal_power_3d(mode_components, axis, d_area):
+        ex = np.asarray(mode_components.get("Ex", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
+        ey = np.asarray(mode_components.get("Ey", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
+        ez = np.asarray(mode_components.get("Ez", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
+        hx = np.asarray(mode_components.get("Hx", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
+        hy = np.asarray(mode_components.get("Hy", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
+        hz = np.asarray(mode_components.get("Hz", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
+        n = int(min(ex.size, ey.size, ez.size, hx.size, hy.size, hz.size))
+        if n <= 0:
+            return 0.0
+        ex = ex[:n]
+        ey = ey[:n]
+        ez = ez[:n]
+        hx = hx[:n]
+        hy = hy[:n]
+        hz = hz[:n]
         if axis == "x":
-            a_ov = 0.5 * np.sum(_arr("Ey") * np.conjugate(_mode("Hz")) - _arr("Ez") * np.conjugate(_mode("Hy"))) * d_area
-            b_ov = 0.5 * np.sum(np.conjugate(_mode("Ey")) * _arr("Hz") - np.conjugate(_mode("Ez")) * _arr("Hy")) * d_area
+            s_axis = ey * np.conjugate(hz) - ez * np.conjugate(hy)
         elif axis == "y":
-            a_ov = 0.5 * np.sum(_arr("Ez") * np.conjugate(_mode("Hx")) - _arr("Ex") * np.conjugate(_mode("Hz"))) * d_area
-            b_ov = 0.5 * np.sum(np.conjugate(_mode("Ez")) * _arr("Hx") - np.conjugate(_mode("Ex")) * _arr("Hz")) * d_area
+            s_axis = ez * np.conjugate(hx) - ex * np.conjugate(hz)
         else:
-            a_ov = 0.5 * np.sum(_arr("Ex") * np.conjugate(_mode("Hy")) - _arr("Ey") * np.conjugate(_mode("Hx"))) * d_area
-            b_ov = 0.5 * np.sum(np.conjugate(_mode("Ex")) * _arr("Hy") - np.conjugate(_mode("Ey")) * _arr("Hx")) * d_area
+            s_axis = ex * np.conjugate(hy) - ey * np.conjugate(hx)
+        return float(0.5 * np.real(np.sum(s_axis) * float(d_area)))
 
-        a_plus = (a_ov + b_ov) / (2.0 * p_norm)
-        a_minus = (a_ov - b_ov) / (2.0 * p_norm)
+    @staticmethod
+    def _project_modal_coefficients_3d(field_components, projection, apply_calibration=True):
+        components = tuple(projection.get("components", ()))
+        if len(components) == 0:
+            raise ValueError("3D projection missing component list.")
+
+        vec_parts = []
+        for comp in components:
+            if comp not in field_components:
+                raise ValueError(f"Missing field component '{comp}' for 3D modal projection.")
+            vec_parts.append(np.asarray(field_components[comp], dtype=np.complex128).reshape(-1))
+        field_vec = np.concatenate(vec_parts).astype(np.complex128, copy=False)
+
+        pinv = np.asarray(projection.get("pinv", np.zeros((2, 0), dtype=np.complex128)), dtype=np.complex128)
+        if pinv.ndim != 2 or pinv.shape[0] < 2:
+            raise ValueError("Invalid 3D projection pseudo-inverse shape.")
+        n_expected = int(pinv.shape[1])
+        if field_vec.size != n_expected:
+            if field_vec.size > n_expected:
+                field_vec = field_vec[:n_expected]
+            else:
+                field_vec = np.pad(field_vec, (0, n_expected - field_vec.size))
+        coeff = pinv @ field_vec
+        a_plus = coeff[0]
+        a_minus = coeff[1]
         if apply_calibration:
             corr = projection.get("coeff_correction", None)
             if corr is not None:
