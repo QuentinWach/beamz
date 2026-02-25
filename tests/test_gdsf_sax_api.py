@@ -335,6 +335,52 @@ def test_monitor_dft_accum_recovers_known_sinusoid():
     assert abs(phase_err) < 0.08
 
 
+def test_monitor_get_dft_component_returns_canonical_matrix_shape():
+    mon = Monitor(
+        start=(0.0, 0.0),
+        end=(0.0, 0.0),
+        name="m_shape",
+        record_fields=False,
+        dft_enabled=True,
+        dft_frequencies=np.array([1.0, 2.0], dtype=float),
+        dft_components=("Ez",),
+    )
+    raw = (np.arange(12, dtype=float) + 1j * np.arange(12, dtype=float)).reshape(2, 2, 3)
+    mon._dft_accum["Ez"] = raw
+    mon._dft_weight_sum = np.ones((2,), dtype=float)
+
+    dft = mon.get_dft_component("Ez")
+    assert dft.shape == (2, 6)
+    np.testing.assert_allclose(dft, 2.0 * raw.reshape(2, 6), rtol=1e-12, atol=1e-12)
+
+
+def test_monitor_get_dft_component_raises_for_invalid_frequency_axis():
+    mon = Monitor(
+        start=(0.0, 0.0),
+        end=(0.0, 0.0),
+        name="m_bad_shape",
+        record_fields=False,
+        dft_enabled=True,
+        dft_frequencies=np.array([1.0, 2.0], dtype=float),
+        dft_components=("Ez",),
+    )
+    mon._dft_accum["Ez"] = np.zeros((3, 4), dtype=np.complex128)
+    mon._dft_weight_sum = np.ones((2,), dtype=float)
+
+    with pytest.raises(ValueError, match="axis 0"):
+        mon.get_dft_component("Ez")
+
+
+def test_resample_complex_matrix_flattens_trailing_spatial_dims():
+    freq_src = np.array([1.0, 2.0], dtype=float)
+    freq_dst = np.array([1.0, 2.0], dtype=float)
+    src = (np.arange(12, dtype=float) + 1j * np.arange(12, dtype=float)).reshape(2, 2, 3)
+
+    out = Simulation._resample_complex_matrix(freq_src, src, freq_dst)
+    assert out.shape == (2, 6)
+    np.testing.assert_allclose(out, src.reshape(2, 6), rtol=1e-12, atol=1e-12)
+
+
 def test_extract_port_waves_dft_modal_coefficients_synthetic(monkeypatch):
     freqs = np.array([1.0, 2.0], dtype=float)
     mode_matrix = np.array([[1.0, 1.0], [1.0, -1.0]], dtype=np.complex128)

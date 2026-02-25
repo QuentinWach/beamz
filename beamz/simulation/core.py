@@ -874,9 +874,34 @@ class Simulation:
 
     @staticmethod
     def _resample_complex_matrix(freq_src, values_src, freq_dst):
+        """Resample a DFT component matrix to requested frequencies.
+
+        Canonical input/output shape is `(nfreq, npoints)`. Any trailing spatial
+        dimensions are flattened into `npoints` so monitor consumers never need
+        to reason about monitor geometry rank.
+        """
+        freq_src = np.atleast_1d(np.asarray(freq_src, dtype=float))
         src = np.asarray(values_src, dtype=np.complex128)
-        if src.ndim == 1:
-            src = src[:, None]
+        if src.ndim == 0:
+            src = src.reshape(1, 1)
+        elif src.ndim == 1:
+            if src.shape[0] == freq_src.size:
+                src = src[:, None]
+            elif freq_src.size == 1:
+                src = src.reshape(1, -1)
+            else:
+                raise ValueError(
+                    "Cannot infer DFT frequency axis for 1D component array: "
+                    f"len(values)={src.shape[0]}, nfreq={freq_src.size}"
+                )
+        else:
+            if src.shape[0] != freq_src.size:
+                raise ValueError(
+                    "DFT component matrix must use frequency on axis 0: "
+                    f"got shape={src.shape}, nfreq={freq_src.size}"
+                )
+            src = src.reshape(src.shape[0], -1)
+
         if np.allclose(freq_src, freq_dst, rtol=1e-9, atol=0.0) and src.shape[0] == len(freq_dst):
             return src
         out = np.empty((len(freq_dst), src.shape[1]), dtype=np.complex128)
@@ -897,6 +922,7 @@ class Simulation:
                 f"Monitor '{monitor.name}' has no configured DFT frequencies."
             )
         values_src = np.asarray(monitor.get_dft_component(component), dtype=np.complex128)
+        values_src = self._resample_complex_matrix(freq_src, values_src, freq_src)
         freq_dst = np.atleast_1d(np.asarray(frequencies, dtype=float))
         sampled = self._resample_complex_matrix(freq_src, values_src, freq_dst)
         if str(component).startswith("H"):

@@ -444,8 +444,35 @@ class Monitor:
         if comp not in self._dft_accum:
             raise ValueError(f"No DFT data recorded for component '{comp}'.")
         accum = np.asarray(self._dft_accum[comp], dtype=np.complex128)
-        scale = np.maximum(self._dft_weight_sum, 1e-18)
-        return (2.0 / scale[:, None]) * accum
+        nfreq = int(self.dft_frequencies.size)
+        if nfreq <= 0:
+            raise ValueError(
+                f"Monitor '{self.name}' has no configured DFT frequencies."
+            )
+        if accum.ndim == 0:
+            accum = accum.reshape(1, 1)
+        elif accum.ndim == 1:
+            if accum.shape[0] == nfreq:
+                accum = accum[:, None]
+            elif nfreq == 1:
+                accum = accum.reshape(1, -1)
+            else:
+                raise ValueError(
+                    "Cannot infer DFT frequency axis for component "
+                    f"'{comp}': shape={accum.shape}, nfreq={nfreq}"
+                )
+        else:
+            if accum.shape[0] != nfreq:
+                raise ValueError(
+                    "DFT accumulator must use frequency on axis 0 for component "
+                    f"'{comp}': shape={accum.shape}, nfreq={nfreq}"
+                )
+            accum = accum.reshape(nfreq, -1)
+
+        scale = np.maximum(np.asarray(self._dft_weight_sum, dtype=float), 1e-18).reshape(
+            nfreq, 1
+        )
+        return (2.0 / scale) * accum
 
     def record_fields_2d(self, Ez, Hx, Hy, t, dx, dy, step=0, Ex=None, Ey=None, Hz=None):
         """Record 2D field data."""
