@@ -851,7 +851,11 @@ class Simulation:
             spec_bins = np.fft.rfft(values, axis=0)
 
         if frequencies is None:
-            return freq_bins, spec_bins
+            out = spec_bins
+            if str(component).startswith("H"):
+                phase = np.exp(1j * 2.0 * np.pi * freq_bins * (0.5 * dt))
+                out = out * phase[:, None]
+            return freq_bins, out
 
         requested = np.atleast_1d(np.asarray(frequencies, dtype=float))
         sampled = np.empty((len(requested), spec_bins.shape[1]), dtype=np.complex128)
@@ -863,6 +867,9 @@ class Simulation:
                 requested, freq_bins, np.imag(spec_bins[:, col]), left=0.0, right=0.0
             )
             sampled[:, col] = real_part + 1j * imag_part
+        if str(component).startswith("H"):
+            phase = np.exp(1j * 2.0 * np.pi * requested * (0.5 * dt))
+            sampled = sampled * phase[:, None]
         return requested, sampled
 
     @staticmethod
@@ -891,7 +898,11 @@ class Simulation:
             )
         values_src = np.asarray(monitor.get_dft_component(component), dtype=np.complex128)
         freq_dst = np.atleast_1d(np.asarray(frequencies, dtype=float))
-        return freq_dst, self._resample_complex_matrix(freq_src, values_src, freq_dst)
+        sampled = self._resample_complex_matrix(freq_src, values_src, freq_dst)
+        if str(component).startswith("H"):
+            phase = np.exp(1j * 2.0 * np.pi * freq_dst * (0.5 * float(self.dt)))
+            sampled = sampled * phase[:, None]
+        return freq_dst, sampled
 
     def _demodulate_monitor_component(
         self,
@@ -971,6 +982,8 @@ class Simulation:
         carrier = np.exp(-1j * 2.0 * np.pi * f0 * t_sel)[:, None]
         denom = max(float(np.sum(w)), 1e-18)
         demod = (2.0 / denom) * np.sum((w[:, None] * v_sel) * carrier, axis=0)
+        if str(component).startswith("H"):
+            demod = demod * np.exp(1j * 2.0 * np.pi * f0 * (0.5 * float(self.dt)))
         return np.asarray(demod, dtype=np.complex128)
 
     @staticmethod
@@ -1195,19 +1208,6 @@ class Simulation:
                 comp_samples[name] = comp_samples[name] * phase_rot
 
         if self.is_3d:
-            axis = parts["axis"]
-            if axis == "x":
-                s_axis = comp_samples["Ey"] * np.conjugate(comp_samples["Hz"]) - comp_samples["Ez"] * np.conjugate(comp_samples["Hy"])
-            elif axis == "y":
-                s_axis = comp_samples["Ez"] * np.conjugate(comp_samples["Hx"]) - comp_samples["Ex"] * np.conjugate(comp_samples["Hz"])
-            else:
-                s_axis = comp_samples["Ex"] * np.conjugate(comp_samples["Hy"]) - comp_samples["Ey"] * np.conjugate(comp_samples["Hx"])
-            pm = 0.5 * np.real(np.sum(s_axis) * dl)
-            if abs(pm) <= 1e-30:
-                pm = 0.5 * np.sum(np.abs(s_axis)) * dl
-            norm = np.sqrt(max(abs(pm), 1e-30))
-            for name in tuple(comp_samples.keys()):
-                comp_samples[name] = comp_samples[name] / norm
             fwd_vec = np.concatenate([comp_samples[c] for c in proj_components])
             bwd_vec = np.concatenate(
                 [(-comp_samples[c] if c.startswith("H") else comp_samples[c]) for c in proj_components]
@@ -1252,11 +1252,33 @@ class Simulation:
             projection["axis"] = parts["axis"]
             projection["d_area"] = float(dl)
             projection["power_norm"] = 1.0
+            # Calibrate extraction so forward/backward basis vectors map to (1,0)/(0,1)
+            # on this exact monitor discretization.
+            mode_fwd = {
+                k: np.asarray(v, dtype=np.complex128)
+                for k, v in projection["mode_components"].items()
+            }
+            mode_bwd = {
+                k: (-np.asarray(v, dtype=np.complex128) if k.startswith("H") else np.asarray(v, dtype=np.complex128))
+                for k, v in mode_fwd.items()
+            }
+            c_fwd = self._project_modal_coefficients_3d(mode_fwd, projection, apply_calibration=False)
+            c_bwd = self._project_modal_coefficients_3d(mode_bwd, projection, apply_calibration=False)
+            calib = np.asarray(
+                [[c_fwd[0], c_bwd[0]], [c_fwd[1], c_bwd[1]]], dtype=np.complex128
+            )
+            try:
+                if np.all(np.isfinite(calib)) and np.linalg.cond(calib) < 1e8:
+                    projection["coeff_correction"] = np.linalg.inv(calib)
+                else:
+                    projection["coeff_correction"] = np.eye(2, dtype=np.complex128)
+            except np.linalg.LinAlgError:
+                projection["coeff_correction"] = np.eye(2, dtype=np.complex128)
         cache[key] = projection
         return projection
 
     @staticmethod
-    def _project_modal_coefficients_3d(field_components, projection):
+    def _project_modal_coefficients_3d(field_components, projection, apply_calibration=True):
         axis = projection.get("axis", "x")
         d_area = float(projection.get("d_area", 1.0))
         p_norm = float(projection.get("power_norm", 1.0))
@@ -1272,16 +1294,22 @@ class Simulation:
 
         if axis == "x":
             a_ov = 0.5 * np.sum(_arr("Ey") * np.conjugate(_mode("Hz")) - _arr("Ez") * np.conjugate(_mode("Hy"))) * d_area
-            b_ov = 0.5 * np.sum(_mode("Ey") * np.conjugate(_arr("Hz")) - _mode("Ez") * np.conjugate(_arr("Hy"))) * d_area
+            b_ov = 0.5 * np.sum(np.conjugate(_mode("Ey")) * _arr("Hz") - np.conjugate(_mode("Ez")) * _arr("Hy")) * d_area
         elif axis == "y":
             a_ov = 0.5 * np.sum(_arr("Ez") * np.conjugate(_mode("Hx")) - _arr("Ex") * np.conjugate(_mode("Hz"))) * d_area
-            b_ov = 0.5 * np.sum(_mode("Ez") * np.conjugate(_arr("Hx")) - _mode("Ex") * np.conjugate(_arr("Hz"))) * d_area
+            b_ov = 0.5 * np.sum(np.conjugate(_mode("Ez")) * _arr("Hx") - np.conjugate(_mode("Ex")) * _arr("Hz")) * d_area
         else:
             a_ov = 0.5 * np.sum(_arr("Ex") * np.conjugate(_mode("Hy")) - _arr("Ey") * np.conjugate(_mode("Hx"))) * d_area
-            b_ov = 0.5 * np.sum(_mode("Ex") * np.conjugate(_arr("Hy")) - _mode("Ey") * np.conjugate(_arr("Hx"))) * d_area
+            b_ov = 0.5 * np.sum(np.conjugate(_mode("Ex")) * _arr("Hy") - np.conjugate(_mode("Ey")) * _arr("Hx")) * d_area
 
         a_plus = (a_ov + b_ov) / (2.0 * p_norm)
         a_minus = (a_ov - b_ov) / (2.0 * p_norm)
+        if apply_calibration:
+            corr = projection.get("coeff_correction", None)
+            if corr is not None:
+                vec = np.asarray([a_plus, a_minus], dtype=np.complex128)
+                vec = np.asarray(corr, dtype=np.complex128) @ vec
+                a_plus, a_minus = vec[0], vec[1]
         return np.complex128(a_plus), np.complex128(a_minus)
 
     def extract_port_waves(
@@ -1492,14 +1520,22 @@ class Simulation:
                 proj_components = tuple(
                     proj.get("components", (proj["e_component"], proj["h_component"]))
                 )
-                field_vec = np.concatenate(
-                    [
-                        dft_cache[(main_monitor.name, comp)][idx]
+                if self.is_3d:
+                    field_components = {
+                        comp: np.asarray(dft_cache[(main_monitor.name, comp)][idx], dtype=np.complex128)
                         for comp in proj_components
-                    ]
-                )
-                coeff = proj["pinv"] @ field_vec
-                a_plus[idx], a_minus[idx] = coeff[0], coeff[1]
+                    }
+                    coeff = self._project_modal_coefficients_3d(field_components, proj)
+                    a_plus[idx], a_minus[idx] = coeff[0], coeff[1]
+                else:
+                    field_vec = np.concatenate(
+                        [
+                            dft_cache[(main_monitor.name, comp)][idx]
+                            for comp in proj_components
+                        ]
+                    )
+                    coeff = proj["pinv"] @ field_vec
+                    a_plus[idx], a_minus[idx] = coeff[0], coeff[1]
                 cond_main[idx] = float(proj.get("condition_number", np.nan))
                 neff_main[idx] = float(proj.get("mode_neff", np.nan))
 
@@ -1538,14 +1574,22 @@ class Simulation:
                     proj_components = tuple(
                         proj.get("components", (proj["e_component"], proj["h_component"]))
                     )
-                    field_vec = np.concatenate(
-                        [
-                            dft_cache[(ref_monitor.name, comp)][idx]
+                    if self.is_3d:
+                        field_components = {
+                            comp: np.asarray(dft_cache[(ref_monitor.name, comp)][idx], dtype=np.complex128)
                             for comp in proj_components
-                        ]
-                    )
-                    coeff = proj["pinv"] @ field_vec
-                    a_incident[idx] = coeff[0]
+                        }
+                        coeff = self._project_modal_coefficients_3d(field_components, proj)
+                        a_incident[idx] = coeff[0]
+                    else:
+                        field_vec = np.concatenate(
+                            [
+                                dft_cache[(ref_monitor.name, comp)][idx]
+                                for comp in proj_components
+                            ]
+                        )
+                        coeff = proj["pinv"] @ field_vec
+                        a_incident[idx] = coeff[0]
                     cond_ref[idx] = float(proj.get("condition_number", np.nan))
                     neff_ref[idx] = float(proj.get("mode_neff", np.nan))
                 port_waves["a_incident"] = a_incident

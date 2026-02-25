@@ -53,9 +53,6 @@ DEBUG_DFT = env_bool("BEAMZ_DEBUG_DFT", False)
 # Keep S-parameters tied to this single device run (no extra normalization runs).
 CALIBRATE_PORT_SCALE = False
 GLOBAL_DFT_WINDOW = env_bool("BEAMZ_GLOBAL_DFT_WINDOW", False)
-ENFORCE_PASSIVITY = env_bool("BEAMZ_ENFORCE_PASSIVITY", True)
-PASSIVITY_TOL = env_float("BEAMZ_PASSIVITY_TOL", 1e-3)
-PASSIVITY_USE_PROXY_CAP = env_bool("BEAMZ_PASSIVITY_USE_PROXY_CAP", True)
 POLARIZATION = str(os.getenv("BEAMZ_POLARIZATION", "te")).strip().lower()
 if POLARIZATION not in {"te", "tm"}:
     raise ValueError(
@@ -127,7 +124,7 @@ MONITOR_Z_MARGIN = env_float("BEAMZ_MONITOR_Z_MARGIN", 0.25 * µm)
 MONITOR_Z_MIN = PML_Z + MONITOR_Z_MARGIN
 MONITOR_Z_MAX = DEVICE_DEPTH - PML_Z - MONITOR_Z_MARGIN
 
-SOURCE_OFFSET = -1.2 * µm
+SOURCE_OFFSET = env_float("BEAMZ_SOURCE_OFFSET", -1.2 * µm)
 FORWARD_MONITOR_OFFSET_ENV = os.getenv("BEAMZ_FORWARD_MONITOR_OFFSET")
 FORWARD_MONITOR_OFFSET = (
     float(FORWARD_MONITOR_OFFSET_ENV)
@@ -136,6 +133,7 @@ FORWARD_MONITOR_OFFSET = (
 )
 FORWARD_MONITOR_SOURCE_GAP = env_float("BEAMZ_FORWARD_MONITOR_SOURCE_GAP", 0.45 * µm)
 FORWARD_MONITOR_TAPER_PAD = env_float("BEAMZ_FORWARD_MONITOR_TAPER_PAD", 0.25 * µm)
+INCIDENT_MODAL_TAPER_PAD = env_float("BEAMZ_INCIDENT_MODAL_TAPER_PAD", 0.25 * µm)
 REFLECTION_MONITOR_BACKOFF = 2.0 * µm
 OUTPUT_MONITOR_OFFSET = env_float("BEAMZ_OUTPUT_MONITOR_OFFSET", 1.2 * µm)
 OUTPUT_MONITOR_SEARCH_RADIUS = env_float(
@@ -825,29 +823,40 @@ def trapz(y, x):
 
 
 def dft_signed_flux_spectrum(monitor_obj, axis):
+    freqs = np.asarray(monitor_obj.get_dft_frequencies(), dtype=float)
+
+    def _comp(name: str):
+        arr = np.asarray(monitor_obj.get_dft_component(name), dtype=np.complex128)
+        if name.startswith("H") and arr.ndim >= 1 and freqs.size:
+            phase = np.exp(1j * 2.0 * np.pi * freqs * (0.5 * float(DT)))
+            arr = arr * phase[:, None]
+        return arr
+
     axis = str(axis).lower()
     if axis == "x":
-        e1 = np.asarray(monitor_obj.get_dft_component("Ey"), dtype=np.complex128)
-        e2 = np.asarray(monitor_obj.get_dft_component("Ez"), dtype=np.complex128)
-        h1 = np.asarray(monitor_obj.get_dft_component("Hz"), dtype=np.complex128)
-        h2 = np.asarray(monitor_obj.get_dft_component("Hy"), dtype=np.complex128)
+        e1 = _comp("Ey")
+        e2 = _comp("Ez")
+        h1 = _comp("Hz")
+        h2 = _comp("Hy")
         p = e1 * np.conjugate(h1) - e2 * np.conjugate(h2)
     elif axis == "y":
-        e1 = np.asarray(monitor_obj.get_dft_component("Ez"), dtype=np.complex128)
-        e2 = np.asarray(monitor_obj.get_dft_component("Ex"), dtype=np.complex128)
-        h1 = np.asarray(monitor_obj.get_dft_component("Hx"), dtype=np.complex128)
-        h2 = np.asarray(monitor_obj.get_dft_component("Hz"), dtype=np.complex128)
+        e1 = _comp("Ez")
+        e2 = _comp("Ex")
+        h1 = _comp("Hx")
+        h2 = _comp("Hz")
         p = e1 * np.conjugate(h1) - e2 * np.conjugate(h2)
     else:
-        e1 = np.asarray(monitor_obj.get_dft_component("Ex"), dtype=np.complex128)
-        e2 = np.asarray(monitor_obj.get_dft_component("Ey"), dtype=np.complex128)
-        h1 = np.asarray(monitor_obj.get_dft_component("Hy"), dtype=np.complex128)
-        h2 = np.asarray(monitor_obj.get_dft_component("Hx"), dtype=np.complex128)
+        e1 = _comp("Ex")
+        e2 = _comp("Ey")
+        h1 = _comp("Hy")
+        h2 = _comp("Hx")
         p = e1 * np.conjugate(h1) - e2 * np.conjugate(h2)
-    if p.ndim != 2 or p.size == 0:
+    if p.ndim < 2 or p.size == 0:
         return np.zeros((0,), dtype=np.complex128)
     # Complex frequency-domain Poynting estimate from monitor DFT phasors.
-    return 0.5 * np.sum(p, axis=1) * (DX * DX)
+    # DFT buffers are expected as (nf, npoints), but sum robustly over all spatial axes.
+    spatial_axes = tuple(range(1, p.ndim))
+    return 0.5 * np.sum(p, axis=spatial_axes) * (DX * DX)
 
 
 def dft_directional_power_spectrum(monitor_obj, direction):
@@ -865,7 +874,7 @@ def dft_directional_power_spectrum(monitor_obj, direction):
         return np.zeros((0,), dtype=float)
     # Time-averaged real Poynting power through monitor plane.
     p_dir = sign * np.real(s_complex)
-    return np.maximum(p_dir, 0.0)
+    return np.asarray(p_dir, dtype=float)
 
 
 def build_mode_source_with_autofit(
@@ -1122,8 +1131,33 @@ o1_ref_start, o1_ref_end, _, _ = port_plane(
     source_height,
     offset=-REFLECTION_MONITOR_BACKOFF,
 )
+modal_monitor_z_span = max(float(MODAL_MONITOR_Z_SPAN), float(source_height))
+o1_fwd_modal_start, o1_fwd_modal_end, _, _ = port_plane(
+    src,
+    MODAL_MONITOR_SPAN_FACTOR,
+    MODAL_MONITOR_MIN_SPAN,
+    modal_monitor_z_span,
+    offset=FORWARD_MONITOR_OFFSET,
+)
+src_dir_sign = 1.0 if str(src["direction"]).startswith("+") else -1.0
+incident_modal_offset = -src_dir_sign * float(INCIDENT_MODAL_TAPER_PAD)
+o1_inc_modal_start, o1_inc_modal_end, _, _ = port_plane(
+    src,
+    MODAL_MONITOR_SPAN_FACTOR,
+    MODAL_MONITOR_MIN_SPAN,
+    modal_monitor_z_span,
+    offset=incident_modal_offset,
+)
+o1_ref_modal_start, o1_ref_modal_end, _, _ = port_plane(
+    src,
+    MODAL_MONITOR_SPAN_FACTOR,
+    MODAL_MONITOR_MIN_SPAN,
+    modal_monitor_z_span,
+    offset=-REFLECTION_MONITOR_BACKOFF,
+)
 
 out_planes = {}
+out_modal_planes = {}
 out_offsets = {}
 eps_grid = np.asarray(grid.permittivity)
 for out in OUTPUT_PORTS:
@@ -1145,8 +1179,16 @@ for out in OUTPUT_PORTS:
         source_height,
         offset=best_offset,
     )
+    modal_start, modal_end, _, _ = port_plane(
+        out_port,
+        MODAL_MONITOR_SPAN_FACTOR,
+        MODAL_MONITOR_MIN_SPAN,
+        modal_monitor_z_span,
+        offset=best_offset,
+    )
     out_offsets[out] = best_offset
     out_planes[out] = (best_start, best_end)
+    out_modal_planes[out] = (modal_start, modal_end)
     x_mon = monitor_center(best_start, best_end)[0]
     x_taper = float(ports[out]["center"][0])
     x_pml_start = float(device_design.width) - float(PML_RIGHT)
@@ -1213,9 +1255,11 @@ dft_extra_cycles = env_float("BEAMZ_DFT_EXTRA_CYCLES", 18.0)
 extra_time = dft_extra_cycles / fmin
 
 forward_center = monitor_center(o1_fwd_start, o1_fwd_end)
+incident_modal_center = monitor_center(o1_inc_modal_start, o1_inc_modal_end)
 reflect_center = monitor_center(o1_ref_start, o1_ref_end)
 n_group_est = env_float("BEAMZ_NGROUP_EST", 2.2)
 arr_fwd = estimate_arrival_time(source_center, forward_center, n_group_est, t0)
+arr_inc = estimate_arrival_time(source_center, incident_modal_center, n_group_est, t0)
 
 x_scatter = float(np.median([ports[p]["center"][0] for p in OUTPUT_PORTS]))
 refl_path = max(0.0, 2.0 * (x_scatter - source_center[0]))
@@ -1232,6 +1276,7 @@ window_post = dft_post_sigma * sigma_t + extra_time
 
 dft_window = {
     "o1_fwd": (max(0.0, arr_fwd - window_pre), arr_fwd + window_post),
+    "o1_inc_modal": (max(0.0, arr_inc - window_pre), arr_inc + window_post),
     "o1_ref": (max(0.0, arr_ref - window_pre), arr_ref + window_post),
 }
 for out in OUTPUT_PORTS:
@@ -1317,7 +1362,34 @@ device_monitors = [
         dft_t_end=dft_window["o1_ref"][1],
         dft_components=source_dft_components,
         **monitor_cfg,
-    )
+    ),
+    Monitor(
+        start=o1_fwd_modal_start,
+        end=o1_fwd_modal_end,
+        name="o1_fwd_modal",
+        dft_t_start=dft_window["o1_fwd"][0],
+        dft_t_end=dft_window["o1_fwd"][1],
+        dft_components=source_dft_components,
+        **monitor_cfg,
+    ),
+    Monitor(
+        start=o1_inc_modal_start,
+        end=o1_inc_modal_end,
+        name="o1_inc_modal",
+        dft_t_start=dft_window["o1_inc_modal"][0],
+        dft_t_end=dft_window["o1_inc_modal"][1],
+        dft_components=source_dft_components,
+        **monitor_cfg,
+    ),
+    Monitor(
+        start=o1_ref_modal_start,
+        end=o1_ref_modal_end,
+        name="o1_ref_modal",
+        dft_t_start=dft_window["o1_ref"][0],
+        dft_t_end=dft_window["o1_ref"][1],
+        dft_components=source_dft_components,
+        **monitor_cfg,
+    ),
 ]
 for out in OUTPUT_PORTS:
     m_start, m_end = out_planes[out]
@@ -1331,6 +1403,18 @@ for out in OUTPUT_PORTS:
             start=m_start,
             end=m_end,
             name=out,
+            dft_t_start=t0_m,
+            dft_t_end=t1_m,
+            dft_components=comps,
+            **monitor_cfg,
+        )
+    )
+    mm_start, mm_end = out_modal_planes[out]
+    device_monitors.append(
+        Monitor(
+            start=mm_start,
+            end=mm_end,
+            name=f"{out}_modal",
             dft_t_start=t0_m,
             dft_t_end=t1_m,
             dft_components=comps,
@@ -1391,6 +1475,11 @@ for mon_name, mon_start, mon_end in [
     ("o1_ref", o1_ref_start, o1_ref_end),
     ("o2", out_planes["o2"][0], out_planes["o2"][1]),
     ("o3", out_planes["o3"][0], out_planes["o3"][1]),
+    ("o1_fwd_modal", o1_fwd_modal_start, o1_fwd_modal_end),
+    ("o1_inc_modal", o1_inc_modal_start, o1_inc_modal_end),
+    ("o1_ref_modal", o1_ref_modal_start, o1_ref_modal_end),
+    ("o2_modal", out_modal_planes["o2"][0], out_modal_planes["o2"][1]),
+    ("o3_modal", out_modal_planes["o3"][0], out_modal_planes["o3"][1]),
 ]:
     probe_mon = Monitor(start=mon_start, end=mon_end, name=f"{mon_name}_overlap")
     core_frac, clad_frac, eps_max = monitor_core_overlap_stats(sim_device, probe_mon)
@@ -1626,7 +1715,6 @@ device_wall = pytime.time() - wall_t0
 print(f"Device run wall-time: {device_wall:.1f} s (steps={stop_steps_device})")
 
 diag_power_data = {}
-passivity_proxy_cap = 1.0
 for mon in power_diag_monitors:
     tt = np.asarray(mon.power_timestamps, dtype=float)
     pw = np.asarray(mon.power_history, dtype=float)
@@ -1660,11 +1748,7 @@ if (
     if pin > 0.0:
         print(f"[full-run transmission proxy] (o2+o3)/in = {(p2 + p3) / pin:.3f}")
         proxy_closure = (p2 + p3 + pref) / pin
-        passivity_proxy_cap = float(np.clip(proxy_closure, 0.0, 1.0))
-        print(
-            f"[full-run closure proxy] (refl+o2+o3)/in = {proxy_closure:.3f}, "
-            f"cap={passivity_proxy_cap:.3f}"
-        )
+        print(f"[full-run closure proxy] (refl+o2+o3)/in = {proxy_closure:.3f}")
     if WRITE_DEBUG_PLOTS:
         fig, ax = plt.subplots(2, 1, figsize=(8.0, 5.8), dpi=220, sharex=True)
         cmap = {
@@ -1695,63 +1779,50 @@ if (
 # Extract modal waves from device run using physical propagation directions.
 src_in_dir = ports[SOURCE_PORT]["direction"]
 src_out_dir = outward_direction(src_in_dir)
-out_dir = {p: outward_direction(ports[p]["direction"]) for p in OUTPUT_PORTS}
+out_dir = {p: ports[p]["direction"] for p in OUTPUT_PORTS}
+out_dir_flux = {p: outward_direction(ports[p]["direction"]) for p in OUTPUT_PORTS}
 
 device_port_specs = [
     PortSpec(
+        name="o1_inc",
+        monitor_name="o1_inc_modal",
+        direction=src_in_dir,
+        polarization=POLARIZATION,
+    ),
+    PortSpec(
         name="o1_refl",
-        monitor_name="o1_ref",
+        monitor_name="o1_ref_modal",
         direction=src_out_dir,
         polarization=POLARIZATION,
     ),
     PortSpec(
         name="o2_out",
-        monitor_name="o2",
+        monitor_name="o2_modal",
         direction=out_dir["o2"],
         polarization=POLARIZATION,
     ),
     PortSpec(
         name="o3_out",
-        monitor_name="o3",
+        monitor_name="o3_modal",
         direction=out_dir["o3"],
         polarization=POLARIZATION,
     ),
 ]
-waves_dev = sim_device.extract_port_waves_dft(
+modal_result = sim_device.get_S_matrix_modal_dft(
+    source_port="o1_inc",
     ports=device_port_specs,
+    output_ports=["o1_refl", "o2_out", "o3_out"],
     frequencies=freqs,
+    as_sax=False,
+    return_diagnostics=True,
     min_incident_db=-55.0,
-    return_power=True,
 )
-
-# Incident normalization from forward monitor in the device run.
-waves_inc = sim_device.extract_port_waves_dft(
-    ports=[
-        PortSpec(
-            name="o1_inc",
-            monitor_name="o1_fwd",
-            direction=src_in_dir,
-            polarization=POLARIZATION,
-        )
-    ],
-    frequencies=freqs,
-    min_incident_db=-55.0,
-    return_power=True,
-)
-a_incident = np.asarray(waves_inc["o1_inc"]["a_plus"], dtype=np.complex128)
+waves_dev = modal_result["diagnostics"]["waves"]
+a_incident = np.asarray(waves_dev["o1_inc"]["a_plus"], dtype=np.complex128)
+valid = np.asarray(modal_result["diagnostics"]["valid_mask"], dtype=bool)
 incident_monitor_obj = monitor_by_name.get("o1_fwd")
 
-b_o1 = np.asarray(waves_dev["o1_refl"]["a_plus"], dtype=np.complex128)
-b_o2 = np.asarray(waves_dev["o2_out"]["a_plus"], dtype=np.complex128)
-b_o3 = np.asarray(waves_dev["o3_out"]["a_plus"], dtype=np.complex128)
-if DEBUG_DFT:
-    print(
-        "Device wave diagnostics: "
-        f"max|b_o1|={np.max(np.abs(b_o1)):.3e}, "
-        f"max|b_o2|={np.max(np.abs(b_o2)):.3e}, "
-        f"max|b_o3|={np.max(np.abs(b_o3)):.3e}"
-    )
-for port_name in ["o1_refl", "o2_out", "o3_out"]:
+for port_name in ["o1_inc", "o1_refl", "o2_out", "o3_out"]:
     a_p = np.asarray(waves_dev[port_name]["a_plus"], dtype=np.complex128)
     a_m = np.asarray(waves_dev[port_name]["a_minus"], dtype=np.complex128)
     p_p = float(np.mean(np.abs(a_p) ** 2)) if a_p.size else 0.0
@@ -1775,140 +1846,27 @@ for port_name in ["o1_refl", "o2_out", "o3_out"]:
             f"min={np.nanmin(neff_arr):.4f}, median={np.nanmedian(neff_arr):.4f}, max={np.nanmax(neff_arr):.4f}"
         )
 
-if CALIBRATE_PORT_SCALE:
-    cal_freq = env_float("BEAMZ_CALIBRATION_FREQUENCY_HZ", fcen)
-    print(f"Running port-scale calibration at {cal_freq/1e12:.2f} THz ...")
-    g_inc = run_modal_gain_calibration(
-        port_name="o1_inc_cal",
-        port=ports[SOURCE_PORT],
-        monitor_start=o1_fwd_start,
-        monitor_end=o1_fwd_end,
-        port_direction=ports[SOURCE_PORT]["direction"],
-        polarization=POLARIZATION,
-        coeff_key="a_plus",
-        cal_frequency=cal_freq,
-        time=time,
-        signal=signal,
-        chunk_steps=chunk_steps,
-        min_steps_env=min_steps_env,
-        max_steps=max_steps,
-        lookback=lookback,
-        decay_ratio=decay_ratio,
-        record_interval=max(monitor_stride, 1),
-    )
-    g_refl = run_modal_gain_calibration(
-        port_name="o1_refl_cal",
-        port=ports[SOURCE_PORT],
-        monitor_start=o1_ref_start,
-        monitor_end=o1_ref_end,
-        port_direction=ports[SOURCE_PORT]["direction"],
-        polarization=POLARIZATION,
-        coeff_key="a_minus",
-        cal_frequency=cal_freq,
-        time=time,
-        signal=signal,
-        chunk_steps=chunk_steps,
-        min_steps_env=min_steps_env,
-        max_steps=max_steps,
-        lookback=lookback,
-        decay_ratio=decay_ratio,
-        record_interval=max(monitor_stride, 1),
-    )
-    g_o2 = run_modal_gain_calibration(
-        port_name="o2_cal",
-        port=ports["o2"],
-        monitor_start=out_planes["o2"][0],
-        monitor_end=out_planes["o2"][1],
-        port_direction=ports["o2"]["direction"],
-        polarization=POLARIZATION,
-        coeff_key="a_minus",
-        cal_frequency=cal_freq,
-        time=time,
-        signal=signal,
-        chunk_steps=chunk_steps,
-        min_steps_env=min_steps_env,
-        max_steps=max_steps,
-        lookback=lookback,
-        decay_ratio=decay_ratio,
-        record_interval=max(monitor_stride, 1),
-    )
-    g_o3 = run_modal_gain_calibration(
-        port_name="o3_cal",
-        port=ports["o3"],
-        monitor_start=out_planes["o3"][0],
-        monitor_end=out_planes["o3"][1],
-        port_direction=ports["o3"]["direction"],
-        polarization=POLARIZATION,
-        coeff_key="a_minus",
-        cal_frequency=cal_freq,
-        time=time,
-        signal=signal,
-        chunk_steps=chunk_steps,
-        min_steps_env=min_steps_env,
-        max_steps=max_steps,
-        lookback=lookback,
-        decay_ratio=decay_ratio,
-        record_interval=max(monitor_stride, 1),
-    )
-    print(
-        "Port gain calibration: "
-        f"g_inc={g_inc:.3e}, g_refl={g_refl:.3e}, g_o2={g_o2:.3e}, g_o3={g_o3:.3e}"
-    )
-    a_incident = a_incident / max(g_inc, 1e-18)
-    b_o1 = b_o1 / max(g_refl, 1e-18)
-    b_o2 = b_o2 / max(g_o2, 1e-18)
-    b_o3 = b_o3 / max(g_o3, 1e-18)
-
 s_guided = {
-    ("o1", "o1"): safe_ratio(b_o1, a_incident),
-    ("o2", "o1"): safe_ratio(b_o2, a_incident),
-    ("o3", "o1"): safe_ratio(b_o3, a_incident),
+    ("o1", "o1"): np.asarray(modal_result["s_matrix"][("o1_refl", "o1_inc")], dtype=np.complex128),
+    ("o2", "o1"): np.asarray(modal_result["s_matrix"][("o2_out", "o1_inc")], dtype=np.complex128),
+    ("o3", "o1"): np.asarray(modal_result["s_matrix"][("o3_out", "o1_inc")], dtype=np.complex128),
 }
 
-min_incident_db = env_float("BEAMZ_MIN_INCIDENT_DB", -55.0)
-max_inc = float(np.max(np.abs(a_incident))) if a_incident.size else 0.0
-floor = max(1e-18, max_inc * (10.0 ** (min_incident_db / 20.0)))
-valid = np.abs(a_incident) >= floor
 print(
     "Incident amplitude diagnostics: "
     f"max={np.max(np.abs(a_incident)):.3e}, "
     f"min={np.min(np.abs(a_incident)):.3e}, "
     f"valid_bins={int(np.count_nonzero(valid))}/{len(valid)}"
 )
-for key in list(s_guided.keys()):
-    s_guided[key] = np.where(valid, s_guided[key], 0.0 + 0.0j)
-
-guided_power_sum_raw = (
-    np.abs(np.asarray(s_guided[("o1", "o1")])) ** 2
-    + np.abs(np.asarray(s_guided[("o2", "o1")])) ** 2
-    + np.abs(np.asarray(s_guided[("o3", "o1")])) ** 2
-)
-if ENFORCE_PASSIVITY:
-    # Keep guided S physically bounded, independent of time-domain proxy monitors.
-    power_cap = 1.0
-    over = valid & (guided_power_sum_raw > (power_cap + float(PASSIVITY_TOL)))
-    n_over = int(np.count_nonzero(over))
-    if n_over > 0:
-        scale = np.ones_like(guided_power_sum_raw, dtype=float)
-        scale[over] = np.sqrt(power_cap / np.maximum(guided_power_sum_raw[over], 1e-18))
-        s_guided[("o1", "o1")] = np.asarray(s_guided[("o1", "o1")]) * scale
-        s_guided[("o2", "o1")] = np.asarray(s_guided[("o2", "o1")]) * scale
-        s_guided[("o3", "o1")] = np.asarray(s_guided[("o3", "o1")]) * scale
-        print(
-            f"[guided passivity projection] corrected {n_over}/{int(np.count_nonzero(valid))} bins "
-            f"(cap=1.000, tol={PASSIVITY_TOL:.1e})"
-        )
-
-s_sax = sax.sdict(s_guided)
 
 guided_power_sum = (
-    np.abs(np.asarray(s_sax[("o1", "o1")])) ** 2
-    + np.abs(np.asarray(s_sax[("o2", "o1")])) ** 2
-    + np.abs(np.asarray(s_sax[("o3", "o1")])) ** 2
+    np.abs(s_guided[("o1", "o1")]) ** 2
+    + np.abs(s_guided[("o2", "o1")]) ** 2
+    + np.abs(s_guided[("o3", "o1")]) ** 2
 )
 guided_loss_est = 1.0 - guided_power_sum
-guided_power_sum = np.where(valid, guided_power_sum, np.nan)
-guided_loss_est = np.where(valid, guided_loss_est, np.nan)
+
+s_sax = sax.sdict(s_guided)
 
 # Separate total-power (all modes/radiation through monitor planes) from guided S.
 flux_r = np.full(len(freqs), np.nan, dtype=float)
@@ -1918,18 +1876,18 @@ if incident_monitor_obj is not None:
     try:
         p_in = dft_directional_power_spectrum(incident_monitor_obj, src_in_dir)
         p_r = dft_directional_power_spectrum(monitor_by_name["o1_ref"], src_out_dir)
-        p_2 = dft_directional_power_spectrum(monitor_by_name["o2"], out_dir["o2"])
-        p_3 = dft_directional_power_spectrum(monitor_by_name["o3"], out_dir["o3"])
+        p_2 = dft_directional_power_spectrum(monitor_by_name["o2"], out_dir_flux["o2"])
+        p_3 = dft_directional_power_spectrum(monitor_by_name["o3"], out_dir_flux["o3"])
         n_flux = min(len(p_in), len(p_r), len(p_2), len(p_3), len(freqs))
         if n_flux > 0:
             p_in = np.asarray(p_in[:n_flux], dtype=float)
             p_r = np.asarray(p_r[:n_flux], dtype=float)
             p_2 = np.asarray(p_2[:n_flux], dtype=float)
             p_3 = np.asarray(p_3[:n_flux], dtype=float)
-            pin = np.maximum(p_in, 1e-30)
-            flux_r[:n_flux] = np.clip(p_r / pin, 0.0, np.inf)
-            flux_t2[:n_flux] = np.clip(p_2 / pin, 0.0, np.inf)
-            flux_t3[:n_flux] = np.clip(p_3 / pin, 0.0, np.inf)
+            pin = np.where(np.abs(p_in) > 1e-30, p_in, np.nan)
+            flux_r[:n_flux] = p_r / pin
+            flux_t2[:n_flux] = p_2 / pin
+            flux_t3[:n_flux] = p_3 / pin
     except Exception as exc:
         print(f"[total flux] skipped: {exc}")
 
