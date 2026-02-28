@@ -1208,6 +1208,17 @@ class Simulation:
                     ii = int(idx)
                     return max(0, min(ii, limit - 1))
 
+                def _slice_len(idx, limit):
+                    if isinstance(idx, slice):
+                        start = 0 if idx.start is None else int(idx.start)
+                        stop = limit if idx.stop is None else int(idx.stop)
+                        step = 1 if idx.step is None else int(idx.step)
+                        if step <= 0:
+                            raise ValueError("Only positive slice steps are supported.")
+                        span = max(0, stop - start)
+                        return 0 if span <= 0 else 1 + (span - 1) // step
+                    return 1
+
                 dims0 = []
                 dims1 = []
                 for cname in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
@@ -1221,11 +1232,19 @@ class Simulation:
                     z_idx = _clamp_idx(z_idx, shp[0])
                     y_idx = _clamp_idx(y_idx, shp[1])
                     x_idx = _clamp_idx(x_idx, shp[2])
-                    view = np.zeros(shp, dtype=np.float32)[z_idx, y_idx, x_idx]
-                    if view.ndim != 2:
-                        view = np.atleast_2d(view)
-                    dims0.append(int(view.shape[0]))
-                    dims1.append(int(view.shape[1]))
+                    slice_lens = [
+                        _slice_len(idx, lim)
+                        for idx, lim in ((z_idx, shp[0]), (y_idx, shp[1]), (x_idx, shp[2]))
+                        if isinstance(idx, slice)
+                    ]
+                    if len(slice_lens) >= 2:
+                        d0, d1 = int(slice_lens[0]), int(slice_lens[1])
+                    elif len(slice_lens) == 1:
+                        d0, d1 = int(slice_lens[0]), 1
+                    else:
+                        d0, d1 = 1, 1
+                    dims0.append(max(d0, 1))
+                    dims1.append(max(d1, 1))
                 mon_dim0 = min(dims0)
                 mon_dim1 = min(dims1)
             except Exception:
