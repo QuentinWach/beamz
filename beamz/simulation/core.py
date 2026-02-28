@@ -1384,6 +1384,39 @@ class Simulation:
             projection["axis"] = parts["axis"]
             projection["d_area"] = float(dl)
             projection["power_norm"] = 1.0
+            # Calibrate extraction so the discretized forward/backward basis
+            # maps back to ideal coefficients (1, 0) and (0, 1).
+            mode_fwd = {
+                k: np.asarray(v, dtype=np.complex128)
+                for k, v in projection["mode_components"].items()
+            }
+            mode_bwd = {
+                k: (
+                    -np.asarray(v, dtype=np.complex128)
+                    if k.startswith("H")
+                    else np.asarray(v, dtype=np.complex128)
+                )
+                for k, v in mode_fwd.items()
+            }
+            c_fwd = self._project_modal_coefficients_3d(
+                mode_fwd, projection, apply_calibration=False
+            )
+            c_bwd = self._project_modal_coefficients_3d(
+                mode_bwd, projection, apply_calibration=False
+            )
+            calib = np.asarray(
+                [[c_fwd[0], c_bwd[0]], [c_fwd[1], c_bwd[1]]], dtype=np.complex128
+            )
+            corr = np.eye(2, dtype=np.complex128)
+            try:
+                cond = float(np.linalg.cond(calib))
+                if np.all(np.isfinite(calib)) and np.isfinite(cond) and cond < 1e8:
+                    inv = np.linalg.inv(calib)
+                    if np.all(np.isfinite(inv)):
+                        corr = np.asarray(inv, dtype=np.complex128)
+            except np.linalg.LinAlgError:
+                pass
+            projection["coeff_correction"] = corr
         cache[key] = projection
         return projection
 

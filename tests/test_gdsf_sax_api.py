@@ -469,6 +469,107 @@ def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
     np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
 
 
+def test_build_port_projection_3d_sets_coeff_correction(monkeypatch):
+    import beamz.simulation.core as core_mod
+
+    sim = Simulation.__new__(Simulation)
+    sim.is_3d = True
+    sim.resolution = 1.0
+    sim.fields = type(
+        "F",
+        (),
+        {
+            "Ex": np.zeros((3, 3, 3), dtype=float),
+            "Ey": np.zeros((3, 3, 3), dtype=float),
+            "Ez": np.zeros((3, 3, 3), dtype=float),
+            "Hx": np.zeros((3, 3, 3), dtype=float),
+            "Hy": np.zeros((3, 3, 3), dtype=float),
+            "Hz": np.zeros((3, 3, 3), dtype=float),
+            "permittivity": np.ones((3, 3, 3), dtype=float),
+        },
+    )()
+
+    def fake_profile(self, monitor, axis, pad_cells):
+        return np.ones((2, 2), dtype=np.complex128), np.arange(4, dtype=int), 1.0
+
+    monkeypatch.setattr(Simulation, "_monitor_profile_slice", fake_profile)
+
+    def fake_solve_modes(
+        eps,
+        omega,
+        dL,
+        m,
+        direction,
+        filter_pol,
+        target_neff,
+        return_fields,
+    ):
+        del eps, omega, dL, m, direction, filter_pol, target_neff, return_fields
+        ex = np.array([[1.0, 0.5], [0.3, 0.1]], dtype=np.complex128)
+        ey = np.array([[0.6, -0.1], [0.2, 0.4]], dtype=np.complex128)
+        ez = np.array([[0.2, 0.3], [0.4, -0.2]], dtype=np.complex128)
+        hx = np.array([[0.1, 0.0], [0.2, 0.3]], dtype=np.complex128)
+        hy = np.array([[0.5, 0.2], [0.1, 0.4]], dtype=np.complex128)
+        hz = np.array([[0.4, 0.1], [0.3, 0.2]], dtype=np.complex128)
+        return (
+            np.array([2.1], dtype=float),
+            [(ex, ey, ez)],
+            [(hx, hy, hz)],
+            None,
+        )
+
+    monkeypatch.setattr(core_mod, "solve_modes", fake_solve_modes)
+
+    bias = np.array([[2.0 + 0.0j, 0.25 + 0.0j], [0.5 + 0.0j, 1.5 + 0.0j]])
+
+    def fake_project(field_components, projection, apply_calibration=True):
+        del apply_calibration
+        hy = np.asarray(field_components["Hy"], dtype=np.complex128)
+        hy_mode = np.asarray(projection["mode_components"]["Hy"], dtype=np.complex128)
+        if np.allclose(hy, hy_mode):
+            return np.complex128(bias[0, 0]), np.complex128(bias[1, 0])
+        if np.allclose(hy, -hy_mode):
+            return np.complex128(bias[0, 1]), np.complex128(bias[1, 1])
+        return np.complex128(0.0 + 0.0j), np.complex128(0.0 + 0.0j)
+
+    monkeypatch.setattr(
+        Simulation, "_project_modal_coefficients_3d", staticmethod(fake_project)
+    )
+
+    class DummyMonitor:
+        name = "m3d"
+
+        @staticmethod
+        def get_grid_slice_3d(dx, dy, dz, field_shape):
+            del dx, dy, dz, field_shape
+            return 1, slice(0, 2), slice(0, 2)
+
+        @staticmethod
+        def get_dft_component(component):
+            del component
+            return np.zeros((1, 4), dtype=np.complex128)
+
+    spec = PortSpec(
+        name="p1",
+        monitor_name="m3d",
+        direction="+x",
+        polarization="tm",
+        mode_index=0,
+    )
+    projection = sim._build_port_projection(
+        spec=spec,
+        monitor=DummyMonitor(),
+        frequency=1.0,
+        cache={},
+    )
+    np.testing.assert_allclose(
+        projection["coeff_correction"],
+        np.linalg.inv(bias),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
 def test_extract_port_waves_dft_modal_coefficients_synthetic(monkeypatch):
     freqs = np.array([1.0, 2.0], dtype=float)
     mode_matrix = np.array([[1.0, 1.0], [1.0, -1.0]], dtype=np.complex128)
