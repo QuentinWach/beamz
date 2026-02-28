@@ -105,11 +105,61 @@ def monitor_overlap_stats(eps_grid, monitor_obj, dx, dy, dz, *, eps_core, eps_cl
     return core_frac, clad_frac, float(np.max(vals))
 
 
+def save_mode_source_plot(mode_source, out_path):
+    eps = np.asarray(getattr(mode_source, "_eps_profile_2d", np.zeros((1, 1))), dtype=float)
+    fields = {
+        "Ex": np.asarray(getattr(mode_source, "_Ex_profile", 0.0), dtype=float),
+        "Ey": np.asarray(getattr(mode_source, "_Ey_profile", 0.0), dtype=float),
+        "Ez": np.asarray(getattr(mode_source, "_Ez_profile", 0.0), dtype=float),
+        "Hx": np.asarray(getattr(mode_source, "_Hx_profile", 0.0), dtype=float),
+        "Hy": np.asarray(getattr(mode_source, "_Hy_profile", 0.0), dtype=float),
+        "Hz": np.asarray(getattr(mode_source, "_Hz_profile", 0.0), dtype=float),
+    }
+
+    fig, axes = plt.subplots(2, 4, figsize=(11.0, 5.6), dpi=220)
+    ax = axes.ravel()
+    for a in ax:
+        a.set_box_aspect(1.0)
+    im_eps = ax[0].imshow(eps, origin="lower", cmap="viridis", aspect="equal")
+    ax[0].set_title("eps cross-section")
+    fig.colorbar(im_eps, ax=ax[0], fraction=0.046, pad=0.04)
+
+    for i, name in enumerate(["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"], start=1):
+        arr = np.asarray(fields[name]).squeeze()
+        if arr.ndim != 2:
+            arr = np.atleast_2d(arr)
+        im = ax[i].imshow(np.abs(arr), origin="lower", cmap="magma", aspect="equal")
+        ax[i].set_title(f"|{name}|")
+        fig.colorbar(im, ax=ax[i], fraction=0.046, pad=0.04)
+
+    ax[7].axis("off")
+    ax[7].text(
+        0.02,
+        0.95,
+        (
+            f"pol={mode_source.pol}\n"
+            f"dir={mode_source.direction}\n"
+            f"neff={float(np.real(getattr(mode_source, '_neff', np.nan))):.6f}\n"
+            f"neff_imp={float(np.real(getattr(mode_source, '_impedance_neff', np.nan))):.6f}\n"
+            f"width={float(mode_source.width)/µm:.3f} um\n"
+            f"height={float(mode_source.height)/µm:.3f} um"
+        ),
+        va="top",
+        ha="left",
+        fontsize=9,
+        family="monospace",
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
 def main():
     out_dir = Path("benchmarks/results/gdsf_to_sax_debug")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_png = out_dir / "gdsf_mmi1x2_3d_sparams.png"
-    out_field_png = out_dir / "gdsf_mmi1x2_3d_field_slices.png"
+    out_field_png = out_dir / "gdsf_mmi1x2_3d_ey_field_slices.png"
+    out_mode_png = out_dir / "gdsf_mmi1x2_3d_mode_source.png"
 
     wl0 = 1.55 * µm
     f0 = LIGHT_SPEED / wl0
@@ -118,7 +168,7 @@ def main():
     n_core, n_clad = 2.04, 1.444
     core_t = 0.45 * µm
 
-    input_extension = 2.0 * µm
+    input_extension = 5.0 * µm
     output_extension = 4.0 * µm
     y_margin = 1.8 * µm
 
@@ -133,7 +183,7 @@ def main():
         n_max=n_core,
         dims=3,
         safety_factor=0.96,
-        points_per_wavelength=8,
+        points_per_wavelength=16,
     )
 
     imported_design, ports = gdsf.load(
@@ -203,12 +253,23 @@ def main():
     z_max = depth - pml_z - 0.05 * µm
 
     src = ports["o1"]
-    src_w = max(0.70 * µm, 1.2 * src["width"])
-    src_h = max(0.50 * µm, 1.2 * core_t)
-    # Keep source safely inside the non-PML interior.
-    source_x_nominal = move_along(src["center"], src["direction"], -0.90 * µm)[0]
-    source_x = max(float(source_x_nominal), float(pml_xy + 0.60 * µm))
-    source_xy = (source_x, float(src["center"][1]))
+    # Larger source/monitor windows to stabilize 3D mode solving/projection.
+    src_w = max(1.60 * µm, 3.2 * src["width"])
+    src_h = max(1.40 * µm, 3.0 * core_t)
+    max_src_w = max(0.2 * µm, design.height - 2.0 * pml_xy - 0.10 * µm)
+    max_src_h = max(0.2 * µm, design.depth - 2.0 * pml_z - 0.10 * µm)
+    src_w = min(src_w, max_src_w)
+    src_h = min(src_h, max_src_h)
+    x_port = float(src["center"][0])
+    x_straight_min = float(pml_xy + 0.60 * µm)
+    x_straight_max = float(x_port - 0.60 * µm)
+    if x_straight_max <= x_straight_min:
+        raise RuntimeError(
+            "Input straight section too short for source/monitor placement. "
+            "Increase input_extension."
+        )
+    source_x = np.clip(x_port - 2.0 * µm, x_straight_min + 0.3 * µm, x_straight_max - 0.3 * µm)
+    source_xy = (float(source_x), float(src["center"][1]))
     source = ModeSource(
         grid=grid,
         center=(source_xy[0], source_xy[1], core_zc),
@@ -220,11 +281,14 @@ def main():
         direction=src["direction"],
     )
 
-    mon_y_span = max(0.62 * µm, 1.15 * src["width"])
-    mon_z_span = max(0.55 * µm, 1.25 * core_t)
+    mon_y_span = max(1.60 * µm, 3.2 * src["width"])
+    mon_z_span = max(1.40 * µm, 3.0 * core_t)
 
-    fwd_xy = move_along(src["center"], src["direction"], +0.70 * µm)
-    ref_xy = move_along(src["center"], src["direction"], -0.20 * µm)
+    # Place source and input monitors on the long straight input section (before taper/MMI).
+    fwd_x = float(np.clip(source_x + 0.70 * µm, x_straight_min + 0.1 * µm, x_straight_max - 0.1 * µm))
+    ref_x = float(np.clip(source_x - 0.80 * µm, x_straight_min + 0.1 * µm, x_straight_max - 0.1 * µm))
+    fwd_xy = (fwd_x, float(src["center"][1]))
+    ref_xy = (ref_x, float(src["center"][1]))
     fwd_start, fwd_end = make_x_plane(
         fwd_xy[0], fwd_xy[1], mon_y_span, core_zc, mon_z_span, z_min, z_max
     )
@@ -303,6 +367,12 @@ def main():
             pml_z=pml_z,
         )
         print(f"Monitor '{name}' inside non-PML: {inside}")
+    print(
+        "Input straight placement: "
+        f"x_straight=[{x_straight_min/µm:.3f},{x_straight_max/µm:.3f}]um, "
+        f"source_x={source_x/µm:.3f}um, fwd_x={fwd_x/µm:.3f}um, ref_x={ref_x/µm:.3f}um, "
+        f"port_x={x_port/µm:.3f}um"
+    )
     src_x, src_y, src_z = source.center
     src_inside_non_pml = (
         float(src_x) >= float(pml_xy)
@@ -332,6 +402,9 @@ def main():
             f"Monitor overlap '{name}': core_frac={core_frac:.3f}, "
             f"clad_frac={clad_frac:.3f}, eps_max={eps_max:.3f}"
         )
+    source.initialize(grid.permittivity, dx, dt=dt)
+    save_mode_source_plot(source, out_mode_png)
+    print(f"Saved mode-source figure: {out_mode_png}")
 
     sim = Simulation(
         design=design,
@@ -349,7 +422,7 @@ def main():
     run_result = sim.run_compiled(
         num_steps=len(time),
         record_interval=rec_interval,
-        record_fields=["Ez"],
+        record_fields=["Ey"],
         progress=False,
     )
 
@@ -423,13 +496,15 @@ def main():
     y_idx = int(np.clip(round(src["center"][1] / dx), 0, eps.shape[1] - 1))
 
     fig, ax = plt.subplots(2, 2, figsize=(8.4, 6.6), dpi=260)
+    for a in ax.ravel():
+        a.set_box_aspect(1.0)
 
     eps_xy = eps[z_idx]
     im0 = ax[0, 0].imshow(
         eps_xy,
         origin="lower",
         cmap="viridis",
-        aspect="auto",
+        aspect="equal",
         extent=[0.0, design.width / µm, 0.0, design.height / µm],
     )
     ax[0, 0].set_title("3D gdsfactory MMI (XY core slice)")
@@ -498,7 +573,7 @@ def main():
         eps_xz,
         origin="lower",
         cmap="viridis",
-        aspect="auto",
+        aspect="equal",
         extent=[0.0, design.width / µm, 0.0, design.depth / µm],
     )
     ax[1, 1].set_title("XZ Slice (input y)")
@@ -536,51 +611,53 @@ def main():
     plt.close(fig)
     print(f"Saved S-parameter figure: {out_png}")
 
-    ez_snap = np.asarray(sim.fields.Ez, dtype=float)
+    ey_snap = np.asarray(sim.fields.Ey, dtype=float)
     if isinstance(run_result, dict):
-        ez_hist = np.asarray(run_result.get("fields", {}).get("Ez", np.zeros((0,))), dtype=float)
-        if ez_hist.ndim == 4 and ez_hist.shape[0] > 0:
-            peak_idx = int(np.argmax(np.max(np.abs(ez_hist), axis=(1, 2, 3))))
-            ez_snap = np.asarray(ez_hist[peak_idx], dtype=float)
+        ey_hist = np.asarray(run_result.get("fields", {}).get("Ey", np.zeros((0,))), dtype=float)
+        if ey_hist.ndim == 4 and ey_hist.shape[0] > 0:
+            peak_idx = int(np.argmax(np.max(np.abs(ey_hist), axis=(1, 2, 3))))
+            ey_snap = np.asarray(ey_hist[peak_idx], dtype=float)
 
-    x_probe = int(np.clip(round(0.5 * (out_flux_x + src["center"][0]) / dx), 0, ez_snap.shape[2] - 1))
-    ez_xy = ez_snap[z_idx, :, :]
-    ez_xz = ez_snap[:, y_idx, :]
-    ez_yz = ez_snap[:, :, x_probe]
+    x_probe = int(np.clip(round(0.5 * (out_flux_x + src["center"][0]) / dx), 0, ey_snap.shape[2] - 1))
+    ey_xy = ey_snap[z_idx, :, :]
+    ey_xz = ey_snap[:, y_idx, :]
+    ey_yz = ey_snap[:, :, x_probe]
 
     fig2, ax2 = plt.subplots(1, 3, figsize=(10.2, 3.2), dpi=260)
+    for a in ax2:
+        a.set_box_aspect(1.0)
     im_xy = ax2[0].imshow(
-        ez_xy,
+        ey_xy,
         origin="lower",
         cmap="RdBu",
-        aspect="auto",
+        aspect="equal",
         extent=[0.0, design.width / µm, 0.0, design.height / µm],
     )
-    ax2[0].set_title(f"Ez XY @ z={z_idx}")
+    ax2[0].set_title(f"Ey XY @ z={z_idx}")
     ax2[0].set_xlabel("x (um)")
     ax2[0].set_ylabel("y (um)")
     fig2.colorbar(im_xy, ax=ax2[0], fraction=0.046, pad=0.04)
 
     im_xz = ax2[1].imshow(
-        ez_xz,
+        ey_xz,
         origin="lower",
         cmap="RdBu",
-        aspect="auto",
+        aspect="equal",
         extent=[0.0, design.width / µm, 0.0, design.depth / µm],
     )
-    ax2[1].set_title(f"Ez XZ @ y={y_idx}")
+    ax2[1].set_title(f"Ey XZ @ y={y_idx}")
     ax2[1].set_xlabel("x (um)")
     ax2[1].set_ylabel("z (um)")
     fig2.colorbar(im_xz, ax=ax2[1], fraction=0.046, pad=0.04)
 
     im_yz = ax2[2].imshow(
-        ez_yz,
+        ey_yz,
         origin="lower",
         cmap="RdBu",
-        aspect="auto",
+        aspect="equal",
         extent=[0.0, design.height / µm, 0.0, design.depth / µm],
     )
-    ax2[2].set_title(f"Ez YZ @ x={x_probe}")
+    ax2[2].set_title(f"Ey YZ @ x={x_probe}")
     ax2[2].set_xlabel("y (um)")
     ax2[2].set_ylabel("z (um)")
     fig2.colorbar(im_yz, ax=ax2[2], fraction=0.046, pad=0.04)
