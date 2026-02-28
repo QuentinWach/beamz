@@ -183,7 +183,7 @@ def main():
         n_max=n_core,
         dims=3,
         safety_factor=0.96,
-        points_per_wavelength=16,
+        points_per_wavelength=20,
     )
 
     imported_design, ports = gdsf.load(
