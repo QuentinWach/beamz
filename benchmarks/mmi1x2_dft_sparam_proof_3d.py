@@ -42,10 +42,26 @@ def directional_power_x(monitor, dx, direction):
     return float(sign * np.real(s))
 
 
+def monitor_inside_non_pml(monitor_bounds, *, width, height, depth, pml_xy, pml_right, pml_z):
+    start, end = monitor_bounds
+    x0, x1 = sorted([float(start[0]), float(end[0])])
+    y0, y1 = sorted([float(start[1]), float(end[1])])
+    z0, z1 = sorted([float(start[2]), float(end[2])])
+    return (
+        x0 >= float(pml_xy)
+        and x1 <= float(width - pml_right)
+        and y0 >= float(pml_xy)
+        and y1 <= float(height - pml_xy)
+        and z0 >= float(pml_z)
+        and z1 <= float(depth - pml_z)
+    )
+
+
 def main():
     out_dir = Path("benchmarks/results/gdsf_to_sax_debug")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_png = out_dir / "mmi1x2_dft_sparam_proof_3d.png"
+    out_field_png = out_dir / "mmi1x2_dft_sparam_proof_3d_field_slices.png"
 
     wl0 = 1.55 * µm
     f0 = LIGHT_SPEED / wl0
@@ -131,7 +147,7 @@ def main():
     mon_y_span = max(0.90 * µm, 1.6 * wg_w)
     mon_z_span = max(0.85 * µm, 2.0 * core_t)
     fwd_start, fwd_end = make_x_plane(4.0 * µm, y_mid, mon_y_span, core_zc, mon_z_span, z_min, z_max)
-    ref_start, ref_end = make_x_plane(1.5 * µm, y_mid, mon_y_span, core_zc, mon_z_span, z_min, z_max)
+    ref_start, ref_end = make_x_plane(2.05 * µm, y_mid, mon_y_span, core_zc, mon_z_span, z_min, z_max)
     o2_start, o2_end = make_x_plane(18.3 * µm, y_up, mon_y_span, core_zc, mon_z_span, z_min, z_max)
     o3_start, o3_end = make_x_plane(18.3 * µm, y_dn, mon_y_span, core_zc, mon_z_span, z_min, z_max)
 
@@ -164,7 +180,7 @@ def main():
         4.0 * µm, y_mid, flux_y_span, core_zc, flux_z_span, z_min, z_max
     )
     ref_flux_start, ref_flux_end = make_x_plane(
-        1.5 * µm, y_mid, flux_y_span, core_zc, flux_z_span, z_min, z_max
+        2.05 * µm, y_mid, flux_y_span, core_zc, flux_z_span, z_min, z_max
     )
     out_flux_start, out_flux_end = make_x_plane(
         18.3 * µm, y_mid, flux_y_span, core_zc, flux_z_span, z_min, z_max
@@ -190,7 +206,24 @@ def main():
         f"steps={len(time)}, dx={dx/µm:.4f}um, "
         f"domain=({width/µm:.2f},{height/µm:.2f},{depth/µm:.2f})um"
     )
-    sim.run_compiled(num_steps=len(time), progress=False)
+    for name, bounds in [
+        ("o1_fwd", (fwd_start, fwd_end)),
+        ("o1_ref", (ref_start, ref_end)),
+        ("o2_out", (o2_start, o2_end)),
+        ("o3_out", (o3_start, o3_end)),
+    ]:
+        print(
+            f"Monitor '{name}' inside non-PML: "
+            f"{monitor_inside_non_pml(bounds, width=width, height=height, depth=depth, pml_xy=pml_xy, pml_right=pml_right, pml_z=pml_z)}"
+        )
+
+    rec_interval = max(1, len(time) // 6)
+    run_result = sim.run_compiled(
+        num_steps=len(time),
+        record_interval=rec_interval,
+        record_fields=["Ez"],
+        progress=False,
+    )
 
     specs = [
         PortSpec(name="o1_fwd", monitor_name="o1_fwd", direction="+x", polarization="tm"),
@@ -267,6 +300,13 @@ def main():
         f"(R={p_ref_flux/max(p_in_flux,1e-30):.6f}, "
         f"T={p_out_flux/max(p_in_flux,1e-30):.6f})"
     )
+
+    ez_snap = np.asarray(sim.fields.Ez, dtype=float)
+    if isinstance(run_result, dict):
+        ez_hist = np.asarray(run_result.get("fields", {}).get("Ez", np.zeros((0,))), dtype=float)
+        if ez_hist.ndim == 4 and ez_hist.shape[0] > 0:
+            peak_idx = int(np.argmax(np.max(np.abs(ez_hist), axis=(1, 2, 3))))
+            ez_snap = np.asarray(ez_hist[peak_idx], dtype=float)
 
     eps = np.asarray(grid.permittivity, dtype=float)
     z_idx = int(np.clip(round(core_zc / dx), 0, eps.shape[0] - 1))
@@ -358,6 +398,53 @@ def main():
     fig.savefig(out_png, dpi=320)
     plt.close(fig)
     print(f"Saved proof figure: {out_png}")
+
+    x_idx = int(np.clip(round((x_mmi_end + 1.0 * µm) / dx), 0, ez_snap.shape[2] - 1))
+    ez_xy = ez_snap[z_idx, :, :]
+    ez_xz = ez_snap[:, y_idx, :]
+    ez_yz = ez_snap[:, :, x_idx]
+
+    fig2, ax2 = plt.subplots(1, 3, figsize=(10.0, 3.2), dpi=260)
+    im_xy = ax2[0].imshow(
+        ez_xy,
+        origin="lower",
+        cmap="RdBu",
+        aspect="auto",
+        extent=[0.0, width / µm, 0.0, height / µm],
+    )
+    ax2[0].set_title(f"Ez XY @ z={z_idx}")
+    ax2[0].set_xlabel("x (um)")
+    ax2[0].set_ylabel("y (um)")
+    fig2.colorbar(im_xy, ax=ax2[0], fraction=0.046, pad=0.04)
+
+    im_xz = ax2[1].imshow(
+        ez_xz,
+        origin="lower",
+        cmap="RdBu",
+        aspect="auto",
+        extent=[0.0, width / µm, 0.0, depth / µm],
+    )
+    ax2[1].set_title(f"Ez XZ @ y={y_idx}")
+    ax2[1].set_xlabel("x (um)")
+    ax2[1].set_ylabel("z (um)")
+    fig2.colorbar(im_xz, ax=ax2[1], fraction=0.046, pad=0.04)
+
+    im_yz = ax2[2].imshow(
+        ez_yz,
+        origin="lower",
+        cmap="RdBu",
+        aspect="auto",
+        extent=[0.0, height / µm, 0.0, depth / µm],
+    )
+    ax2[2].set_title(f"Ez YZ @ x={x_idx}")
+    ax2[2].set_xlabel("y (um)")
+    ax2[2].set_ylabel("z (um)")
+    fig2.colorbar(im_yz, ax=ax2[2], fraction=0.046, pad=0.04)
+
+    fig2.tight_layout()
+    fig2.savefig(out_field_png, dpi=320)
+    plt.close(fig2)
+    print(f"Saved field-slice figure: {out_field_png}")
 
 
 if __name__ == "__main__":
