@@ -43,7 +43,6 @@ from beamz.optimization.topology import (
     create_optimization_mask,
 )
 from beamz.simulation.boundaries import PML, Boundary
-from beamz.simulation.core import PortSpec, Simulation
 from beamz.simulation.compiled import (
     CompiledRunConfig,
     CompiledSimulation,
@@ -52,6 +51,7 @@ from beamz.simulation.compiled import (
     RunState,
     compile_simulation,
 )
+from beamz.simulation.core import PortSpec, Simulation
 from beamz.simulation.thermal import (
     ConvectionBC,
     MZITuningResult,
@@ -73,8 +73,8 @@ from beamz.simulation.thermal import (
 from beamz.visual.helpers import (
     calc_optimal_fdtd_params,
     create_rich_progress,
-    dxdt,
     display_status,
+    dxdt,
     get_si_scale_and_label,
 )
 from beamz.visual.source_plots import plot_signal

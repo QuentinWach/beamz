@@ -231,9 +231,11 @@ def _material_signature(material):
 def _structure_signature(structure):
     sig = {
         "type": type(structure).__name__,
-        "bbox": _to_jsonable(structure.get_bounding_box())
-        if hasattr(structure, "get_bounding_box")
-        else None,
+        "bbox": (
+            _to_jsonable(structure.get_bounding_box())
+            if hasattr(structure, "get_bounding_box")
+            else None
+        ),
         "material": _material_signature(getattr(structure, "material", None)),
     }
     keys = (
@@ -303,7 +305,9 @@ def _design_cache_key(design_obj, resolution, grid_kind, resolution_z):
             "is_3d": bool(design_obj.is_3d),
         },
         "structures": [_structure_signature(s) for s in design_obj.structures],
-        "boundaries": [_boundary_signature(b) for b in getattr(design_obj, "boundaries", [])],
+        "boundaries": [
+            _boundary_signature(b) for b in getattr(design_obj, "boundaries", [])
+        ],
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -366,7 +370,16 @@ def _build_grid_from_cached_arrays(
         grid.width = design_obj.width
         grid.height = design_obj.height
 
-    for name in ("permittivity", "permeability", "conductivity", "k", "rho", "cp", "dn_dT", "T0"):
+    for name in (
+        "permittivity",
+        "permeability",
+        "conductivity",
+        "k",
+        "rho",
+        "cp",
+        "dn_dT",
+        "T0",
+    ):
         setattr(grid, name, np.asarray(arrays[name]))
     grid.shape = grid.permittivity.shape
     return grid
@@ -537,9 +550,11 @@ class Design:
                         cache_key = _design_cache_key(
                             self,
                             resolution=float(resolution),
-                            grid_kind="3d"
-                            if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
-                            else "2d",
+                            grid_kind=(
+                                "3d"
+                                if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
+                                else "2d"
+                            ),
                             resolution_z=float(
                                 getattr(self._grid, "resolution_z", resolution)
                             ),
@@ -587,9 +602,11 @@ class Design:
                 cache_key = _design_cache_key(
                     self,
                     resolution=float(resolution),
-                    grid_kind="3d"
-                    if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
-                    else "2d",
+                    grid_kind=(
+                        "3d"
+                        if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
+                        else "2d"
+                    ),
                     resolution_z=float(getattr(self._grid, "resolution_z", resolution)),
                 )
                 cache_path = _raster_cache_path(cache_key)

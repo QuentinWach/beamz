@@ -55,9 +55,7 @@ def batch_slab_specs(
         BatchedSlabGroup(
             waveforms=jnp.stack([s.waveform for s in slab]),
             coeffs=jnp.stack(padded),
-            starts=jnp.array(
-                [list(s.slab_starts) for s in slab], dtype=jnp.int32
-            ),
+            starts=jnp.array([list(s.slab_starts) for s in slab], dtype=jnp.int32),
             starts_tuple=tuple(tuple(int(v) for v in s.slab_starts) for s in slab),
             max_sizes=max_sizes,
             n=len(slab),
@@ -138,7 +136,12 @@ def _as_slab_spec(
 
 
 def _sample_waveform(
-    get_signal_value, t0: float, dt: float, num_steps: int, offset_fn, total_steps: int | None = None
+    get_signal_value,
+    t0: float,
+    dt: float,
+    num_steps: int,
+    offset_fn,
+    total_steps: int | None = None,
 ):
     n = total_steps if total_steps is not None else num_steps
     start = float(t0)
@@ -156,7 +159,9 @@ def _match_shape(profile: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarr
     if profile.ndim != len(target_shape):
         return np.zeros(target_shape, dtype=profile.dtype)
 
-    slices = tuple(slice(0, min(profile.shape[i], target_shape[i])) for i in range(profile.ndim))
+    slices = tuple(
+        slice(0, min(profile.shape[i], target_shape[i])) for i in range(profile.ndim)
+    )
     trimmed = profile[slices]
     out = np.zeros(target_shape, dtype=profile.dtype)
     insert = tuple(slice(0, trimmed.shape[i]) for i in range(trimmed.ndim))

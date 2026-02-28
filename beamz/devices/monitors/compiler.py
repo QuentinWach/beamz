@@ -313,10 +313,14 @@ def compile_monitor_specs(
             raise ValueError("Monitor frequency_points must be finite values in Hz")
         if dft_enabled and dft_freqs.size > 0:
             freq_points = dft_freqs
-            freq_interval = 1 if bool(getattr(monitor, "dft_record_every_step", True)) else interval
+            freq_interval = (
+                1 if bool(getattr(monitor, "dft_record_every_step", True)) else interval
+            )
         else:
             freq_points = flux_freqs
-            freq_interval = max(1, int(getattr(monitor, "frequency_record_interval", 1)))
+            freq_interval = max(
+                1, int(getattr(monitor, "frequency_record_interval", 1))
+            )
         theta = -2.0 * np.pi * freq_points * float(dt) * float(freq_interval)
         freq_rot_re = np.cos(theta).astype(np.float32, copy=False)
         freq_rot_im = np.sin(theta).astype(np.float32, copy=False)
@@ -379,9 +383,7 @@ def compile_monitor_specs(
                         else interval
                     ),
                     dft_t_start=float(getattr(monitor, "dft_t_start", 0.0)),
-                    dft_t_end=float(
-                        dft_t_end_val
-                    ),
+                    dft_t_end=float(dft_t_end_val),
                     dft_window_code=dft_window_code,
                     dft_point_count=int(x_ez.size),
                     dft_component_mask=jnp.asarray(dft_component_mask),
@@ -444,9 +446,7 @@ def compile_monitor_specs(
                         else interval
                     ),
                     dft_t_start=float(getattr(monitor, "dft_t_start", 0.0)),
-                    dft_t_end=float(
-                        dft_t_end_val
-                    ),
+                    dft_t_end=float(dft_t_end_val),
                     dft_window_code=dft_window_code,
                     dft_point_count=int(min_dim0 * min_dim1),
                     dft_component_mask=jnp.asarray(dft_component_mask),

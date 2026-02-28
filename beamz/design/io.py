@@ -83,7 +83,9 @@ class _GDSFactoryNamespace:
 
         core_polygons = polygons_by_layer[layer]
         if not core_polygons:
-            raise ValueError(f"Component '{component.name}' has no polygons on {layer}.")
+            raise ValueError(
+                f"Component '{component.name}' has no polygons on {layer}."
+            )
 
         all_points = np.vstack([np.asarray(poly)[:, :2] for poly in core_polygons])
         xmin, ymin = np.min(all_points, axis=0)
@@ -92,7 +94,9 @@ class _GDSFactoryNamespace:
         width = float((xmax - xmin + 2.0 * pad_um) * 1e-6)
         height = float((ymax - ymin + 2.0 * pad_um) * 1e-6)
 
-        design = Design(width=width, height=height, depth=0, material=Material(n_clad**2))
+        design = Design(
+            width=width, height=height, depth=0, material=Material(n_clad**2)
+        )
 
         for poly_points in core_polygons:
             vertices = [

@@ -55,7 +55,9 @@ class Monitor:
                 np.asarray(dft_frequencies, dtype=float)
             )
         self.dft_components = (
-            tuple(str(c) for c in dft_components) if dft_components is not None else None
+            tuple(str(c) for c in dft_components)
+            if dft_components is not None
+            else None
         )
         if frequency_points is None:
             freq_arr = np.zeros((0,), dtype=np.float64)
@@ -94,7 +96,15 @@ class Monitor:
             }
         else:
             # 2D fields: Ez, Hx, Hy and optional TE set Ex, Ey, Hz
-            self.fields = {"Ex": [], "Ey": [], "Ez": [], "Hx": [], "Hy": [], "Hz": [], "t": []}
+            self.fields = {
+                "Ex": [],
+                "Ey": [],
+                "Ez": [],
+                "Hx": [],
+                "Hy": [],
+                "Hz": [],
+                "t": [],
+            }
 
         # Power and energy storage
         self.power_accumulated = None
@@ -402,7 +412,11 @@ class Monitor:
         return self.should_record(step)
 
     def _dft_weight(self, t):
-        if self.dft_window == "hann" and self.dft_t_end is not None and self.dft_t_end > self.dft_t_start:
+        if (
+            self.dft_window == "hann"
+            and self.dft_t_end is not None
+            and self.dft_t_end > self.dft_t_start
+        ):
             tau = (float(t) - self.dft_t_start) / (self.dft_t_end - self.dft_t_start)
             tau = min(max(tau, 0.0), 1.0)
             return 0.5 * (1.0 - np.cos(2.0 * np.pi * tau))
@@ -469,12 +483,14 @@ class Monitor:
                 )
             accum = accum.reshape(nfreq, -1)
 
-        scale = np.maximum(np.asarray(self._dft_weight_sum, dtype=float), 1e-18).reshape(
-            nfreq, 1
-        )
+        scale = np.maximum(
+            np.asarray(self._dft_weight_sum, dtype=float), 1e-18
+        ).reshape(nfreq, 1)
         return (2.0 / scale) * accum
 
-    def record_fields_2d(self, Ez, Hx, Hy, t, dx, dy, step=0, Ex=None, Ey=None, Hz=None):
+    def record_fields_2d(
+        self, Ez, Hx, Hy, t, dx, dy, step=0, Ex=None, Ey=None, Hz=None
+    ):
         """Record 2D field data."""
         do_record = self.should_record(step)
         do_dft = self._dft_should_accumulate(step, t)
@@ -554,7 +570,11 @@ class Monitor:
             self.last_record_step = step
         self._manage_memory()
 
-        if do_record and self.live_update and (len(self.fields["t"]) % self.update_interval == 0):
+        if (
+            do_record
+            and self.live_update
+            and (len(self.fields["t"]) % self.update_interval == 0)
+        ):
             self._update_live_plot_2d()
 
     def record_fields_3d(self, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy, dz, step=0):
@@ -656,7 +676,11 @@ class Monitor:
             self.last_record_step = step
         self._manage_memory()
 
-        if do_record and self.live_update and (len(self.fields["t"]) % self.update_interval == 0):
+        if (
+            do_record
+            and self.live_update
+            and (len(self.fields["t"]) % self.update_interval == 0)
+        ):
             self._update_live_plot_3d()
 
     def record_fields(self, *args, **kwargs):

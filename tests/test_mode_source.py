@@ -24,8 +24,8 @@ from beamz import (
     ramped_cosine,
     um,
 )
-from beamz.devices.sources.solve import solve_modes
 from beamz.devices.sources import mode as mode_module
+from beamz.devices.sources.solve import solve_modes
 from tests.utils import TEST_WAVELENGTH, compute_field_energy
 
 
@@ -42,17 +42,26 @@ def _poynting_component_3d(fields, axis):
         nz = min(Ey.shape[0], Hz.shape[0], Ez.shape[0], Hy.shape[0])
         ny = min(Ey.shape[1], Hz.shape[1], Ez.shape[1], Hy.shape[1])
         nx = min(Ey.shape[2], Hz.shape[2], Ez.shape[2], Hy.shape[2])
-        return Ey[:nz, :ny, :nx] * Hz[:nz, :ny, :nx] - Ez[:nz, :ny, :nx] * Hy[:nz, :ny, :nx]
+        return (
+            Ey[:nz, :ny, :nx] * Hz[:nz, :ny, :nx]
+            - Ez[:nz, :ny, :nx] * Hy[:nz, :ny, :nx]
+        )
     if axis == "y":
         nz = min(Ez.shape[0], Hx.shape[0], Ex.shape[0], Hz.shape[0])
         ny = min(Ez.shape[1], Hx.shape[1], Ex.shape[1], Hz.shape[1])
         nx = min(Ez.shape[2], Hx.shape[2], Ex.shape[2], Hz.shape[2])
-        return Ez[:nz, :ny, :nx] * Hx[:nz, :ny, :nx] - Ex[:nz, :ny, :nx] * Hz[:nz, :ny, :nx]
+        return (
+            Ez[:nz, :ny, :nx] * Hx[:nz, :ny, :nx]
+            - Ex[:nz, :ny, :nx] * Hz[:nz, :ny, :nx]
+        )
     if axis == "z":
         nz = min(Ex.shape[0], Hy.shape[0], Ey.shape[0], Hx.shape[0])
         ny = min(Ex.shape[1], Hy.shape[1], Ey.shape[1], Hx.shape[1])
         nx = min(Ex.shape[2], Hy.shape[2], Ey.shape[2], Hx.shape[2])
-        return Ex[:nz, :ny, :nx] * Hy[:nz, :ny, :nx] - Ey[:nz, :ny, :nx] * Hx[:nz, :ny, :nx]
+        return (
+            Ex[:nz, :ny, :nx] * Hy[:nz, :ny, :nx]
+            - Ey[:nz, :ny, :nx] * Hx[:nz, :ny, :nx]
+        )
     raise ValueError(f"Unsupported axis {axis!r}")
 
 
@@ -149,9 +158,9 @@ class TestModeSourceDiscreteHelpers:
         lhs = np.sin(0.5 * omega * dt)
         rhs = S * np.sin(0.5 * k_num * d_axis)
 
-        assert abs(lhs - rhs) < 1e-10, (
-            f"Discrete dispersion residual too large: lhs={lhs:.6e}, rhs={rhs:.6e}"
-        )
+        assert (
+            abs(lhs - rhs) < 1e-10
+        ), f"Discrete dispersion residual too large: lhs={lhs:.6e}, rhs={rhs:.6e}"
 
     def test_numeric_phase_delay_monotonic(self):
         wavelength = TEST_WAVELENGTH
@@ -801,7 +810,9 @@ class TestModeSourcePolarization:
             depth=depth,
         )
 
-        design = Design(width=width, height=height, depth=depth, material=Material(n_clad**2))
+        design = Design(
+            width=width, height=height, depth=depth, material=Material(n_clad**2)
+        )
         design += Rectangle(
             position=(width / 2 - guide_w / 2, height / 2 - guide_w / 2, 0),
             width=guide_w,
@@ -1053,12 +1064,12 @@ class TestModeSource3DSignGaugeParity:
         corr_h = _profile_correlation(h_plus, h_minus)
         corr_e = _profile_correlation(e_plus, e_minus)
 
-        assert corr_h < -0.60, (
-            f"{axis}/{pol} J-driving H profile should flip sign: corr={corr_h:.3f}"
-        )
-        assert corr_e > 0.60, (
-            f"{axis}/{pol} M-driving E profile should preserve sign: corr={corr_e:.3f}"
-        )
+        assert (
+            corr_h < -0.60
+        ), f"{axis}/{pol} J-driving H profile should flip sign: corr={corr_h:.3f}"
+        assert (
+            corr_e > 0.60
+        ), f"{axis}/{pol} M-driving E profile should preserve sign: corr={corr_e:.3f}"
 
 
 @pytest.mark.simulation
@@ -1070,7 +1081,9 @@ class TestModeSourceDirectionality3D:
     def _build_3d_waveguide(axis, wavelength, n_core, n_clad, guide_width):
         return _build_3d_waveguide(axis, wavelength, n_core, n_clad, guide_width)
 
-    @pytest.mark.parametrize(("direction", "pol"), [("+x", "tm"), ("-x", "tm"), ("+x", "te"), ("-x", "te")])
+    @pytest.mark.parametrize(
+        ("direction", "pol"), [("+x", "tm"), ("-x", "tm"), ("+x", "te"), ("-x", "te")]
+    )
     def test_x_slice_direction_regression(self, direction, pol):
         """Regression for reported x-slice reversal: +x -> right, -x -> left."""
         wavelength = TEST_WAVELENGTH
@@ -1228,19 +1241,24 @@ class TestModeSourceDirectionality3D:
         result = sim.run(save_fields=save_fields, field_subsample=1)
         axis_len = _axis_size(
             _poynting_component_3d(
-                {name: np.asarray(result["fields"][name][0]) for name in save_fields}, axis
+                {name: np.asarray(result["fields"][name][0]) for name in save_fields},
+                axis,
             ),
             axis,
         )
         axis_center_coord = center[{"x": 0, "y": 1, "z": 2}[axis]]
-        center_idx = int(np.clip(np.round(axis_center_coord / dx - 0.5), 1, axis_len - 2))
+        center_idx = int(
+            np.clip(np.round(axis_center_coord / dx - 0.5), 1, axis_len - 2)
+        )
         dir_sign = 1.0 if direction.startswith("+") else -1.0
         # Keep near plane out of the reactive source region.
         near_offset_cells = max(2, int(round(0.8 * wavelength / dx)))
         far_offset_cells = max(near_offset_cells + 2, int(round(1.0 * wavelength / dx)))
 
         near_offset_cells = int(np.clip(near_offset_cells, 1, max(1, axis_len // 3)))
-        far_offset_cells = int(np.clip(far_offset_cells, near_offset_cells + 1, max(2, axis_len // 2)))
+        far_offset_cells = int(
+            np.clip(far_offset_cells, near_offset_cells + 1, max(2, axis_len // 2))
+        )
 
         if direction.startswith("+"):
             near_forward_idx = min(axis_len - 1, center_idx + near_offset_cells)
@@ -1261,7 +1279,8 @@ class TestModeSourceDirectionality3D:
         far_backward_vals = []
         for snap_idx in range(steady_start, len(result["fields"]["Ex"])):
             snapshot = {
-                name: np.asarray(result["fields"][name][snap_idx]) for name in save_fields
+                name: np.asarray(result["fields"][name][snap_idx])
+                for name in save_fields
             }
             p_axis = _poynting_component_3d(snapshot, axis)
 

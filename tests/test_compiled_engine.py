@@ -5,13 +5,13 @@ import pytest
 
 from beamz import (
     LIGHT_SPEED,
-    ModeSource,
     PML,
-    Rectangle,
     Design,
     GaussianSource,
     Material,
+    ModeSource,
     Monitor,
+    Rectangle,
     Simulation,
     calc_optimal_fdtd_params,
     ramped_cosine,

@@ -1,11 +1,11 @@
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Literal
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from types import SimpleNamespace
 
 from beamz.const import µm
 from beamz.design.core import Design
@@ -911,12 +911,18 @@ class Simulation:
                 )
             src = src.reshape(src.shape[0], -1)
 
-        if np.allclose(freq_src, freq_dst, rtol=1e-9, atol=0.0) and src.shape[0] == len(freq_dst):
+        if np.allclose(freq_src, freq_dst, rtol=1e-9, atol=0.0) and src.shape[0] == len(
+            freq_dst
+        ):
             return src
         out = np.empty((len(freq_dst), src.shape[1]), dtype=np.complex128)
         for col in range(src.shape[1]):
-            re = np.interp(freq_dst, freq_src, np.real(src[:, col]), left=0.0, right=0.0)
-            im = np.interp(freq_dst, freq_src, np.imag(src[:, col]), left=0.0, right=0.0)
+            re = np.interp(
+                freq_dst, freq_src, np.real(src[:, col]), left=0.0, right=0.0
+            )
+            im = np.interp(
+                freq_dst, freq_src, np.imag(src[:, col]), left=0.0, right=0.0
+            )
             out[:, col] = re + 1j * im
         return out
 
@@ -930,7 +936,9 @@ class Simulation:
             raise ValueError(
                 f"Monitor '{monitor.name}' has no configured DFT frequencies."
             )
-        values_src = np.asarray(monitor.get_dft_component(component), dtype=np.complex128)
+        values_src = np.asarray(
+            monitor.get_dft_component(component), dtype=np.complex128
+        )
         values_src = self._resample_complex_matrix(freq_src, values_src, freq_src)
         freq_dst = np.atleast_1d(np.asarray(frequencies, dtype=float))
         sampled = self._resample_complex_matrix(freq_src, values_src, freq_dst)
@@ -1119,7 +1127,9 @@ class Simulation:
         local_idx = np.clip(sample_idx - lo, 0, max(hi - lo - 1, 0))
         if len(points) > 1:
             step_idx = np.diff(np.asarray(points, dtype=float), axis=0)
-            dl = float(np.mean(np.linalg.norm(step_idx, axis=1))) * float(self.resolution)
+            dl = float(np.mean(np.linalg.norm(step_idx, axis=1))) * float(
+                self.resolution
+            )
         else:
             dl = float(self.resolution)
         dl = max(dl, float(self.resolution) * 1e-9)
@@ -1140,9 +1150,9 @@ class Simulation:
             # Keep monitor-side mode orientation consistent with ModeSource's
             # 3D axis convention, otherwise forward/backward coefficients become
             # poorly separated (a_plus ~= a_minus).
-            solver_direction = (
-                "-" if spec.direction.startswith("+") else "+"
-            ) + parts["axis"]
+            solver_direction = ("-" if spec.direction.startswith("+") else "+") + parts[
+                "axis"
+            ]
         omega = 2.0 * np.pi * float(frequency)
         eps_profile_arr = np.asarray(eps_profile)
         n_local_max = float(
@@ -1243,7 +1253,11 @@ class Simulation:
                     x_idx = _clamp_idx(x_idx, shp[2])
                     slice_lens = [
                         _slice_len(idx, lim)
-                        for idx, lim in ((z_idx, shp[0]), (y_idx, shp[1]), (x_idx, shp[2]))
+                        for idx, lim in (
+                            (z_idx, shp[0]),
+                            (y_idx, shp[1]),
+                            (x_idx, shp[2]),
+                        )
                         if isinstance(idx, slice)
                     ]
                     if len(slice_lens) >= 2:
@@ -1280,8 +1294,12 @@ class Simulation:
             except Exception:
                 n_monitor = int(mon_dim0 * mon_dim1)
 
-            crop_dim0 = int(min(mon_dim0, *(comp_full[c].shape[0] for c in proj_components)))
-            crop_dim1 = int(min(mon_dim1, *(comp_full[c].shape[1] for c in proj_components)))
+            crop_dim0 = int(
+                min(mon_dim0, *(comp_full[c].shape[0] for c in proj_components))
+            )
+            crop_dim1 = int(
+                min(mon_dim1, *(comp_full[c].shape[1] for c in proj_components))
+            )
             if crop_dim0 <= 0 or crop_dim1 <= 0:
                 crop_dim0 = int(min(comp_full[c].shape[0] for c in proj_components))
                 crop_dim1 = int(min(comp_full[c].shape[1] for c in proj_components))
@@ -1322,7 +1340,9 @@ class Simulation:
             comp_samples = {parts["e_component"]: e_fwd, parts["h_component"]: h_fwd}
 
         if self.is_3d:
-            h_ref = comp_samples.get(parts["h_component"], np.zeros((0,), dtype=np.complex128))
+            h_ref = comp_samples.get(
+                parts["h_component"], np.zeros((0,), dtype=np.complex128)
+            )
         else:
             h_ref = h_fwd
         if h_ref.size:
@@ -1340,16 +1360,14 @@ class Simulation:
             }
             p_mode = self._modal_power_3d(mode_components, parts["axis"], float(dl))
             norm = np.sqrt(max(abs(float(p_mode)), 1e-30))
-            mode_components = {name: arr / norm for name, arr in mode_components.items()}
+            mode_components = {
+                name: arr / norm for name, arr in mode_components.items()
+            }
             comp_samples = mode_components
             fwd_vec = np.concatenate([comp_samples[c] for c in proj_components])
             bwd_vec = np.concatenate(
                 [
-                    (
-                        -comp_samples[c]
-                        if c.startswith("H")
-                        else comp_samples[c]
-                    )
+                    (-comp_samples[c] if c.startswith("H") else comp_samples[c])
                     for c in proj_components
                 ]
             )
@@ -1431,12 +1449,30 @@ class Simulation:
 
     @staticmethod
     def _modal_power_3d(mode_components, axis, d_area):
-        ex = np.asarray(mode_components.get("Ex", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
-        ey = np.asarray(mode_components.get("Ey", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
-        ez = np.asarray(mode_components.get("Ez", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
-        hx = np.asarray(mode_components.get("Hx", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
-        hy = np.asarray(mode_components.get("Hy", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
-        hz = np.asarray(mode_components.get("Hz", np.zeros((0,), dtype=np.complex128)), dtype=np.complex128)
+        ex = np.asarray(
+            mode_components.get("Ex", np.zeros((0,), dtype=np.complex128)),
+            dtype=np.complex128,
+        )
+        ey = np.asarray(
+            mode_components.get("Ey", np.zeros((0,), dtype=np.complex128)),
+            dtype=np.complex128,
+        )
+        ez = np.asarray(
+            mode_components.get("Ez", np.zeros((0,), dtype=np.complex128)),
+            dtype=np.complex128,
+        )
+        hx = np.asarray(
+            mode_components.get("Hx", np.zeros((0,), dtype=np.complex128)),
+            dtype=np.complex128,
+        )
+        hy = np.asarray(
+            mode_components.get("Hy", np.zeros((0,), dtype=np.complex128)),
+            dtype=np.complex128,
+        )
+        hz = np.asarray(
+            mode_components.get("Hz", np.zeros((0,), dtype=np.complex128)),
+            dtype=np.complex128,
+        )
         n = int(min(ex.size, ey.size, ez.size, hx.size, hy.size, hz.size))
         if n <= 0:
             return 0.0
@@ -1455,7 +1491,9 @@ class Simulation:
         return float(0.5 * np.real(np.sum(s_axis) * float(d_area)))
 
     @staticmethod
-    def _project_modal_coefficients_3d(field_components, projection, apply_calibration=True):
+    def _project_modal_coefficients_3d(
+        field_components, projection, apply_calibration=True
+    ):
         mode_components = projection.get("mode_components", None)
         axis = str(projection.get("axis", "")).lower()
         d_area = float(projection.get("d_area", 1.0))
@@ -1472,8 +1510,12 @@ class Simulation:
                 arrays = {}
                 n_common = None
                 for name in needed:
-                    f_arr = np.asarray(field_components[name], dtype=np.complex128).reshape(-1)
-                    m_arr = np.asarray(mode_components[name], dtype=np.complex128).reshape(-1)
+                    f_arr = np.asarray(
+                        field_components[name], dtype=np.complex128
+                    ).reshape(-1)
+                    m_arr = np.asarray(
+                        mode_components[name], dtype=np.complex128
+                    ).reshape(-1)
                     n_local = int(min(f_arr.size, m_arr.size))
                     if n_local <= 0:
                         raise ValueError("empty component")
@@ -1490,10 +1532,26 @@ class Simulation:
                     hm1 = arrays[h1][1][:n_common]
                     hm2 = arrays[h2][1][:n_common]
 
-                    s1 = 0.5 * np.sum(ef1 * np.conjugate(hm1) - ef2 * np.conjugate(hm2)) * d_area
-                    s2 = 0.5 * np.sum(np.conjugate(em1) * hf1 - np.conjugate(em2) * hf2) * d_area
-                    q1 = 0.5 * np.sum(em1 * np.conjugate(hm1) - em2 * np.conjugate(hm2)) * d_area
-                    q2 = 0.5 * np.sum(np.conjugate(em1) * hm1 - np.conjugate(em2) * hm2) * d_area
+                    s1 = (
+                        0.5
+                        * np.sum(ef1 * np.conjugate(hm1) - ef2 * np.conjugate(hm2))
+                        * d_area
+                    )
+                    s2 = (
+                        0.5
+                        * np.sum(np.conjugate(em1) * hf1 - np.conjugate(em2) * hf2)
+                        * d_area
+                    )
+                    q1 = (
+                        0.5
+                        * np.sum(em1 * np.conjugate(hm1) - em2 * np.conjugate(hm2))
+                        * d_area
+                    )
+                    q2 = (
+                        0.5
+                        * np.sum(np.conjugate(em1) * hm1 - np.conjugate(em2) * hm2)
+                        * d_area
+                    )
 
                     if np.abs(q1) > 1e-30 and np.abs(q2) > 1e-30:
                         x = s1 / q1
@@ -1518,11 +1576,18 @@ class Simulation:
         vec_parts = []
         for comp in components:
             if comp not in field_components:
-                raise ValueError(f"Missing field component '{comp}' for 3D modal projection.")
-            vec_parts.append(np.asarray(field_components[comp], dtype=np.complex128).reshape(-1))
+                raise ValueError(
+                    f"Missing field component '{comp}' for 3D modal projection."
+                )
+            vec_parts.append(
+                np.asarray(field_components[comp], dtype=np.complex128).reshape(-1)
+            )
         field_vec = np.concatenate(vec_parts).astype(np.complex128, copy=False)
 
-        pinv = np.asarray(projection.get("pinv", np.zeros((2, 0), dtype=np.complex128)), dtype=np.complex128)
+        pinv = np.asarray(
+            projection.get("pinv", np.zeros((2, 0), dtype=np.complex128)),
+            dtype=np.complex128,
+        )
         if pinv.ndim != 2 or pinv.shape[0] < 2:
             raise ValueError("Invalid 3D projection pseudo-inverse shape.")
         n_expected = int(pinv.shape[1])
@@ -1578,7 +1643,9 @@ class Simulation:
         monitor_by_name = self._named_monitors()
         for spec in port_map.values():
             if spec.monitor_name not in monitor_by_name:
-                raise ValueError(f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'.")
+                raise ValueError(
+                    f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'."
+                )
             if spec.reference_monitor and spec.reference_monitor not in monitor_by_name:
                 raise ValueError(
                     f"Missing reference monitor '{spec.reference_monitor}' for port '{spec.name}'."
@@ -1641,8 +1708,10 @@ class Simulation:
                 for comp in wanted_components:
                     key = (ref_monitor.name, comp)
                     if key not in spectrum_cache:
-                        _, spectrum_cache[key] = self._sample_monitor_component_spectrum(
-                            ref_monitor, comp, frequencies=freqs, window=window
+                        _, spectrum_cache[key] = (
+                            self._sample_monitor_component_spectrum(
+                                ref_monitor, comp, frequencies=freqs, window=window
+                            )
                         )
 
                 a_incident = np.zeros(freqs.size, dtype=np.complex128)
@@ -1659,7 +1728,9 @@ class Simulation:
                     else:
                         last_valid_ref_proj = proj
                     proj_components = tuple(
-                        proj.get("components", (proj["e_component"], proj["h_component"]))
+                        proj.get(
+                            "components", (proj["e_component"], proj["h_component"])
+                        )
                     )
                     field_vec = np.concatenate(
                         [
@@ -1701,7 +1772,9 @@ class Simulation:
         for spec in port_map.values():
             main = monitor_by_name.get(spec.monitor_name)
             if main is None:
-                raise ValueError(f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'.")
+                raise ValueError(
+                    f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'."
+                )
             if not getattr(main, "dft_enabled", False):
                 raise ValueError(
                     f"Monitor '{spec.monitor_name}' must be created with dft_enabled=True."
@@ -1758,7 +1831,10 @@ class Simulation:
                 )
                 if self.is_3d:
                     field_components = {
-                        comp: np.asarray(dft_cache[(main_monitor.name, comp)][idx], dtype=np.complex128)
+                        comp: np.asarray(
+                            dft_cache[(main_monitor.name, comp)][idx],
+                            dtype=np.complex128,
+                        )
                         for comp in proj_components
                     }
                     coeff = self._project_modal_coefficients_3d(field_components, proj)
@@ -1808,14 +1884,21 @@ class Simulation:
                     else:
                         last_valid_ref_proj = proj
                     proj_components = tuple(
-                        proj.get("components", (proj["e_component"], proj["h_component"]))
+                        proj.get(
+                            "components", (proj["e_component"], proj["h_component"])
+                        )
                     )
                     if self.is_3d:
                         field_components = {
-                            comp: np.asarray(dft_cache[(ref_monitor.name, comp)][idx], dtype=np.complex128)
+                            comp: np.asarray(
+                                dft_cache[(ref_monitor.name, comp)][idx],
+                                dtype=np.complex128,
+                            )
                             for comp in proj_components
                         }
-                        coeff = self._project_modal_coefficients_3d(field_components, proj)
+                        coeff = self._project_modal_coefficients_3d(
+                            field_components, proj
+                        )
                         a_incident[idx] = coeff[0]
                     else:
                         field_vec = np.concatenate(
@@ -1920,7 +2003,9 @@ class Simulation:
             "valid_mask": valid_mask,
             "condition_numbers": {
                 name: {
-                    "monitor": np.asarray(data.get("condition_number", []), dtype=float),
+                    "monitor": np.asarray(
+                        data.get("condition_number", []), dtype=float
+                    ),
                     "reference": np.asarray(
                         data.get("reference_condition_number", []), dtype=float
                     ),
@@ -1962,7 +2047,9 @@ class Simulation:
         monitor_by_name = self._named_monitors()
         for spec in port_map.values():
             if spec.monitor_name not in monitor_by_name:
-                raise ValueError(f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'.")
+                raise ValueError(
+                    f"Missing monitor '{spec.monitor_name}' for port '{spec.name}'."
+                )
             if spec.reference_monitor and spec.reference_monitor not in monitor_by_name:
                 raise ValueError(
                     f"Missing reference monitor '{spec.reference_monitor}' for port '{spec.name}'."

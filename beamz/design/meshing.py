@@ -776,7 +776,9 @@ class RegularGrid3D(BaseMeshGrid):
 
         timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
         voxel_count = int(grid_width) * int(grid_height) * int(grid_depth)
-        fast_min_voxels = int(float(os.getenv("BEAMZ_RASTER_FAST_MIN_VOXELS", 1_000_000)))
+        fast_min_voxels = int(
+            float(os.getenv("BEAMZ_RASTER_FAST_MIN_VOXELS", 1_000_000))
+        )
         fast_env = os.getenv("BEAMZ_RASTER_FAST_3D")
         if fast_env is None:
             prefer_fast = voxel_count >= fast_min_voxels
@@ -821,7 +823,11 @@ class RegularGrid3D(BaseMeshGrid):
                     min_i, min_j, min_k, max_i, max_j, max_k = bbox
 
                     fast_done = False
-                    if prefer_fast and isinstance(structure, Rectangle) and self._is_axis_aligned(structure):
+                    if (
+                        prefer_fast
+                        and isinstance(structure, Rectangle)
+                        and self._is_axis_aligned(structure)
+                    ):
                         self._rasterize_rectangle_3d_fast(
                             structure=structure,
                             grids=grids,
@@ -1052,9 +1058,24 @@ class RegularGrid3D(BaseMeshGrid):
         z_edges0 = np.arange(k0, k1, dtype=float) * cell_size_z
         z_edges1 = z_edges0 + cell_size_z
 
-        fx = np.clip(np.minimum(x_edges1, x1) - np.maximum(x_edges0, x0), 0.0, cell_size_xy) / cell_size_xy
-        fy = np.clip(np.minimum(y_edges1, y1) - np.maximum(y_edges0, y0), 0.0, cell_size_xy) / cell_size_xy
-        fz = np.clip(np.minimum(z_edges1, z1) - np.maximum(z_edges0, z0), 0.0, cell_size_z) / cell_size_z
+        fx = (
+            np.clip(
+                np.minimum(x_edges1, x1) - np.maximum(x_edges0, x0), 0.0, cell_size_xy
+            )
+            / cell_size_xy
+        )
+        fy = (
+            np.clip(
+                np.minimum(y_edges1, y1) - np.maximum(y_edges0, y0), 0.0, cell_size_xy
+            )
+            / cell_size_xy
+        )
+        fz = (
+            np.clip(
+                np.minimum(z_edges1, z1) - np.maximum(z_edges0, z0), 0.0, cell_size_z
+            )
+            / cell_size_z
+        )
 
         frac = fz[:, None, None] * fy[None, :, None] * fx[None, None, :]
         if not np.any(frac > 0.0):
@@ -1147,9 +1168,13 @@ class RegularGrid3D(BaseMeshGrid):
         for oy in offsets:
             for ox in offsets:
                 points = np.column_stack(((xx + ox).ravel(), (yy + oy).ravel()))
-                inside = outer_path.contains_points(points, radius=1e-15).reshape(xx.shape)
+                inside = outer_path.contains_points(points, radius=1e-15).reshape(
+                    xx.shape
+                )
                 for hole_path in hole_paths:
-                    inside &= ~hole_path.contains_points(points, radius=1e-15).reshape(xx.shape)
+                    inside &= ~hole_path.contains_points(points, radius=1e-15).reshape(
+                        xx.shape
+                    )
                 inside_count += inside.astype(float)
         frac_xy = inside_count / n_samples_xy
         if not np.any(frac_xy > 0.0):

@@ -7,11 +7,11 @@ source injection, monitor accumulation, and material model updates.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
 import pathlib
 import platform
 import sys
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
@@ -534,16 +534,8 @@ class CompiledSimulation:
 
                 vecs = jnp.stack((exs, eys, ezs, hxs, hys, hzs), axis=0)
                 comp_mask = bm.dft_component_mask[i][:, None, None]
-                delta_re_3d = (
-                    w
-                    * comp_mask
-                    * jnp.einsum("f,cp->cfp", ph_vec_re, vecs)
-                )
-                delta_im_3d = (
-                    w
-                    * comp_mask
-                    * jnp.einsum("f,cp->cfp", ph_vec_im, vecs)
-                )
+                delta_re_3d = w * comp_mask * jnp.einsum("f,cp->cfp", ph_vec_re, vecs)
+                delta_im_3d = w * comp_mask * jnp.einsum("f,cp->cfp", ph_vec_im, vecs)
                 d_re = d_re.at[mi].add(delta_re_3d)
                 d_im = d_im.at[mi].add(delta_im_3d)
                 d_w = d_w.at[mi].add(w * mask_f)
@@ -593,9 +585,11 @@ class CompiledSimulation:
 
             power_sample = jnp.where(
                 need_sample,
-                self._monitor_power_3d(mon, ex, ey, ez, hx, hy, hz)
-                if mon.is_3d
-                else self._monitor_power_2d(mon, ez, hx, hy),
+                (
+                    self._monitor_power_3d(mon, ex, ey, ez, hx, hy, hz)
+                    if mon.is_3d
+                    else self._monitor_power_2d(mon, ez, hx, hy)
+                ),
                 jnp.array(0.0, dtype=jnp.float32),
             )
             power_val = jnp.where(
@@ -671,16 +665,8 @@ class CompiledSimulation:
                 ph_re = jnp.cos(phase)
                 ph_im = jnp.sin(phase)
                 comp_mask = mon.dft_component_mask[:, None, None]
-                delta_re = (
-                    w
-                    * comp_mask
-                    * jnp.einsum("f,cp->cfp", ph_re, vecs)
-                )
-                delta_im = (
-                    w
-                    * comp_mask
-                    * jnp.einsum("f,cp->cfp", ph_im, vecs)
-                )
+                delta_re = w * comp_mask * jnp.einsum("f,cp->cfp", ph_re, vecs)
+                delta_im = w * comp_mask * jnp.einsum("f,cp->cfp", ph_im, vecs)
                 mi = mon.monitor_index
                 dft_vec_re = dft_vec_re.at[
                     mi, :, : mon.freq_count, : mon.dft_point_count

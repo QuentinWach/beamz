@@ -32,7 +32,9 @@ def _run_modal_cw_column(waves, ports, frequency, output_ports):
     )
 
 
-def _run_modal_dft_column(waves, ports, frequencies, output_ports, min_incident_db=-40.0):
+def _run_modal_dft_column(
+    waves, ports, frequencies, output_ports, min_incident_db=-40.0
+):
     sim = Simulation.__new__(Simulation)
     sim.devices = []
     sim.is_3d = False
@@ -75,7 +77,9 @@ def test_cw_straight_waveguide_tm_power_bound():
             "a_minus": 0.99 * np.exp(1j * 0.1),
         },
     }
-    result = _run_modal_cw_column(waves, ports, frequency=193e12, output_ports=["o1", "o2"])
+    result = _run_modal_cw_column(
+        waves, ports, frequency=193e12, output_ports=["o1", "o2"]
+    )
     s = result["s_matrix"]
     assert abs(s[("o2", "o1")]) > 0.95
     assert abs(s[("o1", "o1")]) < 0.05
@@ -98,7 +102,9 @@ def test_cw_straight_waveguide_te_power_bound():
             "a_minus": 0.97 * np.exp(-1j * 0.05),
         },
     }
-    result = _run_modal_cw_column(waves, ports, frequency=193e12, output_ports=["o1", "o2"])
+    result = _run_modal_cw_column(
+        waves, ports, frequency=193e12, output_ports=["o1", "o2"]
+    )
     s = result["s_matrix"]
     assert abs(s[("o2", "o1")]) > 0.9
     assert abs(s[("o1", "o1")]) < 0.08
@@ -162,8 +168,12 @@ def test_cw_loss_visibility_with_absorption():
             "a_minus": 0.72 + 0.0j,
         },
     }
-    low = _run_modal_cw_column(waves_low_loss, ports, frequency=193e12, output_ports=["o1", "o2"])
-    high = _run_modal_cw_column(waves_high_loss, ports, frequency=193e12, output_ports=["o1", "o2"])
+    low = _run_modal_cw_column(
+        waves_low_loss, ports, frequency=193e12, output_ports=["o1", "o2"]
+    )
+    high = _run_modal_cw_column(
+        waves_high_loss, ports, frequency=193e12, output_ports=["o1", "o2"]
+    )
     assert high["diagnostics"]["power_sum"] < low["diagnostics"]["power_sum"]
     assert high["diagnostics"]["loss_est"] > low["diagnostics"]["loss_est"]
 
@@ -183,7 +193,11 @@ def test_dft_matches_cw_on_straight_waveguide_subset():
         "o2": {
             "a_plus": np.zeros(3, dtype=np.complex128),
             "a_minus": np.array(
-                [0.98 * np.exp(1j * 0.02), 0.975 * np.exp(1j * 0.04), 0.97 * np.exp(1j * 0.06)],
+                [
+                    0.98 * np.exp(1j * 0.02),
+                    0.975 * np.exp(1j * 0.04),
+                    0.97 * np.exp(1j * 0.06),
+                ],
                 dtype=np.complex128,
             ),
         },
@@ -201,12 +215,20 @@ def test_dft_matches_cw_on_straight_waveguide_subset():
                 "a_minus": waves["o2"]["a_minus"][i],
             },
         }
-        cw = _run_modal_cw_column(waves_i, ports, frequency=float(f), output_ports=["o1", "o2"])
-        assert np.isclose(
-            dft["s_matrix"][("o1", "o1")][i], cw["s_matrix"][("o1", "o1")], rtol=1e-12, atol=1e-12
+        cw = _run_modal_cw_column(
+            waves_i, ports, frequency=float(f), output_ports=["o1", "o2"]
         )
         assert np.isclose(
-            dft["s_matrix"][("o2", "o1")][i], cw["s_matrix"][("o2", "o1")], rtol=1e-12, atol=1e-12
+            dft["s_matrix"][("o1", "o1")][i],
+            cw["s_matrix"][("o1", "o1")],
+            rtol=1e-12,
+            atol=1e-12,
+        )
+        assert np.isclose(
+            dft["s_matrix"][("o2", "o1")][i],
+            cw["s_matrix"][("o2", "o1")],
+            rtol=1e-12,
+            atol=1e-12,
         )
 
 

@@ -37,7 +37,9 @@ def test_gdsf_loader_mmi1x2_returns_materialized_design_and_ports():
 
     core_structures = loaded_design.structures[1:]
     assert core_structures
-    assert all(getattr(struct, "material", None) is not None for struct in core_structures)
+    assert all(
+        getattr(struct, "material", None) is not None for struct in core_structures
+    )
 
     assert {"o1", "o2", "o3"}.issubset(ports.keys())
     for port_name in ("o1", "o2", "o3"):
@@ -81,7 +83,10 @@ def test_extract_port_waves_modal_coefficients_synthetic(monkeypatch):
 
     def fake_sample(self, monitor, component, frequencies=None, window="hann"):
         assert frequencies is not None
-        return np.asarray(frequencies, dtype=float), spectral_map[(monitor.name, component)]
+        return (
+            np.asarray(frequencies, dtype=float),
+            spectral_map[(monitor.name, component)],
+        )
 
     def fake_projection(self, spec, monitor, frequency, cache, mode_pad_cells=6):
         return {"e_component": "Ez", "h_component": "Hy", "pinv": pinv}
@@ -109,7 +114,9 @@ def test_extract_port_waves_modal_coefficients_synthetic(monkeypatch):
         ),
         PortSpec(name="o2", monitor_name="m_out", direction="+x", polarization="tm"),
     ]
-    waves = sim.extract_port_waves(ports=ports, frequencies=freqs, mode_strategy="per_frequency")
+    waves = sim.extract_port_waves(
+        ports=ports, frequencies=freqs, mode_strategy="per_frequency"
+    )
 
     np.testing.assert_allclose(waves["o1"]["a_plus"], a_src, rtol=1e-9, atol=1e-9)
     np.testing.assert_allclose(waves["o1"]["a_minus"], b_src, rtol=1e-9, atol=1e-9)
@@ -137,7 +144,14 @@ def test_get_S_matrix_modal_column_keys_and_shapes(monkeypatch):
         },
     }
 
-    def fake_extract(self, ports, frequencies, mode_strategy="per_frequency", window="hann", return_power=True):
+    def fake_extract(
+        self,
+        ports,
+        frequencies,
+        mode_strategy="per_frequency",
+        window="hann",
+        return_power=True,
+    ):
         return waves
 
     monkeypatch.setattr(Simulation, "extract_port_waves", fake_extract)
@@ -345,7 +359,9 @@ def test_monitor_get_dft_component_returns_canonical_matrix_shape():
         dft_frequencies=np.array([1.0, 2.0], dtype=float),
         dft_components=("Ez",),
     )
-    raw = (np.arange(12, dtype=float) + 1j * np.arange(12, dtype=float)).reshape(2, 2, 3)
+    raw = (np.arange(12, dtype=float) + 1j * np.arange(12, dtype=float)).reshape(
+        2, 2, 3
+    )
     mon._dft_accum["Ez"] = raw
     mon._dft_weight_sum = np.ones((2,), dtype=float)
 
@@ -374,7 +390,9 @@ def test_monitor_get_dft_component_raises_for_invalid_frequency_axis():
 def test_resample_complex_matrix_flattens_trailing_spatial_dims():
     freq_src = np.array([1.0, 2.0], dtype=float)
     freq_dst = np.array([1.0, 2.0], dtype=float)
-    src = (np.arange(12, dtype=float) + 1j * np.arange(12, dtype=float)).reshape(2, 2, 3)
+    src = (np.arange(12, dtype=float) + 1j * np.arange(12, dtype=float)).reshape(
+        2, 2, 3
+    )
 
     out = Simulation._resample_complex_matrix(freq_src, src, freq_dst)
     assert out.shape == (2, 6)
@@ -394,11 +412,7 @@ def test_project_modal_coefficients_3d_recovers_forward_backward_modes():
     fwd_vec = np.concatenate([mode_components[c] for c in components])
     bwd_vec = np.concatenate(
         [
-            (
-                -mode_components[c]
-                if c.startswith("H")
-                else mode_components[c]
-            )
+            (-mode_components[c] if c.startswith("H") else mode_components[c])
             for c in components
         ]
     )
@@ -442,10 +456,7 @@ def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
     }
     fwd_vec = np.concatenate([base[c] for c in components])
     bwd_vec = np.concatenate(
-        [
-            (-base[c] if c.startswith("H") else base[c])
-            for c in components
-        ]
+        [(-base[c] if c.startswith("H") else base[c]) for c in components]
     )
     projection = {
         "components": components,
@@ -672,7 +683,9 @@ def test_get_S_matrix_modal_dft_keys_shapes_and_valid_mask(monkeypatch):
         },
     }
 
-    def fake_extract(self, ports, frequencies, min_incident_db=-40.0, return_power=True):
+    def fake_extract(
+        self, ports, frequencies, min_incident_db=-40.0, return_power=True
+    ):
         assert np.allclose(frequencies, freqs)
         return waves
 
