@@ -172,6 +172,37 @@ class TestModeSourceDiscreteHelpers:
         assert "1.25" not in src and "1.50" not in src
         assert "dt_scale" not in src
 
+    def test_normalize_2d_pair_by_power_enforces_unit_power(self):
+        rng = np.random.default_rng(7)
+        h = rng.normal(size=41) + 1j * rng.normal(size=41)
+        e = rng.normal(size=41) + 1j * rng.normal(size=41)
+        dl = 0.12
+
+        h_n, e_n = mode_module._normalize_2d_pair_by_power(
+            h, e, signed_flux_sign=-1.0, dl=dl
+        )
+        p = mode_module._modal_power_2d(e_n, h_n, signed_flux_sign=-1.0, dl=dl)
+        assert np.isfinite(p)
+        assert np.isclose(abs(p), 1.0, rtol=1e-10, atol=1e-10)
+
+    def test_normalize_3d_profiles_by_flux_enforces_unit_power(self):
+        rng = np.random.default_rng(11)
+        profiles = {
+            "Ex": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Ey": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Ez": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Hx": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Hy": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Hz": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+        }
+        d_area = 0.03
+        out = mode_module._normalize_3d_profiles_by_flux(
+            dict(profiles), axis="x", d_area=d_area
+        )
+        p = mode_module._modal_power_3d_from_profiles(out, axis="x", d_area=d_area)
+        assert np.isfinite(p)
+        assert np.isclose(abs(p), 1.0, rtol=1e-10, atol=1e-10)
+
 
 @pytest.mark.simulation
 class TestModeSourceEffectiveIndex:
