@@ -160,6 +160,7 @@ def main():
     out_png = out_dir / "gdsf_mmi1x2_3d_sparams.png"
     out_field_png = out_dir / "gdsf_mmi1x2_3d_ey_field_slices.png"
     out_mode_png = out_dir / "gdsf_mmi1x2_3d_mode_source.png"
+    out_signal_png = out_dir / "gdsf_mmi1x2_3d_signal.png"
 
     wl0 = 1.55 * µm
     f0 = LIGHT_SPEED / wl0
@@ -170,7 +171,7 @@ def main():
 
     input_extension = 5.0 * µm
     output_extension = 4.0 * µm
-    y_margin = 1.8 * µm
+    y_margin = 2.6 * µm
 
     clad_below = 2.2 * µm
     clad_above = 2.2 * µm
@@ -183,7 +184,7 @@ def main():
         n_max=n_core,
         dims=3,
         safety_factor=0.96,
-        points_per_wavelength=20,
+        points_per_wavelength=12,
     )
 
     imported_design, ports = gdsf.load(
@@ -305,29 +306,65 @@ def main():
             mon_xy[0], mon_xy[1], mon_y_span, core_zc, mon_z_span, z_min, z_max
         )
 
-    t_ramp = 12.0 / f0
-    dft_t_start = 52.0 / f0
-    dft_t_end = 88.0 / f0
-    t_total = 98.0 / f0
-    time = np.arange(0.0, t_total, dt)
-    envelope = 1.0 - np.exp(-((time / max(t_ramp, 1e-30)) ** 2))
-    source.signal = envelope * np.cos(2.0 * np.pi * f0 * time)
+    # Relatively short Gaussian pulse to launch broadband energy through the device.
+    pulse_t0 = 18.0 / f0
+    pulse_sigma = 4.0 / f0
 
-    dft_cfg = dict(
+    # Place DFT windows around estimated pulse arrival at each monitor plane.
+    # A conservative estimate based on core index is sufficient for this sanity test.
+    v_est = LIGHT_SPEED / n_core
+    t_fwd_center = pulse_t0 + abs(fwd_x - source_x) / max(v_est, 1e-30)
+    # Approximate dominant reflection from the MMI/taper entrance near input port x-position.
+    t_ref_center = pulse_t0 + (abs(x_port - source_x) + abs(x_port - ref_x)) / max(v_est, 1e-30)
+    t_o2_center = pulse_t0 + abs(float(out_planes["o2"][0][0]) - float(source_x)) / max(v_est, 1e-30)
+    t_o3_center = pulse_t0 + abs(float(out_planes["o3"][0][0]) - float(source_x)) / max(v_est, 1e-30)
+    dft_half = 10.0 / f0
+
+    def centered_window(tc):
+        return max(0.0, tc - dft_half), tc + dft_half
+
+    dft_fwd_t_start, dft_fwd_t_end = centered_window(t_fwd_center)
+    dft_ref_t_start, dft_ref_t_end = centered_window(t_ref_center)
+    dft_o2_t_start, dft_o2_t_end = centered_window(t_o2_center)
+    dft_o3_t_start, dft_o3_t_end = centered_window(t_o3_center)
+
+    t_total = max(dft_ref_t_end, dft_o2_t_end, dft_o3_t_end) + 18.0 / f0
+    time = np.arange(0.0, t_total, dt)
+
+    source.signal = np.exp(-0.5 * ((time - pulse_t0) / max(pulse_sigma, 1e-30)) ** 2) * np.cos(
+        2.0 * np.pi * f0 * (time - pulse_t0)
+    )
+    fig_sig, ax_sig = plt.subplots(1, 1, figsize=(6.6, 2.5), dpi=240)
+    ax_sig.plot(time / 1e-15, source.signal, color="black", lw=1.6)
+    ax_sig.set_title("Mode Source Signal (Short Gaussian Pulse)")
+    ax_sig.set_xlabel("time (fs)")
+    ax_sig.set_ylabel("amplitude")
+    ax_sig.grid(alpha=0.3)
+    fig_sig.tight_layout()
+    fig_sig.savefig(out_signal_png, dpi=320)
+    plt.close(fig_sig)
+    print(
+        f"Saved signal figure: {out_signal_png} "
+        f"(t0={pulse_t0*f0:.1f}/f0, sigma={pulse_sigma*f0:.1f}/f0)"
+    )
+
+    dft_cfg_common = dict(
         record_fields=False,
         dft_enabled=True,
         dft_frequencies=[f0],
         dft_components=("Ey", "Ez", "Hy", "Hz"),
         dft_window="hann",
-        dft_t_start=dft_t_start,
-        dft_t_end=dft_t_end,
         dft_record_every_step=True,
     )
+    dft_fwd_cfg = dict(dft_cfg_common, dft_t_start=dft_fwd_t_start, dft_t_end=dft_fwd_t_end)
+    dft_ref_cfg = dict(dft_cfg_common, dft_t_start=dft_ref_t_start, dft_t_end=dft_ref_t_end)
+    dft_o2_cfg = dict(dft_cfg_common, dft_t_start=dft_o2_t_start, dft_t_end=dft_o2_t_end)
+    dft_o3_cfg = dict(dft_cfg_common, dft_t_start=dft_o3_t_start, dft_t_end=dft_o3_t_end)
 
-    m_fwd = Monitor(start=fwd_start, end=fwd_end, name="o1_fwd", **dft_cfg)
-    m_ref = Monitor(start=ref_start, end=ref_end, name="o1_ref", **dft_cfg)
-    m_o2 = Monitor(start=out_planes["o2"][0], end=out_planes["o2"][1], name="o2_out", **dft_cfg)
-    m_o3 = Monitor(start=out_planes["o3"][0], end=out_planes["o3"][1], name="o3_out", **dft_cfg)
+    m_fwd = Monitor(start=fwd_start, end=fwd_end, name="o1_fwd", **dft_fwd_cfg)
+    m_ref = Monitor(start=ref_start, end=ref_end, name="o1_ref", **dft_ref_cfg)
+    m_o2 = Monitor(start=out_planes["o2"][0], end=out_planes["o2"][1], name="o2_out", **dft_o2_cfg)
+    m_o3 = Monitor(start=out_planes["o3"][0], end=out_planes["o3"][1], name="o3_out", **dft_o3_cfg)
 
     flux_y_span = max(1.0 * µm, design.height - 2.0 * pml_xy - 0.15 * µm)
     flux_z_span = max(0.25 * µm, design.depth - 2.0 * pml_z - 0.10 * µm)
@@ -341,14 +378,22 @@ def main():
     out_flux_start, out_flux_end = make_x_plane(
         out_flux_x, src["center"][1], flux_y_span, core_zc, flux_z_span, z_min, z_max
     )
-    m_in_flux = Monitor(start=in_flux_start, end=in_flux_end, name="in_flux", **dft_cfg)
-    m_ref_flux = Monitor(start=ref_flux_start, end=ref_flux_end, name="ref_flux", **dft_cfg)
-    m_out_flux = Monitor(start=out_flux_start, end=out_flux_end, name="out_flux", **dft_cfg)
+    m_in_flux = Monitor(start=in_flux_start, end=in_flux_end, name="in_flux", **dft_fwd_cfg)
+    m_ref_flux = Monitor(start=ref_flux_start, end=ref_flux_end, name="ref_flux", **dft_ref_cfg)
+    m_out_flux = Monitor(start=out_flux_start, end=out_flux_end, name="out_flux", **dft_o2_cfg)
 
     print(
         "Running 3D gdsfactory MMI1x2: "
         f"steps={len(time)}, dx={dx/µm:.4f}um, "
         f"domain=({design.width/µm:.2f},{design.height/µm:.2f},{design.depth/µm:.2f})um"
+    )
+    print(
+        "DFT windows (/f0): "
+        f"fwd=[{dft_fwd_t_start*f0:.1f},{dft_fwd_t_end*f0:.1f}], "
+        f"ref=[{dft_ref_t_start*f0:.1f},{dft_ref_t_end*f0:.1f}], "
+        f"o2=[{dft_o2_t_start*f0:.1f},{dft_o2_t_end*f0:.1f}], "
+        f"o3=[{dft_o3_t_start*f0:.1f},{dft_o3_t_end*f0:.1f}] "
+        f"(pulse_t0={pulse_t0*f0:.1f}, steps={len(time)})"
     )
 
     for name, bounds in [
