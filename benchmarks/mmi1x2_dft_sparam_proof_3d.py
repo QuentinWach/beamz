@@ -10,7 +10,6 @@ from beamz import (
     ModeSource,
     Monitor,
     PML,
-    Polygon,
     PortSpec,
     Rectangle,
     Simulation,
@@ -68,14 +67,13 @@ def main():
         points_per_wavelength=10,
     )
 
-    # Compact 3D 1x2 splitter: input straight + small MMI block + two tapers + outputs.
+    # Compact 3D 1x2 splitter: input straight + small MMI block + two connected branches.
     y_mid = 0.5 * height
     y_up = y_mid + 0.70 * µm
     y_dn = y_mid - 0.70 * µm
     wg_w = 0.56 * µm
     x_in_end = 7.0 * µm
     x_mmi_end = 11.0 * µm
-    x_taper_end = 15.5 * µm
 
     design = Design(width=width, height=height, depth=depth, material=Material(n_clad**2))
 
@@ -94,39 +92,16 @@ def main():
         material=Material(n_core**2),
     )
 
-    design += Polygon(
-        vertices=[
-            (x_mmi_end, y_mid + 0.35 * µm),
-            (x_mmi_end, y_mid + 1.05 * µm),
-            (x_taper_end, y_up + 0.5 * wg_w),
-            (x_taper_end, y_up - 0.5 * wg_w),
-        ],
-        material=Material(n_core**2),
-        depth=core_t,
-        z=core_z0,
-    )
-    design += Polygon(
-        vertices=[
-            (x_mmi_end, y_mid - 0.35 * µm),
-            (x_mmi_end, y_mid - 1.05 * µm),
-            (x_taper_end, y_dn - 0.5 * wg_w),
-            (x_taper_end, y_dn + 0.5 * wg_w),
-        ],
-        material=Material(n_core**2),
-        depth=core_t,
-        z=core_z0,
-    )
-
     design += Rectangle(
-        position=(x_taper_end, y_up - 0.5 * wg_w, core_z0),
-        width=width - x_taper_end,
+        position=(x_mmi_end, y_up - 0.5 * wg_w, core_z0),
+        width=width - x_mmi_end,
         height=wg_w,
         depth=core_t,
         material=Material(n_core**2),
     )
     design += Rectangle(
-        position=(x_taper_end, y_dn - 0.5 * wg_w, core_z0),
-        width=width - x_taper_end,
+        position=(x_mmi_end, y_dn - 0.5 * wg_w, core_z0),
+        width=width - x_mmi_end,
         height=wg_w,
         depth=core_t,
         material=Material(n_core**2),
