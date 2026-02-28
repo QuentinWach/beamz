@@ -945,7 +945,10 @@ plt.close(fig)
 # Summary
 # -----------------------------------------------------------------------------
 voxels = int(np.prod(sim.fields.permittivity.shape))
-tcups = (6.0 * voxels * len(time_steps)) / max(elapsed_s, 1e-30) / 1e12
+cell_updates = float(voxels * len(time_steps))
+component_updates = 6.0 * cell_updates
+tcups = cell_updates / max(elapsed_s, 1e-30) / 1e12
+tcompups = component_updates / max(elapsed_s, 1e-30) / 1e12
 
 summary = {
     "domain_um": [X / um, Y / um, Z / um],
@@ -968,6 +971,7 @@ summary = {
     "elapsed_s": float(elapsed_s),
     "s_per_step": float(elapsed_s / len(time_steps)),
     "tcups": float(tcups),
+    "tcompups": float(tcompups),
     "design_projection_png": str(design_proj_png),
     "mode_fields_png": str(mode_png),
     "mid_ez_snapshot_png": str(ez_mid_png),
@@ -999,7 +1003,8 @@ print(
 )
 print(f"grid_shape_zyx={summary['grid_shape_zyx']}")
 print(
-    f"elapsed_s={summary['elapsed_s']:.6f}, s_per_step={summary['s_per_step']:.6e}, tcups={summary['tcups']:.6e}"
+    f"elapsed_s={summary['elapsed_s']:.6f}, s_per_step={summary['s_per_step']:.6e}, "
+    + f"tcups(cell)={summary['tcups']:.6e}, tcompups={summary['tcompups']:.6e}"
 )
 print(f"design_projection_png={design_proj_png}")
 print(f"mode_fields_png={mode_png}")
