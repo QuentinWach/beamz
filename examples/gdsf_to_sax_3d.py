@@ -172,8 +172,8 @@ def main():
     output_extension = 4.0 * µm
     y_margin = 1.8 * µm
 
-    clad_below = 1.1 * µm
-    clad_above = 1.1 * µm
+    clad_below = 2.2 * µm
+    clad_above = 2.2 * µm
     depth = clad_below + core_t + clad_above
     core_z0 = clad_below
     core_zc = core_z0 + 0.5 * core_t
@@ -255,7 +255,7 @@ def main():
     src = ports["o1"]
     # Larger source/monitor windows to stabilize 3D mode solving/projection.
     src_w = max(1.60 * µm, 3.2 * src["width"])
-    src_h = max(1.40 * µm, 3.0 * core_t)
+    src_h = max(2.20 * µm, 4.8 * core_t)
     max_src_w = max(0.2 * µm, design.height - 2.0 * pml_xy - 0.10 * µm)
     max_src_h = max(0.2 * µm, design.depth - 2.0 * pml_z - 0.10 * µm)
     src_w = min(src_w, max_src_w)
@@ -282,7 +282,7 @@ def main():
     )
 
     mon_y_span = max(1.60 * µm, 3.2 * src["width"])
-    mon_z_span = max(1.40 * µm, 3.0 * core_t)
+    mon_z_span = max(2.20 * µm, 4.8 * core_t)
 
     # Place source and input monitors on the long straight input section (before taper/MMI).
     fwd_x = float(np.clip(source_x + 0.70 * µm, x_straight_min + 0.1 * µm, x_straight_max - 0.1 * µm))
