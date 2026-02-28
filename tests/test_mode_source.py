@@ -1187,7 +1187,8 @@ class TestModeSourceDirectionality3D:
             n_core,
             dims=3,
             safety_factor=0.9,
-            points_per_wavelength=6,
+            # Use higher 3D resolution for strict directional purity checks.
+            points_per_wavelength=12,
             width=design.width,
             height=design.height,
             depth=design.depth,
@@ -1234,7 +1235,8 @@ class TestModeSourceDirectionality3D:
         axis_center_coord = center[{"x": 0, "y": 1, "z": 2}[axis]]
         center_idx = int(np.clip(np.round(axis_center_coord / dx - 0.5), 1, axis_len - 2))
         dir_sign = 1.0 if direction.startswith("+") else -1.0
-        near_offset_cells = max(2, int(round(0.4 * wavelength / dx)))
+        # Keep near plane out of the reactive source region.
+        near_offset_cells = max(2, int(round(0.8 * wavelength / dx)))
         far_offset_cells = max(near_offset_cells + 2, int(round(1.0 * wavelength / dx)))
 
         near_offset_cells = int(np.clip(near_offset_cells, 1, max(1, axis_len // 3)))
@@ -1290,21 +1292,21 @@ class TestModeSourceDirectionality3D:
             f"Weak forward 3D flux for {direction}/{pol}: "
             f"far_forward_flux_mean={far_forward_flux_mean:.3e}"
         )
-        assert near_forward_ratio > 0.955, (
+        assert near_forward_ratio > 0.985, (
             f"Poor near-plane 3D forward dominance for {direction}/{pol}: "
             f"near_forward_ratio={near_forward_ratio:.4f}, "
             f"near_forward_flux_mean={near_forward_flux_mean:.3e}, "
             f"near_backward_flux_mean={near_backward_flux_mean:.3e}, "
             f"near_offset_cells={near_offset_cells}, steady_start={steady_start}"
         )
-        assert far_forward_ratio > 0.955, (
+        assert far_forward_ratio > 0.99, (
             f"Poor far-plane 3D forward dominance for {direction}/{pol}: "
             f"far_forward_ratio={far_forward_ratio:.4f}, "
             f"far_forward_flux_mean={far_forward_flux_mean:.3e}, "
             f"far_backward_flux_mean={far_backward_flux_mean:.3e}, "
             f"far_offset_cells={far_offset_cells}, steady_start={steady_start}"
         )
-        assert far_backward_ratio < 5e-2, (
+        assert far_backward_ratio < 1e-2, (
             f"Excess far-plane backward 3D flux for {direction}/{pol}: "
             f"far_backward_ratio={far_backward_ratio:.4e}, "
             f"far_forward_flux_mean={far_forward_flux_mean:.3e}, "

@@ -953,14 +953,6 @@ def _get_3d_huygens_terms(axis, pol):
     """Return 3D sign terms with TE gauge parity matched to 2D conventions."""
     e_terms = list(_HUYGENS_SIGNS[axis]["e"])
     h_terms = list(_HUYGENS_SIGNS[axis]["h"])
-    if pol == "te":
-        # TE in this codebase uses the opposite gauge class for one tangential pair.
-        e0 = list(e_terms[0])
-        h1 = list(h_terms[1])
-        e0[2] *= -1
-        h1[2] *= -1
-        e_terms[0] = tuple(e0)
-        h_terms[1] = tuple(h1)
     return e_terms, h_terms
 
 
@@ -1753,11 +1745,9 @@ class ModeSource:
             self.initialize(fields.permittivity, resolution, dt=dt)
 
         # J=n×H is evaluated on the E update and needs the physical E/H plane offset.
-        if self._is_3d:
-            # E is injected after the E-step, so use the full-step Yee timestamp.
-            signal_time_e = t + dt + self._dt_physical
-        else:
-            signal_time_e = t + 0.5 * dt + self._dt_physical
+        # Keep E/H drive samples on the same temporal convention and only apply
+        # the physical E/H plane offset correction via _dt_physical.
+        signal_time_e = t + 0.5 * dt + self._dt_physical
         signal_value_e = self._get_signal_value(signal_time_e, dt)
 
         if self._Ex_profile is not None and self._is_3d:
