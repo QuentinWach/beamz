@@ -162,4 +162,4 @@ globals().update(_exports)
 __all__ = list(_exports.keys())
 
 # Version information
-__version__ = "0.2.0"
+__version__ = "0.2.1"
