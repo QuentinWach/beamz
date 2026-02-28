@@ -80,6 +80,31 @@ def monitor_inside_non_pml(monitor_bounds, *, width, height, depth, pml_xy, pml_
     )
 
 
+def draw_pml_lines_xy(ax, *, width, height, pml_xy, pml_right, color="white"):
+    ax.axvline(float(pml_xy) / µm, color=color, lw=1.0, ls="--", alpha=0.85)
+    ax.axvline(float(width - pml_right) / µm, color=color, lw=1.0, ls="--", alpha=0.85)
+    ax.axhline(float(pml_xy) / µm, color=color, lw=1.0, ls="--", alpha=0.85)
+    ax.axhline(float(height - pml_xy) / µm, color=color, lw=1.0, ls="--", alpha=0.85)
+
+
+def draw_pml_lines_xz(ax, *, width, depth, pml_xy, pml_right, pml_z, color="white"):
+    ax.axvline(float(pml_xy) / µm, color=color, lw=1.0, ls="--", alpha=0.85)
+    ax.axvline(float(width - pml_right) / µm, color=color, lw=1.0, ls="--", alpha=0.85)
+    ax.axhline(float(pml_z) / µm, color=color, lw=1.0, ls="--", alpha=0.85)
+    ax.axhline(float(depth - pml_z) / µm, color=color, lw=1.0, ls="--", alpha=0.85)
+
+
+def monitor_overlap_stats(eps_grid, monitor_obj, dx, dy, dz, *, eps_core, eps_clad):
+    z_idx, y_idx, x_idx = monitor_obj.get_grid_slice_3d(dx, dy, dz, eps_grid.shape)
+    eps_roi = np.asarray(eps_grid[z_idx, y_idx, x_idx], dtype=float)
+    vals = eps_roi.reshape(-1)
+    if vals.size == 0:
+        return 0.0, 0.0, float("nan")
+    core_frac = float(np.mean(np.abs(vals - eps_core) <= np.abs(vals - eps_clad)))
+    clad_frac = float(np.mean(np.abs(vals - eps_clad) < np.abs(vals - eps_core)))
+    return core_frac, clad_frac, float(np.max(vals))
+
+
 def main():
     out_dir = Path("benchmarks/results/gdsf_to_sax_debug")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -171,10 +196,19 @@ def main():
 
     grid = design.rasterize(resolution=dx)
 
+    pml_xy = 1.0 * wl0
+    pml_right = 1.5 * wl0
+    pml_z = 0.5 * wl0
+    z_min = pml_z + 0.05 * µm
+    z_max = depth - pml_z - 0.05 * µm
+
     src = ports["o1"]
-    src_w = max(0.95 * µm, 1.7 * src["width"])
-    src_h = max(0.75 * µm, 1.8 * core_t)
-    source_xy = move_along(src["center"], src["direction"], -0.90 * µm)
+    src_w = max(0.70 * µm, 1.2 * src["width"])
+    src_h = max(0.50 * µm, 1.2 * core_t)
+    # Keep source safely inside the non-PML interior.
+    source_x_nominal = move_along(src["center"], src["direction"], -0.90 * µm)[0]
+    source_x = max(float(source_x_nominal), float(pml_xy + 0.60 * µm))
+    source_xy = (source_x, float(src["center"][1]))
     source = ModeSource(
         grid=grid,
         center=(source_xy[0], source_xy[1], core_zc),
@@ -186,14 +220,8 @@ def main():
         direction=src["direction"],
     )
 
-    pml_xy = 1.0 * wl0
-    pml_right = 1.5 * wl0
-    pml_z = 0.5 * wl0
-    z_min = pml_z + 0.05 * µm
-    z_max = depth - pml_z - 0.05 * µm
-
-    mon_y_span = max(0.90 * µm, 1.6 * src["width"])
-    mon_z_span = max(0.75 * µm, 1.8 * core_t)
+    mon_y_span = max(0.62 * µm, 1.15 * src["width"])
+    mon_z_span = max(0.55 * µm, 1.25 * core_t)
 
     fwd_xy = move_along(src["center"], src["direction"], +0.70 * µm)
     ref_xy = move_along(src["center"], src["direction"], -0.20 * µm)
@@ -275,6 +303,35 @@ def main():
             pml_z=pml_z,
         )
         print(f"Monitor '{name}' inside non-PML: {inside}")
+    src_x, src_y, src_z = source.center
+    src_inside_non_pml = (
+        float(src_x) >= float(pml_xy)
+        and float(src_x) <= float(design.width - pml_right)
+        and float(src_y - 0.5 * source.width) >= float(pml_xy)
+        and float(src_y + 0.5 * source.width) <= float(design.height - pml_xy)
+        and float(src_z - 0.5 * source.height) >= float(pml_z)
+        and float(src_z + 0.5 * source.height) <= float(design.depth - pml_z)
+    )
+    print(f"Source inside non-PML: {src_inside_non_pml}")
+    for name, mon in [
+        ("o1_fwd", m_fwd),
+        ("o1_ref", m_ref),
+        ("o2_out", m_o2),
+        ("o3_out", m_o3),
+    ]:
+        core_frac, clad_frac, eps_max = monitor_overlap_stats(
+            np.asarray(grid.permittivity, dtype=float),
+            mon,
+            dx=dx,
+            dy=dx,
+            dz=dx,
+            eps_core=n_core**2,
+            eps_clad=n_clad**2,
+        )
+        print(
+            f"Monitor overlap '{name}': core_frac={core_frac:.3f}, "
+            f"clad_frac={clad_frac:.3f}, eps_max={eps_max:.3f}"
+        )
 
     sim = Simulation(
         design=design,
@@ -379,6 +436,13 @@ def main():
     ax[0, 0].set_xlabel("x (um)")
     ax[0, 0].set_ylabel("y (um)")
     fig.colorbar(im0, ax=ax[0, 0], fraction=0.046, pad=0.04)
+    draw_pml_lines_xy(
+        ax[0, 0],
+        width=design.width,
+        height=design.height,
+        pml_xy=pml_xy,
+        pml_right=pml_right,
+    )
 
     for name, (s, e), color in [
         ("o1_fwd", (fwd_start, fwd_end), "white"),
@@ -391,6 +455,13 @@ def main():
         y1_um = max(s[1], e[1]) / µm
         ax[0, 0].plot([x_um, x_um], [y0_um, y1_um], color=color, lw=1.5)
         ax[0, 0].text(x_um, y1_um + 0.04, name, color=color, fontsize=7, ha="center")
+    ax[0, 0].plot(
+        [src_x / µm, src_x / µm],
+        [(src_y - 0.5 * source.width) / µm, (src_y + 0.5 * source.width) / µm],
+        color="red",
+        lw=1.8,
+    )
+    ax[0, 0].text(src_x / µm, (src_y + 0.5 * source.width) / µm + 0.04, "source", color="red", fontsize=7, ha="center")
 
     labels = ["|S11|^2", "|S21|^2", "|S31|^2", "closure"]
     vals = [p11, p21, p31, closure]
@@ -434,6 +505,31 @@ def main():
     ax[1, 1].set_xlabel("x (um)")
     ax[1, 1].set_ylabel("z (um)")
     fig.colorbar(im1, ax=ax[1, 1], fraction=0.046, pad=0.04)
+    draw_pml_lines_xz(
+        ax[1, 1],
+        width=design.width,
+        depth=design.depth,
+        pml_xy=pml_xy,
+        pml_right=pml_right,
+        pml_z=pml_z,
+    )
+    ax[1, 1].plot(
+        [src_x / µm, src_x / µm],
+        [(src_z - 0.5 * source.height) / µm, (src_z + 0.5 * source.height) / µm],
+        color="red",
+        lw=1.8,
+    )
+    for name, (s, e), color in [
+        ("o1_fwd", (fwd_start, fwd_end), "white"),
+        ("o1_ref", (ref_start, ref_end), "cyan"),
+        ("o2_out", out_planes["o2"], "orange"),
+        ("o3_out", out_planes["o3"], "orange"),
+    ]:
+        x_um = 0.5 * (s[0] + e[0]) / µm
+        z0_um = min(s[2], e[2]) / µm
+        z1_um = max(s[2], e[2]) / µm
+        ax[1, 1].plot([x_um, x_um], [z0_um, z1_um], color=color, lw=1.3)
+        ax[1, 1].text(x_um, z1_um + 0.02, name, color=color, fontsize=6.5, ha="center")
 
     fig.tight_layout()
     fig.savefig(out_png, dpi=320)
