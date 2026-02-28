@@ -159,6 +159,7 @@ def main():
     out_dir = Path("benchmarks/results/gdsf_to_sax_debug")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_png = out_dir / "gdsf_mmi1x2_3d_sparams.png"
+    out_db_png = out_dir / "gdsf_mmi1x2_3d_sparams_db.png"
     out_field_png = out_dir / "gdsf_mmi1x2_3d_ey_field_slices.png"
     out_mode_png = out_dir / "gdsf_mmi1x2_3d_mode_source.png"
     out_signal_png = out_dir / "gdsf_mmi1x2_3d_signal.png"
@@ -188,8 +189,8 @@ def main():
         wl0,
         n_max=n_core,
         dims=3,
-        safety_factor=0.96,
-        points_per_wavelength=20,
+        safety_factor=0.999,
+        points_per_wavelength=12,
     )
 
     imported_design, ports = gdsf.load(
@@ -817,6 +818,39 @@ def main():
     fig.savefig(out_png, dpi=320)
     plt.close(fig)
     print(f"Saved S-parameter figure: {out_png}")
+
+    # Publication-ready S-parameter magnitude plot in dB.
+    s11_db_spec = 20.0 * np.log10(np.maximum(np.abs(s11_spec), 1e-12))
+    s21_db_spec = 20.0 * np.log10(np.maximum(np.abs(s21_spec), 1e-12))
+    s31_db_spec = 20.0 * np.log10(np.maximum(np.abs(s31_spec), 1e-12))
+    wl_nm = (wl_spec / µm) * 1e3
+    order = np.argsort(wl_nm)
+    db_stack = np.vstack([s11_db_spec[order], s21_db_spec[order], s31_db_spec[order]])
+    db_min = float(np.nanmin(db_stack))
+    y_floor = min(-40.0, 5.0 * np.floor(db_min / 5.0))
+
+    fig_db, ax_db = plt.subplots(1, 1, figsize=(5, 3), dpi=360)
+    ax_db.plot(wl_nm[order], s11_db_spec[order], "o-", color="black", lw=2, ms=3, label=r"|$S_{11}$|")
+    ax_db.plot(wl_nm[order], s21_db_spec[order], "o-", color="#1f77b4", lw=2, ms=3, label=r"|$S_{21}$|")
+    ax_db.plot(wl_nm[order], s31_db_spec[order], "o-", color="#2ca02c", lw=2, ms=3, label=r"|$S_{31}$|")
+    ax_db.axvline(wl0 / µm * 1e3, color="0.45", lw=1.0, ls="--")
+    ax_db.set_xlim(float(np.min(wl_nm)), float(np.max(wl_nm)))
+    ax_db.set_ylim(y_floor, 0.5)
+    ax_db.set_xlabel("Wavelength (nm)", fontsize=11)
+    ax_db.set_ylabel("S-parameter Magnitude (dB)", fontsize=11)
+    ax_db.set_title("3D MMI1x2 Fundamental-Mode S-Parameters", fontsize=12, pad=8.0)
+    ax_db.tick_params(axis="both", which="major", labelsize=10, direction="in", length=5.0, width=1.0)
+    ax_db.tick_params(axis="both", which="minor", direction="in", length=3.0, width=0.8)
+    ax_db.minorticks_on()
+    ax_db.grid(which="major", alpha=0.25, lw=0.6)
+    ax_db.grid(which="minor", alpha=0.12, lw=0.4)
+    for spine in ax_db.spines.values():
+        spine.set_linewidth(1.0)
+    ax_db.legend(loc="best", frameon=False, fontsize=10)
+    fig_db.tight_layout()
+    fig_db.savefig(out_db_png, dpi=360)
+    plt.close(fig_db)
+    print(f"Saved dB S-parameter figure: {out_db_png}")
 
     ey_snap = np.asarray(sim.fields.Ey, dtype=float)
     if isinstance(run_result, dict):
