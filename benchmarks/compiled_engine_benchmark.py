@@ -127,6 +127,16 @@ def _safe_div(num: float, den: float) -> float:
     return num / den
 
 
+def _cell_updates(sim: Simulation, steps: int) -> int:
+    voxels = int(np.prod(sim.fields.permittivity.shape))
+    return int(voxels * int(steps))
+
+
+def _component_updates(sim: Simulation, steps: int) -> int:
+    # Yee cell has 6 field components (Ex,Ey,Ez,Hx,Hy,Hz).
+    return 6 * _cell_updates(sim, steps)
+
+
 def _hlo_op_counts(hlo_text: str) -> dict[str, int]:
     """Count real HLO ops from instruction lines (ignore metadata substrings)."""
     counts = {
@@ -447,6 +457,9 @@ def _append_csv(
     tcups_py: float,
     tcups_split: float,
     tcups_compiled: float,
+    tcompups_py: float,
+    tcompups_split: float,
+    tcompups_compiled: float,
     py_runs_s: list[float],
     split_runs_s: list[float],
     compiled_runs_s: list[float],
@@ -507,6 +520,9 @@ def _append_csv(
         "legacy_python_step_tcups",
         "legacy_split_jit_tcups",
         "compiled_v3_scan_tcups",
+        "legacy_python_step_tcompups",
+        "legacy_split_jit_tcompups",
+        "compiled_v3_scan_tcompups",
         "compiled_vs_python_speedup_x",
         "compiled_vs_split_jit_speedup_x",
         "legacy_python_step_runs_s",
@@ -583,6 +599,9 @@ def _append_csv(
         "legacy_python_step_tcups": tcups_py,
         "legacy_split_jit_tcups": tcups_split,
         "compiled_v3_scan_tcups": tcups_compiled,
+        "legacy_python_step_tcompups": tcompups_py,
+        "legacy_split_jit_tcompups": tcompups_split,
+        "compiled_v3_scan_tcompups": tcompups_compiled,
         "compiled_vs_python_speedup_x": _safe_div(t_py, t_compiled),
         "compiled_vs_split_jit_speedup_x": _safe_div(t_split, t_compiled),
         "legacy_python_step_runs_s": ";".join(f"{x:.9f}" for x in py_runs_s),
@@ -866,8 +885,16 @@ def make_simulation(
 def _tcups(sim: Simulation, steps: int, elapsed_s: float) -> float:
     if elapsed_s <= 0 or not np.isfinite(elapsed_s):
         return float("nan")
-    voxels = int(np.prod(sim.fields.permittivity.shape))
-    updates = 6 * voxels * steps
+    # Standard CUPS convention used by Meep/FDTDx literature:
+    # one "cell update" = all 6 Yee components for one voxel and one timestep.
+    updates = _cell_updates(sim, steps)
+    return updates / elapsed_s / 1e12
+
+
+def _tcompups(sim: Simulation, steps: int, elapsed_s: float) -> float:
+    if elapsed_s <= 0 or not np.isfinite(elapsed_s):
+        return float("nan")
+    updates = _component_updates(sim, steps)
     return updates / elapsed_s / 1e12
 
 
@@ -965,7 +992,13 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
     """Collect simple operation counts from compiled v0.3 HLO text."""
     import jax
     import jax.numpy as jnp
-    from beamz.simulation.compiled import EngineState, MonitorState, monitor_state_size
+    from beamz.simulation.compiled import (
+        EngineState,
+        MonitorState,
+        monitor_dft_point_size,
+        monitor_frequency_size,
+        monitor_state_size,
+    )
 
     def _compiled_inputs():
         program = sim.compile(num_steps=steps)
@@ -974,16 +1007,32 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
 
         if program.monitor_specs:
             max_records = max(1, monitor_state_size(program.monitor_specs, steps))
+            max_freq = monitor_frequency_size(program.monitor_specs)
+            max_points = monitor_dft_point_size(program.monitor_specs)
             monitor_state = MonitorState(
                 powers=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
                 timestamps=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
                 counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+                freq_flux_re=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+                freq_flux_im=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+                freq_phase_re=jnp.ones((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+                freq_phase_im=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+                dft_vec_re=jnp.zeros((len(program.monitor_specs), 6, max_freq, max_points), dtype=jnp.float32),
+                dft_vec_im=jnp.zeros((len(program.monitor_specs), 6, max_freq, max_points), dtype=jnp.float32),
+                dft_weight_sum=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
             )
         else:
             monitor_state = MonitorState(
                 powers=jnp.zeros((0, 0), dtype=jnp.float32),
                 timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
                 counts=jnp.zeros((0,), dtype=jnp.int32),
+                freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+                dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+                dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
             )
 
         engine_state = EngineState(
@@ -1021,7 +1070,13 @@ def dump_compiled_ir_artifacts(
     """Write JAXPR/HLO artifacts for deep debugging and return optimized-HLO stats."""
     import jax
     import jax.numpy as jnp
-    from beamz.simulation.compiled import EngineState, MonitorState, monitor_state_size
+    from beamz.simulation.compiled import (
+        EngineState,
+        MonitorState,
+        monitor_dft_point_size,
+        monitor_frequency_size,
+        monitor_state_size,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1031,16 +1086,32 @@ def dump_compiled_ir_artifacts(
 
     if program.monitor_specs:
         max_records = max(1, monitor_state_size(program.monitor_specs, steps))
+        max_freq = monitor_frequency_size(program.monitor_specs)
+        max_points = monitor_dft_point_size(program.monitor_specs)
         monitor_state = MonitorState(
             powers=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
             timestamps=jnp.zeros((len(program.monitor_specs), max_records), dtype=jnp.float32),
             counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+            freq_flux_re=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_flux_im=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_phase_re=jnp.ones((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_phase_im=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
+            dft_vec_re=jnp.zeros((len(program.monitor_specs), 6, max_freq, max_points), dtype=jnp.float32),
+            dft_vec_im=jnp.zeros((len(program.monitor_specs), 6, max_freq, max_points), dtype=jnp.float32),
+            dft_weight_sum=jnp.zeros((len(program.monitor_specs), max_freq), dtype=jnp.float32),
         )
     else:
         monitor_state = MonitorState(
             powers=jnp.zeros((0, 0), dtype=jnp.float32),
             timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
             counts=jnp.zeros((0,), dtype=jnp.int32),
+            freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+            freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+            freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+            freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+            dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+            dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+            dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
         )
 
     engine_state = EngineState(
@@ -1473,19 +1544,28 @@ def main():
         tcups_py = _tcups(sim_base, steps, t_py)
         tcups_split = _tcups(sim_base, steps, t_split)
         tcups_compiled = _tcups(sim_base, steps, t_compiled)
+        tcompups_py = _tcompups(sim_base, steps, t_py)
+        tcompups_split = _tcompups(sim_base, steps, t_split)
+        tcompups_compiled = _tcompups(sim_base, steps, t_compiled)
 
         print("Results")
         if "python" in modes:
             print(
-                f"legacy_python_step (median): {t_py:.6f}s, {_safe_div(t_py, steps):.6e}s/step, {tcups_py:.6e} TCUPS"
+                "legacy_python_step (median): "
+                + f"{t_py:.6f}s, {_safe_div(t_py, steps):.6e}s/step, "
+                + f"{tcups_py:.6e} TCUPS(cell), {tcompups_py:.6e} TCompUPS"
             )
         if "split_jit" in modes:
             print(
-                f"legacy_split_jit   (median): {t_split:.6f}s, {_safe_div(t_split, steps):.6e}s/step, {tcups_split:.6e} TCUPS"
+                "legacy_split_jit   (median): "
+                + f"{t_split:.6f}s, {_safe_div(t_split, steps):.6e}s/step, "
+                + f"{tcups_split:.6e} TCUPS(cell), {tcompups_split:.6e} TCompUPS"
             )
         if "compiled" in modes:
             print(
-                f"compiled_v3_scan   (median): {t_compiled:.6f}s, {_safe_div(t_compiled, steps):.6e}s/step, {tcups_compiled:.6e} TCUPS"
+                "compiled_v3_scan   (median): "
+                + f"{t_compiled:.6f}s, {_safe_div(t_compiled, steps):.6e}s/step, "
+                + f"{tcups_compiled:.6e} TCUPS(cell), {tcompups_compiled:.6e} TCompUPS"
             )
         if repeats > 1:
             print("Per-Run Times (s)")
@@ -1616,6 +1696,9 @@ def main():
             tcups_py=tcups_py,
             tcups_split=tcups_split,
             tcups_compiled=tcups_compiled,
+            tcompups_py=tcompups_py,
+            tcompups_split=tcompups_split,
+            tcompups_compiled=tcompups_compiled,
             py_runs_s=py_runs,
             split_runs_s=split_runs,
             compiled_runs_s=compiled_runs,

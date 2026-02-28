@@ -244,8 +244,6 @@ def compute_mode(
         E = np.stack([mode.Ex, mode.Ey, mode.Ez], axis=0).astype(np.complex128)
         H = np.stack([mode.Hx, mode.Hy, mode.Hz], axis=0).astype(np.complex128)
 
-    H *= tidy3d.constants.ETA_0
-
     E_norm, H_norm = _normalize_by_poynting_flux(E, H, axis=propagation_axis)
     return E_norm, H_norm, np.asarray(mode.neff, dtype=np.complex128), propagation_axis
 

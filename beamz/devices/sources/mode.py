@@ -117,17 +117,70 @@ def _compute_transverse_bounds(center_val, extent, resolution, grid_max):
     return max(0, center_idx - half_idx), min(grid_max, center_idx + half_idx)
 
 
-def _impedance_match_e_profile(e_profile, h_profile, Z_phys, eps=1e-12):
-    """Match one E-profile to one H-profile with a shared 2D rule.
+def _impedance_match_e_profile(e_profile, h_profile, z_target, eps=1e-12):
+    """Scale E profile so the least-squares modal impedance matches ``z_target``."""
+    e = np.asarray(e_profile, dtype=np.complex128).reshape(-1)
+    h = np.asarray(h_profile, dtype=np.complex128).reshape(-1)
+    n = int(min(e.size, h.size))
+    if n <= 0:
+        return e_profile
+    e = e[:n]
+    h = h[:n]
+    denom = np.sum(h * np.conjugate(h))
+    if abs(denom) <= eps:
+        return e_profile
+    z_est = np.sum(e * np.conjugate(h)) / denom
+    z_mag = float(abs(z_est))
+    if (not np.isfinite(z_mag)) or z_mag <= eps:
+        return e_profile
+    scale = float(abs(z_target)) / z_mag
+    return np.asarray(e_profile) * scale
 
-    Uses mean-absolute amplitudes so TE/TM use the same normalization
-    and the result is less sensitive to single-cell peaks.
-    """
-    norm_h = np.mean(np.abs(h_profile))
-    norm_e = np.mean(np.abs(e_profile))
-    if norm_h > eps and norm_e > eps:
-        return e_profile * (Z_phys / (norm_e / norm_h))
-    return e_profile
+
+def _modal_power_2d(e_profile, h_profile, signed_flux_sign, dl):
+    """Return 2D modal power using the same convention as port extraction."""
+    e = np.asarray(e_profile, dtype=np.complex128).reshape(-1)
+    h = np.asarray(h_profile, dtype=np.complex128).reshape(-1)
+    n = int(min(e.size, h.size))
+    if n <= 0:
+        return 0.0
+    e = e[:n]
+    h = h[:n]
+    p = 0.5 * np.real(np.sum(float(signed_flux_sign) * e * np.conjugate(h)) * float(dl))
+    return float(p)
+
+
+def _normalize_2d_pair_by_power(h_profile, e_profile, signed_flux_sign, dl, eps=1e-30):
+    """Normalize a 2D Huygens pair so |modal power| equals 1."""
+    h = np.asarray(h_profile)
+    e = np.asarray(e_profile)
+    p = _modal_power_2d(
+        np.asarray(e, dtype=np.complex128),
+        np.asarray(h, dtype=np.complex128),
+        signed_flux_sign=signed_flux_sign,
+        dl=dl,
+    )
+    if np.isfinite(p) and abs(p) > eps:
+        scale = np.sqrt(1.0 / abs(p))
+        h = h * scale
+        e = e * scale
+    return h, e
+
+
+def _to_real_profile(profile, imag_ratio_warn=1e-2, eps=1e-30):
+    """Project profile to real-valued injection coefficients."""
+    arr = np.asarray(profile, dtype=np.complex128)
+    re = np.real(arr)
+    im = np.imag(arr)
+    re_peak = float(np.max(np.abs(re))) if re.size else 0.0
+    im_peak = float(np.max(np.abs(im))) if im.size else 0.0
+    if re_peak > eps and im_peak / re_peak > imag_ratio_warn:
+        logger.debug(
+            "Mode profile has non-negligible imaginary content before real projection: "
+            "imag/real peak ratio=%.3e",
+            im_peak / re_peak,
+        )
+    return re
 
 
 def _solve_numeric_k_axis(omega, dt, d_axis, neff, eps=1e-30):
@@ -265,11 +318,7 @@ def _select_3d_impedance_index(axis, pol, eps_profile_2d, Ex, Ey, Ez, Hx, Hy, Hz
 def _impedance_match_3d_tangential_pairs(
     axis, Ex_s, Ey_s, Ez_s, Hx_s, Hy_s, Hz_s, Z_target, eps=1e-12
 ):
-    """Match tangential 3D E components to their paired tangential H components.
-
-    This mirrors the 2D rule (pair-wise E/H matching) instead of using a single
-    global scale across all components, which tends to increase backscatter.
-    """
+    """Match tangential 3D E components to paired H components via LS impedance fit."""
     e_map = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s}
     h_map = {"Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
     pair_map = {
@@ -283,8 +332,7 @@ def _impedance_match_3d_tangential_pairs(
         abs_e = np.abs(e_field)
         abs_h = np.abs(h_field)
 
-        # Robust local impedance estimate: use pointwise |E|/|H| over the strong-field
-        # support of H to avoid tail-dominated or near-orthogonal global statistics.
+        # Robust local impedance estimate: use pointwise |E|/|H| over strong-field H support.
         h_peak = float(np.max(abs_h))
         if h_peak > eps:
             mask = abs_h > (0.05 * h_peak)
@@ -538,7 +586,7 @@ def _build_3d_x(
         ),
     }
 
-    # --- pair-wise tangential impedance matching ---
+    # Match J/M balance using pairwise tangential impedance fits before windowing.
     Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
         "x",
         Ex_s,
@@ -562,7 +610,8 @@ def _build_3d_x(
         use_jax=True,
         alpha=0.2,
     )
-    profiles = _normalize_3d_profiles_by_flux(profiles, axis="x")
+    d_area = float(resolution * resolution)
+    profiles = _normalize_3d_profiles_by_flux(profiles, axis="x", d_area=d_area)
 
     extra = {
         "_y_start": y_start,
@@ -641,7 +690,7 @@ def _build_3d_y(
         ),
     }
 
-    # --- pair-wise tangential impedance matching ---
+    # Match J/M balance using pairwise tangential impedance fits before windowing.
     Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
         "y",
         Ex_s,
@@ -665,7 +714,8 @@ def _build_3d_y(
         use_jax=False,
         alpha=0.2,
     )
-    profiles = _normalize_3d_profiles_by_flux(profiles, axis="y")
+    d_area = float(resolution * resolution)
+    profiles = _normalize_3d_profiles_by_flux(profiles, axis="y", d_area=d_area)
 
     extra = {
         "_x_start": x_start,
@@ -748,7 +798,7 @@ def _build_3d_z(
         ),
     }
 
-    # --- pair-wise tangential impedance matching ---
+    # Match J/M balance using pairwise tangential impedance fits before windowing.
     Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
         "z",
         Ex_s,
@@ -772,7 +822,8 @@ def _build_3d_z(
         use_jax=True,
         alpha=0.2,
     )
-    profiles = _normalize_3d_profiles_by_flux(profiles, axis="z")
+    d_area = float(resolution * resolution)
+    profiles = _normalize_3d_profiles_by_flux(profiles, axis="z", d_area=d_area)
 
     extra = {
         "_x_start": x_start,
@@ -814,8 +865,8 @@ def _crop_and_window_all(
     return profiles
 
 
-def _normalize_3d_profiles_by_flux(profiles, axis, eps=1e-18):
-    """Normalize 3D source profiles to a stable unit-flux scale."""
+def _modal_power_3d_from_profiles(profiles, axis, d_area):
+    """Compute 3D modal power from profiles on a cross-section."""
     ex = profiles.get("Ex")
     ey = profiles.get("Ey")
     ez = profiles.get("Ez")
@@ -823,14 +874,14 @@ def _normalize_3d_profiles_by_flux(profiles, axis, eps=1e-18):
     hy = profiles.get("Hy")
     hz = profiles.get("Hz")
     if any(v is None for v in (ex, ey, ez, hx, hy, hz)):
-        return profiles
+        return 0.0
 
-    ex = np.asarray(ex)
-    ey = np.asarray(ey)
-    ez = np.asarray(ez)
-    hx = np.asarray(hx)
-    hy = np.asarray(hy)
-    hz = np.asarray(hz)
+    ex = np.asarray(ex, dtype=np.complex128)
+    ey = np.asarray(ey, dtype=np.complex128)
+    ez = np.asarray(ez, dtype=np.complex128)
+    hx = np.asarray(hx, dtype=np.complex128)
+    hy = np.asarray(hy, dtype=np.complex128)
+    hz = np.asarray(hz, dtype=np.complex128)
     ny = min(
         ex.shape[0], ey.shape[0], ez.shape[0], hx.shape[0], hy.shape[0], hz.shape[0]
     )
@@ -838,7 +889,7 @@ def _normalize_3d_profiles_by_flux(profiles, axis, eps=1e-18):
         ex.shape[1], ey.shape[1], ez.shape[1], hx.shape[1], hy.shape[1], hz.shape[1]
     )
     if ny <= 0 or nx <= 0:
-        return profiles
+        return 0.0
 
     ex = ex[:ny, :nx]
     ey = ey[:ny, :nx]
@@ -848,21 +899,33 @@ def _normalize_3d_profiles_by_flux(profiles, axis, eps=1e-18):
     hz = hz[:ny, :nx]
 
     if axis == "x":
-        s_axis = ey * hz - ez * hy
+        s_axis = ey * np.conjugate(hz) - ez * np.conjugate(hy)
     elif axis == "y":
-        s_axis = ez * hx - ex * hz
+        s_axis = ez * np.conjugate(hx) - ex * np.conjugate(hz)
     else:
-        s_axis = ex * hy - ey * hx
+        s_axis = ex * np.conjugate(hy) - ey * np.conjugate(hx)
+    return float(0.5 * np.real(np.sum(s_axis) * float(d_area)))
 
-    flux_l1 = float(np.sum(np.abs(s_axis)))
-    if (not np.isfinite(flux_l1)) or flux_l1 <= eps:
+
+def _normalize_3d_profiles_by_flux(profiles, axis, d_area=1.0, eps=1e-18):
+    """Normalize 3D source profiles so |modal power| equals 1."""
+    flux = _modal_power_3d_from_profiles(profiles, axis=axis, d_area=d_area)
+    if (not np.isfinite(flux)) or abs(flux) <= eps:
         return profiles
 
-    scale = float(np.sqrt(1.0 / max(flux_l1, eps)))
+    scale = float(np.sqrt(1.0 / max(abs(flux), eps)))
     scale = float(np.clip(scale, 1e-6, 1e6))
     for key, value in profiles.items():
         profiles[key] = np.asarray(value) * scale
     return profiles
+
+
+def _project_3d_profiles_to_real(profiles):
+    """Project 3D source profiles to real-valued runtime injection arrays."""
+    out = {}
+    for key, value in profiles.items():
+        out[key] = _to_real_profile(value)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -890,14 +953,6 @@ def _get_3d_huygens_terms(axis, pol):
     """Return 3D sign terms with TE gauge parity matched to 2D conventions."""
     e_terms = list(_HUYGENS_SIGNS[axis]["e"])
     h_terms = list(_HUYGENS_SIGNS[axis]["h"])
-    if pol == "te":
-        # TE in this codebase uses the opposite gauge class for one tangential pair.
-        e0 = list(e_terms[0])
-        h1 = list(h_terms[1])
-        e0[2] *= -1
-        h1[2] *= -1
-        e_terms[0] = tuple(e0)
-        h_terms[1] = tuple(h1)
     return e_terms, h_terms
 
 
@@ -1336,7 +1391,7 @@ class ModeSource:
         """
         dir_sign = 1.0 if self.direction.startswith("+") else -1.0
         ETA_0 = np.sqrt(MU_0 / EPS_0)
-        Z_phys = ETA_0 / max(np.real(self._neff), 1e-6)
+        z_target = ETA_0 / max(np.real(self._neff), 1e-6)
 
         if axis == "x":
             self._setup_2d_x(
@@ -1348,7 +1403,7 @@ class ModeSource:
                 nx,
                 resolution,
                 dir_sign,
-                Z_phys,
+                z_target,
             )
         else:
             self._setup_2d_y(
@@ -1360,7 +1415,7 @@ class ModeSource:
                 nx,
                 resolution,
                 dir_sign,
-                Z_phys,
+                z_target,
             )
 
     def _setup_2d_x(
@@ -1373,7 +1428,7 @@ class ModeSource:
         nx,
         resolution,
         dir_sign,
-        Z_phys,
+        z_target,
     ):
         """2D injection setup for x-propagation."""
         center_y_idx = int(round(self.center[1] / resolution))
@@ -1397,20 +1452,30 @@ class ModeSource:
             phase_ref = np.angle(Hy_raw.flatten()[idx_max])
             Hy_profile = Hy_raw * np.exp(-1j * phase_ref)
             Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
-
-            Ez_profile = _impedance_match_e_profile(Ez_profile, Hy_profile, Z_phys)
+            Ez_profile = _impedance_match_e_profile(Ez_profile, Hy_profile, z_target)
 
             width_cells = y_end - y_start
             window = self._make_1d_window(width_cells)
 
-            Hy_cropped = np.real(Hy_profile)[y_start:y_end]
-            Ez_cropped = np.real(Ez_profile)[y_start:y_end]
+            Hy_cropped = Hy_profile[y_start:y_end]
+            Ez_cropped = Ez_profile[y_start:y_end]
             if len(Hy_cropped) == len(window):
                 Hy_cropped = Hy_cropped * window
                 Ez_cropped = Ez_cropped * window
 
-            self._jz_profile = dir_sign * Hy_cropped
-            self._my_profile = dir_sign * Ez_cropped
+            jz_profile = dir_sign * Hy_cropped
+            my_profile = dir_sign * Ez_cropped
+            jz_profile, my_profile = _normalize_2d_pair_by_power(
+                jz_profile, my_profile, signed_flux_sign=-1.0, dl=resolution
+            )
+            jz_profile = _to_real_profile(jz_profile)
+            my_profile = _to_real_profile(my_profile)
+            jz_profile, my_profile = _normalize_2d_pair_by_power(
+                jz_profile, my_profile, signed_flux_sign=-1.0, dl=resolution
+            )
+
+            self._jz_profile = jz_profile
+            self._my_profile = my_profile
 
         else:  # TE
             hz_col = (
@@ -1434,21 +1499,31 @@ class ModeSource:
             phase_ref = np.angle(Hz_staggered.flatten()[idx_max])
             Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
             Ey_profile = Ey_staggered * np.exp(-1j * phase_ref)
-
-            Ey_profile = _impedance_match_e_profile(Ey_profile, Hz_profile, Z_phys)
+            Ey_profile = _impedance_match_e_profile(Ey_profile, Hz_profile, z_target)
 
             width_cells = min(y_end, len(Hz_profile)) - y_start
             window = self._make_1d_window(width_cells)
 
-            Hz_cropped = np.real(Hz_profile)[y_start : min(y_end, len(Hz_profile))]
-            Ey_cropped = np.real(Ey_profile)[y_start : min(y_end, len(Ey_profile))]
+            Hz_cropped = Hz_profile[y_start : min(y_end, len(Hz_profile))]
+            Ey_cropped = Ey_profile[y_start : min(y_end, len(Ey_profile))]
             if len(Hz_cropped) == len(window):
                 Hz_cropped = Hz_cropped * window
                 Ey_cropped = Ey_cropped * window
 
             # Relative J/M sign controls propagation handedness for TE in x-propagation.
-            self._jy_profile = dir_sign * Hz_cropped
-            self._mz_profile = -dir_sign * Ey_cropped
+            jy_profile = dir_sign * Hz_cropped
+            mz_profile = -dir_sign * Ey_cropped
+            jy_profile, mz_profile = _normalize_2d_pair_by_power(
+                jy_profile, mz_profile, signed_flux_sign=1.0, dl=resolution
+            )
+            jy_profile = _to_real_profile(jy_profile)
+            mz_profile = _to_real_profile(mz_profile)
+            jy_profile, mz_profile = _normalize_2d_pair_by_power(
+                jy_profile, mz_profile, signed_flux_sign=1.0, dl=resolution
+            )
+
+            self._jy_profile = jy_profile
+            self._mz_profile = mz_profile
 
     def _setup_2d_y(
         self,
@@ -1460,7 +1535,7 @@ class ModeSource:
         nx,
         resolution,
         dir_sign,
-        Z_phys,
+        z_target,
     ):
         """2D injection setup for y-propagation."""
         center_x_idx = int(round(self.center[0] / resolution))
@@ -1484,21 +1559,31 @@ class ModeSource:
             phase_ref = np.angle(Hx_raw.flatten()[idx_max])
             Hx_profile = Hx_raw * np.exp(-1j * phase_ref)
             Ez_profile = Ez_raw * np.exp(-1j * phase_ref)
-
-            Ez_profile = _impedance_match_e_profile(Ez_profile, Hx_profile, Z_phys)
+            Ez_profile = _impedance_match_e_profile(Ez_profile, Hx_profile, z_target)
 
             width_cells = x_end - x_start
             window = self._make_1d_window(width_cells)
 
-            Hx_cropped = np.real(Hx_profile)[x_start:x_end]
-            Ez_cropped = np.real(Ez_profile)[x_start:x_end]
+            Hx_cropped = Hx_profile[x_start:x_end]
+            Ez_cropped = Ez_profile[x_start:x_end]
             if len(Hx_cropped) == len(window):
                 Hx_cropped = Hx_cropped * window
                 Ez_cropped = Ez_cropped * window
 
             # Relative J/M sign controls propagation handedness for TM in y-propagation.
-            self._jz_profile = dir_sign * Hx_cropped
-            self._my_profile = -dir_sign * Ez_cropped
+            jz_profile = dir_sign * Hx_cropped
+            my_profile = -dir_sign * Ez_cropped
+            jz_profile, my_profile = _normalize_2d_pair_by_power(
+                jz_profile, my_profile, signed_flux_sign=1.0, dl=resolution
+            )
+            jz_profile = _to_real_profile(jz_profile)
+            my_profile = _to_real_profile(my_profile)
+            jz_profile, my_profile = _normalize_2d_pair_by_power(
+                jz_profile, my_profile, signed_flux_sign=1.0, dl=resolution
+            )
+
+            self._jz_profile = jz_profile
+            self._my_profile = my_profile
 
         else:  # TE y-prop
             hz_row = (
@@ -1522,20 +1607,30 @@ class ModeSource:
             phase_ref = np.angle(Hz_staggered.flatten()[idx_max])
             Hz_profile = Hz_staggered * np.exp(-1j * phase_ref)
             Ex_profile = Ex_staggered * np.exp(-1j * phase_ref)
-
-            Ex_profile = _impedance_match_e_profile(Ex_profile, Hz_profile, Z_phys)
+            Ex_profile = _impedance_match_e_profile(Ex_profile, Hz_profile, z_target)
 
             width_cells = min(x_end, len(Hz_profile)) - x_start
             window = self._make_1d_window(width_cells)
 
-            Hz_cropped = np.real(Hz_profile)[x_start : min(x_end, len(Hz_profile))]
-            Ex_cropped = np.real(Ex_profile)[x_start : min(x_end, len(Ex_profile))]
+            Hz_cropped = Hz_profile[x_start : min(x_end, len(Hz_profile))]
+            Ex_cropped = Ex_profile[x_start : min(x_end, len(Ex_profile))]
             if len(Hz_cropped) == len(window):
                 Hz_cropped = Hz_cropped * window
                 Ex_cropped = Ex_cropped * window
 
-            self._jx_profile = -dir_sign * Hz_cropped
-            self._mz_profile = -dir_sign * Ex_cropped
+            jx_profile = -dir_sign * Hz_cropped
+            mz_profile = -dir_sign * Ex_cropped
+            jx_profile, mz_profile = _normalize_2d_pair_by_power(
+                jx_profile, mz_profile, signed_flux_sign=-1.0, dl=resolution
+            )
+            jx_profile = _to_real_profile(jx_profile)
+            mz_profile = _to_real_profile(mz_profile)
+            jx_profile, mz_profile = _normalize_2d_pair_by_power(
+                jx_profile, mz_profile, signed_flux_sign=-1.0, dl=resolution
+            )
+
+            self._jx_profile = jx_profile
+            self._mz_profile = mz_profile
 
     @staticmethod
     def _make_1d_window(width_cells, alpha=0.3):
@@ -1650,11 +1745,9 @@ class ModeSource:
             self.initialize(fields.permittivity, resolution, dt=dt)
 
         # J=n×H is evaluated on the E update and needs the physical E/H plane offset.
-        if self._is_3d:
-            # E is injected after the E-step, so use the full-step Yee timestamp.
-            signal_time_e = t + dt + self._dt_physical
-        else:
-            signal_time_e = t + 0.5 * dt + self._dt_physical
+        # Keep E/H drive samples on the same temporal convention and only apply
+        # the physical E/H plane offset correction via _dt_physical.
+        signal_time_e = t + 0.5 * dt + self._dt_physical
         signal_value_e = self._get_signal_value(signal_time_e, dt)
 
         if self._Ex_profile is not None and self._is_3d:

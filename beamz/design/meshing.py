@@ -1,10 +1,25 @@
+import os
+import time
+
 import numpy as np
+
+try:
+    from matplotlib.path import Path as MplPath
+except Exception:  # pragma: no cover - matplotlib is expected but keep fallback safe
+    MplPath = None
 
 from beamz.design.structures import Rectangle
 from beamz.visual.helpers import (
     create_rich_progress,
     display_status,
 )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class MaterialGrids:
@@ -723,12 +738,13 @@ class RegularGrid3D(BaseMeshGrid):
         )
 
     def __rasterize_3d__(self):
-        """3D rasterization using layered 2D approach with z-layer processing."""
+        """3D rasterization using vectorized shape fills and bounded fallbacks."""
         width, height, depth = self.design.width, self.design.height, self.design.depth
         grid_width = int(width / self.resolution_xy)
         grid_height = int(height / self.resolution_xy)
         grid_depth = int(depth / self.resolution_z) if depth > 0 else 1
 
+        t_total_start = time.perf_counter()
         cell_size_xy = self.resolution_xy
         cell_size_z = self.resolution_z
 
@@ -745,18 +761,12 @@ class RegularGrid3D(BaseMeshGrid):
             else [0]
         )
 
-        # Precompute offsets for 3D super-sampling (3x3x3 = 27 samples)
-        offsets_xy = np.array([-0.25, 0, 0.25]) * cell_size_xy
-        offsets_z = np.array([-0.25, 0, 0.25]) * cell_size_z if depth > 0 else [0]
-        sdx, sdy, sdz = np.meshgrid(offsets_xy, offsets_xy, offsets_z)
-        sdx, sdy, sdz = sdx.flatten(), sdy.flatten(), sdz.flatten()
-        num_samples = len(sdx)
-
         # Estimate dt for PML calculations
         c = 3e8
         dt_estimate = 0.5 * self.resolution / (c * np.sqrt(2))
 
         grids = MaterialGrids((grid_depth, grid_height, grid_width))
+        t_setup_end = time.perf_counter()
 
         # Fill background
         if len(self.design.structures) > 0:
@@ -764,7 +774,19 @@ class RegularGrid3D(BaseMeshGrid):
             if hasattr(background, "material") and background.material is not None:
                 grids.fill_all(self._get_all_material_props(background.material))
 
-        # Process structures layer by layer
+        timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
+        voxel_count = int(grid_width) * int(grid_height) * int(grid_depth)
+        fast_min_voxels = int(float(os.getenv("BEAMZ_RASTER_FAST_MIN_VOXELS", 1_000_000)))
+        fast_env = os.getenv("BEAMZ_RASTER_FAST_3D")
+        if fast_env is None:
+            prefer_fast = voxel_count >= fast_min_voxels
+        else:
+            prefer_fast = _env_bool("BEAMZ_RASTER_FAST_3D", True)
+        fast_rect_count = 0
+        fast_poly_count = 0
+        fallback_count = 0
+
+        t_struct_start = time.perf_counter()
         with create_rich_progress() as progress:
             task = progress.add_task(
                 "Rasterizing 3D structures...", total=len(self.design.structures)
@@ -784,71 +806,73 @@ class RegularGrid3D(BaseMeshGrid):
                 props = self._get_all_material_props(structure.material)
 
                 try:
-                    bbox = structure.get_bounding_box()
-                    if bbox is None:
-                        raise AttributeError("Bounding box is None")
-
-                    if len(bbox) == 6:
-                        min_x, min_y, min_z, max_x, max_y, max_z = bbox
-                    else:
-                        min_x, min_y, max_x, max_y = bbox
-                        min_z, max_z = 0, 0
-
-                    min_i = max(0, int(min_y / cell_size_xy) - 1)
-                    min_j = max(0, int(min_x / cell_size_xy) - 1)
-                    min_k = max(0, int(min_z / cell_size_z) - 1) if depth > 0 else 0
-                    max_i = min(grid_height, int(np.ceil(max_y / cell_size_xy)) + 1)
-                    max_j = min(grid_width, int(np.ceil(max_x / cell_size_xy)) + 1)
-                    max_k = (
-                        min(grid_depth, int(np.ceil(max_z / cell_size_z)) + 1)
-                        if depth > 0
-                        else 1
+                    bbox = self._get_bbox_indices_3d(
+                        structure,
+                        grid_height=grid_height,
+                        grid_width=grid_width,
+                        grid_depth=grid_depth,
+                        cell_size_xy=cell_size_xy,
+                        cell_size_z=cell_size_z,
+                        margin_cells=1,
                     )
-
-                    if (
-                        min_i >= grid_height
-                        or min_j >= grid_width
-                        or min_k >= grid_depth
-                        or max_i <= 0
-                        or max_j <= 0
-                        or max_k <= 0
-                    ):
+                    if bbox is None:
                         progress.update(task, advance=1)
                         continue
+                    min_i, min_j, min_k, max_i, max_j, max_k = bbox
 
-                    # Build 3D containment function
-                    if hasattr(structure, "point_in_polygon"):
-                        contains_fn = lambda x, y, z: structure.point_in_polygon(
-                            x, y, z
+                    fast_done = False
+                    if prefer_fast and isinstance(structure, Rectangle) and self._is_axis_aligned(structure):
+                        self._rasterize_rectangle_3d_fast(
+                            structure=structure,
+                            grids=grids,
+                            props=props,
+                            grid_height=grid_height,
+                            grid_width=grid_width,
+                            grid_depth=grid_depth,
+                            cell_size_xy=cell_size_xy,
+                            cell_size_z=cell_size_z,
                         )
-                    else:
-                        contains_fn = lambda x, y, z: any(
-                            val != def_val
-                            for val, def_val in zip(
-                                self.design.get_material_value(x, y, z), [1.0, 1.0, 0.0]
-                            )
+                        fast_rect_count += 1
+                        fast_done = True
+
+                    if not fast_done and prefer_fast:
+                        poly_done = self._rasterize_polygon_3d_fast(
+                            structure=structure,
+                            grids=grids,
+                            props=props,
+                            min_i=min_i,
+                            min_j=min_j,
+                            min_k=min_k,
+                            max_i=max_i,
+                            max_j=max_j,
+                            max_k=max_k,
+                            x_centers=x_centers,
+                            y_centers=y_centers,
+                            cell_size_xy=cell_size_xy,
+                            cell_size_z=cell_size_z,
                         )
+                        if poly_done:
+                            fast_poly_count += 1
+                            fast_done = True
 
-                    for k in range(min_k, max_k):
-                        z_center = z_centers[k]
-                        for i in range(min_i, max_i):
-                            for j in range(min_j, max_j):
-                                x_center = x_centers[j]
-                                y_center = y_centers[i]
-
-                                samples_inside = 0
-                                for si in range(num_samples):
-                                    if contains_fn(
-                                        x_center + sdx[si],
-                                        y_center + sdy[si],
-                                        z_center + sdz[si],
-                                    ):
-                                        samples_inside += 1
-
-                                if samples_inside > 0:
-                                    grids.blend_at(
-                                        (k, i, j), props, samples_inside / num_samples
-                                    )
+                    if not fast_done:
+                        self._rasterize_structure_3d_fallback(
+                            structure=structure,
+                            grids=grids,
+                            props=props,
+                            min_i=min_i,
+                            min_j=min_j,
+                            min_k=min_k,
+                            max_i=max_i,
+                            max_j=max_j,
+                            max_k=max_k,
+                            cell_size_xy=cell_size_xy,
+                            cell_size_z=cell_size_z,
+                            x_centers=x_centers,
+                            y_centers=y_centers,
+                            z_centers=z_centers,
+                        )
+                        fallback_count += 1
 
                 except (AttributeError, TypeError) as e:
                     display_status(
@@ -857,8 +881,10 @@ class RegularGrid3D(BaseMeshGrid):
                     )
 
                 progress.update(task, advance=1)
+        t_struct_end = time.perf_counter()
 
         # Process 3D PML boundaries
+        t_pml_start = time.perf_counter()
         self._process_3d_pml(
             grids.permittivity,
             grids.permeability,
@@ -868,8 +894,32 @@ class RegularGrid3D(BaseMeshGrid):
             z_centers,
             dt_estimate,
         )
+        t_pml_end = time.perf_counter()
 
         grids.assign_to(self)
+        t_total_end = time.perf_counter()
+
+        if timing_enabled:
+            display_status(
+                (
+                    "3D raster timing: "
+                    f"setup={t_setup_end - t_total_start:.2f}s, "
+                    f"structures={t_struct_end - t_struct_start:.2f}s, "
+                    f"pml={t_pml_end - t_pml_start:.2f}s, "
+                    f"total={t_total_end - t_total_start:.2f}s"
+                ),
+                "info",
+            )
+            display_status(
+                (
+                    "3D raster kernels: "
+                    f"fast_enabled={prefer_fast}, "
+                    f"fast_rect={fast_rect_count}, "
+                    f"fast_poly={fast_poly_count}, "
+                    f"fallback={fallback_count}"
+                ),
+                "info",
+            )
 
     def _process_3d_pml(
         self,
@@ -911,6 +961,287 @@ class RegularGrid3D(BaseMeshGrid):
                                 conductivity[k, i, j] += pml_conductivity
 
                 progress.update(task, advance=1)
+
+    @staticmethod
+    def _is_axis_aligned(structure):
+        """Check if a rectangle is axis-aligned (not rotated)."""
+        return (
+            hasattr(structure, "vertices")
+            and structure.vertices
+            and structure.vertices[0][0] == structure.position[0]
+            and structure.vertices[0][1] == structure.position[1]
+        )
+
+    def _get_bbox_indices_3d(
+        self,
+        structure,
+        *,
+        grid_height,
+        grid_width,
+        grid_depth,
+        cell_size_xy,
+        cell_size_z,
+        margin_cells=1,
+    ):
+        """Get clipped 3D bbox index range for a structure."""
+        bbox = structure.get_bounding_box()
+        if bbox is None:
+            return None
+        if len(bbox) == 6:
+            min_x, min_y, min_z, max_x, max_y, max_z = bbox
+        elif len(bbox) == 4:
+            min_x, min_y, max_x, max_y = bbox
+            min_z = getattr(structure, "z", 0.0)
+            max_z = min_z + float(getattr(structure, "depth", 0.0))
+            if max_z <= min_z:
+                max_z = min_z + cell_size_z
+        else:
+            return None
+
+        margin = int(max(0, margin_cells))
+        min_i = max(0, int(min_y / cell_size_xy) - margin)
+        min_j = max(0, int(min_x / cell_size_xy) - margin)
+        min_k = max(0, int(min_z / cell_size_z) - margin) if grid_depth > 1 else 0
+        max_i = min(grid_height, int(np.ceil(max_y / cell_size_xy)) + margin)
+        max_j = min(grid_width, int(np.ceil(max_x / cell_size_xy)) + margin)
+        max_k = (
+            min(grid_depth, int(np.ceil(max_z / cell_size_z)) + margin)
+            if grid_depth > 1
+            else 1
+        )
+
+        if min_i >= max_i or min_j >= max_j or min_k >= max_k:
+            return None
+        return min_i, min_j, min_k, max_i, max_j, max_k
+
+    def _rasterize_rectangle_3d_fast(
+        self,
+        *,
+        structure,
+        grids,
+        props,
+        grid_height,
+        grid_width,
+        grid_depth,
+        cell_size_xy,
+        cell_size_z,
+    ):
+        """Fast fill for axis-aligned rectangular prisms."""
+        x0, y0, z0 = structure.position
+        x1 = x0 + float(structure.width)
+        y1 = y0 + float(structure.height)
+        z1 = z0 + float(getattr(structure, "depth", 0.0))
+        if z1 <= z0:
+            z1 = z0 + cell_size_z
+
+        i0 = max(0, int(np.floor(y0 / cell_size_xy)))
+        j0 = max(0, int(np.floor(x0 / cell_size_xy)))
+        k0 = max(0, int(np.floor(z0 / cell_size_z))) if grid_depth > 1 else 0
+        i1 = min(grid_height, int(np.ceil(y1 / cell_size_xy)))
+        j1 = min(grid_width, int(np.ceil(x1 / cell_size_xy)))
+        k1 = min(grid_depth, int(np.ceil(z1 / cell_size_z))) if grid_depth > 1 else 1
+        if i0 >= i1 or j0 >= j1 or k0 >= k1:
+            return
+
+        # Compute exact axis-aligned overlap fractions per voxel to preserve
+        # anti-aliased boundaries without expensive per-sample point checks.
+        x_edges0 = np.arange(j0, j1, dtype=float) * cell_size_xy
+        x_edges1 = x_edges0 + cell_size_xy
+        y_edges0 = np.arange(i0, i1, dtype=float) * cell_size_xy
+        y_edges1 = y_edges0 + cell_size_xy
+        z_edges0 = np.arange(k0, k1, dtype=float) * cell_size_z
+        z_edges1 = z_edges0 + cell_size_z
+
+        fx = np.clip(np.minimum(x_edges1, x1) - np.maximum(x_edges0, x0), 0.0, cell_size_xy) / cell_size_xy
+        fy = np.clip(np.minimum(y_edges1, y1) - np.maximum(y_edges0, y0), 0.0, cell_size_xy) / cell_size_xy
+        fz = np.clip(np.minimum(z_edges1, z1) - np.maximum(z_edges0, z0), 0.0, cell_size_z) / cell_size_z
+
+        frac = fz[:, None, None] * fy[None, :, None] * fx[None, None, :]
+        if not np.any(frac > 0.0):
+            return
+
+        full_mask = frac >= (1.0 - 1e-12)
+        blend_mask = (frac > 0.0) & ~full_mask
+
+        if np.any(full_mask):
+            for name, val in zip(MaterialGrids.NAMES, props):
+                arr = getattr(grids, name)[k0:k1, i0:i1, j0:j1]
+                arr[full_mask] = val
+
+        if np.any(blend_mask):
+            for name, val in zip(MaterialGrids.NAMES, props):
+                arr = getattr(grids, name)[k0:k1, i0:i1, j0:j1]
+                f = frac[blend_mask]
+                arr[blend_mask] = arr[blend_mask] * (1.0 - f) + val * f
+
+    def _rasterize_polygon_3d_fast(
+        self,
+        *,
+        structure,
+        grids,
+        props,
+        min_i,
+        min_j,
+        min_k,
+        max_i,
+        max_j,
+        max_k,
+        x_centers,
+        y_centers,
+        cell_size_xy,
+        cell_size_z,
+    ):
+        """Vectorized anti-aliased fill for extruded polygons.
+
+        Uses 3x3 supersampling in XY and exact voxel overlap in Z so imported
+        taper polygons get the same subpixel smoothing behavior as fallback paths.
+        """
+        if MplPath is None:
+            return False
+        if not hasattr(structure, "vertices") or not structure.vertices:
+            return False
+        if hasattr(structure, "radius"):
+            # Circle/ring currently uses fallback path.
+            return False
+        if float(getattr(structure, "depth", 0.0)) <= 0.0:
+            return False
+        if min_i >= max_i or min_j >= max_j or min_k >= max_k:
+            return False
+
+        verts3 = np.asarray(structure.vertices, dtype=float)
+        if verts3.ndim != 2 or verts3.shape[0] < 3:
+            return False
+        if verts3.shape[1] >= 3 and np.ptp(verts3[:, 2]) > 1e-12:
+            # Non-planar polygons should use full fallback.
+            return False
+
+        verts = np.asarray([(v[0], v[1]) for v in structure.vertices], dtype=float)
+        if verts.ndim != 2 or verts.shape[0] < 3:
+            return False
+
+        z0 = float(getattr(structure, "z", np.min(verts3[:, 2])))
+        z1 = z0 + float(getattr(structure, "depth", 0.0))
+        if z1 <= z0:
+            z1 = float(np.max(verts3[:, 2]))
+        if z1 <= z0:
+            z1 = z0 + float(cell_size_z)
+
+        x_local = x_centers[min_j:max_j]
+        y_local = y_centers[min_i:max_i]
+        xx, yy = np.meshgrid(x_local, y_local)
+        outer_path = MplPath(verts)
+        interiors = getattr(structure, "interiors", None) or []
+
+        hole_paths = []
+        for hole in interiors:
+            iv3 = np.asarray(hole, dtype=float)
+            if iv3.ndim == 2 and iv3.shape[1] >= 3 and np.ptp(iv3[:, 2]) > 1e-12:
+                return False
+            iv = np.asarray([(v[0], v[1]) for v in hole], dtype=float)
+            if iv.ndim == 2 and iv.shape[0] >= 3:
+                hole_paths.append(MplPath(iv))
+
+        offsets = np.array([-0.25, 0.0, 0.25], dtype=float) * float(cell_size_xy)
+        n_samples_xy = float(len(offsets) * len(offsets))
+        inside_count = np.zeros(xx.shape, dtype=float)
+        for oy in offsets:
+            for ox in offsets:
+                points = np.column_stack(((xx + ox).ravel(), (yy + oy).ravel()))
+                inside = outer_path.contains_points(points, radius=1e-15).reshape(xx.shape)
+                for hole_path in hole_paths:
+                    inside &= ~hole_path.contains_points(points, radius=1e-15).reshape(xx.shape)
+                inside_count += inside.astype(float)
+        frac_xy = inside_count / n_samples_xy
+        if not np.any(frac_xy > 0.0):
+            return True
+
+        z_edges0 = np.arange(min_k, max_k, dtype=float) * float(cell_size_z)
+        z_edges1 = z_edges0 + float(cell_size_z)
+        frac_z = np.clip(
+            np.minimum(z_edges1, z1) - np.maximum(z_edges0, z0),
+            0.0,
+            float(cell_size_z),
+        ) / float(cell_size_z)
+        frac = frac_z[:, None, None] * frac_xy[None, :, :]
+        if not np.any(frac > 0.0):
+            return True
+
+        full_mask = frac >= (1.0 - 1e-12)
+        blend_mask = (frac > 0.0) & ~full_mask
+
+        if np.any(full_mask):
+            for name, val in zip(MaterialGrids.NAMES, props):
+                arr = getattr(grids, name)[min_k:max_k, min_i:max_i, min_j:max_j]
+                arr[full_mask] = val
+
+        if np.any(blend_mask):
+            for name, val in zip(MaterialGrids.NAMES, props):
+                arr = getattr(grids, name)[min_k:max_k, min_i:max_i, min_j:max_j]
+                f = frac[blend_mask]
+                arr[blend_mask] = arr[blend_mask] * (1.0 - f) + val * f
+
+        return True
+
+    def _rasterize_structure_3d_fallback(
+        self,
+        *,
+        structure,
+        grids,
+        props,
+        min_i,
+        min_j,
+        min_k,
+        max_i,
+        max_j,
+        max_k,
+        cell_size_xy,
+        cell_size_z,
+        x_centers,
+        y_centers,
+        z_centers,
+    ):
+        """Fallback supersampling path for non-rectilinear 3D structures."""
+        if min_i >= max_i or min_j >= max_j or min_k >= max_k:
+            return
+
+        offsets_xy = np.array([-0.25, 0.0, 0.25], dtype=float) * float(cell_size_xy)
+        offsets_z = (
+            np.array([-0.25, 0.0, 0.25], dtype=float) * float(cell_size_z)
+            if len(z_centers) > 1
+            else np.array([0.0], dtype=float)
+        )
+        sdx, sdy, sdz = np.meshgrid(offsets_xy, offsets_xy, offsets_z)
+        sdx = sdx.ravel()
+        sdy = sdy.ravel()
+        sdz = sdz.ravel()
+        num_samples = sdx.size
+
+        if hasattr(structure, "point_in_polygon"):
+            contains_fn = lambda x, y, z: structure.point_in_polygon(x, y, z)
+        else:
+            contains_fn = lambda x, y, z: any(
+                val != def_val
+                for val, def_val in zip(
+                    self.design.get_material_value(x, y, z), [1.0, 1.0, 0.0]
+                )
+            )
+
+        for k in range(min_k, max_k):
+            z_center = z_centers[k]
+            for i in range(min_i, max_i):
+                y_center = y_centers[i]
+                for j in range(min_j, max_j):
+                    x_center = x_centers[j]
+                    inside = 0
+                    for sidx in range(num_samples):
+                        if contains_fn(
+                            x_center + sdx[sidx],
+                            y_center + sdy[sidx],
+                            z_center + sdz[sidx],
+                        ):
+                            inside += 1
+                    if inside > 0:
+                        grids.blend_at((k, i, j), props, inside / float(num_samples))
 
     def get_2d_slice(self, z_index=None, z_position=None):
         """Extract a 2D slice from the 3D grid.

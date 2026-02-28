@@ -172,6 +172,37 @@ class TestModeSourceDiscreteHelpers:
         assert "1.25" not in src and "1.50" not in src
         assert "dt_scale" not in src
 
+    def test_normalize_2d_pair_by_power_enforces_unit_power(self):
+        rng = np.random.default_rng(7)
+        h = rng.normal(size=41) + 1j * rng.normal(size=41)
+        e = rng.normal(size=41) + 1j * rng.normal(size=41)
+        dl = 0.12
+
+        h_n, e_n = mode_module._normalize_2d_pair_by_power(
+            h, e, signed_flux_sign=-1.0, dl=dl
+        )
+        p = mode_module._modal_power_2d(e_n, h_n, signed_flux_sign=-1.0, dl=dl)
+        assert np.isfinite(p)
+        assert np.isclose(abs(p), 1.0, rtol=1e-10, atol=1e-10)
+
+    def test_normalize_3d_profiles_by_flux_enforces_unit_power(self):
+        rng = np.random.default_rng(11)
+        profiles = {
+            "Ex": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Ey": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Ez": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Hx": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Hy": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+            "Hz": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
+        }
+        d_area = 0.03
+        out = mode_module._normalize_3d_profiles_by_flux(
+            dict(profiles), axis="x", d_area=d_area
+        )
+        p = mode_module._modal_power_3d_from_profiles(out, axis="x", d_area=d_area)
+        assert np.isfinite(p)
+        assert np.isclose(abs(p), 1.0, rtol=1e-10, atol=1e-10)
+
 
 @pytest.mark.simulation
 class TestModeSourceEffectiveIndex:
@@ -1156,7 +1187,8 @@ class TestModeSourceDirectionality3D:
             n_core,
             dims=3,
             safety_factor=0.9,
-            points_per_wavelength=6,
+            # Use higher 3D resolution for strict directional purity checks.
+            points_per_wavelength=12,
             width=design.width,
             height=design.height,
             depth=design.depth,
@@ -1203,7 +1235,8 @@ class TestModeSourceDirectionality3D:
         axis_center_coord = center[{"x": 0, "y": 1, "z": 2}[axis]]
         center_idx = int(np.clip(np.round(axis_center_coord / dx - 0.5), 1, axis_len - 2))
         dir_sign = 1.0 if direction.startswith("+") else -1.0
-        near_offset_cells = max(2, int(round(0.4 * wavelength / dx)))
+        # Keep near plane out of the reactive source region.
+        near_offset_cells = max(2, int(round(0.8 * wavelength / dx)))
         far_offset_cells = max(near_offset_cells + 2, int(round(1.0 * wavelength / dx)))
 
         near_offset_cells = int(np.clip(near_offset_cells, 1, max(1, axis_len // 3)))
