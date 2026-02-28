@@ -5,6 +5,7 @@ for 3D DFT monitors + modal S extraction on gdsfactory geometry.
 """
 
 from pathlib import Path
+import time as pytime
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -482,11 +483,25 @@ def main():
     )
 
     rec_interval = max(1, len(time) // 6)
+    bench_t0 = pytime.perf_counter()
     run_result = sim.run_compiled(
         num_steps=len(time),
         record_interval=rec_interval,
         record_fields=["Ey"],
         progress=False,
+    )
+    bench_elapsed_s = max(pytime.perf_counter() - bench_t0, 1e-12)
+    num_voxels = int(np.prod(np.asarray(grid.permittivity).shape))
+    num_steps = int(len(time))
+    voxel_updates = float(num_voxels) * float(num_steps)
+    gcups = voxel_updates / bench_elapsed_s / 1e9
+    print(
+        "Benchmark: "
+        f"voxels={num_voxels:,}, "
+        f"timesteps={num_steps:,}, "
+        f"voxel_updates={voxel_updates:.3e}, "
+        f"wall_time={bench_elapsed_s:.2f}s, "
+        f"GCUPS={gcups:.3f}"
     )
 
     # Multimode extraction: excite fundamental input mode and project multiple
