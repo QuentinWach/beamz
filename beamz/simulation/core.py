@@ -752,6 +752,15 @@ class Simulation:
         return out
 
     @staticmethod
+    def _format_s_matrix_output(s_matrix, as_sax):
+        """Return S-parameter mapping without requiring optional external packages."""
+        if as_sax:
+            # Keep tuple-key mapping compatible with existing callers while avoiding
+            # a hard dependency on the external `sax` package.
+            return dict(s_matrix)
+        return s_matrix
+
+    @staticmethod
     def _normalize_portspecs(ports):
         if isinstance(ports, dict):
             values = list(ports.values())
@@ -1885,16 +1894,7 @@ class Simulation:
             s_matrix[(out_port, source_port)] = ratio
 
         self.s_matrix_frequencies = np.asarray(frequencies, dtype=float)
-        if as_sax:
-            try:
-                import sax
-            except ImportError as exc:
-                raise ImportError(
-                    "sax is required for as_sax=True. Install it with `pip install sax`."
-                ) from exc
-            s_output = sax.sdict(s_matrix)
-        else:
-            s_output = s_matrix
+        s_output = self._format_s_matrix_output(s_matrix, as_sax=as_sax)
 
         if not return_diagnostics:
             return s_output
@@ -2092,16 +2092,7 @@ class Simulation:
             s_matrix[(out_port, source_port)] = self._safe_ratio(b_out, a_incident)
 
         self.s_matrix_frequencies = np.asarray(frequencies, dtype=float)
-        if as_sax:
-            try:
-                import sax
-            except ImportError as exc:
-                raise ImportError(
-                    "sax is required for as_sax=True. Install it with `pip install sax`."
-                ) from exc
-            s_output = sax.sdict(s_matrix)
-        else:
-            s_output = s_matrix
+        s_output = self._format_s_matrix_output(s_matrix, as_sax=as_sax)
 
         if not return_diagnostics:
             return s_output
@@ -2173,16 +2164,7 @@ class Simulation:
             s_matrix[(out_port, source_port)] = np.complex128(ratio)
 
         self.s_matrix_frequencies = np.asarray([float(frequency)], dtype=float)
-        if as_sax:
-            try:
-                import sax
-            except ImportError as exc:
-                raise ImportError(
-                    "sax is required for as_sax=True. Install it with `pip install sax`."
-                ) from exc
-            s_output = sax.sdict(s_matrix)
-        else:
-            s_output = s_matrix
+        s_output = self._format_s_matrix_output(s_matrix, as_sax=as_sax)
 
         if not return_diagnostics:
             return s_output

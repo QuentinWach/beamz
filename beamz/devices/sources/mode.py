@@ -327,24 +327,34 @@ def _impedance_match_3d_tangential_pairs(
         "z": [("Ex", "Hy"), ("Ey", "Hx")],
     }
     for e_name, h_name in pair_map[axis]:
-        e_field = np.asarray(e_map[e_name], dtype=np.complex128)
-        h_field = np.asarray(h_map[h_name], dtype=np.complex128)
-        e_flat = e_field.reshape(-1)
-        h_flat = h_field.reshape(-1)
-        n = int(min(e_flat.size, h_flat.size))
-        if n <= 0:
+        e_field = np.asarray(e_map[e_name])
+        h_field = np.asarray(h_map[h_name])
+        abs_e = np.abs(e_field)
+        abs_h = np.abs(h_field)
+
+        # Robust local impedance estimate: use pointwise |E|/|H| over strong-field H support.
+        h_peak = float(np.max(abs_h))
+        if h_peak > eps:
+            mask = abs_h > (0.05 * h_peak)
+            if np.any(mask):
+                local_ratio = abs_e[mask] / (abs_h[mask] + eps)
+                ratio = float(np.median(local_ratio))
+            else:
+                ratio = 0.0
+        else:
+            ratio = 0.0
+
+        if not np.isfinite(ratio) or ratio <= eps:
+            e_norm = float(np.sqrt(np.sum(abs_e**2) + eps))
+            h_norm = float(np.sqrt(np.sum(abs_h**2) + eps))
+            ratio = e_norm / (h_norm + eps)
+
+        if not np.isfinite(ratio) or ratio <= eps:
             continue
-        e_flat = e_flat[:n]
-        h_flat = h_flat[:n]
-        denom = np.sum(h_flat * np.conjugate(h_flat))
-        if abs(denom) <= eps:
-            continue
-        z_est = np.sum(e_flat * np.conjugate(h_flat)) / denom
-        z_mag = float(abs(z_est))
-        if (not np.isfinite(z_mag)) or z_mag <= eps:
-            continue
-        z_t = float(abs(Z_target))
-        scale = z_t / z_mag
+        z_abs = float(abs(Z_target))
+        scale = z_abs / ratio
+        max_scale = max(20.0, 8.0 * z_abs)
+        scale = float(np.clip(scale, 1.0 / max_scale, max_scale))
         e_map[e_name] = e_field * scale
     return (
         e_map["Ex"],
@@ -602,8 +612,6 @@ def _build_3d_x(
     )
     d_area = float(resolution * resolution)
     profiles = _normalize_3d_profiles_by_flux(profiles, axis="x", d_area=d_area)
-    profiles = _project_3d_profiles_to_real(profiles)
-    profiles = _normalize_3d_profiles_by_flux(profiles, axis="x", d_area=d_area)
 
     extra = {
         "_y_start": y_start,
@@ -707,8 +715,6 @@ def _build_3d_y(
         alpha=0.2,
     )
     d_area = float(resolution * resolution)
-    profiles = _normalize_3d_profiles_by_flux(profiles, axis="y", d_area=d_area)
-    profiles = _project_3d_profiles_to_real(profiles)
     profiles = _normalize_3d_profiles_by_flux(profiles, axis="y", d_area=d_area)
 
     extra = {
@@ -818,8 +824,6 @@ def _build_3d_z(
     )
     d_area = float(resolution * resolution)
     profiles = _normalize_3d_profiles_by_flux(profiles, axis="z", d_area=d_area)
-    profiles = _project_3d_profiles_to_real(profiles)
-    profiles = _normalize_3d_profiles_by_flux(profiles, axis="z", d_area=d_area)
 
     extra = {
         "_x_start": x_start,
@@ -855,7 +859,9 @@ def _crop_and_window_all(
     for name, field in staggered.items():
         fe = min(z_end, field.shape[0])
         te = min(t_end, field.shape[1])
-        profiles[name] = dir_sign * _crop_and_window_2d(field, z_start, fe, t_start, te, window)
+        profiles[name] = dir_sign * np.real(
+            _crop_and_window_2d(field, z_start, fe, t_start, te, window)
+        )
     return profiles
 
 

@@ -32,7 +32,6 @@ dependencies = [
     "rich>=13.9.4",
     "shapely>=2.0.6",
     "jax>=0.4.0",
-    "sax",
     "gdsfactory",
     "jaxlib>=0.4.0",
     "optax>=0.1.0",

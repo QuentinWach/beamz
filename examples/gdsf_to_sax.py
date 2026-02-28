@@ -6,7 +6,6 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-import sax
 from beamz import *
 from beamz.visual.helpers import dxdt
 try:
@@ -283,7 +282,7 @@ guided_out_ratio = np.asarray(modal_result["diagnostics"]["power_sum"], dtype=fl
 loss = np.asarray(modal_result["diagnostics"]["loss_est"], dtype=float)
 valid_mask = np.asarray(modal_result["diagnostics"]["valid_mask"], dtype=bool)
 
-s_sax = sax.sdict(s_sparse)
+s_sax = dict(s_sparse)
 wl_um = wl / µm
 power_sum = (
     np.abs(np.asarray(s_sax[("o1", "o1")])) ** 2

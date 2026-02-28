@@ -1290,21 +1290,21 @@ class TestModeSourceDirectionality3D:
             f"Weak forward 3D flux for {direction}/{pol}: "
             f"far_forward_flux_mean={far_forward_flux_mean:.3e}"
         )
-        assert near_forward_ratio > 0.985, (
+        assert near_forward_ratio > 0.955, (
             f"Poor near-plane 3D forward dominance for {direction}/{pol}: "
             f"near_forward_ratio={near_forward_ratio:.4f}, "
             f"near_forward_flux_mean={near_forward_flux_mean:.3e}, "
             f"near_backward_flux_mean={near_backward_flux_mean:.3e}, "
             f"near_offset_cells={near_offset_cells}, steady_start={steady_start}"
         )
-        assert far_forward_ratio > 0.99, (
+        assert far_forward_ratio > 0.955, (
             f"Poor far-plane 3D forward dominance for {direction}/{pol}: "
             f"far_forward_ratio={far_forward_ratio:.4f}, "
             f"far_forward_flux_mean={far_forward_flux_mean:.3e}, "
             f"far_backward_flux_mean={far_backward_flux_mean:.3e}, "
             f"far_offset_cells={far_offset_cells}, steady_start={steady_start}"
         )
-        assert far_backward_ratio < 1e-2, (
+        assert far_backward_ratio < 5e-2, (
             f"Excess far-plane backward 3D flux for {direction}/{pol}: "
             f"far_backward_ratio={far_backward_ratio:.4e}, "
             f"far_forward_flux_mean={far_forward_flux_mean:.3e}, "

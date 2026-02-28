@@ -13,7 +13,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import sax
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle as MplRect
@@ -1876,7 +1875,7 @@ guided_power_sum = (
 )
 guided_loss_est = 1.0 - guided_power_sum
 
-s_sax = sax.sdict(s_guided)
+s_sax = dict(s_guided)
 
 # Separate total-power (all modes/radiation through monitor planes) from guided S.
 flux_r = np.full(len(freqs), np.nan, dtype=float)
