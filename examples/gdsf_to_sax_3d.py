@@ -55,13 +55,14 @@ def make_x_plane(x_pos, y_center, y_span, z_center, z_span, z_min, z_max):
     )
 
 
-def directional_power_x(monitor, dx, direction):
+def directional_power_x(monitor, *, dx, dy, dz, direction, freq_idx=0):
     sign = 1.0 if str(direction).strip() == "+x" else -1.0
-    ey = np.asarray(monitor.get_dft_component("Ey"), dtype=np.complex128)[0]
-    ez = np.asarray(monitor.get_dft_component("Ez"), dtype=np.complex128)[0]
-    hy = np.asarray(monitor.get_dft_component("Hy"), dtype=np.complex128)[0]
-    hz = np.asarray(monitor.get_dft_component("Hz"), dtype=np.complex128)[0]
-    s = 0.5 * np.sum(ey * np.conjugate(hz) - ez * np.conjugate(hy)) * (dx * dx)
+    ey = np.asarray(monitor.get_dft_component("Ey"), dtype=np.complex128)[int(freq_idx)]
+    ez = np.asarray(monitor.get_dft_component("Ez"), dtype=np.complex128)[int(freq_idx)]
+    hy = np.asarray(monitor.get_dft_component("Hy"), dtype=np.complex128)[int(freq_idx)]
+    hz = np.asarray(monitor.get_dft_component("Hz"), dtype=np.complex128)[int(freq_idx)]
+    del dx  # x-normal plane area is dy*dz
+    s = 0.5 * np.sum(ey * np.conjugate(hz) - ez * np.conjugate(hy)) * (dy * dz)
     return float(sign * np.real(s))
 
 
@@ -164,6 +165,10 @@ def main():
 
     wl0 = 1.55 * µm
     f0 = LIGHT_SPEED / wl0
+    wl_min = 1.50 * µm
+    wl_max = 1.60 * µm
+    nfreq = 31
+    freqs = np.linspace(LIGHT_SPEED / wl_max, LIGHT_SPEED / wl_min, nfreq, dtype=float)
 
     # Use moderate index contrast and resolution to keep this example lightweight.
     n_core, n_clad = 2.04, 1.444
@@ -301,7 +306,7 @@ def main():
     for name in ("o2", "o3"):
         p = ports[name]
         d_out = outward_direction(p["direction"])
-        mon_xy = move_along(p["center"], d_out, +0.4 * µm)
+        mon_xy = move_along(p["center"], d_out, +1.0 * µm)
         out_planes[name] = make_x_plane(
             mon_xy[0], mon_xy[1], mon_y_span, core_zc, mon_z_span, z_min, z_max
         )
@@ -351,7 +356,7 @@ def main():
     dft_cfg_common = dict(
         record_fields=False,
         dft_enabled=True,
-        dft_frequencies=[f0],
+        dft_frequencies=freqs,
         dft_components=("Ey", "Ez", "Hy", "Hz"),
         dft_window="hann",
         dft_record_every_step=True,
@@ -388,6 +393,11 @@ def main():
         f"domain=({design.width/µm:.2f},{design.height/µm:.2f},{design.depth/µm:.2f})um"
     )
     print(
+        "DFT freq sweep: "
+        f"{(LIGHT_SPEED/np.max(freqs))/µm:.4f}..{(LIGHT_SPEED/np.min(freqs))/µm:.4f} um "
+        f"({len(freqs)} points)"
+    )
+    print(
         "DFT windows (/f0): "
         f"fwd=[{dft_fwd_t_start*f0:.1f},{dft_fwd_t_end*f0:.1f}], "
         f"ref=[{dft_ref_t_start*f0:.1f},{dft_ref_t_end*f0:.1f}], "
@@ -417,6 +427,10 @@ def main():
         f"x_straight=[{x_straight_min/µm:.3f},{x_straight_max/µm:.3f}]um, "
         f"source_x={source_x/µm:.3f}um, fwd_x={fwd_x/µm:.3f}um, ref_x={ref_x/µm:.3f}um, "
         f"port_x={x_port/µm:.3f}um"
+    )
+    print(
+        "Port directions (gdsfactory): "
+        f"o1={ports['o1']['direction']}, o2={ports['o2']['direction']}, o3={ports['o3']['direction']}"
     )
     src_x, src_y, src_z = source.center
     src_inside_non_pml = (
@@ -471,70 +485,126 @@ def main():
         progress=False,
     )
 
-    specs = [
-        PortSpec(name="o1_fwd", monitor_name="o1_fwd", direction=src["direction"], polarization="te"),
-        PortSpec(name="o1_ref", monitor_name="o1_ref", direction=src["direction"], polarization="te"),
-        PortSpec(name="o2_out", monitor_name="o2_out", direction=ports["o2"]["direction"], polarization="te"),
-        PortSpec(name="o3_out", monitor_name="o3_out", direction=ports["o3"]["direction"], polarization="te"),
+    # Use explicit source/reference modal S extraction so incident/outgoing waves
+    # are selected by the framework convention rather than magnitude heuristics.
+    outward_specs = [
+        PortSpec(
+            name="o1",
+            monitor_name="o1_ref",
+            reference_monitor="o1_fwd",
+            direction=outward_direction(src["direction"]),
+            polarization="te",
+        ),
+        PortSpec(
+            name="o2",
+            monitor_name="o2_out",
+            direction=outward_direction(ports["o2"]["direction"]),
+            polarization="te",
+        ),
+        PortSpec(
+            name="o3",
+            monitor_name="o3_out",
+            direction=outward_direction(ports["o3"]["direction"]),
+            polarization="te",
+        ),
     ]
-    waves = sim.extract_port_waves_dft(ports=specs, frequencies=[f0], return_power=True)
+    s_dft = sim.get_S_matrix_modal_dft(
+        source_port="o1",
+        ports=outward_specs,
+        output_ports=["o1", "o2", "o3"],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-35.0,
+    )
+    s_matrix = s_dft["s_matrix"]
+    diagnostics = s_dft["diagnostics"]
+    waves = diagnostics["waves"]
 
-    a_fwd_plus = complex(np.asarray(waves["o1_fwd"]["a_plus"], dtype=np.complex128)[0])
-    a_fwd_minus = complex(np.asarray(waves["o1_fwd"]["a_minus"], dtype=np.complex128)[0])
-    if abs(a_fwd_plus) >= abs(a_fwd_minus):
-        inc_key, opp_key, a_incident = "a_plus", "a_minus", a_fwd_plus
-    else:
-        inc_key, opp_key, a_incident = "a_minus", "a_plus", a_fwd_minus
+    s11_spec = np.asarray(s_matrix[("o1", "o1")], dtype=np.complex128)
+    s21_spec = np.asarray(s_matrix[("o2", "o1")], dtype=np.complex128)
+    s31_spec = np.asarray(s_matrix[("o3", "o1")], dtype=np.complex128)
+    valid_mask = np.asarray(diagnostics.get("valid_mask", np.ones_like(freqs, dtype=bool)), dtype=bool)
 
-    denom = max(abs(a_incident), 1e-30)
-    s11 = complex(np.asarray(waves["o1_ref"][opp_key], dtype=np.complex128)[0] / denom)
-    s21 = complex(np.asarray(waves["o2_out"][opp_key], dtype=np.complex128)[0] / denom)
-    s31 = complex(np.asarray(waves["o3_out"][opp_key], dtype=np.complex128)[0] / denom)
-
-    p11 = abs(s11) ** 2
-    p21 = abs(s21) ** 2
-    p31 = abs(s31) ** 2
-    closure = p11 + p21 + p31
-    split_sum = max(p21 + p31, 1e-30)
-    split_o2 = p21 / split_sum
-    split_o3 = p31 / split_sum
-    balance_db = abs(
-        20.0 * np.log10(max(abs(s21), 1e-12)) - 20.0 * np.log10(max(abs(s31), 1e-12))
+    p11_spec = np.abs(s11_spec) ** 2
+    p21_spec = np.abs(s21_spec) ** 2
+    p31_spec = np.abs(s31_spec) ** 2
+    closure_spec = p11_spec + p21_spec + p31_spec
+    split_sum_spec = np.maximum(p21_spec + p31_spec, 1e-30)
+    split_o2_spec = p21_spec / split_sum_spec
+    split_o3_spec = p31_spec / split_sum_spec
+    balance_db_spec = np.abs(
+        20.0 * np.log10(np.maximum(np.abs(s21_spec), 1e-12))
+        - 20.0 * np.log10(np.maximum(np.abs(s31_spec), 1e-12))
     )
 
-    p_in_flux = directional_power_x(m_in_flux, dx=dx, direction="+x")
-    p_ref_flux = directional_power_x(m_ref_flux, dx=dx, direction="-x")
-    p_out_flux = directional_power_x(m_out_flux, dx=dx, direction="+x")
+    wl_spec = LIGHT_SPEED / freqs
+    wl0_idx = int(np.argmin(np.abs(wl_spec - wl0)))
+    wl_c = float(wl_spec[wl0_idx])
+    s11 = complex(s11_spec[wl0_idx])
+    s21 = complex(s21_spec[wl0_idx])
+    s31 = complex(s31_spec[wl0_idx])
+    p11 = float(p11_spec[wl0_idx])
+    p21 = float(p21_spec[wl0_idx])
+    p31 = float(p31_spec[wl0_idx])
+    closure = float(closure_spec[wl0_idx])
+    split_o2 = float(split_o2_spec[wl0_idx])
+    split_o3 = float(split_o3_spec[wl0_idx])
+    balance_db = float(balance_db_spec[wl0_idx])
+    a_fwd_plus = np.asarray(waves["o1"]["a_plus"], dtype=np.complex128)
+    a_fwd_minus = np.asarray(waves["o1"]["a_minus"], dtype=np.complex128)
+    a_incident = np.asarray(waves["o1"].get("a_incident", a_fwd_plus), dtype=np.complex128)
+    a_incident_c = complex(a_incident[wl0_idx])
+    a_fwd_plus_c = complex(a_fwd_plus[wl0_idx])
+    a_fwd_minus_c = complex(a_fwd_minus[wl0_idx])
+
+    p_in_flux = directional_power_x(m_in_flux, dx=dx, dy=dx, dz=dx, direction="+x", freq_idx=wl0_idx)
+    p_ref_flux = directional_power_x(m_ref_flux, dx=dx, dy=dx, dz=dx, direction="-x", freq_idx=wl0_idx)
+    p_out_flux = directional_power_x(m_out_flux, dx=dx, dy=dx, dz=dx, direction="+x", freq_idx=wl0_idx)
     p_in_abs = max(abs(p_in_flux), 1e-30)
     flux_closure_signed = (p_ref_flux + p_out_flux) / p_in_abs
     flux_closure_unsigned = (abs(p_ref_flux) + abs(p_out_flux)) / p_in_abs
 
     print(
-        f"S11 @ {wl0/µm:.4f}um: |S11|={abs(s11):.6f}, "
+        f"S11 @ {wl_c/µm:.4f}um: |S11|={abs(s11):.6f}, "
         f"{20*np.log10(max(abs(s11),1e-12)):.2f} dB"
     )
     print(
-        f"S21 @ {wl0/µm:.4f}um: |S21|={abs(s21):.6f}, "
+        f"S21 @ {wl_c/µm:.4f}um: |S21|={abs(s21):.6f}, "
         f"{20*np.log10(max(abs(s21),1e-12)):.2f} dB"
     )
     print(
-        f"S31 @ {wl0/µm:.4f}um: |S31|={abs(s31):.6f}, "
+        f"S31 @ {wl_c/µm:.4f}um: |S31|={abs(s31):.6f}, "
         f"{20*np.log10(max(abs(s31),1e-12)):.2f} dB"
     )
     print(
         f"Modal closure: {closure:.6f}, split o2/o3={split_o2:.3f}/{split_o3:.3f}, "
         f"balance={balance_db:.3f} dB"
     )
+    source_out_dir = outward_direction(src["direction"])
     print(
-        "Incident-wave normalization: "
-        f"inc_key={inc_key}, |a_plus_fwd|={abs(a_fwd_plus):.3e}, "
-        f"|a_minus_fwd|={abs(a_fwd_minus):.3e}, |a_inc|={abs(a_incident):.3e}"
+        "Wave convention check: "
+        f"src_dir={src['direction']}, src_outward={source_out_dir}, "
+        f"|a_plus_ref|={abs(a_fwd_plus_c):.3e}, |a_minus_ref|={abs(a_fwd_minus_c):.3e}, "
+        f"|a_inc|={abs(a_incident_c):.3e}"
     )
     print(
         "Wide-plane flux closure: "
         f"signed={flux_closure_signed:.6f}, unsigned={flux_closure_unsigned:.6f} "
         f"(R={p_ref_flux/p_in_abs:.6f}, T={p_out_flux/p_in_abs:.6f})"
     )
+    valid_idx = np.where(valid_mask)[0]
+    if valid_idx.size > 0:
+        p_sum_valid = np.asarray(closure_spec[valid_idx], dtype=float)
+        s21_db = 20.0 * np.log10(np.maximum(np.abs(s21_spec[valid_idx]), 1e-12))
+        s31_db = 20.0 * np.log10(np.maximum(np.abs(s31_spec[valid_idx]), 1e-12))
+        print(
+            "Sweep summary: "
+            f"valid={valid_idx.size}/{len(freqs)}, "
+            f"closure[min,max]=[{np.nanmin(p_sum_valid):.3f},{np.nanmax(p_sum_valid):.3f}], "
+            f"S21[dB min,max]=[{np.nanmin(s21_db):.2f},{np.nanmax(s21_db):.2f}], "
+            f"S31[dB min,max]=[{np.nanmin(s31_db):.2f},{np.nanmax(s31_db):.2f}]"
+        )
 
     eps = np.asarray(grid.permittivity, dtype=float)
     z_idx = int(np.clip(round(core_zc / dx), 0, eps.shape[0] - 1))
@@ -583,28 +653,34 @@ def main():
     )
     ax[0, 0].text(src_x / µm, (src_y + 0.5 * source.width) / µm + 0.04, "source", color="red", fontsize=7, ha="center")
 
-    labels = ["|S11|^2", "|S21|^2", "|S31|^2", "closure"]
-    vals = [p11, p21, p31, closure]
-    colors = ["black", "tab:blue", "tab:green", "tab:red"]
-    ax[0, 1].bar(labels, vals, color=colors, alpha=0.88)
-    ax[0, 1].axhline(1.0, color="k", ls="--", lw=1.0, alpha=0.7)
+    wl_um = wl_spec / µm
+    order = np.argsort(wl_um)
+    ax[0, 1].plot(wl_um[order], p11_spec[order], "o-", color="black", lw=1.4, label="|S11|^2")
+    ax[0, 1].plot(wl_um[order], p21_spec[order], "o-", color="tab:blue", lw=1.4, label="|S21|^2")
+    ax[0, 1].plot(wl_um[order], p31_spec[order], "o-", color="tab:green", lw=1.4, label="|S31|^2")
+    ax[0, 1].plot(wl_um[order], closure_spec[order], color="tab:red", lw=1.2, ls="--", label="closure")
+    ax[0, 1].axhline(1.0, color="k", ls=":", lw=1.0, alpha=0.75)
+    ax[0, 1].axvline(wl0 / µm, color="gray", ls="--", lw=0.9, alpha=0.8)
+    ax[0, 1].set_xlabel("wavelength (um)")
     ax[0, 1].set_ylabel("Power")
-    ax[0, 1].set_title("Modal DFT Metrics")
-    ax[0, 1].grid(axis="y", alpha=0.25)
+    ax[0, 1].set_title("Modal DFT Spectrum")
+    ax[0, 1].grid(alpha=0.25)
+    ax[0, 1].legend(fontsize=7, loc="best")
 
     ax[1, 0].axis("off")
     ax[1, 0].text(
         0.02,
         0.96,
         (
-            f"MMI1x2 3D @ {wl0/µm:.4f} um\n"
+            f"MMI1x2 3D @ {wl_c/µm:.4f} um (center)\n"
+            f"sweep = {wl_min/µm:.4f}..{wl_max/µm:.4f} um ({len(freqs)} pts)\n"
             f"|S11| = {abs(s11):.6f}\n"
             f"|S21| = {abs(s21):.6f}\n"
             f"|S31| = {abs(s31):.6f}\n"
             f"closure = {closure:.6f}\n"
             f"flux signed/unsigned = {flux_closure_signed:.3f}/{flux_closure_unsigned:.3f}\n"
             f"split o2/o3 = {split_o2:.3f}/{split_o3:.3f}\n"
-            f"inc_key={inc_key}, |a_inc|={abs(a_incident):.3e}\n"
+            f"src_outward={source_out_dir}, |a_inc|={abs(a_incident_c):.3e}\n"
             f"dx={dx/µm:.4f} um, steps={len(time)}"
         ),
         va="top",
