@@ -848,6 +848,8 @@ class RegularGrid3D(BaseMeshGrid):
                             max_k=max_k,
                             x_centers=x_centers,
                             y_centers=y_centers,
+                            cell_size_xy=cell_size_xy,
+                            cell_size_z=cell_size_z,
                         )
                         if poly_done:
                             fast_poly_count += 1
@@ -1086,8 +1088,14 @@ class RegularGrid3D(BaseMeshGrid):
         max_k,
         x_centers,
         y_centers,
+        cell_size_xy,
+        cell_size_z,
     ):
-        """Vectorized XY fill for extruded polygons using matplotlib Path."""
+        """Vectorized anti-aliased fill for extruded polygons.
+
+        Uses 3x3 supersampling in XY and exact voxel overlap in Z so imported
+        taper polygons get the same subpixel smoothing behavior as fallback paths.
+        """
         if MplPath is None:
             return False
         if not hasattr(structure, "vertices") or not structure.vertices:
@@ -1111,33 +1119,67 @@ class RegularGrid3D(BaseMeshGrid):
         if verts.ndim != 2 or verts.shape[0] < 3:
             return False
 
+        z0 = float(getattr(structure, "z", np.min(verts3[:, 2])))
+        z1 = z0 + float(getattr(structure, "depth", 0.0))
+        if z1 <= z0:
+            z1 = float(np.max(verts3[:, 2]))
+        if z1 <= z0:
+            z1 = z0 + float(cell_size_z)
+
         x_local = x_centers[min_j:max_j]
         y_local = y_centers[min_i:max_i]
         xx, yy = np.meshgrid(x_local, y_local)
-        points = np.column_stack((xx.ravel(), yy.ravel()))
-
         outer_path = MplPath(verts)
-        mask = outer_path.contains_points(points).reshape(yy.shape)
-
         interiors = getattr(structure, "interiors", None) or []
-        for interior in interiors:
-            iv3 = np.asarray(interior, dtype=float)
+
+        hole_paths = []
+        for hole in interiors:
+            iv3 = np.asarray(hole, dtype=float)
             if iv3.ndim == 2 and iv3.shape[1] >= 3 and np.ptp(iv3[:, 2]) > 1e-12:
                 return False
-            iv = np.asarray([(v[0], v[1]) for v in interior], dtype=float)
+            iv = np.asarray([(v[0], v[1]) for v in hole], dtype=float)
             if iv.ndim == 2 and iv.shape[0] >= 3:
-                hole_path = MplPath(iv)
-                hole_mask = hole_path.contains_points(points).reshape(yy.shape)
-                mask &= ~hole_mask
+                hole_paths.append(MplPath(iv))
 
-        if not np.any(mask):
+        offsets = np.array([-0.25, 0.0, 0.25], dtype=float) * float(cell_size_xy)
+        n_samples_xy = float(len(offsets) * len(offsets))
+        inside_count = np.zeros(xx.shape, dtype=float)
+        for oy in offsets:
+            for ox in offsets:
+                points = np.column_stack(((xx + ox).ravel(), (yy + oy).ravel()))
+                inside = outer_path.contains_points(points, radius=1e-15).reshape(xx.shape)
+                for hole_path in hole_paths:
+                    inside &= ~hole_path.contains_points(points, radius=1e-15).reshape(xx.shape)
+                inside_count += inside.astype(float)
+        frac_xy = inside_count / n_samples_xy
+        if not np.any(frac_xy > 0.0):
             return True
 
-        local_i, local_j = np.where(mask)
-        global_i = local_i + min_i
-        global_j = local_j + min_j
-        for k in range(min_k, max_k):
-            grids.set_region((k, global_i, global_j), props)
+        z_edges0 = np.arange(min_k, max_k, dtype=float) * float(cell_size_z)
+        z_edges1 = z_edges0 + float(cell_size_z)
+        frac_z = np.clip(
+            np.minimum(z_edges1, z1) - np.maximum(z_edges0, z0),
+            0.0,
+            float(cell_size_z),
+        ) / float(cell_size_z)
+        frac = frac_z[:, None, None] * frac_xy[None, :, :]
+        if not np.any(frac > 0.0):
+            return True
+
+        full_mask = frac >= (1.0 - 1e-12)
+        blend_mask = (frac > 0.0) & ~full_mask
+
+        if np.any(full_mask):
+            for name, val in zip(MaterialGrids.NAMES, props):
+                arr = getattr(grids, name)[min_k:max_k, min_i:max_i, min_j:max_j]
+                arr[full_mask] = val
+
+        if np.any(blend_mask):
+            for name, val in zip(MaterialGrids.NAMES, props):
+                arr = getattr(grids, name)[min_k:max_k, min_i:max_i, min_j:max_j]
+                f = frac[blend_mask]
+                arr[blend_mask] = arr[blend_mask] * (1.0 - f) + val * f
+
         return True
 
     def _rasterize_structure_3d_fallback(

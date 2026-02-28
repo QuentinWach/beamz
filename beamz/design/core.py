@@ -175,7 +175,7 @@ def _rebuild_structure_list(
     return rebuilt
 
 
-RASTER_CACHE_VERSION = "v2"
+RASTER_CACHE_VERSION = "v3"
 
 
 def _env_bool(name: str, default: bool) -> bool:

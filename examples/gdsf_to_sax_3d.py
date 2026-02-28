@@ -485,45 +485,75 @@ def main():
         progress=False,
     )
 
-    # Use explicit source/reference modal S extraction so incident/outgoing waves
-    # are selected by the framework convention rather than magnitude heuristics.
-    outward_specs = [
-        PortSpec(
-            name="o1",
-            monitor_name="o1_ref",
-            reference_monitor="o1_fwd",
-            direction=outward_direction(src["direction"]),
-            polarization="te",
-        ),
-        PortSpec(
-            name="o2",
-            monitor_name="o2_out",
-            direction=outward_direction(ports["o2"]["direction"]),
-            polarization="te",
-        ),
-        PortSpec(
-            name="o3",
-            monitor_name="o3_out",
-            direction=outward_direction(ports["o3"]["direction"]),
-            polarization="te",
-        ),
-    ]
-    s_dft = sim.get_S_matrix_modal_dft(
-        source_port="o1",
-        ports=outward_specs,
-        output_ports=["o1", "o2", "o3"],
-        frequencies=freqs,
-        as_sax=False,
-        return_diagnostics=True,
-        min_incident_db=-35.0,
-    )
+    # Multimode extraction: excite fundamental input mode and project multiple
+    # output/reflection mode indices to quantify guided power not in TE0.
+    requested_modes = 3
+    s_dft = None
+    modes_eval = requested_modes
+    last_extract_error = None
+    port_defs = {
+        "o1": {"monitor": "o1_ref", "direction": outward_direction(src["direction"])},
+        "o2": {"monitor": "o2_out", "direction": outward_direction(ports["o2"]["direction"])},
+        "o3": {"monitor": "o3_out", "direction": outward_direction(ports["o3"]["direction"])},
+    }
+    source_key = "o1_m0"
+    for modes_try in range(requested_modes, 0, -1):
+        specs_try = []
+        output_try = []
+        for port_name in ("o1", "o2", "o3"):
+            for mode_idx in range(modes_try):
+                key = f"{port_name}_m{mode_idx}"
+                kwargs = {}
+                if port_name == "o1" and mode_idx == 0:
+                    kwargs["reference_monitor"] = "o1_fwd"
+                specs_try.append(
+                    PortSpec(
+                        name=key,
+                        monitor_name=port_defs[port_name]["monitor"],
+                        direction=port_defs[port_name]["direction"],
+                        polarization="te",
+                        mode_index=mode_idx,
+                        **kwargs,
+                    )
+                )
+                output_try.append(key)
+        try:
+            s_dft = sim.get_S_matrix_modal_dft(
+                source_port=source_key,
+                ports=specs_try,
+                output_ports=output_try,
+                frequencies=freqs,
+                as_sax=False,
+                return_diagnostics=True,
+                min_incident_db=-35.0,
+            )
+            modes_eval = modes_try
+            break
+        except Exception as exc:
+            last_extract_error = exc
+
+    if s_dft is None:
+        raise RuntimeError(
+            f"Multimode S extraction failed up to mode {requested_modes - 1}: {last_extract_error}"
+        )
+    if modes_eval < requested_modes:
+        print(
+            f"Multimode extraction fallback: requested {requested_modes} modes, using {modes_eval} modes."
+        )
+
     s_matrix = s_dft["s_matrix"]
     diagnostics = s_dft["diagnostics"]
     waves = diagnostics["waves"]
 
-    s11_spec = np.asarray(s_matrix[("o1", "o1")], dtype=np.complex128)
-    s21_spec = np.asarray(s_matrix[("o2", "o1")], dtype=np.complex128)
-    s31_spec = np.asarray(s_matrix[("o3", "o1")], dtype=np.complex128)
+    def s_col(dst_key):
+        return np.asarray(
+            s_matrix.get((dst_key, source_key), np.zeros(freqs.size, dtype=np.complex128)),
+            dtype=np.complex128,
+        )
+
+    s11_spec = s_col("o1_m0")
+    s21_spec = s_col("o2_m0")
+    s31_spec = s_col("o3_m0")
     valid_mask = np.asarray(diagnostics.get("valid_mask", np.ones_like(freqs, dtype=bool)), dtype=bool)
 
     p11_spec = np.abs(s11_spec) ** 2
@@ -537,6 +567,29 @@ def main():
         20.0 * np.log10(np.maximum(np.abs(s21_spec), 1e-12))
         - 20.0 * np.log10(np.maximum(np.abs(s31_spec), 1e-12))
     )
+    p_ref_multimode_spec = np.zeros(freqs.size, dtype=float)
+    p_out_multimode_spec = np.zeros(freqs.size, dtype=float)
+    p_ref_multimode_guided_spec = np.zeros(freqs.size, dtype=float)
+    p_out_multimode_guided_spec = np.zeros(freqs.size, dtype=float)
+    guided_neff_threshold = n_clad + 1e-3
+    for port_name in ("o1", "o2", "o3"):
+        for mode_idx in range(modes_eval):
+            key = f"{port_name}_m{mode_idx}"
+            s_mode = s_col(key)
+            p_mode = np.abs(s_mode) ** 2
+            neff_mode = np.asarray(
+                waves.get(key, {}).get("mode_neff", np.full(freqs.size, np.nan)),
+                dtype=float,
+            )
+            is_guided = np.isfinite(neff_mode) & (neff_mode > guided_neff_threshold)
+            if port_name == "o1":
+                p_ref_multimode_spec += p_mode
+                p_ref_multimode_guided_spec += np.where(is_guided, p_mode, 0.0)
+            else:
+                p_out_multimode_spec += p_mode
+                p_out_multimode_guided_spec += np.where(is_guided, p_mode, 0.0)
+    closure_multimode_spec = p_ref_multimode_spec + p_out_multimode_spec
+    closure_multimode_guided_spec = p_ref_multimode_guided_spec + p_out_multimode_guided_spec
 
     wl_spec = LIGHT_SPEED / freqs
     wl0_idx = int(np.argmin(np.abs(wl_spec - wl0)))
@@ -548,12 +601,14 @@ def main():
     p21 = float(p21_spec[wl0_idx])
     p31 = float(p31_spec[wl0_idx])
     closure = float(closure_spec[wl0_idx])
+    closure_multimode = float(closure_multimode_spec[wl0_idx])
+    closure_multimode_guided = float(closure_multimode_guided_spec[wl0_idx])
     split_o2 = float(split_o2_spec[wl0_idx])
     split_o3 = float(split_o3_spec[wl0_idx])
     balance_db = float(balance_db_spec[wl0_idx])
-    a_fwd_plus = np.asarray(waves["o1"]["a_plus"], dtype=np.complex128)
-    a_fwd_minus = np.asarray(waves["o1"]["a_minus"], dtype=np.complex128)
-    a_incident = np.asarray(waves["o1"].get("a_incident", a_fwd_plus), dtype=np.complex128)
+    a_fwd_plus = np.asarray(waves[source_key]["a_plus"], dtype=np.complex128)
+    a_fwd_minus = np.asarray(waves[source_key]["a_minus"], dtype=np.complex128)
+    a_incident = np.asarray(waves[source_key].get("a_incident", a_fwd_plus), dtype=np.complex128)
     a_incident_c = complex(a_incident[wl0_idx])
     a_fwd_plus_c = complex(a_fwd_plus[wl0_idx])
     a_fwd_minus_c = complex(a_fwd_minus[wl0_idx])
@@ -581,6 +636,11 @@ def main():
         f"Modal closure: {closure:.6f}, split o2/o3={split_o2:.3f}/{split_o3:.3f}, "
         f"balance={balance_db:.3f} dB"
     )
+    print(
+        "Multimode closure: "
+        f"modes=0..{modes_eval-1}, total={closure_multimode:.6f}, "
+        f"guided(neff>{guided_neff_threshold:.3f})={closure_multimode_guided:.6f}"
+    )
     source_out_dir = outward_direction(src["direction"])
     print(
         "Wave convention check: "
@@ -596,12 +656,16 @@ def main():
     valid_idx = np.where(valid_mask)[0]
     if valid_idx.size > 0:
         p_sum_valid = np.asarray(closure_spec[valid_idx], dtype=float)
+        p_sum_mm_valid = np.asarray(closure_multimode_spec[valid_idx], dtype=float)
+        p_sum_mm_guided_valid = np.asarray(closure_multimode_guided_spec[valid_idx], dtype=float)
         s21_db = 20.0 * np.log10(np.maximum(np.abs(s21_spec[valid_idx]), 1e-12))
         s31_db = 20.0 * np.log10(np.maximum(np.abs(s31_spec[valid_idx]), 1e-12))
         print(
             "Sweep summary: "
             f"valid={valid_idx.size}/{len(freqs)}, "
             f"closure[min,max]=[{np.nanmin(p_sum_valid):.3f},{np.nanmax(p_sum_valid):.3f}], "
+            f"closure_mm[min,max]=[{np.nanmin(p_sum_mm_valid):.3f},{np.nanmax(p_sum_mm_valid):.3f}], "
+            f"closure_mm_guided[min,max]=[{np.nanmin(p_sum_mm_guided_valid):.3f},{np.nanmax(p_sum_mm_guided_valid):.3f}], "
             f"S21[dB min,max]=[{np.nanmin(s21_db):.2f},{np.nanmax(s21_db):.2f}], "
             f"S31[dB min,max]=[{np.nanmin(s31_db):.2f},{np.nanmax(s31_db):.2f}]"
         )
@@ -658,12 +722,28 @@ def main():
     ax[0, 1].plot(wl_um[order], p11_spec[order], "o-", color="black", lw=1.4, label="|S11|^2")
     ax[0, 1].plot(wl_um[order], p21_spec[order], "o-", color="tab:blue", lw=1.4, label="|S21|^2")
     ax[0, 1].plot(wl_um[order], p31_spec[order], "o-", color="tab:green", lw=1.4, label="|S31|^2")
-    ax[0, 1].plot(wl_um[order], closure_spec[order], color="tab:red", lw=1.2, ls="--", label="closure")
+    ax[0, 1].plot(wl_um[order], closure_spec[order], color="tab:red", lw=1.2, ls="--", label="closure m0")
+    ax[0, 1].plot(
+        wl_um[order],
+        closure_multimode_guided_spec[order],
+        color="tab:orange",
+        lw=1.2,
+        ls="-.",
+        label=f"closure m0..m{modes_eval-1} (guided)",
+    )
+    ax[0, 1].plot(
+        wl_um[order],
+        closure_multimode_spec[order],
+        color="tab:brown",
+        lw=1.0,
+        ls=":",
+        label=f"closure m0..m{modes_eval-1} (all)",
+    )
     ax[0, 1].axhline(1.0, color="k", ls=":", lw=1.0, alpha=0.75)
     ax[0, 1].axvline(wl0 / µm, color="gray", ls="--", lw=0.9, alpha=0.8)
     ax[0, 1].set_xlabel("wavelength (um)")
     ax[0, 1].set_ylabel("Power")
-    ax[0, 1].set_title("Modal DFT Spectrum")
+    ax[0, 1].set_title("Modal DFT Spectrum (Fundamental + Multimode)")
     ax[0, 1].grid(alpha=0.25)
     ax[0, 1].legend(fontsize=7, loc="best")
 
@@ -677,7 +757,10 @@ def main():
             f"|S11| = {abs(s11):.6f}\n"
             f"|S21| = {abs(s21):.6f}\n"
             f"|S31| = {abs(s31):.6f}\n"
-            f"closure = {closure:.6f}\n"
+            f"closure m0 = {closure:.6f}\n"
+            f"closure mm(guided) = {closure_multimode_guided:.6f}\n"
+            f"closure mm(all) = {closure_multimode:.6f}\n"
+            f"mode count eval = {modes_eval}\n"
             f"flux signed/unsigned = {flux_closure_signed:.3f}/{flux_closure_unsigned:.3f}\n"
             f"split o2/o3 = {split_o2:.3f}/{split_o3:.3f}\n"
             f"src_outward={source_out_dir}, |a_inc|={abs(a_incident_c):.3e}\n"
