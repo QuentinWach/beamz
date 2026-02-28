@@ -189,7 +189,7 @@ def main():
         n_max=n_core,
         dims=3,
         safety_factor=0.96,
-        points_per_wavelength=12,
+        points_per_wavelength=20,
     )
 
     imported_design, ports = gdsf.load(
@@ -227,25 +227,27 @@ def main():
     }
 
     # Extend all ports outward to create uniform monitor/source sections.
+    port_overlap = 0.20 * µm
     for name, port in ports.items():
         cx, cy = port["center"]
         w = float(port["width"])
         ext = input_extension if name == "o1" else output_extension
         d_out = outward_direction(port["direction"])
+        sx, sy = move_along((cx, cy), d_out, -port_overlap)
         ox, oy = move_along((cx, cy), d_out, ext)
         if d_out.endswith("x"):
             design += Rectangle(
-                position=(min(cx, ox), cy - 0.5 * w, core_z0),
-                width=abs(ox - cx),
+                position=(min(sx, ox), cy - 0.5 * w, core_z0),
+                width=abs(ox - sx),
                 height=w,
                 depth=core_t,
                 material=Material(n_core**2),
             )
         else:
             design += Rectangle(
-                position=(cx - 0.5 * w, min(cy, oy), core_z0),
+                position=(cx - 0.5 * w, min(sy, oy), core_z0),
                 width=w,
-                height=abs(oy - cy),
+                height=abs(oy - sy),
                 depth=core_t,
                 material=Material(n_core**2),
             )
@@ -333,7 +335,8 @@ def main():
     dft_o2_t_start, dft_o2_t_end = centered_window(t_o2_center)
     dft_o3_t_start, dft_o3_t_end = centered_window(t_o3_center)
 
-    t_total = max(dft_ref_t_end, dft_o2_t_end, dft_o3_t_end) + 18.0 / f0
+    settle_tail = 24.0 / f0
+    t_total = max(dft_ref_t_end, dft_o2_t_end, dft_o3_t_end) + settle_tail
     time = np.arange(0.0, t_total, dt)
 
     source.signal = np.exp(-0.5 * ((time - pulse_t0) / max(pulse_sigma, 1e-30)) ** 2) * np.cos(
