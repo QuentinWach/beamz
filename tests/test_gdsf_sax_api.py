@@ -395,9 +395,9 @@ def test_project_modal_coefficients_3d_recovers_forward_backward_modes():
     bwd_vec = np.concatenate(
         [
             (
-                -np.conjugate(mode_components[c])
+                -mode_components[c]
                 if c.startswith("H")
-                else np.conjugate(mode_components[c])
+                else mode_components[c]
             )
             for c in components
         ]
@@ -426,6 +426,10 @@ def test_project_modal_coefficients_3d_recovers_forward_backward_modes():
     a_p2, a_m2 = Simulation._project_modal_coefficients_3d(mixed_fields, projection)
     np.testing.assert_allclose(a_p2, a_true, rtol=1e-10, atol=1e-10)
     np.testing.assert_allclose(a_m2, b_true, rtol=1e-10, atol=1e-10)
+    mixed_vec = np.concatenate([mixed_fields[c] for c in components])
+    coeff_pinv = projection["pinv"] @ mixed_vec
+    np.testing.assert_allclose(coeff_pinv[0], a_true, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(coeff_pinv[1], b_true, rtol=1e-10, atol=1e-10)
 
 
 def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
@@ -439,7 +443,7 @@ def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
     fwd_vec = np.concatenate([base[c] for c in components])
     bwd_vec = np.concatenate(
         [
-            (-np.conjugate(base[c]) if c.startswith("H") else np.conjugate(base[c]))
+            (-base[c] if c.startswith("H") else base[c])
             for c in components
         ]
     )

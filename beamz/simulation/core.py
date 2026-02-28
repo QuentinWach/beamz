@@ -1318,9 +1318,9 @@ class Simulation:
             bwd_vec = np.concatenate(
                 [
                     (
-                        -np.conjugate(comp_samples[c])
+                        -comp_samples[c]
                         if c.startswith("H")
-                        else np.conjugate(comp_samples[c])
+                        else comp_samples[c]
                     )
                     for c in proj_components
                 ]
