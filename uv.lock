@@ -118,7 +118,7 @@ wheels = [
 
 [[package]]
 name = "beamz"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "gdsfactory", version = "8.32.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },

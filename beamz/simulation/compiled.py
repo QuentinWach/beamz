@@ -746,7 +746,6 @@ class CompiledSimulation:
         elif self.monitor_specs:
             monitors_2d = tuple(self.monitor_specs)
 
-        @jax.jit(donate_argnums=(0, 1))
         def run_scan(
             engine_state: EngineState,
             monitor_state: MonitorState,
@@ -1079,7 +1078,9 @@ class CompiledSimulation:
                 )
             return engine_final, monitor_final, material_final
 
-        self._compiled_scan = run_scan
+        # Use function-style JIT wrapping for compatibility with older JAX
+        # versions where decorator kwargs require the callable as first arg.
+        self._compiled_scan = jax.jit(run_scan, donate_argnums=(0, 1))
         self._compile_count += 1
 
     @property

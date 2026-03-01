@@ -57,7 +57,18 @@ class _GDSFactoryNamespace:
                 "Install it with `pip install gdsfactory`."
             ) from exc
 
-        gf.gpdk.PDK.activate()
+        if hasattr(gf, "gpdk") and hasattr(gf.gpdk, "PDK"):
+            gf.gpdk.PDK.activate()
+        else:
+            # gdsfactory<9 does not expose gf.gpdk; keep compatibility.
+            try:
+                from gdsfactory.pdk import get_active_pdk
+
+                active_pdk = get_active_pdk()
+                if active_pdk is not None and hasattr(active_pdk, "activate"):
+                    active_pdk.activate()
+            except Exception:
+                pass
         component_kwargs = component_kwargs or {}
 
         if isinstance(cell, str):
@@ -111,12 +122,14 @@ class _GDSFactoryNamespace:
         ports = {}
         for port in component.ports:
             orientation = float(port.orientation) % 360.0
+            center_um = getattr(port, "dcenter", port.center)
+            width_um = getattr(port, "dwidth", port.width)
             ports[port.name] = {
                 "center": (
-                    float((port.center[0] - xmin + pad_um) * 1e-6),
-                    float((port.center[1] - ymin + pad_um) * 1e-6),
+                    float((center_um[0] - xmin + pad_um) * 1e-6),
+                    float((center_um[1] - ymin + pad_um) * 1e-6),
                 ),
-                "width": float(port.width) * 1e-6,
+                "width": float(width_um) * 1e-6,
                 "orientation": orientation,
                 "direction": _orientation_to_inward_direction(orientation),
             }

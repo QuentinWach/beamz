@@ -416,84 +416,6 @@ def _select_3d_phase_ref(axis, pol, Ex, Ey, Ez, Hx, Hy, Hz):
     return candidates[int(np.argmax(strengths))]
 
 
-def _select_core_confined_mode_index(eps_profile, e_fields, neff_values):
-    """Pick the most core-confined candidate mode, with neff as tie-breaker."""
-    if e_fields is None or len(e_fields) <= 1:
-        return 0
-
-    eps_arr = np.asarray(eps_profile)
-    if eps_arr.size == 0:
-        return 0
-
-    eps_flat = np.real(np.ravel(eps_arr))
-    eps_min = float(np.min(eps_flat))
-    eps_max = float(np.max(eps_flat))
-    if (not np.isfinite(eps_min)) or (not np.isfinite(eps_max)) or (eps_max <= eps_min):
-        return 0
-
-    # Binary-like core/cladding split that remains stable under subpixel smoothing.
-    thresh = eps_min + 0.5 * (eps_max - eps_min)
-    core_mask = eps_flat >= thresh
-    if not np.any(core_mask):
-        return 0
-
-    # Estimate core center from geometry mask for center-confinement tie-breaking.
-    core_coords = np.argwhere(core_mask.reshape(eps_arr.shape))
-    if core_coords.size > 0:
-        core_center = np.mean(core_coords, axis=0)
-    else:
-        core_center = 0.5 * (np.asarray(eps_arr.shape, dtype=float) - 1.0)
-
-    best_idx = 0
-    best_core_frac = -np.inf
-    best_center_frac = -np.inf
-    best_neff = -np.inf
-    for idx in range(len(e_fields)):
-        field = np.asarray(e_fields[idx])
-        if field.ndim < 2:
-            continue
-        # Sum electric energy over vector components for confinement scoring.
-        e_mag = np.sum(np.abs(field) ** 2, axis=0)
-        e_flat = np.ravel(e_mag)
-        n = min(e_flat.size, eps_flat.size)
-        if n <= 0:
-            continue
-        e_flat = e_flat[:n]
-        mask = core_mask[:n]
-        total = float(np.sum(e_flat))
-        if (not np.isfinite(total)) or total <= 1e-30:
-            continue
-        core_frac = float(np.sum(e_flat[mask]) / total)
-
-        # Secondary metric: prefer energy concentrated near the core center.
-        e_mag_shape = e_mag.shape
-        center_mask = np.ones(e_mag_shape, dtype=bool)
-        idx_grids = np.indices(e_mag_shape)
-        for axis_i, n_axis in enumerate(e_mag_shape):
-            half_span = max(1.0, 0.25 * float(n_axis))
-            center_mask &= (
-                np.abs(idx_grids[axis_i] - float(core_center[axis_i])) <= half_span
-            )
-        center_frac = float(np.sum(e_mag[center_mask]) / total)
-
-        neff_r = float(np.real(neff_values[idx])) if idx < len(neff_values) else -np.inf
-        # Favor core confinement, then center confinement, then higher neff.
-        if (core_frac > best_core_frac + 1e-12) or (
-            abs(core_frac - best_core_frac) <= 1e-12
-            and center_frac > best_center_frac + 1e-12
-        ) or (
-            abs(core_frac - best_core_frac) <= 1e-12
-            and abs(center_frac - best_center_frac) <= 1e-12
-            and neff_r > best_neff
-        ):
-            best_idx = idx
-            best_core_frac = core_frac
-            best_center_frac = center_frac
-            best_neff = neff_r
-
-    return int(best_idx)
-
-
 def _build_3d_profiles(
     Ex,
     Ey,
@@ -1296,21 +1218,19 @@ class ModeSource:
         # continuum modes can otherwise dominate the sort order.
         target_neff = 0.98 * n_local_max
 
-        mode_candidates = 3
         neff_val, e_fields, h_fields, _ = solve_modes(
             eps=eps_profile,
             omega=omega,
             dL=dL,
-            m=mode_candidates,
+            m=1,
             direction=solver_direction,
             filter_pol=self.pol,
             target_neff=target_neff,
             return_fields=True,
         )
-        mode_idx = _select_core_confined_mode_index(eps_profile, e_fields, neff_val)
-        self._neff = neff_val[mode_idx]
-        E_mode = e_fields[mode_idx]
-        H_mode = h_fields[mode_idx]
+        self._neff = neff_val[0]
+        E_mode = e_fields[0]
+        H_mode = h_fields[0]
 
         # 3. Extract all 6 components and convert to JAX arrays
         Ex_raw = jnp.asarray(jnp.squeeze(E_mode[0]))
