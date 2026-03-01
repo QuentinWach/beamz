@@ -480,13 +480,17 @@ def _select_core_confined_mode_index(eps_profile, e_fields, neff_values):
         center_frac = center_num / total
         neff_r = float(np.real(neff_values[idx])) if idx < len(neff_values) else -np.inf
 
-        if (core_frac > best_core_frac + 1e-12) or (
-            abs(core_frac - best_core_frac) <= 1e-12
-            and center_frac > best_center_frac + 1e-12
-        ) or (
-            abs(core_frac - best_core_frac) <= 1e-12
-            and abs(center_frac - best_center_frac) <= 1e-12
-            and neff_r > best_neff
+        if (
+            (core_frac > best_core_frac + 1e-12)
+            or (
+                abs(core_frac - best_core_frac) <= 1e-12
+                and center_frac > best_center_frac + 1e-12
+            )
+            or (
+                abs(core_frac - best_core_frac) <= 1e-12
+                and abs(center_frac - best_center_frac) <= 1e-12
+                and neff_r > best_neff
+            )
         ):
             best_idx = idx
             best_core_frac = core_frac

@@ -234,6 +234,7 @@ class TestModeSourceDiscreteHelpers:
         )
         assert idx == 0
 
+
 @pytest.mark.simulation
 class TestModeSourceEffectiveIndex:
     """Verify mode effective index computation."""
