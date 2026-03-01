@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from beamz import Design, Material
 from beamz.optimization.autodiff import (
     compute_parameter_gradient_vjp,
     generate_conic_kernel,
@@ -21,7 +22,7 @@ from beamz.optimization.autodiff import (
     smoothed_heaviside,
     transform_density,
 )
-from beamz.optimization.topology import compute_overlap_gradient
+from beamz.optimization.topology import TopologyManager, compute_overlap_gradient
 
 
 @pytest.mark.optimization
@@ -420,3 +421,27 @@ class TestMaskHandling:
         assert not jnp.allclose(
             filtered_with_context, filtered_no_context
         ), "Fixed structure mask had no effect on filtering"
+
+
+@pytest.mark.optimization
+class TestTopologyManagerResolution:
+    """Resolution handling should be explicit and deterministic."""
+
+    def test_requires_explicit_resolution_without_cached_grid(self):
+        design = Design(
+            width=2.0e-6, height=2.0e-6, material=Material(permittivity=1.0)
+        )
+        mask = np.ones((2, 2), dtype=bool)
+
+        with pytest.raises(ValueError, match="requires explicit `resolution`"):
+            TopologyManager(design=design, region_mask=mask)
+
+    def test_uses_cached_design_resolution_when_available(self):
+        design = Design(
+            width=2.0e-6, height=2.0e-6, material=Material(permittivity=1.0)
+        )
+        grid = design.rasterize(resolution=1.0e-6)
+        mask = np.ones_like(np.asarray(grid.permittivity), dtype=bool)
+
+        manager = TopologyManager(design=design, region_mask=mask, resolution=None)
+        assert np.isclose(manager.resolution, 1.0e-6)

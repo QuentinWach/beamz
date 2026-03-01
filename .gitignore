@@ -76,6 +76,8 @@ MARKETING_2.md
 *.npy
 benchmarks/results/ir/
 benchmarks/results/trace/
+benchmarks/results/**
+!benchmarks/results/.gitkeep
 
 beamz/devices/reference/
 notes/

@@ -1,8 +1,11 @@
+import logging
 from typing import Callable, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Rectangle as MatplotlibRectangle
+
+logger = logging.getLogger(__name__)
 
 
 class Monitor:
@@ -827,8 +830,8 @@ class Monitor:
                 ax.autoscale_view()
             self.live_fig.canvas.draw()
             self.live_fig.canvas.flush_events()
-        except:
-            pass  # Ignore plotting errors
+        except Exception:
+            logger.debug("Failed to update 2D monitor live plot.", exc_info=True)
 
     def _update_live_plot_3d(self):
         """Update live plot for 3D monitor."""
@@ -861,8 +864,8 @@ class Monitor:
                 ax.autoscale_view()
             self.live_fig.canvas.draw()
             self.live_fig.canvas.flush_events()
-        except:
-            pass  # Ignore plotting errors
+        except Exception:
+            logger.debug("Failed to update 3D monitor live plot.", exc_info=True)
 
     def get_field_statistics(self):
         """Get statistical information about recorded fields."""
