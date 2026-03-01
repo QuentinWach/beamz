@@ -212,6 +212,28 @@ class TestModeSourceDiscreteHelpers:
         assert np.isfinite(p)
         assert np.isclose(abs(p), 1.0, rtol=1e-10, atol=1e-10)
 
+    def test_select_core_confined_mode_prefers_centered_mode(self):
+        eps = np.ones((81, 1), dtype=float)
+        eps[24:57, 0] = 4.0
+        y = np.arange(81, dtype=float)
+
+        centered = np.exp(-0.5 * ((y - 40.0) / 6.0) ** 2)
+        edge_lobed = np.exp(-0.5 * ((y - 27.0) / 4.0) ** 2) + np.exp(
+            -0.5 * ((y - 53.0) / 4.0) ** 2
+        )
+
+        e_center = np.zeros((3, 81, 1), dtype=np.complex128)
+        e_edge = np.zeros((3, 81, 1), dtype=np.complex128)
+        e_center[2, :, 0] = centered
+        e_edge[2, :, 0] = edge_lobed
+
+        idx = mode_module._select_core_confined_mode_index(
+            eps_profile=eps,
+            e_fields=np.stack([e_center, e_edge], axis=0),
+            neff_values=np.asarray([1.90, 1.95], dtype=np.complex128),
+        )
+        assert idx == 0
+
 @pytest.mark.simulation
 class TestModeSourceEffectiveIndex:
     """Verify mode effective index computation."""

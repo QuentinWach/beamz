@@ -416,6 +416,59 @@ def _select_3d_phase_ref(axis, pol, Ex, Ey, Ez, Hx, Hy, Hz):
     return candidates[int(np.argmax(strengths))]
 
 
+def _select_core_confined_mode_index(eps_profile, e_fields, neff_values):
+    """Choose the candidate mode with strongest confinement in the high-index core."""
+    if e_fields is None or len(e_fields) <= 1:
+        return 0
+
+    eps_arr = np.asarray(eps_profile)
+    if eps_arr.size == 0:
+        return 0
+
+    eps_flat = np.real(eps_arr).ravel()
+    eps_min = float(np.min(eps_flat))
+    eps_max = float(np.max(eps_flat))
+    if (not np.isfinite(eps_min)) or (not np.isfinite(eps_max)) or (eps_max <= eps_min):
+        return 0
+
+    # Robust core estimate that also works with subpixel-smoothed profiles.
+    core_mask = eps_flat >= (eps_min + 0.5 * (eps_max - eps_min))
+    if not np.any(core_mask):
+        return 0
+
+    best_idx = 0
+    best_core_frac = -np.inf
+    best_neff = -np.inf
+
+    for idx, field in enumerate(e_fields):
+        f = np.asarray(field)
+        if f.ndim < 2:
+            continue
+
+        e_mag = np.sum(np.abs(f) ** 2, axis=0).ravel()
+        n = min(e_mag.size, core_mask.size)
+        if n <= 0:
+            continue
+        e_mag = e_mag[:n]
+        mask = core_mask[:n]
+
+        total = float(np.sum(e_mag))
+        if (not np.isfinite(total)) or total <= 1e-30:
+            continue
+
+        core_frac = float(np.sum(e_mag[mask]) / total)
+        neff_r = float(np.real(neff_values[idx])) if idx < len(neff_values) else -np.inf
+
+        if (core_frac > best_core_frac + 1e-12) or (
+            abs(core_frac - best_core_frac) <= 1e-12 and neff_r > best_neff
+        ):
+            best_idx = idx
+            best_core_frac = core_frac
+            best_neff = neff_r
+
+    return int(best_idx)
+
+
 def _build_3d_profiles(
     Ex,
     Ey,
@@ -1218,19 +1271,34 @@ class ModeSource:
         # continuum modes can otherwise dominate the sort order.
         target_neff = 0.98 * n_local_max
 
-        neff_val, e_fields, h_fields, _ = solve_modes(
-            eps=eps_profile,
-            omega=omega,
-            dL=dL,
-            m=1,
-            direction=solver_direction,
-            filter_pol=self.pol,
-            target_neff=target_neff,
-            return_fields=True,
-        )
-        self._neff = neff_val[0]
-        E_mode = e_fields[0]
-        H_mode = h_fields[0]
+        mode_candidates = 3
+        try:
+            neff_val, e_fields, h_fields, _ = solve_modes(
+                eps=eps_profile,
+                omega=omega,
+                dL=dL,
+                m=mode_candidates,
+                direction=solver_direction,
+                filter_pol=self.pol,
+                target_neff=target_neff,
+                return_fields=True,
+            )
+        except ValueError:
+            neff_val, e_fields, h_fields, _ = solve_modes(
+                eps=eps_profile,
+                omega=omega,
+                dL=dL,
+                m=1,
+                direction=solver_direction,
+                filter_pol=self.pol,
+                target_neff=target_neff,
+                return_fields=True,
+            )
+
+        mode_idx = _select_core_confined_mode_index(eps_profile, e_fields, neff_val)
+        self._neff = neff_val[mode_idx]
+        E_mode = e_fields[mode_idx]
+        H_mode = h_fields[mode_idx]
 
         # 3. Extract all 6 components and convert to JAX arrays
         Ex_raw = jnp.asarray(jnp.squeeze(E_mode[0]))
