@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 import numpy as np
-
-from beamz.const import LIGHT_SPEED
 
 # Defer imports to avoid circular dependencies if any,
 # or import at top level if safe. design shouldn't depend on optimization.
@@ -82,9 +78,7 @@ class TopologyManager:
         self.beta_start, self.beta_end = beta_schedule
         self.eps_min = eps_min
         self.eps_max = eps_max
-        self.resolution = resolution or getattr(
-            design.rasterize(resolution=0.1), "dx"
-        )  # Fallback resolution check?
+        self.resolution = self._resolve_resolution(design, resolution)
 
         # Filter settings
         self.filter_type = filter_type
@@ -110,6 +104,31 @@ class TopologyManager:
 
         # History
         self.objective_history = []
+
+    @staticmethod
+    def _resolve_resolution(design, resolution: float | None) -> float:
+        """Resolve optimization resolution without using unsafe implicit defaults.
+
+        Resolution must be explicitly provided unless the design has already been
+        rasterized and therefore carries a cached resolution.
+        """
+        if resolution is not None:
+            resolved = float(resolution)
+        else:
+            resolved = getattr(design, "_grid_resolution", None)
+            if resolved is None and hasattr(design, "_grid"):
+                resolved = getattr(design._grid, "dx", None)
+            if resolved is None:
+                raise ValueError(
+                    "TopologyManager requires explicit `resolution` (meters) when the "
+                    "design has no cached rasterization. Call `design.rasterize(...)` "
+                    "first or pass `resolution=...` explicitly."
+                )
+            resolved = float(resolved)
+
+        if resolved <= 0:
+            raise ValueError(f"resolution must be positive, got {resolved!r}")
+        return resolved
 
     def get_current_beta(self, step: int, total_steps: int) -> float:
         """Calculate projection beta for current step."""
