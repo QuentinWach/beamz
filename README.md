@@ -23,6 +23,8 @@ pip install beamz
 - Sub-pixel smoothing.
 - Gaussian and mode sources with TE and TM polarization.
 - Custom source time profiles.
+- Monitors for field snapshots, power/Poynting history, and frequency-domain (DFT) accumulation.
+- Single-frequency CW and broadband in-simulation DFT S-parameter extraction workflow.
 - Dedicated visualization module for ...almost everything.
 - Streamlined parametric design module.
 - Thermal workflows (transient coupling + static thermal solves).
