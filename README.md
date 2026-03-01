@@ -1,7 +1,7 @@
 <div align="left">
 <img src="docs/assets/BEAMZ_logo.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
 
-BEAMZ is an **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package using the [FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for topology optimization using the adjoint method with **Jax-based [autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)** and a thermal solver.
+BEAMZ is an **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method**. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for topology optimization using the adjoint method with **Jax-based [autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)** and a thermal solver.
 </div>
 
 ```bash
