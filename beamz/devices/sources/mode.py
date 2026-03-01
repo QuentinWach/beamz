@@ -437,8 +437,16 @@ def _select_core_confined_mode_index(eps_profile, e_fields, neff_values):
     if not np.any(core_mask):
         return 0
 
+    # Estimate core center from geometry mask for center-confinement tie-breaking.
+    core_coords = np.argwhere(core_mask.reshape(eps_arr.shape))
+    if core_coords.size > 0:
+        core_center = np.mean(core_coords, axis=0)
+    else:
+        core_center = 0.5 * (np.asarray(eps_arr.shape, dtype=float) - 1.0)
+
     best_idx = 0
-    best_score = -np.inf
+    best_core_frac = -np.inf
+    best_center_frac = -np.inf
     best_neff = -np.inf
     for idx in range(len(e_fields)):
         field = np.asarray(e_fields[idx])
@@ -456,13 +464,31 @@ def _select_core_confined_mode_index(eps_profile, e_fields, neff_values):
         if (not np.isfinite(total)) or total <= 1e-30:
             continue
         core_frac = float(np.sum(e_flat[mask]) / total)
+
+        # Secondary metric: prefer energy concentrated near the core center.
+        e_mag_shape = e_mag.shape
+        center_mask = np.ones(e_mag_shape, dtype=bool)
+        idx_grids = np.indices(e_mag_shape)
+        for axis_i, n_axis in enumerate(e_mag_shape):
+            half_span = max(1.0, 0.25 * float(n_axis))
+            center_mask &= (
+                np.abs(idx_grids[axis_i] - float(core_center[axis_i])) <= half_span
+            )
+        center_frac = float(np.sum(e_mag[center_mask]) / total)
+
         neff_r = float(np.real(neff_values[idx])) if idx < len(neff_values) else -np.inf
-        # Favor confinement first, then higher neff if scores are comparable.
-        if (core_frac > best_score + 1e-12) or (
-            abs(core_frac - best_score) <= 1e-12 and neff_r > best_neff
+        # Favor core confinement, then center confinement, then higher neff.
+        if (core_frac > best_core_frac + 1e-12) or (
+            abs(core_frac - best_core_frac) <= 1e-12
+            and center_frac > best_center_frac + 1e-12
+        ) or (
+            abs(core_frac - best_core_frac) <= 1e-12
+            and abs(center_frac - best_center_frac) <= 1e-12
+            and neff_r > best_neff
         ):
             best_idx = idx
-            best_score = core_frac
+            best_core_frac = core_frac
+            best_center_frac = center_frac
             best_neff = neff_r
 
     return int(best_idx)
