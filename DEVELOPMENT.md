@@ -169,7 +169,7 @@ python release_version.py 0.1.X
 ```
 
 This will:
-1. Update version in `setup.py`, `pyproject.toml`, and `beamz/__init__.py`
+1. Update version in `pyproject.toml` and `beamz/__init__.py`
 2. Create git tag `v0.1.X`
 3. Push tag to remote repository
 
@@ -181,9 +181,7 @@ python release_version.py 0.1.X --message "Release notes"
 ```
 
 Options:
-- `--tag-only`: Only create git tag
 - `--no-push`: Don't push tag to remote
-- `--draft`: Create draft GitHub release
 - `--force`: Force overwrite existing tag
 - `--skip-version-update`: Skip updating version files
 
@@ -226,7 +224,7 @@ beamz/
 ├── pyproject.toml      # Project config (source of truth)
 ├── uv.lock            # Dependency lockfile
 ├── Makefile           # Development shortcuts
-└── CLAUDE.md          # AI assistant guide
+└── release_version.py # Version bump + tag helper
 ```
 
 ## Configuration Files
@@ -299,6 +297,6 @@ GitHub Actions workflows use uv:
 ## Additional Resources
 
 - [uv Documentation](https://docs.astral.sh/uv/)
-- [Contributing Guide](CONTRIBUTING.md)
-- [Quick Start](QUICKSTART.md)
-- [AI Assistant Guide](CLAUDE.md)
+- [Project README](README.md)
+- [Documentation Index](docs/index.md)
+- [Benchmark Artifact Policy](BENCHMARK_ARTIFACT_POLICY.md)
