@@ -19,7 +19,7 @@ Inspired by examples/4_topo.py with a multi-wavelength objective:
 
 Per optimization step, this script runs:
 - 2 forward sims (one for each wavelength)
-- 2 adjoint sims (one for each wavelength / target port)
+- 4 adjoint sims (target + leakage port for each wavelength)
 """
 
 
@@ -63,10 +63,25 @@ DX, DT = calc_optimal_fdtd_params(
     points_per_wavelength=14,
 )
 
-STEPS = 25
+STEPS = 80
 FIELD_SUBSAMPLE = 2
 TARGET_DENSITY = 0.5
 PENALTY_STRENGTH = 0.8
+EMA_ALPHA = 0.20
+
+# Continuation schedule endpoints for multi-objective WDM optimization.
+# alpha_xtalk: leak suppression weight in FoM_k = T_target - alpha*T_leak
+ALPHA_XTALK_START = 0.15
+ALPHA_XTALK_END = 1.00
+# gamma_softmin: fairness sharpness over wavelengths. Low=mean-like, high=worst-like.
+GAMMA_SOFTMIN_START = 2.0
+GAMMA_SOFTMIN_END = 14.0
+# Gradient step scale (acts like learning-rate decay without rebuilding optax optimizer).
+GRAD_SCALE_START = 1.00
+GRAD_SCALE_END = 0.45
+# Gradient clipping schedule (%tile of |grad| inside design region).
+CLIP_PCT_START = 99.8
+CLIP_PCT_END = 98.8
 
 
 def port_center_y(domain_h, wg_w, output_gap):
@@ -186,6 +201,27 @@ def run_adjoint(grid, wavelength, target_port, time, signal):
     if not ez_hist:
         raise RuntimeError("Adjoint simulation returned no Ez history.")
     return ez_hist
+
+
+def opposite_port(port_name):
+    return "bottom" if port_name == "top" else "top"
+
+
+def continuation_value(step, total_steps, start, end, power=1.0):
+    if total_steps <= 1:
+        return end
+    frac = step / (total_steps - 1)
+    frac = np.clip(frac, 0.0, 1.0) ** power
+    return start + frac * (end - start)
+
+
+def softmin_weights(values, gamma):
+    # Stable soft-min weighting: higher weight on lower-performing channels.
+    vals = np.array(values, dtype=float)
+    logits = -gamma * vals
+    logits -= np.max(logits)
+    expv = np.exp(logits)
+    return expv / np.sum(expv)
 
 
 def run_forward_flux_map(grid, wavelength, time, signal):
@@ -318,10 +354,15 @@ for wl, _target in WAVELENGTH_CASES:
 
 # --- 3) Optimization loop ---
 objective_history = []
+objective_ema_history = []
+route_mean_history = []
+softmin_history = []
 tx_hist = {
     WL_SHORT: {"target": [], "leak": []},
     WL_LONG: {"target": [], "leak": []},
 }
+fom_hist = {WL_SHORT: [], WL_LONG: []}
+_ema_objective = None
 
 print(f"Starting 1x2 WDM topology optimization for {STEPS} steps...")
 for step in range(STEPS):
@@ -331,11 +372,27 @@ for step in range(STEPS):
     grid.permittivity[:] = base_eps
     grid.permittivity[mask] = opt.eps_min + phys_density[mask] * (opt.eps_max - opt.eps_min)
 
-    grad_total = np.zeros_like(grid.permittivity, dtype=float)
-    objective_step = 0.0
+    alpha_xtalk = continuation_value(
+        step, STEPS, ALPHA_XTALK_START, ALPHA_XTALK_END, power=1.0
+    )
+    gamma_softmin = continuation_value(
+        step, STEPS, GAMMA_SOFTMIN_START, GAMMA_SOFTMIN_END, power=1.2
+    )
+    grad_scale = continuation_value(
+        step, STEPS, GRAD_SCALE_START, GRAD_SCALE_END, power=1.0
+    )
+    clip_pct = continuation_value(
+        step, STEPS, CLIP_PCT_START, CLIP_PCT_END, power=1.0
+    )
+
+    per_wl_fom = []
+    per_wl_grad = []
+    route_mean = 0.0
     step_report = []
 
-    # Exactly two forward + two adjoint simulations per step.
+    # Two forward + four adjoint simulations per step:
+    # - 1 adjoint for target-port transmission gradient
+    # - 1 adjoint for wrong-port (crosstalk) gradient
     for wl, target_port in WAVELENGTH_CASES:
         t_axis, sig = waveforms[wl]
 
@@ -349,43 +406,91 @@ for step in range(STEPS):
 
         target_tx = tx_top if target_port == "top" else tx_bot
         leak_tx = tx_bot if target_port == "top" else tx_top
-        objective_step += target_tx
+        route_mean += target_tx
 
         tx_hist[wl]["target"].append(100.0 * target_tx)
         tx_hist[wl]["leak"].append(100.0 * leak_tx)
+        fom_k = target_tx - alpha_xtalk * leak_tx
+        fom_hist[wl].append(100.0 * fom_k)
 
-        adj_hist = run_adjoint(
+        adj_target = run_adjoint(
             grid=grid,
             wavelength=wl,
             target_port=target_port,
             time=t_axis,
             signal=sig,
         )
-        grad_total += np.array(compute_overlap_gradient(fwd_hist, adj_hist))
+
+        leak_port = opposite_port(target_port)
+        adj_leak = run_adjoint(
+            grid=grid,
+            wavelength=wl,
+            target_port=leak_port,
+            time=t_axis,
+            signal=sig,
+        )
+        grad_target = np.array(compute_overlap_gradient(fwd_hist, adj_target))
+        grad_leak = np.array(compute_overlap_gradient(fwd_hist, adj_leak))
+        grad_fom_k = grad_target - alpha_xtalk * grad_leak
+
+        per_wl_fom.append(fom_k)
+        per_wl_grad.append(grad_fom_k)
 
         step_report.append(
-            f"{wl / UM:.3f}um->{target_port}: target={100.0 * target_tx:5.1f}% "
-            f"leak={100.0 * leak_tx:5.1f}%"
+            f"{wl / UM:.3f}um->{target_port}: T={100.0 * target_tx:5.1f}% "
+            f"L={100.0 * leak_tx:5.1f}% FoM={100.0 * fom_k:5.1f}%"
         )
 
-    objective_step /= len(WAVELENGTH_CASES)
-    objective_history.append(objective_step)
-    opt.objective_history.append(objective_step)
+    route_mean /= len(WAVELENGTH_CASES)
+    route_mean_history.append(route_mean)
+
+    # Fairness: soft-min over wavelengths (approaches worst-channel objective as gamma increases).
+    soft_w = softmin_weights(per_wl_fom, gamma_softmin)
+    _fom_arr = np.array(per_wl_fom, dtype=float)
+    _logits = -gamma_softmin * _fom_arr
+    _logits_max = np.max(_logits)
+    _lse = _logits_max + np.log(np.sum(np.exp(_logits - _logits_max)))
+    objective_route = -_lse / gamma_softmin
+    softmin_history.append(objective_route)
+
+    grad_total = np.zeros_like(grid.permittivity, dtype=float)
+    for w_i, grad_i in zip(soft_w, per_wl_grad):
+        grad_total += w_i * grad_i
 
     # Material-usage regularization.
     current_density = np.mean(phys_density[mask])
     grad_penalty = PENALTY_STRENGTH * (current_density - TARGET_DENSITY)
     grad_total[mask] -= grad_penalty
 
-    penalty_value = 0.5 * PENALTY_STRENGTH * (current_density - TARGET_DENSITY) ** 2
-    total_objective = objective_step - penalty_value
+    # Clip tail gradients in the design region for stability.
+    grad_abs = np.abs(grad_total[mask])
+    if grad_abs.size > 0:
+        clip_val = np.percentile(grad_abs, clip_pct)
+        if clip_val > 0:
+            grad_total[mask] = np.clip(grad_total[mask], -clip_val, clip_val)
 
-    max_update = opt.apply_gradient(grad_total / len(WAVELENGTH_CASES), beta)
+    # Step-size continuation (effective LR decay).
+    grad_total[mask] *= grad_scale
+
+    penalty_value = 0.5 * PENALTY_STRENGTH * (current_density - TARGET_DENSITY) ** 2
+    total_objective = objective_route - penalty_value
+
+    objective_history.append(total_objective)
+    opt.objective_history.append(total_objective)
+    if _ema_objective is None:
+        _ema_objective = total_objective
+    else:
+        _ema_objective = EMA_ALPHA * total_objective + (1.0 - EMA_ALPHA) * _ema_objective
+    objective_ema_history.append(_ema_objective)
+
+    max_update = opt.apply_gradient(grad_total, beta)
 
     print(
         f"[{step + 1:02d}/{STEPS}] Obj={total_objective:.4f} "
-        f"(route={100.0 * objective_step:.1f}% mat={current_density:.2f} "
-        f"beta={beta:.2f} dmax={max_update:.3e}) | " + " | ".join(step_report)
+        f"(softmin={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
+        f"a={alpha_xtalk:.2f} g={gamma_softmin:.1f} s={grad_scale:.2f} "
+        f"mat={current_density:.2f} beta={beta:.2f} dmax={max_update:.3e}) | "
+        + " | ".join(step_report)
     )
 
     if step % 5 == 0 or step == STEPS - 1:
@@ -484,11 +589,21 @@ plt.close()
 steps = np.arange(1, STEPS + 1)
 
 plt.figure(figsize=(9, 5))
-plt.plot(steps, 100.0 * np.array(objective_history), "k-", linewidth=2)
+plt.plot(steps, 100.0 * np.array(objective_history), "k-", linewidth=1.5, label="Total objective")
+plt.plot(
+    steps,
+    100.0 * np.array(objective_ema_history),
+    color="tab:orange",
+    linewidth=2.2,
+    label=f"Objective EMA (alpha={EMA_ALPHA:.2f})",
+)
+plt.plot(steps, 100.0 * np.array(route_mean_history), "g--", linewidth=1.4, label="Mean target T")
+plt.plot(steps, 100.0 * np.array(softmin_history), "b--", linewidth=1.4, label="Soft-min route FoM")
 plt.xlabel("Optimization step")
-plt.ylabel("Average routed transmission (%)")
-plt.title("1x2 WDM objective progress")
+plt.ylabel("FoM (%)")
+plt.title("1x2 WDM objective progress (fairness + continuation)")
 plt.grid(alpha=0.3)
+plt.legend()
 plt.tight_layout()
 plt.savefig("wdm_objective_vs_step.png", dpi=160)
 plt.close()
@@ -507,7 +622,31 @@ plt.tight_layout()
 plt.savefig("wdm_routing_vs_step.png", dpi=160)
 plt.close()
 
+plt.figure(figsize=(9, 4.8))
+plt.plot(steps, fom_hist[WL_SHORT], "b-", linewidth=2, label="FoM 1.31 um")
+plt.plot(steps, fom_hist[WL_LONG], "r-", linewidth=2, label="FoM 1.55 um")
+plt.xlabel("Optimization step")
+plt.ylabel("Per-wavelength FoM (%)")
+plt.title("Per-channel FoM = T_target - alpha(step) * T_leak")
+plt.grid(alpha=0.3)
+plt.legend()
+plt.tight_layout()
+plt.savefig("wdm_per_channel_fom_vs_step.png", dpi=160)
+plt.close()
+
+# Additional ideas (not enabled here):
+# 1) Reflection penalty:
+#    Add a backward-power term and corresponding adjoint source near the input port,
+#    then optimize FoM_k = T_target - a*T_leak - b*R.
+# 2) Epigraph / explicit max-min:
+#    Introduce scalar t and constrain each channel FoM_k >= t, then maximize t.
+# 3) Multi-frequency per channel:
+#    Replace each single wavelength with a small band sample set and average FoM.
+# 4) Robust fabrication objective:
+#    Evaluate FoM on eroded/nominal/dilated projections and optimize worst-case average.
+
 print(
     "Saved: wdm_objective_vs_step.png, wdm_routing_vs_step.png, "
-    "wdm_final_binary_flux_overlay.png, wdm_topo_*.png"
+    "wdm_per_channel_fom_vs_step.png, wdm_final_binary_flux_overlay.png, "
+    "wdm_topo_*.png"
 )
