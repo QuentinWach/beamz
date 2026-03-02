@@ -63,10 +63,10 @@ DX, DT = calc_optimal_fdtd_params(
     points_per_wavelength=14,
 )
 
-STEPS = 80
+STEPS = 15
 FIELD_SUBSAMPLE = 2
-TARGET_DENSITY = 0.5
-PENALTY_STRENGTH = 0.8
+TARGET_DENSITY = 0.85
+PENALTY_STRENGTH = 0.5
 EMA_ALPHA = 0.20
 
 # Continuation schedule endpoints for multi-objective WDM optimization.
@@ -534,32 +534,41 @@ for wl, target_port in WAVELENGTH_CASES:
 # Normalize final flux maps robustly for overlay.
 red_flux = final_flux_maps[WL_SHORT]
 blue_flux = final_flux_maps[WL_LONG]
-red_scale = np.percentile(red_flux, 99.5)
-blue_scale = np.percentile(blue_flux, 99.5)
+red_scale = np.percentile(red_flux, 99.0)
+blue_scale = np.percentile(blue_flux, 99.0)
 red_scale = red_scale if red_scale > 0 else 1.0
 blue_scale = blue_scale if blue_scale > 0 else 1.0
 red_norm = np.clip(red_flux / red_scale, 0.0, 1.0)
 blue_norm = np.clip(blue_flux / blue_scale, 0.0, 1.0)
 
 red_cmap = LinearSegmentedColormap.from_list(
-    "pure_red_overlay", [(1.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.95)]
+    "pure_red_overlay",
+    [
+        (1.0, 0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0, 0.80),
+        (1.0, 0.65, 0.65, 1.0),
+    ],
 )
 blue_cmap = LinearSegmentedColormap.from_list(
-    "pure_blue_overlay", [(0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 1.0, 0.95)]
+    "pure_blue_overlay",
+    [
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0, 0.80),
+        (0.65, 0.75, 1.0, 1.0),
+    ],
 )
 
 extent_um = [0.0, W / UM, 0.0, H / UM]
-plt.figure(figsize=(8.2, 6.0))
-plt.imshow(
-    binary_design.T,
-    cmap="gray",
-    origin="lower",
-    interpolation="nearest",
-    extent=extent_um,
-    vmin=0.0,
-    vmax=1.0,
-)
-plt.imshow(
+fig_w = 8.0
+fig_h = fig_w * (H / W)  # preserve physical x:y scaling in output canvas
+fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+fig.patch.set_facecolor("black")
+ax.set_aspect("equal", adjustable="box")
+ax.set_xlim(0.0, W / UM)
+ax.set_ylim(0.0, H / UM)
+ax.set_facecolor("black")
+
+ax.imshow(
     red_norm.T,
     cmap=red_cmap,
     origin="lower",
@@ -568,7 +577,7 @@ plt.imshow(
     vmin=0.0,
     vmax=1.0,
 )
-plt.imshow(
+ax.imshow(
     blue_norm.T,
     cmap=blue_cmap,
     origin="lower",
@@ -577,12 +586,23 @@ plt.imshow(
     vmin=0.0,
     vmax=1.0,
 )
-plt.xlabel("x (um)")
-plt.ylabel("y (um)")
-plt.title("Binary projected design with integrated flux overlay (red: 1.31 um, blue: 1.55 um)")
-plt.tight_layout()
-plt.savefig("wdm_final_binary_flux_overlay.png", dpi=220)
-plt.close()
+
+# Draw the binary structure boundary as a white contour line.
+plot_mask = binary_design.T
+ny_plot, nx_plot = plot_mask.shape
+x_plot = np.linspace(0.0, W / UM, nx_plot)
+y_plot = np.linspace(0.0, H / UM, ny_plot)
+ax.contour(x_plot, y_plot, plot_mask, levels=[0.5], colors="white", linewidths=1.1)
+
+ax.axis("off")
+ax.set_position([0.0, 0.0, 1.0, 1.0])
+fig.savefig(
+    "wdm_final_binary_flux_overlay.png",
+    dpi=220,
+    facecolor="black",
+    edgecolor="black",
+)
+plt.close(fig)
 
 
 # --- 5) Plots ---
