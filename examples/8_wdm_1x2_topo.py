@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 
 from beamz import *
 from beamz.optimization.topology import (
@@ -62,7 +63,7 @@ DX, DT = calc_optimal_fdtd_params(
     points_per_wavelength=14,
 )
 
-STEPS = 60
+STEPS = 25
 FIELD_SUBSAMPLE = 2
 TARGET_DENSITY = 0.5
 PENALTY_STRENGTH = 0.8
@@ -187,6 +188,72 @@ def run_adjoint(grid, wavelength, target_port, time, signal):
     return ez_hist
 
 
+def run_forward_flux_map(grid, wavelength, time, signal):
+    """
+    Run a final forward simulation and accumulate time-integrated |S| map.
+    For 2D TM fields in this codebase: Sx ~ -Ez*Hy, Sy ~ Ez*Hx.
+    """
+    src = ModeSource(
+        grid,
+        center=(X_SRC, Y_IN),
+        width=3.0 * WG_W,
+        wavelength=wavelength,
+        pol="tm",
+        signal=signal,
+        direction="+x",
+    )
+
+    mon_in = make_vertical_monitor(grid, X_MON_IN, Y_IN, MON_SPAN)
+    mon_top = make_vertical_monitor(grid, X_MON_OUT, Y_TOP, MON_SPAN)
+    mon_bot = make_vertical_monitor(grid, X_MON_OUT, Y_BOT, MON_SPAN)
+
+    sim = Simulation(
+        grid,
+        [src, mon_in, mon_top, mon_bot],
+        [PML(edges="all", thickness=PML_T)],
+        time=time,
+        resolution=DX,
+    )
+    results = sim.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=1)
+
+    in_energy = np.sum(mon_in.power_history) * DT
+    top_energy = np.sum(mon_top.power_history) * DT
+    bot_energy = np.sum(mon_bot.power_history) * DT
+    if np.abs(in_energy) < 1e-30:
+        in_energy = 1.0
+
+    ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
+    hx_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hx", [])]
+    hy_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hy", [])]
+    n_frames = min(len(ez_hist), len(hx_hist), len(hy_hist))
+    if n_frames == 0:
+        raise RuntimeError("Final forward simulation returned no Ez/Hx/Hy history.")
+
+    flux_map = np.zeros_like(ez_hist[0], dtype=float)
+    for i in range(n_frames):
+        ez_i = ez_hist[i]
+        hx_i = hx_hist[i]
+        hy_i = hy_hist[i]
+
+        # Yee-grid field components can differ by one cell in x/y; use overlap area.
+        ny = min(ez_i.shape[0], hx_i.shape[0], hy_i.shape[0])
+        nx = min(ez_i.shape[1], hx_i.shape[1], hy_i.shape[1])
+        if ny <= 0 or nx <= 0:
+            continue
+
+        ez_c = ez_i[:ny, :nx]
+        hx_c = hx_i[:ny, :nx]
+        hy_c = hy_i[:ny, :nx]
+
+        s_x = -ez_c * hy_c
+        s_y = ez_c * hx_c
+        flux_map[:ny, :nx] += np.sqrt(s_x * s_x + s_y * s_y) * DT
+
+    tx_top = np.abs(top_energy) / np.abs(in_energy)
+    tx_bot = np.abs(bot_energy) / np.abs(in_energy)
+    return tx_top, tx_bot, flux_map
+
+
 # --- 2) Design & optimization setup ---
 design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
 
@@ -228,10 +295,10 @@ opt = TopologyManager(
     resolution=DX,
     optimizer="Adam",
     learning_rate=0.01,
-    filter_radius=0.22 * UM,
+    filter_radius=0.05 * UM,
     eps_min=EPS_CLAD,
     eps_max=EPS_CORE,
-    beta_schedule=(1.0, 18.0),
+    beta_schedule=(1.0, 25.0),
     filter_type="conic",
 )
 
@@ -330,23 +397,87 @@ for step in range(STEPS):
         )
 
 
-# --- 4) Final routing check ---
-print("\nFinal routing check:")
+# --- 4) Project to binary and run final wavelength-resolved flux maps ---
+# Enforce a binary projected design for final validation/visualization.
+beta_final = opt.beta_end
+phys_final = opt.get_physical_density(beta_final)
+phys_binary = (phys_final >= 0.5).astype(float)
+
+grid.permittivity[:] = base_eps
+grid.permittivity[mask] = opt.eps_min + phys_binary[mask] * (opt.eps_max - opt.eps_min)
+
+binary_design = (grid.permittivity > 0.5 * (EPS_CLAD + EPS_CORE)).astype(float)
+
+final_flux_maps = {}
+print("\nFinal routing check on binary projected design:")
 for wl, target_port in WAVELENGTH_CASES:
     t_axis, sig = waveforms[wl]
-    _, tx_top, tx_bot = run_forward(
+    tx_top, tx_bot, flux_map = run_forward_flux_map(
         grid=grid,
         wavelength=wl,
         time=t_axis,
         signal=sig,
-        save_fields=False,
     )
+    final_flux_maps[wl] = flux_map
     target_tx = tx_top if target_port == "top" else tx_bot
     leak_tx = tx_bot if target_port == "top" else tx_top
     print(
         f"  wl={wl / UM:.3f} um target={target_port}: "
         f"target={100.0 * target_tx:.2f}% leak={100.0 * leak_tx:.2f}%"
     )
+
+# Normalize final flux maps robustly for overlay.
+red_flux = final_flux_maps[WL_SHORT]
+blue_flux = final_flux_maps[WL_LONG]
+red_scale = np.percentile(red_flux, 99.5)
+blue_scale = np.percentile(blue_flux, 99.5)
+red_scale = red_scale if red_scale > 0 else 1.0
+blue_scale = blue_scale if blue_scale > 0 else 1.0
+red_norm = np.clip(red_flux / red_scale, 0.0, 1.0)
+blue_norm = np.clip(blue_flux / blue_scale, 0.0, 1.0)
+
+red_cmap = LinearSegmentedColormap.from_list(
+    "pure_red_overlay", [(1.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.95)]
+)
+blue_cmap = LinearSegmentedColormap.from_list(
+    "pure_blue_overlay", [(0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 1.0, 0.95)]
+)
+
+extent_um = [0.0, W / UM, 0.0, H / UM]
+plt.figure(figsize=(8.2, 6.0))
+plt.imshow(
+    binary_design.T,
+    cmap="gray",
+    origin="lower",
+    interpolation="nearest",
+    extent=extent_um,
+    vmin=0.0,
+    vmax=1.0,
+)
+plt.imshow(
+    red_norm.T,
+    cmap=red_cmap,
+    origin="lower",
+    interpolation="bilinear",
+    extent=extent_um,
+    vmin=0.0,
+    vmax=1.0,
+)
+plt.imshow(
+    blue_norm.T,
+    cmap=blue_cmap,
+    origin="lower",
+    interpolation="bilinear",
+    extent=extent_um,
+    vmin=0.0,
+    vmax=1.0,
+)
+plt.xlabel("x (um)")
+plt.ylabel("y (um)")
+plt.title("Binary projected design with integrated flux overlay (red: 1.31 um, blue: 1.55 um)")
+plt.tight_layout()
+plt.savefig("wdm_final_binary_flux_overlay.png", dpi=220)
+plt.close()
 
 
 # --- 5) Plots ---
@@ -376,4 +507,7 @@ plt.tight_layout()
 plt.savefig("wdm_routing_vs_step.png", dpi=160)
 plt.close()
 
-print("Saved: wdm_objective_vs_step.png, wdm_routing_vs_step.png, wdm_topo_*.png")
+print(
+    "Saved: wdm_objective_vs_step.png, wdm_routing_vs_step.png, "
+    "wdm_final_binary_flux_overlay.png, wdm_topo_*.png"
+)
