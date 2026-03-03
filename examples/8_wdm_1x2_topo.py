@@ -32,10 +32,15 @@ UM = 1e-6
 WG_W = 0.55 * UM
 OUT_GAP = 0.95 * UM
 INV_W = 3.50 * UM
-INV_H = 3.50 * UM
+INV_H = INV_W
 
-W = 8.0 * UM
-H = 6.0 * UM
+INPUT_WG_LEN = 3.10 * UM
+# Keep output access length equal to the previous setup.
+OUTPUT_WG_LEN = 3.10 * UM
+
+# Place the inverse region after a straight input waveguide.
+W = INPUT_WG_LEN + INV_W + OUTPUT_WG_LEN
+H = 7.0 * UM
 PML_T = 1.2 * UM
 
 WL_SHORT = 1.30 * UM
@@ -53,7 +58,7 @@ EPS_CLAD = N_CLAD**2
 DX, DT = calc_optimal_fdtd_params(
     wavelength=WL_SHORT,
     n_max=N_CORE,
-    points_per_wavelength=12,
+    points_per_wavelength=8,
 )
 
 STEPS = 60
@@ -65,6 +70,7 @@ EMA_ALPHA = 0.20
 
 LEAK_W_START = 0.20
 LEAK_W_END = 1.00
+THROUGHPUT_W = 0.20
 
 GRAD_SCALE_START = 0.80
 GRAD_SCALE_END = 0.50
@@ -79,9 +85,7 @@ DEBUG_EVERY = 5
 
 # Beta continuation.
 BETA_START = 1.0
-BETA_MID = 6.0
-BETA_END = 18.0
-BETA_STAGE1_FRAC = 0.75
+BETA_END = 10.0
 
 # Small deterministic perturbation to break exact geometric symmetry.
 INITIAL_ASYM_NOISE = 1e-2
@@ -126,12 +130,15 @@ def port_center_y(domain_h, wg_w, output_gap):
 
 
 Y_IN, Y_TOP, Y_BOT = port_center_y(H, WG_W, OUT_GAP)
-X_INV0 = 0.5 * (W - INV_W)
+X_INV0 = INPUT_WG_LEN
 Y_INV0 = 0.5 * (H - INV_H)
 X_INV1 = X_INV0 + INV_W
 Y_INV1 = Y_INV0 + INV_H
 
-X_SRC = PML_T + 0.25 * UM
+X_SRC = PML_T + 0.30 * UM
+X_MON_IN = X_SRC + 0.35 * UM
+if X_MON_IN >= X_INV0:
+    raise ValueError("Input monitor must stay in straight input waveguide (before design region).")
 X_MON_OUT = W - PML_T - 0.35 * UM
 MON_SPAN = 2.6 * WG_W
 
@@ -142,30 +149,6 @@ def continuation_value(step, total_steps, start, end, power=1.0):
     frac = step / (total_steps - 1)
     frac = np.clip(frac, 0.0, 1.0) ** power
     return start + frac * (end - start)
-
-
-def continuation_value_two_stage(
-    step,
-    total_steps,
-    start,
-    mid,
-    end,
-    stage1_frac=0.45,
-    power1=1.0,
-    power2=1.0,
-):
-    if total_steps <= 1:
-        return end
-
-    frac = np.clip(step / (total_steps - 1), 0.0, 1.0)
-    split = np.clip(stage1_frac, 0.05, 0.95)
-
-    if frac <= split:
-        local = (frac / split) ** power1
-        return start + local * (mid - start)
-
-    local = ((frac - split) / (1.0 - split)) ** power2
-    return mid + local * (end - mid)
 
 
 def build_time_and_signal(wavelength):
@@ -198,6 +181,14 @@ def make_vertical_monitor(grid, x, y_center, span, name=None, record_fields=True
 
 
 def build_port_monitors(grid):
+    mon_in = make_vertical_monitor(
+        grid,
+        X_MON_IN,
+        Y_IN,
+        MON_SPAN,
+        name="in_norm",
+        record_fields=False,
+    )
     mon_top = make_vertical_monitor(
         grid,
         X_MON_OUT,
@@ -214,7 +205,7 @@ def build_port_monitors(grid):
         name="out_bottom",
         record_fields=True,
     )
-    return mon_top, mon_bot
+    return mon_in, mon_top, mon_bot
 
 
 def run_forward(grid, wavelength, time, signal, save_fields=True):
@@ -227,11 +218,11 @@ def run_forward(grid, wavelength, time, signal, save_fields=True):
         signal=signal,
         direction="+x",
     )
-    mon_top, mon_bot = build_port_monitors(grid)
+    mon_in, mon_top, mon_bot = build_port_monitors(grid)
 
     sim = Simulation(
         grid,
-        [src, mon_top, mon_bot],
+        [src, mon_in, mon_top, mon_bot],
         [PML(edges="all", thickness=PML_T)],
         time=time,
         resolution=DX,
@@ -240,9 +231,11 @@ def run_forward(grid, wavelength, time, signal, save_fields=True):
     save = ["Ez"] if save_fields else []
     results = sim.run(save_fields=save, field_subsample=FIELD_SUBSAMPLE)
 
-    top_energy = float(np.sum(np.abs(np.asarray(mon_top.power_history, dtype=float))) * DT)
-    bot_energy = float(np.sum(np.abs(np.asarray(mon_bot.power_history, dtype=float))) * DT)
-    total_out = max(top_energy + bot_energy, 1e-30)
+    in_energy = float(np.sum(np.asarray(mon_in.power_history, dtype=float)) * DT)
+    top_energy = float(np.sum(np.asarray(mon_top.power_history, dtype=float)) * DT)
+    bot_energy = float(np.sum(np.asarray(mon_bot.power_history, dtype=float)) * DT)
+    in_energy = max(in_energy, 1e-30)
+    total_out = max(top_energy + bot_energy, 0.0)
 
     ez_hist = []
     if save_fields:
@@ -250,7 +243,7 @@ def run_forward(grid, wavelength, time, signal, save_fields=True):
         if not ez_hist:
             raise RuntimeError("Forward simulation returned no Ez history.")
 
-    return ez_hist, top_energy, bot_energy, total_out
+    return ez_hist, in_energy, top_energy, bot_energy, total_out
 
 
 def run_adjoint(grid, wavelength, target_port, time, signal):
@@ -293,22 +286,23 @@ def run_forward_flux_map(grid, wavelength, time, signal):
         signal=signal,
         direction="+x",
     )
-    mon_top, mon_bot = build_port_monitors(grid)
+    mon_in, mon_top, mon_bot = build_port_monitors(grid)
 
     sim = Simulation(
         grid,
-        [src, mon_top, mon_bot],
+        [src, mon_in, mon_top, mon_bot],
         [PML(edges="all", thickness=PML_T)],
         time=time,
         resolution=DX,
     )
     results = sim.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=1)
 
-    top_energy = float(np.sum(np.abs(np.asarray(mon_top.power_history, dtype=float))) * DT)
-    bot_energy = float(np.sum(np.abs(np.asarray(mon_bot.power_history, dtype=float))) * DT)
-    total_out = max(top_energy + bot_energy, 1e-30)
-    tx_top = max(0.0, top_energy / total_out)
-    tx_bot = max(0.0, bot_energy / total_out)
+    in_energy = float(np.sum(np.asarray(mon_in.power_history, dtype=float)) * DT)
+    top_energy = float(np.sum(np.asarray(mon_top.power_history, dtype=float)) * DT)
+    bot_energy = float(np.sum(np.asarray(mon_bot.power_history, dtype=float)) * DT)
+    in_energy = max(in_energy, 1e-30)
+    tx_top = max(0.0, top_energy / in_energy)
+    tx_bot = max(0.0, bot_energy / in_energy)
 
     ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
     hx_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hx", [])]
@@ -361,18 +355,17 @@ def save_setup_sources_monitors_plot(grid, path="wdm_setup_sources_monitors.png"
         grid.permittivity.T,
         cmap="gray",
         origin="lower",
-        extent=(0.0, W / UM, 0.0, H / UM),
+        # We plot permittivity.T, so plotted axes are (y, x) in physical units.
+        extent=(0.0, H / UM, 0.0, W / UM),
         aspect="equal",
     )
 
     src_span = 3.0 * WG_W
 
     # The background uses permittivity.T, so annotate in the same rotated frame.
-    # Map physical (x, y) -> plotted (x', y') coordinates.
+    # Map physical (x, y) -> plotted coordinates (y, x).
     def map_xy(x_phys, y_phys):
-        x_plot = (y_phys / H) * W
-        y_plot = (x_phys / W) * H
-        return x_plot / UM, y_plot / UM
+        return y_phys / UM, x_phys / UM
 
     def draw_vline(x, y_center, span, color, label=None, linestyle="-", lw=2.0):
         x0, y0 = map_xy(x, y_center - 0.5 * span)
@@ -419,8 +412,11 @@ def save_setup_sources_monitors_plot(grid, path="wdm_setup_sources_monitors.png"
         )
     )
 
-    ax.set_xlabel("x (um)")
-    ax.set_ylabel("y (um)")
+    ax.set_xlim(0.0, H / UM)
+    ax.set_ylim(0.0, W / UM)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("y (um)")
+    ax.set_ylabel("x (um)")
     ax.set_title("WDM setup: mode sources and monitors")
     ax.grid(alpha=0.2, linestyle=":")
     ax.legend(loc="upper right", fontsize=8)
@@ -433,6 +429,7 @@ def save_setup_sources_monitors_plot(grid, path="wdm_setup_sources_monitors.png"
 design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
 
 # Fixed access waveguides outside optimization region.
+# Input is a straight waveguide up to the design region.
 design += Rectangle(
     position=(0.0, Y_IN - 0.5 * WG_W),
     width=X_INV0,
@@ -472,7 +469,7 @@ opt = TopologyManager(
     filter_radius=0.05 * UM,
     eps_min=EPS_CLAD,
     eps_max=EPS_CORE,
-    beta_schedule=(1.0, 20.0),
+    beta_schedule=(BETA_START, BETA_END),
     filter_type="conic",
 )
 
@@ -511,23 +508,13 @@ tx_hist = {
 }
 fom_hist = {WL_SHORT: [], WL_LONG: []}
 ema_objective = None
-throughput_ref = {WL_SHORT: None, WL_LONG: None}
 prev_phys_plot = None
 prev_design_density = None
 
 print(f"Starting simplified 1x2 WDM topology optimization for {STEPS} steps...")
 for step in range(STEPS):
     step_id = step + 1
-    beta = continuation_value_two_stage(
-        step,
-        STEPS,
-        BETA_START,
-        BETA_MID,
-        BETA_END,
-        stage1_frac=BETA_STAGE1_FRAC,
-        power1=1.0,
-        power2=1.4,
-    )
+    beta = continuation_value(step, STEPS, BETA_START, BETA_END, power=1.0)
     phys_density = opt.get_physical_density(beta)
 
     grid.permittivity[:] = base_eps
@@ -539,12 +526,13 @@ for step in range(STEPS):
     per_wl_fom = []
     per_wl_grad = []
     route_mean = 0.0
+    throughput_mean = 0.0
     step_report = []
     forward_cache = []
 
     for wl, target_port in WAVELENGTH_CASES:
         t_axis, sig = waveforms[wl]
-        fwd_hist, top_energy, bot_energy, total_out = run_forward(
+        fwd_hist, in_energy, top_energy, bot_energy, total_out = run_forward(
             grid=grid,
             wavelength=wl,
             time=t_axis,
@@ -552,15 +540,15 @@ for step in range(STEPS):
             save_fields=True,
         )
 
-        if throughput_ref[wl] is None:
-            throughput_ref[wl] = max(total_out, 1e-30)
-        norm_scale = throughput_ref[wl]
+        norm_scale = in_energy
         target_e = top_energy if target_port == "top" else bot_energy
         leak_e = bot_energy if target_port == "top" else top_energy
         target_tx = target_e / norm_scale
         leak_tx = leak_e / norm_scale
+        throughput_tx = total_out / norm_scale
 
         route_mean += target_tx
+        throughput_mean += throughput_tx
         tx_hist[wl]["target"].append(100.0 * target_tx)
         tx_hist[wl]["leak"].append(100.0 * leak_tx)
 
@@ -571,15 +559,14 @@ for step in range(STEPS):
                 "time": t_axis,
                 "signal": sig,
                 "fwd_hist": fwd_hist,
-                "tx_top": top_energy,
-                "tx_bot": bot_energy,
-                "norm_scale": norm_scale,
                 "target_tx": target_tx,
                 "leak_tx": leak_tx,
+                "throughput_tx": throughput_tx,
             }
         )
 
     route_mean /= len(WAVELENGTH_CASES)
+    throughput_mean /= len(WAVELENGTH_CASES)
     route_mean_history.append(route_mean)
 
     grad_maps_by_wl = {}
@@ -591,11 +578,9 @@ for step in range(STEPS):
         sig = item["signal"]
         fwd_hist = item["fwd_hist"]
 
-        tx_top = item["tx_top"]
-        tx_bot = item["tx_bot"]
-        norm_scale = item["norm_scale"]
         target_tx = item["target_tx"]
         leak_tx = item["leak_tx"]
+        throughput_tx = item["throughput_tx"]
 
         adj_top = run_adjoint(grid=grid, wavelength=wl, target_port="top", time=t_axis, signal=sig)
         adj_bot = run_adjoint(grid=grid, wavelength=wl, target_port="bottom", time=t_axis, signal=sig)
@@ -610,8 +595,10 @@ for step in range(STEPS):
             grad_target = grad_bot
             grad_leak = grad_top
 
-        fom_k = target_tx - leak_weight * leak_tx
-        grad_fom_k = ADJOINT_GRAD_SIGN * (grad_target - leak_weight * grad_leak)
+        fom_k = target_tx - leak_weight * leak_tx + THROUGHPUT_W * throughput_tx
+        grad_fom_k = ADJOINT_GRAD_SIGN * (
+            grad_target - leak_weight * grad_leak + THROUGHPUT_W * (grad_target + grad_leak)
+        )
 
         per_wl_fom.append(fom_k)
         per_wl_grad.append(grad_fom_k)
@@ -622,6 +609,7 @@ for step in range(STEPS):
             f"{wl / UM:.3f}um->{target_port}: "
             f"T={100.0 * target_tx:5.1f}% "
             f"L={100.0 * leak_tx:5.1f}% "
+            f"Tout={100.0 * throughput_tx:5.1f}% "
             f"FoM={100.0 * fom_k:5.1f}%"
         )
 
@@ -667,6 +655,7 @@ for step in range(STEPS):
         print(
             f"[{step_id:03d}/{STEPS}] Obj={total_objective:.4f} "
             f"(meanFoM={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
+            f"meanTout={100.0 * throughput_mean:.1f}% "
             f"wL={leak_weight:.2f} wLong={long_w:.2f} s={grad_scale:.2f} "
             f"mat={current_density:.2f} beta={beta:.2f} dmax={max_update:.3e}) | "
             + " | ".join(step_report)
