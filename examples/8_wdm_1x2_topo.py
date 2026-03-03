@@ -61,20 +61,33 @@ DX, DT = calc_optimal_fdtd_params(
     points_per_wavelength=8,
 )
 
-STEPS = 60
+STEPS = 200
 FIELD_SUBSAMPLE = 1
 
-TARGET_DENSITY = 0.85
-PENALTY_STRENGTH = 0.05
 EMA_ALPHA = 0.20
 
-LEAK_W_START = 0.20
-LEAK_W_END = 1.00
 THROUGHPUT_W = 0.20
 
-GRAD_SCALE_START = 0.80
-GRAD_SCALE_END = 0.50
 CLIP_PCT = 99.5
+
+# Optimizer and blur continuation:
+# Use piecewise-constant phases; final phase is dedicated binarization.
+LEARNING_RATE = 0.0015
+BETA_PHASE_VALUES = (1.0, 2.5, 6.0, 12.0)
+BLUR_PHASE_VALUES = (0.50 * UM, 0.30 * UM, 0.18 * UM, 0.10 * UM)
+LEAK_W_PHASE_VALUES = (0.30, 0.60, 0.90, 1.00)
+GRAD_SCALE_PHASE_VALUES = (0.80, 0.60, 0.35, 0.18)
+PHASE_FRACTIONS = (0.30, 0.30, 0.25, 0.15)
+if len(BETA_PHASE_VALUES) != len(BLUR_PHASE_VALUES):
+    raise ValueError("BETA_PHASE_VALUES and BLUR_PHASE_VALUES must have same length.")
+if len(PHASE_FRACTIONS) != len(BETA_PHASE_VALUES):
+    raise ValueError("PHASE_FRACTIONS must match number of phases.")
+if len(LEAK_W_PHASE_VALUES) != len(BETA_PHASE_VALUES):
+    raise ValueError("LEAK_W_PHASE_VALUES must match number of phases.")
+if len(GRAD_SCALE_PHASE_VALUES) != len(BETA_PHASE_VALUES):
+    raise ValueError("GRAD_SCALE_PHASE_VALUES must match number of phases.")
+if not np.isclose(sum(PHASE_FRACTIONS), 1.0, atol=1e-12):
+    raise ValueError("PHASE_FRACTIONS must sum to 1.0.")
 
 # Use +1.0 if overlap gradients are already dJ/deps;
 # switch to -1.0 if objective moves the wrong way.
@@ -82,10 +95,6 @@ ADJOINT_GRAD_SIGN = 1.0
 
 # Debug outputs cadence.
 DEBUG_EVERY = 5
-
-# Beta continuation.
-BETA_START = 1.0
-BETA_END = 10.0
 
 # Small deterministic perturbation to break exact geometric symmetry.
 INITIAL_ASYM_NOISE = 1e-2
@@ -151,10 +160,21 @@ def continuation_value(step, total_steps, start, end, power=1.0):
     return start + frac * (end - start)
 
 
+def get_phase_index(step, total_steps):
+    frac = (step + 1) / max(1, total_steps)
+    cumulative = 0.0
+    for idx, f in enumerate(PHASE_FRACTIONS):
+        cumulative += f
+        if frac <= cumulative or idx == len(PHASE_FRACTIONS) - 1:
+            return idx
+    return len(PHASE_FRACTIONS) - 1
+
+
 def build_time_and_signal(wavelength):
     flight_time = (X_MON_OUT - X_SRC) * N_CORE / LIGHT_SPEED
-    ramp_duration = 8.0 * wavelength / LIGHT_SPEED
-    total_time = 2.2 * flight_time + 2.5 * ramp_duration
+    ramp_duration = 12.0 * wavelength / LIGHT_SPEED
+    total_time = 3.6 * flight_time + 4.5 * ramp_duration
+    gate_start = 1.2 * flight_time + 0.9 * ramp_duration
     time = np.arange(0.0, total_time, DT)
 
     signal = ramped_cosine(
@@ -162,9 +182,22 @@ def build_time_and_signal(wavelength):
         1.0,
         LIGHT_SPEED / wavelength,
         ramp_duration=ramp_duration,
-        t_max=0.45 * total_time,
+        t_max=0.78 * total_time,
     )
-    return time, signal, total_time, flight_time
+    return time, signal, total_time, flight_time, gate_start
+
+
+def integrate_windowed_energy(power_history, time, gate_start):
+    power = np.asarray(power_history, dtype=float)
+    n = min(power.size, time.size)
+    if n == 0:
+        return 0.0
+    t = np.asarray(time[:n], dtype=float)
+    p = power[:n]
+    mask = t >= gate_start
+    if np.any(mask):
+        return float(np.sum(p[mask]) * DT)
+    return float(np.sum(p) * DT)
 
 
 def make_vertical_monitor(grid, x, y_center, span, name=None, record_fields=True):
@@ -208,7 +241,7 @@ def build_port_monitors(grid):
     return mon_in, mon_top, mon_bot
 
 
-def run_forward(grid, wavelength, time, signal, save_fields=True):
+def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
     src = ModeSource(
         grid,
         center=(X_SRC, Y_IN),
@@ -231,9 +264,9 @@ def run_forward(grid, wavelength, time, signal, save_fields=True):
     save = ["Ez"] if save_fields else []
     results = sim.run(save_fields=save, field_subsample=FIELD_SUBSAMPLE)
 
-    in_energy = float(np.sum(np.asarray(mon_in.power_history, dtype=float)) * DT)
-    top_energy = float(np.sum(np.asarray(mon_top.power_history, dtype=float)) * DT)
-    bot_energy = float(np.sum(np.asarray(mon_bot.power_history, dtype=float)) * DT)
+    in_energy = integrate_windowed_energy(mon_in.power_history, time, gate_start)
+    top_energy = integrate_windowed_energy(mon_top.power_history, time, gate_start)
+    bot_energy = integrate_windowed_energy(mon_bot.power_history, time, gate_start)
     in_energy = max(in_energy, 1e-30)
     total_out = max(top_energy + bot_energy, 0.0)
 
@@ -276,7 +309,7 @@ def run_adjoint(grid, wavelength, target_port, time, signal):
     return ez_hist
 
 
-def run_forward_flux_map(grid, wavelength, time, signal):
+def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
     src = ModeSource(
         grid,
         center=(X_SRC, Y_IN),
@@ -297,9 +330,9 @@ def run_forward_flux_map(grid, wavelength, time, signal):
     )
     results = sim.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=1)
 
-    in_energy = float(np.sum(np.asarray(mon_in.power_history, dtype=float)) * DT)
-    top_energy = float(np.sum(np.asarray(mon_top.power_history, dtype=float)) * DT)
-    bot_energy = float(np.sum(np.asarray(mon_bot.power_history, dtype=float)) * DT)
+    in_energy = integrate_windowed_energy(mon_in.power_history, time, gate_start)
+    top_energy = integrate_windowed_energy(mon_top.power_history, time, gate_start)
+    bot_energy = integrate_windowed_energy(mon_bot.power_history, time, gate_start)
     in_energy = max(in_energy, 1e-30)
     tx_top = max(0.0, top_energy / in_energy)
     tx_bot = max(0.0, bot_energy / in_energy)
@@ -465,11 +498,11 @@ opt = TopologyManager(
     region_mask=mask,
     resolution=DX,
     optimizer="Adam",
-    learning_rate=0.003,
-    filter_radius=0.05 * UM,
+    learning_rate=LEARNING_RATE,
+    filter_radius=BLUR_PHASE_VALUES[0],
     eps_min=EPS_CLAD,
     eps_max=EPS_CORE,
-    beta_schedule=(BETA_START, BETA_END),
+    beta_schedule=(BETA_PHASE_VALUES[0], BETA_PHASE_VALUES[-1]),
     filter_type="conic",
 )
 
@@ -489,11 +522,12 @@ print("Saved setup plot: wdm_setup_sources_monitors.png")
 waveforms = {}
 print("Waveform timing check (pulse should clear the full device):")
 for wl, _target in WAVELENGTH_CASES:
-    t_axis, sig, t_total, t_flight = build_time_and_signal(wl)
-    waveforms[wl] = (t_axis, sig)
+    t_axis, sig, t_total, t_flight, t_gate = build_time_and_signal(wl)
+    waveforms[wl] = (t_axis, sig, t_gate)
     print(
         f"  wl={wl / UM:.3f} um | total={t_total * 1e15:.1f} fs | "
-        f"flight_est={t_flight * 1e15:.1f} fs | ratio={t_total / t_flight:.2f}x"
+        f"flight_est={t_flight * 1e15:.1f} fs | gate={t_gate * 1e15:.1f} fs | "
+        f"ratio={t_total / t_flight:.2f}x"
     )
 
 
@@ -510,18 +544,26 @@ fom_hist = {WL_SHORT: [], WL_LONG: []}
 ema_objective = None
 prev_phys_plot = None
 prev_design_density = None
+prev_phase_idx = None
 
 print(f"Starting simplified 1x2 WDM topology optimization for {STEPS} steps...")
 for step in range(STEPS):
     step_id = step + 1
-    beta = continuation_value(step, STEPS, BETA_START, BETA_END, power=1.0)
+    phase_idx = get_phase_index(step, STEPS)
+    if prev_phase_idx is not None and phase_idx != prev_phase_idx:
+        # Reset Adam moments when changing phase to avoid stale momentum carryover.
+        opt._opt_state = None
+    beta = BETA_PHASE_VALUES[phase_idx]
+    blur_radius = BLUR_PHASE_VALUES[phase_idx]
+    leak_weight = LEAK_W_PHASE_VALUES[phase_idx]
+    grad_scale = GRAD_SCALE_PHASE_VALUES[phase_idx]
+    opt.filter_radius = blur_radius
+    opt.filter_radius_cells = max(0, int(round(blur_radius / opt.resolution)))
     phys_density = opt.get_physical_density(beta)
+    prev_phase_idx = phase_idx
 
     grid.permittivity[:] = base_eps
     grid.permittivity[mask] = opt.eps_min + phys_density[mask] * (opt.eps_max - opt.eps_min)
-
-    leak_weight = continuation_value(step, STEPS, LEAK_W_START, LEAK_W_END, power=1.0)
-    grad_scale = continuation_value(step, STEPS, GRAD_SCALE_START, GRAD_SCALE_END, power=1.0)
 
     per_wl_fom = []
     per_wl_grad = []
@@ -531,12 +573,13 @@ for step in range(STEPS):
     forward_cache = []
 
     for wl, target_port in WAVELENGTH_CASES:
-        t_axis, sig = waveforms[wl]
+        t_axis, sig, t_gate = waveforms[wl]
         fwd_hist, in_energy, top_energy, bot_energy, total_out = run_forward(
             grid=grid,
             wavelength=wl,
             time=t_axis,
             signal=sig,
+            gate_start=t_gate,
             save_fields=True,
         )
 
@@ -626,8 +669,6 @@ for step in range(STEPS):
         grad_total += w_i * grad_i
 
     current_density = np.mean(phys_density[mask])
-    grad_penalty = PENALTY_STRENGTH * (current_density - TARGET_DENSITY)
-    grad_total[mask] -= grad_penalty
 
     grad_abs = np.abs(grad_total[mask])
     if grad_abs.size > 0:
@@ -637,8 +678,7 @@ for step in range(STEPS):
 
     grad_total[mask] *= grad_scale
 
-    penalty_value = 0.5 * PENALTY_STRENGTH * (current_density - TARGET_DENSITY) ** 2
-    total_objective = objective_route - penalty_value
+    total_objective = objective_route
 
     max_update = opt.apply_gradient(grad_total, beta)
 
@@ -657,7 +697,9 @@ for step in range(STEPS):
             f"(meanFoM={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
             f"meanTout={100.0 * throughput_mean:.1f}% "
             f"wL={leak_weight:.2f} wLong={long_w:.2f} s={grad_scale:.2f} "
-            f"mat={current_density:.2f} beta={beta:.2f} dmax={max_update:.3e}) | "
+            f"mat={current_density:.2f} ph={phase_idx + 1}/{len(PHASE_FRACTIONS)} beta={beta:.2f} "
+            f"blur={blur_radius / UM:.3f}um "
+            f"fc={opt.filter_radius_cells} dmax={max_update:.3e}) | "
             + " | ".join(step_report)
         )
 
@@ -726,10 +768,10 @@ for step in range(STEPS):
         save_gradient_debug_image(f"wdm_grad_short_{step_id:03d}.png", grad_maps_by_wl[WL_SHORT])
         save_gradient_debug_image(f"wdm_grad_long_{step_id:03d}.png", grad_maps_by_wl[WL_LONG])
 
-        t_short, s_short = waveforms[WL_SHORT]
-        t_long, s_long = waveforms[WL_LONG]
-        _, _, flux_short = run_forward_flux_map(grid, WL_SHORT, t_short, s_short)
-        _, _, flux_long = run_forward_flux_map(grid, WL_LONG, t_long, s_long)
+        t_short, s_short, g_short = waveforms[WL_SHORT]
+        t_long, s_long, g_long = waveforms[WL_LONG]
+        _, _, flux_short = run_forward_flux_map(grid, WL_SHORT, t_short, s_short, g_short)
+        _, _, flux_long = run_forward_flux_map(grid, WL_LONG, t_long, s_long, g_long)
         save_flux_debug_image(f"wdm_flux_short_{step_id:03d}.png", flux_short)
         save_flux_debug_image(f"wdm_flux_long_{step_id:03d}.png", flux_long)
 
@@ -748,7 +790,7 @@ for step in range(STEPS):
 
 
 # --- 4) Project to binary and run final wavelength-resolved flux maps ---
-beta_final = opt.beta_end
+beta_final = BETA_PHASE_VALUES[-1]
 phys_final = opt.get_physical_density(beta_final)
 phys_binary = (phys_final >= 0.5).astype(float)
 
@@ -760,12 +802,13 @@ binary_design = (grid.permittivity > 0.5 * (EPS_CLAD + EPS_CORE)).astype(float)
 final_flux_maps = {}
 print("\nFinal routing check on binary projected design:")
 for wl, target_port in WAVELENGTH_CASES:
-    t_axis, sig = waveforms[wl]
+    t_axis, sig, t_gate = waveforms[wl]
     tx_top, tx_bot, flux_map = run_forward_flux_map(
         grid=grid,
         wavelength=wl,
         time=t_axis,
         signal=sig,
+        gate_start=t_gate,
     )
     final_flux_maps[wl] = flux_map
     target_tx = tx_top if target_port == "top" else tx_bot
