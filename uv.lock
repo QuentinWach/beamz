@@ -136,6 +136,7 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "shapely" },
+    { name = "tidy3d" },
 ]
 
 [package.optional-dependencies]
@@ -157,7 +158,6 @@ test = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-randomly" },
-    { name = "tidy3d" },
 ]
 
 [package.metadata]
@@ -183,7 +183,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.9.4" },
     { name = "scipy", specifier = ">=1.10.1" },
     { name = "shapely", specifier = ">=2.0.6" },
-    { name = "tidy3d", marker = "extra == 'test'", specifier = ">=2.0.0" },
+    { name = "tidy3d", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'gpu'", specifier = ">=2.6.0" },
 ]
 provides-extras = ["dev", "gpu", "test"]
