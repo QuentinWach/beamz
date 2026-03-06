@@ -12,14 +12,15 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Circle as PlotCircle
 from matplotlib.patches import Polygon as PlotPolygon
 from matplotlib.patches import Rectangle as PlotRectangle
 
-from beamz import Design, Material, Polygon
+from beamz import Circle, Design, Material, Polygon
 
 
-def build_demo_design() -> tuple[Design, Polygon]:
-    """Create a polygon with oblique edges to highlight raster AA differences."""
+def build_demo_design() -> tuple[Design, Polygon, Circle]:
+    """Create polygon+circle geometry to highlight raster AA differences."""
     width, height = 12.0, 8.0
     background = Material(permittivity=1.0)
     polygon_mat = Material(permittivity=12.0)
@@ -35,12 +36,18 @@ def build_demo_design() -> tuple[Design, Polygon]:
         ],
         material=polygon_mat,
     )
+    circle = Circle(
+        position=(2.2, 6.4),
+        radius=0.9,
+        material=polygon_mat,
+    )
     design += poly
-    return design, poly
+    design += circle
+    return design, poly, circle
 
 
-def draw_polygon_panel(ax, design: Design, poly: Polygon) -> None:
-    """Draw the input polygon geometry in physical coordinates."""
+def draw_geometry_panel(ax, design: Design, poly: Polygon, circle: Circle) -> None:
+    """Draw the input geometry in physical coordinates."""
     outside_color = "white"
     inside_color = "black"
     ax.add_patch(
@@ -64,7 +71,16 @@ def draw_polygon_panel(ax, design: Design, poly: Polygon) -> None:
             linewidth=1.2,
         )
     )
-    ax.set_title("Polygon Geometry", fontsize=10)
+    ax.add_patch(
+        PlotCircle(
+            xy=(float(circle.position[0]), float(circle.position[1])),
+            radius=float(circle.radius),
+            facecolor=inside_color,
+            edgecolor="white",
+            linewidth=1.2,
+        )
+    )
+    ax.set_title("Input Geometry", fontsize=10)
     ax.set_xlim(0.0, design.width)
     ax.set_ylim(0.0, design.height)
     ax.set_aspect("equal")
@@ -83,13 +99,13 @@ def main() -> None:
     parser.add_argument(
         "--resolution",
         type=float,
-        default=0.25,
+        default=0.35,
         help="Raster cell size in design units.",
     )
     parser.add_argument(
         "--jitter-samples",
         type=int,
-        default=16,
+        default=2*2*2*2*2*2,
         help="Number of stratified-jitter samples per cell.",
     )
     parser.add_argument(
@@ -102,7 +118,7 @@ def main() -> None:
 
     os.environ.setdefault("BEAMZ_RASTER_TIMING", "0")
 
-    design, poly = build_demo_design()
+    design, poly, circle = build_demo_design()
     one_sample_grid = design.rasterize(
         resolution=args.resolution,
         force_recompute=True,
@@ -114,7 +130,7 @@ def main() -> None:
         resolution=args.resolution,
         force_recompute=True,
         aa_mode="legacy_grid",
-        aa_samples=16,
+        aa_samples=2*2*2*2*2*2,
         aa_seed=0,
     )
     jitter_grid = design.rasterize(
@@ -142,7 +158,7 @@ def main() -> None:
 
     fig, axes = plt.subplots(2, 2, figsize=(7, 5), constrained_layout=True, dpi=120)
     axes = axes.ravel()
-    draw_polygon_panel(axes[0], design, poly)
+    draw_geometry_panel(axes[0], design, poly, circle)
 
     axes[1].imshow(
         eps_one,
@@ -168,7 +184,7 @@ def main() -> None:
         vmax=vmax,
         aspect="equal",
     )
-    axes[2].set_title("Gridded Super-Sampling (16 Samples)", fontsize=10)
+    axes[2].set_title(f"Gridded Super-Sampling ({args.jitter_samples} Samples)", fontsize=10)
     axes[2].set_xticks([])
     axes[2].set_yticks([])
 
