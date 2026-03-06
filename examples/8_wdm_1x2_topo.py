@@ -12,15 +12,18 @@ from beamz.optimization.topology import (
 
 
 """
-Simplified inverse-design example: 1x2 wavelength demultiplexer (Si on SiO2) in 2D.
+Simplified inverse-design example: 1x2 wavelength demultiplexer (Si in air) in 2D.
 
 Per optimization step:
 - 2 forward sims (one per wavelength)
-- 4 adjoint sims (top + bottom, per wavelength)
+- 8 adjoint sims (top + bottom + reflection + input norm, per wavelength)
 
-Objective (power-based, simple):
-FoM_k = T_target - w_leak*T_leak
-Total objective = mean(FoM_k over wavelengths) - material_penalty
+Objective (directional flux based, normalized):
+For each wavelength k,
+  J_k = N_k / P_in
+with
+  N_k = T_target - w_leak*T_leak - w_refl*T_refl + w_throughput*T_total_out
+and gradients assembled with the quotient rule (includes dP_in term).
 """
 
 
@@ -61,25 +64,27 @@ DX, DT = calc_optimal_fdtd_params(
     points_per_wavelength=8,
 )
 
-STEPS = 300
+STEPS = 80
 FIELD_SUBSAMPLE = 1
 
 EMA_ALPHA = 0.20
 
 CLIP_PCT = 99.5
+GRAD_ABS_HARD_CAP = 50.0
+NORMALIZE_GRAD_RMS = True
 
 # Optimizer and blur continuation:
 # Use piecewise-constant phases; final phase is dedicated binarization.
-LEARNING_RATE = 0.0015
-BETA_PHASE_VALUES = (1.0, 2.5, 7.0, 25.0)
-BLUR_PHASE_VALUES = (0.50 * UM, 0.3 * UM, 0.2 * UM, 0.15 * UM)
-LEAK_W_PHASE_VALUES = (0.30, 0.70, 1.20, 1.60)
-REFL_W_PHASE_VALUES = (0.05, 0.12, 0.20, 0.30)
-GRAD_SCALE_PHASE_VALUES = (0.80, 0.55, 0.25, 0.06)
-THROUGHPUT_W_PHASE_VALUES = (0.25, 0.15, 0.05, 0.00)
+LEARNING_RATE = 0.01
+BETA_PHASE_VALUES = (2.0, 15.0, 40.0)
+BLUR_PHASE_VALUES = (0.3 * UM, 0.2 * UM, 0.15 * UM)
+LEAK_W_PHASE_VALUES = (0.30, 1.0, 1.60)
+REFL_W_PHASE_VALUES = (0.05, 0.15, 0.30)
+GRAD_SCALE_PHASE_VALUES = (0.80, 0.35, 0.06)
+THROUGHPUT_W_PHASE_VALUES = (0.25, 0.10, 0.00)
 # Extra objective/gradient pressure to push density away from 0.5 in late phases.
-BINARY_PUSH_PHASE_VALUES = (0.00, 0.00, 0.04, 0.20)
-PHASE_FRACTIONS = (0.20, 0.20, 0.20, 0.40)
+BINARY_PUSH_PHASE_VALUES = (0.00, 0.04, 0.20)
+PHASE_FRACTIONS = (0.2, 0.3, 0.5)
 if len(BETA_PHASE_VALUES) != len(BLUR_PHASE_VALUES):
     raise ValueError("BETA_PHASE_VALUES and BLUR_PHASE_VALUES must have same length.")
 if len(PHASE_FRACTIONS) != len(BETA_PHASE_VALUES):
@@ -97,9 +102,10 @@ if len(BINARY_PUSH_PHASE_VALUES) != len(BETA_PHASE_VALUES):
 if not np.isclose(sum(PHASE_FRACTIONS), 1.0, atol=1e-12):
     raise ValueError("PHASE_FRACTIONS must sum to 1.0.")
 
-# Use +1.0 if overlap gradients are already dJ/deps;
-# switch to -1.0 if objective moves the wrong way.
-ADJOINT_GRAD_SIGN = 1.0
+# Use only positive directional flux contributions for integrated energies.
+POSITIVE_FLUX_ONLY = True
+# Keep normalization denominator away from near-zero signed-flux artifacts.
+IN_NORM_FLOOR_FRAC = 0.20
 
 # Debug outputs cadence.
 DEBUG_EVERY = 5
@@ -211,6 +217,76 @@ def integrate_windowed_energy(power_history, time, gate_start):
     return float(np.sum(p) * DT)
 
 
+def signed_flux_trace_from_field_histories(
+    ez_hist,
+    hx_hist,
+    hy_hist,
+    monitor,
+    normal_direction,
+):
+    direction = str(normal_direction).lower()
+    if direction not in {"+x", "-x", "+y", "-y"}:
+        raise ValueError(f"Unsupported normal_direction={normal_direction!r}")
+    axis = direction[1]
+    dir_sign = 1.0 if direction.startswith("+") else -1.0
+
+    points = monitor.get_grid_points_2d(DX, DX)
+    n = min(len(ez_hist), len(hx_hist), len(hy_hist))
+    trace = np.zeros(n, dtype=float)
+    if n == 0 or len(points) == 0:
+        return trace
+
+    xs = np.asarray([int(p[0]) for p in points], dtype=int)
+    ys = np.asarray([int(p[1]) for p in points], dtype=int)
+
+    for i in range(n):
+        ez = np.asarray(ez_hist[i])
+        hx = np.asarray(hx_hist[i])
+        hy = np.asarray(hy_hist[i])
+
+        valid = (
+            (ys >= 0)
+            & (xs >= 0)
+            & (ys < ez.shape[0])
+            & (xs < ez.shape[1])
+            & (ys < hx.shape[0])
+            & (xs < hx.shape[1])
+            & (ys < hy.shape[0])
+            & (xs < hy.shape[1])
+        )
+        if not np.any(valid):
+            continue
+
+        e = ez[ys[valid], xs[valid]]
+        h_x = hx[ys[valid], xs[valid]]
+        h_y = hy[ys[valid], xs[valid]]
+
+        if axis == "x":
+            density = -np.real(e * np.conjugate(h_y))
+        else:
+            density = np.real(e * np.conjugate(h_x))
+        trace[i] = float(dir_sign * np.sum(density) * DX * DX)
+
+    return trace
+
+
+def integrate_signed_flux_energy(flux_trace, time, gate_start, positive_only=POSITIVE_FLUX_ONLY):
+    flux_trace = np.asarray(flux_trace, dtype=float)
+    n = min(flux_trace.size, len(time))
+    if n == 0:
+        return 0.0
+
+    t = np.asarray(time[:n], dtype=float)
+    flux = flux_trace[:n]
+    if positive_only:
+        flux = np.maximum(flux, 0.0)
+
+    mask = t >= gate_start
+    if np.any(mask):
+        return float(np.sum(flux[mask]) * DT)
+    return float(np.sum(flux) * DT)
+
+
 def apply_time_gate_to_history(field_history, time, gate_start):
     n = min(len(field_history), len(time))
     gated = []
@@ -242,7 +318,7 @@ def build_port_monitors(grid):
         Y_IN,
         MON_SPAN,
         name="in_refl",
-        record_fields=False,
+        record_fields=True,
     )
     mon_in = make_vertical_monitor(
         grid,
@@ -250,7 +326,7 @@ def build_port_monitors(grid):
         Y_IN,
         MON_SPAN,
         name="in_norm",
-        record_fields=False,
+        record_fields=True,
     )
     mon_top = make_vertical_monitor(
         grid,
@@ -291,19 +367,34 @@ def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
         resolution=DX,
     )
 
-    save = ["Ez"] if save_fields else []
+    save = ["Ez", "Hx", "Hy"]
     results = sim.run(save_fields=save, field_subsample=FIELD_SUBSAMPLE)
 
-    refl_energy = integrate_windowed_energy(mon_refl.power_history, time, gate_start)
-    in_energy = integrate_windowed_energy(mon_in.power_history, time, gate_start)
-    top_energy = integrate_windowed_energy(mon_top.power_history, time, gate_start)
-    bot_energy = integrate_windowed_energy(mon_bot.power_history, time, gate_start)
+    ez_hist_all = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
+    hx_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hx", [])]
+    hy_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hy", [])]
+    n_hist = min(len(ez_hist_all), len(hx_hist), len(hy_hist))
+    if n_hist == 0:
+        raise RuntimeError("Forward simulation returned no Ez/Hx/Hy history.")
+    ez_hist_all = ez_hist_all[:n_hist]
+    hx_hist = hx_hist[:n_hist]
+    hy_hist = hy_hist[:n_hist]
+
+    refl_flux = signed_flux_trace_from_field_histories(ez_hist_all, hx_hist, hy_hist, mon_refl, "-x")
+    in_flux = signed_flux_trace_from_field_histories(ez_hist_all, hx_hist, hy_hist, mon_in, "+x")
+    top_flux = signed_flux_trace_from_field_histories(ez_hist_all, hx_hist, hy_hist, mon_top, "+x")
+    bot_flux = signed_flux_trace_from_field_histories(ez_hist_all, hx_hist, hy_hist, mon_bot, "+x")
+
+    refl_energy = integrate_signed_flux_energy(refl_flux, time, gate_start)
+    in_energy = integrate_signed_flux_energy(in_flux, time, gate_start)
+    top_energy = integrate_signed_flux_energy(top_flux, time, gate_start)
+    bot_energy = integrate_signed_flux_energy(bot_flux, time, gate_start)
     in_energy = max(in_energy, 1e-30)
     total_out = max(top_energy + bot_energy, 0.0)
 
     ez_hist = []
     if save_fields:
-        ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
+        ez_hist = ez_hist_all
         if not ez_hist:
             raise RuntimeError("Forward simulation returned no Ez history.")
 
@@ -319,10 +410,14 @@ def run_adjoint(grid, wavelength, target_port, time, signal):
         x_target = X_MON_OUT
         y_target = Y_BOT
         direction = "-x"
-    elif target_port == "input":
+    elif target_port == "refl":
         x_target = X_MON_REFL
         y_target = Y_IN
         direction = "+x"
+    elif target_port == "in_norm":
+        x_target = X_MON_IN
+        y_target = Y_IN
+        direction = "-x"
     else:
         raise ValueError(f"Unknown adjoint target_port='{target_port}'")
 
@@ -372,19 +467,25 @@ def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
     )
     results = sim.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=1)
 
-    in_energy = integrate_windowed_energy(mon_in.power_history, time, gate_start)
-    top_energy = integrate_windowed_energy(mon_top.power_history, time, gate_start)
-    bot_energy = integrate_windowed_energy(mon_bot.power_history, time, gate_start)
-    in_energy = max(in_energy, 1e-30)
-    tx_top = max(0.0, top_energy / in_energy)
-    tx_bot = max(0.0, bot_energy / in_energy)
-
     ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
     hx_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hx", [])]
     hy_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hy", [])]
     n_frames = min(len(ez_hist), len(hx_hist), len(hy_hist))
     if n_frames == 0:
         raise RuntimeError("Forward flux map sim returned no Ez/Hx/Hy history.")
+    ez_hist = ez_hist[:n_frames]
+    hx_hist = hx_hist[:n_frames]
+    hy_hist = hy_hist[:n_frames]
+
+    in_flux = signed_flux_trace_from_field_histories(ez_hist, hx_hist, hy_hist, mon_in, "+x")
+    top_flux = signed_flux_trace_from_field_histories(ez_hist, hx_hist, hy_hist, mon_top, "+x")
+    bot_flux = signed_flux_trace_from_field_histories(ez_hist, hx_hist, hy_hist, mon_bot, "+x")
+    in_energy = integrate_signed_flux_energy(in_flux, time, gate_start)
+    top_energy = integrate_signed_flux_energy(top_flux, time, gate_start)
+    bot_energy = integrate_signed_flux_energy(bot_flux, time, gate_start)
+    in_energy = max(in_energy, 1e-30)
+    tx_top = max(0.0, top_energy / in_energy)
+    tx_bot = max(0.0, bot_energy / in_energy)
 
     flux_map = np.zeros_like(ez_hist[0], dtype=float)
     for i in range(n_frames):
@@ -583,6 +684,7 @@ tx_hist = {
     WL_LONG: {"target": [], "leak": []},
 }
 fom_hist = {WL_SHORT: [], WL_LONG: []}
+in_energy_ref = {WL_SHORT: None, WL_LONG: None}
 ema_objective = None
 prev_phys_plot = None
 prev_design_density = None
@@ -629,7 +731,11 @@ for step in range(STEPS):
             save_fields=True,
         )
 
-        norm_scale = in_energy
+        if in_energy_ref[wl] is None:
+            in_energy_ref[wl] = max(float(in_energy), 1e-30)
+        norm_floor = max(IN_NORM_FLOOR_FRAC * in_energy_ref[wl], 1e-30)
+        norm_scale = max(float(in_energy), norm_floor)
+        norm_floored = bool(in_energy < norm_floor)
         target_e = top_energy if target_port == "top" else bot_energy
         leak_e = bot_energy if target_port == "top" else top_energy
         target_tx = target_e / norm_scale
@@ -650,6 +756,13 @@ for step in range(STEPS):
                 "signal": sig,
                 "gate_start": t_gate,
                 "fwd_hist": fwd_hist,
+                "in_energy": in_energy,
+                "norm_scale": norm_scale,
+                "norm_floored": norm_floored,
+                "top_energy": top_energy,
+                "bot_energy": bot_energy,
+                "refl_energy": refl_energy,
+                "total_out_energy": total_out,
                 "target_tx": target_tx,
                 "leak_tx": leak_tx,
                 "refl_tx": refl_tx,
@@ -675,33 +788,53 @@ for step in range(STEPS):
         leak_tx = item["leak_tx"]
         refl_tx = item["refl_tx"]
         throughput_tx = item["throughput_tx"]
+        in_energy = item["in_energy"]
+        norm_scale = item["norm_scale"]
+        norm_floored = item["norm_floored"]
+        top_energy = item["top_energy"]
+        bot_energy = item["bot_energy"]
+        refl_energy = item["refl_energy"]
+        total_out_energy = item["total_out_energy"]
 
         adj_top = run_adjoint(grid=grid, wavelength=wl, target_port="top", time=t_axis, signal=sig)
         adj_bot = run_adjoint(grid=grid, wavelength=wl, target_port="bottom", time=t_axis, signal=sig)
-        adj_refl = run_adjoint(grid=grid, wavelength=wl, target_port="input", time=t_axis, signal=sig)
+        adj_refl = run_adjoint(grid=grid, wavelength=wl, target_port="refl", time=t_axis, signal=sig)
+        adj_in = run_adjoint(grid=grid, wavelength=wl, target_port="in_norm", time=t_axis, signal=sig)
 
         fwd_hist_gated = apply_time_gate_to_history(fwd_hist, t_axis, t_gate)
         adj_top_gated = apply_time_gate_to_history(adj_top, t_axis, t_gate)
         adj_bot_gated = apply_time_gate_to_history(adj_bot, t_axis, t_gate)
         adj_refl_gated = apply_time_gate_to_history(adj_refl, t_axis, t_gate)
+        adj_in_gated = apply_time_gate_to_history(adj_in, t_axis, t_gate)
 
         grad_top = np.array(compute_overlap_gradient(fwd_hist_gated, adj_top_gated))
         grad_bot = np.array(compute_overlap_gradient(fwd_hist_gated, adj_bot_gated))
         grad_refl = np.array(compute_overlap_gradient(fwd_hist_gated, adj_refl_gated))
+        grad_in = np.array(compute_overlap_gradient(fwd_hist_gated, adj_in_gated))
+
+        numerator_energy = (
+            (top_energy if target_port == "top" else bot_energy)
+            - leak_weight * (bot_energy if target_port == "top" else top_energy)
+            - refl_weight * refl_energy
+            + throughput_w * total_out_energy
+        )
+        inv_in = 1.0 / max(norm_scale, 1e-30)
+        inv_in2 = inv_in * inv_in
 
         if target_port == "top":
-            grad_target = grad_top
-            grad_leak = grad_bot
+            coeff_top = 1.0 + throughput_w
+            coeff_bot = throughput_w - leak_weight
         else:
-            grad_target = grad_bot
-            grad_leak = grad_top
+            coeff_top = throughput_w - leak_weight
+            coeff_bot = 1.0 + throughput_w
 
-        fom_k = target_tx - leak_weight * leak_tx - refl_weight * refl_tx + throughput_w * throughput_tx
-        grad_fom_k = ADJOINT_GRAD_SIGN * (
-            grad_target
-            - leak_weight * grad_leak
-            - refl_weight * grad_refl
-            + throughput_w * (grad_target + grad_leak)
+        coeff_refl = -refl_weight
+        coeff_in = 0.0 if norm_floored else (-numerator_energy * inv_in2)
+
+        fom_k = numerator_energy * inv_in
+        grad_fom_k = (
+            inv_in * (coeff_top * grad_top + coeff_bot * grad_bot + coeff_refl * grad_refl)
+            + coeff_in * grad_in
         )
 
         per_wl_fom.append(fom_k)
@@ -716,9 +849,9 @@ for step in range(STEPS):
             f"R={100.0 * refl_tx:5.1f}% "
             f"Tout={100.0 * throughput_tx:5.1f}% "
             f"FoM={100.0 * fom_k:5.1f}%"
+            + (" [norm-floor]" if norm_floored else "")
         )
 
-    long_w = 1.0
     wl_weights = np.full(len(WAVELENGTH_CASES), 1.0 / len(WAVELENGTH_CASES), dtype=float)
 
     objective_route = float(np.dot(wl_weights, np.asarray(per_wl_fom, dtype=float)))
@@ -743,6 +876,12 @@ for step in range(STEPS):
         clip_val = np.percentile(grad_abs, CLIP_PCT)
         if clip_val > 0:
             grad_total[mask] = np.clip(grad_total[mask], -clip_val, clip_val)
+        grad_total[mask] = np.clip(grad_total[mask], -GRAD_ABS_HARD_CAP, GRAD_ABS_HARD_CAP)
+        if NORMALIZE_GRAD_RMS:
+            g = grad_total[mask]
+            g_rms = float(np.sqrt(np.mean(g * g)))
+            if np.isfinite(g_rms) and g_rms > 0:
+                grad_total[mask] = g / g_rms
 
     grad_total[mask] *= grad_scale
 
@@ -765,7 +904,7 @@ for step in range(STEPS):
             f"(meanFoM={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
             f"meanTout={100.0 * throughput_mean:.1f}% "
             f"wL={leak_weight:.2f} wR={refl_weight:.2f} wT={throughput_w:.2f} "
-            f"wLong={long_w:.2f} s={grad_scale:.2f} "
+            f"s={grad_scale:.2f} "
             f"wB={binary_push:.2f} bin={binarity:.2f} "
             f"mat={current_density:.2f} ph={phase_idx + 1}/{len(PHASE_FRACTIONS)} beta={beta:.2f} "
             f"blur={blur_radius / UM:.3f}um "
@@ -962,7 +1101,7 @@ plt.plot(steps, fom_hist[WL_SHORT], "b-", linewidth=2, label="FoM 1.31 um")
 plt.plot(steps, fom_hist[WL_LONG], "r-", linewidth=2, label="FoM 1.55 um")
 plt.xlabel("Optimization step")
 plt.ylabel("Per-wavelength FoM (%)")
-plt.title("Per-channel FoM = T_target - wL*T_leak")
+plt.title("Per-channel FoM = normalized (Ttarget - wL*Tleak - wR*Trefl + wT*Tout)")
 plt.grid(alpha=0.3)
 plt.legend()
 plt.tight_layout()
