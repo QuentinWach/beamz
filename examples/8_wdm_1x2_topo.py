@@ -479,7 +479,7 @@ def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
     ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
     hx_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hx", [])]
     hy_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hy", [])]
-    n_frames = min(len(ez_hist), len(hx_hist), len(hy_hist))
+    n_frames = min(len(ez_hist), len(hx_hist), len(hy_hist), len(time))
     if n_frames == 0:
         raise RuntimeError("Forward flux map sim returned no Ez/Hx/Hy history.")
     ez_hist = ez_hist[:n_frames]
@@ -488,6 +488,8 @@ def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
 
     flux_map = np.zeros_like(ez_hist[0], dtype=float)
     for i in range(n_frames):
+        if time[i] < gate_start:
+            continue
         ez_i = ez_hist[i]
         hx_i = hx_hist[i]
         hy_i = hy_hist[i]
