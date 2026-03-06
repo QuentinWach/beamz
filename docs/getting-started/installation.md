@@ -4,7 +4,7 @@
 pip install beamz
 ```
 
-is the easiest way to install BEAMZ since you only need [Python 3.8 or higher](https://www.python.org/downloads/) and [pip (Python package installer)](https://pip.pypa.io/en/stable/installation/).
+is the easiest way to install BEAMZ since you only need [Python 3.10 or higher](https://www.python.org/downloads/) and [pip (Python package installer)](https://pip.pypa.io/en/stable/installation/).
 
 Alternatively, you can install BEAMZ directly from the source code. To do so, clone the repository:
 ```bash
