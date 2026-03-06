@@ -175,7 +175,7 @@ def _rebuild_structure_list(
     return rebuilt
 
 
-RASTER_CACHE_VERSION = "v3"
+RASTER_CACHE_VERSION = "v4"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -287,7 +287,18 @@ def _grid_kind_for_request(design_obj, grid_type, kwargs):
     return "3d" if (design_obj.is_3d and design_obj.depth > 0) else "2d"
 
 
-def _design_cache_key(design_obj, resolution, grid_kind, resolution_z):
+def _normalize_aa_config(kwargs):
+    mode = str(kwargs.get("aa_mode", "legacy_grid") or "legacy_grid").strip().lower()
+    samples = kwargs.get("aa_samples", 9)
+    seed = kwargs.get("aa_seed", 0)
+    return {
+        "mode": mode,
+        "samples": int(9 if samples is None else samples),
+        "seed": int(0 if seed is None else seed),
+    }
+
+
+def _design_cache_key(design_obj, resolution, grid_kind, resolution_z, aa_config):
     raster_env = {
         "fast_3d": os.getenv("BEAMZ_RASTER_FAST_3D"),
         "fast_min_voxels": os.getenv("BEAMZ_RASTER_FAST_MIN_VOXELS", "1000000"),
@@ -297,6 +308,7 @@ def _design_cache_key(design_obj, resolution, grid_kind, resolution_z):
         "grid_kind": grid_kind,
         "resolution_xy": _to_jsonable(float(resolution)),
         "resolution_z": _to_jsonable(float(resolution_z)),
+        "antialiasing": _to_jsonable(aa_config),
         "raster_env": raster_env,
         "domain": {
             "width": _to_jsonable(float(design_obj.width)),
@@ -486,20 +498,27 @@ class Design:
         from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
         from beamz.visual.helpers import display_status
 
-        # Return cached grid if resolution matches and no force recompute
-        if (
-            not force_recompute
-            and hasattr(self, "_grid")
-            and hasattr(self, "_grid_resolution")
-        ):
-            if self._grid_resolution == resolution:
-                return self._grid
-
         timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
         disk_cache_enabled = _env_bool("BEAMZ_RASTER_CACHE", True)
         t_total_start = time.perf_counter()
-        requested_resolution_z = float(kwargs.get("resolution_z", resolution))
         grid_kind = _grid_kind_for_request(self, grid_type, kwargs)
+        requested_resolution_z_raw = kwargs.get("resolution_z", resolution)
+        if requested_resolution_z_raw is None:
+            requested_resolution_z_raw = resolution
+        requested_resolution_z = float(requested_resolution_z_raw)
+        aa_config = _normalize_aa_config(kwargs)
+        request_signature = {
+            "resolution_xy": float(resolution),
+            "resolution_z": requested_resolution_z,
+            "grid_kind": grid_kind,
+            "aa_config": aa_config,
+        }
+
+        # Return cached grid if request signature matches and no force recompute
+        if not force_recompute and hasattr(self, "_grid"):
+            cached_sig = getattr(self, "_grid_request_signature", None)
+            if cached_sig is not None and cached_sig == request_signature:
+                return self._grid
 
         cache_path = None
         if disk_cache_enabled and not force_recompute:
@@ -508,6 +527,7 @@ class Design:
                 resolution=float(resolution),
                 grid_kind=grid_kind,
                 resolution_z=requested_resolution_z,
+                aa_config=aa_config,
             )
             cache_path = _raster_cache_path(cache_key)
             if cache_path.exists():
@@ -522,6 +542,7 @@ class Design:
                         arrays=arrays,
                     )
                     self._grid_resolution = resolution
+                    self._grid_request_signature = request_signature
                 finally:
                     arrays.close()
                 if timing_enabled:
@@ -544,6 +565,7 @@ class Design:
             elif gt in {"auto", "auto-select", "autoselect"}:
                 self._grid = create_mesh(self, resolution, **kwargs)
                 self._grid_resolution = resolution
+                self._grid_request_signature = request_signature
                 t_raster_end = time.perf_counter()
                 if disk_cache_enabled:
                     if cache_path is None:
@@ -558,6 +580,7 @@ class Design:
                             resolution_z=float(
                                 getattr(self._grid, "resolution_z", resolution)
                             ),
+                            aa_config=aa_config,
                         )
                         cache_path = _raster_cache_path(cache_key)
                     t_save = time.perf_counter()
@@ -588,12 +611,16 @@ class Design:
         if grid_cls is RegularGrid3D:
             resolution_xy, resolution_z = resolution, kwargs.pop("resolution_z", None)
             self._grid = grid_cls(
-                self, resolution_xy=resolution_xy, resolution_z=resolution_z
+                self,
+                resolution_xy=resolution_xy,
+                resolution_z=resolution_z,
+                **kwargs,
             )
             self._grid_resolution = resolution
         else:
             self._grid = grid_cls(self, resolution, **kwargs)
             self._grid_resolution = resolution
+        self._grid_request_signature = request_signature
 
         t_raster_end = time.perf_counter()
 
@@ -608,6 +635,7 @@ class Design:
                         else "2d"
                     ),
                     resolution_z=float(getattr(self._grid, "resolution_z", resolution)),
+                    aa_config=aa_config,
                 )
                 cache_path = _raster_cache_path(cache_key)
             t_save = time.perf_counter()
