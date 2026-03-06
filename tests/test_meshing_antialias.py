@@ -13,20 +13,22 @@ def _build_circle_design():
     return design
 
 
-def test_default_antialias_matches_legacy_grid(monkeypatch):
+def test_default_antialias_matches_stratified_jitter_64(monkeypatch):
     monkeypatch.setenv("BEAMZ_RASTER_CACHE", "0")
     monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
 
     design = _build_circle_design()
     default_grid = design.rasterize(resolution=0.5, force_recompute=True)
-    legacy_grid = design.rasterize(
+    default_explicit_grid = design.rasterize(
         resolution=0.5,
         force_recompute=True,
-        aa_mode="legacy_grid",
-        aa_samples=9,
+        aa_mode="stratified_jitter",
+        aa_samples=64,
         aa_seed=0,
     )
-    np.testing.assert_allclose(default_grid.permittivity, legacy_grid.permittivity)
+    np.testing.assert_allclose(
+        default_grid.permittivity, default_explicit_grid.permittivity
+    )
 
 
 def test_stratified_jitter_is_deterministic_for_fixed_seed(monkeypatch):
