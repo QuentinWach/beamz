@@ -72,8 +72,8 @@ class BaseMeshGrid:
     """Base class for mesh grids with common functionality."""
 
     _SUPPORTED_AA_MODES = ("legacy_grid", "stratified_jitter")
-    _DEFAULT_AA_MODE = "legacy_grid"
-    _DEFAULT_AA_SAMPLES = 9
+    _DEFAULT_AA_MODE = "stratified_jitter"
+    _DEFAULT_AA_SAMPLES = 64
     _DEFAULT_AA_SEED = 0
 
     def __init__(self, design, resolution):
@@ -246,8 +246,8 @@ class RegularGrid(BaseMeshGrid):
         self,
         design,
         resolution,
-        aa_mode="legacy_grid",
-        aa_samples=None,
+        aa_mode="stratified_jitter",
+        aa_samples=64,
         aa_seed=0,
     ):
         super().__init__(design, resolution)
@@ -784,8 +784,8 @@ class RegularGrid3D(BaseMeshGrid):
         design,
         resolution_xy=None,
         resolution_z=None,
-        aa_mode="legacy_grid",
-        aa_samples=None,
+        aa_mode="stratified_jitter",
+        aa_samples=64,
         aa_seed=0,
     ):
         # Handle different resolution input formats
