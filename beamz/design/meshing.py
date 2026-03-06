@@ -112,6 +112,57 @@ class BaseMeshGrid:
         ny = max(1, int(np.ceil(float(sample_count) / float(nx))))
         return nx, ny
 
+    @staticmethod
+    def _splitmix64(value):
+        """Deterministic 64-bit mixer for stable per-cell scrambling."""
+        mask = 0xFFFFFFFFFFFFFFFF
+        z = int(value) & mask
+        z = (z + 0x9E3779B97F4A7C15) & mask
+        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & mask
+        z = z ^ (z >> 31)
+        return z & mask
+
+    def _cell_scramble_params_xy(self, cell_i, cell_j, cell_k=0):
+        """Return deterministic (shift_x, shift_y, rot90) for a cell."""
+        mask = 0xFFFFFFFFFFFFFFFF
+        key = int(self.aa_seed) & mask
+        key ^= (int(cell_i) * 0x9E3779B185EBCA87) & mask
+        key ^= (int(cell_j) * 0xC2B2AE3D27D4EB4F) & mask
+        key ^= (int(cell_k) * 0x165667B19E3779F9) & mask
+
+        h1 = self._splitmix64(key ^ 0xA0761D6478BD642F)
+        h2 = self._splitmix64(key ^ 0xE7037ED1A0B428DB)
+
+        mantissa_mask = (1 << 53) - 1
+        shift_x = ((h1 >> 11) & mantissa_mask) / float(1 << 53)
+        shift_y = ((h2 >> 11) & mantissa_mask) / float(1 << 53)
+        rot90 = int((h1 ^ h2) & 0x3)
+        return shift_x, shift_y, rot90
+
+    def _scramble_offsets_xy_for_cell(
+        self, sample_dx, sample_dy, cell_size, cell_i, cell_j, cell_k=0
+    ):
+        """Apply per-cell CP shift + 90° rotation to stratified jitter samples."""
+        if self.aa_mode != "stratified_jitter":
+            return sample_dx, sample_dy
+
+        cell_size = float(cell_size)
+        u = np.asarray(sample_dx, dtype=float) / cell_size + 0.5
+        v = np.asarray(sample_dy, dtype=float) / cell_size + 0.5
+
+        shift_x, shift_y, rot90 = self._cell_scramble_params_xy(cell_i, cell_j, cell_k)
+        if rot90 == 1:
+            u, v = v, 1.0 - u
+        elif rot90 == 2:
+            u, v = 1.0 - u, 1.0 - v
+        elif rot90 == 3:
+            u, v = 1.0 - v, u
+
+        u = np.mod(u + shift_x, 1.0)
+        v = np.mod(v + shift_y, 1.0)
+        return (u - 0.5) * cell_size, (v - 0.5) * cell_size
+
     def _build_supersample_offsets_xy(self, cell_size):
         """Build XY supersample offsets for the configured AA mode."""
         cell_size = float(cell_size)
@@ -459,11 +510,35 @@ class RegularGrid(BaseMeshGrid):
             return None
         return min_i, min_j, max_i, max_j
 
-    def _supersample_cell(self, cx, cy, sample_dx, sample_dy, num_samples, contains_fn):
+    def _supersample_cell(
+        self,
+        cx,
+        cy,
+        sample_dx,
+        sample_dy,
+        num_samples,
+        contains_fn,
+        *,
+        cell_i=None,
+        cell_j=None,
+        cell_k=0,
+        cell_size=None,
+    ):
         """Count how many configured sample points are inside the shape."""
+        local_dx, local_dy = sample_dx, sample_dy
+        if cell_i is not None and cell_j is not None:
+            local_dx, local_dy = self._scramble_offsets_xy_for_cell(
+                sample_dx=sample_dx,
+                sample_dy=sample_dy,
+                cell_size=(self.resolution if cell_size is None else cell_size),
+                cell_i=cell_i,
+                cell_j=cell_j,
+                cell_k=cell_k,
+            )
+
         count = 0
         for k in range(num_samples):
-            if contains_fn(cx + sample_dx[k], cy + sample_dy[k]):
+            if contains_fn(cx + local_dx[k], cy + local_dy[k]):
                 count += 1
         return count
 
@@ -561,6 +636,9 @@ class RegularGrid(BaseMeshGrid):
                 sample_dy,
                 num_samples,
                 lambda x, y: sx <= x < sx + sw and sy <= y < sy + sh,
+                cell_i=i,
+                cell_j=j,
+                cell_size=cell_size,
             )
             if samples_inside > 0:
                 blend_factor = samples_inside / num_samples
@@ -614,6 +692,9 @@ class RegularGrid(BaseMeshGrid):
                 sample_dy,
                 num_samples,
                 lambda x, y: np.hypot(x - center_x, y - center_y) <= radius,
+                cell_i=i,
+                cell_j=j,
+                cell_size=cell_size,
             )
             if samples_inside > 0:
                 grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -675,6 +756,9 @@ class RegularGrid(BaseMeshGrid):
                 lambda x, y: inner_radius
                 <= np.hypot(x - center_x, y - center_y)
                 <= outer_radius,
+                cell_i=i,
+                cell_j=j,
+                cell_size=cell_size,
             )
             if samples_inside > 0:
                 grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -754,6 +838,9 @@ class RegularGrid(BaseMeshGrid):
                         sample_dy,
                         num_samples,
                         contains_func,
+                        cell_i=i,
+                        cell_j=j,
+                        cell_size=cell_size,
                     )
                     if samples_inside > 0:
                         grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -769,6 +856,9 @@ class RegularGrid(BaseMeshGrid):
                         sample_dy,
                         num_samples,
                         contains_func,
+                        cell_i=i,
+                        cell_j=j,
+                        cell_size=cell_size,
                     )
                     if samples_inside > 0:
                         grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -1272,10 +1362,44 @@ class RegularGrid3D(BaseMeshGrid):
         sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
         n_samples_xy = float(sample_dx.size)
         inside_count = np.zeros(xx.shape, dtype=float)
+
+        shift_x_map = None
+        shift_y_map = None
+        rot_map = None
+        if self.aa_mode == "stratified_jitter":
+            shift_x_map = np.empty(xx.shape, dtype=float)
+            shift_y_map = np.empty(xx.shape, dtype=float)
+            rot_map = np.empty(xx.shape, dtype=np.uint8)
+            for i_rel in range(xx.shape[0]):
+                cell_i = min_i + i_rel
+                for j_rel in range(xx.shape[1]):
+                    cell_j = min_j + j_rel
+                    sx, sy, rot90 = self._cell_scramble_params_xy(cell_i, cell_j, 0)
+                    shift_x_map[i_rel, j_rel] = sx
+                    shift_y_map[i_rel, j_rel] = sy
+                    rot_map[i_rel, j_rel] = rot90
+
         for sidx in range(sample_dx.size):
-            points = np.column_stack(
-                ((xx + sample_dx[sidx]).ravel(), (yy + sample_dy[sidx]).ravel())
-            )
+            if self.aa_mode == "stratified_jitter":
+                u0 = sample_dx[sidx] / float(cell_size_xy) + 0.5
+                v0 = sample_dy[sidx] / float(cell_size_xy) + 0.5
+                u_rot = np.where(
+                    rot_map == 0,
+                    u0,
+                    np.where(rot_map == 1, v0, np.where(rot_map == 2, 1.0 - u0, 1.0 - v0)),
+                )
+                v_rot = np.where(
+                    rot_map == 0,
+                    v0,
+                    np.where(rot_map == 1, 1.0 - u0, np.where(rot_map == 2, 1.0 - v0, u0)),
+                )
+                cell_dx = (np.mod(u_rot + shift_x_map, 1.0) - 0.5) * float(cell_size_xy)
+                cell_dy = (np.mod(v_rot + shift_y_map, 1.0) - 0.5) * float(cell_size_xy)
+                points = np.column_stack(((xx + cell_dx).ravel(), (yy + cell_dy).ravel()))
+            else:
+                points = np.column_stack(
+                    ((xx + sample_dx[sidx]).ravel(), (yy + sample_dy[sidx]).ravel())
+                )
             inside = outer_path.contains_points(points, radius=1e-15).reshape(xx.shape)
             for hole_path in hole_paths:
                 inside &= ~hole_path.contains_points(points, radius=1e-15).reshape(
@@ -1358,12 +1482,20 @@ class RegularGrid3D(BaseMeshGrid):
                 y_center = y_centers[i]
                 for j in range(min_j, max_j):
                     x_center = x_centers[j]
+                    cell_dx, cell_dy = self._scramble_offsets_xy_for_cell(
+                        sample_dx=sample_dx,
+                        sample_dy=sample_dy,
+                        cell_size=cell_size_xy,
+                        cell_i=i,
+                        cell_j=j,
+                        cell_k=k,
+                    )
                     inside = 0
                     for z_off in offsets_z:
-                        for sidx in range(sample_dx.size):
+                        for sidx in range(cell_dx.size):
                             if contains_fn(
-                                x_center + sample_dx[sidx],
-                                y_center + sample_dy[sidx],
+                                x_center + cell_dx[sidx],
+                                y_center + cell_dy[sidx],
                                 z_center + z_off,
                             ):
                                 inside += 1

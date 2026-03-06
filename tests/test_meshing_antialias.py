@@ -1,6 +1,7 @@
 import numpy as np
 
 from beamz import Circle, Design, Material
+from beamz.design.core import _normalize_aa_config
 from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
 
 
@@ -131,3 +132,44 @@ def test_explicit_grid_type_cache_signature_distinguishes_2d_and_3d(monkeypatch)
     assert isinstance(grid_3d, RegularGrid3D)
     assert isinstance(grid_2d, RegularGrid)
     assert grid_2d is not grid_3d
+
+
+def test_stratified_jitter_per_cell_scramble_is_deterministic_and_decorrelated(
+    monkeypatch,
+):
+    monkeypatch.setenv("BEAMZ_RASTER_CACHE", "0")
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+
+    design = _build_circle_design()
+    grid = RegularGrid(
+        design,
+        resolution=0.5,
+        aa_mode="stratified_jitter",
+        aa_samples=16,
+        aa_seed=1234,
+    )
+    base_dx, base_dy = grid._build_supersample_offsets_xy(cell_size=0.5)
+
+    cell_a_dx, cell_a_dy = grid._scramble_offsets_xy_for_cell(
+        base_dx, base_dy, cell_size=0.5, cell_i=7, cell_j=11
+    )
+    cell_a2_dx, cell_a2_dy = grid._scramble_offsets_xy_for_cell(
+        base_dx, base_dy, cell_size=0.5, cell_i=7, cell_j=11
+    )
+    cell_b_dx, cell_b_dy = grid._scramble_offsets_xy_for_cell(
+        base_dx, base_dy, cell_size=0.5, cell_i=7, cell_j=12
+    )
+
+    np.testing.assert_allclose(cell_a_dx, cell_a2_dx)
+    np.testing.assert_allclose(cell_a_dy, cell_a2_dy)
+    assert not (
+        np.allclose(cell_a_dx, cell_b_dx) and np.allclose(cell_a_dy, cell_b_dy)
+    )
+
+
+def test_normalize_aa_config_tracks_scramble_policy():
+    jitter_cfg = _normalize_aa_config({"aa_mode": "stratified_jitter"})
+    legacy_cfg = _normalize_aa_config({"aa_mode": "legacy_grid"})
+
+    assert jitter_cfg["scramble"] == "cp_cell_v1"
+    assert legacy_cfg["scramble"] == "none"

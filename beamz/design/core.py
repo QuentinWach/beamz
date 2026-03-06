@@ -312,6 +312,7 @@ def _normalize_aa_config(kwargs):
         "mode": mode,
         "samples": int(64 if samples is None else samples),
         "seed": int(0 if seed is None else seed),
+        "scramble": "cp_cell_v1" if mode == "stratified_jitter" else "none",
     }
 
 
