@@ -117,8 +117,16 @@ class BaseMeshGrid:
         cell_size = float(cell_size)
         if self.aa_mode == "legacy_grid":
             nx, ny = self._sample_grid_shape(self.aa_samples)
-            ox = np.linspace(-0.25, 0.25, nx, dtype=float) * cell_size
-            oy = np.linspace(-0.25, 0.25, ny, dtype=float) * cell_size
+            if nx == 1:
+                ox = np.array([0.0], dtype=float)
+            else:
+                ox = np.linspace(-0.25, 0.25, nx, dtype=float)
+            if ny == 1:
+                oy = np.array([0.0], dtype=float)
+            else:
+                oy = np.linspace(-0.25, 0.25, ny, dtype=float)
+            ox = ox * cell_size
+            oy = oy * cell_size
             sample_dx, sample_dy = np.meshgrid(ox, oy)
             sample_dx = sample_dx.ravel()
             sample_dy = sample_dy.ravel()
@@ -1421,9 +1429,9 @@ def create_mesh(design, resolution, auto_select=True, force_3d=False, **kwargs):
     Returns:
         RegularGrid or RegularGrid3D instance
     """
+    resolution_z = kwargs.pop("resolution_z", None)
     if force_3d or (auto_select and design.is_3d and design.depth > 0):
         display_status("Auto-selecting 3D meshing for 3D design", "info")
-        resolution_z = kwargs.pop("resolution_z", None)
         return RegularGrid3D(
             design,
             resolution_xy=resolution,

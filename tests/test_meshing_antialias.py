@@ -1,6 +1,7 @@
 import numpy as np
 
 from beamz import Circle, Design, Material
+from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
 
 
 def _build_circle_design():
@@ -74,3 +75,59 @@ def test_switching_antialias_mode_recomputes_grid(monkeypatch):
 
     assert jitter_grid is not legacy_grid
     assert not np.allclose(legacy_grid.permittivity, jitter_grid.permittivity)
+
+
+def test_legacy_grid_single_sample_is_centered(monkeypatch):
+    monkeypatch.setenv("BEAMZ_RASTER_CACHE", "0")
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+
+    design = _build_circle_design()
+    grid = RegularGrid(
+        design,
+        resolution=0.5,
+        aa_mode="legacy_grid",
+        aa_samples=1,
+        aa_seed=0,
+    )
+
+    sample_dx, sample_dy = grid._build_supersample_offsets_xy(cell_size=0.5)
+    np.testing.assert_allclose(sample_dx, np.array([0.0]))
+    np.testing.assert_allclose(sample_dy, np.array([0.0]))
+
+
+def test_create_mesh_ignores_resolution_z_for_2d_design():
+    design = _build_circle_design()
+    grid = create_mesh(
+        design,
+        resolution=0.5,
+        auto_select=False,
+        force_3d=False,
+        resolution_z=0.1,
+    )
+    assert isinstance(grid, RegularGrid)
+
+
+def test_explicit_grid_type_cache_signature_distinguishes_2d_and_3d(monkeypatch):
+    monkeypatch.setenv("BEAMZ_RASTER_CACHE", "0")
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+
+    design = _build_circle_design()
+    grid_3d = design.rasterize(
+        resolution=0.5,
+        grid_type=RegularGrid3D,
+        force_recompute=True,
+        aa_mode="legacy_grid",
+        aa_samples=1,
+        aa_seed=0,
+    )
+    grid_2d = design.rasterize(
+        resolution=0.5,
+        grid_type=RegularGrid,
+        aa_mode="legacy_grid",
+        aa_samples=1,
+        aa_seed=0,
+    )
+
+    assert isinstance(grid_3d, RegularGrid3D)
+    assert isinstance(grid_2d, RegularGrid)
+    assert grid_2d is not grid_3d
