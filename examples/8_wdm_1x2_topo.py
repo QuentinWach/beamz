@@ -18,7 +18,7 @@ Per optimization step:
 - 2 forward sims (one per wavelength)
 - 8 adjoint sims (top + bottom + reflection + input norm, per wavelength)
 
-Objective (directional flux based, normalized):
+Objective (modal power based, normalized):
 For each wavelength k,
   J_k = N_k / P_in
 with
@@ -102,8 +102,6 @@ if len(BINARY_PUSH_PHASE_VALUES) != len(BETA_PHASE_VALUES):
 if not np.isclose(sum(PHASE_FRACTIONS), 1.0, atol=1e-12):
     raise ValueError("PHASE_FRACTIONS must sum to 1.0.")
 
-# Use only positive directional flux contributions for integrated energies.
-POSITIVE_FLUX_ONLY = True
 # Keep normalization denominator away from near-zero signed-flux artifacts.
 IN_NORM_FLOOR_FRAC = 0.20
 
@@ -204,87 +202,62 @@ def build_time_and_signal(wavelength):
     return time, signal, total_time, flight_time, gate_start
 
 
-def integrate_windowed_energy(power_history, time, gate_start):
-    power = np.asarray(power_history, dtype=float)
-    n = min(power.size, time.size)
-    if n == 0:
-        return 0.0
-    t = np.asarray(time[:n], dtype=float)
-    p = power[:n]
-    mask = t >= gate_start
-    if np.any(mask):
-        return float(np.sum(p[mask]) * DT)
-    return float(np.sum(p) * DT)
+def make_modal_port_specs():
+    return [
+        PortSpec(
+            name="in",
+            monitor_name="in_norm",
+            direction="+x",
+            polarization="tm",
+        ),
+        PortSpec(
+            name="top",
+            monitor_name="out_top",
+            direction="+x",
+            polarization="tm",
+        ),
+        PortSpec(
+            name="bottom",
+            monitor_name="out_bottom",
+            direction="+x",
+            polarization="tm",
+        ),
+        PortSpec(
+            name="refl",
+            monitor_name="in_refl",
+            direction="-x",
+            polarization="tm",
+        ),
+    ]
 
 
-def signed_flux_trace_from_field_histories(
-    ez_hist,
-    hx_hist,
-    hy_hist,
-    monitor,
-    normal_direction,
-):
-    direction = str(normal_direction).lower()
-    if direction not in {"+x", "-x", "+y", "-y"}:
-        raise ValueError(f"Unsupported normal_direction={normal_direction!r}")
-    axis = direction[1]
-    dir_sign = 1.0 if direction.startswith("+") else -1.0
+def extract_modal_port_energies(sim, wavelength):
+    frequency = LIGHT_SPEED / wavelength
+    modal = sim.get_S_matrix_modal_dft(
+        source_port="in",
+        ports=make_modal_port_specs(),
+        output_ports=["top", "bottom", "refl"],
+        frequencies=np.array([frequency], dtype=float),
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-80.0,
+    )
 
-    points = monitor.get_grid_points_2d(DX, DX)
-    n = min(len(ez_hist), len(hx_hist), len(hy_hist))
-    trace = np.zeros(n, dtype=float)
-    if n == 0 or len(points) == 0:
-        return trace
+    valid = np.asarray(modal["diagnostics"]["valid_mask"], dtype=bool)
+    if valid.size == 0 or not bool(valid[0]):
+        raise RuntimeError("Modal extraction returned invalid incident amplitude at source port.")
 
-    xs = np.asarray([int(p[0]) for p in points], dtype=int)
-    ys = np.asarray([int(p[1]) for p in points], dtype=int)
+    s_matrix = modal["s_matrix"]
+    tx_top = float(np.abs(np.asarray(s_matrix[("top", "in")], dtype=np.complex128)[0]) ** 2)
+    tx_bot = float(np.abs(np.asarray(s_matrix[("bottom", "in")], dtype=np.complex128)[0]) ** 2)
+    tx_refl = float(np.abs(np.asarray(s_matrix[("refl", "in")], dtype=np.complex128)[0]) ** 2)
 
-    for i in range(n):
-        ez = np.asarray(ez_hist[i])
-        hx = np.asarray(hx_hist[i])
-        hy = np.asarray(hy_hist[i])
-
-        valid = (
-            (ys >= 0)
-            & (xs >= 0)
-            & (ys < ez.shape[0])
-            & (xs < ez.shape[1])
-            & (ys < hx.shape[0])
-            & (xs < hx.shape[1])
-            & (ys < hy.shape[0])
-            & (xs < hy.shape[1])
-        )
-        if not np.any(valid):
-            continue
-
-        e = ez[ys[valid], xs[valid]]
-        h_x = hx[ys[valid], xs[valid]]
-        h_y = hy[ys[valid], xs[valid]]
-
-        if axis == "x":
-            density = -np.real(e * np.conjugate(h_y))
-        else:
-            density = np.real(e * np.conjugate(h_x))
-        trace[i] = float(dir_sign * np.sum(density) * DX * DX)
-
-    return trace
-
-
-def integrate_signed_flux_energy(flux_trace, time, gate_start, positive_only=POSITIVE_FLUX_ONLY):
-    flux_trace = np.asarray(flux_trace, dtype=float)
-    n = min(flux_trace.size, len(time))
-    if n == 0:
-        return 0.0
-
-    t = np.asarray(time[:n], dtype=float)
-    flux = flux_trace[:n]
-    if positive_only:
-        flux = np.maximum(flux, 0.0)
-
-    mask = t >= gate_start
-    if np.any(mask):
-        return float(np.sum(flux[mask]) * DT)
-    return float(np.sum(flux) * DT)
+    p_in = float(np.asarray(modal["diagnostics"]["P_in"], dtype=float)[0])
+    p_in = max(p_in, 1e-30)
+    p_top = max(tx_top * p_in, 0.0)
+    p_bot = max(tx_bot * p_in, 0.0)
+    p_refl = max(tx_refl * p_in, 0.0)
+    return p_in, p_top, p_bot, p_refl
 
 
 def apply_time_gate_to_history(field_history, time, gate_start):
@@ -298,7 +271,17 @@ def apply_time_gate_to_history(field_history, time, gate_start):
     return gated
 
 
-def make_vertical_monitor(grid, x, y_center, span, name=None, record_fields=True):
+def make_vertical_monitor(
+    grid,
+    x,
+    y_center,
+    span,
+    name=None,
+    record_fields=True,
+    dft_frequency=None,
+    dft_t_start=0.0,
+    dft_t_end=None,
+):
     kwargs = dict(
         design=grid,
         start=(x, y_center - 0.5 * span),
@@ -306,19 +289,36 @@ def make_vertical_monitor(grid, x, y_center, span, name=None, record_fields=True
         accumulate_power=True,
         record_fields=bool(record_fields),
     )
+    if dft_frequency is not None:
+        kwargs["dft_enabled"] = True
+        kwargs["dft_frequencies"] = np.array([float(dft_frequency)], dtype=float)
+        kwargs["dft_components"] = ("Ez", "Hx", "Hy")
+        kwargs["dft_window"] = "rect"
+        kwargs["dft_t_start"] = float(dft_t_start)
+        if dft_t_end is not None:
+            kwargs["dft_t_end"] = float(dft_t_end)
     if name is not None:
         kwargs["name"] = str(name)
     return Monitor(**kwargs)
 
 
-def build_port_monitors(grid):
+def build_port_monitors(
+    grid,
+    record_fields=True,
+    dft_frequency=None,
+    dft_t_start=0.0,
+    dft_t_end=None,
+):
     mon_refl = make_vertical_monitor(
         grid,
         X_MON_REFL,
         Y_IN,
         MON_SPAN,
         name="in_refl",
-        record_fields=True,
+        record_fields=record_fields,
+        dft_frequency=dft_frequency,
+        dft_t_start=dft_t_start,
+        dft_t_end=dft_t_end,
     )
     mon_in = make_vertical_monitor(
         grid,
@@ -326,7 +326,10 @@ def build_port_monitors(grid):
         Y_IN,
         MON_SPAN,
         name="in_norm",
-        record_fields=True,
+        record_fields=record_fields,
+        dft_frequency=dft_frequency,
+        dft_t_start=dft_t_start,
+        dft_t_end=dft_t_end,
     )
     mon_top = make_vertical_monitor(
         grid,
@@ -334,7 +337,10 @@ def build_port_monitors(grid):
         Y_TOP,
         MON_SPAN,
         name="out_top",
-        record_fields=True,
+        record_fields=record_fields,
+        dft_frequency=dft_frequency,
+        dft_t_start=dft_t_start,
+        dft_t_end=dft_t_end,
     )
     mon_bot = make_vertical_monitor(
         grid,
@@ -342,7 +348,10 @@ def build_port_monitors(grid):
         Y_BOT,
         MON_SPAN,
         name="out_bottom",
-        record_fields=True,
+        record_fields=record_fields,
+        dft_frequency=dft_frequency,
+        dft_t_start=dft_t_start,
+        dft_t_end=dft_t_end,
     )
     return mon_refl, mon_in, mon_top, mon_bot
 
@@ -357,7 +366,14 @@ def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
         signal=signal,
         direction="+x",
     )
-    mon_refl, mon_in, mon_top, mon_bot = build_port_monitors(grid)
+    dft_frequency = LIGHT_SPEED / wavelength
+    mon_refl, mon_in, mon_top, mon_bot = build_port_monitors(
+        grid,
+        record_fields=False,
+        dft_frequency=dft_frequency,
+        dft_t_start=0.0,
+        dft_t_end=float(time[-1]),
+    )
 
     sim = Simulation(
         grid,
@@ -367,34 +383,15 @@ def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
         resolution=DX,
     )
 
-    save = ["Ez", "Hx", "Hy"]
+    save = ["Ez"] if save_fields else []
     results = sim.run(save_fields=save, field_subsample=FIELD_SUBSAMPLE)
 
-    ez_hist_all = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
-    hx_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hx", [])]
-    hy_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hy", [])]
-    n_hist = min(len(ez_hist_all), len(hx_hist), len(hy_hist))
-    if n_hist == 0:
-        raise RuntimeError("Forward simulation returned no Ez/Hx/Hy history.")
-    ez_hist_all = ez_hist_all[:n_hist]
-    hx_hist = hx_hist[:n_hist]
-    hy_hist = hy_hist[:n_hist]
-
-    refl_flux = signed_flux_trace_from_field_histories(ez_hist_all, hx_hist, hy_hist, mon_refl, "-x")
-    in_flux = signed_flux_trace_from_field_histories(ez_hist_all, hx_hist, hy_hist, mon_in, "+x")
-    top_flux = signed_flux_trace_from_field_histories(ez_hist_all, hx_hist, hy_hist, mon_top, "+x")
-    bot_flux = signed_flux_trace_from_field_histories(ez_hist_all, hx_hist, hy_hist, mon_bot, "+x")
-
-    refl_energy = integrate_signed_flux_energy(refl_flux, time, gate_start)
-    in_energy = integrate_signed_flux_energy(in_flux, time, gate_start)
-    top_energy = integrate_signed_flux_energy(top_flux, time, gate_start)
-    bot_energy = integrate_signed_flux_energy(bot_flux, time, gate_start)
-    in_energy = max(in_energy, 1e-30)
+    in_energy, top_energy, bot_energy, refl_energy = extract_modal_port_energies(sim, wavelength)
     total_out = max(top_energy + bot_energy, 0.0)
 
     ez_hist = []
     if save_fields:
-        ez_hist = ez_hist_all
+        ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
         if not ez_hist:
             raise RuntimeError("Forward simulation returned no Ez history.")
 
@@ -456,16 +453,28 @@ def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
         signal=signal,
         direction="+x",
     )
-    _mon_refl, mon_in, mon_top, mon_bot = build_port_monitors(grid)
+    dft_frequency = LIGHT_SPEED / wavelength
+    _mon_refl, _mon_in, _mon_top, _mon_bot = build_port_monitors(
+        grid,
+        record_fields=False,
+        dft_frequency=dft_frequency,
+        dft_t_start=0.0,
+        dft_t_end=float(time[-1]),
+    )
 
     sim = Simulation(
         grid,
-        [src, mon_in, mon_top, mon_bot],
+        [src, _mon_refl, _mon_in, _mon_top, _mon_bot],
         [PML(edges="all", thickness=PML_T)],
         time=time,
         resolution=DX,
     )
     results = sim.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=1)
+
+    in_energy, top_energy, bot_energy, _refl_energy = extract_modal_port_energies(sim, wavelength)
+    in_energy = max(in_energy, 1e-30)
+    tx_top = max(0.0, top_energy / in_energy)
+    tx_bot = max(0.0, bot_energy / in_energy)
 
     ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
     hx_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hx", [])]
@@ -476,16 +485,6 @@ def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
     ez_hist = ez_hist[:n_frames]
     hx_hist = hx_hist[:n_frames]
     hy_hist = hy_hist[:n_frames]
-
-    in_flux = signed_flux_trace_from_field_histories(ez_hist, hx_hist, hy_hist, mon_in, "+x")
-    top_flux = signed_flux_trace_from_field_histories(ez_hist, hx_hist, hy_hist, mon_top, "+x")
-    bot_flux = signed_flux_trace_from_field_histories(ez_hist, hx_hist, hy_hist, mon_bot, "+x")
-    in_energy = integrate_signed_flux_energy(in_flux, time, gate_start)
-    top_energy = integrate_signed_flux_energy(top_flux, time, gate_start)
-    bot_energy = integrate_signed_flux_energy(bot_flux, time, gate_start)
-    in_energy = max(in_energy, 1e-30)
-    tx_top = max(0.0, top_energy / in_energy)
-    tx_bot = max(0.0, bot_energy / in_energy)
 
     flux_map = np.zeros_like(ez_hist[0], dtype=float)
     for i in range(n_frames):
@@ -802,15 +801,10 @@ for step in range(STEPS):
         adj_in = run_adjoint(grid=grid, wavelength=wl, target_port="in_norm", time=t_axis, signal=sig)
 
         fwd_hist_gated = apply_time_gate_to_history(fwd_hist, t_axis, t_gate)
-        adj_top_gated = apply_time_gate_to_history(adj_top, t_axis, t_gate)
-        adj_bot_gated = apply_time_gate_to_history(adj_bot, t_axis, t_gate)
-        adj_refl_gated = apply_time_gate_to_history(adj_refl, t_axis, t_gate)
-        adj_in_gated = apply_time_gate_to_history(adj_in, t_axis, t_gate)
-
-        grad_top = np.array(compute_overlap_gradient(fwd_hist_gated, adj_top_gated))
-        grad_bot = np.array(compute_overlap_gradient(fwd_hist_gated, adj_bot_gated))
-        grad_refl = np.array(compute_overlap_gradient(fwd_hist_gated, adj_refl_gated))
-        grad_in = np.array(compute_overlap_gradient(fwd_hist_gated, adj_in_gated))
+        grad_top = np.array(compute_overlap_gradient(fwd_hist_gated, adj_top))
+        grad_bot = np.array(compute_overlap_gradient(fwd_hist_gated, adj_bot))
+        grad_refl = np.array(compute_overlap_gradient(fwd_hist_gated, adj_refl))
+        grad_in = np.array(compute_overlap_gradient(fwd_hist_gated, adj_in))
 
         numerator_energy = (
             (top_energy if target_port == "top" else bot_energy)
@@ -867,9 +861,12 @@ for step in range(STEPS):
 
     if binary_push > 0.0 and rho_slice.size > 0:
         # J_bin = mean((2*rho-1)^2), maximize in late phases to push rho -> {0,1}.
-        # dJ_bin/deps = [4*(2*rho-1)] / (eps_max-eps_min)
+        # dJ_bin/deps = [4*(2*rho-1)] / [(eps_max-eps_min) * N]
         eps_span = max(opt.eps_max - opt.eps_min, 1e-30)
-        grad_total[mask] += binary_push * (4.0 * (2.0 * rho_slice - 1.0) / eps_span)
+        n_pix = float(rho_slice.size)
+        grad_total[mask] += binary_push * (
+            4.0 * (2.0 * rho_slice - 1.0) / (eps_span * n_pix)
+        )
 
     grad_abs = np.abs(grad_total[mask])
     if grad_abs.size > 0:
