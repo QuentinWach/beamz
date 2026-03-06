@@ -62,12 +62,12 @@ def draw_polygon_panel(ax, design: Design, poly: Polygon) -> None:
             linewidth=2.0,
         )
     )
-    ax.set_title("Polygon Geometry")
+    ax.set_title("Polygon Geometry", fontsize=10)
     ax.set_xlim(0.0, design.width)
     ax.set_ylim(0.0, design.height)
     ax.set_aspect("equal")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
+    ax.set_xticks([])
+    ax.set_yticks([])
 
 
 def main() -> None:
@@ -81,7 +81,7 @@ def main() -> None:
     parser.add_argument(
         "--resolution",
         type=float,
-        default=0.2,
+        default=0.5,
         help="Raster cell size in design units.",
     )
     parser.add_argument(
@@ -112,7 +112,7 @@ def main() -> None:
         resolution=args.resolution,
         force_recompute=True,
         aa_mode="legacy_grid",
-        aa_samples=9,
+        aa_samples=16,
         aa_seed=0,
     )
     jitter_grid = design.rasterize(
@@ -138,7 +138,7 @@ def main() -> None:
         float(np.max(eps_jitter)),
     )
 
-    fig, axes = plt.subplots(2, 2, figsize=(5, 5), constrained_layout=True, dpi=120)
+    fig, axes = plt.subplots(2, 2, figsize=(7, 5), constrained_layout=True, dpi=120)
     axes = axes.ravel()
     draw_polygon_panel(axes[0], design, poly)
 
@@ -152,9 +152,9 @@ def main() -> None:
         vmax=vmax,
         aspect="equal",
     )
-    axes[1].set_title("Permittivity: 1 sample")
-    axes[1].set_xlabel("x")
-    axes[1].set_ylabel("y")
+    axes[1].set_title("Naive Sampling", fontsize=10)
+    axes[1].set_xticks([])
+    axes[1].set_yticks([])
 
     axes[2].imshow(
         eps_legacy,
@@ -166,11 +166,11 @@ def main() -> None:
         vmax=vmax,
         aspect="equal",
     )
-    axes[2].set_title("Permittivity: legacy_grid (3x3)")
-    axes[2].set_xlabel("x")
-    axes[2].set_ylabel("y")
+    axes[2].set_title("Gridded Super-Sampling (16 Samples)", fontsize=10)
+    axes[2].set_xticks([])
+    axes[2].set_yticks([])
 
-    im2 = axes[3].imshow(
+    axes[3].imshow(
         eps_jitter,
         origin="lower",
         extent=extent,
@@ -181,15 +181,13 @@ def main() -> None:
         aspect="equal",
     )
     axes[3].set_title(
-        f"Permittivity: stratified_jitter ({args.jitter_samples} samples)"
+        f"Stratified Jitter ({args.jitter_samples} Samples)",
+        fontsize=10,
     )
-    axes[3].set_xlabel("x")
-    axes[3].set_ylabel("y")
+    axes[3].set_xticks([])
+    axes[3].set_yticks([])
 
-    cbar = fig.colorbar(im2, ax=axes[1:], shrink=0.9)
-    cbar.set_label("Relative permittivity")
-
-    for ax, panel in zip(axes, ("a", "b", "c", "d")):
+    for idx, (ax, panel) in enumerate(zip(axes, ("a", "b", "c", "d"))):
         ax.text(
             0.02,
             0.98,
@@ -197,9 +195,9 @@ def main() -> None:
             transform=ax.transAxes,
             ha="left",
             va="top",
-            fontsize=13,
+            fontsize=16,
             fontweight="bold",
-            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.7, "pad": 1.5},
+            color=("black" if idx == 0 else "white"),
         )
 
     if args.output:
