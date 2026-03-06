@@ -138,7 +138,8 @@ def main() -> None:
         float(np.max(eps_jitter)),
     )
 
-    fig, axes = plt.subplots(1, 4, figsize=(18, 4.4), constrained_layout=True)
+    fig, axes = plt.subplots(2, 2, figsize=(5, 5), constrained_layout=True, dpi=120)
+    axes = axes.ravel()
     draw_polygon_panel(axes[0], design, poly)
 
     axes[1].imshow(
@@ -187,6 +188,19 @@ def main() -> None:
 
     cbar = fig.colorbar(im2, ax=axes[1:], shrink=0.9)
     cbar.set_label("Relative permittivity")
+
+    for ax, panel in zip(axes, ("a", "b", "c", "d")):
+        ax.text(
+            0.02,
+            0.98,
+            panel,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=13,
+            fontweight="bold",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.7, "pad": 1.5},
+        )
 
     if args.output:
         fig.savefig(args.output, dpi=220, bbox_inches="tight")
