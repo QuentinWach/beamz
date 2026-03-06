@@ -130,7 +130,7 @@ def main() -> None:
         resolution=args.resolution,
         force_recompute=True,
         aa_mode="legacy_grid",
-        aa_samples=2*2*2*2*2*2,
+        aa_samples=int(args.jitter_samples),
         aa_seed=0,
     )
     jitter_grid = design.rasterize(

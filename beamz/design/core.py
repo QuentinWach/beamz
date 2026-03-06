@@ -271,7 +271,22 @@ def _boundary_signature(boundary):
     return {"type": type(boundary).__name__, "attrs": raw}
 
 
+def _grid_kind_for_type(grid_type):
+    if not isinstance(grid_type, type):
+        return None
+    for cls in getattr(grid_type, "__mro__", ()):
+        name = getattr(cls, "__name__", "").lower()
+        if name == "regulargrid3d":
+            return "3d"
+        if name == "regulargrid":
+            return "2d"
+    return None
+
+
 def _grid_kind_for_request(design_obj, grid_type, kwargs):
+    explicit_kind = _grid_kind_for_type(grid_type)
+    if explicit_kind is not None:
+        return explicit_kind
     if isinstance(grid_type, str):
         gt = grid_type.lower()
         if gt in {"regular3d", "3d"}:
