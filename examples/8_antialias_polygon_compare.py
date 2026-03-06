@@ -1,4 +1,4 @@
-"""Compare legacy grid AA vs stratified-jitter AA on a polygon mesh raster.
+"""Compare single-sample vs legacy grid AA vs stratified-jitter on a polygon raster.
 
 Usage:
     uv run python examples/8_antialias_polygon_compare.py
@@ -101,6 +101,13 @@ def main() -> None:
     os.environ.setdefault("BEAMZ_RASTER_TIMING", "0")
 
     design, poly = build_demo_design()
+    one_sample_grid = design.rasterize(
+        resolution=args.resolution,
+        force_recompute=True,
+        aa_mode="legacy_grid",
+        aa_samples=1,
+        aa_seed=0,
+    )
     legacy_grid = design.rasterize(
         resolution=args.resolution,
         force_recompute=True,
@@ -116,16 +123,39 @@ def main() -> None:
         aa_seed=args.seed,
     )
 
+    eps_one = one_sample_grid.permittivity
     eps_legacy = legacy_grid.permittivity
     eps_jitter = jitter_grid.permittivity
     extent = (0.0, design.width, 0.0, design.height)
-    vmin = min(float(np.min(eps_legacy)), float(np.min(eps_jitter)))
-    vmax = max(float(np.max(eps_legacy)), float(np.max(eps_jitter)))
+    vmin = min(
+        float(np.min(eps_one)),
+        float(np.min(eps_legacy)),
+        float(np.min(eps_jitter)),
+    )
+    vmax = max(
+        float(np.max(eps_one)),
+        float(np.max(eps_legacy)),
+        float(np.max(eps_jitter)),
+    )
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.4), constrained_layout=True)
+    fig, axes = plt.subplots(1, 4, figsize=(18, 4.4), constrained_layout=True)
     draw_polygon_panel(axes[0], design, poly)
 
     axes[1].imshow(
+        eps_one,
+        origin="lower",
+        extent=extent,
+        cmap="viridis",
+        interpolation="nearest",
+        vmin=vmin,
+        vmax=vmax,
+        aspect="equal",
+    )
+    axes[1].set_title("Permittivity: 1 sample")
+    axes[1].set_xlabel("x")
+    axes[1].set_ylabel("y")
+
+    axes[2].imshow(
         eps_legacy,
         origin="lower",
         extent=extent,
@@ -135,11 +165,11 @@ def main() -> None:
         vmax=vmax,
         aspect="equal",
     )
-    axes[1].set_title("Permittivity: legacy_grid (3x3)")
-    axes[1].set_xlabel("x")
-    axes[1].set_ylabel("y")
+    axes[2].set_title("Permittivity: legacy_grid (3x3)")
+    axes[2].set_xlabel("x")
+    axes[2].set_ylabel("y")
 
-    im2 = axes[2].imshow(
+    im2 = axes[3].imshow(
         eps_jitter,
         origin="lower",
         extent=extent,
@@ -149,11 +179,11 @@ def main() -> None:
         vmax=vmax,
         aspect="equal",
     )
-    axes[2].set_title(
+    axes[3].set_title(
         f"Permittivity: stratified_jitter ({args.jitter_samples} samples)"
     )
-    axes[2].set_xlabel("x")
-    axes[2].set_ylabel("y")
+    axes[3].set_xlabel("x")
+    axes[3].set_ylabel("y")
 
     cbar = fig.colorbar(im2, ax=axes[1:], shrink=0.9)
     cbar.set_label("Relative permittivity")
