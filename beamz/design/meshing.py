@@ -71,6 +71,11 @@ class MaterialGrids:
 class BaseMeshGrid:
     """Base class for mesh grids with common functionality."""
 
+    _SUPPORTED_AA_MODES = ("legacy_grid", "stratified_jitter")
+    _DEFAULT_AA_MODE = "stratified_jitter"
+    _DEFAULT_AA_SAMPLES = 64
+    _DEFAULT_AA_SEED = 0
+
     def __init__(self, design, resolution):
         self.design = design
         self.resolution = resolution
@@ -82,6 +87,136 @@ class BaseMeshGrid:
             raise ValueError("Resolution must be positive")
         if self.design is None:
             raise ValueError("Design cannot be None")
+
+    def _configure_antialiasing(self, aa_mode=None, aa_samples=None, aa_seed=None):
+        """Configure anti-aliasing supersampling behavior."""
+        mode = str(aa_mode or self._DEFAULT_AA_MODE).strip().lower()
+        if mode not in self._SUPPORTED_AA_MODES:
+            raise ValueError(
+                f"Unsupported aa_mode={aa_mode!r}. "
+                f"Expected one of: {self._SUPPORTED_AA_MODES}"
+            )
+        samples = self._DEFAULT_AA_SAMPLES if aa_samples is None else int(aa_samples)
+        if samples <= 0:
+            raise ValueError(f"aa_samples must be positive, got {samples}")
+        seed = self._DEFAULT_AA_SEED if aa_seed is None else int(aa_seed)
+
+        self.aa_mode = mode
+        self.aa_samples = samples
+        self.aa_seed = seed
+
+    @staticmethod
+    def _sample_grid_shape(sample_count):
+        """Choose stratification grid shape close to square for N samples."""
+        nx = max(1, int(np.floor(np.sqrt(float(sample_count)))))
+        ny = max(1, int(np.ceil(float(sample_count) / float(nx))))
+        return nx, ny
+
+    @staticmethod
+    def _splitmix64(value):
+        """Deterministic 64-bit mixer for stable per-cell scrambling."""
+        mask = 0xFFFFFFFFFFFFFFFF
+        z = int(value) & mask
+        z = (z + 0x9E3779B97F4A7C15) & mask
+        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & mask
+        z = z ^ (z >> 31)
+        return z & mask
+
+    def _cell_scramble_params_xy(self, cell_i, cell_j, cell_k=0):
+        """Return deterministic (shift_x, shift_y, rot90) for a cell."""
+        mask = 0xFFFFFFFFFFFFFFFF
+        key = int(self.aa_seed) & mask
+        key ^= (int(cell_i) * 0x9E3779B185EBCA87) & mask
+        key ^= (int(cell_j) * 0xC2B2AE3D27D4EB4F) & mask
+        key ^= (int(cell_k) * 0x165667B19E3779F9) & mask
+
+        h1 = self._splitmix64(key ^ 0xA0761D6478BD642F)
+        h2 = self._splitmix64(key ^ 0xE7037ED1A0B428DB)
+
+        mantissa_mask = (1 << 53) - 1
+        shift_x = ((h1 >> 11) & mantissa_mask) / float(1 << 53)
+        shift_y = ((h2 >> 11) & mantissa_mask) / float(1 << 53)
+        rot90 = int((h1 ^ h2) & 0x3)
+        return shift_x, shift_y, rot90
+
+    def _scramble_offsets_xy_for_cell(
+        self, sample_dx, sample_dy, cell_size, cell_i, cell_j, cell_k=0
+    ):
+        """Apply per-cell CP shift + 90° rotation to stratified jitter samples."""
+        if self.aa_mode != "stratified_jitter":
+            return sample_dx, sample_dy
+
+        cell_size = float(cell_size)
+        u = np.asarray(sample_dx, dtype=float) / cell_size + 0.5
+        v = np.asarray(sample_dy, dtype=float) / cell_size + 0.5
+
+        shift_x, shift_y, rot90 = self._cell_scramble_params_xy(cell_i, cell_j, cell_k)
+        if rot90 == 1:
+            u, v = v, 1.0 - u
+        elif rot90 == 2:
+            u, v = 1.0 - u, 1.0 - v
+        elif rot90 == 3:
+            u, v = 1.0 - v, u
+
+        u = np.mod(u + shift_x, 1.0)
+        v = np.mod(v + shift_y, 1.0)
+        return (u - 0.5) * cell_size, (v - 0.5) * cell_size
+
+    def _build_supersample_offsets_xy(self, cell_size):
+        """Build XY supersample offsets for the configured AA mode."""
+        cell_size = float(cell_size)
+        if self.aa_mode == "legacy_grid":
+            nx, ny = self._sample_grid_shape(self.aa_samples)
+            if nx == 1:
+                ox = np.array([0.0], dtype=float)
+            else:
+                ox = np.linspace(-0.25, 0.25, nx, dtype=float)
+            if ny == 1:
+                oy = np.array([0.0], dtype=float)
+            else:
+                oy = np.linspace(-0.25, 0.25, ny, dtype=float)
+            ox = ox * cell_size
+            oy = oy * cell_size
+            sample_dx, sample_dy = np.meshgrid(ox, oy)
+            sample_dx = sample_dx.ravel()
+            sample_dy = sample_dy.ravel()
+            if sample_dx.size > self.aa_samples:
+                sample_dx = sample_dx[: self.aa_samples]
+                sample_dy = sample_dy[: self.aa_samples]
+            return sample_dx, sample_dy
+
+        nx, ny = self._sample_grid_shape(self.aa_samples)
+        total = nx * ny
+        rng = np.random.default_rng(self.aa_seed)
+        strata_x = np.tile(np.arange(nx, dtype=float), ny)
+        strata_y = np.repeat(np.arange(ny, dtype=float), nx)
+        jitter_x = rng.random(total)
+        jitter_y = rng.random(total)
+        if total > self.aa_samples:
+            keep = rng.permutation(total)[: self.aa_samples]
+            strata_x = strata_x[keep]
+            strata_y = strata_y[keep]
+            jitter_x = jitter_x[keep]
+            jitter_y = jitter_y[keep]
+        sample_dx = ((strata_x + jitter_x) / float(nx) - 0.5) * cell_size
+        sample_dy = ((strata_y + jitter_y) / float(ny) - 0.5) * cell_size
+        return sample_dx, sample_dy
+
+    def _build_supersample_offsets_z(self, cell_size_z, depth_samples):
+        """Build Z supersample offsets for 3D fallback paths."""
+        if depth_samples <= 1:
+            return np.array([0.0], dtype=float)
+
+        cell_size_z = float(cell_size_z)
+        if self.aa_mode == "legacy_grid":
+            return np.array([-0.25, 0.0, 0.25], dtype=float) * cell_size_z
+
+        n = int(depth_samples)
+        rng = np.random.default_rng(self.aa_seed + 7919)
+        bins = np.arange(n, dtype=float)
+        jitter = rng.random(n)
+        return ((bins + jitter) / float(n) - 0.5) * cell_size_z
 
     def _get_material_properties_safe(self, material, x=0, y=0, z=0):
         """Safely get material properties from either Material or CustomMaterial objects."""
@@ -166,8 +301,20 @@ class BaseMeshGrid:
 class RegularGrid(BaseMeshGrid):
     """2D Regular grid meshing for 2D designs (backwards compatible)."""
 
-    def __init__(self, design, resolution):
+    def __init__(
+        self,
+        design,
+        resolution,
+        aa_mode="stratified_jitter",
+        aa_samples=64,
+        aa_seed=0,
+    ):
         super().__init__(design, resolution)
+        self._configure_antialiasing(
+            aa_mode=aa_mode,
+            aa_samples=aa_samples,
+            aa_seed=aa_seed,
+        )
 
         # Check if this is actually a 2D design
         if design.is_3d and design.depth > 0:
@@ -194,7 +341,8 @@ class RegularGrid(BaseMeshGrid):
 
         Iterates through structures in order (background first, foreground last).
         Uses bounding-box clipping and fast paths for axis-aligned rectangles,
-        circles, and rings. Boundary cells get 3x3 super-sampling for anti-aliasing.
+        circles, and rings. Boundary cells get configurable super-sampling
+        for anti-aliasing.
         """
         width, height = self.design.width, self.design.height
         grid_width, grid_height = int(width / self.resolution), int(
@@ -206,11 +354,8 @@ class RegularGrid(BaseMeshGrid):
         x_centers = np.linspace(0.5 * cell_size, width - 0.5 * cell_size, grid_width)
         y_centers = np.linspace(0.5 * cell_size, height - 0.5 * cell_size, grid_height)
 
-        # Precompute offsets for all 9 sample points
-        offsets = np.array([-0.25, 0, 0.25]) * cell_size
-        sample_dx, sample_dy = np.meshgrid(offsets, offsets)
-        sample_dx = sample_dx.flatten()
-        sample_dy = sample_dy.flatten()
+        # Precompute subpixel offsets based on AA mode
+        sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size)
         num_samples = len(sample_dx)
 
         grids = MaterialGrids((grid_height, grid_width))
@@ -365,11 +510,35 @@ class RegularGrid(BaseMeshGrid):
             return None
         return min_i, min_j, max_i, max_j
 
-    def _supersample_cell(self, cx, cy, sample_dx, sample_dy, num_samples, contains_fn):
-        """Count how many of the 3x3 sample points are inside the shape."""
+    def _supersample_cell(
+        self,
+        cx,
+        cy,
+        sample_dx,
+        sample_dy,
+        num_samples,
+        contains_fn,
+        *,
+        cell_i=None,
+        cell_j=None,
+        cell_k=0,
+        cell_size=None,
+    ):
+        """Count how many configured sample points are inside the shape."""
+        local_dx, local_dy = sample_dx, sample_dy
+        if cell_i is not None and cell_j is not None:
+            local_dx, local_dy = self._scramble_offsets_xy_for_cell(
+                sample_dx=sample_dx,
+                sample_dy=sample_dy,
+                cell_size=(self.resolution if cell_size is None else cell_size),
+                cell_i=cell_i,
+                cell_j=cell_j,
+                cell_k=cell_k,
+            )
+
         count = 0
         for k in range(num_samples):
-            if contains_fn(cx + sample_dx[k], cy + sample_dy[k]):
+            if contains_fn(cx + local_dx[k], cy + local_dy[k]):
                 count += 1
         return count
 
@@ -467,6 +636,9 @@ class RegularGrid(BaseMeshGrid):
                 sample_dy,
                 num_samples,
                 lambda x, y: sx <= x < sx + sw and sy <= y < sy + sh,
+                cell_i=i,
+                cell_j=j,
+                cell_size=cell_size,
             )
             if samples_inside > 0:
                 blend_factor = samples_inside / num_samples
@@ -520,6 +692,9 @@ class RegularGrid(BaseMeshGrid):
                 sample_dy,
                 num_samples,
                 lambda x, y: np.hypot(x - center_x, y - center_y) <= radius,
+                cell_i=i,
+                cell_j=j,
+                cell_size=cell_size,
             )
             if samples_inside > 0:
                 grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -581,6 +756,9 @@ class RegularGrid(BaseMeshGrid):
                 lambda x, y: inner_radius
                 <= np.hypot(x - center_x, y - center_y)
                 <= outer_radius,
+                cell_i=i,
+                cell_j=j,
+                cell_size=cell_size,
             )
             if samples_inside > 0:
                 grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -660,6 +838,9 @@ class RegularGrid(BaseMeshGrid):
                         sample_dy,
                         num_samples,
                         contains_func,
+                        cell_i=i,
+                        cell_j=j,
+                        cell_size=cell_size,
                     )
                     if samples_inside > 0:
                         grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -675,6 +856,9 @@ class RegularGrid(BaseMeshGrid):
                         sample_dy,
                         num_samples,
                         contains_func,
+                        cell_i=i,
+                        cell_j=j,
+                        cell_size=cell_size,
                     )
                     if samples_inside > 0:
                         grids.blend_at((i, j), props, samples_inside / num_samples)
@@ -693,7 +877,15 @@ class RegularGrid(BaseMeshGrid):
 class RegularGrid3D(BaseMeshGrid):
     """3D Regular grid meshing for 3D designs."""
 
-    def __init__(self, design, resolution_xy=None, resolution_z=None):
+    def __init__(
+        self,
+        design,
+        resolution_xy=None,
+        resolution_z=None,
+        aa_mode="stratified_jitter",
+        aa_samples=64,
+        aa_seed=0,
+    ):
         # Handle different resolution input formats
         if isinstance(design, (int, float)) and resolution_xy is None:
             # Legacy format: RegularGrid3D(resolution) - set uniform resolution
@@ -710,6 +902,11 @@ class RegularGrid3D(BaseMeshGrid):
             resolution_z = resolution_xy
 
         super().__init__(design, resolution_xy)
+        self._configure_antialiasing(
+            aa_mode=aa_mode,
+            aa_samples=aa_samples,
+            aa_seed=aa_seed,
+        )
 
         # Store separate resolutions for xy and z
         self.resolution_xy = resolution_xy
@@ -1114,7 +1311,7 @@ class RegularGrid3D(BaseMeshGrid):
     ):
         """Vectorized anti-aliased fill for extruded polygons.
 
-        Uses 3x3 supersampling in XY and exact voxel overlap in Z so imported
+        Uses configurable supersampling in XY and exact voxel overlap in Z so imported
         taper polygons get the same subpixel smoothing behavior as fallback paths.
         """
         if MplPath is None:
@@ -1162,20 +1359,53 @@ class RegularGrid3D(BaseMeshGrid):
             if iv.ndim == 2 and iv.shape[0] >= 3:
                 hole_paths.append(MplPath(iv))
 
-        offsets = np.array([-0.25, 0.0, 0.25], dtype=float) * float(cell_size_xy)
-        n_samples_xy = float(len(offsets) * len(offsets))
+        sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
+        n_samples_xy = float(sample_dx.size)
         inside_count = np.zeros(xx.shape, dtype=float)
-        for oy in offsets:
-            for ox in offsets:
-                points = np.column_stack(((xx + ox).ravel(), (yy + oy).ravel()))
-                inside = outer_path.contains_points(points, radius=1e-15).reshape(
+
+        shift_x_map = None
+        shift_y_map = None
+        rot_map = None
+        if self.aa_mode == "stratified_jitter":
+            shift_x_map = np.empty(xx.shape, dtype=float)
+            shift_y_map = np.empty(xx.shape, dtype=float)
+            rot_map = np.empty(xx.shape, dtype=np.uint8)
+            for i_rel in range(xx.shape[0]):
+                cell_i = min_i + i_rel
+                for j_rel in range(xx.shape[1]):
+                    cell_j = min_j + j_rel
+                    sx, sy, rot90 = self._cell_scramble_params_xy(cell_i, cell_j, 0)
+                    shift_x_map[i_rel, j_rel] = sx
+                    shift_y_map[i_rel, j_rel] = sy
+                    rot_map[i_rel, j_rel] = rot90
+
+        for sidx in range(sample_dx.size):
+            if self.aa_mode == "stratified_jitter":
+                u0 = sample_dx[sidx] / float(cell_size_xy) + 0.5
+                v0 = sample_dy[sidx] / float(cell_size_xy) + 0.5
+                u_rot = np.where(
+                    rot_map == 0,
+                    u0,
+                    np.where(rot_map == 1, v0, np.where(rot_map == 2, 1.0 - u0, 1.0 - v0)),
+                )
+                v_rot = np.where(
+                    rot_map == 0,
+                    v0,
+                    np.where(rot_map == 1, 1.0 - u0, np.where(rot_map == 2, 1.0 - v0, u0)),
+                )
+                cell_dx = (np.mod(u_rot + shift_x_map, 1.0) - 0.5) * float(cell_size_xy)
+                cell_dy = (np.mod(v_rot + shift_y_map, 1.0) - 0.5) * float(cell_size_xy)
+                points = np.column_stack(((xx + cell_dx).ravel(), (yy + cell_dy).ravel()))
+            else:
+                points = np.column_stack(
+                    ((xx + sample_dx[sidx]).ravel(), (yy + sample_dy[sidx]).ravel())
+                )
+            inside = outer_path.contains_points(points, radius=1e-15).reshape(xx.shape)
+            for hole_path in hole_paths:
+                inside &= ~hole_path.contains_points(points, radius=1e-15).reshape(
                     xx.shape
                 )
-                for hole_path in hole_paths:
-                    inside &= ~hole_path.contains_points(points, radius=1e-15).reshape(
-                        xx.shape
-                    )
-                inside_count += inside.astype(float)
+            inside_count += inside.astype(float)
         frac_xy = inside_count / n_samples_xy
         if not np.any(frac_xy > 0.0):
             return True
@@ -1229,17 +1459,12 @@ class RegularGrid3D(BaseMeshGrid):
         if min_i >= max_i or min_j >= max_j or min_k >= max_k:
             return
 
-        offsets_xy = np.array([-0.25, 0.0, 0.25], dtype=float) * float(cell_size_xy)
-        offsets_z = (
-            np.array([-0.25, 0.0, 0.25], dtype=float) * float(cell_size_z)
-            if len(z_centers) > 1
-            else np.array([0.0], dtype=float)
+        sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
+        offsets_z = self._build_supersample_offsets_z(
+            cell_size_z=cell_size_z,
+            depth_samples=(3 if len(z_centers) > 1 else 1),
         )
-        sdx, sdy, sdz = np.meshgrid(offsets_xy, offsets_xy, offsets_z)
-        sdx = sdx.ravel()
-        sdy = sdy.ravel()
-        sdz = sdz.ravel()
-        num_samples = sdx.size
+        num_samples = sample_dx.size * offsets_z.size
 
         if hasattr(structure, "point_in_polygon"):
             contains_fn = lambda x, y, z: structure.point_in_polygon(x, y, z)
@@ -1257,14 +1482,23 @@ class RegularGrid3D(BaseMeshGrid):
                 y_center = y_centers[i]
                 for j in range(min_j, max_j):
                     x_center = x_centers[j]
+                    cell_dx, cell_dy = self._scramble_offsets_xy_for_cell(
+                        sample_dx=sample_dx,
+                        sample_dy=sample_dy,
+                        cell_size=cell_size_xy,
+                        cell_i=i,
+                        cell_j=j,
+                        cell_k=k,
+                    )
                     inside = 0
-                    for sidx in range(num_samples):
-                        if contains_fn(
-                            x_center + sdx[sidx],
-                            y_center + sdy[sidx],
-                            z_center + sdz[sidx],
-                        ):
-                            inside += 1
+                    for z_off in offsets_z:
+                        for sidx in range(cell_dx.size):
+                            if contains_fn(
+                                x_center + cell_dx[sidx],
+                                y_center + cell_dy[sidx],
+                                z_center + z_off,
+                            ):
+                                inside += 1
                     if inside > 0:
                         grids.blend_at((k, i, j), props, inside / float(num_samples))
 
@@ -1314,7 +1548,7 @@ class RegularGrid3D(BaseMeshGrid):
 
 
 # Convenience functions for automatic mesh selection
-def create_mesh(design, resolution, auto_select=True, force_3d=False):
+def create_mesh(design, resolution, auto_select=True, force_3d=False, **kwargs):
     """Create a mesh automatically selecting 2D or 3D based on design properties.
 
     Args:
@@ -1322,16 +1556,23 @@ def create_mesh(design, resolution, auto_select=True, force_3d=False):
         resolution: Mesh resolution (or xy resolution for 3D)
         auto_select: If True, automatically choose between 2D and 3D meshing
         force_3d: If True, force 3D meshing even for 2D designs
+        **kwargs: Extra mesh kwargs forwarded to RegularGrid/RegularGrid3D
 
     Returns:
         RegularGrid or RegularGrid3D instance
     """
+    resolution_z = kwargs.pop("resolution_z", None)
     if force_3d or (auto_select and design.is_3d and design.depth > 0):
         display_status("Auto-selecting 3D meshing for 3D design", "info")
-        return RegularGrid3D(design, resolution)
+        return RegularGrid3D(
+            design,
+            resolution_xy=resolution,
+            resolution_z=resolution_z,
+            **kwargs,
+        )
     else:
         if auto_select and design.is_3d:
             display_status(
                 "Auto-selecting 2D meshing for effectively 2D design (depth=0)", "info"
             )
-        return RegularGrid(design, resolution)
+        return RegularGrid(design, resolution, **kwargs)
