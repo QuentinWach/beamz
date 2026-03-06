@@ -41,12 +41,14 @@ def build_demo_design() -> tuple[Design, Polygon]:
 
 def draw_polygon_panel(ax, design: Design, poly: Polygon) -> None:
     """Draw the input polygon geometry in physical coordinates."""
+    outside_color = "white"
+    inside_color = "black"
     ax.add_patch(
         PlotRectangle(
             (0.0, 0.0),
             design.width,
             design.height,
-            facecolor="#f7f7f7",
+            facecolor=outside_color,
             edgecolor="black",
             linewidth=1.0,
         )
@@ -56,10 +58,10 @@ def draw_polygon_panel(ax, design: Design, poly: Polygon) -> None:
         PlotPolygon(
             verts,
             closed=True,
-            facecolor="#4C72B0",
-            alpha=0.55,
-            edgecolor="#1f2a44",
-            linewidth=2.0,
+            facecolor=inside_color,
+            alpha=1.0,
+            edgecolor="white",
+            linewidth=1.2,
         )
     )
     ax.set_title("Polygon Geometry", fontsize=10)
@@ -81,7 +83,7 @@ def main() -> None:
     parser.add_argument(
         "--resolution",
         type=float,
-        default=0.5,
+        default=0.25,
         help="Raster cell size in design units.",
     )
     parser.add_argument(
@@ -146,7 +148,7 @@ def main() -> None:
         eps_one,
         origin="lower",
         extent=extent,
-        cmap="viridis",
+        cmap="Greys",
         interpolation="nearest",
         vmin=vmin,
         vmax=vmax,
@@ -160,7 +162,7 @@ def main() -> None:
         eps_legacy,
         origin="lower",
         extent=extent,
-        cmap="viridis",
+        cmap="Greys",
         interpolation="nearest",
         vmin=vmin,
         vmax=vmax,
@@ -174,7 +176,7 @@ def main() -> None:
         eps_jitter,
         origin="lower",
         extent=extent,
-        cmap="viridis",
+        cmap="Greys",
         interpolation="nearest",
         vmin=vmin,
         vmax=vmax,
@@ -197,7 +199,7 @@ def main() -> None:
             va="top",
             fontsize=16,
             fontweight="bold",
-            color=("black" if idx == 0 else "white"),
+            color="black",
         )
 
     if args.output:
