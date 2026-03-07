@@ -129,6 +129,14 @@ def line_center(line):
     return 0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])
 
 
+def safe_complex_ratio(num: np.ndarray, den: np.ndarray, eps: float = 1e-18) -> np.ndarray:
+    out = np.zeros_like(np.asarray(num, dtype=np.complex128), dtype=np.complex128)
+    den_arr = np.asarray(den, dtype=np.complex128)
+    valid = np.abs(den_arr) > float(eps)
+    out[valid] = np.asarray(num, dtype=np.complex128)[valid] / den_arr[valid]
+    return out
+
+
 def save_signal_plot(time: np.ndarray, signal: np.ndarray, out_path: Path) -> None:
     fig, ax = plt.subplots(1, 1, figsize=(6.4, 2.6), dpi=260)
     ax.plot(time / 1e-15, signal, color="black", lw=1.5)
@@ -550,6 +558,8 @@ def run_crossing(
     animation_frames: int,
     show_progress: bool,
     out_dir: Path,
+    reference_incident: np.ndarray | None = None,
+    reference_reflection: np.ndarray | None = None,
 ) -> dict[str, object]:
     component, component_label = load_crossing_component(component_name=component_name)
     polarization = str(polarization).lower()
@@ -981,12 +991,16 @@ def run_crossing(
     source_mode_idx = int(source_best["mode_index"])
     source_result = source_best["result"]
     valid_mask = np.asarray(source_result["diagnostics"]["valid_mask"], dtype=bool)
+    source_waves = source_result["diagnostics"]["waves"].get(source_port, {})
+    source_incident = np.asarray(
+        source_waves.get("a_incident", source_waves.get("a_plus", np.zeros(freqs.shape))),
+        dtype=np.complex128,
+    )
 
     s_cols = {
         source_port: np.asarray(source_result["s_matrix"][(source_port, source_port)], dtype=np.complex128)
     }
     port_quality = {}
-    source_waves = source_result["diagnostics"]["waves"].get(source_port, {})
     source_neff = np.asarray(source_waves.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
     source_cond = np.asarray(source_waves.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
     port_quality[source_port] = (
@@ -1082,6 +1096,37 @@ def run_crossing(
             "cond": np.asarray(best["cond"], dtype=float),
         }
 
+    s_cols_raw = {p: np.asarray(v, dtype=np.complex128).copy() for p, v in s_cols.items()}
+    ref_ratio = np.ones_like(source_incident, dtype=np.complex128)
+    ref_norm_applied = False
+    ref_refl_subtracted = False
+    if reference_incident is not None:
+        ref_incident = np.asarray(reference_incident, dtype=np.complex128)
+        if ref_incident.shape == source_incident.shape:
+            ref_ratio = safe_complex_ratio(source_incident, ref_incident)
+            ref_valid = np.abs(ref_incident) > 1e-18
+            valid_mask = valid_mask & ref_valid
+            for p in all_ports:
+                s_cols[p] = np.asarray(s_cols[p], dtype=np.complex128) * ref_ratio
+            ref_norm_applied = True
+            print("Applied reference-run incident normalization to device S-parameters.")
+        else:
+            print(
+                "Reference normalization skipped: incident shape mismatch "
+                f"(device={source_incident.shape}, reference={ref_incident.shape})."
+            )
+    if reference_reflection is not None:
+        ref_refl = np.asarray(reference_reflection, dtype=np.complex128)
+        if ref_refl.shape == s_cols[source_port].shape:
+            s_cols[source_port] = np.asarray(s_cols[source_port], dtype=np.complex128) - ref_refl
+            ref_refl_subtracted = True
+            print("Applied reference-run reflection subtraction on source-port S11.")
+        else:
+            print(
+                "Reference reflection subtraction skipped: shape mismatch "
+                f"(device={s_cols[source_port].shape}, reference={ref_refl.shape})."
+            )
+
     print(
         "Selected source mode and output monitor/mode: "
         + ", ".join(
@@ -1123,7 +1168,12 @@ def run_crossing(
         wavelengths_um=wl_um,
         valid_mask=valid_mask.astype(bool),
         closure=closure,
+        incident_device=source_incident,
+        incident_ref_ratio=ref_ratio,
+        ref_norm_applied=np.asarray([ref_norm_applied], dtype=bool),
+        ref_refl_subtracted=np.asarray([ref_refl_subtracted], dtype=bool),
         **{f"quality_{p}": port_quality[p].astype(bool) for p in all_ports},
+        **{f"s_raw_{p}_{source_port}": s_cols_raw[p] for p in all_ports},
         **{f"s_{p}_{source_port}": s_cols[p] for p in all_ports},
     )
 
@@ -1212,6 +1262,11 @@ def run_crossing(
         "all_ports": list(all_ports),
         "wavelength_um": np.asarray(wl_um, dtype=float),
         "s_cols": {p: np.asarray(s_cols[p], dtype=np.complex128) for p in all_ports},
+        "s_cols_raw": {p: np.asarray(s_cols_raw[p], dtype=np.complex128) for p in all_ports},
+        "incident_device": np.asarray(source_incident, dtype=np.complex128),
+        "incident_ref_ratio": np.asarray(ref_ratio, dtype=np.complex128),
+        "ref_norm_applied": bool(ref_norm_applied),
+        "ref_refl_subtracted": bool(ref_refl_subtracted),
         "valid_mask": np.asarray(valid_mask, dtype=bool),
         "port_quality": {p: np.asarray(port_quality[p], dtype=bool) for p in all_ports},
         "closure": np.asarray(closure, dtype=float),
@@ -1403,6 +1458,16 @@ def build_argparser() -> argparse.ArgumentParser:
         default=0.35,
         help="Calibration pass threshold: max |closure-1| over valid frequencies.",
     )
+    parser.add_argument(
+        "--no-calibration-reference-normalization",
+        action="store_true",
+        help="Disable applying calibration incident normalization to the device run.",
+    )
+    parser.add_argument(
+        "--no-calibration-reflection-subtraction",
+        action="store_true",
+        help="Disable calibration-based source reflection subtraction on the device run.",
+    )
     return parser
 
 
@@ -1415,6 +1480,8 @@ def main():
     if args.wl0_nm < args.wl_min_nm or args.wl0_nm > args.wl_max_nm:
         raise ValueError("--wl0-nm must be within [wl-min-nm, wl-max-nm].")
 
+    reference_incident = None
+    reference_reflection = None
     if args.run_calibration:
         cal_out = args.out_dir / "calibration"
         print(
@@ -1460,6 +1527,17 @@ def main():
                 "Calibration gate failed. "
                 "Adjust source/monitor placement and normalization before device extraction."
             )
+        if not args.no_calibration_reference_normalization:
+            reference_incident = np.asarray(cal_result["incident_device"], dtype=np.complex128)
+            if not args.no_calibration_reflection_subtraction:
+                cal_source = str(cal_result["source_port"])
+                reference_reflection = np.asarray(
+                    cal_result["s_cols"][cal_source], dtype=np.complex128
+                )
+            print(
+                "Using calibration-derived reference normalization for device extraction: "
+                f"incident=yes, reflection_subtraction={not args.no_calibration_reflection_subtraction}"
+            )
 
     run_crossing(
         component_name=args.component,
@@ -1481,6 +1559,8 @@ def main():
         animation_frames=args.animation_frames,
         show_progress=not args.quiet_run,
         out_dir=args.out_dir,
+        reference_incident=reference_incident,
+        reference_reflection=reference_reflection,
     )
 
 
