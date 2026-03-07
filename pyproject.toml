@@ -36,8 +36,6 @@ dependencies = [
     "jaxlib>=0.4.0",
     "optax>=0.1.0",
     "tidy3d>=2.0.0",
-    # "mkdocs>=1.5.0", # These seem like dev/docs dependencies, not core
-    # "mkdocs-material>=9.0.0", # Moved to dev optional-dependencies
 ]
 
 [project.urls]
@@ -53,8 +51,6 @@ dev = [
     "isort>=5.0.0",
     "flake8>=4.0.0",
     "myst-parser>=2.0.0",
-    "mkdocs>=1.5.0", # Moved from core dependencies
-    "mkdocs-material>=9.0.0", # Moved from core dependencies
 ]
 gpu = [
     "torch>=2.6.0",
