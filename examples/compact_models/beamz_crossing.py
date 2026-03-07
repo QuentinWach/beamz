@@ -1,8 +1,8 @@
-"""Broadband 2D modal S-parameter extraction for a 4-port crossing.
+"""Broadband 3D modal S-parameter extraction for a 4-port crossing.
 
 Workflow:
 1. Import a crossing from UBC PDK (fallback: gdsfactory generic crossing).
-2. Build a BeamZ design and extend each port with a straight waveguide section.
+2. Build a 3D BeamZ design (explicit layer stack) and extend each port.
 3. Launch a Gaussian pulse at one source port.
 4. Use DFT monitors + modal decomposition to extract S11/S21/S31/S41 over frequency.
 5. Save a compact-model data file and a dB plot.
@@ -55,22 +55,34 @@ def parse_layer(layer_str: str) -> tuple[int, int]:
     return int(parts[0]), int(parts[1])
 
 
-def load_crossing_component():
-    """Return (component, label) using UBC PDK if available, else gdsfactory fallback."""
+def load_crossing_component(component_name: str = "ebeam_crossing4"):
+    """Return (component, label) preferring PDK crossing over generic fallback."""
     try:
         from ubcpdk import PDK, cells
 
         PDK.activate()
-        return cells.ebeam_crossing4(), "ubcpdk.cells.ebeam_crossing4"
+        if hasattr(cells, component_name):
+            return getattr(cells, component_name)(), f"ubcpdk.cells.{component_name}"
+        if hasattr(cells, "ebeam_crossing4"):
+            return cells.ebeam_crossing4(), "ubcpdk.cells.ebeam_crossing4"
     except Exception as exc:
-        import gdsfactory as gf
+        ubc_exc = exc
+    else:
+        ubc_exc = None
 
-        gf.gpdk.PDK.activate()
-        print(
-            "[beamz_crossing] UBC PDK unavailable, using generic gdsfactory crossing "
-            f"fallback. Reason: {type(exc).__name__}: {exc}"
-        )
-        return gf.components.crossing(), "gdsfactory.components.crossing"
+    import gdsfactory as gf
+
+    gf.gpdk.PDK.activate()
+    for name in [component_name, "crossing", "crossing45"]:
+        try:
+            return gf.get_component(name), f"gf.get_component('{name}')"
+        except Exception:
+            continue
+    print(
+        "[beamz_crossing] Could not load requested PDK crossing; using generic fallback. "
+        f"UBC load reason: {type(ubc_exc).__name__ if ubc_exc else 'n/a'}: {ubc_exc}"
+    )
+    return gf.components.crossing(), "gdsfactory.components.crossing"
 
 
 def port_line(
@@ -84,9 +96,27 @@ def port_line(
     return (cx - 0.5 * span, cy), (cx + 0.5 * span, cy)
 
 
-def line_center(line: tuple[tuple[float, float], tuple[float, float]]) -> tuple[float, float]:
-    (x0, y0), (x1, y1) = line
-    return 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+def port_plane(
+    port: dict,
+    *,
+    y_span: float,
+    z_span: float,
+    z_center: float,
+    offset: float = 0.0,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    cx, cy = move_along(port["center"], port["direction"], offset)
+    z0 = z_center - 0.5 * z_span
+    z1 = z_center + 0.5 * z_span
+    if port["direction"].endswith("x"):
+        return (cx, cy - 0.5 * y_span, z0), (cx, cy + 0.5 * y_span, z1)
+    return (cx - 0.5 * y_span, cy, z0), (cx + 0.5 * y_span, cy, z1)
+
+
+def line_center(line):
+    a, b = line
+    if len(a) == 3:
+        return 0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])
+    return 0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])
 
 
 def save_signal_plot(time: np.ndarray, signal: np.ndarray, out_path: Path) -> None:
@@ -110,12 +140,66 @@ def save_mode_profile_plot(
     out_path: Path,
 ) -> None:
     axis = mode_src.direction[1]
-    if axis == "x":
-        x_idx = int(np.clip(round(float(mode_src.center[0]) / dx), 0, grid_eps.shape[1] - 1))
-        eps_profile = np.asarray(grid_eps[:, x_idx], dtype=float)
+    eps2d = np.asarray(getattr(mode_src, "_eps_profile_2d", np.array([])))
+    if eps2d.ndim == 2 and eps2d.size > 0:
+        profile_map = {
+            "Ex": getattr(mode_src, "_Ex_profile", None),
+            "Ey": getattr(mode_src, "_Ey_profile", None),
+            "Ez": getattr(mode_src, "_Ez_profile", None),
+            "Hx": getattr(mode_src, "_Hx_profile", None),
+            "Hy": getattr(mode_src, "_Hy_profile", None),
+            "Hz": getattr(mode_src, "_Hz_profile", None),
+        }
+        fig, ax = plt.subplots(2, 4, figsize=(10.8, 5.4), dpi=250)
+        ax = ax.ravel()
+        im_eps = ax[0].imshow(eps2d, origin="lower", cmap="viridis", aspect="equal")
+        ax[0].set_title(f"{label}: eps")
+        fig.colorbar(im_eps, ax=ax[0], fraction=0.046, pad=0.04)
+        for i, name in enumerate(["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"], start=1):
+            arr = profile_map[name]
+            if arr is None:
+                ax[i].axis("off")
+                continue
+            a2 = np.asarray(arr).squeeze()
+            if a2.ndim != 2:
+                a2 = np.atleast_2d(a2)
+            im = ax[i].imshow(np.abs(a2), origin="lower", cmap="magma", aspect="equal")
+            ax[i].set_title(f"{label}: |{name}|")
+            fig.colorbar(im, ax=ax[i], fraction=0.046, pad=0.04)
+        ax[7].axis("off")
+        ax[7].text(
+            0.02,
+            0.95,
+            (
+                f"pol={mode_src.pol}\n"
+                f"dir={mode_src.direction}\n"
+                f"axis={axis}\n"
+                f"neff={float(np.real(getattr(mode_src, '_neff', np.nan))):.5f}\n"
+                f"width={float(mode_src.width)/µm:.3f}um\n"
+                f"height={float(getattr(mode_src, 'height', 0.0) or 0.0)/µm:.3f}um"
+            ),
+            va="top",
+            ha="left",
+            fontsize=9,
+            family="monospace",
+        )
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=300)
+        plt.close(fig)
+        return
+
+    if grid_eps.ndim == 3:
+        zc = int(np.clip(round(float(mode_src.center[2]) / dx), 0, grid_eps.shape[0] - 1))
+        yc = int(np.clip(round(float(mode_src.center[1]) / dx), 0, grid_eps.shape[1] - 1))
+        xc = int(np.clip(round(float(mode_src.center[0]) / dx), 0, grid_eps.shape[2] - 1))
+        eps_profile = np.asarray(grid_eps[zc, :, xc] if axis == "x" else grid_eps[zc, yc, :], dtype=float)
     else:
-        y_idx = int(np.clip(round(float(mode_src.center[1]) / dx), 0, grid_eps.shape[0] - 1))
-        eps_profile = np.asarray(grid_eps[y_idx, :], dtype=float)
+        if axis == "x":
+            x_idx = int(np.clip(round(float(mode_src.center[0]) / dx), 0, grid_eps.shape[1] - 1))
+            eps_profile = np.asarray(grid_eps[:, x_idx], dtype=float)
+        else:
+            y_idx = int(np.clip(round(float(mode_src.center[1]) / dx), 0, grid_eps.shape[0] - 1))
+            eps_profile = np.asarray(grid_eps[y_idx, :], dtype=float)
 
     profiles = {
         "jz": getattr(mode_src, "_jz_profile", None),
@@ -163,76 +247,95 @@ def save_overview_plot(
     eps: np.ndarray,
     width: float,
     height: float,
+    depth: float,
     imported_bbox: tuple[float, float, float, float],
-    source_line: tuple[tuple[float, float], tuple[float, float]],
-    monitor_lines: dict[str, tuple[tuple[float, float], tuple[float, float]]],
+    source_plane: tuple[tuple[float, float, float], tuple[float, float, float]],
+    monitor_planes: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]],
+    layer_z: dict[str, tuple[float, float]],
     out_path: Path,
 ) -> None:
     x0, x1, y0, y1 = imported_bbox
-    dx = width / max(eps.shape[1], 1)
-    dy = height / max(eps.shape[0], 1)
-    y_mid_idx = int(
-        np.clip(round(0.5 * (y0 + y1) / dy), 0, eps.shape[0] - 1)
-    )
-    x_mid_idx = int(
-        np.clip(round(0.5 * (x0 + x1) / dx), 0, eps.shape[1] - 1)
-    )
-    eps_x = np.asarray(eps[y_mid_idx, :], dtype=float)
-    eps_y = np.asarray(eps[:, x_mid_idx], dtype=float)
-    nz_vis = 40
-    eps_xz = np.repeat(eps_x[None, :], nz_vis, axis=0)
-    eps_yz = np.repeat(eps_y[:, None], nz_vis, axis=1).T
-    z_vis = 1.0 * µm
+    if eps.ndim == 3:
+        nz, ny, nx = eps.shape
+        dz = depth / max(nz, 1)
+        dy = height / max(ny, 1)
+        dx = width / max(nx, 1)
+        core_z0, core_z1 = layer_z.get("core", (0.0, depth))
+        z_core_idx = int(np.clip(round(0.5 * (core_z0 + core_z1) / dz), 0, nz - 1))
+        y_mid_idx = int(np.clip(round(0.5 * (y0 + y1) / dy), 0, ny - 1))
+        x_mid_idx = int(np.clip(round(0.5 * (x0 + x1) / dx), 0, nx - 1))
+        eps_xy = np.asarray(eps[z_core_idx], dtype=float)
+        eps_xz = np.asarray(eps[:, y_mid_idx, :], dtype=float)
+        eps_yz = np.asarray(eps[:, :, x_mid_idx], dtype=float)
+    else:
+        dy = height / max(eps.shape[0], 1)
+        dx = width / max(eps.shape[1], 1)
+        y_mid_idx = int(np.clip(round(0.5 * (y0 + y1) / dy), 0, eps.shape[0] - 1))
+        x_mid_idx = int(np.clip(round(0.5 * (x0 + x1) / dx), 0, eps.shape[1] - 1))
+        eps_xy = np.asarray(eps, dtype=float)
+        eps_x = np.asarray(eps[y_mid_idx, :], dtype=float)
+        eps_y = np.asarray(eps[:, x_mid_idx], dtype=float)
+        nz_vis = 40
+        eps_xz = np.repeat(eps_x[None, :], nz_vis, axis=0)
+        eps_yz = np.repeat(eps_y[:, None], nz_vis, axis=1).T
 
     fig, ax = plt.subplots(1, 3, figsize=(12.0, 3.6), dpi=260)
     ax[0].imshow(
-        eps,
+        eps_xy,
         origin="lower",
         extent=[0.0, width / µm, 0.0, height / µm],
         cmap="viridis",
         aspect="equal",
     )
-    ax[0].set_title("XY overview")
+    ax[0].set_title("XY overview (core z-slice)")
     ax[0].set_xlabel("x (um)")
     ax[0].set_ylabel("y (um)")
     ax[0].plot([x0 / µm, x1 / µm, x1 / µm, x0 / µm, x0 / µm], [y0 / µm, y0 / µm, y1 / µm, y1 / µm, y0 / µm], "w--", lw=1.2)
-    for name, line in [("source", source_line), *monitor_lines.items()]:
-        (xa, ya), (xb, yb) = line
+    for name, plane in [("source", source_plane), *monitor_planes.items()]:
+        (xa, ya, _za), (xb, yb, _zb) = plane
         color = "red" if name == "source" else "white"
         lw = 1.8 if name == "source" else 1.1
         ax[0].plot([xa / µm, xb / µm], [ya / µm, yb / µm], color=color, lw=lw)
-        xc, yc = line_center(line)
+        xc, yc = 0.5 * (xa + xb), 0.5 * (ya + yb)
         ax[0].text(xc / µm, yc / µm + 0.08, name, color=color, fontsize=6.5, ha="center")
 
     ax[1].imshow(
         eps_xz,
         origin="lower",
-        extent=[0.0, width / µm, 0.0, z_vis / µm],
+        extent=[0.0, width / µm, 0.0, depth / µm],
         cmap="viridis",
         aspect="auto",
     )
-    ax[1].set_title("XZ (visualized z)")
+    ax[1].set_title("XZ")
     ax[1].set_xlabel("x (um)")
     ax[1].set_ylabel("z (um)")
-    for name, line in [("source", source_line), *monitor_lines.items()]:
-        xc, _ = line_center(line)
+    for lyr, (lz0, lz1) in layer_z.items():
+        ax[1].axhspan(lz0 / µm, lz1 / µm, color="white", alpha=0.05)
+        ax[1].text(0.15, 0.5 * (lz0 + lz1) / µm, lyr, color="white", fontsize=6.5, va="center")
+    for name, plane in [("source", source_plane), *monitor_planes.items()]:
+        (xa, _, za), (xb, _, zb) = plane
+        xc = 0.5 * (xa + xb)
         color = "red" if name == "source" else "white"
-        ax[1].axvline(xc / µm, color=color, lw=1.1, alpha=0.9)
+        ax[1].plot([xc / µm, xc / µm], [min(za, zb) / µm, max(za, zb) / µm], color=color, lw=1.1, alpha=0.9)
 
     ax[2].imshow(
         eps_yz,
         origin="lower",
-        extent=[0.0, height / µm, 0.0, z_vis / µm],
+        extent=[0.0, height / µm, 0.0, depth / µm],
         cmap="viridis",
         aspect="auto",
     )
-    ax[2].set_title("YZ (visualized z)")
+    ax[2].set_title("YZ")
     ax[2].set_xlabel("y (um)")
     ax[2].set_ylabel("z (um)")
-    for name, line in [("source", source_line), *monitor_lines.items()]:
-        _, yc = line_center(line)
+    for lyr, (lz0, lz1) in layer_z.items():
+        ax[2].axhspan(lz0 / µm, lz1 / µm, color="white", alpha=0.05)
+        ax[2].text(0.15, 0.5 * (lz0 + lz1) / µm, lyr, color="white", fontsize=6.5, va="center")
+    for name, plane in [("source", source_plane), *monitor_planes.items()]:
+        (_, ya, za), (_, yb, zb) = plane
+        yc = 0.5 * (ya + yb)
         color = "red" if name == "source" else "white"
-        ax[2].axvline(yc / µm, color=color, lw=1.1, alpha=0.9)
+        ax[2].plot([yc / µm, yc / µm], [min(za, zb) / µm, max(za, zb) / µm], color=color, lw=1.1, alpha=0.9)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=320)
@@ -250,7 +353,7 @@ def save_field_animation(
     out_path: Path,
     fps: int = 20,
 ) -> bool:
-    if field_hist.ndim != 3 or field_hist.shape[0] < 2:
+    if field_hist.ndim not in {3, 4} or field_hist.shape[0] < 2:
         return False
     try:
         from matplotlib.animation import FFMpegWriter, FuncAnimation, writers
@@ -267,17 +370,27 @@ def save_field_animation(
     y_lo = max(0.0, y0 - y_pad)
     y_hi = min(height, y1 + y_pad)
 
-    nx = eps.shape[1]
-    ny = eps.shape[0]
-    dx_x = width / max(nx, 1)
-    dx_y = height / max(ny, 1)
+    if eps.ndim == 3:
+        nz, ny, nx = eps.shape
+        dx_x = width / max(nx, 1)
+        dx_y = height / max(ny, 1)
+        core_z_idx = int(np.clip(round(0.5 * nz), 0, nz - 1))
+    else:
+        ny, nx = eps.shape
+        dx_x = width / max(nx, 1)
+        dx_y = height / max(ny, 1)
+        core_z_idx = 0
     ix0 = int(np.clip(np.floor(x_lo / dx_x), 0, nx - 1))
     ix1 = int(np.clip(np.ceil(x_hi / dx_x), ix0 + 1, nx))
     iy0 = int(np.clip(np.floor(y_lo / dx_y), 0, ny - 1))
     iy1 = int(np.clip(np.ceil(y_hi / dx_y), iy0 + 1, ny))
     y_slice = int(np.clip(round(0.5 * (y0 + y1) / dx_y), 0, ny - 1))
 
-    f_crop = np.asarray(field_hist[:, iy0:iy1, ix0:ix1], dtype=float)
+    if field_hist.ndim == 4:
+        f_xy = np.asarray(field_hist[:, core_z_idx, :, :], dtype=float)
+    else:
+        f_xy = np.asarray(field_hist, dtype=float)
+    f_crop = np.asarray(f_xy[:, iy0:iy1, ix0:ix1], dtype=float)
     vmax = float(np.nanpercentile(np.abs(f_crop), 99.0))
     vmax = max(vmax, 1e-12)
 
@@ -299,7 +412,7 @@ def save_field_animation(
     slice_line = ax0.axhline(y_slice_um, color="black", ls="--", lw=1.0, alpha=0.8)
 
     x_line = np.arange(nx, dtype=float) * dx_x / µm
-    line_vals = np.asarray(field_hist[0, y_slice, :], dtype=float)
+    line_vals = np.asarray(f_xy[0, y_slice, :], dtype=float)
     (line_plot,) = ax1.plot(x_line, line_vals, color="tab:blue", lw=1.6)
     ax1.set_xlim(float(np.min(x_line)), float(np.max(x_line)))
     ax1.set_ylim(-vmax, vmax)
@@ -311,7 +424,7 @@ def save_field_animation(
 
     def _update(i):
         im.set_data(f_crop[i])
-        line_plot.set_ydata(np.asarray(field_hist[i, y_slice, :], dtype=float))
+        line_plot.set_ydata(np.asarray(f_xy[i, y_slice, :], dtype=float))
         frame_text.set_text(f"frame {i+1}/{field_hist.shape[0]}")
         return im, line_plot, slice_line, frame_text
 
@@ -329,7 +442,10 @@ def build_design_with_extensions(
     n_core: float,
     n_clad: float,
     extension: float,
-) -> tuple[Design, dict, tuple[float, float, float, float]]:
+    core_t: float,
+    clad_below: float,
+    clad_above: float,
+) -> tuple[Design, dict, tuple[float, float, float, float], dict[str, tuple[float, float]]]:
     imported_design, ports = gdsf.load(
         component,
         layer=layer,
@@ -337,15 +453,21 @@ def build_design_with_extensions(
         n_clad=n_clad,
         padding=0.0,
     )
+    depth = clad_below + core_t + clad_above
+    core_z0 = clad_below
+    core_z1 = core_z0 + core_t
 
     design = Design(
         width=imported_design.width + 2.0 * extension,
         height=imported_design.height + 2.0 * extension,
-        depth=0.0,
+        depth=depth,
         material=Material(n_clad**2),
     )
     for structure in imported_design.structures[1:]:
-        design += structure.copy().shift(extension, extension)
+        shifted = structure.copy().shift(extension, extension, core_z0)
+        shifted.z = core_z0
+        shifted.depth = core_t
+        design += shifted
 
     ports = {
         name: {
@@ -355,6 +477,7 @@ def build_design_with_extensions(
                 float(p["center"][1] + extension),
             ),
             "width": float(p["width"]),
+            "z_center": float(core_z0 + 0.5 * core_t),
         }
         for name, p in ports.items()
     }
@@ -367,19 +490,19 @@ def build_design_with_extensions(
         ox, oy = move_along((cx, cy), d_out, extension)
         if port["direction"].endswith("x"):
             design += Rectangle(
-                position=(min(cx, ox), cy - 0.5 * width),
+                position=(min(cx, ox), cy - 0.5 * width, core_z0),
                 width=abs(ox - cx),
                 height=width,
                 material=Material(n_core**2),
-                depth=0,
+                depth=core_t,
             )
         else:
             design += Rectangle(
-                position=(cx - 0.5 * width, min(cy, oy)),
+                position=(cx - 0.5 * width, min(cy, oy), core_z0),
                 width=width,
                 height=abs(oy - cy),
                 material=Material(n_core**2),
-                depth=0,
+                depth=core_t,
             )
 
     imported_bbox = (
@@ -388,11 +511,17 @@ def build_design_with_extensions(
         float(extension),
         float(extension + imported_design.height),
     )
-    return design, ports, imported_bbox
+    layer_z = {
+        "clad_bottom": (0.0, core_z0),
+        "core": (core_z0, core_z1),
+        "clad_top": (core_z1, depth),
+    }
+    return design, ports, imported_bbox, layer_z
 
 
 def run_crossing(
     *,
+    component_name: str,
     wl0: float,
     wl_min: float,
     wl_max: float,
@@ -402,9 +531,17 @@ def run_crossing(
     polarization: str,
     points_per_wavelength: int,
     layer: tuple[int, int],
+    extension_um: float,
+    core_t_um: float,
+    clad_below_um: float,
+    clad_above_um: float,
+    monitor_candidates: int,
+    mode_search_max: int,
+    animation_frames: int,
+    show_progress: bool,
     out_dir: Path,
 ) -> None:
-    component, component_label = load_crossing_component()
+    component, component_label = load_crossing_component(component_name=component_name)
     polarization = str(polarization).lower()
     if polarization not in {"tm", "te"}:
         raise ValueError("--polarization must be 'tm' or 'te'.")
@@ -412,13 +549,19 @@ def run_crossing(
     mode_dir = out_dir / "modes"
     mode_dir.mkdir(parents=True, exist_ok=True)
 
-    extension = 5.0 * µm
-    design, ports, imported_bbox = build_design_with_extensions(
+    core_t = float(core_t_um) * µm
+    clad_below = float(clad_below_um) * µm
+    clad_above = float(clad_above_um) * µm
+    extension = float(extension_um) * µm
+    design, ports, imported_bbox, layer_z = build_design_with_extensions(
         component,
         layer=layer,
         n_core=n_core,
         n_clad=n_clad,
         extension=extension,
+        core_t=core_t,
+        clad_below=clad_below,
+        clad_above=clad_above,
     )
     source_port = "o1" if "o1" in ports else sorted(ports.keys())[0]
     output_ports = [name for name in sorted(ports.keys()) if name != source_port]
@@ -427,22 +570,27 @@ def run_crossing(
     dx, dt = dxdt(
         wl0,
         n_max=n_core,
-        dims=2,
+        dims=3,
         safety_factor=0.999,
         points_per_wavelength=points_per_wavelength,
     )
     grid = design.rasterize(resolution=dx)
+    num_voxels = int(np.prod(np.asarray(grid.permittivity).shape))
 
-    freqs = np.linspace(LIGHT_SPEED / wl_max, LIGHT_SPEED / wl_min, num_freqs)
+    freqs = np.linspace(LIGHT_SPEED / wl_max, LIGHT_SPEED / wl_min, num_freqs, dtype=np.float32)
     wl = LIGHT_SPEED / freqs
     f0 = LIGHT_SPEED / wl0
 
     src = ports[source_port]
-    source_span = max(1.0 * µm, 3.0 * float(src["width"]))
-    monitor_span = max(1.0 * µm, 3.0 * float(src["width"]))
+    source_span = max(1.0 * µm, 3.0 * float(src["width"]))  # y-span
+    monitor_span = max(1.0 * µm, 3.0 * float(src["width"]))  # y-span
+    source_height = max(1.2 * µm, 4.0 * core_t)
+    monitor_height = max(1.0 * µm, 3.6 * core_t)
+    z_center = float(src["z_center"])
 
-    pml_thickness = 1.0 * wl0
-    max_outward_offset = max(0.9 * µm, extension - pml_thickness - 0.35 * µm)
+    pml_xy = 1.0 * wl0
+    pml_z = 0.8 * wl0
+    max_outward_offset = max(0.9 * µm, extension - pml_xy - 0.35 * µm)
     source_mag = min(1.6 * µm, 0.55 * max_outward_offset)
     fwd_mag = max(0.70 * µm, source_mag - 0.45 * µm)
     ref_mag = min(max_outward_offset - 0.20 * µm, source_mag + 0.65 * µm)
@@ -451,16 +599,37 @@ def run_crossing(
     source_offset = -source_mag
     fwd_offset = -fwd_mag
     ref_offset = -ref_mag
-    source_center = move_along(src["center"], src["direction"], source_offset)
-    source_line = port_line(src, source_span, offset=source_offset)
-    src_line_center = line_center(source_line)
+    source_xy = move_along(src["center"], src["direction"], source_offset)
+    source_center = (source_xy[0], source_xy[1], z_center)
+    source_plane = port_plane(
+        src,
+        y_span=source_span,
+        z_span=source_height,
+        z_center=z_center,
+        offset=source_offset,
+    )
+    src_plane_center = line_center(source_plane)
 
-    fwd_line = port_line(src, monitor_span, offset=fwd_offset)
-    ref_line = port_line(src, monitor_span, offset=ref_offset)
+    fwd_plane = port_plane(
+        src,
+        y_span=monitor_span,
+        z_span=monitor_height,
+        z_center=z_center,
+        offset=fwd_offset,
+    )
+    ref_plane = port_plane(
+        src,
+        y_span=monitor_span,
+        z_span=monitor_height,
+        z_center=z_center,
+        offset=ref_offset,
+    )
 
     # Build multiple output-monitor placement candidates (farther into straight sections).
     out_mag_candidates = []
-    for frac in (0.55, 0.75, 0.95):
+    frac_lut = [0.60, 0.80, 0.95]
+    n_cands = int(np.clip(monitor_candidates, 1, 3))
+    for frac in frac_lut[:n_cands]:
         mag = float(np.clip(frac * out_mag, 0.70 * µm, max_outward_offset - 0.08 * µm))
         if not any(abs(mag - m) < 1e-12 for m in out_mag_candidates):
             out_mag_candidates.append(mag)
@@ -470,18 +639,30 @@ def run_crossing(
     for p in output_ports:
         cand_list = []
         for i, mag in enumerate(out_mag_candidates):
-            line = port_line(ports[p], monitor_span, offset=-mag)
-            c_out = line_center(line)
-            dist = float(np.hypot(c_out[0] - src_line_center[0], c_out[1] - src_line_center[1]))
+            plane = port_plane(
+                ports[p],
+                y_span=monitor_span,
+                z_span=monitor_height,
+                z_center=z_center,
+                offset=-mag,
+            )
+            c_out = line_center(plane)
+            dist = float(np.hypot(c_out[0] - src_plane_center[0], c_out[1] - src_plane_center[1]))
             if dist < min_center_separation:
                 deeper_mag = min(max_outward_offset - 0.08 * µm, mag + (min_center_separation - dist))
-                line = port_line(ports[p], monitor_span, offset=-deeper_mag)
+                plane = port_plane(
+                    ports[p],
+                    y_span=monitor_span,
+                    z_span=monitor_height,
+                    z_center=z_center,
+                    offset=-deeper_mag,
+                )
                 mag = deeper_mag
             cand_list.append(
                 {
                     "name": f"{p}_cand{i}",
                     "offset": -mag,
-                    "line": line,
+                    "plane": plane,
                 }
             )
         out_candidates[p] = cand_list
@@ -494,9 +675,11 @@ def run_crossing(
         return np.hypot(float(p1[0]) - float(p0[0]), float(p1[1]) - float(p0[1])) / max(v_est, 1e-30)
 
     src_center_xy = tuple(float(v) for v in src["center"])
-    src_xy = tuple(float(v) for v in source_center)
-    t_fwd = pulse_t0 + travel_time(src_xy, line_center(fwd_line))
-    t_ref = pulse_t0 + travel_time(src_xy, src_center_xy) + travel_time(src_center_xy, line_center(ref_line))
+    src_xy = (float(source_center[0]), float(source_center[1]))
+    fwd_center = line_center(fwd_plane)
+    ref_center = line_center(ref_plane)
+    t_fwd = pulse_t0 + travel_time(src_xy, (fwd_center[0], fwd_center[1]))
+    t_ref = pulse_t0 + travel_time(src_xy, src_center_xy) + travel_time(src_center_xy, (ref_center[0], ref_center[1]))
 
     dft_half = 26.0 / f0
 
@@ -515,7 +698,7 @@ def run_crossing(
                 pulse_t0
                 + travel_time(src_xy, src_center_xy)
                 + travel_time(src_center_xy, out_center)
-                + travel_time(out_center, line_center(cand["line"]))
+                + travel_time(out_center, (line_center(cand["plane"])[0], line_center(cand["plane"])[1]))
             )
             out_windows[p][cand["name"]] = centered_window(t_out)
 
@@ -530,7 +713,7 @@ def run_crossing(
     time = np.arange(0.0, t_total, dt)
     signal = np.exp(-0.5 * ((time - pulse_t0) / max(pulse_sigma, 1e-30)) ** 2) * np.cos(
         2.0 * np.pi * f0 * (time - pulse_t0)
-    )
+    ).astype(np.float32)
     signal_path = out_dir / "beamz_crossing_signal.png"
     save_signal_plot(time, signal, signal_path)
 
@@ -538,17 +721,14 @@ def run_crossing(
         grid=grid,
         center=source_center,
         width=source_span,
+        height=source_height,
         wavelength=wl0,
         pol=polarization,
         signal=signal,
         direction=src["direction"],
     )
 
-    dft_components = (
-        ("Ez", "Hx", "Hy")
-        if polarization == "tm"
-        else ("Ex", "Ey", "Hz")
-    )
+    dft_components = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
     monitor_cfg = dict(
         record_fields=False,
         dft_enabled=True,
@@ -559,14 +739,16 @@ def run_crossing(
     )
 
     m_fwd = Monitor(
-        *fwd_line,
+        start=fwd_plane[0],
+        end=fwd_plane[1],
         name=f"{source_port}_fwd",
         dft_t_start=dft_fwd_t_start,
         dft_t_end=dft_fwd_t_end,
         **monitor_cfg,
     )
     m_ref = Monitor(
-        *ref_line,
+        start=ref_plane[0],
+        end=ref_plane[1],
         name=f"{source_port}_ref",
         dft_t_start=dft_ref_t_start,
         dft_t_end=dft_ref_t_end,
@@ -578,7 +760,8 @@ def run_crossing(
             w0, w1 = out_windows[p][cand["name"]]
             output_monitors.append(
                 Monitor(
-                    *cand["line"],
+                    start=cand["plane"][0],
+                    end=cand["plane"][1],
                     name=cand["name"],
                     dft_t_start=w0,
                     dft_t_end=w1,
@@ -586,22 +769,24 @@ def run_crossing(
                 )
             )
 
-    monitor_lines = {
-        f"{source_port}_fwd": fwd_line,
-        f"{source_port}_ref": ref_line,
+    monitor_planes = {
+        f"{source_port}_fwd": fwd_plane,
+        f"{source_port}_ref": ref_plane,
     }
     for p in output_ports:
         for cand in out_candidates[p]:
-            monitor_lines[cand["name"]] = cand["line"]
+            monitor_planes[cand["name"]] = cand["plane"]
 
     overview_path = out_dir / "beamz_crossing_overview.png"
     save_overview_plot(
         eps=np.asarray(grid.permittivity, dtype=float),
         width=design.width,
         height=design.height,
+        depth=design.depth,
         imported_bbox=imported_bbox,
-        source_line=source_line,
-        monitor_lines=monitor_lines,
+        source_plane=source_plane,
+        monitor_planes=monitor_planes,
+        layer_z=layer_z,
         out_path=overview_path,
     )
 
@@ -609,8 +794,9 @@ def run_crossing(
     mode_sources = {"source_main": source}
     mode_sources[f"{source_port}_fwd"] = ModeSource(
         grid=grid,
-        center=line_center(fwd_line),
+        center=line_center(fwd_plane),
         width=monitor_span,
+        height=monitor_height,
         wavelength=wl0,
         pol=polarization,
         signal=np.zeros(8, dtype=float),
@@ -618,8 +804,9 @@ def run_crossing(
     )
     mode_sources[f"{source_port}_ref"] = ModeSource(
         grid=grid,
-        center=line_center(ref_line),
+        center=line_center(ref_plane),
         width=monitor_span,
+        height=monitor_height,
         wavelength=wl0,
         pol=polarization,
         signal=np.zeros(8, dtype=float),
@@ -630,8 +817,9 @@ def run_crossing(
         for cand in out_candidates[p]:
             mode_sources[cand["name"]] = ModeSource(
                 grid=grid,
-                center=line_center(cand["line"]),
+                center=line_center(cand["plane"]),
                 width=monitor_span,
+                height=monitor_height,
                 wavelength=wl0,
                 pol=polarization,
                 signal=np.zeros(8, dtype=float),
@@ -653,7 +841,10 @@ def run_crossing(
     sim = Simulation(
         design=design,
         devices=[source, m_fwd, m_ref, *output_monitors],
-        boundaries=[PML(edges="all", thickness=pml_thickness)],
+        boundaries=[
+            PML(edges=["left", "right", "top", "bottom"], thickness=pml_xy),
+            PML(edges=["front", "back"], thickness=pml_z),
+        ],
         time=time,
         resolution=dx,
     )
@@ -661,32 +852,80 @@ def run_crossing(
     print(
         "Running crossing modal DFT extraction: "
         f"component={component_label}, source={source_port}, outputs={output_ports}, "
-        f"pol={polarization}, freq_points={num_freqs}, steps={len(time)}, dx={dx/µm:.4f}um, "
+        f"pol={polarization}, freq_points={num_freqs}, steps={len(time)}, "
+        f"dx={dx/µm:.4f}um, depth={design.depth/µm:.2f}um, "
         f"offsets(src/fwd/ref)={source_offset/µm:.2f}/{fwd_offset/µm:.2f}/{ref_offset/µm:.2f}um"
     )
     print(
+        "Workload: "
+        f"grid={grid.permittivity.shape}, voxels={num_voxels:,}, "
+        f"updates~{num_voxels*len(time):.3e}"
+    )
+    print(
         "Placement check: "
-        f"source_center=({source_center[0]/µm:.2f},{source_center[1]/µm:.2f})um, "
-        f"source_line_center=({src_line_center[0]/µm:.2f},{src_line_center[1]/µm:.2f})um"
+        f"source_center=({source_center[0]/µm:.2f},{source_center[1]/µm:.2f},{source_center[2]/µm:.2f})um, "
+        f"source_plane_center=({src_plane_center[0]/µm:.2f},{src_plane_center[1]/µm:.2f},{src_plane_center[2]/µm:.2f})um"
     )
     for p in output_ports:
         for cand in out_candidates[p]:
-            c_out = line_center(cand["line"])
-            dist = float(np.hypot(c_out[0] - src_line_center[0], c_out[1] - src_line_center[1]))
+            c_out = line_center(cand["plane"])
+            dist = float(np.hypot(c_out[0] - src_plane_center[0], c_out[1] - src_plane_center[1]))
             print(
-                f"  monitor {cand['name']}: center=({c_out[0]/µm:.2f},{c_out[1]/µm:.2f})um, "
+                f"  monitor {cand['name']}: center=({c_out[0]/µm:.2f},{c_out[1]/µm:.2f},{c_out[2]/µm:.2f})um, "
                 f"offset={cand['offset']/µm:.2f}um, distance_to_source={dist/µm:.2f}um"
             )
     field_component = "Ey" if polarization == "te" else "Ez"
-    field_record_interval = max(1, len(time) // 220)
-    run_result = sim.run_compiled(
-        record_interval=field_record_interval,
-        record_fields=[field_component],
-        progress=False,
-    )
+    eps_grid = np.asarray(grid.permittivity, dtype=float)
+    capture_z_idx = 0
+    if eps_grid.ndim == 3:
+        core_z0, core_z1 = layer_z.get("core", (0.0, design.depth))
+        dz = design.depth / max(int(eps_grid.shape[0]), 1)
+        capture_z_idx = int(
+            np.clip(round(0.5 * (core_z0 + core_z1) / max(dz, 1e-30)), 0, eps_grid.shape[0] - 1)
+        )
+
+    field_hist = np.zeros((0,), dtype=float)
+    n_anim_frames = max(0, int(animation_frames))
+    if n_anim_frames > 0:
+        # Avoid storing full 3D volumes every interval: run in chunks and keep one XY z-slice.
+        total_steps = len(time)
+        chunk_size = max(1, int(np.ceil(total_steps / max(n_anim_frames, 1))))
+        frame_list = []
+        steps_done = 0
+        print(
+            "Compiled run mode: chunked slice capture "
+            f"(target_frames={n_anim_frames}, chunk_size={chunk_size}, field={field_component})"
+        )
+        while steps_done < total_steps:
+            this_chunk = min(chunk_size, total_steps - steps_done)
+            sim.run_compiled(num_steps=this_chunk, progress=False)
+            steps_done += this_chunk
+
+            field_now = np.asarray(getattr(sim.fields, field_component), dtype=float)
+            if field_now.ndim == 3:
+                frame = np.asarray(field_now[capture_z_idx, :, :], dtype=np.float32)
+            elif field_now.ndim == 2:
+                frame = np.asarray(field_now, dtype=np.float32)
+            else:
+                frame = np.asarray(field_now, dtype=np.float32).reshape(1, 1)
+            frame_list.append(frame)
+
+            if show_progress:
+                pct = 100.0 * steps_done / max(total_steps, 1)
+                print(
+                    f"\r● Progress: {pct:.0f}% ({steps_done}/{total_steps} steps)",
+                    end="",
+                    flush=True,
+                )
+        if show_progress:
+            print()
+        if frame_list:
+            field_hist = np.stack(frame_list, axis=0)
+    else:
+        sim.run_compiled(progress=bool(show_progress))
 
     cond_threshold = 1e8
-    max_mode_search = 3
+    max_mode_search = int(np.clip(mode_search_max, 0, 3))
 
     def source_spec(mode_index: int) -> PortSpec:
         return PortSpec(
@@ -699,6 +938,7 @@ def run_crossing(
         )
 
     # Choose source mode index.
+    print(f"Selecting source mode over m0..m{max_mode_search}")
     source_best = None
     for mode_idx in range(max_mode_search + 1):
         result = sim.get_S_matrix_modal_dft(
@@ -720,6 +960,10 @@ def run_crossing(
         qual_frac = float(np.mean(qual)) if qual.size else 0.0
         guided_bonus = 0.4 if neff_med > (n_clad + 1e-3) else 0.0
         score = 3.0 * qual_frac + guided_bonus + neff_med - 0.05 * np.log10(max(cond_med, 1.0))
+        print(
+            f"  source m{mode_idx}: score={score:.3f}, "
+            f"qual={qual_frac:.2f}, neff_med={neff_med:.4f}, cond_med={cond_med:.2e}"
+        )
         candidate = {"mode_index": mode_idx, "result": result, "score": score}
         if source_best is None or score > source_best["score"]:
             source_best = candidate
@@ -752,6 +996,7 @@ def run_crossing(
 
     # Select best monitor placement + mode index for each output port.
     for p in output_ports:
+        print(f"Selecting output port {p} over {len(out_candidates[p])} monitor candidates and m0..m{max_mode_search}")
         best = None
         for cand in out_candidates[p]:
             for mode_idx in range(max_mode_search + 1):
@@ -800,6 +1045,11 @@ def run_crossing(
                     - 0.05 * np.log10(max(cond_med, 1.0))
                     - 0.03 * ripple
                     - 0.6 * max(mag_med - 1.2, 0.0)
+                )
+                print(
+                    f"  {p} {cand['name']} m{mode_idx}: "
+                    f"score={score:.3f}, qual={qual_frac:.2f}, "
+                    f"neff_med={neff_med:.4f}, cond_med={cond_med:.2e}, ripple={ripple:.2f}"
                 )
                 candidate = {
                     "score": score,
@@ -923,16 +1173,10 @@ def run_crossing(
     fig_full.savefig(fig_path_full, dpi=320)
     plt.close(fig_full)
 
-    field_hist = np.zeros((0,), dtype=float)
-    if isinstance(run_result, dict):
-        field_hist = np.asarray(
-            run_result.get("fields", {}).get(field_component, np.zeros((0,))),
-            dtype=float,
-        )
     anim_path = out_dir / "beamz_crossing_field_propagation.mp4"
     anim_ok = save_field_animation(
         field_hist=field_hist,
-        eps=np.asarray(grid.permittivity, dtype=float),
+        eps=eps_grid,
         width=design.width,
         height=design.height,
         imported_bbox=imported_bbox,
@@ -955,6 +1199,12 @@ def run_crossing(
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--component",
+        type=str,
+        default="ebeam_crossing4",
+        help="Preferred crossing component name from active PDK.",
+    )
     parser.add_argument("--wl0-nm", type=float, default=1550.0, help="Center wavelength in nm.")
     parser.add_argument("--wl-min-nm", type=float, default=1530.0, help="Sweep min wavelength in nm.")
     parser.add_argument("--wl-max-nm", type=float, default=1570.0, help="Sweep max wavelength in nm.")
@@ -976,8 +1226,55 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--points-per-wavelength",
         type=int,
-        default=12,
+        default=8,
         help="Grid resolution in points per wavelength.",
+    )
+    parser.add_argument(
+        "--extension-um",
+        type=float,
+        default=4.0,
+        help="Port extension length on each side in microns.",
+    )
+    parser.add_argument(
+        "--core-thickness-um",
+        type=float,
+        default=0.22,
+        help="Core layer thickness in microns (3D).",
+    )
+    parser.add_argument(
+        "--clad-below-um",
+        type=float,
+        default=1.2,
+        help="Bottom cladding thickness in microns (3D).",
+    )
+    parser.add_argument(
+        "--clad-above-um",
+        type=float,
+        default=1.2,
+        help="Top cladding thickness in microns (3D).",
+    )
+    parser.add_argument(
+        "--monitor-candidates",
+        type=int,
+        default=2,
+        help="Number of output-monitor placement candidates per port (1..3).",
+    )
+    parser.add_argument(
+        "--mode-search-max",
+        type=int,
+        default=1,
+        help="Max mode index for automatic search (0..3).",
+    )
+    parser.add_argument(
+        "--quiet-run",
+        action="store_true",
+        help="Disable compiled-run progress output.",
+    )
+    parser.add_argument(
+        "--animation-frames",
+        type=int,
+        default=36,
+        help="Number of field-slice frames to capture for MP4 (0 disables animation capture).",
     )
     parser.add_argument(
         "--layer",
@@ -1004,6 +1301,7 @@ def main():
         raise ValueError("--wl0-nm must be within [wl-min-nm, wl-max-nm].")
 
     run_crossing(
+        component_name=args.component,
         wl0=args.wl0_nm * 1e-9,
         wl_min=args.wl_min_nm * 1e-9,
         wl_max=args.wl_max_nm * 1e-9,
@@ -1013,6 +1311,14 @@ def main():
         polarization=args.polarization,
         points_per_wavelength=args.points_per_wavelength,
         layer=parse_layer(args.layer),
+        extension_um=args.extension_um,
+        core_t_um=args.core_thickness_um,
+        clad_below_um=args.clad_below_um,
+        clad_above_um=args.clad_above_um,
+        monitor_candidates=args.monitor_candidates,
+        mode_search_max=args.mode_search_max,
+        animation_frames=args.animation_frames,
+        show_progress=not args.quiet_run,
         out_dir=args.out_dir,
     )
 
