@@ -89,6 +89,239 @@ def line_center(line: tuple[tuple[float, float], tuple[float, float]]) -> tuple[
     return 0.5 * (x0 + x1), 0.5 * (y0 + y1)
 
 
+def save_signal_plot(time: np.ndarray, signal: np.ndarray, out_path: Path) -> None:
+    fig, ax = plt.subplots(1, 1, figsize=(6.4, 2.6), dpi=260)
+    ax.plot(time / 1e-15, signal, color="black", lw=1.5)
+    ax.set_xlabel("time (fs)")
+    ax.set_ylabel("amplitude")
+    ax.set_title("Excitation Signal")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def save_mode_profile_plot(
+    *,
+    label: str,
+    mode_src: ModeSource,
+    grid_eps: np.ndarray,
+    dx: float,
+    out_path: Path,
+) -> None:
+    axis = mode_src.direction[1]
+    if axis == "x":
+        x_idx = int(np.clip(round(float(mode_src.center[0]) / dx), 0, grid_eps.shape[1] - 1))
+        eps_profile = np.asarray(grid_eps[:, x_idx], dtype=float)
+    else:
+        y_idx = int(np.clip(round(float(mode_src.center[1]) / dx), 0, grid_eps.shape[0] - 1))
+        eps_profile = np.asarray(grid_eps[y_idx, :], dtype=float)
+
+    profiles = {
+        "jz": getattr(mode_src, "_jz_profile", None),
+        "jy": getattr(mode_src, "_jy_profile", None),
+        "jx": getattr(mode_src, "_jx_profile", None),
+        "my": getattr(mode_src, "_my_profile", None),
+        "mz": getattr(mode_src, "_mz_profile", None),
+    }
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(8.2, 2.8), dpi=260)
+    u = np.arange(eps_profile.size, dtype=float) * dx / µm
+    ax0.plot(u, eps_profile, color="tab:blue", lw=1.6)
+    ax0.set_title(f"{label}: eps profile")
+    ax0.set_xlabel("transverse coordinate (um)")
+    ax0.set_ylabel("permittivity")
+    ax0.grid(alpha=0.3)
+
+    plotted = False
+    for name, arr in profiles.items():
+        if arr is None:
+            continue
+        a = np.asarray(arr, dtype=np.complex128).reshape(-1)
+        if a.size == 0:
+            continue
+        uu = np.arange(a.size, dtype=float) * dx / µm
+        ax1.plot(uu, np.abs(a), lw=1.5, label=f"|{name}|")
+        plotted = True
+    if not plotted:
+        ax1.text(0.02, 0.7, "No mode profile data", transform=ax1.transAxes)
+    ax1.set_title(
+        f"{label}: mode profile ({mode_src.pol}, {mode_src.direction})\n"
+        f"neff={float(np.real(getattr(mode_src, '_neff', np.nan))):.4f}"
+    )
+    ax1.set_xlabel("transverse coordinate (um)")
+    ax1.set_ylabel("normalized magnitude")
+    ax1.grid(alpha=0.3)
+    if plotted:
+        ax1.legend(loc="best", fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def save_overview_plot(
+    *,
+    eps: np.ndarray,
+    width: float,
+    height: float,
+    imported_bbox: tuple[float, float, float, float],
+    source_line: tuple[tuple[float, float], tuple[float, float]],
+    monitor_lines: dict[str, tuple[tuple[float, float], tuple[float, float]]],
+    out_path: Path,
+) -> None:
+    x0, x1, y0, y1 = imported_bbox
+    dx = width / max(eps.shape[1], 1)
+    dy = height / max(eps.shape[0], 1)
+    y_mid_idx = int(
+        np.clip(round(0.5 * (y0 + y1) / dy), 0, eps.shape[0] - 1)
+    )
+    x_mid_idx = int(
+        np.clip(round(0.5 * (x0 + x1) / dx), 0, eps.shape[1] - 1)
+    )
+    eps_x = np.asarray(eps[y_mid_idx, :], dtype=float)
+    eps_y = np.asarray(eps[:, x_mid_idx], dtype=float)
+    nz_vis = 40
+    eps_xz = np.repeat(eps_x[None, :], nz_vis, axis=0)
+    eps_yz = np.repeat(eps_y[:, None], nz_vis, axis=1).T
+    z_vis = 1.0 * µm
+
+    fig, ax = plt.subplots(1, 3, figsize=(12.0, 3.6), dpi=260)
+    ax[0].imshow(
+        eps,
+        origin="lower",
+        extent=[0.0, width / µm, 0.0, height / µm],
+        cmap="viridis",
+        aspect="equal",
+    )
+    ax[0].set_title("XY overview")
+    ax[0].set_xlabel("x (um)")
+    ax[0].set_ylabel("y (um)")
+    ax[0].plot([x0 / µm, x1 / µm, x1 / µm, x0 / µm, x0 / µm], [y0 / µm, y0 / µm, y1 / µm, y1 / µm, y0 / µm], "w--", lw=1.2)
+    for name, line in [("source", source_line), *monitor_lines.items()]:
+        (xa, ya), (xb, yb) = line
+        color = "red" if name == "source" else "white"
+        lw = 1.8 if name == "source" else 1.1
+        ax[0].plot([xa / µm, xb / µm], [ya / µm, yb / µm], color=color, lw=lw)
+        xc, yc = line_center(line)
+        ax[0].text(xc / µm, yc / µm + 0.08, name, color=color, fontsize=6.5, ha="center")
+
+    ax[1].imshow(
+        eps_xz,
+        origin="lower",
+        extent=[0.0, width / µm, 0.0, z_vis / µm],
+        cmap="viridis",
+        aspect="auto",
+    )
+    ax[1].set_title("XZ (visualized z)")
+    ax[1].set_xlabel("x (um)")
+    ax[1].set_ylabel("z (um)")
+    for name, line in [("source", source_line), *monitor_lines.items()]:
+        xc, _ = line_center(line)
+        color = "red" if name == "source" else "white"
+        ax[1].axvline(xc / µm, color=color, lw=1.1, alpha=0.9)
+
+    ax[2].imshow(
+        eps_yz,
+        origin="lower",
+        extent=[0.0, height / µm, 0.0, z_vis / µm],
+        cmap="viridis",
+        aspect="auto",
+    )
+    ax[2].set_title("YZ (visualized z)")
+    ax[2].set_xlabel("y (um)")
+    ax[2].set_ylabel("z (um)")
+    for name, line in [("source", source_line), *monitor_lines.items()]:
+        _, yc = line_center(line)
+        color = "red" if name == "source" else "white"
+        ax[2].axvline(yc / µm, color=color, lw=1.1, alpha=0.9)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=320)
+    plt.close(fig)
+
+
+def save_field_animation(
+    *,
+    field_hist: np.ndarray,
+    eps: np.ndarray,
+    width: float,
+    height: float,
+    imported_bbox: tuple[float, float, float, float],
+    field_label: str,
+    out_path: Path,
+    fps: int = 20,
+) -> bool:
+    if field_hist.ndim != 3 or field_hist.shape[0] < 2:
+        return False
+    try:
+        from matplotlib.animation import FFMpegWriter, FuncAnimation, writers
+    except Exception:
+        return False
+    if not writers.is_available("ffmpeg"):
+        return False
+
+    x0, x1, y0, y1 = imported_bbox
+    x_pad = 0.8 * µm
+    y_pad = 0.8 * µm
+    x_lo = max(0.0, x0 - x_pad)
+    x_hi = min(width, x1 + x_pad)
+    y_lo = max(0.0, y0 - y_pad)
+    y_hi = min(height, y1 + y_pad)
+
+    nx = eps.shape[1]
+    ny = eps.shape[0]
+    dx_x = width / max(nx, 1)
+    dx_y = height / max(ny, 1)
+    ix0 = int(np.clip(np.floor(x_lo / dx_x), 0, nx - 1))
+    ix1 = int(np.clip(np.ceil(x_hi / dx_x), ix0 + 1, nx))
+    iy0 = int(np.clip(np.floor(y_lo / dx_y), 0, ny - 1))
+    iy1 = int(np.clip(np.ceil(y_hi / dx_y), iy0 + 1, ny))
+    y_slice = int(np.clip(round(0.5 * (y0 + y1) / dx_y), 0, ny - 1))
+
+    f_crop = np.asarray(field_hist[:, iy0:iy1, ix0:ix1], dtype=float)
+    vmax = float(np.nanpercentile(np.abs(f_crop), 99.0))
+    vmax = max(vmax, 1e-12)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.2, 3.8), dpi=220)
+    ax0, ax1 = axes
+    im = ax0.imshow(
+        f_crop[0],
+        origin="lower",
+        cmap="RdBu",
+        vmin=-vmax,
+        vmax=vmax,
+        extent=[x_lo / µm, x_hi / µm, y_lo / µm, y_hi / µm],
+        aspect="equal",
+    )
+    ax0.set_title(f"{field_label} field crop")
+    ax0.set_xlabel("x (um)")
+    ax0.set_ylabel("y (um)")
+    y_slice_um = y_slice * dx_y / µm
+    slice_line = ax0.axhline(y_slice_um, color="black", ls="--", lw=1.0, alpha=0.8)
+
+    x_line = np.arange(nx, dtype=float) * dx_x / µm
+    line_vals = np.asarray(field_hist[0, y_slice, :], dtype=float)
+    (line_plot,) = ax1.plot(x_line, line_vals, color="tab:blue", lw=1.6)
+    ax1.set_xlim(float(np.min(x_line)), float(np.max(x_line)))
+    ax1.set_ylim(-vmax, vmax)
+    ax1.set_xlabel("x (um)")
+    ax1.set_ylabel(field_label)
+    ax1.set_title("Mid-cell line slice")
+    ax1.grid(alpha=0.3)
+    frame_text = ax1.text(0.03, 0.93, "", transform=ax1.transAxes, va="top")
+
+    def _update(i):
+        im.set_data(f_crop[i])
+        line_plot.set_ydata(np.asarray(field_hist[i, y_slice, :], dtype=float))
+        frame_text.set_text(f"frame {i+1}/{field_hist.shape[0]}")
+        return im, line_plot, slice_line, frame_text
+
+    ani = FuncAnimation(fig, _update, frames=field_hist.shape[0], interval=max(1000 // max(fps, 1), 1), blit=False)
+    writer = FFMpegWriter(fps=fps, bitrate=2400)
+    ani.save(out_path, writer=writer)
+    plt.close(fig)
+    return True
+
+
 def build_design_with_extensions(
     component,
     *,
@@ -96,7 +329,7 @@ def build_design_with_extensions(
     n_core: float,
     n_clad: float,
     extension: float,
-) -> tuple[Design, dict]:
+) -> tuple[Design, dict, tuple[float, float, float, float]]:
     imported_design, ports = gdsf.load(
         component,
         layer=layer,
@@ -149,7 +382,13 @@ def build_design_with_extensions(
                 depth=0,
             )
 
-    return design, ports
+    imported_bbox = (
+        float(extension),
+        float(extension + imported_design.width),
+        float(extension),
+        float(extension + imported_design.height),
+    )
+    return design, ports, imported_bbox
 
 
 def run_crossing(
@@ -169,9 +408,12 @@ def run_crossing(
     polarization = str(polarization).lower()
     if polarization not in {"tm", "te"}:
         raise ValueError("--polarization must be 'tm' or 'te'.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mode_dir = out_dir / "modes"
+    mode_dir.mkdir(parents=True, exist_ok=True)
 
     extension = 5.0 * µm
-    design, ports = build_design_with_extensions(
+    design, ports, imported_bbox = build_design_with_extensions(
         component,
         layer=layer,
         n_core=n_core,
@@ -289,6 +531,8 @@ def run_crossing(
     signal = np.exp(-0.5 * ((time - pulse_t0) / max(pulse_sigma, 1e-30)) ** 2) * np.cos(
         2.0 * np.pi * f0 * (time - pulse_t0)
     )
+    signal_path = out_dir / "beamz_crossing_signal.png"
+    save_signal_plot(time, signal, signal_path)
 
     source = ModeSource(
         grid=grid,
@@ -342,6 +586,70 @@ def run_crossing(
                 )
             )
 
+    monitor_lines = {
+        f"{source_port}_fwd": fwd_line,
+        f"{source_port}_ref": ref_line,
+    }
+    for p in output_ports:
+        for cand in out_candidates[p]:
+            monitor_lines[cand["name"]] = cand["line"]
+
+    overview_path = out_dir / "beamz_crossing_overview.png"
+    save_overview_plot(
+        eps=np.asarray(grid.permittivity, dtype=float),
+        width=design.width,
+        height=design.height,
+        imported_bbox=imported_bbox,
+        source_line=source_line,
+        monitor_lines=monitor_lines,
+        out_path=overview_path,
+    )
+
+    # Build and save a mode-profile debug plot for every source/monitor placement.
+    mode_sources = {"source_main": source}
+    mode_sources[f"{source_port}_fwd"] = ModeSource(
+        grid=grid,
+        center=line_center(fwd_line),
+        width=monitor_span,
+        wavelength=wl0,
+        pol=polarization,
+        signal=np.zeros(8, dtype=float),
+        direction=src["direction"],
+    )
+    mode_sources[f"{source_port}_ref"] = ModeSource(
+        grid=grid,
+        center=line_center(ref_line),
+        width=monitor_span,
+        wavelength=wl0,
+        pol=polarization,
+        signal=np.zeros(8, dtype=float),
+        direction=src["direction"],
+    )
+    for p in output_ports:
+        out_dirn = outward_direction(ports[p]["direction"])
+        for cand in out_candidates[p]:
+            mode_sources[cand["name"]] = ModeSource(
+                grid=grid,
+                center=line_center(cand["line"]),
+                width=monitor_span,
+                wavelength=wl0,
+                pol=polarization,
+                signal=np.zeros(8, dtype=float),
+                direction=out_dirn,
+            )
+    for name, msrc in mode_sources.items():
+        try:
+            msrc.initialize(grid.permittivity, dx, dt=dt)
+            save_mode_profile_plot(
+                label=name,
+                mode_src=msrc,
+                grid_eps=np.asarray(grid.permittivity, dtype=float),
+                dx=dx,
+                out_path=mode_dir / f"{name}_mode.png",
+            )
+        except Exception as exc:
+            print(f"Mode plot skipped for {name}: {type(exc).__name__}: {exc}")
+
     sim = Simulation(
         design=design,
         devices=[source, m_fwd, m_ref, *output_monitors],
@@ -369,7 +677,13 @@ def run_crossing(
                 f"  monitor {cand['name']}: center=({c_out[0]/µm:.2f},{c_out[1]/µm:.2f})um, "
                 f"offset={cand['offset']/µm:.2f}um, distance_to_source={dist/µm:.2f}um"
             )
-    sim.run_fast(progress=False)
+    field_component = "Ey" if polarization == "te" else "Ez"
+    field_record_interval = max(1, len(time) // 220)
+    run_result = sim.run_compiled(
+        record_interval=field_record_interval,
+        record_fields=[field_component],
+        progress=False,
+    )
 
     cond_threshold = 1e8
     max_mode_search = 3
@@ -539,7 +853,6 @@ def run_crossing(
         f"(source_valid={bool(valid_mask[idx0])})"
     )
 
-    out_dir.mkdir(parents=True, exist_ok=True)
     data_path = out_dir / "beamz_crossing_sparams.npz"
     np.savez(
         data_path,
@@ -554,47 +867,97 @@ def run_crossing(
         **{f"s_{p}_{source_port}": s_cols[p] for p in all_ports},
     )
 
-    fig, ax = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
     color_cycle = ["black", "tab:blue", "tab:orange", "tab:green", "tab:red"]
-    db_min = 0.0
-    for i, p in enumerate(all_ports):
+    plot_series = {}
+    for p in all_ports:
         y_db = 20.0 * np.log10(np.maximum(np.abs(s_cols[p]), 1e-12))
         y_db = np.where(valid_mask & port_quality[p], y_db, np.nan)
-        finite = np.isfinite(y_db)
-        if np.any(finite):
-            db_min = min(db_min, float(np.nanmin(y_db[finite])))
-        ax.plot(
+        plot_series[p] = y_db
+
+    # Fixed-axis dB plot requested for compact model review.
+    fig_limited, ax_limited = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
+    for i, p in enumerate(all_ports):
+        ax_limited.plot(
             wl_um,
-            y_db,
+            plot_series[p],
             "-",
             color=color_cycle[i % len(color_cycle)],
             lw=2.0,
             label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
         )
-    y_floor = min(-40.0, 5.0 * np.floor(db_min / 5.0))
-    ax.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
-    ax.set_ylim(y_floor, 0.5)
-    ax.set_xlabel("Wavelength (um)")
-    ax.set_ylabel("Magnitude (dB)")
-    ax.set_title(f"Crossing S-Parameters ({component_label})")
-    ax.grid(which="major", alpha=0.25, lw=0.6)
-    ax.minorticks_on()
-    ax.grid(which="minor", alpha=0.12, lw=0.4)
-    ax.legend(loc="best", fontsize=9, frameon=False)
-    fig.tight_layout()
-    fig_path = out_dir / "beamz_crossing_sparams_db.png"
-    fig.savefig(fig_path, dpi=320)
-    plt.close(fig)
+    ax_limited.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
+    ax_limited.set_ylim(-55.0, 0.0)
+    ax_limited.set_xlabel("Wavelength (um)")
+    ax_limited.set_ylabel("Magnitude (dB)")
+    ax_limited.set_title(f"Crossing S-Parameters ({component_label})")
+    ax_limited.grid(which="major", alpha=0.25, lw=0.6)
+    ax_limited.minorticks_on()
+    ax_limited.grid(which="minor", alpha=0.12, lw=0.4)
+    ax_limited.legend(loc="best", fontsize=9, frameon=False)
+    fig_limited.tight_layout()
+    fig_path_limited = out_dir / "beamz_crossing_sparams_db.png"
+    fig_limited.savefig(fig_path_limited, dpi=320)
+    plt.close(fig_limited)
+
+    # Full-range dB plot without y-limit clipping.
+    fig_full, ax_full = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
+    for i, p in enumerate(all_ports):
+        ax_full.plot(
+            wl_um,
+            plot_series[p],
+            "-",
+            color=color_cycle[i % len(color_cycle)],
+            lw=2.0,
+            label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
+        )
+    ax_full.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
+    ax_full.set_xlabel("Wavelength (um)")
+    ax_full.set_ylabel("Magnitude (dB)")
+    ax_full.set_title(f"Crossing S-Parameters (Full Range, {component_label})")
+    ax_full.grid(which="major", alpha=0.25, lw=0.6)
+    ax_full.minorticks_on()
+    ax_full.grid(which="minor", alpha=0.12, lw=0.4)
+    ax_full.legend(loc="best", fontsize=9, frameon=False)
+    fig_full.tight_layout()
+    fig_path_full = out_dir / "beamz_crossing_sparams_db_full.png"
+    fig_full.savefig(fig_path_full, dpi=320)
+    plt.close(fig_full)
+
+    field_hist = np.zeros((0,), dtype=float)
+    if isinstance(run_result, dict):
+        field_hist = np.asarray(
+            run_result.get("fields", {}).get(field_component, np.zeros((0,))),
+            dtype=float,
+        )
+    anim_path = out_dir / "beamz_crossing_field_propagation.mp4"
+    anim_ok = save_field_animation(
+        field_hist=field_hist,
+        eps=np.asarray(grid.permittivity, dtype=float),
+        width=design.width,
+        height=design.height,
+        imported_bbox=imported_bbox,
+        field_label=field_component,
+        out_path=anim_path,
+        fps=20,
+    )
 
     print(f"Saved S-parameter data: {data_path}")
-    print(f"Saved dB plot: {fig_path}")
+    print(f"Saved dB plot (limited -55..0 dB): {fig_path_limited}")
+    print(f"Saved dB plot (full range): {fig_path_full}")
+    print(f"Saved overview plot: {overview_path}")
+    print(f"Saved signal plot: {signal_path}")
+    print(f"Saved mode plots directory: {mode_dir}")
+    if anim_ok:
+        print(f"Saved field animation: {anim_path}")
+    else:
+        print("Field animation was not saved (no recorded frames or ffmpeg unavailable).")
 
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wl0-nm", type=float, default=1550.0, help="Center wavelength in nm.")
-    parser.add_argument("--wl-min-nm", type=float, default=1500.0, help="Sweep min wavelength in nm.")
-    parser.add_argument("--wl-max-nm", type=float, default=1600.0, help="Sweep max wavelength in nm.")
+    parser.add_argument("--wl-min-nm", type=float, default=1530.0, help="Sweep min wavelength in nm.")
+    parser.add_argument("--wl-max-nm", type=float, default=1570.0, help="Sweep max wavelength in nm.")
     parser.add_argument(
         "--num-freqs",
         type=int,
