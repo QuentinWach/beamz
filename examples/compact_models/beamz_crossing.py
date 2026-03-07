@@ -1007,7 +1007,7 @@ def run_crossing(
                         p: PortSpec(
                             name=p,
                             monitor_name=cand["name"],
-                            direction=outward_direction(ports[p]["direction"]),
+                            direction=ports[p]["direction"],
                             polarization=polarization,
                             mode_index=mode_idx,
                         ),
