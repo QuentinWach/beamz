@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-fast lint format clean docs build publish
+.PHONY: help install install-dev test test-fast lint format clean build publish
 
 help:  ## Show this help message
 	@echo "Usage: make [target]"
@@ -36,12 +36,6 @@ clean:  ## Clean build artifacts
 	rm -rf build/ dist/ *.egg-info/ .pytest_cache/ .coverage htmlcov/
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
-
-docs-serve:  ## Serve documentation locally
-	uv run mkdocs serve
-
-docs-deploy:  ## Deploy documentation to GitHub Pages
-	uv run mkdocs gh-deploy
 
 build:  ## Build distribution packages
 	uv build
