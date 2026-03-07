@@ -75,7 +75,17 @@ def build_materials(config):
 def load_gds_component(gds_filename):
     """Load GDS file as a gdsfactory Component."""
     import gdsfactory as gf
-    gf.gpdk.PDK.activate()
+    if hasattr(gf, "gpdk") and hasattr(gf.gpdk, "PDK"):
+        gf.gpdk.PDK.activate()
+    else:
+        try:
+            from gdsfactory.pdk import get_active_pdk
+
+            active_pdk = get_active_pdk()
+            if active_pdk is not None and hasattr(active_pdk, "activate"):
+                active_pdk.activate()
+        except Exception:
+            pass
     return gf.import_gds(gds_filename)
 
 

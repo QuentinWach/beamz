@@ -72,7 +72,17 @@ def load_crossing_component(component_name: str = "ebeam_crossing4"):
 
     import gdsfactory as gf
 
-    gf.gpdk.PDK.activate()
+    if hasattr(gf, "gpdk") and hasattr(gf.gpdk, "PDK"):
+        gf.gpdk.PDK.activate()
+    else:
+        try:
+            from gdsfactory.pdk import get_active_pdk
+
+            active_pdk = get_active_pdk()
+            if active_pdk is not None and hasattr(active_pdk, "activate"):
+                active_pdk.activate()
+        except Exception:
+            pass
     for name in [component_name, "crossing", "crossing45"]:
         try:
             return gf.get_component(name), f"gf.get_component('{name}')"
@@ -540,7 +550,7 @@ def run_crossing(
     animation_frames: int,
     show_progress: bool,
     out_dir: Path,
-) -> None:
+) -> dict[str, object]:
     component, component_label = load_crossing_component(component_name=component_name)
     polarization = str(polarization).lower()
     if polarization not in {"tm", "te"}:
@@ -1196,6 +1206,82 @@ def run_crossing(
     else:
         print("Field animation was not saved (no recorded frames or ffmpeg unavailable).")
 
+    return {
+        "component_label": component_label,
+        "source_port": source_port,
+        "all_ports": list(all_ports),
+        "wavelength_um": np.asarray(wl_um, dtype=float),
+        "s_cols": {p: np.asarray(s_cols[p], dtype=np.complex128) for p in all_ports},
+        "valid_mask": np.asarray(valid_mask, dtype=bool),
+        "port_quality": {p: np.asarray(port_quality[p], dtype=bool) for p in all_ports},
+        "closure": np.asarray(closure, dtype=float),
+        "selected_monitors": dict(selected_monitors),
+        "mode_indices": dict(mode_indices),
+    }
+
+
+def evaluate_straight_calibration(
+    result: dict[str, object],
+    *,
+    min_through_db: float,
+    max_reflection_db: float,
+    max_closure_error: float,
+) -> tuple[bool, dict[str, float | str]]:
+    source_port = str(result["source_port"])
+    all_ports = [str(p) for p in result["all_ports"]]
+    s_cols = result["s_cols"]
+    valid_mask = np.asarray(result["valid_mask"], dtype=bool)
+    port_quality = result["port_quality"]
+    closure = np.asarray(result["closure"], dtype=float)
+    if source_port not in all_ports:
+        raise ValueError("Calibration result missing source port in all_ports.")
+
+    def _masked_db(port_name: str) -> np.ndarray:
+        s = np.asarray(s_cols[port_name], dtype=np.complex128)
+        q = np.asarray(port_quality[port_name], dtype=bool)
+        m = valid_mask & q
+        db = 20.0 * np.log10(np.maximum(np.abs(s), 1e-12))
+        return np.where(m, db, np.nan)
+
+    refl_db = _masked_db(source_port)
+    refl_peak_db = float(np.nanmax(refl_db)) if np.any(np.isfinite(refl_db)) else float("inf")
+
+    output_ports = [p for p in all_ports if p != source_port]
+    if not output_ports:
+        raise ValueError("Calibration requires at least one output port.")
+    through_port = max(
+        output_ports,
+        key=lambda p: float(
+            np.nanmedian(np.abs(np.asarray(s_cols[p], dtype=np.complex128)[valid_mask]))
+            if np.any(valid_mask)
+            else -np.inf
+        ),
+    )
+    through_db = _masked_db(through_port)
+    through_med_db = (
+        float(np.nanmedian(through_db)) if np.any(np.isfinite(through_db)) else float("-inf")
+    )
+
+    closure_valid = np.where(valid_mask, closure, np.nan)
+    closure_err = (
+        float(np.nanmax(np.abs(closure_valid - 1.0)))
+        if np.any(np.isfinite(closure_valid))
+        else float("inf")
+    )
+
+    passed = (
+        through_med_db >= float(min_through_db)
+        and refl_peak_db <= float(max_reflection_db)
+        and closure_err <= float(max_closure_error)
+    )
+    summary = {
+        "through_port": through_port,
+        "through_median_db": through_med_db,
+        "reflection_peak_db": refl_peak_db,
+        "closure_max_abs_error": closure_err,
+    }
+    return passed, summary
+
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1288,6 +1374,35 @@ def build_argparser() -> argparse.ArgumentParser:
         default=Path("benchmarks/results/compact_models"),
         help="Output directory for compact-model data and plots.",
     )
+    parser.add_argument(
+        "--run-calibration",
+        action="store_true",
+        help="Run straight-waveguide calibration before extracting crossing S-parameters.",
+    )
+    parser.add_argument(
+        "--calibration-component",
+        type=str,
+        default="straight",
+        help="Component used for calibration sanity check.",
+    )
+    parser.add_argument(
+        "--cal-min-through-db",
+        type=float,
+        default=-1.5,
+        help="Calibration pass threshold: median through must be >= this dB value.",
+    )
+    parser.add_argument(
+        "--cal-max-reflection-db",
+        type=float,
+        default=-15.0,
+        help="Calibration pass threshold: worst reflection must be <= this dB value.",
+    )
+    parser.add_argument(
+        "--cal-max-closure-error",
+        type=float,
+        default=0.35,
+        help="Calibration pass threshold: max |closure-1| over valid frequencies.",
+    )
     return parser
 
 
@@ -1299,6 +1414,52 @@ def main():
         raise ValueError("--wl-min-nm must be smaller than --wl-max-nm.")
     if args.wl0_nm < args.wl_min_nm or args.wl0_nm > args.wl_max_nm:
         raise ValueError("--wl0-nm must be within [wl-min-nm, wl-max-nm].")
+
+    if args.run_calibration:
+        cal_out = args.out_dir / "calibration"
+        print(
+            "Running straight-waveguide calibration gate: "
+            f"component={args.calibration_component}, out_dir={cal_out}"
+        )
+        cal_result = run_crossing(
+            component_name=args.calibration_component,
+            wl0=args.wl0_nm * 1e-9,
+            wl_min=args.wl_min_nm * 1e-9,
+            wl_max=args.wl_max_nm * 1e-9,
+            num_freqs=args.num_freqs,
+            n_core=args.n_core,
+            n_clad=args.n_clad,
+            polarization=args.polarization,
+            points_per_wavelength=args.points_per_wavelength,
+            layer=parse_layer(args.layer),
+            extension_um=args.extension_um,
+            core_t_um=args.core_thickness_um,
+            clad_below_um=args.clad_below_um,
+            clad_above_um=args.clad_above_um,
+            monitor_candidates=args.monitor_candidates,
+            mode_search_max=args.mode_search_max,
+            animation_frames=0,
+            show_progress=not args.quiet_run,
+            out_dir=cal_out,
+        )
+        cal_ok, cal_summary = evaluate_straight_calibration(
+            cal_result,
+            min_through_db=args.cal_min_through_db,
+            max_reflection_db=args.cal_max_reflection_db,
+            max_closure_error=args.cal_max_closure_error,
+        )
+        print(
+            "Calibration summary: "
+            f"through_port={cal_summary['through_port']}, "
+            f"through_median_db={cal_summary['through_median_db']:.2f}, "
+            f"reflection_peak_db={cal_summary['reflection_peak_db']:.2f}, "
+            f"closure_max_abs_error={cal_summary['closure_max_abs_error']:.3f}"
+        )
+        if not cal_ok:
+            raise RuntimeError(
+                "Calibration gate failed. "
+                "Adjust source/monitor placement and normalization before device extraction."
+            )
 
     run_crossing(
         component_name=args.component,
