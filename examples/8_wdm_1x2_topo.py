@@ -64,7 +64,7 @@ DX, DT = calc_optimal_fdtd_params(
     points_per_wavelength=8,
 )
 
-STEPS = 80
+STEPS = 150
 FIELD_SUBSAMPLE = 1
 
 EMA_ALPHA = 0.20
@@ -75,16 +75,19 @@ NORMALIZE_GRAD_RMS = True
 
 # Optimizer and blur continuation:
 # Use piecewise-constant phases; final phase is dedicated binarization.
-LEARNING_RATE = 0.01
-BETA_PHASE_VALUES = (2.0, 15.0, 40.0)
-BLUR_PHASE_VALUES = (0.3 * UM, 0.2 * UM, 0.15 * UM)
-LEAK_W_PHASE_VALUES = (0.30, 1.0, 1.60)
-REFL_W_PHASE_VALUES = (0.05, 0.15, 0.30)
-GRAD_SCALE_PHASE_VALUES = (0.80, 0.35, 0.06)
-THROUGHPUT_W_PHASE_VALUES = (0.25, 0.10, 0.00)
+LEARNING_RATE_PHASE_VALUES = (0.005, 0.005, 0.005)
+LEARNING_RATE = LEARNING_RATE_PHASE_VALUES[0]
+BETA_PHASE_VALUES = (2.0, 2.0, 2.0)
+BLUR_PHASE_VALUES = (0.25*UM, 0.25*UM, 0.25*UM)
+LEAK_W_PHASE_VALUES = (0.80, 0.80, 0.80)
+REFL_W_PHASE_VALUES = (0.15, 0.15, 0.15)
+GRAD_SCALE_PHASE_VALUES = (1.00, 1.00, 1.00)
+THROUGHPUT_W_PHASE_VALUES = (0.00, 0.00, 0.00)
 # Extra objective/gradient pressure to push density away from 0.5 in late phases.
-BINARY_PUSH_PHASE_VALUES = (0.00, 0.04, 0.20)
-PHASE_FRACTIONS = (0.2, 0.3, 0.5)
+BINARY_PUSH_PHASE_VALUES = (0.00, 0.00, 0.00)
+PHASE_FRACTIONS = (0.30, 0.30, 0.40)
+# Smooth each phase transition over this half-width in normalized progress units.
+PHASE_TRANSITION_HALF_WIDTH = 0.00
 if len(BETA_PHASE_VALUES) != len(BLUR_PHASE_VALUES):
     raise ValueError("BETA_PHASE_VALUES and BLUR_PHASE_VALUES must have same length.")
 if len(PHASE_FRACTIONS) != len(BETA_PHASE_VALUES):
@@ -99,8 +102,19 @@ if len(THROUGHPUT_W_PHASE_VALUES) != len(BETA_PHASE_VALUES):
     raise ValueError("THROUGHPUT_W_PHASE_VALUES must match number of phases.")
 if len(BINARY_PUSH_PHASE_VALUES) != len(BETA_PHASE_VALUES):
     raise ValueError("BINARY_PUSH_PHASE_VALUES must match number of phases.")
+if len(LEARNING_RATE_PHASE_VALUES) != len(BETA_PHASE_VALUES):
+    raise ValueError("LEARNING_RATE_PHASE_VALUES must match number of phases.")
 if not np.isclose(sum(PHASE_FRACTIONS), 1.0, atol=1e-12):
     raise ValueError("PHASE_FRACTIONS must sum to 1.0.")
+if PHASE_TRANSITION_HALF_WIDTH < 0.0:
+    raise ValueError("PHASE_TRANSITION_HALF_WIDTH must be non-negative.")
+
+_phase_boundaries = np.cumsum(np.asarray(PHASE_FRACTIONS[:-1], dtype=float))
+_phase_gap_min = np.min(np.diff(np.concatenate(([0.0], _phase_boundaries, [1.0]))))
+if PHASE_TRANSITION_HALF_WIDTH >= 0.5 * _phase_gap_min:
+    raise ValueError(
+        "PHASE_TRANSITION_HALF_WIDTH is too large; transition windows overlap."
+    )
 
 # Keep normalization denominator away from near-zero signed-flux artifacts.
 IN_NORM_FLOOR_FRAC = 0.20
@@ -109,10 +123,10 @@ IN_NORM_FLOOR_FRAC = 0.20
 DEBUG_EVERY = 5
 
 # Small deterministic perturbation to break exact geometric symmetry.
-INITIAL_ASYM_NOISE = 1e-2
+INITIAL_ASYM_NOISE = 1e-3
 
-# Keep wavelength weights fixed during debugging for a stationary objective.
-FIXED_WL_WEIGHTS = True
+# Normalize each wavelength gradient before averaging to prevent single-wavelength domination.
+NORMALIZE_PER_WL_GRAD = False
 
 
 def cleanup_old_wdm_outputs():
@@ -183,6 +197,34 @@ def get_phase_index(step, total_steps):
         if frac <= cumulative or idx == len(PHASE_FRACTIONS) - 1:
             return idx
     return len(PHASE_FRACTIONS) - 1
+
+
+def smoothstep01(x):
+    x = np.clip(x, 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def get_smoothed_phase_value(step, total_steps, phase_values):
+    if len(phase_values) == 1:
+        return float(phase_values[0])
+
+    frac = (step + 1) / max(1, total_steps)
+    half_w = float(PHASE_TRANSITION_HALF_WIDTH)
+    boundaries = _phase_boundaries
+
+    value = float(phase_values[0])
+    for i, boundary in enumerate(boundaries):
+        lo = boundary - half_w
+        hi = boundary + half_w
+        if frac < lo:
+            return value
+        if frac <= hi:
+            t = (frac - lo) / max(hi - lo, 1e-12)
+            s = smoothstep01(t)
+            return (1.0 - s) * float(phase_values[i]) + s * float(phase_values[i + 1])
+        value = float(phase_values[i + 1])
+
+    return float(phase_values[-1])
 
 
 def build_time_and_signal(wavelength):
@@ -371,7 +413,7 @@ def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
         grid,
         record_fields=False,
         dft_frequency=dft_frequency,
-        dft_t_start=0.0,
+        dft_t_start=float(gate_start),
         dft_t_end=float(time[-1]),
     )
 
@@ -458,7 +500,7 @@ def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
         grid,
         record_fields=False,
         dft_frequency=dft_frequency,
-        dft_t_start=0.0,
+        dft_t_start=float(gate_start),
         dft_t_end=float(time[-1]),
     )
 
@@ -689,27 +731,23 @@ in_energy_ref = {WL_SHORT: None, WL_LONG: None}
 ema_objective = None
 prev_phys_plot = None
 prev_design_density = None
-prev_phase_idx = None
 
 print(f"Starting simplified 1x2 WDM topology optimization for {STEPS} steps...")
 for step in range(STEPS):
     step_id = step + 1
     phase_idx = get_phase_index(step, STEPS)
-    if prev_phase_idx is not None and phase_idx != prev_phase_idx:
-        # Reset Adam moments when changing phase to avoid stale momentum carryover.
-        opt._opt_state = None
-    beta = BETA_PHASE_VALUES[phase_idx]
-    blur_radius = BLUR_PHASE_VALUES[phase_idx]
-    leak_weight = LEAK_W_PHASE_VALUES[phase_idx]
-    refl_weight = REFL_W_PHASE_VALUES[phase_idx]
-    grad_scale = GRAD_SCALE_PHASE_VALUES[phase_idx]
-    throughput_w = THROUGHPUT_W_PHASE_VALUES[phase_idx]
-    binary_push = BINARY_PUSH_PHASE_VALUES[phase_idx]
+    phase_lr = get_smoothed_phase_value(step, STEPS, LEARNING_RATE_PHASE_VALUES)
+    beta = get_smoothed_phase_value(step, STEPS, BETA_PHASE_VALUES)
+    blur_radius = get_smoothed_phase_value(step, STEPS, BLUR_PHASE_VALUES)
+    leak_weight = get_smoothed_phase_value(step, STEPS, LEAK_W_PHASE_VALUES)
+    refl_weight = get_smoothed_phase_value(step, STEPS, REFL_W_PHASE_VALUES)
+    grad_scale = get_smoothed_phase_value(step, STEPS, GRAD_SCALE_PHASE_VALUES)
+    throughput_w = get_smoothed_phase_value(step, STEPS, THROUGHPUT_W_PHASE_VALUES)
+    binary_push = get_smoothed_phase_value(step, STEPS, BINARY_PUSH_PHASE_VALUES)
     opt.filter_radius = blur_radius
     # Keep at least one filter cell to avoid zero-radius speckle phase.
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
     phys_density = opt.get_physical_density(beta)
-    prev_phase_idx = phase_idx
 
     grid.permittivity[:] = base_eps
     grid.permittivity[mask] = opt.eps_min + phys_density[mask] * (opt.eps_max - opt.eps_min)
@@ -808,14 +846,15 @@ for step in range(STEPS):
         grad_refl = np.array(compute_overlap_gradient(fwd_hist_gated, adj_refl))
         grad_in = np.array(compute_overlap_gradient(fwd_hist_gated, adj_in))
 
+        inv_in = 1.0 / max(norm_scale, 1e-30)
+        inv_in2 = inv_in * inv_in
+
         numerator_energy = (
             (top_energy if target_port == "top" else bot_energy)
             - leak_weight * (bot_energy if target_port == "top" else top_energy)
             - refl_weight * refl_energy
             + throughput_w * total_out_energy
         )
-        inv_in = 1.0 / max(norm_scale, 1e-30)
-        inv_in2 = inv_in * inv_in
 
         if target_port == "top":
             coeff_top = 1.0 + throughput_w
@@ -825,13 +864,17 @@ for step in range(STEPS):
             coeff_bot = 1.0 + throughput_w
 
         coeff_refl = -refl_weight
-        coeff_in = 0.0 if norm_floored else (-numerator_energy * inv_in2)
-
+        coeff_in = -numerator_energy * inv_in2
         fom_k = numerator_energy * inv_in
-        grad_fom_k = (
-            inv_in * (coeff_top * grad_top + coeff_bot * grad_bot + coeff_refl * grad_refl)
-            + coeff_in * grad_in
-        )
+
+        coeff_top *= inv_in
+        coeff_bot *= inv_in
+        coeff_refl *= inv_in
+
+        if norm_floored:
+            coeff_in = 0.0
+
+        grad_fom_k = coeff_top * grad_top + coeff_bot * grad_bot + coeff_refl * grad_refl + coeff_in * grad_in
 
         per_wl_fom.append(fom_k)
         per_wl_grad.append(grad_fom_k)
@@ -855,7 +898,13 @@ for step in range(STEPS):
 
     grad_total = np.zeros_like(grid.permittivity, dtype=float)
     for w_i, grad_i in zip(wl_weights, per_wl_grad):
-        grad_total += w_i * grad_i
+        g_use = grad_i
+        if NORMALIZE_PER_WL_GRAD:
+            g_slice = grad_i[mask]
+            g_rms = float(np.sqrt(np.mean(g_slice * g_slice))) if g_slice.size > 0 else 0.0
+            if np.isfinite(g_rms) and g_rms > 0:
+                g_use = grad_i / g_rms
+        grad_total += w_i * g_use
 
     current_density = np.mean(phys_density[mask])
     rho_slice = phys_density[mask]
@@ -882,7 +931,8 @@ for step in range(STEPS):
             if np.isfinite(g_rms) and g_rms > 0:
                 grad_total[mask] = g / g_rms
 
-    grad_total[mask] *= grad_scale
+    lr_ratio = phase_lr / max(LEARNING_RATE, 1e-30)
+    grad_total[mask] *= grad_scale * lr_ratio
 
     total_objective = objective_route + binary_push * binarity
 
@@ -903,7 +953,7 @@ for step in range(STEPS):
             f"(meanFoM={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
             f"meanTout={100.0 * throughput_mean:.1f}% "
             f"wL={leak_weight:.2f} wR={refl_weight:.2f} wT={throughput_w:.2f} "
-            f"s={grad_scale:.2f} "
+            f"lr={phase_lr:.4f} s={grad_scale:.2f} "
             f"wB={binary_push:.2f} bin={binarity:.2f} "
             f"mat={current_density:.2f} ph={phase_idx + 1}/{len(PHASE_FRACTIONS)} beta={beta:.2f} "
             f"blur={blur_radius / UM:.3f}um "
