@@ -53,7 +53,6 @@ make test          # Run tests with coverage
 make test-fast     # Run quick tests
 make format        # Format code (black + isort)
 make lint          # Check code quality
-make docs-serve    # Serve docs locally
 make build         # Build distribution
 ```
 
@@ -61,7 +60,6 @@ Or use uv directly:
 ```bash
 uv run pytest tests/
 uv run black beamz/
-uv run mkdocs serve
 ```
 
 ### Adding Dependencies
@@ -139,23 +137,6 @@ All tool configurations are in `pyproject.toml`:
 - black (line-length: 88, target: py310+)
 - isort (black-compatible)
 
-## Documentation
-
-### Local Development
-
-```bash
-make docs-serve
-# Opens at http://127.0.0.1:8000
-```
-
-### Deployment
-
-```bash
-make docs-deploy
-```
-
-This deploys to the `gh-pages` branch.
-
 ## Version Release
 
 ### Using the Release Script
@@ -220,7 +201,6 @@ beamz/
 │   └── visual/         # Visualization
 ├── tests/              # Test suite
 ├── examples/           # Example scripts
-├── docs/               # Documentation source
 ├── pyproject.toml      # Project config (source of truth)
 ├── uv.lock            # Dependency lockfile
 ├── Makefile           # Development shortcuts
@@ -298,5 +278,4 @@ GitHub Actions workflows use uv:
 
 - [uv Documentation](https://docs.astral.sh/uv/)
 - [Project README](README.md)
-- [Documentation Index](docs/index.md)
 - [Benchmark Artifact Policy](BENCHMARK_ARTIFACT_POLICY.md)
