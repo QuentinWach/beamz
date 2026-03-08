@@ -663,7 +663,6 @@ def save_field_animation(
     eps: np.ndarray,
     width: float,
     height: float,
-    imported_bbox: tuple[float, float, float, float],
     field_label: str,
     out_path: Path,
     fps: int = 20,
@@ -677,14 +676,6 @@ def save_field_animation(
     if not writers.is_available("ffmpeg"):
         return False
 
-    x0, x1, y0, y1 = imported_bbox
-    x_pad = 0.8 * µm
-    y_pad = 0.8 * µm
-    x_lo = max(0.0, x0 - x_pad)
-    x_hi = min(width, x1 + x_pad)
-    y_lo = max(0.0, y0 - y_pad)
-    y_hi = min(height, y1 + y_pad)
-
     if eps.ndim == 3:
         nz, ny, nx = eps.shape
         dx_x = width / max(nx, 1)
@@ -695,32 +686,28 @@ def save_field_animation(
         dx_x = width / max(nx, 1)
         dx_y = height / max(ny, 1)
         core_z_idx = 0
-    ix0 = int(np.clip(np.floor(x_lo / dx_x), 0, nx - 1))
-    ix1 = int(np.clip(np.ceil(x_hi / dx_x), ix0 + 1, nx))
-    iy0 = int(np.clip(np.floor(y_lo / dx_y), 0, ny - 1))
-    iy1 = int(np.clip(np.ceil(y_hi / dx_y), iy0 + 1, ny))
-    y_slice = int(np.clip(round(0.5 * (y0 + y1) / dx_y), 0, ny - 1))
+    y_slice = max(0, min(ny - 1, ny // 2))
 
     if field_hist.ndim == 4:
         f_xy = np.asarray(field_hist[:, core_z_idx, :, :], dtype=float)
     else:
         f_xy = np.asarray(field_hist, dtype=float)
-    f_crop = np.asarray(f_xy[:, iy0:iy1, ix0:ix1], dtype=float)
-    vmax = float(np.nanpercentile(np.abs(f_crop), 99.0))
+    f_view = np.asarray(f_xy, dtype=float)
+    vmax = float(np.nanpercentile(np.abs(f_view), 99.0))
     vmax = max(vmax, 1e-12)
 
     fig, axes = plt.subplots(1, 2, figsize=(9.2, 3.8), dpi=220)
     ax0, ax1 = axes
     im = ax0.imshow(
-        f_crop[0],
+        f_view[0],
         origin="lower",
         cmap="RdBu",
         vmin=-vmax,
         vmax=vmax,
-        extent=[x_lo / µm, x_hi / µm, y_lo / µm, y_hi / µm],
+        extent=[0.0, width / µm, 0.0, height / µm],
         aspect="equal",
     )
-    ax0.set_title(f"{field_label} field crop")
+    ax0.set_title(f"{field_label} field (full XY domain)")
     ax0.set_xlabel("x (um)")
     ax0.set_ylabel("y (um)")
     y_slice_um = y_slice * dx_y / µm
@@ -738,7 +725,7 @@ def save_field_animation(
     frame_text = ax1.text(0.03, 0.93, "", transform=ax1.transAxes, va="top")
 
     def _update(i):
-        im.set_data(f_crop[i])
+        im.set_data(f_view[i])
         line_plot.set_ydata(np.asarray(f_xy[i, y_slice, :], dtype=float))
         frame_text.set_text(f"frame {i+1}/{field_hist.shape[0]}")
         return im, line_plot, slice_line, frame_text
@@ -757,6 +744,7 @@ def build_design_with_extensions(
     n_core: float,
     n_clad: float,
     extension: float,
+    port_overlap: float,
     core_t: float,
     clad_below: float,
     clad_above: float,
@@ -797,25 +785,26 @@ def build_design_with_extensions(
         for name, p in ports.items()
     }
 
-    # Extend each port outward so source/monitors can be placed in clean straight sections.
+    # Extend each port outward and slightly inward to ensure solid overlap (no seam/gap at the interface).
     for port in ports.values():
         cx, cy = port["center"]
         width = float(port["width"])
         d_out = outward_direction(port["direction"])
+        sx, sy = move_along((cx, cy), d_out, -port_overlap)
         ox, oy = move_along((cx, cy), d_out, extension)
         if port["direction"].endswith("x"):
             design += Rectangle(
-                position=(min(cx, ox), cy - 0.5 * width, core_z0),
-                width=abs(ox - cx),
+                position=(min(sx, ox), cy - 0.5 * width, core_z0),
+                width=abs(ox - sx),
                 height=width,
                 material=Material(n_core**2),
                 depth=core_t,
             )
         else:
             design += Rectangle(
-                position=(cx - 0.5 * width, min(cy, oy), core_z0),
+                position=(cx - 0.5 * width, min(sy, oy), core_z0),
                 width=width,
-                height=abs(oy - cy),
+                height=abs(oy - sy),
                 material=Material(n_core**2),
                 depth=core_t,
             )
@@ -848,6 +837,7 @@ def run_crossing(
     layer: tuple[int, int] | None,
     use_pdk_stack: bool,
     extension_um: float,
+    port_overlap_um: float,
     core_t_um: float,
     clad_below_um: float,
     clad_above_um: float,
@@ -901,12 +891,14 @@ def run_crossing(
     clad_below = float(clad_below_um_resolved) * µm
     clad_above = float(clad_above_um_resolved) * µm
     extension = float(extension_um) * µm
+    port_overlap = max(0.0, float(port_overlap_um)) * µm
     design, ports, imported_bbox, layer_z = build_design_with_extensions(
         component,
         layer=layer_resolved,
         n_core=n_core,
         n_clad=n_clad,
         extension=extension,
+        port_overlap=port_overlap,
         core_t=core_t,
         clad_below=clad_below,
         clad_above=clad_above,
@@ -930,10 +922,12 @@ def run_crossing(
     f0 = LIGHT_SPEED / wl0
 
     src = ports[source_port]
-    source_span = max(1.0 * µm, 3.0 * float(src["width"]))  # y-span
-    monitor_span = max(1.0 * µm, 3.0 * float(src["width"]))  # y-span
-    source_height = max(1.2 * µm, 4.0 * core_t)
-    monitor_height = max(1.0 * µm, 3.6 * core_t)
+    source_span = max(2.2 * µm, 6.0 * float(src["width"]))
+    monitor_span = max(2.0 * µm, 5.5 * float(src["width"]))
+    z_margin = 0.20 * µm
+    max_z_span = max(0.6 * µm, design.depth - 2.0 * z_margin)
+    source_height = min(max_z_span, max(2.8 * µm, 10.0 * core_t))
+    monitor_height = min(max_z_span, max(2.6 * µm, 9.0 * core_t))
     z_center = float(src["z_center"])
 
     pml_xy = 1.0 * wl0
@@ -1684,9 +1678,10 @@ def run_crossing(
         ax_limited.plot(
             wl_um,
             plot_series[p],
-            "-",
+            "o-",
             color=color_cycle[i % len(color_cycle)],
             lw=2.0,
+            ms=4.5,
             label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
         )
     ax_limited.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
@@ -1709,9 +1704,10 @@ def run_crossing(
         ax_full.plot(
             wl_um,
             plot_series[p],
-            "-",
+            "o-",
             color=color_cycle[i % len(color_cycle)],
             lw=2.0,
+            ms=4.5,
             label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
         )
     ax_full.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
@@ -1742,7 +1738,6 @@ def run_crossing(
         eps=eps_grid,
         width=design.width,
         height=design.height,
-        imported_bbox=imported_bbox,
         field_label=field_component,
         out_path=anim_path,
         fps=20,
@@ -1908,6 +1903,12 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Port extension length on each side in microns.",
     )
     parser.add_argument(
+        "--port-overlap-um",
+        type=float,
+        default=0.35,
+        help="Extra inward overlap of extension waveguides into the imported cell (um).",
+    )
+    parser.add_argument(
         "--core-thickness-um",
         type=float,
         default=0.22,
@@ -2063,6 +2064,7 @@ def main():
             layer=parse_layer(args.layer),
             use_pdk_stack=not args.no_use_pdk_stack,
             extension_um=args.extension_um,
+            port_overlap_um=args.port_overlap_um,
             core_t_um=args.core_thickness_um,
             clad_below_um=args.clad_below_um,
             clad_above_um=args.clad_above_um,
@@ -2119,6 +2121,7 @@ def main():
         layer=parse_layer(args.layer),
         use_pdk_stack=not args.no_use_pdk_stack,
         extension_um=args.extension_um,
+        port_overlap_um=args.port_overlap_um,
         core_t_um=args.core_thickness_um,
         clad_below_um=args.clad_below_um,
         clad_above_um=args.clad_above_um,
