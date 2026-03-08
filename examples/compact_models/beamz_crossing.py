@@ -1251,20 +1251,38 @@ def run_crossing(
             scattered_wave="plus",
         )
 
-    # Choose source mode index.
+    # Choose source mode index (batched extraction over source-mode candidates).
     print(f"Selecting source mode over m0..m{max_mode_search}")
+    source_mode_ports = {}
+    source_mode_alias = {}
+    for mode_idx in range(max_mode_search + 1):
+        alias = f"{source_drive_port}_m{mode_idx}"
+        source_mode_alias[mode_idx] = alias
+        spec = source_spec(mode_idx)
+        source_mode_ports[alias] = PortSpec(
+            name=alias,
+            monitor_name=spec.monitor_name,
+            direction=spec.direction,
+            polarization=spec.polarization,
+            mode_index=spec.mode_index,
+            reference_monitor=spec.reference_monitor,
+            incident_wave=spec.incident_wave,
+            scattered_wave=spec.scattered_wave,
+        )
+    source_mode_result = sim.get_S_matrix_modal_dft(
+        source_port=source_mode_alias[0],
+        ports=source_mode_ports,
+        output_ports=[source_mode_alias[0]],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-45.0,
+    )
+    source_mode_waves = source_mode_result["diagnostics"]["waves"]
     source_best = None
     for mode_idx in range(max_mode_search + 1):
-        result = sim.get_S_matrix_modal_dft(
-            source_port=source_drive_port,
-            ports={source_drive_port: source_spec(mode_idx)},
-            output_ports=[source_drive_port],
-            frequencies=freqs,
-            as_sax=False,
-            return_diagnostics=True,
-            min_incident_db=-45.0,
-        )
-        waves = result["diagnostics"]["waves"].get(source_drive_port, {})
+        alias = source_mode_alias[mode_idx]
+        waves = source_mode_waves.get(alias, {})
         a_plus = np.asarray(waves.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
         a_minus = np.asarray(waves.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
         inc_key, inc_sel, inc_opp, inc_dom = select_dominant_wave(
@@ -1296,7 +1314,6 @@ def run_crossing(
         )
         candidate = {
             "mode_index": mode_idx,
-            "result": result,
             "score": score,
             "valid_mask": valid,
             "incident_wave": inc_sel,
@@ -1365,87 +1382,111 @@ def run_crossing(
     }
 
     # Select best monitor placement + mode index for each output port.
+    output_search_ports = {source_drive_port: source_spec(source_mode_idx)}
+    output_search_meta = []
     for p in output_ports:
-        print(f"Selecting output port {p} over {len(out_candidates[p])} monitor candidates and m0..m{max_mode_search}")
-        best = None
+        out_dirn = outward_direction(ports[p]["direction"])
         for cand in out_candidates[p]:
             for mode_idx in range(max_mode_search + 1):
-                result = sim.get_S_matrix_modal_dft(
-                    source_port=source_drive_port,
-                    ports={
-                        source_drive_port: source_spec(source_mode_idx),
-                        p: PortSpec(
-                            name=p,
-                            monitor_name=cand["name"],
-                            direction=outward_direction(ports[p]["direction"]),
-                            polarization=polarization,
-                            mode_index=mode_idx,
-                            scattered_wave="plus",
-                        ),
-                    },
-                    output_ports=[p],
-                    frequencies=freqs,
-                    as_sax=False,
-                    return_diagnostics=True,
-                    min_incident_db=-45.0,
+                alias = f"{p}__{cand['name']}__m{mode_idx}"
+                output_search_ports[alias] = PortSpec(
+                    name=alias,
+                    monitor_name=cand["name"],
+                    direction=out_dirn,
+                    polarization=polarization,
+                    mode_index=mode_idx,
+                    scattered_wave="plus",
                 )
-                waves_p = result["diagnostics"]["waves"].get(p, {})
-                a_plus_p = np.asarray(waves_p.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
-                a_minus_p = np.asarray(waves_p.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
-                neff_p = np.asarray(waves_p.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
-                cond_p = np.asarray(waves_p.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
-                qual = (
-                    valid_mask
-                    & np.isfinite(cond_p)
-                    & (cond_p < cond_threshold)
+                output_search_meta.append(
+                    {
+                        "alias": alias,
+                        "port": p,
+                        "monitor_name": cand["name"],
+                        "mode_index": mode_idx,
+                    }
                 )
-                wave_key, a_sel, a_opp, wave_dom = select_dominant_wave(
-                    a_plus_p,
-                    a_minus_p,
-                    qual,
-                )
-                s_p = safe_complex_ratio(a_sel, source_incident)
-                s_p = np.where(qual, s_p, 0.0 + 0.0j)
-                qual_frac = float(np.mean(qual)) if qual.size else 0.0
-                if np.count_nonzero(qual) >= 4:
-                    db = 20.0 * np.log10(np.maximum(np.abs(s_p[qual]), 1e-12))
-                    ripple = float(np.nanstd(np.diff(db))) if db.size > 1 else 30.0
-                    mag_med = float(np.nanmedian(np.abs(s_p[qual])))
-                else:
-                    ripple = 30.0
-                    mag_med = float(np.nanmedian(np.abs(s_p))) if s_p.size else 0.0
-                neff_med = float(np.nanmedian(neff_p[np.isfinite(neff_p)])) if np.any(np.isfinite(neff_p)) else -np.inf
-                cond_med = float(np.nanmedian(cond_p[np.isfinite(cond_p)])) if np.any(np.isfinite(cond_p)) else np.inf
-                # Prefer guided, well-conditioned, smooth spectra near expected passive range.
-                score = (
-                    3.0 * qual_frac
-                    + (0.4 if neff_med > (n_clad + 1e-3) else 0.0)
-                    + neff_med
-                    - 0.05 * np.log10(max(cond_med, 1.0))
-                    - 0.03 * ripple
-                    - 0.6 * max(mag_med - 1.2, 0.0)
-                )
-                print(
-                    f"  {p} {cand['name']} m{mode_idx}: "
-                    f"score={score:.3f}, qual={qual_frac:.2f}, "
-                    f"neff_med={neff_med:.4f}, cond_med={cond_med:.2e}, ripple={ripple:.2f}, "
-                    f"wave={wave_key}, dom={wave_dom:.2f}dB"
-                )
-                candidate = {
-                    "score": score,
-                    "monitor_name": cand["name"],
-                    "mode_index": mode_idx,
-                    "s": s_p,
-                    "quality": qual,
-                    "neff": neff_p,
-                    "cond": cond_p,
-                    "a_selected": a_sel,
-                    "a_opposite": a_opp,
-                    "wave_key": wave_key,
-                    "wave_dom_db": wave_dom,
-                }
-                if best is None or candidate["score"] > best["score"]:
-                    best = candidate
+    print(
+        "Selecting output monitor/mode candidates in one batched extraction: "
+        f"ports={len(output_ports)}, combinations={len(output_search_meta)}"
+    )
+    output_search_result = sim.get_S_matrix_modal_dft(
+        source_port=source_drive_port,
+        ports=output_search_ports,
+        output_ports=[entry["alias"] for entry in output_search_meta],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-45.0,
+    )
+    output_search_waves = output_search_result["diagnostics"]["waves"]
+    for p in output_ports:
+        print(
+            f"Selecting output port {p} over {len(out_candidates[p])} monitor candidates "
+            f"and m0..m{max_mode_search}"
+        )
+        best = None
+        for entry in output_search_meta:
+            if entry["port"] != p:
+                continue
+            waves_p = output_search_waves.get(entry["alias"], {})
+            mode_idx = int(entry["mode_index"])
+            monitor_name = str(entry["monitor_name"])
+            a_plus_p = np.asarray(waves_p.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
+            a_minus_p = np.asarray(waves_p.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
+            neff_p = np.asarray(waves_p.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
+            cond_p = np.asarray(waves_p.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
+            qual = (
+                valid_mask
+                & np.isfinite(cond_p)
+                & (cond_p < cond_threshold)
+            )
+            wave_key, a_sel, a_opp, wave_dom = select_dominant_wave(
+                a_plus_p,
+                a_minus_p,
+                qual,
+            )
+            s_p = safe_complex_ratio(a_sel, source_incident)
+            s_p = np.where(qual, s_p, 0.0 + 0.0j)
+            qual_frac = float(np.mean(qual)) if qual.size else 0.0
+            if np.count_nonzero(qual) >= 4:
+                db = 20.0 * np.log10(np.maximum(np.abs(s_p[qual]), 1e-12))
+                ripple = float(np.nanstd(np.diff(db))) if db.size > 1 else 30.0
+                mag_med = float(np.nanmedian(np.abs(s_p[qual])))
+            else:
+                ripple = 30.0
+                mag_med = float(np.nanmedian(np.abs(s_p))) if s_p.size else 0.0
+            neff_med = float(np.nanmedian(neff_p[np.isfinite(neff_p)])) if np.any(np.isfinite(neff_p)) else -np.inf
+            cond_med = float(np.nanmedian(cond_p[np.isfinite(cond_p)])) if np.any(np.isfinite(cond_p)) else np.inf
+            # Prefer guided, well-conditioned, smooth spectra near expected passive range.
+            score = (
+                3.0 * qual_frac
+                + (0.4 if neff_med > (n_clad + 1e-3) else 0.0)
+                + neff_med
+                - 0.05 * np.log10(max(cond_med, 1.0))
+                - 0.03 * ripple
+                - 0.6 * max(mag_med - 1.2, 0.0)
+            )
+            print(
+                f"  {p} {monitor_name} m{mode_idx}: "
+                f"score={score:.3f}, qual={qual_frac:.2f}, "
+                f"neff_med={neff_med:.4f}, cond_med={cond_med:.2e}, ripple={ripple:.2f}, "
+                f"wave={wave_key}, dom={wave_dom:.2f}dB"
+            )
+            candidate = {
+                "score": score,
+                "monitor_name": monitor_name,
+                "mode_index": mode_idx,
+                "s": s_p,
+                "quality": qual,
+                "neff": neff_p,
+                "cond": cond_p,
+                "a_selected": a_sel,
+                "a_opposite": a_opp,
+                "wave_key": wave_key,
+                "wave_dom_db": wave_dom,
+            }
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
 
         s_cols[p] = np.asarray(best["s"], dtype=np.complex128)
         port_quality[p] = np.asarray(best["quality"], dtype=bool)
