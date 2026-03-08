@@ -158,7 +158,13 @@ def test_get_S_matrix_modal_column_keys_and_shapes(monkeypatch):
     result = sim.get_S_matrix_modal(
         source_port="o1",
         ports=[
-            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(
+                name="o1",
+                monitor_name="o1",
+                reference_monitor="o1_ref",
+                direction="+x",
+                polarization="tm",
+            ),
             PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
         ],
         output_ports=["o1", "o2"],
@@ -294,7 +300,13 @@ def test_get_S_matrix_modal_cw_shapes_and_keys(monkeypatch):
     result = sim.get_S_matrix_modal_cw(
         source_port="o1",
         ports=[
-            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(
+                name="o1",
+                monitor_name="o1",
+                reference_monitor="o1_ref",
+                direction="+x",
+                polarization="tm",
+            ),
             PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
         ],
         output_ports=["o1", "o2"],
@@ -693,7 +705,13 @@ def test_get_S_matrix_modal_dft_keys_shapes_and_valid_mask(monkeypatch):
     result = sim.get_S_matrix_modal_dft(
         source_port="o1",
         ports=[
-            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(
+                name="o1",
+                monitor_name="o1",
+                reference_monitor="o1_ref",
+                direction="+x",
+                polarization="tm",
+            ),
             PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
         ],
         output_ports=["o1", "o2"],
@@ -712,3 +730,139 @@ def test_get_S_matrix_modal_dft_keys_shapes_and_valid_mask(monkeypatch):
     assert np.array_equal(diag["valid_mask"], np.array([True, False, True]))
     assert s_matrix[("o2", "o1")][1] == 0.0j
     assert np.isnan(diag["power_sum"][1])
+
+
+def test_get_S_matrix_modal_dft_respects_wave_selectors(monkeypatch):
+    sim = Simulation.__new__(Simulation)
+    sim.devices = []
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    freqs = np.array([1.0, 2.0], dtype=float)
+    waves = {
+        "src": {
+            "a_plus": np.array([2.0, 2.0], dtype=np.complex128),
+            "a_minus": np.array([0.4, 0.4], dtype=np.complex128),
+            "a_incident_plus": np.array([1.5, 1.5], dtype=np.complex128),
+            "a_incident_minus": np.array([0.2, 0.2], dtype=np.complex128),
+            "condition_number": np.array([2.0, 2.0], dtype=float),
+        },
+        "out": {
+            "a_plus": np.array([0.9, 0.8], dtype=np.complex128),
+            "a_minus": np.array([0.1, 0.1], dtype=np.complex128),
+            "condition_number": np.array([3.0, 3.0], dtype=float),
+        },
+    }
+
+    def fake_extract(
+        self, ports, frequencies, min_incident_db=-40.0, return_power=True
+    ):
+        del ports, min_incident_db, return_power
+        assert np.allclose(frequencies, freqs)
+        return waves
+
+    monkeypatch.setattr(Simulation, "extract_port_waves_dft", fake_extract)
+    result = sim.get_S_matrix_modal_dft(
+        source_port="src",
+        ports=[
+            PortSpec(
+                name="src",
+                monitor_name="src_m",
+                direction="+x",
+                polarization="tm",
+                reference_monitor="src_ref",
+                incident_wave="plus",
+            ),
+            PortSpec(
+                name="out",
+                monitor_name="out_m",
+                direction="+x",
+                polarization="tm",
+                scattered_wave="plus",
+            ),
+        ],
+        output_ports=["out"],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-80.0,
+    )
+    np.testing.assert_allclose(
+        result["s_matrix"][("out", "src")],
+        np.array([0.6, 0.5333333333333333], dtype=np.complex128),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_get_S_matrix_modal_dft_auto_incident_selector_prefers_dominant(monkeypatch):
+    sim = Simulation.__new__(Simulation)
+    sim.devices = []
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    freqs = np.array([1.0, 2.0], dtype=float)
+    waves = {
+        "src": {
+            "a_plus": np.array([0.2, 1.0], dtype=np.complex128),
+            "a_minus": np.array([2.0, 0.2], dtype=np.complex128),
+            "condition_number": np.array([2.0, 2.0], dtype=float),
+        },
+        "out": {
+            "a_plus": np.array([0.4, 0.4], dtype=np.complex128),
+            "a_minus": np.array([0.5, 0.5], dtype=np.complex128),
+            "condition_number": np.array([3.0, 3.0], dtype=float),
+        },
+    }
+
+    def fake_extract(
+        self, ports, frequencies, min_incident_db=-40.0, return_power=True
+    ):
+        del ports, min_incident_db, return_power
+        assert np.allclose(frequencies, freqs)
+        return waves
+
+    monkeypatch.setattr(Simulation, "extract_port_waves_dft", fake_extract)
+    result = sim.get_S_matrix_modal_dft(
+        source_port="src",
+        ports=[
+            PortSpec(
+                name="src",
+                monitor_name="src_m",
+                direction="+x",
+                polarization="tm",
+                incident_wave="auto",
+            ),
+            PortSpec(
+                name="out",
+                monitor_name="out_m",
+                direction="+x",
+                polarization="tm",
+                scattered_wave="minus",
+            ),
+        ],
+        output_ports=["out"],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-80.0,
+    )
+    np.testing.assert_allclose(
+        result["s_matrix"][("out", "src")],
+        np.array([0.25, 0.5], dtype=np.complex128),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_normalize_portspecs_rejects_invalid_wave_selector():
+    with pytest.raises(ValueError, match="incident_wave"):
+        Simulation._normalize_portspecs(
+            [
+                {
+                    "name": "o1",
+                    "monitor_name": "m1",
+                    "direction": "+x",
+                    "polarization": "tm",
+                    "incident_wave": "invalid",
+                }
+            ]
+        )
