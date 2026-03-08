@@ -851,6 +851,8 @@ def run_crossing(
     core_t_um: float,
     clad_below_um: float,
     clad_above_um: float,
+    top_clad_shift_um: float,
+    min_bottom_clad_um: float,
     monitor_candidates: int,
     mode_search_max: int,
     animation_frames: int,
@@ -877,13 +879,22 @@ def run_crossing(
         clad_above_um=clad_above_um,
         use_pdk_stack=bool(use_pdk_stack),
     )
+    shift = max(0.0, float(top_clad_shift_um))
+    min_bottom = max(0.0, float(min_bottom_clad_um))
+    if shift > 0.0:
+        shift_eff = min(shift, max(0.0, clad_below_um_resolved - min_bottom))
+        clad_below_um_resolved -= shift_eff
+        clad_above_um_resolved += shift_eff
+    else:
+        shift_eff = 0.0
     print(
         "Stack resolution: "
         f"layer={layer_resolved}, "
         f"core_t={core_t_um_resolved:.3f}um, "
         f"clad_below={clad_below_um_resolved:.3f}um, "
         f"clad_above={clad_above_um_resolved:.3f}um, "
-        f"used_pdk_stack={bool(stack_meta.get('used_pdk_stack', False))}"
+        f"used_pdk_stack={bool(stack_meta.get('used_pdk_stack', False))}, "
+        f"top_shift_applied={shift_eff:.3f}um"
     )
 
     core_t = float(core_t_um_resolved) * µm
@@ -1915,6 +1926,21 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Top cladding thickness in microns (3D).",
     )
     parser.add_argument(
+        "--top-clad-shift-um",
+        type=float,
+        default=0.8,
+        help=(
+            "Transfer this much cladding thickness from bottom to top "
+            "to increase top clearance without growing total depth."
+        ),
+    )
+    parser.add_argument(
+        "--min-bottom-clad-um",
+        type=float,
+        default=0.8,
+        help="Minimum bottom cladding retained when applying --top-clad-shift-um.",
+    )
+    parser.add_argument(
         "--monitor-candidates",
         type=int,
         default=2,
@@ -2040,6 +2066,8 @@ def main():
             core_t_um=args.core_thickness_um,
             clad_below_um=args.clad_below_um,
             clad_above_um=args.clad_above_um,
+            top_clad_shift_um=args.top_clad_shift_um,
+            min_bottom_clad_um=args.min_bottom_clad_um,
             monitor_candidates=args.monitor_candidates,
             mode_search_max=args.mode_search_max,
             animation_frames=0,
@@ -2094,6 +2122,8 @@ def main():
         core_t_um=args.core_thickness_um,
         clad_below_um=args.clad_below_um,
         clad_above_um=args.clad_above_um,
+        top_clad_shift_um=args.top_clad_shift_um,
+        min_bottom_clad_um=args.min_bottom_clad_um,
         monitor_candidates=args.monitor_candidates,
         mode_search_max=args.mode_search_max,
         animation_frames=args.animation_frames,
