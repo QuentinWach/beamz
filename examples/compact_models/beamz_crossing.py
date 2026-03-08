@@ -48,7 +48,9 @@ def move_along(center: tuple[float, float], direction: str, distance: float) -> 
     raise ValueError(f"Unsupported direction {direction!r}")
 
 
-def parse_layer(layer_str: str) -> tuple[int, int]:
+def parse_layer(layer_str: str) -> tuple[int, int] | None:
+    if str(layer_str).strip().lower() == "auto":
+        return None
     parts = [p.strip() for p in layer_str.split(",")]
     if len(parts) != 2:
         raise ValueError(f"Invalid layer '{layer_str}'. Use 'layer,datatype', e.g. '1,0'.")
@@ -93,6 +95,140 @@ def load_crossing_component(component_name: str = "ebeam_crossing4"):
         f"UBC load reason: {type(ubc_exc).__name__ if ubc_exc else 'n/a'}: {ubc_exc}"
     )
     return gf.components.crossing(), "gdsfactory.components.crossing"
+
+
+def _layer_spec_to_tuple(layer_spec, pdk=None) -> tuple[int, int] | None:
+    if layer_spec is None:
+        return None
+    if isinstance(layer_spec, tuple) and len(layer_spec) == 2:
+        return int(layer_spec[0]), int(layer_spec[1])
+    if hasattr(layer_spec, "layer") and hasattr(layer_spec, "datatype"):
+        return int(layer_spec.layer), int(layer_spec.datatype)
+    resolved = layer_spec
+    if pdk is not None:
+        try:
+            resolved = pdk.get_layer(layer_spec)
+        except Exception:
+            resolved = layer_spec
+    if isinstance(resolved, tuple) and len(resolved) == 2:
+        return int(resolved[0]), int(resolved[1])
+    if hasattr(resolved, "layer") and hasattr(resolved, "datatype"):
+        return int(resolved.layer), int(resolved.datatype)
+    if isinstance(resolved, int):
+        dtype = int(getattr(layer_spec, "datatype", 0))
+        layer_num = int(getattr(layer_spec, "layer", resolved))
+        return layer_num, dtype
+    return None
+
+
+def resolve_pdk_stack(
+    component,
+    *,
+    layer: tuple[int, int] | None,
+    core_t_um: float,
+    clad_below_um: float,
+    clad_above_um: float,
+    use_pdk_stack: bool,
+) -> tuple[tuple[int, int], float, float, float, dict[str, object]]:
+    layer_resolved = layer
+    core_t_out = float(core_t_um)
+    clad_below_out = float(clad_below_um)
+    clad_above_out = float(clad_above_um)
+    meta: dict[str, object] = {"used_pdk_stack": False}
+
+    if not use_pdk_stack:
+        if layer_resolved is None:
+            layer_resolved = (1, 0)
+        meta["selected_layer"] = layer_resolved
+        return layer_resolved, core_t_out, clad_below_out, clad_above_out, meta
+
+    try:
+        import gdsfactory as gf
+
+        pdk = gf.get_active_pdk() if hasattr(gf, "get_active_pdk") else None
+    except Exception:
+        pdk = None
+    if pdk is None:
+        if layer_resolved is None:
+            layer_resolved = (1, 0)
+        meta["selected_layer"] = layer_resolved
+        return layer_resolved, core_t_out, clad_below_out, clad_above_out, meta
+
+    polygons_by_layer = component.get_polygons_points(by="tuple")
+    available_layers = set(polygons_by_layer.keys())
+    layer_stack = getattr(pdk, "layer_stack", None)
+    levels = getattr(layer_stack, "layers", {}) if layer_stack is not None else {}
+
+    core_level = None
+    for lname, level in levels.items():
+        try:
+            name_key = str(lname).lower()
+            th = float(getattr(level, "thickness", 0.0))
+            mat = str(getattr(level, "material", "")).lower()
+        except Exception:
+            continue
+        if th <= 0:
+            continue
+        if "core" in name_key:
+            core_level = level
+            break
+        if core_level is None and ("si3n4" in mat or "sin" == mat or "nitride" in mat):
+            core_level = level
+
+    core_layer_from_stack = _layer_spec_to_tuple(
+        getattr(core_level, "layer", None) if core_level is not None else None,
+        pdk=pdk,
+    )
+    if layer_resolved is None:
+        layer_resolved = core_layer_from_stack
+        if layer_resolved not in available_layers and layer_resolved is not None:
+            layer_num = int(layer_resolved[0])
+            same_num = [lt for lt in available_layers if int(lt[0]) == layer_num]
+            if same_num:
+                layer_resolved = sorted(same_num, key=lambda lt: int(lt[1]))[0]
+        if layer_resolved is None:
+            layer_resolved = (1, 0) if (1, 0) in available_layers else sorted(available_layers)[0]
+
+    if core_level is not None:
+        try:
+            core_z0 = float(getattr(core_level, "zmin"))
+            core_th = float(getattr(core_level, "thickness"))
+            core_t_out = core_th
+            core_top = core_z0 + core_th
+            oxide_levels = []
+            for level in levels.values():
+                try:
+                    z0 = float(getattr(level, "zmin"))
+                    th = float(getattr(level, "thickness"))
+                    z1 = z0 + th
+                    mat = str(getattr(level, "material", "")).lower()
+                except Exception:
+                    continue
+                if th <= 0:
+                    continue
+                if any(k in mat for k in ("sio2", "oxide", "silica", "glass")):
+                    oxide_levels.append((z0, z1))
+
+            if oxide_levels:
+                below_candidates = [z0 for z0, z1 in oxide_levels if z1 <= core_z0 + 1e-9]
+                if below_candidates:
+                    clad_below_out = max(core_z0 - min(below_candidates), 0.0)
+
+                above_cover = [z1 for z0, z1 in oxide_levels if z0 <= core_top + 1e-9 and z1 >= core_top - 1e-9]
+                if above_cover:
+                    clad_above_out = max(max(above_cover) - core_top, 0.0)
+                else:
+                    above_candidates = [z1 for z0, z1 in oxide_levels if z0 >= core_top - 1e-9]
+                    if above_candidates:
+                        clad_above_out = max(max(above_candidates) - core_top, 0.0)
+            meta["used_pdk_stack"] = True
+            meta["core_layer_stack"] = core_layer_from_stack
+            meta["core_material"] = str(getattr(core_level, "material", ""))
+        except Exception:
+            pass
+
+    meta["selected_layer"] = layer_resolved
+    return layer_resolved, core_t_out, clad_below_out, clad_above_out, meta
 
 
 def port_line(
@@ -383,6 +519,8 @@ def save_overview_plot(
     source_plane: tuple[tuple[float, float, float], tuple[float, float, float]],
     monitor_planes: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]],
     layer_z: dict[str, tuple[float, float]],
+    pml_xy: float = 0.0,
+    pml_z: float = 0.0,
     out_path: Path,
 ) -> None:
     x0, x1, y0, y1 = imported_bbox
@@ -421,6 +559,24 @@ def save_overview_plot(
     ax[0].set_title("XY overview (core z-slice)")
     ax[0].set_xlabel("x (um)")
     ax[0].set_ylabel("y (um)")
+    pml_xy_um = max(0.0, float(pml_xy) / µm)
+    pml_z_um = max(0.0, float(pml_z) / µm)
+    x_max_um = float(width / µm)
+    y_max_um = float(height / µm)
+    z_max_um = float(depth / µm)
+    if pml_xy_um > 0.0:
+        ax[0].axvspan(0.0, min(pml_xy_um, x_max_um), color="tab:orange", alpha=0.12)
+        ax[0].axvspan(max(0.0, x_max_um - pml_xy_um), x_max_um, color="tab:orange", alpha=0.12)
+        ax[0].axhspan(0.0, min(pml_xy_um, y_max_um), color="tab:orange", alpha=0.12)
+        ax[0].axhspan(max(0.0, y_max_um - pml_xy_um), y_max_um, color="tab:orange", alpha=0.12)
+        ax[0].text(
+            max(0.05, 0.03 * x_max_um),
+            max(0.05, 0.03 * y_max_um),
+            "PML",
+            color="tab:orange",
+            fontsize=7,
+            weight="bold",
+        )
     ax[0].plot([x0 / µm, x1 / µm, x1 / µm, x0 / µm, x0 / µm], [y0 / µm, y0 / µm, y1 / µm, y1 / µm, y0 / µm], "w--", lw=1.2)
     for name, plane in [("source", source_plane), *monitor_planes.items()]:
         (xa, ya, _za), (xb, yb, _zb) = plane
@@ -440,6 +596,20 @@ def save_overview_plot(
     ax[1].set_title("XZ")
     ax[1].set_xlabel("x (um)")
     ax[1].set_ylabel("z (um)")
+    if pml_xy_um > 0.0:
+        ax[1].axvspan(0.0, min(pml_xy_um, x_max_um), color="tab:orange", alpha=0.12)
+        ax[1].axvspan(max(0.0, x_max_um - pml_xy_um), x_max_um, color="tab:orange", alpha=0.12)
+    if pml_z_um > 0.0:
+        ax[1].axhspan(0.0, min(pml_z_um, z_max_um), color="tab:orange", alpha=0.12)
+        ax[1].axhspan(max(0.0, z_max_um - pml_z_um), z_max_um, color="tab:orange", alpha=0.12)
+        ax[1].text(
+            max(0.05, 0.03 * x_max_um),
+            max(0.05, 0.03 * z_max_um),
+            "PML",
+            color="tab:orange",
+            fontsize=7,
+            weight="bold",
+        )
     for lyr, (lz0, lz1) in layer_z.items():
         ax[1].axhspan(lz0 / µm, lz1 / µm, color="white", alpha=0.05)
         ax[1].text(0.15, 0.5 * (lz0 + lz1) / µm, lyr, color="white", fontsize=6.5, va="center")
@@ -459,6 +629,20 @@ def save_overview_plot(
     ax[2].set_title("YZ")
     ax[2].set_xlabel("y (um)")
     ax[2].set_ylabel("z (um)")
+    if pml_xy_um > 0.0:
+        ax[2].axvspan(0.0, min(pml_xy_um, y_max_um), color="tab:orange", alpha=0.12)
+        ax[2].axvspan(max(0.0, y_max_um - pml_xy_um), y_max_um, color="tab:orange", alpha=0.12)
+    if pml_z_um > 0.0:
+        ax[2].axhspan(0.0, min(pml_z_um, z_max_um), color="tab:orange", alpha=0.12)
+        ax[2].axhspan(max(0.0, z_max_um - pml_z_um), z_max_um, color="tab:orange", alpha=0.12)
+        ax[2].text(
+            max(0.05, 0.03 * y_max_um),
+            max(0.05, 0.03 * z_max_um),
+            "PML",
+            color="tab:orange",
+            fontsize=7,
+            weight="bold",
+        )
     for lyr, (lz0, lz1) in layer_z.items():
         ax[2].axhspan(lz0 / µm, lz1 / µm, color="white", alpha=0.05)
         ax[2].text(0.15, 0.5 * (lz0 + lz1) / µm, lyr, color="white", fontsize=6.5, va="center")
@@ -661,7 +845,8 @@ def run_crossing(
     n_clad: float,
     polarization: str,
     points_per_wavelength: int,
-    layer: tuple[int, int],
+    layer: tuple[int, int] | None,
+    use_pdk_stack: bool,
     extension_um: float,
     core_t_um: float,
     clad_below_um: float,
@@ -684,13 +869,30 @@ def run_crossing(
     mode_dir = out_dir / "modes"
     mode_dir.mkdir(parents=True, exist_ok=True)
 
-    core_t = float(core_t_um) * µm
-    clad_below = float(clad_below_um) * µm
-    clad_above = float(clad_above_um) * µm
+    layer_resolved, core_t_um_resolved, clad_below_um_resolved, clad_above_um_resolved, stack_meta = resolve_pdk_stack(
+        component,
+        layer=layer,
+        core_t_um=core_t_um,
+        clad_below_um=clad_below_um,
+        clad_above_um=clad_above_um,
+        use_pdk_stack=bool(use_pdk_stack),
+    )
+    print(
+        "Stack resolution: "
+        f"layer={layer_resolved}, "
+        f"core_t={core_t_um_resolved:.3f}um, "
+        f"clad_below={clad_below_um_resolved:.3f}um, "
+        f"clad_above={clad_above_um_resolved:.3f}um, "
+        f"used_pdk_stack={bool(stack_meta.get('used_pdk_stack', False))}"
+    )
+
+    core_t = float(core_t_um_resolved) * µm
+    clad_below = float(clad_below_um_resolved) * µm
+    clad_above = float(clad_above_um_resolved) * µm
     extension = float(extension_um) * µm
     design, ports, imported_bbox, layer_z = build_design_with_extensions(
         component,
-        layer=layer,
+        layer=layer_resolved,
         n_core=n_core,
         n_clad=n_clad,
         extension=extension,
@@ -922,6 +1124,8 @@ def run_crossing(
         source_plane=source_plane,
         monitor_planes=monitor_planes,
         layer_z=layer_z,
+        pml_xy=pml_xy,
+        pml_z=pml_z,
         out_path=overview_path,
     )
 
@@ -1426,6 +1630,8 @@ def run_crossing(
         data_path,
         source_port=source_port,
         output_ports=np.asarray(all_ports, dtype=object),
+        selected_layer=np.asarray([layer_resolved], dtype=object),
+        stack_used=np.asarray([bool(stack_meta.get("used_pdk_stack", False))], dtype=bool),
         selected_monitors=np.asarray([selected_monitors[p] for p in all_ports], dtype=object),
         mode_indices=np.asarray([mode_indices[p] for p in all_ports], dtype=int),
         wave_keys=np.asarray([port_diagnostics[p]["wave_key"] for p in all_ports], dtype=object),
@@ -1547,6 +1753,8 @@ def run_crossing(
         "component_label": component_label,
         "source_port": source_port,
         "all_ports": list(all_ports),
+        "selected_layer": layer_resolved,
+        "stack_used": bool(stack_meta.get("used_pdk_stack", False)),
         "wavelength_um": np.asarray(wl_um, dtype=float),
         "s_cols": {p: np.asarray(s_cols[p], dtype=np.complex128) for p in all_ports},
         "s_cols_raw": {p: np.asarray(s_cols_raw[p], dtype=np.complex128) for p in all_ports},
@@ -1657,8 +1865,18 @@ def build_argparser() -> argparse.ArgumentParser:
         default=51,
         help="Number of DFT frequency points (recommended 11..51).",
     )
-    parser.add_argument("--n-core", type=float, default=3.47, help="Core refractive index.")
-    parser.add_argument("--n-clad", type=float, default=1.44, help="Cladding refractive index.")
+    parser.add_argument(
+        "--n-core",
+        type=float,
+        default=2.0,
+        help="Core refractive index (default Si3N4-like).",
+    )
+    parser.add_argument(
+        "--n-clad",
+        type=float,
+        default=1.44,
+        help="Cladding refractive index (default SiO2-like).",
+    )
     parser.add_argument(
         "--polarization",
         type=str,
@@ -1733,8 +1951,13 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--layer",
         type=str,
-        default="1,0",
-        help="GDS layer,datatype used for core extraction (example: 1,0).",
+        default="auto",
+        help="GDS layer,datatype used for core extraction (example: 1,0), or 'auto'.",
+    )
+    parser.add_argument(
+        "--no-use-pdk-stack",
+        action="store_true",
+        help="Disable PDK layer-stack based layer/thickness/cladding resolution.",
     )
     parser.add_argument(
         "--out-dir",
@@ -1812,6 +2035,7 @@ def main():
             polarization=args.polarization,
             points_per_wavelength=args.points_per_wavelength,
             layer=parse_layer(args.layer),
+            use_pdk_stack=not args.no_use_pdk_stack,
             extension_um=args.extension_um,
             core_t_um=args.core_thickness_um,
             clad_below_um=args.clad_below_um,
@@ -1865,6 +2089,7 @@ def main():
         polarization=args.polarization,
         points_per_wavelength=args.points_per_wavelength,
         layer=parse_layer(args.layer),
+        use_pdk_stack=not args.no_use_pdk_stack,
         extension_um=args.extension_um,
         core_t_um=args.core_thickness_um,
         clad_below_um=args.clad_below_um,
