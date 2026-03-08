@@ -28,6 +28,7 @@ class Monitor:
         dft_enabled=False,
         dft_components=None,
         dft_record_every_step=True,
+        dft_record_interval=None,
         dft_window="rect",
         objective_function: Optional[Callable[["Monitor"], float]] = None,
         name: Optional[str] = None,
@@ -42,6 +43,12 @@ class Monitor:
         self.max_history_steps = max_history_steps
         self.dft_enabled = bool(dft_enabled)
         self.dft_record_every_step = bool(dft_record_every_step)
+        if dft_record_interval is None:
+            self.dft_record_interval = (
+                1 if self.dft_record_every_step else max(1, int(record_interval))
+            )
+        else:
+            self.dft_record_interval = max(1, int(dft_record_interval))
         self.dft_t_start = float(dft_t_start) if dft_t_start is not None else 0.0
         self.dft_t_end = None if dft_t_end is None else float(dft_t_end)
         self.dft_window = str(dft_window).lower()
@@ -129,6 +136,10 @@ class Monitor:
         self._dft_accum = {}
         self._dft_weight_sum = np.zeros(self.dft_frequencies.size, dtype=float)
         self._dft_sample_count = 0
+        self._dft_phase = np.ones(self.dft_frequencies.size, dtype=np.complex128)
+        self._dft_last_t = None
+        self._dft_last_dt = None
+        self._dft_last_rot = None
 
         if self.is_3d:
             self._init_3d_monitor(start, end, plane_normal, plane_position, size)
@@ -410,9 +421,7 @@ class Monitor:
             return False
         if float(t) < self.dft_t_start:
             return False
-        if self.dft_record_every_step:
-            return True
-        return self.should_record(step)
+        return (int(step) % int(self.dft_record_interval)) == 0
 
     def _dft_weight(self, t):
         if (
@@ -433,13 +442,33 @@ class Monitor:
             self._dft_accum[component] = arr
         return arr
 
+    def _dft_current_phase(self, t):
+        t_now = float(t)
+        if self._dft_last_t is None:
+            self._dft_last_t = t_now
+            return self._dft_phase
+        dt = t_now - float(self._dft_last_t)
+        if abs(dt) > 0.0:
+            if (
+                self._dft_last_dt is None
+                or self._dft_last_rot is None
+                or abs(dt - float(self._dft_last_dt)) > 1e-18
+            ):
+                self._dft_last_dt = dt
+                self._dft_last_rot = np.exp(
+                    -1j * 2.0 * np.pi * self.dft_frequencies * dt
+                )
+            self._dft_phase = self._dft_phase * self._dft_last_rot
+        self._dft_last_t = t_now
+        return self._dft_phase
+
     def _update_dft(self, t, component_vectors):
         if not component_vectors:
             return
         w = float(self._dft_weight(t))
         if w <= 0.0:
             return
-        phase = np.exp(-1j * 2.0 * np.pi * self.dft_frequencies * float(t))
+        phase = self._dft_current_phase(t)
         self._dft_weight_sum = self._dft_weight_sum + w
         self._dft_sample_count += 1
         for comp, vec in component_vectors.items():
@@ -452,6 +481,10 @@ class Monitor:
         self._dft_accum = {}
         self._dft_weight_sum = np.zeros(self.dft_frequencies.size, dtype=float)
         self._dft_sample_count = 0
+        self._dft_phase = np.ones(self.dft_frequencies.size, dtype=np.complex128)
+        self._dft_last_t = None
+        self._dft_last_dt = None
+        self._dft_last_rot = None
 
     def get_dft_frequencies(self):
         return np.asarray(self.dft_frequencies, dtype=float)
@@ -1146,6 +1179,7 @@ class Monitor:
                     dft_enabled=self.dft_enabled,
                     dft_components=self.dft_components,
                     dft_record_every_step=self.dft_record_every_step,
+                    dft_record_interval=self.dft_record_interval,
                     dft_window=self.dft_window,
                 )
             else:
@@ -1167,6 +1201,7 @@ class Monitor:
                     dft_enabled=self.dft_enabled,
                     dft_components=self.dft_components,
                     dft_record_every_step=self.dft_record_every_step,
+                    dft_record_interval=self.dft_record_interval,
                     dft_window=self.dft_window,
                 )
         else:
@@ -1186,5 +1221,6 @@ class Monitor:
                 dft_enabled=self.dft_enabled,
                 dft_components=self.dft_components,
                 dft_record_every_step=self.dft_record_every_step,
+                dft_record_interval=self.dft_record_interval,
                 dft_window=self.dft_window,
             )
