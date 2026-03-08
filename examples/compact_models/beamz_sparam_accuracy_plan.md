@@ -29,22 +29,22 @@ Match the trusted MEEP baseline for crossing S-parameters (shape + absolute leve
    - Monitor/source non-PML overlap fraction in z.
    - Minimum source/monitor spacing in straight sections.
 
-### Phase 2: Normalization Upgrade
-1. Implement two-run normalization:
-   - Reference run (calibration structure / background).
-   - Device run (crossing).
-2. Compute incident amplitude from reference monitors and reuse for device normalization.
-3. Reflection handling:
-   - Subtract source/background contribution where needed.
-   - Keep reflected/transmitted branch mapping explicit and testable.
+### Phase 2: Single-Run Normalization Upgrade
+1. Use one dedicated incident monitor on the source arm for normalization (`a_incident = a+` on source-forward monitor).
+2. Measure reflection and transmission on separate output monitors in the same run.
+3. Make outgoing-wave choice explicit per port (not hard-coded globally to `a-`).
+4. Keep optional straight-waveguide calibration as a sanity gate only, not as a required normalization reference.
 
-### Phase 3: Mode Extraction Stability
+### Phase 3: Mode Extraction Stability + Convention Audit
 1. Replace score-by-transmission heuristics with physically constrained mode selection:
    - Guided `n_eff` threshold.
    - Condition number threshold.
    - Continuity across frequency.
 2. Prevent mode hopping with nearest-neighbor tracking in frequency.
-3. Export per-port diagnostics (`a+`, `a-`, `n_eff`, condition number) for audit.
+3. Export per-port diagnostics (`a+`, `a-`, selected wave key, `n_eff`, condition number) for audit.
+4. Add explicit convention checks:
+   - On each output monitor, selected outgoing wave should dominate the opposite wave over most bins.
+   - On source-forward monitor, selected incident wave should dominate near pulse center.
 
 ### Phase 4: Validation Against Baseline
 1. Compare BeamZ results to reference crossing curves (`reference_result.png` and numeric dumps if available).
@@ -55,6 +55,6 @@ Match the trusted MEEP baseline for crossing S-parameters (shape + absolute leve
 3. Freeze default settings after metrics pass.
 
 ## Immediate Next Steps (Now)
-1. Implement straight-waveguide calibration gate in `beamz_crossing.py`.
-2. Wire calibration metrics + fail-fast behavior.
-3. Keep outputs and logs explicit so failures are diagnosable.
+1. Make `PortSpec`/S-matrix extraction support explicit `incident_wave` and `scattered_wave` selectors.
+2. Switch crossing extraction to single-run normalization with dedicated source-forward monitor.
+3. Add unit tests that fail when wave-selector mapping is wrong.

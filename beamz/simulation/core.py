@@ -32,6 +32,8 @@ class PortSpec:
     polarization: Literal["tm", "te"]
     mode_index: int = 0
     reference_monitor: str | None = None
+    incident_wave: Literal["plus", "minus", "auto"] = "plus"
+    scattered_wave: Literal["plus", "minus", "auto"] = "minus"
 
 
 class Simulation:
@@ -752,6 +754,42 @@ class Simulation:
         return out
 
     @staticmethod
+    def _select_wave_component(
+        wave_data,
+        selector="minus",
+        *,
+        use_reference=False,
+    ):
+        sel = str(selector).lower()
+        if sel not in {"plus", "minus", "auto"}:
+            raise ValueError(
+                f"Unsupported wave selector '{selector}'. "
+                "Use one of {'plus', 'minus', 'auto'}."
+            )
+
+        if use_reference:
+            plus = np.asarray(
+                wave_data.get(
+                    "a_incident_plus",
+                    wave_data.get("a_incident", wave_data.get("a_plus")),
+                ),
+                dtype=np.complex128,
+            )
+            minus = np.asarray(
+                wave_data.get("a_incident_minus", wave_data.get("a_minus")),
+                dtype=np.complex128,
+            )
+        else:
+            plus = np.asarray(wave_data.get("a_plus"), dtype=np.complex128)
+            minus = np.asarray(wave_data.get("a_minus"), dtype=np.complex128)
+
+        if sel == "plus":
+            return plus
+        if sel == "minus":
+            return minus
+        return np.where(np.abs(plus) >= np.abs(minus), plus, minus)
+
+    @staticmethod
     def _format_s_matrix_output(s_matrix, as_sax):
         """Return S-parameter mapping without requiring optional external packages."""
         if as_sax:
@@ -781,12 +819,24 @@ class Simulation:
                     polarization=item["polarization"],
                     mode_index=int(item.get("mode_index", 0)),
                     reference_monitor=item.get("reference_monitor"),
+                    incident_wave=str(item.get("incident_wave", "plus")).lower(),
+                    scattered_wave=str(item.get("scattered_wave", "minus")).lower(),
                 )
             if spec.direction not in {"+x", "-x", "+y", "-y", "+z", "-z"}:
                 raise ValueError(f"Unsupported port direction '{spec.direction}'.")
             pol = str(spec.polarization).lower()
             if pol not in {"tm", "te"}:
                 raise ValueError(f"Unsupported polarization '{spec.polarization}'.")
+            inc_wave = str(spec.incident_wave).lower()
+            scat_wave = str(spec.scattered_wave).lower()
+            if inc_wave not in {"plus", "minus", "auto"}:
+                raise ValueError(
+                    f"Unsupported incident_wave '{spec.incident_wave}' for port '{spec.name}'."
+                )
+            if scat_wave not in {"plus", "minus", "auto"}:
+                raise ValueError(
+                    f"Unsupported scattered_wave '{spec.scattered_wave}' for port '{spec.name}'."
+                )
             normalized[spec.name] = PortSpec(
                 name=spec.name,
                 monitor_name=spec.monitor_name,
@@ -794,6 +844,8 @@ class Simulation:
                 polarization=pol,
                 mode_index=int(spec.mode_index),
                 reference_monitor=spec.reference_monitor,
+                incident_wave=inc_wave,
+                scattered_wave=scat_wave,
             )
         return normalized
 
@@ -1714,7 +1766,8 @@ class Simulation:
                             )
                         )
 
-                a_incident = np.zeros(freqs.size, dtype=np.complex128)
+                a_incident_plus = np.zeros(freqs.size, dtype=np.complex128)
+                a_incident_minus = np.zeros(freqs.size, dtype=np.complex128)
                 last_valid_ref_proj = None
                 for idx, f in enumerate(freqs):
                     f_mode = float(f if strategy == "per_frequency" else single_freq)
@@ -1739,10 +1792,14 @@ class Simulation:
                         ]
                     )
                     coeff = proj["pinv"] @ field_vec
-                    a_incident[idx] = coeff[0]
-                port_waves["a_incident"] = a_incident
+                    a_incident_plus[idx], a_incident_minus[idx] = coeff[0], coeff[1]
+                port_waves["a_incident"] = a_incident_plus
+                port_waves["a_incident_plus"] = a_incident_plus
+                port_waves["a_incident_minus"] = a_incident_minus
                 if return_power:
-                    port_waves["P_incident"] = np.abs(a_incident) ** 2
+                    port_waves["P_incident"] = np.abs(a_incident_plus) ** 2
+                    port_waves["P_incident_plus"] = np.abs(a_incident_plus) ** 2
+                    port_waves["P_incident_minus"] = np.abs(a_incident_minus) ** 2
 
             waves[spec.name] = port_waves
         return waves
@@ -1869,7 +1926,8 @@ class Simulation:
                         _, dft_cache[key] = self._sample_monitor_component_dft(
                             ref_monitor, comp, frequencies=freqs
                         )
-                a_incident = np.zeros(freqs.size, dtype=np.complex128)
+                a_incident_plus = np.zeros(freqs.size, dtype=np.complex128)
+                a_incident_minus = np.zeros(freqs.size, dtype=np.complex128)
                 cond_ref = np.zeros(freqs.size, dtype=float)
                 neff_ref = np.full(freqs.size, np.nan, dtype=float)
                 last_valid_ref_proj = None
@@ -1899,7 +1957,7 @@ class Simulation:
                         coeff = self._project_modal_coefficients_3d(
                             field_components, proj
                         )
-                        a_incident[idx] = coeff[0]
+                        a_incident_plus[idx], a_incident_minus[idx] = coeff[0], coeff[1]
                     else:
                         field_vec = np.concatenate(
                             [
@@ -1908,14 +1966,18 @@ class Simulation:
                             ]
                         )
                         coeff = proj["pinv"] @ field_vec
-                        a_incident[idx] = coeff[0]
+                        a_incident_plus[idx], a_incident_minus[idx] = coeff[0], coeff[1]
                     cond_ref[idx] = float(proj.get("condition_number", np.nan))
                     neff_ref[idx] = float(proj.get("mode_neff", np.nan))
-                port_waves["a_incident"] = a_incident
+                port_waves["a_incident"] = a_incident_plus
+                port_waves["a_incident_plus"] = a_incident_plus
+                port_waves["a_incident_minus"] = a_incident_minus
                 port_waves["reference_condition_number"] = cond_ref
                 port_waves["reference_mode_neff"] = neff_ref
                 if return_power:
-                    port_waves["P_incident"] = np.abs(a_incident) ** 2
+                    port_waves["P_incident"] = np.abs(a_incident_plus) ** 2
+                    port_waves["P_incident_plus"] = np.abs(a_incident_plus) ** 2
+                    port_waves["P_incident_minus"] = np.abs(a_incident_minus) ** 2
 
             waves[spec.name] = port_waves
         return waves
@@ -1960,10 +2022,13 @@ class Simulation:
         if missing:
             raise ValueError(f"output_ports contains unknown ports: {missing}")
 
-        a_incident = np.asarray(
-            waves[source_port].get("a_incident", waves[source_port]["a_plus"]),
-            dtype=np.complex128,
+        source_spec = port_map[source_port]
+        a_incident = self._select_wave_component(
+            waves[source_port],
+            selector=source_spec.incident_wave,
+            use_reference=bool(source_spec.reference_monitor),
         )
+        a_incident = np.asarray(a_incident, dtype=np.complex128)
         max_incident = float(np.max(np.abs(a_incident))) if a_incident.size else 0.0
         rel_floor = max_incident * (10.0 ** (float(min_incident_db) / 20.0))
         abs_floor = max(1e-18, rel_floor)
@@ -1971,7 +2036,13 @@ class Simulation:
 
         s_matrix = {}
         for out_port in output_ports:
-            b_out = np.asarray(waves[out_port]["a_minus"], dtype=np.complex128)
+            out_spec = port_map[out_port]
+            b_out = self._select_wave_component(
+                waves[out_port],
+                selector=out_spec.scattered_wave,
+                use_reference=False,
+            )
+            b_out = np.asarray(b_out, dtype=np.complex128)
             ratio = self._safe_ratio(b_out, a_incident)
             ratio = np.where(valid_mask, ratio, 0.0 + 0.0j)
             s_matrix[(out_port, source_port)] = ratio
@@ -1985,7 +2056,14 @@ class Simulation:
         p_in = np.abs(a_incident) ** 2
         p_guided_out = np.zeros_like(p_in, dtype=float)
         for out_port in output_ports:
-            p_guided_out += np.abs(waves[out_port]["a_minus"]) ** 2
+            out_spec = port_map[out_port]
+            p_guided_out += np.abs(
+                self._select_wave_component(
+                    waves[out_port],
+                    selector=out_spec.scattered_wave,
+                    use_reference=False,
+                )
+            ) ** 2
         power_sum = p_guided_out / np.maximum(p_in, 1e-18)
         loss_est = 1.0 - power_sum
         power_sum = np.where(valid_mask, power_sum, np.nan)
@@ -2115,10 +2193,15 @@ class Simulation:
                     window=window,
                 )
                 ref_coeff = ref_proj["pinv"] @ np.concatenate([e_ref, h_ref])
-                a_incident = np.complex128(ref_coeff[0])
-                port_waves["a_incident"] = a_incident
+                a_incident_plus = np.complex128(ref_coeff[0])
+                a_incident_minus = np.complex128(ref_coeff[1])
+                port_waves["a_incident"] = a_incident_plus
+                port_waves["a_incident_plus"] = a_incident_plus
+                port_waves["a_incident_minus"] = a_incident_minus
                 if return_power:
-                    port_waves["P_incident"] = float(np.abs(a_incident) ** 2)
+                    port_waves["P_incident"] = float(np.abs(a_incident_plus) ** 2)
+                    port_waves["P_incident_plus"] = float(np.abs(a_incident_plus) ** 2)
+                    port_waves["P_incident_minus"] = float(np.abs(a_incident_minus) ** 2)
 
             waves[spec.name] = port_waves
         return waves
@@ -2172,10 +2255,20 @@ class Simulation:
         if missing:
             raise ValueError(f"output_ports contains unknown ports: {missing}")
 
-        a_incident = waves[source_port].get("a_incident", waves[source_port]["a_plus"])
+        source_spec = port_map[source_port]
+        a_incident = self._select_wave_component(
+            waves[source_port],
+            selector=source_spec.incident_wave,
+            use_reference=bool(source_spec.reference_monitor),
+        )
         s_matrix = {}
         for out_port in output_ports:
-            b_out = waves[out_port]["a_minus"]
+            out_spec = port_map[out_port]
+            b_out = self._select_wave_component(
+                waves[out_port],
+                selector=out_spec.scattered_wave,
+                use_reference=False,
+            )
             s_matrix[(out_port, source_port)] = self._safe_ratio(b_out, a_incident)
 
         self.s_matrix_frequencies = np.asarray(frequencies, dtype=float)
@@ -2187,7 +2280,14 @@ class Simulation:
         p_in = np.abs(a_incident) ** 2
         p_guided_out = np.zeros_like(p_in, dtype=float)
         for out_port in output_ports:
-            p_guided_out += np.abs(waves[out_port]["a_minus"]) ** 2
+            out_spec = port_map[out_port]
+            p_guided_out += np.abs(
+                self._select_wave_component(
+                    waves[out_port],
+                    selector=out_spec.scattered_wave,
+                    use_reference=False,
+                )
+            ) ** 2
         power_sum = p_guided_out / np.maximum(p_in, 1e-18)
         diagnostics = {
             "frequencies": np.asarray(frequencies, dtype=float),
@@ -2243,11 +2343,23 @@ class Simulation:
         if missing:
             raise ValueError(f"output_ports contains unknown ports: {missing}")
 
-        a_incident = waves[source_port].get("a_incident", waves[source_port]["a_plus"])
+        source_spec = port_map[source_port]
+        a_incident = self._select_wave_component(
+            waves[source_port],
+            selector=source_spec.incident_wave,
+            use_reference=bool(source_spec.reference_monitor),
+        )
         s_matrix = {}
         for out_port in output_ports:
-            b_out = waves[out_port]["a_minus"]
-            ratio = self._safe_ratio(np.asarray([b_out]), np.asarray([a_incident]))[0]
+            out_spec = port_map[out_port]
+            b_out = self._select_wave_component(
+                waves[out_port],
+                selector=out_spec.scattered_wave,
+                use_reference=False,
+            )
+            b_vec = np.atleast_1d(np.asarray(b_out, dtype=np.complex128))
+            a_vec = np.atleast_1d(np.asarray(a_incident, dtype=np.complex128))
+            ratio = self._safe_ratio(b_vec, a_vec)[0]
             s_matrix[(out_port, source_port)] = np.complex128(ratio)
 
         self.s_matrix_frequencies = np.asarray([float(frequency)], dtype=float)
@@ -2256,9 +2368,21 @@ class Simulation:
         if not return_diagnostics:
             return s_output
 
-        p_in = float(np.abs(a_incident) ** 2)
+        p_in = float(np.abs(np.atleast_1d(np.asarray(a_incident, dtype=np.complex128))[0]) ** 2)
         p_guided_out = float(
-            np.sum([np.abs(waves[out]["a_minus"]) ** 2 for out in output_ports])
+            np.sum(
+                [
+                    np.abs(
+                        self._select_wave_component(
+                            waves[out],
+                            selector=port_map[out].scattered_wave,
+                            use_reference=False,
+                        )
+                    )
+                    ** 2
+                    for out in output_ports
+                ]
+            )
         )
         power_sum = p_guided_out / max(p_in, 1e-18)
         diagnostics = {

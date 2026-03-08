@@ -137,6 +137,92 @@ def safe_complex_ratio(num: np.ndarray, den: np.ndarray, eps: float = 1e-18) -> 
     return out
 
 
+def safe_real_ratio(num: np.ndarray, den: np.ndarray, eps: float = 1e-18) -> np.ndarray:
+    num_arr = np.asarray(num, dtype=float)
+    den_arr = np.asarray(den, dtype=float)
+    out = np.full_like(num_arr, np.nan, dtype=float)
+    valid = np.abs(den_arr) > float(eps)
+    out[valid] = num_arr[valid] / den_arr[valid]
+    return out
+
+
+def wave_dominance_db(
+    selected_wave: np.ndarray,
+    opposite_wave: np.ndarray,
+    valid_mask: np.ndarray,
+    eps: float = 1e-18,
+) -> float:
+    sel = np.asarray(selected_wave, dtype=np.complex128)
+    opp = np.asarray(opposite_wave, dtype=np.complex128)
+    mask = np.asarray(valid_mask, dtype=bool)
+    if sel.shape != opp.shape:
+        n = min(sel.size, opp.size)
+        sel = sel.reshape(-1)[:n]
+        opp = opp.reshape(-1)[:n]
+        mask = mask.reshape(-1)[:n]
+    if not np.any(mask):
+        return float("nan")
+    p_sel = np.mean(np.abs(sel[mask]) ** 2)
+    p_opp = np.mean(np.abs(opp[mask]) ** 2)
+    return float(10.0 * np.log10(max(p_sel, eps) / max(p_opp, eps)))
+
+
+def select_dominant_wave(
+    a_plus: np.ndarray,
+    a_minus: np.ndarray,
+    valid_mask: np.ndarray,
+) -> tuple[str, np.ndarray, np.ndarray, float]:
+    plus = np.asarray(a_plus, dtype=np.complex128)
+    minus = np.asarray(a_minus, dtype=np.complex128)
+    mask = np.asarray(valid_mask, dtype=bool)
+    if plus.shape != minus.shape:
+        n = min(plus.size, minus.size)
+        plus = plus.reshape(-1)[:n]
+        minus = minus.reshape(-1)[:n]
+        mask = mask.reshape(-1)[:n]
+    if not np.any(mask):
+        mask = np.ones_like(plus, dtype=bool)
+    p_plus = float(np.mean(np.abs(plus[mask]) ** 2))
+    p_minus = float(np.mean(np.abs(minus[mask]) ** 2))
+    if p_plus >= p_minus:
+        return "plus", plus, minus, wave_dominance_db(plus, minus, mask)
+    return "minus", minus, plus, wave_dominance_db(minus, plus, mask)
+
+
+def dft_directional_power_spectrum(
+    sim: Simulation,
+    monitor: Monitor,
+    direction: str,
+    frequencies: np.ndarray,
+) -> np.ndarray:
+    freqs = np.asarray(frequencies, dtype=float)
+    comps = {}
+    for c in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+        _, spec = sim._sample_monitor_component_dft(monitor, c, frequencies=freqs)
+        comps[c] = np.asarray(spec, dtype=np.complex128)
+    n_pts = min(arr.shape[1] for arr in comps.values())
+    if n_pts <= 0:
+        return np.zeros(freqs.shape, dtype=float)
+    ex = comps["Ex"][:, :n_pts]
+    ey = comps["Ey"][:, :n_pts]
+    ez = comps["Ez"][:, :n_pts]
+    hx = comps["Hx"][:, :n_pts]
+    hy = comps["Hy"][:, :n_pts]
+    hz = comps["Hz"][:, :n_pts]
+    axis = str(direction)[1]
+    sign = 1.0 if str(direction).startswith("+") else -1.0
+    if axis == "x":
+        s_axis = 0.5 * np.real(ey * np.conjugate(hz) - ez * np.conjugate(hy))
+    elif axis == "y":
+        s_axis = 0.5 * np.real(ez * np.conjugate(hx) - ex * np.conjugate(hz))
+    elif axis == "z":
+        s_axis = 0.5 * np.real(ex * np.conjugate(hy) - ey * np.conjugate(hx))
+    else:
+        raise ValueError(f"Unsupported direction '{direction}'.")
+    d_area = float(sim.resolution) * float(sim.resolution)
+    return np.asarray(sign * np.sum(s_axis, axis=1) * d_area, dtype=float)
+
+
 def save_signal_plot(time: np.ndarray, signal: np.ndarray, out_path: Path) -> None:
     fig, ax = plt.subplots(1, 1, figsize=(6.4, 2.6), dpi=260)
     ax.plot(time / 1e-15, signal, color="black", lw=1.5)
@@ -144,6 +230,33 @@ def save_signal_plot(time: np.ndarray, signal: np.ndarray, out_path: Path) -> No
     ax.set_ylabel("amplitude")
     ax.set_title("Excitation Signal")
     ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def save_closure_compare_plot(
+    wavelengths_um: np.ndarray,
+    modal_closure: np.ndarray,
+    flux_closure: np.ndarray,
+    valid_mask: np.ndarray,
+    out_path: Path,
+) -> None:
+    wl = np.asarray(wavelengths_um, dtype=float)
+    modal = np.asarray(modal_closure, dtype=float)
+    flux = np.asarray(flux_closure, dtype=float)
+    mask = np.asarray(valid_mask, dtype=bool)
+    modal = np.where(mask, modal, np.nan)
+    flux = np.where(mask, flux, np.nan)
+    fig, ax = plt.subplots(1, 1, figsize=(5.8, 3.4), dpi=280)
+    ax.plot(wl, modal, color="tab:blue", lw=1.9, label="Modal closure")
+    ax.plot(wl, flux, color="tab:orange", lw=1.9, label="Flux closure")
+    ax.axhline(1.0, color="black", lw=1.0, ls="--", alpha=0.7)
+    ax.set_xlabel("Wavelength (um)")
+    ax.set_ylabel("Closure")
+    ax.set_title("Modal vs Flux Closure")
+    ax.grid(alpha=0.28)
+    ax.legend(loc="best", fontsize=8, frameon=False)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
@@ -558,6 +671,8 @@ def run_crossing(
     animation_frames: int,
     show_progress: bool,
     out_dir: Path,
+    wave_dominance_min_db: float = 6.0,
+    strict_normalization_qa: bool = True,
     reference_incident: np.ndarray | None = None,
     reference_reflection: np.ndarray | None = None,
 ) -> dict[str, object]:
@@ -947,14 +1062,27 @@ def run_crossing(
     cond_threshold = 1e8
     max_mode_search = int(np.clip(mode_search_max, 0, 3))
 
+    source_drive_port = f"{source_port}_in"
+
     def source_spec(mode_index: int) -> PortSpec:
         return PortSpec(
-            name=source_port,
-            monitor_name=f"{source_port}_ref",
-            reference_monitor=f"{source_port}_fwd",
+            name=source_drive_port,
+            monitor_name=f"{source_port}_fwd",
             direction=src["direction"],
             polarization=polarization,
             mode_index=mode_index,
+            incident_wave="auto",
+            scattered_wave="minus",
+        )
+
+    def source_reflection_spec(mode_index: int) -> PortSpec:
+        return PortSpec(
+            name=source_port,
+            monitor_name=f"{source_port}_ref",
+            direction=outward_direction(src["direction"]),
+            polarization=polarization,
+            mode_index=mode_index,
+            scattered_wave="plus",
         )
 
     # Choose source mode index.
@@ -962,47 +1090,90 @@ def run_crossing(
     source_best = None
     for mode_idx in range(max_mode_search + 1):
         result = sim.get_S_matrix_modal_dft(
-            source_port=source_port,
-            ports={source_port: source_spec(mode_idx)},
-            output_ports=[source_port],
+            source_port=source_drive_port,
+            ports={source_drive_port: source_spec(mode_idx)},
+            output_ports=[source_drive_port],
             frequencies=freqs,
             as_sax=False,
             return_diagnostics=True,
             min_incident_db=-45.0,
         )
-        waves = result["diagnostics"]["waves"].get(source_port, {})
+        waves = result["diagnostics"]["waves"].get(source_drive_port, {})
+        a_plus = np.asarray(waves.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
+        a_minus = np.asarray(waves.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
+        inc_key, inc_sel, inc_opp, inc_dom = select_dominant_wave(
+            a_plus,
+            a_minus,
+            np.ones(freqs.shape, dtype=bool),
+        )
         neff = np.asarray(waves.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
         cond = np.asarray(waves.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
-        valid = np.asarray(result["diagnostics"]["valid_mask"], dtype=bool)
+        max_inc = float(np.max(np.abs(inc_sel))) if inc_sel.size else 0.0
+        abs_floor = max(1e-18, max_inc * (10.0 ** (-45.0 / 20.0)))
+        valid = np.abs(inc_sel) >= abs_floor
         qual = valid & np.isfinite(cond) & (cond < cond_threshold)
         neff_med = float(np.nanmedian(neff[np.isfinite(neff)])) if np.any(np.isfinite(neff)) else -np.inf
         cond_med = float(np.nanmedian(cond[np.isfinite(cond)])) if np.any(np.isfinite(cond)) else np.inf
         qual_frac = float(np.mean(qual)) if qual.size else 0.0
         guided_bonus = 0.4 if neff_med > (n_clad + 1e-3) else 0.0
-        score = 3.0 * qual_frac + guided_bonus + neff_med - 0.05 * np.log10(max(cond_med, 1.0))
+        score = (
+            3.0 * qual_frac
+            + guided_bonus
+            + neff_med
+            - 0.05 * np.log10(max(cond_med, 1.0))
+            + 0.01 * inc_dom
+        )
         print(
             f"  source m{mode_idx}: score={score:.3f}, "
-            f"qual={qual_frac:.2f}, neff_med={neff_med:.4f}, cond_med={cond_med:.2e}"
+            f"qual={qual_frac:.2f}, neff_med={neff_med:.4f}, cond_med={cond_med:.2e}, "
+            f"incident={inc_key}, dom={inc_dom:.2f}dB"
         )
-        candidate = {"mode_index": mode_idx, "result": result, "score": score}
+        candidate = {
+            "mode_index": mode_idx,
+            "result": result,
+            "score": score,
+            "valid_mask": valid,
+            "incident_wave": inc_sel,
+            "incident_opposite": inc_opp,
+            "incident_wave_key": inc_key,
+            "incident_dom_db": inc_dom,
+        }
         if source_best is None or score > source_best["score"]:
             source_best = candidate
 
     source_mode_idx = int(source_best["mode_index"])
-    source_result = source_best["result"]
-    valid_mask = np.asarray(source_result["diagnostics"]["valid_mask"], dtype=bool)
-    source_waves = source_result["diagnostics"]["waves"].get(source_port, {})
-    source_incident = np.asarray(
-        source_waves.get("a_incident", source_waves.get("a_plus", np.zeros(freqs.shape))),
-        dtype=np.complex128,
-    )
+    valid_mask = np.asarray(source_best["valid_mask"], dtype=bool)
+    source_incident = np.asarray(source_best["incident_wave"], dtype=np.complex128)
+    source_incident_opposite = np.asarray(source_best["incident_opposite"], dtype=np.complex128)
+    source_incident_key = str(source_best["incident_wave_key"])
 
-    s_cols = {
-        source_port: np.asarray(source_result["s_matrix"][(source_port, source_port)], dtype=np.complex128)
-    }
+    source_refl_result = sim.get_S_matrix_modal_dft(
+        source_port=source_drive_port,
+        ports={
+            source_drive_port: source_spec(source_mode_idx),
+            source_port: source_reflection_spec(source_mode_idx),
+        },
+        output_ports=[source_port],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-45.0,
+    )
+    source_refl_waves = source_refl_result["diagnostics"]["waves"].get(source_port, {})
+    source_refl_plus = np.asarray(source_refl_waves.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
+    source_refl_minus = np.asarray(source_refl_waves.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
+    source_refl_wave_key, source_refl_selected, source_refl_opposite, source_refl_dom_db = select_dominant_wave(
+        source_refl_plus,
+        source_refl_minus,
+        valid_mask,
+    )
+    source_refl = safe_complex_ratio(source_refl_selected, source_incident)
+    source_refl = np.where(valid_mask, source_refl, 0.0 + 0.0j)
+    source_neff = np.asarray(source_refl_waves.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
+    source_cond = np.asarray(source_refl_waves.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
+
+    s_cols = {source_port: source_refl}
     port_quality = {}
-    source_neff = np.asarray(source_waves.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
-    source_cond = np.asarray(source_waves.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
     port_quality[source_port] = (
         valid_mask
         & np.isfinite(source_cond)
@@ -1015,6 +1186,10 @@ def run_crossing(
         source_port: {
             "neff": source_neff,
             "cond": source_cond,
+            "a_selected": source_refl_selected,
+            "a_opposite": source_refl_opposite,
+            "wave_key": source_refl_wave_key,
+            "wave_dom_db": float(source_refl_dom_db),
         }
     }
 
@@ -1025,15 +1200,16 @@ def run_crossing(
         for cand in out_candidates[p]:
             for mode_idx in range(max_mode_search + 1):
                 result = sim.get_S_matrix_modal_dft(
-                    source_port=source_port,
+                    source_port=source_drive_port,
                     ports={
-                        source_port: source_spec(source_mode_idx),
+                        source_drive_port: source_spec(source_mode_idx),
                         p: PortSpec(
                             name=p,
                             monitor_name=cand["name"],
-                            direction=ports[p]["direction"],
+                            direction=outward_direction(ports[p]["direction"]),
                             polarization=polarization,
                             mode_index=mode_idx,
+                            scattered_wave="plus",
                         ),
                     },
                     output_ports=[p],
@@ -1042,8 +1218,9 @@ def run_crossing(
                     return_diagnostics=True,
                     min_incident_db=-45.0,
                 )
-                s_p = np.asarray(result["s_matrix"][(p, source_port)], dtype=np.complex128)
                 waves_p = result["diagnostics"]["waves"].get(p, {})
+                a_plus_p = np.asarray(waves_p.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
+                a_minus_p = np.asarray(waves_p.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
                 neff_p = np.asarray(waves_p.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
                 cond_p = np.asarray(waves_p.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
                 qual = (
@@ -1051,6 +1228,13 @@ def run_crossing(
                     & np.isfinite(cond_p)
                     & (cond_p < cond_threshold)
                 )
+                wave_key, a_sel, a_opp, wave_dom = select_dominant_wave(
+                    a_plus_p,
+                    a_minus_p,
+                    qual,
+                )
+                s_p = safe_complex_ratio(a_sel, source_incident)
+                s_p = np.where(qual, s_p, 0.0 + 0.0j)
                 qual_frac = float(np.mean(qual)) if qual.size else 0.0
                 if np.count_nonzero(qual) >= 4:
                     db = 20.0 * np.log10(np.maximum(np.abs(s_p[qual]), 1e-12))
@@ -1073,7 +1257,8 @@ def run_crossing(
                 print(
                     f"  {p} {cand['name']} m{mode_idx}: "
                     f"score={score:.3f}, qual={qual_frac:.2f}, "
-                    f"neff_med={neff_med:.4f}, cond_med={cond_med:.2e}, ripple={ripple:.2f}"
+                    f"neff_med={neff_med:.4f}, cond_med={cond_med:.2e}, ripple={ripple:.2f}, "
+                    f"wave={wave_key}, dom={wave_dom:.2f}dB"
                 )
                 candidate = {
                     "score": score,
@@ -1083,6 +1268,10 @@ def run_crossing(
                     "quality": qual,
                     "neff": neff_p,
                     "cond": cond_p,
+                    "a_selected": a_sel,
+                    "a_opposite": a_opp,
+                    "wave_key": wave_key,
+                    "wave_dom_db": wave_dom,
                 }
                 if best is None or candidate["score"] > best["score"]:
                     best = candidate
@@ -1094,6 +1283,10 @@ def run_crossing(
         port_diagnostics[p] = {
             "neff": np.asarray(best["neff"], dtype=float),
             "cond": np.asarray(best["cond"], dtype=float),
+            "a_selected": np.asarray(best["a_selected"], dtype=np.complex128),
+            "a_opposite": np.asarray(best["a_opposite"], dtype=np.complex128),
+            "wave_key": str(best["wave_key"]),
+            "wave_dom_db": float(best["wave_dom_db"]),
         }
 
     s_cols_raw = {p: np.asarray(v, dtype=np.complex128).copy() for p, v in s_cols.items()}
@@ -1130,14 +1323,76 @@ def run_crossing(
     print(
         "Selected source mode and output monitor/mode: "
         + ", ".join(
-            f"{p}={selected_monitors[p]}/m{mode_indices[p]}"
+            f"{p}={selected_monitors[p]}/m{mode_indices[p]}/{port_diagnostics[p]['wave_key']}"
             for p in all_ports
         )
     )
+    incident_dominance = wave_dominance_db(
+        source_incident,
+        source_incident_opposite,
+        valid_mask,
+    )
+    port_wave_dominance_db = {
+        p: wave_dominance_db(
+            port_diagnostics[p]["a_selected"],
+            port_diagnostics[p]["a_opposite"],
+            valid_mask & port_quality[p],
+        )
+        for p in all_ports
+    }
+    print(
+        "Wave-direction dominance (selected/opposite power): "
+        f"incident={incident_dominance:.2f} dB ({source_incident_key}), "
+        + ", ".join(f"{p}={port_wave_dominance_db[p]:.2f} dB" for p in all_ports)
+    )
+    qa_issues = []
+    dom_threshold = float(wave_dominance_min_db)
+    if (not np.isfinite(incident_dominance)) or (incident_dominance < dom_threshold):
+        qa_issues.append(
+            f"incident dominance {incident_dominance:.2f} dB < threshold {dom_threshold:.2f} dB"
+        )
+    for p in all_ports:
+        d = float(port_wave_dominance_db[p])
+        if (not np.isfinite(d)) or (d < dom_threshold):
+            qa_issues.append(f"{p} dominance {d:.2f} dB < threshold {dom_threshold:.2f} dB")
+    if qa_issues:
+        msg = "Normalization QA issues:\n  - " + "\n  - ".join(qa_issues)
+        if strict_normalization_qa:
+            raise RuntimeError(msg)
+        print(msg)
 
     closure = np.zeros_like(wl, dtype=float)
     for p in all_ports:
         closure += np.abs(s_cols[p]) ** 2
+
+    monitor_objects = {m.name: m for m in [m_fwd, m_ref, *output_monitors]}
+    flux_in = dft_directional_power_spectrum(
+        sim,
+        monitor_objects[f"{source_port}_fwd"],
+        src["direction"],
+        freqs,
+    )
+    flux_ref = dft_directional_power_spectrum(
+        sim,
+        monitor_objects[f"{source_port}_ref"],
+        outward_direction(src["direction"]),
+        freqs,
+    )
+    flux_out = {}
+    for p in output_ports:
+        mon_name = selected_monitors[p]
+        flux_out[p] = dft_directional_power_spectrum(
+            sim,
+            monitor_objects[mon_name],
+            outward_direction(ports[p]["direction"]),
+            freqs,
+        )
+    flux_total_out = np.asarray(flux_ref, dtype=float)
+    for p in output_ports:
+        flux_total_out = flux_total_out + np.asarray(flux_out[p], dtype=float)
+    flux_closure = safe_real_ratio(flux_total_out, flux_in)
+    flux_ref_ratio = safe_real_ratio(flux_ref, flux_in)
+    flux_ratio = {p: safe_real_ratio(flux_out[p], flux_in) for p in output_ports}
 
     wl_um = wl / µm
     idx0 = int(np.argmin(np.abs(wl - wl0)))
@@ -1151,11 +1406,19 @@ def run_crossing(
             f"S[{p},{source_port}] @ {wl_um[idx0]:.4f}um: "
             f"|S|={abs(val):.6f}, {20*np.log10(max(abs(val), 1e-12)):.2f} dB, "
             f"neff={neff_p[idx0]:.4f}, cond={cond_p[idx0]:.2e}, "
-            f"quality={quality}, monitor={selected_monitors[p]}, mode=m{mode_indices[p]}"
+            f"quality={quality}, monitor={selected_monitors[p]}, mode=m{mode_indices[p]}, "
+            f"wave={port_diagnostics[p]['wave_key']}, wave_dom={port_wave_dominance_db[p]:.2f}dB"
         )
     print(
         f"Power closure @ {wl_um[idx0]:.4f}um: {closure[idx0]:.6f} "
         f"(source_valid={bool(valid_mask[idx0])})"
+    )
+    flux_out_center = ", ".join(
+        f"{p}={float(flux_ratio[p][idx0]):.3f}" for p in output_ports
+    )
+    print(
+        f"Flux closure @ {wl_um[idx0]:.4f}um: {float(flux_closure[idx0]):.3f} "
+        f"(R={float(flux_ref_ratio[idx0]):.3f}, {flux_out_center})"
     )
 
     data_path = out_dir / "beamz_crossing_sparams.npz"
@@ -1165,13 +1428,27 @@ def run_crossing(
         output_ports=np.asarray(all_ports, dtype=object),
         selected_monitors=np.asarray([selected_monitors[p] for p in all_ports], dtype=object),
         mode_indices=np.asarray([mode_indices[p] for p in all_ports], dtype=int),
+        wave_keys=np.asarray([port_diagnostics[p]["wave_key"] for p in all_ports], dtype=object),
         wavelengths_um=wl_um,
         valid_mask=valid_mask.astype(bool),
         closure=closure,
         incident_device=source_incident,
+        incident_opposite=source_incident_opposite,
+        incident_wave_key=np.asarray([source_incident_key], dtype=object),
+        incident_dominance_db=np.asarray([incident_dominance], dtype=float),
         incident_ref_ratio=ref_ratio,
         ref_norm_applied=np.asarray([ref_norm_applied], dtype=bool),
         ref_refl_subtracted=np.asarray([ref_refl_subtracted], dtype=bool),
+        port_wave_dominance_db=np.asarray(
+            [port_wave_dominance_db[p] for p in all_ports],
+            dtype=float,
+        ),
+        flux_in=flux_in,
+        flux_ref=flux_ref,
+        flux_closure=flux_closure,
+        flux_ref_ratio=flux_ref_ratio,
+        **{f"flux_{p}": np.asarray(flux_out[p], dtype=float) for p in output_ports},
+        **{f"flux_ratio_{p}": np.asarray(flux_ratio[p], dtype=float) for p in output_ports},
         **{f"quality_{p}": port_quality[p].astype(bool) for p in all_ports},
         **{f"s_raw_{p}_{source_port}": s_cols_raw[p] for p in all_ports},
         **{f"s_{p}_{source_port}": s_cols[p] for p in all_ports},
@@ -1233,6 +1510,15 @@ def run_crossing(
     fig_full.savefig(fig_path_full, dpi=320)
     plt.close(fig_full)
 
+    closure_plot_path = out_dir / "beamz_crossing_closure_compare.png"
+    save_closure_compare_plot(
+        wavelengths_um=wl_um,
+        modal_closure=closure,
+        flux_closure=flux_closure,
+        valid_mask=valid_mask,
+        out_path=closure_plot_path,
+    )
+
     anim_path = out_dir / "beamz_crossing_field_propagation.mp4"
     anim_ok = save_field_animation(
         field_hist=field_hist,
@@ -1248,6 +1534,7 @@ def run_crossing(
     print(f"Saved S-parameter data: {data_path}")
     print(f"Saved dB plot (limited -55..0 dB): {fig_path_limited}")
     print(f"Saved dB plot (full range): {fig_path_full}")
+    print(f"Saved closure comparison plot: {closure_plot_path}")
     print(f"Saved overview plot: {overview_path}")
     print(f"Saved signal plot: {signal_path}")
     print(f"Saved mode plots directory: {mode_dir}")
@@ -1264,12 +1551,27 @@ def run_crossing(
         "s_cols": {p: np.asarray(s_cols[p], dtype=np.complex128) for p in all_ports},
         "s_cols_raw": {p: np.asarray(s_cols_raw[p], dtype=np.complex128) for p in all_ports},
         "incident_device": np.asarray(source_incident, dtype=np.complex128),
+        "incident_opposite": np.asarray(source_incident_opposite, dtype=np.complex128),
+        "incident_wave_key": source_incident_key,
+        "incident_dominance_db": float(incident_dominance),
         "incident_ref_ratio": np.asarray(ref_ratio, dtype=np.complex128),
         "ref_norm_applied": bool(ref_norm_applied),
         "ref_refl_subtracted": bool(ref_refl_subtracted),
         "valid_mask": np.asarray(valid_mask, dtype=bool),
+        "qa_issues": list(qa_issues),
         "port_quality": {p: np.asarray(port_quality[p], dtype=bool) for p in all_ports},
         "closure": np.asarray(closure, dtype=float),
+        "flux_in": np.asarray(flux_in, dtype=float),
+        "flux_ref": np.asarray(flux_ref, dtype=float),
+        "flux_closure": np.asarray(flux_closure, dtype=float),
+        "flux_ref_ratio": np.asarray(flux_ref_ratio, dtype=float),
+        "flux_out": {p: np.asarray(flux_out[p], dtype=float) for p in output_ports},
+        "flux_ratio": {p: np.asarray(flux_ratio[p], dtype=float) for p in output_ports},
+        "port_wave_dominance_db": {
+            p: float(port_wave_dominance_db[p])
+            for p in all_ports
+        },
+        "wave_keys": {p: str(port_diagnostics[p]["wave_key"]) for p in all_ports},
         "selected_monitors": dict(selected_monitors),
         "mode_indices": dict(mode_indices),
     }
@@ -1407,6 +1709,17 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Max mode index for automatic search (0..3).",
     )
     parser.add_argument(
+        "--wave-dominance-min-db",
+        type=float,
+        default=6.0,
+        help="Minimum selected/opposite modal power dominance (dB) required per port.",
+    )
+    parser.add_argument(
+        "--no-strict-normalization-qa",
+        action="store_true",
+        help="Do not fail the run when wave-dominance QA checks fail.",
+    )
+    parser.add_argument(
         "--quiet-run",
         action="store_true",
         help="Disable compiled-run progress output.",
@@ -1508,6 +1821,8 @@ def main():
             animation_frames=0,
             show_progress=not args.quiet_run,
             out_dir=cal_out,
+            wave_dominance_min_db=args.wave_dominance_min_db,
+            strict_normalization_qa=not args.no_strict_normalization_qa,
         )
         cal_ok, cal_summary = evaluate_straight_calibration(
             cal_result,
@@ -1559,6 +1874,8 @@ def main():
         animation_frames=args.animation_frames,
         show_progress=not args.quiet_run,
         out_dir=args.out_dir,
+        wave_dominance_min_db=args.wave_dominance_min_db,
+        strict_normalization_qa=not args.no_strict_normalization_qa,
         reference_incident=reference_incident,
         reference_reflection=reference_reflection,
     )
