@@ -836,6 +836,9 @@ def run_crossing(
     points_per_wavelength: int,
     layer: tuple[int, int] | None,
     use_pdk_stack: bool,
+    z_crop_auto: bool,
+    margin_z_above_um: float,
+    margin_z_below_um: float,
     extension_um: float,
     port_overlap_um: float,
     core_t_um: float,
@@ -845,6 +848,11 @@ def run_crossing(
     min_bottom_clad_um: float,
     monitor_candidates: int,
     mode_search_max: int,
+    pml_um: float,
+    port_margin_um: float,
+    source_port_offset_um: float,
+    distance_source_to_monitors_um: float,
+    run_after_sources_uoc: float,
     animation_frames: int,
     show_progress: bool,
     out_dir: Path,
@@ -869,6 +877,12 @@ def run_crossing(
         clad_above_um=clad_above_um,
         use_pdk_stack=bool(use_pdk_stack),
     )
+    if bool(z_crop_auto):
+        clad_below_um_resolved = float(max(0.0, margin_z_below_um))
+        clad_above_um_resolved = float(max(0.0, margin_z_above_um))
+        stack_meta["z_crop_auto"] = True
+    else:
+        stack_meta["z_crop_auto"] = False
     shift = max(0.0, float(top_clad_shift_um))
     min_bottom = max(0.0, float(min_bottom_clad_um))
     if shift > 0.0:
@@ -884,6 +898,7 @@ def run_crossing(
         f"clad_below={clad_below_um_resolved:.3f}um, "
         f"clad_above={clad_above_um_resolved:.3f}um, "
         f"used_pdk_stack={bool(stack_meta.get('used_pdk_stack', False))}, "
+        f"z_crop_auto={bool(stack_meta.get('z_crop_auto', False))}, "
         f"top_shift_applied={shift_eff:.3f}um"
     )
 
@@ -922,25 +937,25 @@ def run_crossing(
     f0 = LIGHT_SPEED / wl0
 
     src = ports[source_port]
-    source_span = max(2.2 * µm, 6.0 * float(src["width"]))
-    monitor_span = max(2.0 * µm, 5.5 * float(src["width"]))
-    z_margin = 0.20 * µm
-    max_z_span = max(0.6 * µm, design.depth - 2.0 * z_margin)
-    source_height = min(max_z_span, max(2.8 * µm, 10.0 * core_t))
-    monitor_height = min(max_z_span, max(2.6 * µm, 9.0 * core_t))
+    port_margin = max(0.0, float(port_margin_um)) * µm
+    source_span = max(float(src["width"]) + 2.0 * port_margin, float(src["width"]) + 0.1 * µm)
+    monitor_span = source_span
     z_center = float(src["z_center"])
+    z_span_limit = max(
+        0.2 * µm,
+        2.0 * min(z_center, float(design.depth) - z_center) - 0.02 * µm,
+    )
+    source_height = z_span_limit
+    monitor_height = z_span_limit
 
-    pml_xy = 1.0 * wl0
-    pml_z = 0.8 * wl0
-    max_outward_offset = max(0.9 * µm, extension - pml_xy - 0.35 * µm)
-    source_mag = min(1.6 * µm, 0.55 * max_outward_offset)
-    fwd_mag = max(0.70 * µm, source_mag - 0.45 * µm)
-    ref_mag = min(max_outward_offset - 0.20 * µm, source_mag + 0.65 * µm)
-    out_mag = min(max_outward_offset - 0.15 * µm, 0.80 * max_outward_offset)
+    pml_xy = max(0.0, float(pml_um)) * µm
+    pml_z = max(0.0, float(pml_um)) * µm
+    source_port_offset = max(0.0, float(source_port_offset_um)) * µm
+    dist_source_to_mon = max(0.0, float(distance_source_to_monitors_um)) * µm
 
-    source_offset = -source_mag
-    fwd_offset = -fwd_mag
-    ref_offset = -ref_mag
+    source_offset = source_port_offset
+    fwd_offset = source_port_offset + dist_source_to_mon
+    ref_offset = fwd_offset
     source_xy = move_along(src["center"], src["direction"], source_offset)
     source_center = (source_xy[0], source_xy[1], z_center)
     source_plane = port_plane(
@@ -967,17 +982,15 @@ def run_crossing(
         offset=ref_offset,
     )
 
-    # Build multiple output-monitor placement candidates (farther into straight sections).
+    # Build output-monitor placement candidates near each port, matching gsim defaults.
     out_mag_candidates = []
-    frac_lut = [0.60, 0.80, 0.95]
     n_cands = int(np.clip(monitor_candidates, 1, 3))
-    for frac in frac_lut[:n_cands]:
-        mag = float(np.clip(frac * out_mag, 0.70 * µm, max_outward_offset - 0.08 * µm))
+    for i in range(n_cands):
+        mag = source_port_offset + float(i) * (0.20 * µm)
         if not any(abs(mag - m) < 1e-12 for m in out_mag_candidates):
             out_mag_candidates.append(mag)
 
     out_candidates = {}
-    min_center_separation = 1.2 * max(source_span, monitor_span)
     for p in output_ports:
         cand_list = []
         for i, mag in enumerate(out_mag_candidates):
@@ -986,72 +999,23 @@ def run_crossing(
                 y_span=monitor_span,
                 z_span=monitor_height,
                 z_center=z_center,
-                offset=-mag,
+                offset=mag,
             )
-            c_out = line_center(plane)
-            dist = float(np.hypot(c_out[0] - src_plane_center[0], c_out[1] - src_plane_center[1]))
-            if dist < min_center_separation:
-                deeper_mag = min(max_outward_offset - 0.08 * µm, mag + (min_center_separation - dist))
-                plane = port_plane(
-                    ports[p],
-                    y_span=monitor_span,
-                    z_span=monitor_height,
-                    z_center=z_center,
-                    offset=-deeper_mag,
-                )
-                mag = deeper_mag
             cand_list.append(
                 {
                     "name": f"{p}_cand{i}",
-                    "offset": -mag,
+                    "offset": mag,
                     "plane": plane,
                 }
             )
         out_candidates[p] = cand_list
 
-    pulse_t0 = 12.0 / f0
-    pulse_sigma = 4.0 / f0
-    v_est = LIGHT_SPEED / max(n_core, 1e-9)
-
-    def travel_time(p0, p1):
-        return np.hypot(float(p1[0]) - float(p0[0]), float(p1[1]) - float(p0[1])) / max(v_est, 1e-30)
-
-    src_center_xy = tuple(float(v) for v in src["center"])
-    src_xy = (float(source_center[0]), float(source_center[1]))
-    fwd_center = line_center(fwd_plane)
-    ref_center = line_center(ref_plane)
-    t_fwd = pulse_t0 + travel_time(src_xy, (fwd_center[0], fwd_center[1]))
-    t_ref = pulse_t0 + travel_time(src_xy, src_center_xy) + travel_time(src_center_xy, (ref_center[0], ref_center[1]))
-
-    dft_half = 26.0 / f0
-
-    def centered_window(t_center):
-        return max(0.0, t_center - dft_half), t_center + dft_half
-
-    dft_fwd_t_start, dft_fwd_t_end = centered_window(t_fwd)
-    dft_ref_t_start, dft_ref_t_end = centered_window(t_ref)
-
-    out_windows = {}
-    for p in output_ports:
-        out_windows[p] = {}
-        out_center = tuple(float(v) for v in ports[p]["center"])
-        for cand in out_candidates[p]:
-            t_out = (
-                pulse_t0
-                + travel_time(src_xy, src_center_xy)
-                + travel_time(src_center_xy, out_center)
-                + travel_time(out_center, (line_center(cand["plane"])[0], line_center(cand["plane"])[1]))
-            )
-            out_windows[p][cand["name"]] = centered_window(t_out)
-
-    t_total = max(
-        dft_ref_t_end,
-        *(
-            out_windows[p][cand["name"]][1]
-            for p in output_ports
-            for cand in out_candidates[p]
-        ),
-    ) + 18.0 / f0
+    df = max(float(np.max(freqs) - np.min(freqs)), 1e-12)
+    pulse_sigma = 1.0 / (2.0 * np.pi * df)
+    pulse_t0 = 6.0 * pulse_sigma
+    uoc_to_s = 1e-6 / LIGHT_SPEED
+    run_after_s = max(0.0, float(run_after_sources_uoc)) * uoc_to_s
+    t_total = pulse_t0 + run_after_s + 12.0 / f0
     time = np.arange(0.0, t_total, dt)
     signal = np.exp(-0.5 * ((time - pulse_t0) / max(pulse_sigma, 1e-30)) ** 2) * np.cos(
         2.0 * np.pi * f0 * (time - pulse_t0)
@@ -1076,7 +1040,7 @@ def run_crossing(
         dft_enabled=True,
         dft_frequencies=freqs,
         dft_components=dft_components,
-        dft_window="hann",
+        dft_window="none",
         dft_record_every_step=True,
     )
 
@@ -1084,29 +1048,22 @@ def run_crossing(
         start=fwd_plane[0],
         end=fwd_plane[1],
         name=f"{source_port}_fwd",
-        dft_t_start=dft_fwd_t_start,
-        dft_t_end=dft_fwd_t_end,
         **monitor_cfg,
     )
     m_ref = Monitor(
         start=ref_plane[0],
         end=ref_plane[1],
         name=f"{source_port}_ref",
-        dft_t_start=dft_ref_t_start,
-        dft_t_end=dft_ref_t_end,
         **monitor_cfg,
     )
     output_monitors = []
     for p in output_ports:
         for cand in out_candidates[p]:
-            w0, w1 = out_windows[p][cand["name"]]
             output_monitors.append(
                 Monitor(
                     start=cand["plane"][0],
                     end=cand["plane"][1],
                     name=cand["name"],
-                    dft_t_start=w0,
-                    dft_t_end=w1,
                     **monitor_cfg,
                 )
             )
@@ -1374,6 +1331,11 @@ def run_crossing(
     source_refl_wave_key, source_refl_selected, source_refl_opposite, source_refl_dom_db = select_dominant_wave(
         source_refl_plus,
         source_refl_minus,
+        valid_mask,
+    )
+    source_refl_dom_db = wave_dominance_db(
+        source_refl_selected,
+        source_refl_opposite,
         valid_mask,
     )
     source_refl = safe_complex_ratio(source_refl_selected, source_incident)
@@ -1874,8 +1836,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--n-core",
         type=float,
-        default=2.0,
-        help="Core refractive index (default Si3N4-like).",
+        default=3.47,
+        help="Core refractive index (default Si-like, matching gsim reference).",
     )
     parser.add_argument(
         "--n-clad",
@@ -1893,19 +1855,36 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--points-per-wavelength",
         type=int,
-        default=8,
-        help="Grid resolution in points per wavelength.",
+        default=20,
+        help="Grid resolution in points per wavelength (gsim-like default).",
+    )
+    parser.add_argument(
+        "--no-z-crop-auto",
+        action="store_true",
+        help="Disable core-centered z-crop style margins (gsim-like behavior is enabled by default).",
+    )
+    parser.add_argument(
+        "--margin-z-above-um",
+        type=float,
+        default=0.5,
+        help="Top z-margin above core when z-crop-auto is enabled (um).",
+    )
+    parser.add_argument(
+        "--margin-z-below-um",
+        type=float,
+        default=0.5,
+        help="Bottom z-margin below core when z-crop-auto is enabled (um).",
     )
     parser.add_argument(
         "--extension-um",
         type=float,
-        default=4.0,
-        help="Port extension length on each side in microns.",
+        default=1.5,
+        help="Port extension length on each side in microns (gsim-like: margin + pml).",
     )
     parser.add_argument(
         "--port-overlap-um",
         type=float,
-        default=0.35,
+        default=0.10,
         help="Extra inward overlap of extension waveguides into the imported cell (um).",
     )
     parser.add_argument(
@@ -1917,19 +1896,19 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--clad-below-um",
         type=float,
-        default=1.2,
+        default=0.5,
         help="Bottom cladding thickness in microns (3D).",
     )
     parser.add_argument(
         "--clad-above-um",
         type=float,
-        default=1.2,
+        default=0.5,
         help="Top cladding thickness in microns (3D).",
     )
     parser.add_argument(
         "--top-clad-shift-um",
         type=float,
-        default=0.8,
+        default=0.0,
         help=(
             "Transfer this much cladding thickness from bottom to top "
             "to increase top clearance without growing total depth."
@@ -1944,14 +1923,44 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--monitor-candidates",
         type=int,
-        default=2,
+        default=1,
         help="Number of output-monitor placement candidates per port (1..3).",
     )
     parser.add_argument(
         "--mode-search-max",
         type=int,
-        default=1,
+        default=0,
         help="Max mode index for automatic search (0..3).",
+    )
+    parser.add_argument(
+        "--pml-um",
+        type=float,
+        default=1.0,
+        help="PML thickness in microns (gsim-like default).",
+    )
+    parser.add_argument(
+        "--port-margin-um",
+        type=float,
+        default=0.5,
+        help="Extra monitor/source span added on each side of port width (um).",
+    )
+    parser.add_argument(
+        "--source-port-offset-um",
+        type=float,
+        default=0.1,
+        help="Source offset from port center into device (um).",
+    )
+    parser.add_argument(
+        "--distance-source-to-monitors-um",
+        type=float,
+        default=0.2,
+        help="Additional source-port monitor offset past source into device (um).",
+    )
+    parser.add_argument(
+        "--run-after-sources-uoc",
+        type=float,
+        default=45.0,
+        help="Approximate run duration after source center, in um/c units (gsim-like fixed-time default).",
     )
     parser.add_argument(
         "--wave-dominance-min-db",
@@ -2063,6 +2072,9 @@ def main():
             points_per_wavelength=args.points_per_wavelength,
             layer=parse_layer(args.layer),
             use_pdk_stack=not args.no_use_pdk_stack,
+            z_crop_auto=not args.no_z_crop_auto,
+            margin_z_above_um=args.margin_z_above_um,
+            margin_z_below_um=args.margin_z_below_um,
             extension_um=args.extension_um,
             port_overlap_um=args.port_overlap_um,
             core_t_um=args.core_thickness_um,
@@ -2072,6 +2084,11 @@ def main():
             min_bottom_clad_um=args.min_bottom_clad_um,
             monitor_candidates=args.monitor_candidates,
             mode_search_max=args.mode_search_max,
+            pml_um=args.pml_um,
+            port_margin_um=args.port_margin_um,
+            source_port_offset_um=args.source_port_offset_um,
+            distance_source_to_monitors_um=args.distance_source_to_monitors_um,
+            run_after_sources_uoc=args.run_after_sources_uoc,
             animation_frames=0,
             show_progress=not args.quiet_run,
             out_dir=cal_out,
@@ -2120,6 +2137,9 @@ def main():
         points_per_wavelength=args.points_per_wavelength,
         layer=parse_layer(args.layer),
         use_pdk_stack=not args.no_use_pdk_stack,
+        z_crop_auto=not args.no_z_crop_auto,
+        margin_z_above_um=args.margin_z_above_um,
+        margin_z_below_um=args.margin_z_below_um,
         extension_um=args.extension_um,
         port_overlap_um=args.port_overlap_um,
         core_t_um=args.core_thickness_um,
@@ -2129,6 +2149,11 @@ def main():
         min_bottom_clad_um=args.min_bottom_clad_um,
         monitor_candidates=args.monitor_candidates,
         mode_search_max=args.mode_search_max,
+        pml_um=args.pml_um,
+        port_margin_um=args.port_margin_um,
+        source_port_offset_um=args.source_port_offset_um,
+        distance_source_to_monitors_um=args.distance_source_to_monitors_um,
+        run_after_sources_uoc=args.run_after_sources_uoc,
         animation_frames=args.animation_frames,
         show_progress=not args.quiet_run,
         out_dir=args.out_dir,
