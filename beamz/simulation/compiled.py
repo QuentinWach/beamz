@@ -495,6 +495,8 @@ class CompiledSimulation:
                 row_f_im = f_im[mi]
                 row_ph_re = ph_re[mi]
                 row_ph_im = ph_im[mi]
+                cur_ph_re = row_ph_re
+                cur_ph_im = row_ph_im
                 delta_re = flux_sample * dt_scalar * row_ph_re * mask_f
                 delta_im = flux_sample * dt_scalar * row_ph_im * mask_f
                 row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
@@ -525,12 +527,8 @@ class CompiledSimulation:
                     jnp.asarray(1.0, dtype=jnp.float32),
                 )
                 w = jnp.where(do_dft, w, jnp.asarray(0.0, dtype=jnp.float32))
-
-                f_hz = bm.freq_hz[i]
-                mask_f = bm.freq_mask[i]
-                phi = -two_pi * f_hz * t_phys
-                ph_vec_re = jnp.cos(phi) * mask_f
-                ph_vec_im = jnp.sin(phi) * mask_f
+                ph_vec_re = cur_ph_re * mask_f
+                ph_vec_im = cur_ph_im * mask_f
 
                 vecs = jnp.stack((exs, eys, ezs, hxs, hys, hzs), axis=0)
                 comp_mask = bm.dft_component_mask[i][:, None, None]
@@ -615,6 +613,8 @@ class CompiledSimulation:
                 row_f_im = freq_flux_im[mi, : mon.freq_count]
                 row_ph_re = freq_phase_re[mi, : mon.freq_count]
                 row_ph_im = freq_phase_im[mi, : mon.freq_count]
+                cur_ph_re = row_ph_re
+                cur_ph_im = row_ph_im
                 delta_re = power_sample * dt_scalar * row_ph_re
                 delta_im = power_sample * dt_scalar * row_ph_im
                 row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
@@ -628,6 +628,9 @@ class CompiledSimulation:
                 freq_phase_re = freq_phase_re.at[mi, : mon.freq_count].set(row_ph_re)
                 freq_phase_im = freq_phase_im.at[mi, : mon.freq_count].set(row_ph_im)
             if mon.dft_enabled and mon.freq_count > 0 and mon.dft_point_count > 0:
+                mi = mon.monitor_index
+                cur_ph_re = freq_phase_re[mi, : mon.freq_count]
+                cur_ph_im = freq_phase_im[mi, : mon.freq_count]
                 do_dft = (
                     ((abs_step % mon.dft_record_interval) == 0)
                     & (t_phys >= mon.dft_t_start)
@@ -661,13 +664,9 @@ class CompiledSimulation:
                 vecs = jnp.stack(
                     (ex_vals, ey_vals, ez_vals, hx_vals, hy_vals, hz_vals), axis=0
                 )
-                phase = -two_pi * mon.freq_hz * t_phys
-                ph_re = jnp.cos(phase)
-                ph_im = jnp.sin(phase)
                 comp_mask = mon.dft_component_mask[:, None, None]
-                delta_re = w * comp_mask * jnp.einsum("f,cp->cfp", ph_re, vecs)
-                delta_im = w * comp_mask * jnp.einsum("f,cp->cfp", ph_im, vecs)
-                mi = mon.monitor_index
+                delta_re = w * comp_mask * jnp.einsum("f,cp->cfp", cur_ph_re, vecs)
+                delta_im = w * comp_mask * jnp.einsum("f,cp->cfp", cur_ph_im, vecs)
                 dft_vec_re = dft_vec_re.at[
                     mi, :, : mon.freq_count, : mon.dft_point_count
                 ].add(delta_re[:, : mon.freq_count, : mon.dft_point_count])
