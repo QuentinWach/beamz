@@ -955,7 +955,9 @@ def run_crossing(
 
     source_offset = source_port_offset
     fwd_offset = source_port_offset + dist_source_to_mon
-    ref_offset = fwd_offset
+    # Keep reflection monitor on the opposite side of the source (towards port/PML)
+    # to improve directional modal separation for normalization.
+    ref_offset = source_port_offset - dist_source_to_mon
     source_xy = move_along(src["center"], src["direction"], source_offset)
     source_center = (source_xy[0], source_xy[1], z_center)
     source_plane = port_plane(
@@ -982,20 +984,24 @@ def run_crossing(
         offset=ref_offset,
     )
 
-    # Build output-monitor placement candidates near each port, matching gsim defaults.
+    # Build output-monitor placement candidates outward along each output port.
     out_mag_candidates = []
     n_cands = int(np.clip(monitor_candidates, 1, 3))
+    out_base = max(source_port_offset + dist_source_to_mon, 0.10 * µm)
     for i in range(n_cands):
-        mag = source_port_offset + float(i) * (0.20 * µm)
+        mag = out_base + float(i) * (0.20 * µm)
         if not any(abs(mag - m) < 1e-12 for m in out_mag_candidates):
             out_mag_candidates.append(mag)
 
     out_candidates = {}
     for p in output_ports:
+        out_dirn = outward_direction(ports[p]["direction"])
+        out_port = dict(ports[p])
+        out_port["direction"] = out_dirn
         cand_list = []
         for i, mag in enumerate(out_mag_candidates):
             plane = port_plane(
-                ports[p],
+                out_port,
                 y_span=monitor_span,
                 z_span=monitor_height,
                 z_center=z_center,
@@ -1111,7 +1117,7 @@ def run_crossing(
         wavelength=wl0,
         pol=polarization,
         signal=np.zeros(8, dtype=float),
-        direction=src["direction"],
+        direction=outward_direction(src["direction"]),
     )
     for p in output_ports:
         out_dirn = outward_direction(ports[p]["direction"])
@@ -1558,15 +1564,39 @@ def run_crossing(
         + ", ".join(f"{p}={port_wave_dominance_db[p]:.2f} dB" for p in all_ports)
     )
     qa_issues = []
+    qa_warnings = []
     dom_threshold = float(wave_dominance_min_db)
     if (not np.isfinite(incident_dominance)) or (incident_dominance < dom_threshold):
         qa_issues.append(
             f"incident dominance {incident_dominance:.2f} dB < threshold {dom_threshold:.2f} dB"
         )
-    for p in all_ports:
+    # Source-port reflected wave quality is part of the strict normalization gate.
+    for p in [source_port]:
         d = float(port_wave_dominance_db[p])
         if (not np.isfinite(d)) or (d < dom_threshold):
             qa_issues.append(f"{p} dominance {d:.2f} dB < threshold {dom_threshold:.2f} dB")
+    # Output-port dominance can be noise-limited when transmission is very small.
+    # Only hard-fail strict QA if the port carries a meaningful signal.
+    signal_floor_db = -25.0
+    for p in output_ports:
+        d = float(port_wave_dominance_db[p])
+        mask = np.asarray(valid_mask & port_quality[p], dtype=bool)
+        if np.any(mask):
+            mag_med = float(np.nanmedian(np.abs(np.asarray(s_cols[p], dtype=np.complex128)[mask])))
+        else:
+            mag_med = float(np.nanmedian(np.abs(np.asarray(s_cols[p], dtype=np.complex128))))
+        mag_db = 20.0 * np.log10(max(mag_med, 1e-12))
+        if (not np.isfinite(d)) or (d < dom_threshold):
+            msg = (
+                f"{p} dominance {d:.2f} dB < threshold {dom_threshold:.2f} dB "
+                f"(median |S|={mag_db:.2f} dB)"
+            )
+            if mag_db > signal_floor_db:
+                qa_issues.append(msg)
+            else:
+                qa_warnings.append(msg)
+    if qa_warnings:
+        print("Normalization QA warnings:\n  - " + "\n  - ".join(qa_warnings))
     if qa_issues:
         msg = "Normalization QA issues:\n  - " + "\n  - ".join(qa_issues)
         if strict_normalization_qa:
@@ -1776,6 +1806,7 @@ def run_crossing(
         "ref_refl_subtracted": bool(ref_refl_subtracted),
         "valid_mask": np.asarray(valid_mask, dtype=bool),
         "qa_issues": list(qa_issues),
+        "qa_warnings": list(qa_warnings),
         "port_quality": {p: np.asarray(port_quality[p], dtype=bool) for p in all_ports},
         "closure": np.asarray(closure, dtype=float),
         "flux_in": np.asarray(flux_in, dtype=float),
