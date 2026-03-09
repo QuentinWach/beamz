@@ -860,6 +860,7 @@ def run_crossing(
     strict_normalization_qa: bool = True,
     reference_incident: np.ndarray | None = None,
     reference_reflection: np.ndarray | None = None,
+    source_direction_mode: str = "inward",
 ) -> dict[str, object]:
     component, component_label = load_crossing_component(component_name=component_name)
     polarization = str(polarization).lower()
@@ -937,6 +938,14 @@ def run_crossing(
     f0 = LIGHT_SPEED / wl0
 
     src = ports[source_port]
+    source_direction_mode = str(source_direction_mode).lower()
+    if source_direction_mode not in {"inward", "outward"}:
+        raise ValueError("source_direction_mode must be one of {'inward', 'outward'}.")
+    source_drive_direction = (
+        src["direction"]
+        if source_direction_mode == "inward"
+        else outward_direction(src["direction"])
+    )
     port_margin = max(0.0, float(port_margin_um)) * µm
     source_span = max(float(src["width"]) + 2.0 * port_margin, float(src["width"]) + 0.1 * µm)
     monitor_span = source_span
@@ -1037,7 +1046,7 @@ def run_crossing(
         wavelength=wl0,
         pol=polarization,
         signal=signal,
-        direction=src["direction"],
+        direction=source_drive_direction,
     )
 
     dft_components = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
@@ -1107,7 +1116,7 @@ def run_crossing(
         wavelength=wl0,
         pol=polarization,
         signal=np.zeros(8, dtype=float),
-        direction=src["direction"],
+        direction=source_drive_direction,
     )
     mode_sources[f"{source_port}_ref"] = ModeSource(
         grid=grid,
@@ -1117,7 +1126,7 @@ def run_crossing(
         wavelength=wl0,
         pol=polarization,
         signal=np.zeros(8, dtype=float),
-        direction=outward_direction(src["direction"]),
+        direction=outward_direction(source_drive_direction),
     )
     for p in output_ports:
         out_dirn = outward_direction(ports[p]["direction"])
@@ -1161,6 +1170,7 @@ def run_crossing(
         f"component={component_label}, source={source_port}, outputs={output_ports}, "
         f"pol={polarization}, freq_points={num_freqs}, steps={len(time)}, "
         f"dx={dx/µm:.4f}um, depth={design.depth/µm:.2f}um, "
+        f"source_dir={source_drive_direction} ({source_direction_mode}), "
         f"offsets(src/fwd/ref)={source_offset/µm:.2f}/{fwd_offset/µm:.2f}/{ref_offset/µm:.2f}um"
     )
     print(
@@ -1240,7 +1250,7 @@ def run_crossing(
         return PortSpec(
             name=source_drive_port,
             monitor_name=f"{source_port}_fwd",
-            direction=src["direction"],
+            direction=source_drive_direction,
             polarization=polarization,
             mode_index=mode_index,
             incident_wave="auto",
@@ -1251,7 +1261,7 @@ def run_crossing(
         return PortSpec(
             name=source_port,
             monitor_name=f"{source_port}_ref",
-            direction=outward_direction(src["direction"]),
+            direction=outward_direction(source_drive_direction),
             polarization=polarization,
             mode_index=mode_index,
             scattered_wave="plus",
@@ -1611,13 +1621,13 @@ def run_crossing(
     flux_in = dft_directional_power_spectrum(
         sim,
         monitor_objects[f"{source_port}_fwd"],
-        src["direction"],
+        source_drive_direction,
         freqs,
     )
     flux_ref = dft_directional_power_spectrum(
         sim,
         monitor_objects[f"{source_port}_ref"],
-        outward_direction(src["direction"]),
+        outward_direction(source_drive_direction),
         freqs,
     )
     flux_out = {}
@@ -1791,6 +1801,8 @@ def run_crossing(
     return {
         "component_label": component_label,
         "source_port": source_port,
+        "source_drive_direction": source_drive_direction,
+        "source_direction_mode": source_direction_mode,
         "all_ports": list(all_ports),
         "selected_layer": layer_resolved,
         "stack_used": bool(stack_meta.get("used_pdk_stack", False)),
@@ -1886,6 +1898,34 @@ def evaluate_straight_calibration(
         "closure_max_abs_error": closure_err,
     }
     return passed, summary
+
+
+def choose_best_calibration_direction(
+    summaries: dict[str, tuple[bool, dict[str, float | str]]],
+    *,
+    min_through_db: float,
+    max_reflection_db: float,
+    max_closure_error: float,
+) -> str:
+    def _score(item: tuple[bool, dict[str, float | str]]) -> float:
+        passed, summary = item
+        through = float(summary.get("through_median_db", -np.inf))
+        refl = float(summary.get("reflection_peak_db", np.inf))
+        closure = float(summary.get("closure_max_abs_error", np.inf))
+        score = through - 0.30 * refl - 8.0 * closure
+        if passed:
+            score += 100.0
+        score -= 10.0 * max(0.0, min_through_db - through)
+        score -= 2.0 * max(0.0, refl - max_reflection_db)
+        score -= 25.0 * max(0.0, closure - max_closure_error)
+        return score
+
+    ranked = sorted(
+        summaries.items(),
+        key=lambda kv: _score(kv[1]),
+        reverse=True,
+    )
+    return str(ranked[0][0])
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -2035,6 +2075,16 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Approximate run duration after source center, in um/c units (gsim-like fixed-time default).",
     )
     parser.add_argument(
+        "--source-direction",
+        type=str,
+        default="auto",
+        choices=["auto", "inward", "outward"],
+        help=(
+            "Source launch direction policy relative to gdsf port mapping. "
+            "'auto' uses straight calibration (if enabled) to choose inward/outward."
+        ),
+    )
+    parser.add_argument(
         "--wave-dominance-min-db",
         type=float,
         default=6.0,
@@ -2126,63 +2176,96 @@ def main():
 
     reference_incident = None
     reference_reflection = None
-    if args.run_calibration:
-        cal_out = args.out_dir / "calibration"
+    selected_source_direction_mode = (
+        args.source_direction if args.source_direction in {"inward", "outward"} else "inward"
+    )
+    if args.source_direction == "auto" and not args.run_calibration:
         print(
-            "Running straight-waveguide calibration gate: "
-            f"component={args.calibration_component}, out_dir={cal_out}"
+            "source-direction=auto requested without calibration; defaulting to 'inward'. "
+            "Use --run-calibration to audit inward/outward automatically."
         )
-        cal_result = run_crossing(
-            component_name=args.calibration_component,
-            wl0=args.wl0_nm * 1e-9,
-            wl_min=args.wl_min_nm * 1e-9,
-            wl_max=args.wl_max_nm * 1e-9,
-            num_freqs=args.num_freqs,
-            n_core=args.n_core,
-            n_clad=args.n_clad,
-            polarization=args.polarization,
-            points_per_wavelength=args.points_per_wavelength,
-            layer=parse_layer(args.layer),
-            use_pdk_stack=not args.no_use_pdk_stack,
-            z_crop_auto=not args.no_z_crop_auto,
-            margin_z_above_um=args.margin_z_above_um,
-            margin_z_below_um=args.margin_z_below_um,
-            extension_um=args.extension_um,
-            port_overlap_um=args.port_overlap_um,
-            core_t_um=args.core_thickness_um,
-            clad_below_um=args.clad_below_um,
-            clad_above_um=args.clad_above_um,
-            top_clad_shift_um=args.top_clad_shift_um,
-            min_bottom_clad_um=args.min_bottom_clad_um,
-            monitor_candidates=args.monitor_candidates,
-            mode_search_max=args.mode_search_max,
-            pml_um=args.pml_um,
-            port_margin_um=args.port_margin_um,
-            source_port_offset_um=args.source_port_offset_um,
-            distance_source_to_monitors_um=args.distance_source_to_monitors_um,
-            run_after_sources_uoc=args.run_after_sources_uoc,
-            animation_frames=0,
-            show_progress=not args.quiet_run,
-            out_dir=cal_out,
-            wave_dominance_min_db=args.wave_dominance_min_db,
-            strict_normalization_qa=not args.no_strict_normalization_qa,
+    if args.run_calibration:
+        direction_candidates = (
+            ["inward", "outward"] if args.source_direction == "auto" else [args.source_direction]
         )
-        cal_ok, cal_summary = evaluate_straight_calibration(
-            cal_result,
+        cal_runs: dict[str, dict[str, object]] = {}
+        cal_summaries: dict[str, tuple[bool, dict[str, float | str]]] = {}
+        for dir_mode in direction_candidates:
+            cal_out = args.out_dir / "calibration" / dir_mode
+            print(
+                "Running straight-waveguide calibration gate: "
+                f"component={args.calibration_component}, out_dir={cal_out}, "
+                f"source_direction={dir_mode}"
+            )
+            cal_result = run_crossing(
+                component_name=args.calibration_component,
+                wl0=args.wl0_nm * 1e-9,
+                wl_min=args.wl_min_nm * 1e-9,
+                wl_max=args.wl_max_nm * 1e-9,
+                num_freqs=args.num_freqs,
+                n_core=args.n_core,
+                n_clad=args.n_clad,
+                polarization=args.polarization,
+                points_per_wavelength=args.points_per_wavelength,
+                layer=parse_layer(args.layer),
+                use_pdk_stack=not args.no_use_pdk_stack,
+                z_crop_auto=not args.no_z_crop_auto,
+                margin_z_above_um=args.margin_z_above_um,
+                margin_z_below_um=args.margin_z_below_um,
+                extension_um=args.extension_um,
+                port_overlap_um=args.port_overlap_um,
+                core_t_um=args.core_thickness_um,
+                clad_below_um=args.clad_below_um,
+                clad_above_um=args.clad_above_um,
+                top_clad_shift_um=args.top_clad_shift_um,
+                min_bottom_clad_um=args.min_bottom_clad_um,
+                monitor_candidates=args.monitor_candidates,
+                mode_search_max=args.mode_search_max,
+                pml_um=args.pml_um,
+                port_margin_um=args.port_margin_um,
+                source_port_offset_um=args.source_port_offset_um,
+                distance_source_to_monitors_um=args.distance_source_to_monitors_um,
+                run_after_sources_uoc=args.run_after_sources_uoc,
+                animation_frames=0,
+                show_progress=not args.quiet_run,
+                out_dir=cal_out,
+                wave_dominance_min_db=args.wave_dominance_min_db,
+                # Audit run should not abort before we can compare candidates.
+                strict_normalization_qa=False,
+                source_direction_mode=dir_mode,
+            )
+            cal_ok, cal_summary = evaluate_straight_calibration(
+                cal_result,
+                min_through_db=args.cal_min_through_db,
+                max_reflection_db=args.cal_max_reflection_db,
+                max_closure_error=args.cal_max_closure_error,
+            )
+            cal_runs[dir_mode] = cal_result
+            cal_summaries[dir_mode] = (cal_ok, cal_summary)
+            print(
+                f"Calibration summary ({dir_mode}): "
+                f"through_port={cal_summary['through_port']}, "
+                f"through_median_db={cal_summary['through_median_db']:.2f}, "
+                f"reflection_peak_db={cal_summary['reflection_peak_db']:.2f}, "
+                f"closure_max_abs_error={cal_summary['closure_max_abs_error']:.3f}, "
+                f"pass={cal_ok}"
+            )
+
+        selected_source_direction_mode = choose_best_calibration_direction(
+            cal_summaries,
             min_through_db=args.cal_min_through_db,
             max_reflection_db=args.cal_max_reflection_db,
             max_closure_error=args.cal_max_closure_error,
         )
         print(
-            "Calibration summary: "
-            f"through_port={cal_summary['through_port']}, "
-            f"through_median_db={cal_summary['through_median_db']:.2f}, "
-            f"reflection_peak_db={cal_summary['reflection_peak_db']:.2f}, "
-            f"closure_max_abs_error={cal_summary['closure_max_abs_error']:.3f}"
+            f"Selected source-direction mode from calibration audit: {selected_source_direction_mode}"
         )
+        cal_ok, cal_summary = cal_summaries[selected_source_direction_mode]
+        cal_result = cal_runs[selected_source_direction_mode]
         if not cal_ok:
             raise RuntimeError(
-                "Calibration gate failed. "
+                "Calibration gate failed for selected direction mode "
+                f"'{selected_source_direction_mode}'. "
                 "Adjust source/monitor placement and normalization before device extraction."
             )
         if not args.no_calibration_reference_normalization:
@@ -2233,6 +2316,7 @@ def main():
         strict_normalization_qa=not args.no_strict_normalization_qa,
         reference_incident=reference_incident,
         reference_reflection=reference_reflection,
+        source_direction_mode=selected_source_direction_mode,
     )
 
 
