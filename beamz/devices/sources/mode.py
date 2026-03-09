@@ -3,7 +3,7 @@ import logging
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.const import EPS_0, LIGHT_SPEED, MU_0, µm
+from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices.sources.solve import solve_modes
 
 logger = logging.getLogger(__name__)
@@ -206,7 +206,8 @@ def _solve_numeric_k_axis(omega, dt, d_axis, neff, eps=1e-30):
 def _numeric_phase_delay(omega, k_num, delta_s, eps=1e-30):
     """Convert numerical phase advance into a time delay."""
     omega_r = max(abs(float(omega)), eps)
-    return float(max(0.0, float(k_num) * float(delta_s)) / omega_r)
+    # Keep the sign: launch direction depends on the signed E/H plane offset.
+    return float((float(k_num) * float(delta_s)) / omega_r)
 
 
 def _numeric_impedance_axis(omega, dt, d_axis, k_num, neff, mu_r=1.0, eps=1e-30):
@@ -1252,7 +1253,7 @@ class ModeSource:
             if self.direction == "+x":
                 offset_idx = max(0, center_idx - 1)
             else:
-                offset_idx = min(nx - 2, center_idx)
+                offset_idx = min(nx - 2, center_idx + 1)
 
             if is_3d:
                 eps_profile = permittivity[:, :, center_idx]
@@ -1266,7 +1267,7 @@ class ModeSource:
             if self.direction == "+y":
                 offset_idx = max(0, center_idx - 1)
             else:
-                offset_idx = min(ny - 2, center_idx)
+                offset_idx = min(ny - 2, center_idx + 1)
 
             if is_3d:
                 eps_profile = permittivity[:, center_idx, :]
@@ -1280,7 +1281,7 @@ class ModeSource:
             if self.direction == "+z":
                 offset_idx = max(0, center_idx - 1)
             else:
-                offset_idx = min(nz - 2, center_idx)
+                offset_idx = min(nz - 2, center_idx + 1)
 
             eps_profile = permittivity[center_idx, :, :]
             self._eps_profile_2d = eps_profile
@@ -1778,7 +1779,7 @@ class ModeSource:
                 coord_e = (idx_e + 0.5) * dy
                 coord_h = (idx_h + 1.0) * dy
 
-        delta_s = abs(coord_e - coord_h)
+        delta_s = float(coord_e - coord_h)
         if is_3d and dt is not None:
             omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
             d_axis = {"x": dx, "y": dy, "z": dz}[axis]
