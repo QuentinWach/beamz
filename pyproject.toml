@@ -64,9 +64,6 @@ test = [ # Adding a 'test' extra that includes pytest and pytest-cov for conveni
     "pytest-cov>=4.0.0",
     "pytest-randomly>=3.0.0",
 ]
-scene = [
-    "anywidget>=0.9.18",
-]
 
 
 [tool.black]
