@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.24.4",
+    "anywidget>=0.9.18",
     "matplotlib>=3.7.5",
     "gdspy>=1.6.0",
     "scipy>=1.10.1",
@@ -60,9 +61,6 @@ test = [ # Adding a 'test' extra that includes pytest and pytest-cov for conveni
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-randomly>=3.0.0",
-]
-scene = [
-    "anywidget>=0.9.18",
 ]
 
 
