@@ -7,7 +7,7 @@ from ._beamz import (
     looks_like_beamz_simulation,
     simulation_to_scene,
 )
-from ._browser import open_in_browser
+from ._browser import inline_iframe_html, open_in_browser
 from ._demo import demo_scene, demo_widget
 from ._scene import (
     CameraSpec,
@@ -31,6 +31,7 @@ __all__ = [
     "demo_scene",
     "demo_widget",
     "design_to_scene",
+    "inline_iframe_html",
     "looks_like_beamz_design",
     "looks_like_beamz_simulation",
     "open_in_browser",

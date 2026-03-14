@@ -9,8 +9,10 @@ from beamz.visual.scene import (
     Object3D,
     SceneSpec,
     demo_scene,
+    inline_iframe_html,
     scene_from_dict,
     simulation_to_scene,
+    view3d,
 )
 from beamz.visual.scene._browser import open_in_browser
 
@@ -125,6 +127,12 @@ def test_open_in_browser_writes_html_without_launching():
     assert url.startswith("file://")
 
 
+def test_inline_iframe_html_contains_iframe():
+    html = inline_iframe_html(demo_scene())
+    assert "<iframe" in html
+    assert "srcdoc=" in html
+
+
 def test_simulation_to_scene_includes_devices_boundaries_and_metadata():
     scene = simulation_to_scene(_make_simulation())
 
@@ -160,3 +168,9 @@ def test_simulation_show_delegates_to_view3d(monkeypatch):
     assert result == "scene-view"
     assert isinstance(captured["value"], SceneSpec)
     assert captured["kwargs"] == {"mode": "browser", "open_browser": False}
+
+
+def test_view3d_inline_returns_ipython_html():
+    result = view3d(demo_scene(), mode="inline")
+    assert hasattr(result, "data")
+    assert "<iframe" in result.data

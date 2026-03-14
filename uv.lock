@@ -121,6 +121,7 @@ name = "beamz"
 version = "0.2.1"
 source = { editable = "." }
 dependencies = [
+    { name = "anywidget" },
     { name = "gdsfactory", version = "8.32.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "gdsfactory", version = "9.34.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "gdspy" },
@@ -153,9 +154,6 @@ dev = [
 gpu = [
     { name = "torch" },
 ]
-scene = [
-    { name = "anywidget" },
-]
 test = [
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -164,7 +162,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anywidget", marker = "extra == 'scene'", specifier = ">=0.9.18" },
+    { name = "anywidget", specifier = ">=0.9.18" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=22.0.0" },
     { name = "flake8", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "gdsfactory" },
@@ -188,7 +186,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'gpu'", specifier = ">=2.6.0" },
     { name = "traitlets", specifier = ">=5.14.0" },
 ]
-provides-extras = ["dev", "gpu", "test", "scene"]
+provides-extras = ["dev", "gpu", "test"]
 
 [[package]]
 name = "black"

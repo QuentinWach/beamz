@@ -5,7 +5,7 @@ from typing import Any
 from traitlets import Dict, List, Unicode
 
 from ._beamz import beamz_to_scene, looks_like_beamz_design, looks_like_beamz_simulation
-from ._browser import open_in_browser
+from ._browser import inline_iframe_html, open_in_browser
 from ._frontend import widget_css, widget_esm
 from ._scene import SceneSpec, scene_from_dict
 
@@ -42,7 +42,7 @@ class SceneWidget(_WidgetBase):
         if anywidget is None:
             raise RuntimeError(
                 "Rendering the BEAMZ scene widget requires `anywidget`. "
-                "Install BeamZ with the `scene` extra."
+                "Reinstall BeamZ or install `anywidget` in this environment."
             )
         scene_spec = scene if isinstance(scene, SceneSpec) else scene_from_dict(scene)
         scene_json = scene_spec.to_dict()
@@ -82,17 +82,21 @@ def view3d(
     mode: str = "auto",
     open_browser: bool = True,
     **kwargs: Any,
-) -> SceneWidget | str:
+) -> Any:
     scene = _coerce_scene(value)
     chosen_mode = mode
     if chosen_mode == "auto":
-        chosen_mode = (
-            "widget" if _in_notebook() and anywidget is not None else "browser"
-        )
+        chosen_mode = "inline" if _in_notebook() else "browser"
+    if chosen_mode == "inline":
+        try:
+            from IPython.display import HTML
+        except ImportError as exc:
+            raise RuntimeError("mode='inline' requires IPython.") from exc
+        return HTML(inline_iframe_html(scene))
     if chosen_mode == "browser":
         return open_in_browser(scene, open_browser=open_browser)
     if chosen_mode != "widget":
-        raise ValueError("mode must be one of: 'auto', 'widget', 'browser'")
+        raise ValueError("mode must be one of: 'auto', 'inline', 'widget', 'browser'")
     return SceneWidget(scene=scene, **kwargs)
 
 
