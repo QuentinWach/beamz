@@ -21,6 +21,7 @@ from beamz.visual.helpers import (
     display_status,
     get_si_scale_and_label,
 )
+from beamz.visual.scene import beamz_to_scene, view3d
 from beamz.visual.source_plots import plot_signal, show_mode_profile
 from beamz.visual.video import VideoRecorder
 
@@ -41,4 +42,6 @@ __all__ = [
     "calc_optimal_fdtd_params",
     "plot_signal",
     "show_mode_profile",
+    "beamz_to_scene",
+    "view3d",
 ]
