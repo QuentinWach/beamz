@@ -22,6 +22,7 @@ wheels/
 *.excalidraw
 wip/
 experiments/
+results/
 
 # Virtual Environment
 venv/
