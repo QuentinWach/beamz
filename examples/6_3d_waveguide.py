@@ -28,7 +28,7 @@ waveguide = Rectangle(
     material=Material(N_CORE**2)
 )
 design += waveguide
-design.show()
+#design.show()
 
 # 3. Add a Mode Source
 # Define the signal
@@ -59,7 +59,7 @@ source.initialize(grid.permittivity, DX)
 
 # Plot and save all mode field components (Ex, Ey, Ez, Hx, Hy, Hz)
 print("Plotting all mode field components...")
-source.show()
+#source.show()
 print("Mode profile figure saved to mode_profile.png")
 
 # 4. Add Monitors
@@ -74,13 +74,20 @@ monitor_xy = Monitor(
 #design.show()
 
 # 5. Run the Simulation
-sim = Simulation(design=design, devices=[source, monitor_xy], 
-boundaries=[PML(edges='all', thickness=0.75*WL)], time=time_steps, resolution=DX)
+sim = Simulation(
+    design=design, 
+    devices=[source, monitor_xy], 
+    boundaries=[PML(edges='all', thickness=0.75*WL)],
+    time=time_steps,
+    resolution=DX)
+
+# Show the design
+sim.show()
 
 # Run with live animation of the Ez field on the XY monitor
-results = sim.run(animate_live="Ez",
-    animation_interval=15, 
+#results = sim.run(animate_live="Ez",
+#    animation_interval=15, 
     #axis_scale=[-0.9e-4, 0.9e-4],
-    clean_visualization=True, 
-    save_video="3d_waveguide.mp4",
-    video_fps=40)
+#    clean_visualization=True, 
+#    save_video="3d_waveguide.mp4",
+#    video_fps=40)
