@@ -356,6 +356,16 @@ function makeSegments(points, material) {
   return new THREE.LineSegments(geometry, material);
 }
 
+function measurementScale(size) {
+  const spans = [size.x, size.y, size.z]
+    .map((value) => Math.abs(Number(value) || 0))
+    .filter((value) => value > 0);
+  if (spans.length === 0) {
+    return 1e-9;
+  }
+  return Math.max(...spans);
+}
+
 function setSegmentsPoints(lineSegments, points) {
   lineSegments.geometry.dispose();
   lineSegments.geometry = new THREE.BufferGeometry().setFromPoints(points);
@@ -371,6 +381,7 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
   const max = box.max.clone();
   const size = box.getSize(new THREE.Vector3());
   const diag = size.length();
+  const scale = measurementScale(size);
   const edgeMaterial = new THREE.LineBasicMaterial({ color: theme.measurement.edge, transparent: true, opacity: 0.8 });
   const axisMaterial = new THREE.LineBasicMaterial({ color: theme.measurement.axis, transparent: true, opacity: 0.95 });
   const tickMaterial = new THREE.LineBasicMaterial({ color: theme.measurement.tick, transparent: true, opacity: 0.9 });
@@ -400,7 +411,7 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
     ),
   );
 
-  const tickLength = Math.max(diag * 0.015, 0.04);
+  const tickLength = Math.max(scale * 0.035, diag * 0.015, 1e-9);
 
   const axisConfigs = [
     {
