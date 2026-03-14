@@ -34,4 +34,4 @@ sim = Simulation(design=design, devices=[source, monitor], boundaries=[PML(edges
 sim.show()
 
 # The simulation will now automatically detect the monitor and use it for live animation
-sim.run(animate_live="Hy", animation_interval=2, clean_visualization=False)
+#sim.run(animate_live="Hy", animation_interval=2, clean_visualization=False)
