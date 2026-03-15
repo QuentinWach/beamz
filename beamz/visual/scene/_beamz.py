@@ -6,6 +6,18 @@ from typing import Any, Iterable
 from ._scene import CameraSpec, ClipPlaneSpec, MaterialSpec, Object3D, SceneSpec
 
 
+_STRUCTURE_PALETTE = (
+    "#2563eb",
+    "#0891b2",
+    "#0f766e",
+    "#65a30d",
+    "#ca8a04",
+    "#ea580c",
+    "#dc2626",
+    "#9333ea",
+)
+
+
 @dataclass(slots=True)
 class _Bounds:
     min_x: float
@@ -117,15 +129,14 @@ def _design_bounds(design: Any) -> _Bounds:
     return _Bounds(0.0, 0.0, 0.0, width, height, max_z)
 
 
-def _material_spec(structure: Any, fallback: str) -> MaterialSpec:
-    color = getattr(structure, "color", None) or fallback
+def _material_spec(structure: Any, color: str) -> MaterialSpec:
     material = getattr(structure, "material", None)
     permittivity = (
         getattr(material, "permittivity", 1.0) if material is not None else 1.0
     )
     opacity = 0.08 if abs(float(permittivity) - 1.0) < 0.05 else 0.7
     wireframe = bool(getattr(structure, "is_pml", False))
-    return MaterialSpec(color=str(color), opacity=opacity, wireframe=wireframe)
+    return MaterialSpec(color=color, opacity=opacity, wireframe=wireframe)
 
 
 def _structure_metadata(structure: Any) -> dict[str, Any]:
@@ -147,7 +158,16 @@ def _structure_metadata(structure: Any) -> dict[str, Any]:
 
 def _structure_objects(design: Any) -> list[Object3D]:
     objects: list[Object3D] = []
+    color_by_material_key: dict[tuple[Any, ...], str] = {}
     for index, structure in enumerate(getattr(design, "structures", [])):
+        material_key = _structure_material_key(structure)
+        color = color_by_material_key.get(material_key)
+        if color is None:
+            color = (
+                getattr(structure, "color", None)
+                or _STRUCTURE_PALETTE[len(color_by_material_key) % len(_STRUCTURE_PALETTE)]
+            )
+            color_by_material_key[material_key] = str(color)
         label = (
             f"PML {index + 1}"
             if bool(getattr(structure, "is_pml", False))
@@ -173,8 +193,11 @@ def _structure_objects(design: Any) -> list[Object3D]:
                     kind="poly_extrusion",
                     label=label,
                     geometry=geometry,
-                    material=_material_spec(structure, "#2563eb"),
-                    metadata=_structure_metadata(structure),
+                    material=_material_spec(structure, str(color)),
+                    metadata={
+                        **_structure_metadata(structure),
+                        "material_key": list(material_key),
+                    },
                 )
             )
             continue
@@ -203,11 +226,106 @@ def _structure_objects(design: Any) -> list[Object3D]:
                     kind="box",
                     label=label,
                     geometry=geometry,
-                    material=_material_spec(structure, "#2563eb"),
-                    metadata=_structure_metadata(structure),
+                    material=_material_spec(structure, str(color)),
+                    metadata={
+                        **_structure_metadata(structure),
+                        "material_key": list(material_key),
+                    },
                 )
             )
-    return objects
+    return _merge_adjacent_structure_runs(objects)
+
+
+def _structure_material_key(structure: Any) -> tuple[Any, ...]:
+    material = getattr(structure, "material", None)
+    return (
+        type(material).__name__ if material is not None else None,
+        round(float(getattr(material, "permittivity", 1.0)), 9)
+        if material is not None
+        else None,
+        round(float(getattr(material, "permeability", 1.0)), 9)
+        if material is not None
+        else None,
+        round(float(getattr(material, "conductivity", 0.0)), 9)
+        if material is not None
+        else None,
+        bool(getattr(structure, "is_pml", False)),
+    )
+
+
+def _merge_adjacent_structure_runs(objects: list[Object3D]) -> list[Object3D]:
+    merged: list[Object3D] = []
+    current: Object3D | None = None
+    current_count = 0
+    current_labels: list[str] = []
+
+    for obj in objects:
+        if current is None:
+            current = obj
+            current_count = 1
+            current_labels = [obj.label]
+            continue
+        if _can_merge_structure_objects(current, obj):
+            _append_geometry_item(current, obj)
+            current_count += 1
+            current_labels.append(obj.label)
+            continue
+        _finalize_merged_structure(current, current_count, current_labels)
+        merged.append(current)
+        current = obj
+        current_count = 1
+        current_labels = [obj.label]
+
+    if current is not None:
+        _finalize_merged_structure(current, current_count, current_labels)
+        merged.append(current)
+
+    return merged
+
+
+def _can_merge_structure_objects(lhs: Object3D, rhs: Object3D) -> bool:
+    return (
+        lhs.kind == rhs.kind
+        and lhs.metadata.get("kind") == "structure"
+        and rhs.metadata.get("kind") == "structure"
+        and lhs.metadata.get("material_key") == rhs.metadata.get("material_key")
+        and lhs.material.to_dict() == rhs.material.to_dict()
+    )
+
+
+def _append_geometry_item(target: Object3D, source: Object3D) -> None:
+    items = target.geometry.setdefault("items", [_geometry_item(target)])
+    items.append(_geometry_item(source))
+
+
+def _geometry_item(obj: Object3D) -> dict[str, Any]:
+    geometry = obj.geometry
+    if obj.kind == "box":
+        return {
+            "center": list(geometry["center"]),
+            "size": list(geometry["size"]),
+        }
+    if obj.kind == "poly_extrusion":
+        return {
+            "vertices": [list(vertex) for vertex in geometry["vertices"]],
+            "holes": [
+                [list(vertex) for vertex in hole]
+                for hole in geometry.get("holes", [])
+            ],
+            "depth": float(geometry.get("depth", 0.0)),
+            "z0": float(geometry.get("z0", 0.0)),
+        }
+    return dict(geometry)
+
+
+def _finalize_merged_structure(
+    obj: Object3D, count: int, labels: list[str]
+) -> None:
+    obj.metadata["structure_count"] = count
+    obj.metadata["source_labels"] = labels
+    if count <= 1:
+        return
+    obj.label = f"{labels[0]} +{count - 1}"
 
 
 def _monitor_objects(monitors: Iterable[Any]) -> list[Object3D]:
@@ -429,6 +547,11 @@ def _build_scene(
     objects: list[Object3D],
     metadata: dict[str, Any],
 ) -> SceneSpec:
+    for index, obj in enumerate(objects):
+        obj.metadata = {
+            **obj.metadata,
+            "display_order": index,
+        }
     center = bounds.center
     diagonal = max(bounds.diagonal, 1e-9)
     camera = CameraSpec(
