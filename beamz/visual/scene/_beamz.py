@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import colorsys
 from dataclasses import dataclass
 from typing import Any, Iterable
 
 from shapely.geometry import box as shapely_box
 from shapely.ops import unary_union
 
+from beamz.const import BLUE, GREEN, ORANGE, PURPLE, RED
 from beamz.design.core import (
     _find_rings_to_preserve,
     _material_key as _design_material_key,
@@ -16,16 +18,7 @@ from beamz.design.core import (
 from ._scene import CameraSpec, ClipPlaneSpec, MaterialSpec, Object3D, SceneSpec
 
 
-_STRUCTURE_PALETTE = (
-    "#2563eb",
-    "#0891b2",
-    "#0f766e",
-    "#65a30d",
-    "#ca8a04",
-    "#ea580c",
-    "#dc2626",
-    "#9333ea",
-)
+_STRUCTURE_PALETTE = (BLUE, RED, GREEN, ORANGE, PURPLE)
 
 
 @dataclass(slots=True)
@@ -144,7 +137,7 @@ def _material_spec(structure: Any, color: str) -> MaterialSpec:
     permittivity = (
         getattr(material, "permittivity", 1.0) if material is not None else 1.0
     )
-    opacity = 0.08 if abs(float(permittivity) - 1.0) < 0.05 else 0.7
+    opacity = 0.0 if _is_air_like_material(material) else 1.0
     wireframe = bool(getattr(structure, "is_pml", False))
     return MaterialSpec(color=color, opacity=opacity, wireframe=wireframe)
 
@@ -171,14 +164,11 @@ def _structure_objects(design: Any) -> list[Object3D]:
     color_by_material_key: dict[tuple[Any, ...], str] = {}
     merged_structures = _merged_structures_for_view(getattr(design, "structures", []))
     for index, structure in enumerate(merged_structures):
-        material_key = _structure_material_key(structure)
+        material_key = _design_material_key(getattr(structure, "material", None))
         color = color_by_material_key.get(material_key)
         if color is None:
-            color = (
-                getattr(structure, "color", None)
-                or _STRUCTURE_PALETTE[len(color_by_material_key) % len(_STRUCTURE_PALETTE)]
-            )
-            color_by_material_key[material_key] = str(color)
+            color = _get_deterministic_color(len(color_by_material_key))
+            color_by_material_key[material_key] = color
         label = (
             f"PML {index + 1}"
             if bool(getattr(structure, "is_pml", False))
@@ -207,7 +197,7 @@ def _structure_objects(design: Any) -> list[Object3D]:
                     material=_material_spec(structure, str(color)),
                     metadata={
                         **_structure_metadata(structure),
-                        "material_key": list(material_key),
+                        "material_key": list(_structure_material_key(structure)),
                     },
                 )
             )
@@ -240,11 +230,26 @@ def _structure_objects(design: Any) -> list[Object3D]:
                     material=_material_spec(structure, str(color)),
                     metadata={
                         **_structure_metadata(structure),
-                        "material_key": list(material_key),
+                        "material_key": list(_structure_material_key(structure)),
                     },
                 )
             )
     return _merge_adjacent_structure_runs(objects)
+
+
+def _get_deterministic_color(index: int) -> str:
+    if index < len(_STRUCTURE_PALETTE):
+        return _STRUCTURE_PALETTE[index]
+    saturation, value = 0.6, 0.7
+    hue = (index * 0.618034) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
+    return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+
+
+def _is_air_like_material(material: Any) -> bool:
+    if material is None:
+        return True
+    return abs(float(getattr(material, "permittivity", 1.0)) - 1.0) < 0.1
 
 
 def _merged_structures_for_view(structures: Iterable[Any]) -> list[Any]:
