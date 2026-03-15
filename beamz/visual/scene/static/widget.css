@@ -24,19 +24,19 @@
 }
 
 .zview-root[data-theme="dark"] {
-  --zview-bg-radial: rgba(56, 189, 248, 0.12);
-  --zview-bg-start: #020617;
-  --zview-bg-end: #0f172a;
-  --zview-border: rgba(148, 163, 184, 0.16);
-  --zview-button-bg: rgba(15, 23, 42, 0.78);
-  --zview-button-border: rgba(148, 163, 184, 0.18);
-  --zview-button-text: #e2e8f0;
-  --zview-sidebar-bg: rgba(15, 23, 42, 0.78);
-  --zview-sidebar-border: rgba(148, 163, 184, 0.14);
-  --zview-sidebar-text: #e2e8f0;
-  --zview-sidebar-muted: #94a3b8;
-  --zview-sidebar-item: rgba(30, 41, 59, 0.72);
-  --zview-sidebar-item-border: rgba(148, 163, 184, 0.12);
+  --zview-bg-radial: rgba(163, 163, 163, 0.08);
+  --zview-bg-start: #1a1a1a;
+  --zview-bg-end: #262626;
+  --zview-border: rgba(212, 212, 212, 0.14);
+  --zview-button-bg: rgba(38, 38, 38, 0.82);
+  --zview-button-border: rgba(212, 212, 212, 0.16);
+  --zview-button-text: #f5f5f5;
+  --zview-sidebar-bg: rgba(38, 38, 38, 0.82);
+  --zview-sidebar-border: rgba(212, 212, 212, 0.12);
+  --zview-sidebar-text: #f5f5f5;
+  --zview-sidebar-muted: #a3a3a3;
+  --zview-sidebar-item: rgba(64, 64, 64, 0.7);
+  --zview-sidebar-item-border: rgba(212, 212, 212, 0.1);
 }
 
 .zview-root[data-theme="light"] {

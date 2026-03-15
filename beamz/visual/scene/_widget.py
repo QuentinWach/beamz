@@ -5,7 +5,7 @@ from typing import Any
 from traitlets import Dict, List, Unicode
 
 from ._beamz import beamz_to_scene, looks_like_beamz_design, looks_like_beamz_simulation
-from ._browser import inline_iframe_html, open_in_browser
+from ._browser import inline_iframe_src, open_in_browser
 from ._frontend import widget_css, widget_esm
 from ._scene import SceneSpec, scene_from_dict
 
@@ -89,10 +89,11 @@ def view3d(
         chosen_mode = "inline" if _in_notebook() else "browser"
     if chosen_mode == "inline":
         try:
-            from IPython.display import HTML
+            from IPython.display import IFrame
         except ImportError as exc:
             raise RuntimeError("mode='inline' requires IPython.") from exc
-        return HTML(inline_iframe_html(scene))
+        height = int(kwargs.pop("height", 640))
+        return IFrame(src=inline_iframe_src(scene), width="100%", height=height)
     if chosen_mode == "browser":
         return open_in_browser(scene, open_browser=open_browser)
     if chosen_mode != "widget":
