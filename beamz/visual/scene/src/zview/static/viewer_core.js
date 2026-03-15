@@ -333,41 +333,38 @@ function niceTickStep(min, max, targetCount = 5) {
   return 10 * magnitude;
 }
 
-function tickValues(min, max, targetCount = 5) {
-  if (Math.abs(max - min) < 1e-9) {
+function integerMicronTickValues(min, max, targetCount = 5) {
+  const minMicron = Number(min) * 1e6;
+  const maxMicron = Number(max) * 1e6;
+  if (Math.abs(maxMicron - minMicron) < 1e-6) {
     return [min];
   }
-  const step = niceTickStep(min, max, targetCount);
-  const start = Math.ceil((min - 1e-9) / step) * step;
+  const span = Math.max(Math.abs(maxMicron - minMicron), 1);
+  const raw = Math.max(span / Math.max(targetCount, 2), 1);
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const normalized = raw / magnitude;
+  const stepMicron = normalized <= 1
+    ? magnitude
+    : normalized <= 2
+      ? 2 * magnitude
+      : normalized <= 5
+        ? 5 * magnitude
+        : 10 * magnitude;
+  const start = Math.ceil((minMicron - 1e-9) / stepMicron) * stepMicron;
   const values = [];
-  for (let value = start; value <= max + 1e-9; value += step) {
-    values.push(Number(value.toFixed(9)));
+  for (let value = start; value <= maxMicron + 1e-9; value += stepMicron) {
+    values.push(Number((value * 1e-6).toFixed(12)));
   }
-  if (values.length === 0 || Math.abs(values[0] - min) > 1e-6) {
-    values.unshift(min);
-  }
-  if (Math.abs(values[values.length - 1] - max) > 1e-6) {
-    values.push(max);
+  if (values.length === 0) {
+    const midpointMicron = Math.round((minMicron + maxMicron) / 2);
+    values.push(Number((midpointMicron * 1e-6).toFixed(12)));
   }
   return values;
 }
 
 function formatMicron(value) {
-  const microns = Number(value) * 1e6;
-  const magnitude = Math.abs(microns);
-  if (magnitude < 1e-6) {
-    return "0";
-  }
-  if (magnitude >= 100) {
-    return microns.toFixed(0);
-  }
-  if (magnitude >= 10) {
-    return microns.toFixed(1);
-  }
-  if (magnitude >= 1) {
-    return microns.toFixed(2);
-  }
-  return microns.toFixed(3);
+  const microns = Math.round(Number(value) * 1e6);
+  return String(microns);
 }
 
 function makeSegments(points, material) {
@@ -454,7 +451,7 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
     const axisStart = axis.start.clone();
     const axisEnd = axis.end.clone();
     axisGroup.add(makeSegments([axisStart, axisEnd], axisMaterial));
-    const values = tickValues(axis.min, axis.max, 5);
+    const values = integerMicronTickValues(axis.min, axis.max, 5);
     const tickPoints = [];
     for (const value of values) {
       const t = Math.abs(axis.max - axis.min) < 1e-9 ? 0 : (value - axis.min) / (axis.max - axis.min);
