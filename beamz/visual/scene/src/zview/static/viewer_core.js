@@ -265,8 +265,16 @@ function makeSpriteLabel(text, options = {}) {
   ctx.textBaseline = "middle";
   ctx.fillText(text, canvas.width / 2, canvas.height / 2);
   const texture = new THREE.CanvasTexture(canvas);
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    alphaTest: 0.01,
+  });
   const sprite = new THREE.Sprite(material);
+  sprite.renderOrder = 2000;
   const [sx, sy] = config.scale || [0.48, 0.24];
   sprite.scale.set(sx, sy, 1);
   if (config.screenSizePx) {
@@ -345,10 +353,21 @@ function tickValues(min, max, targetCount = 5) {
 }
 
 function formatMicron(value) {
-  if (Math.abs(value) < 1e-9) {
-    return "0.0";
+  const microns = Number(value) * 1e6;
+  const magnitude = Math.abs(microns);
+  if (magnitude < 1e-6) {
+    return "0";
   }
-  return Math.abs(value) >= 10 ? value.toFixed(0) : value.toFixed(1);
+  if (magnitude >= 100) {
+    return microns.toFixed(0);
+  }
+  if (magnitude >= 10) {
+    return microns.toFixed(1);
+  }
+  if (magnitude >= 1) {
+    return microns.toFixed(2);
+  }
+  return microns.toFixed(3);
 }
 
 function makeSegments(points, material) {
@@ -449,7 +468,7 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
         height: 160,
         screenSizePx: [92, 36],
       });
-      tickLabel.position.copy(point.clone().add(axis.offsetDir.clone().multiplyScalar(tickLength * 1.95)));
+      tickLabel.position.copy(point.clone().add(axis.offsetDir.clone().multiplyScalar(tickLength * 1.7)));
       axisGroup.add(tickLabel);
     }
     axisGroup.add(makeSegments(tickPoints, tickMaterial));
@@ -461,7 +480,7 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
       height: 160,
       screenSizePx: [168, 48],
     });
-    axisLabel.position.copy(axisStart.clone().lerp(axisEnd, 0.5).add(axis.offsetDir.clone().multiplyScalar(tickLength * 3.2)));
+    axisLabel.position.copy(axisStart.clone().lerp(axisEnd, 0.5).add(axis.offsetDir.clone().multiplyScalar(tickLength * 4.8)));
     axisGroup.add(axisLabel);
     group.add(axisGroup);
   }
