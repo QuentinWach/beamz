@@ -41,6 +41,18 @@ class FakeStructure:
         self.is_pml = False
 
 
+class FakeStructureTwin(FakeStructure):
+    def __init__(self, x_offset=0.0, color="#16a34a"):
+        super().__init__()
+        self.vertices = [
+            (0.0 + x_offset, 0.0, 0.0),
+            (2.0 + x_offset, 0.0, 0.0),
+            (2.0 + x_offset, 1.0, 0.0),
+            (0.0 + x_offset, 1.0, 0.0),
+        ]
+        self.color = color
+
+
 class FakeGaussianSource:
     def __init__(self):
         self.position = (0.5, 0.5, 0.11)
@@ -75,6 +87,23 @@ def _make_design():
         sources=[source],
         monitors=[monitor],
         width=2.0,
+        height=1.0,
+        depth=0.22,
+        is_3d=True,
+    )
+
+
+def _make_design_with_repeated_material():
+    source = FakeModeSource()
+    monitor = FakeMonitor()
+    return SimpleNamespace(
+        structures=[
+            FakeStructureTwin(x_offset=0.0, color="#2563eb"),
+            FakeStructureTwin(x_offset=2.5, color="#f97316"),
+        ],
+        sources=[source],
+        monitors=[monitor],
+        width=5.0,
         height=1.0,
         depth=0.22,
         is_3d=True,
@@ -175,6 +204,37 @@ def test_simulation_show_delegates_to_view3d(monkeypatch):
     assert result == "scene-view"
     assert isinstance(captured["value"], SceneSpec)
     assert captured["kwargs"] == {"mode": "browser", "open_browser": False}
+
+
+def test_design_to_scene_merges_adjacent_structures_with_same_material():
+    scene = simulation_to_scene(
+        SimpleNamespace(
+            design=_make_design_with_repeated_material(),
+            devices=[],
+            boundaries=[],
+            resolution=2.5e-8,
+            is_3d=True,
+            plane_2d="xy",
+            dt=1e-16,
+            num_steps=8,
+        )
+    )
+
+    structure_objects = [
+        obj for obj in scene.objects if obj.metadata.get("kind") == "structure"
+    ]
+
+    assert len(structure_objects) == 1
+    assert structure_objects[0].geometry["items"]
+    assert len(structure_objects[0].geometry["items"]) == 2
+    assert structure_objects[0].material.color == "#2563eb"
+    assert structure_objects[0].metadata["structure_count"] == 2
+
+
+def test_scene_objects_get_stable_display_order_metadata():
+    scene = simulation_to_scene(_make_simulation())
+    display_orders = [obj.metadata["display_order"] for obj in scene.objects]
+    assert display_orders == list(range(len(scene.objects)))
 
 
 def test_view3d_inline_returns_ipython_html():

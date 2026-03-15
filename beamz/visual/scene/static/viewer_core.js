@@ -1,5 +1,6 @@
 import * as THREE from "https://esm.sh/three@0.160.1";
 import { OrbitControls } from "https://esm.sh/three@0.160.1/examples/jsm/controls/OrbitControls.js";
+import * as BufferGeometryUtils from "https://esm.sh/three@0.160.1/examples/jsm/utils/BufferGeometryUtils.js";
 import { RoundedBoxGeometry } from "https://esm.sh/three@0.160.1/examples/jsm/geometries/RoundedBoxGeometry.js";
 
 const THEMES = {
@@ -63,9 +64,29 @@ function normalizeVec3(values, fallback) {
   return new THREE.Vector3(Number(x), Number(y), Number(z));
 }
 
-function makeMaterial(spec, clippingPlanes, kind) {
+function materialSignature(spec, kind) {
+  return JSON.stringify({
+    kind,
+    color: spec?.color || null,
+    opacity: Number(spec?.opacity ?? 1),
+    wireframe: Boolean(spec?.wireframe),
+    metalness: Number(spec?.metalness ?? 0),
+    roughness: Number(spec?.roughness ?? 0.85),
+    emissive: spec?.emissive || "#000000",
+  });
+}
+
+function displayOrder(spec, fallbackOrder = 0) {
+  return Number(spec?.metadata?.display_order ?? fallbackOrder);
+}
+
+function makeMaterial(spec, clippingPlanes, kind, materialCache) {
   const opacity = Math.max(0, Math.min(1, Number(spec?.opacity ?? 1)));
-  return new THREE.MeshPhysicalMaterial({
+  const signature = materialSignature(spec, kind);
+  if (materialCache?.has(signature)) {
+    return materialCache.get(signature);
+  }
+  const material = new THREE.MeshPhysicalMaterial({
     color: colorValue(spec?.color),
     transparent: opacity < 1,
     opacity,
@@ -76,8 +97,13 @@ function makeMaterial(spec, clippingPlanes, kind) {
     emissive: colorValue(spec?.emissive, "#000000"),
     side: kind === "plane" ? THREE.DoubleSide : THREE.FrontSide,
     clippingPlanes,
-    depthWrite: opacity >= 0.99,
+    depthWrite: false,
   });
+  material.polygonOffset = kind === "plane";
+  material.polygonOffsetFactor = kind === "plane" ? -1 : 0;
+  material.polygonOffsetUnits = kind === "plane" ? -1 : 0;
+  materialCache?.set(signature, material);
+  return material;
 }
 
 function orientToNormal(object, normal) {
@@ -125,6 +151,47 @@ function extrusionShape(vertices, holes) {
   return shape;
 }
 
+function boxGeometryFromItem(item) {
+  const size = item.size || [1, 1, 1];
+  const center = item.center || [0, 0, 0];
+  const geometry = new THREE.BoxGeometry(Number(size[0]), Number(size[1]), Number(size[2]));
+  geometry.translate(Number(center[0]), Number(center[1]), Number(center[2]));
+  return geometry;
+}
+
+function planeGeometryFromItem(item) {
+  const size = item.size || [1, 1];
+  const center = normalizeVec3(item.center, [0, 0, 0]);
+  const geometry = new THREE.PlaneGeometry(Number(size[0]), Number(size[1]));
+  const temp = new THREE.Object3D();
+  temp.position.copy(center);
+  orientToNormal(temp, item.normal || [0, 0, 1]);
+  temp.updateMatrixWorld(true);
+  geometry.applyMatrix4(temp.matrixWorld);
+  return geometry;
+}
+
+function polyExtrusionGeometryFromItem(item) {
+  const shape = extrusionShape(item.vertices || [], item.holes || []);
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: Number(item.depth || 0), bevelEnabled: false });
+  geometry.translate(0, 0, Number(item.z0 || 0));
+  return geometry;
+}
+
+function mergeGeometryItems(items, buildGeometry) {
+  const geometries = items.map((item) => buildGeometry(item));
+  if (geometries.length === 1) {
+    return geometries[0];
+  }
+  const merged = BufferGeometryUtils.mergeGeometries(geometries, false);
+  for (const geometry of geometries) {
+    if (geometry !== merged) {
+      geometry.dispose();
+    }
+  }
+  return merged;
+}
+
 function makeObjectOutline(spec, object, outlineColor, clippingPlanes) {
   if (!object?.isMesh) {
     return null;
@@ -161,16 +228,16 @@ function makeObjectOutline(spec, object, outlineColor, clippingPlanes) {
   return null;
 }
 
-function buildObject(spec, clippingPlanes, outlineColor) {
+function buildObject(spec, clippingPlanes, outlineColor, materialCache, orderIndex = 0) {
   let object = null;
-  const material = makeMaterial(spec.material, clippingPlanes, spec.kind);
+  const material = makeMaterial(spec.material, clippingPlanes, spec.kind, materialCache);
   const geometry = spec.geometry || {};
+  const order = displayOrder(spec, orderIndex);
 
   switch (spec.kind) {
     case "box": {
-      const size = geometry.size || [1, 1, 1];
-      const center = geometry.center || [0, 0, 0];
-      const boxGeometry = new THREE.BoxGeometry(Number(size[0]), Number(size[1]), Number(size[2]));
+      const geometryItems = Array.isArray(geometry.items) && geometry.items.length ? geometry.items : [geometry];
+      const boxGeometry = mergeGeometryItems(geometryItems, boxGeometryFromItem);
       if (spec.material?.wireframe) {
         const lineMaterial = new THREE.LineBasicMaterial({
           color: colorValue(spec.material?.color, "#0f172a"),
@@ -182,7 +249,6 @@ function buildObject(spec, clippingPlanes, outlineColor) {
       } else {
         object = new THREE.Mesh(boxGeometry, material);
       }
-      object.position.copy(normalizeVec3(center, [0, 0, 0]));
       break;
     }
     case "sphere": {
@@ -193,11 +259,8 @@ function buildObject(spec, clippingPlanes, outlineColor) {
       break;
     }
     case "plane": {
-      const size = geometry.size || [1, 1];
-      const center = geometry.center || [0, 0, 0];
-      object = new THREE.Mesh(new THREE.PlaneGeometry(Number(size[0]), Number(size[1])), material);
-      object.position.copy(normalizeVec3(center, [0, 0, 0]));
-      orientToNormal(object, geometry.normal || [0, 0, 1]);
+      const geometryItems = Array.isArray(geometry.items) && geometry.items.length ? geometry.items : [geometry];
+      object = new THREE.Mesh(mergeGeometryItems(geometryItems, planeGeometryFromItem), material);
       break;
     }
     case "line": {
@@ -220,10 +283,8 @@ function buildObject(spec, clippingPlanes, outlineColor) {
       break;
     }
     case "poly_extrusion": {
-      const shape = extrusionShape(geometry.vertices || [], geometry.holes || []);
-      const extrudeGeometry = new THREE.ExtrudeGeometry(shape, { depth: Number(geometry.depth || 0), bevelEnabled: false });
-      object = new THREE.Mesh(extrudeGeometry, material);
-      object.position.set(0, 0, Number(geometry.z0 || 0));
+      const geometryItems = Array.isArray(geometry.items) && geometry.items.length ? geometry.items : [geometry];
+      object = new THREE.Mesh(mergeGeometryItems(geometryItems, polyExtrusionGeometryFromItem), material);
       break;
     }
     default:
@@ -234,35 +295,18 @@ function buildObject(spec, clippingPlanes, outlineColor) {
   if (outline) {
     object.add(outline);
   }
-  if (object.isMesh && Number(spec.material?.opacity ?? 1) < 1) {
-    object.renderOrder = transparentRenderOrder(spec);
-  }
+  object.renderOrder = order;
   object.visible = spec.visible !== false;
   object.userData.zview = spec;
   object.traverse?.((node) => {
     node.userData.zview = spec;
+    if (node !== object && node.userData?.zviewOutlineMaterial) {
+      node.renderOrder = order + 0.25;
+    } else {
+      node.renderOrder = order;
+    }
   });
   return object;
-}
-
-function transparentRenderOrder(spec) {
-  const kind = spec.metadata?.kind;
-  if (kind === "domain") {
-    return -30;
-  }
-  if (kind === "boundary") {
-    return -20;
-  }
-  if (kind === "structure") {
-    return 0;
-  }
-  if (kind === "monitor") {
-    return 10;
-  }
-  if (kind === "source" || kind === "source_direction" || kind === "simulation") {
-    return 20;
-  }
-  return 0;
 }
 
 function makeTextTexture(text, { background = null, color = "#6b7280", size = 256, font = "700 46px ui-sans-serif, system-ui, sans-serif" } = {}) {
@@ -656,6 +700,7 @@ function makeRenderer(container) {
   renderer.setPixelRatio(globalThis.devicePixelRatio || 1);
   renderer.setSize(container.clientWidth || 900, container.clientHeight || 520, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.sortObjects = false;
   renderer.domElement.className = "zview-canvas";
   container.appendChild(renderer.domElement);
   return renderer;
@@ -803,8 +848,9 @@ function renderObjects(root, sceneSpec, themeName) {
   const planes = clippingPlanes(sceneSpec);
   const content = new THREE.Group();
   const objectMap = new Map();
-  for (const spec of sceneSpec.objects || []) {
-    const object = buildObject(spec, planes, THEMES[themeName].objectOutline);
+  const materialCache = new Map();
+  for (const [index, spec] of (sceneSpec.objects || []).entries()) {
+    const object = buildObject(spec, planes, THEMES[themeName].objectOutline, materialCache, index);
     if (object) {
       content.add(object);
       objectMap.set(spec.id, object);
@@ -1058,7 +1104,7 @@ function mountZView({ el, sceneSpec, onHover = () => {}, onSelect = () => {} }) 
   const key = new THREE.DirectionalLight(0xffffff, 1.2);
   key.position.set(3, -5, 8);
   scene.add(key);
-  const fill = new THREE.DirectionalLight(0xa5b4fc, 0.45);
+  const fill = new THREE.DirectionalLight(0xe5e7eb, 0.35);
   fill.position.set(-4, 2, 3);
   scene.add(fill);
 
@@ -1136,6 +1182,9 @@ function mountZView({ el, sceneSpec, onHover = () => {}, onSelect = () => {} }) 
       parts.push(String(spec.metadata.type));
     } else {
       parts.push(String(spec.kind));
+    }
+    if (Number(spec.metadata?.structure_count || 1) > 1) {
+      parts.push(`${Number(spec.metadata.structure_count)} merged`);
     }
     if (spec.metadata?.material?.permittivity !== undefined && spec.metadata?.kind === "structure") {
       parts.push(`eps ${Number(spec.metadata.material.permittivity).toFixed(2)}`);
