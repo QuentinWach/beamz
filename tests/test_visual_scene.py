@@ -110,6 +110,23 @@ def _make_design_with_repeated_material():
     )
 
 
+def _make_design_with_overlapping_material():
+    source = FakeModeSource()
+    monitor = FakeMonitor()
+    return SimpleNamespace(
+        structures=[
+            FakeStructureTwin(x_offset=0.0, color="#2563eb"),
+            FakeStructureTwin(x_offset=1.0, color="#f97316"),
+        ],
+        sources=[source],
+        monitors=[monitor],
+        width=4.0,
+        height=1.0,
+        depth=0.22,
+        is_3d=True,
+    )
+
+
 def _make_simulation():
     design = _make_design()
     extra_source = FakeGaussianSource()
@@ -235,6 +252,30 @@ def test_scene_objects_get_stable_display_order_metadata():
     scene = simulation_to_scene(_make_simulation())
     display_orders = [obj.metadata["display_order"] for obj in scene.objects]
     assert display_orders == list(range(len(scene.objects)))
+
+
+def test_design_to_scene_unions_overlapping_same_material_structures():
+    scene = simulation_to_scene(
+        SimpleNamespace(
+            design=_make_design_with_overlapping_material(),
+            devices=[],
+            boundaries=[],
+            resolution=2.5e-8,
+            is_3d=True,
+            plane_2d="xy",
+            dt=1e-16,
+            num_steps=8,
+        )
+    )
+
+    structure_objects = [
+        obj for obj in scene.objects if obj.metadata.get("kind") == "structure"
+    ]
+
+    assert len(structure_objects) == 1
+    assert "items" not in structure_objects[0].geometry
+    assert structure_objects[0].kind == "poly_extrusion"
+    assert structure_objects[0].material.color == "#2563eb"
 
 
 def test_view3d_inline_returns_ipython_html():
