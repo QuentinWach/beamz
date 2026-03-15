@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from beamz.const import BLUE, RED
 from beamz.simulation.boundaries import PML
 from beamz.simulation.core import Simulation
 from beamz.visual.scene import (
@@ -51,6 +52,12 @@ class FakeStructureTwin(FakeStructure):
             (0.0 + x_offset, 1.0, 0.0),
         ]
         self.color = color
+
+
+class FakeAirStructure(FakeStructureTwin):
+    def __init__(self, x_offset=0.0):
+        super().__init__(x_offset=x_offset, color="#ffffff")
+        self.material = FakeMaterial(permittivity=1.0)
 
 
 class FakeGaussianSource:
@@ -121,6 +128,25 @@ def _make_design_with_overlapping_material():
         sources=[source],
         monitors=[monitor],
         width=4.0,
+        height=1.0,
+        depth=0.22,
+        is_3d=True,
+    )
+
+
+def _make_design_with_two_materials_and_air():
+    source = FakeModeSource()
+    monitor = FakeMonitor()
+    air = FakeAirStructure(x_offset=4.5)
+    return SimpleNamespace(
+        structures=[
+            FakeStructureTwin(x_offset=0.0),
+            FakeStructureTwin(x_offset=2.5),
+            air,
+        ],
+        sources=[source],
+        monitors=[monitor],
+        width=7.0,
         height=1.0,
         depth=0.22,
         is_3d=True,
@@ -244,7 +270,7 @@ def test_design_to_scene_merges_adjacent_structures_with_same_material():
     assert len(structure_objects) == 1
     assert structure_objects[0].geometry["items"]
     assert len(structure_objects[0].geometry["items"]) == 2
-    assert structure_objects[0].material.color == "#2563eb"
+    assert structure_objects[0].material.color == BLUE
     assert structure_objects[0].metadata["structure_count"] == 2
 
 
@@ -275,7 +301,29 @@ def test_design_to_scene_unions_overlapping_same_material_structures():
     assert len(structure_objects) == 1
     assert "items" not in structure_objects[0].geometry
     assert structure_objects[0].kind == "poly_extrusion"
-    assert structure_objects[0].material.color == "#2563eb"
+    assert structure_objects[0].material.color == BLUE
+
+
+def test_structure_colors_are_deterministic_and_only_air_is_transparent():
+    scene = simulation_to_scene(
+        SimpleNamespace(
+            design=_make_design_with_two_materials_and_air(),
+            devices=[],
+            boundaries=[],
+            resolution=2.5e-8,
+            is_3d=True,
+            plane_2d="xy",
+            dt=1e-16,
+            num_steps=8,
+        )
+    )
+
+    structure_objects = [
+        obj for obj in scene.objects if obj.metadata.get("kind") == "structure"
+    ]
+
+    assert [obj.material.color for obj in structure_objects] == [BLUE, RED]
+    assert [obj.material.opacity for obj in structure_objects] == [1.0, 0.0]
 
 
 def test_view3d_inline_returns_ipython_html():
