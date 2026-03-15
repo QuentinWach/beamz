@@ -3,6 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from shapely.geometry import box as shapely_box
+from shapely.ops import unary_union
+
+from beamz.design.core import (
+    _find_rings_to_preserve,
+    _material_key as _design_material_key,
+    _shapely_to_polygons,
+    _to_shapely,
+)
+
 from ._scene import CameraSpec, ClipPlaneSpec, MaterialSpec, Object3D, SceneSpec
 
 
@@ -159,7 +169,8 @@ def _structure_metadata(structure: Any) -> dict[str, Any]:
 def _structure_objects(design: Any) -> list[Object3D]:
     objects: list[Object3D] = []
     color_by_material_key: dict[tuple[Any, ...], str] = {}
-    for index, structure in enumerate(getattr(design, "structures", [])):
+    merged_structures = _merged_structures_for_view(getattr(design, "structures", []))
+    for index, structure in enumerate(merged_structures):
         material_key = _structure_material_key(structure)
         color = color_by_material_key.get(material_key)
         if color is None:
@@ -234,6 +245,87 @@ def _structure_objects(design: Any) -> list[Object3D]:
                 )
             )
     return _merge_adjacent_structure_runs(objects)
+
+
+def _merged_structures_for_view(structures: Iterable[Any]) -> list[Any]:
+    material_groups: dict[tuple[Any, ...], list[tuple[int, Any, Any]]] = {}
+    passthrough: list[tuple[int, Any]] = []
+
+    for index, structure in enumerate(structures):
+        shape = _viewer_structure_shape(structure)
+        if shape is None or getattr(structure, "material", None) is None:
+            passthrough.append((index, structure))
+            continue
+        material_groups.setdefault(_viewer_structure_group_key(structure), []).append(
+            (index, structure, shape)
+        )
+
+    merged_items: list[tuple[float, Any]] = list(passthrough)
+    for group_key, entries in material_groups.items():
+        group_pairs = [(structure, shape) for _, structure, shape in entries]
+        structures_to_remove = [structure for _, structure, _ in entries]
+        rings_to_preserve = _find_rings_to_preserve(
+            {group_key: group_pairs}, structures_to_remove
+        )
+        ring_ids = {id(structure) for structure in rings_to_preserve}
+        merge_entries = [
+            (index, structure, shape)
+            for index, structure, shape in entries
+            if id(structure) not in ring_ids
+        ]
+
+        for index, structure, _ in entries:
+            if id(structure) in ring_ids:
+                merged_items.append((index, structure))
+
+        if len(merge_entries) <= 1:
+            merged_items.extend((index, structure) for index, structure, _ in merge_entries)
+            continue
+
+        merged_geometry = unary_union([shape for _, _, shape in merge_entries])
+        merged_polygons = _shapely_to_polygons(
+            merged_geometry,
+            merge_entries[0][1].material,
+            merge_entries[0][1],
+        )
+        if not merged_polygons:
+            merged_items.extend((index, structure) for index, structure, _ in merge_entries)
+            continue
+
+        display_order = max(index for index, _, _ in merge_entries)
+        representative_color = getattr(merge_entries[0][1], "color", None)
+        for offset, polygon in enumerate(merged_polygons):
+            polygon.color = representative_color
+            merged_items.append((display_order + offset * 1e-3, polygon))
+
+    return [structure for _, structure in sorted(merged_items, key=lambda item: item[0])]
+
+
+def _viewer_structure_group_key(structure: Any) -> tuple[Any, ...]:
+    return (
+        _design_material_key(getattr(structure, "material", None)),
+        round(float(getattr(structure, "depth", 0.0) or 0.0), 12),
+        round(float(getattr(structure, "z", 0.0) or 0.0), 12),
+        bool(getattr(structure, "is_pml", False)),
+    )
+
+
+def _viewer_structure_shape(structure: Any) -> Any | None:
+    shape = _to_shapely(structure)
+    if shape is not None:
+        return shape
+    if (
+        hasattr(structure, "position")
+        and hasattr(structure, "width")
+        and hasattr(structure, "height")
+    ):
+        px, py, *_ = getattr(structure, "position")
+        width = float(getattr(structure, "width", 0.0) or 0.0)
+        height = float(getattr(structure, "height", 0.0) or 0.0)
+        if width <= 0 or height <= 0:
+            return None
+        return shapely_box(float(px), float(py), float(px) + width, float(py) + height)
+    return None
 
 
 def _structure_material_key(structure: Any) -> tuple[Any, ...]:
