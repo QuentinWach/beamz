@@ -10,6 +10,7 @@ from beamz.visual.scene import (
     SceneSpec,
     demo_scene,
     inline_iframe_html,
+    inline_iframe_src,
     scene_from_dict,
     simulation_to_scene,
     view3d,
@@ -130,7 +131,13 @@ def test_open_in_browser_writes_html_without_launching():
 def test_inline_iframe_html_contains_iframe():
     html = inline_iframe_html(demo_scene())
     assert "<iframe" in html
-    assert "srcdoc=" in html
+    assert 'src="data:text/html;base64,' in html
+    assert "Standalone browser rendering" not in html
+
+
+def test_inline_iframe_src_uses_data_url():
+    src = inline_iframe_src(demo_scene())
+    assert src.startswith("data:text/html;base64,")
 
 
 def test_simulation_to_scene_includes_devices_boundaries_and_metadata():
@@ -172,5 +179,5 @@ def test_simulation_show_delegates_to_view3d(monkeypatch):
 
 def test_view3d_inline_returns_ipython_html():
     result = view3d(demo_scene(), mode="inline")
-    assert hasattr(result, "data")
-    assert "<iframe" in result.data
+    assert result.__class__.__name__ == "IFrame"
+    assert str(result.src).startswith("data:text/html;base64,")

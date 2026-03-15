@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import base64
 import html
-import tempfile
 import webbrowser
+import tempfile
 from pathlib import Path
 from typing import Any
 
-from ._frontend import browser_html
+from ._frontend import browser_html, inline_html
 from ._scene import SceneSpec, scene_from_dict
 
 
@@ -30,10 +31,16 @@ def inline_iframe_html(
     height: int = 640,
 ) -> str:
     scene_spec = scene if isinstance(scene, SceneSpec) else scene_from_dict(scene)
-    srcdoc = html.escape(browser_html(scene_spec), quote=True)
+    src = html.escape(inline_iframe_src(scene_spec), quote=True)
     return (
-        f'<iframe srcdoc="{srcdoc}" '
+        f'<iframe src="{src}" '
         'style="width: 100%; min-height: 480px; '
         f'height: {int(height)}px; border: 0; border-radius: 16px;" '
         'sandbox="allow-scripts allow-same-origin"></iframe>'
     )
+
+
+def inline_iframe_src(scene: SceneSpec | dict[str, Any]) -> str:
+    scene_spec = scene if isinstance(scene, SceneSpec) else scene_from_dict(scene)
+    payload = base64.b64encode(inline_html(scene_spec).encode("utf-8")).decode("ascii")
+    return f"data:text/html;base64,{payload}"

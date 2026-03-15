@@ -4,27 +4,30 @@ import { RoundedBoxGeometry } from "https://esm.sh/three@0.160.1/examples/jsm/ge
 
 const THEMES = {
   dark: {
-    sceneBackground: "#020617",
-    objectOutline: "#f8fafc",
+    sceneBackground: "#1a1a1a",
+    objectOutline: "#ffffff",
     gizmo: {
-      cubeColor: "#1e293b",
+      cubeColor: "#2a2a2a",
       cubeRoughness: 0.62,
       cubeMetalness: 0.08,
       cubeOpacity: 0.9,
-      faceText: "#f8fafc",
+      faceText: "#f5f5f5",
       faceOpacity: 0.96,
+      axisX: "#d4d4d4",
+      axisY: "#a3a3a3",
+      axisZ: "#737373",
     },
     measurement: {
-      edge: 0x64748b,
-      axis: 0xe2e8f0,
-      tick: 0x94a3b8,
-      tickText: "#cbd5e1",
-      axisText: "#f8fafc",
+      edge: 0x737373,
+      axis: 0xd4d4d4,
+      tick: 0xa3a3a3,
+      tickText: "#d4d4d4",
+      axisText: "#f5f5f5",
     },
   },
   light: {
     sceneBackground: "#f8fafc",
-    objectOutline: "#0f172a",
+    objectOutline: "#000000",
     gizmo: {
       cubeColor: "#f4f4f5",
       cubeRoughness: 0.55,
@@ -32,6 +35,9 @@ const THEMES = {
       cubeOpacity: 0.84,
       faceText: "#334155",
       faceOpacity: 0.92,
+      axisX: "#404040",
+      axisY: "#737373",
+      axisZ: "#a3a3a3",
     },
     measurement: {
       edge: 0x6b7280,
@@ -57,7 +63,7 @@ function normalizeVec3(values, fallback) {
   return new THREE.Vector3(Number(x), Number(y), Number(z));
 }
 
-function makeMaterial(spec, clippingPlanes) {
+function makeMaterial(spec, clippingPlanes, kind) {
   const opacity = Math.max(0, Math.min(1, Number(spec?.opacity ?? 1)));
   return new THREE.MeshPhysicalMaterial({
     color: colorValue(spec?.color),
@@ -68,7 +74,7 @@ function makeMaterial(spec, clippingPlanes) {
     metalness: Number(spec?.metalness ?? 0),
     roughness: Number(spec?.roughness ?? 0.85),
     emissive: colorValue(spec?.emissive, "#000000"),
-    side: THREE.DoubleSide,
+    side: kind === "plane" ? THREE.DoubleSide : THREE.FrontSide,
     clippingPlanes,
     depthWrite: opacity >= 0.99,
   });
@@ -130,10 +136,12 @@ function makeObjectOutline(spec, object, outlineColor, clippingPlanes) {
       transparent: true,
       opacity: 0.95,
       clippingPlanes,
+      depthTest: false,
       depthWrite: false,
     });
     const outlineMesh = new THREE.Mesh(object.geometry.clone(), outlineMaterial);
     outlineMesh.scale.setScalar(1.035);
+    outlineMesh.renderOrder = 1000;
     outlineMesh.userData.zviewOutlineMaterial = outlineMaterial;
     return outlineMesh;
   }
@@ -143,8 +151,10 @@ function makeObjectOutline(spec, object, outlineColor, clippingPlanes) {
       transparent: true,
       opacity: 0.95,
       clippingPlanes,
+      depthTest: false,
     });
     const outline = new THREE.LineSegments(new THREE.EdgesGeometry(object.geometry), outlineMaterial);
+    outline.renderOrder = 1000;
     outline.userData.zviewOutlineMaterial = outlineMaterial;
     return outline;
   }
@@ -153,7 +163,7 @@ function makeObjectOutline(spec, object, outlineColor, clippingPlanes) {
 
 function buildObject(spec, clippingPlanes, outlineColor) {
   let object = null;
-  const material = makeMaterial(spec.material, clippingPlanes);
+  const material = makeMaterial(spec.material, clippingPlanes, spec.kind);
   const geometry = spec.geometry || {};
 
   switch (spec.kind) {
@@ -224,12 +234,35 @@ function buildObject(spec, clippingPlanes, outlineColor) {
   if (outline) {
     object.add(outline);
   }
+  if (object.isMesh && Number(spec.material?.opacity ?? 1) < 1) {
+    object.renderOrder = transparentRenderOrder(spec);
+  }
   object.visible = spec.visible !== false;
   object.userData.zview = spec;
   object.traverse?.((node) => {
     node.userData.zview = spec;
   });
   return object;
+}
+
+function transparentRenderOrder(spec) {
+  const kind = spec.metadata?.kind;
+  if (kind === "domain") {
+    return -30;
+  }
+  if (kind === "boundary") {
+    return -20;
+  }
+  if (kind === "structure") {
+    return 0;
+  }
+  if (kind === "monitor") {
+    return 10;
+  }
+  if (kind === "source" || kind === "source_direction" || kind === "simulation") {
+    return 20;
+  }
+  return 0;
 }
 
 function makeTextTexture(text, { background = null, color = "#6b7280", size = 256, font = "700 46px ui-sans-serif, system-ui, sans-serif" } = {}) {
@@ -857,20 +890,33 @@ function makeGizmo(rendererHost, themeName = "dark") {
   const axesRoot = new THREE.Group();
   const axisScale = 2.2;
   const axisOrigin = new THREE.Vector3(-1.15, -1.15, -1.15);
-  const xArrow = makeAxisArrow(new THREE.Vector3(1, 0, 0), 0xef4444, axisScale);
+  const axisColors = THEMES[themeName].gizmo;
+  const xArrow = makeAxisArrow(
+    new THREE.Vector3(1, 0, 0),
+    colorValue(axisColors.axisX).getHex(),
+    axisScale,
+  );
   xArrow.position.copy(axisOrigin);
-  const yArrow = makeAxisArrow(new THREE.Vector3(0, 0, 1), 0x84cc16, axisScale);
+  const yArrow = makeAxisArrow(
+    new THREE.Vector3(0, 0, 1),
+    colorValue(axisColors.axisY).getHex(),
+    axisScale,
+  );
   yArrow.position.copy(axisOrigin);
-  const zArrow = makeAxisArrow(new THREE.Vector3(0, 1, 0), 0x3b82f6, axisScale);
+  const zArrow = makeAxisArrow(
+    new THREE.Vector3(0, 1, 0),
+    colorValue(axisColors.axisZ).getHex(),
+    axisScale,
+  );
   zArrow.position.copy(axisOrigin);
   axesRoot.add(xArrow);
   axesRoot.add(yArrow);
   axesRoot.add(zArrow);
-  const xLabel = makeSpriteLabel("X", "#ef4444");
+  const xLabel = makeSpriteLabel("X", axisColors.axisX);
   xLabel.position.set(1.7, -1.16, -1.15);
-  const yLabel = makeSpriteLabel("Y", "#84cc16");
+  const yLabel = makeSpriteLabel("Y", axisColors.axisY);
   yLabel.position.set(-1.15, -1.15, 1.7);
-  const zLabel = makeSpriteLabel("Z", "#3b82f6");
+  const zLabel = makeSpriteLabel("Z", axisColors.axisZ);
   zLabel.position.set(-1.15, 1.7, -1.15);
   axesRoot.add(xLabel);
   axesRoot.add(yLabel);
