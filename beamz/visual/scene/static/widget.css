@@ -1,4 +1,5 @@
 .zview-root {
+  --zview-font-ui: ui-monospace, "SFMono-Regular", monospace;
   --zview-bg-radial: rgba(59, 130, 246, 0.08);
   --zview-bg-start: #f8fafc;
   --zview-bg-end: #e2e8f0;
@@ -6,20 +7,22 @@
   --zview-button-bg: rgba(255, 255, 255, 0.86);
   --zview-button-border: rgba(15, 23, 42, 0.12);
   --zview-button-text: #0f172a;
-  --zview-sidebar-bg: rgba(255, 255, 255, 0.78);
+  --zview-sidebar-bg: #ffffff;
   --zview-sidebar-border: rgba(15, 23, 42, 0.1);
   --zview-sidebar-text: #0f172a;
   --zview-sidebar-muted: #475569;
-  --zview-sidebar-item: rgba(255, 255, 255, 0.72);
+  --zview-sidebar-item: #f8fafc;
   --zview-sidebar-item-border: rgba(15, 23, 42, 0.08);
+  --zview-sidebar-shadow: none;
+  --zview-sidebar-item-shadow: none;
   position: relative;
   width: 100%;
   min-height: 480px;
   background:
     radial-gradient(circle at top left, var(--zview-bg-radial), transparent 30%),
     linear-gradient(180deg, var(--zview-bg-start) 0%, var(--zview-bg-end) 100%);
-  border: 1px solid var(--zview-border);
-  border-radius: 16px;
+  border: 0;
+  border-radius: 10px;
   overflow: hidden;
 }
 
@@ -31,12 +34,14 @@
   --zview-button-bg: rgba(38, 38, 38, 0.82);
   --zview-button-border: rgba(212, 212, 212, 0.16);
   --zview-button-text: #f5f5f5;
-  --zview-sidebar-bg: rgba(38, 38, 38, 0.82);
+  --zview-sidebar-bg: #262626;
   --zview-sidebar-border: rgba(212, 212, 212, 0.12);
   --zview-sidebar-text: #f5f5f5;
   --zview-sidebar-muted: #a3a3a3;
-  --zview-sidebar-item: rgba(64, 64, 64, 0.7);
+  --zview-sidebar-item: #333333;
   --zview-sidebar-item-border: rgba(212, 212, 212, 0.1);
+  --zview-sidebar-shadow: none;
+  --zview-sidebar-item-shadow: none;
 }
 
 .zview-root[data-theme="light"] {
@@ -47,12 +52,14 @@
   --zview-button-bg: rgba(255, 255, 255, 0.86);
   --zview-button-border: rgba(15, 23, 42, 0.12);
   --zview-button-text: #0f172a;
-  --zview-sidebar-bg: rgba(255, 255, 255, 0.78);
+  --zview-sidebar-bg: #ffffff;
   --zview-sidebar-border: rgba(15, 23, 42, 0.1);
   --zview-sidebar-text: #0f172a;
   --zview-sidebar-muted: #475569;
-  --zview-sidebar-item: rgba(255, 255, 255, 0.72);
+  --zview-sidebar-item: #f8fafc;
   --zview-sidebar-item-border: rgba(15, 23, 42, 0.08);
+  --zview-sidebar-shadow: none;
+  --zview-sidebar-item-shadow: none;
 }
 
 .zview-toolbar {
@@ -68,10 +75,11 @@
   border: 1px solid var(--zview-button-border);
   background: var(--zview-button-bg);
   color: var(--zview-button-text);
-  border-radius: 999px;
-  padding: 6px 12px;
+  border-radius: 10px;
+  padding: 7px 12px 5px;
   font-size: 12px;
-  font-family: ui-monospace, "SFMono-Regular", monospace;
+  line-height: 1.15;
+  font-family: var(--zview-font-ui);
   cursor: pointer;
   backdrop-filter: blur(10px);
 }
@@ -110,13 +118,15 @@
   z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 18px;
+  gap: 12px;
+  padding: 14px 14px 12px;
+  border-radius: 9px;
   border: 1px solid var(--zview-sidebar-border);
   background: var(--zview-sidebar-bg);
-  backdrop-filter: blur(14px);
+  backdrop-filter: none;
+  box-shadow: var(--zview-sidebar-shadow);
   color: var(--zview-sidebar-text);
+  font-family: var(--zview-font-ui);
   overflow: auto;
   transition: transform 180ms ease, opacity 180ms ease;
 }
@@ -142,8 +152,10 @@
 .zview-sidebar-header {
   display: flex;
   align-items: start;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-bottom: 2px;
+  border-bottom: 0;
 }
 
 .zview-sidebar-close {
@@ -152,20 +164,22 @@
 }
 
 .zview-sidebar-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .zview-sidebar-subtitle {
   font-size: 11px;
   color: var(--zview-sidebar-muted);
+  line-height: 1.3;
 }
 
 .zview-sidebar-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .zview-sidebar-group-button {
@@ -182,21 +196,21 @@
 }
 
 .zview-sidebar-group-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
 }
 
 .zview-sidebar-group-count {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--zview-sidebar-muted);
 }
 
 .zview-sidebar-items {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .zview-sidebar-item {
@@ -204,10 +218,11 @@
   grid-template-columns: auto 1fr;
   align-items: start;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
   border: 1px solid var(--zview-sidebar-item-border);
   background: var(--zview-sidebar-item);
+  box-shadow: var(--zview-sidebar-item-shadow);
 }
 
 .zview-sidebar-item input {
@@ -216,14 +231,14 @@
 
 .zview-sidebar-item-label {
   font-size: 11px;
-  font-weight: 600;
-  line-height: 1.25;
+  font-weight: 700;
+  line-height: 1.3;
 }
 
 .zview-sidebar-item-meta {
   font-size: 10px;
   color: var(--zview-sidebar-muted);
-  line-height: 1.2;
+  line-height: 1.35;
 }
 
 .zview-sidebar-empty {
