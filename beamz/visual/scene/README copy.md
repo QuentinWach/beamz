@@ -1,6 +1,6 @@
-# zview
+# beamz.visual.scene
 
-`zview` is a notebook-first 3D visualization widget for BeamZ-style FDTD geometry and simulation setup. It uses a compact Python scene graph, exposes that scene to the browser through `anywidget`, and renders it with Three.js.
+`beamz.visual.scene` is a notebook-first 3D visualization widget for BeamZ-style FDTD geometry and simulation setup. It uses a compact Python scene graph, exposes that scene to the browser through `anywidget`, and renders it with Three.js.
 
 Current scope:
 
@@ -18,7 +18,7 @@ pip install -e ".[widget,dev]"
 ## Example
 
 ```python
-from zview import view3d
+from beamz.visual.scene import view3d
 
 result = view3d(simulation_or_design)
 result
@@ -32,7 +32,7 @@ Behavior:
 Demo scene:
 
 ```python
-from zview import demo_widget
+from beamz.visual.scene import demo_widget
 
 demo_widget()
 ```
