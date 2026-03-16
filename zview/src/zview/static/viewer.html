@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__ZVIEW_TITLE__</title>
+    <style>
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: #e2e8f0;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      body {
+        padding: 24px;
+      }
+      .zview-page {
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+      .zview-header {
+        margin-bottom: 14px;
+        color: #0f172a;
+      }
+      .zview-header p {
+        margin: 4px 0 0;
+        color: #475569;
+      }
+__ZVIEW_CSS__
+    </style>
+  </head>
+  <body>
+    <div class="zview-page">
+      <div class="zview-header">
+        <h1 id="zview-title">__ZVIEW_TITLE__</h1>
+        <p>Standalone browser rendering for ZView.</p>
+      </div>
+      <div id="zview-root"></div>
+    </div>
+    <script>
+      window.__ZVIEW_SCENE__ = __ZVIEW_SCENE_JSON__;
+    </script>
+    <script type="module">
+__ZVIEW_MODULE_SOURCE__
+    </script>
+  </body>
+</html>
