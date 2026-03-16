@@ -4,27 +4,30 @@ import { RoundedBoxGeometry } from "https://esm.sh/three@0.160.1/examples/jsm/ge
 
 const THEMES = {
   dark: {
-    sceneBackground: "#020617",
-    objectOutline: "#f8fafc",
+    sceneBackground: "#1a1a1a",
+    objectOutline: "#ffffff",
     gizmo: {
-      cubeColor: "#1e293b",
+      cubeColor: "#2a2a2a",
       cubeRoughness: 0.62,
       cubeMetalness: 0.08,
       cubeOpacity: 0.9,
-      faceText: "#f8fafc",
+      faceText: "#f5f5f5",
       faceOpacity: 0.96,
+      axisX: "#d4d4d4",
+      axisY: "#a3a3a3",
+      axisZ: "#737373",
     },
     measurement: {
-      edge: 0x64748b,
-      axis: 0xe2e8f0,
-      tick: 0x94a3b8,
-      tickText: "#cbd5e1",
-      axisText: "#f8fafc",
+      edge: 0x737373,
+      axis: 0xd4d4d4,
+      tick: 0xa3a3a3,
+      tickText: "#d4d4d4",
+      axisText: "#f5f5f5",
     },
   },
   light: {
     sceneBackground: "#f8fafc",
-    objectOutline: "#0f172a",
+    objectOutline: "#000000",
     gizmo: {
       cubeColor: "#f4f4f5",
       cubeRoughness: 0.55,
@@ -32,6 +35,9 @@ const THEMES = {
       cubeOpacity: 0.84,
       faceText: "#334155",
       faceOpacity: 0.92,
+      axisX: "#404040",
+      axisY: "#737373",
+      axisZ: "#a3a3a3",
     },
     measurement: {
       edge: 0x6b7280,
@@ -57,9 +63,29 @@ function normalizeVec3(values, fallback) {
   return new THREE.Vector3(Number(x), Number(y), Number(z));
 }
 
-function makeMaterial(spec, clippingPlanes) {
+function materialSignature(spec, kind) {
+  return JSON.stringify({
+    kind,
+    color: spec?.color || null,
+    opacity: Number(spec?.opacity ?? 1),
+    wireframe: Boolean(spec?.wireframe),
+    metalness: Number(spec?.metalness ?? 0),
+    roughness: Number(spec?.roughness ?? 0.85),
+    emissive: spec?.emissive || "#000000",
+  });
+}
+
+function displayOrder(spec, fallbackOrder = 0) {
+  return Number(spec?.metadata?.display_order ?? fallbackOrder);
+}
+
+function makeMaterial(spec, clippingPlanes, kind, materialCache) {
   const opacity = Math.max(0, Math.min(1, Number(spec?.opacity ?? 1)));
-  return new THREE.MeshPhysicalMaterial({
+  const signature = materialSignature(spec, kind);
+  if (materialCache?.has(signature)) {
+    return materialCache.get(signature);
+  }
+  const material = new THREE.MeshPhysicalMaterial({
     color: colorValue(spec?.color),
     transparent: opacity < 1,
     opacity,
@@ -70,8 +96,13 @@ function makeMaterial(spec, clippingPlanes) {
     emissive: colorValue(spec?.emissive, "#000000"),
     side: THREE.DoubleSide,
     clippingPlanes,
-    depthWrite: opacity >= 0.99,
+    depthWrite: opacity >= 0.999,
   });
+  material.polygonOffset = kind === "plane";
+  material.polygonOffsetFactor = kind === "plane" ? -1 : 0;
+  material.polygonOffsetUnits = kind === "plane" ? -1 : 0;
+  materialCache?.set(signature, material);
+  return material;
 }
 
 function orientToNormal(object, normal) {
@@ -119,48 +150,93 @@ function extrusionShape(vertices, holes) {
   return shape;
 }
 
+function boxGeometryFromItem(item) {
+  const size = item.size || [1, 1, 1];
+  const center = item.center || [0, 0, 0];
+  const geometry = new THREE.BoxGeometry(Number(size[0]), Number(size[1]), Number(size[2]));
+  geometry.translate(Number(center[0]), Number(center[1]), Number(center[2]));
+  return geometry;
+}
+
+function planeGeometryFromItem(item) {
+  const size = item.size || [1, 1];
+  const center = normalizeVec3(item.center, [0, 0, 0]);
+  const geometry = new THREE.PlaneGeometry(Number(size[0]), Number(size[1]));
+  const temp = new THREE.Object3D();
+  temp.position.copy(center);
+  orientToNormal(temp, item.normal || [0, 0, 1]);
+  temp.updateMatrixWorld(true);
+  geometry.applyMatrix4(temp.matrixWorld);
+  return geometry;
+}
+
+function polyExtrusionGeometryFromItem(item) {
+  const shape = extrusionShape(item.vertices || [], item.holes || []);
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: Number(item.depth || 0), bevelEnabled: false });
+  geometry.translate(0, 0, Number(item.z0 || 0));
+  return geometry;
+}
+
+function makeOutlineShell(object, outlineColor, clippingPlanes, scale = 1.01) {
+  const outlineMaterial = new THREE.MeshBasicMaterial({
+    color: colorValue(outlineColor, "#ffffff"),
+    side: THREE.BackSide,
+    transparent: false,
+    opacity: 1,
+    clippingPlanes,
+    depthTest: true,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const outlineMesh = new THREE.Mesh(object.geometry.clone(), outlineMaterial);
+  outlineMesh.scale.setScalar(scale);
+  outlineMesh.renderOrder = 1000;
+  outlineMesh.frustumCulled = false;
+  outlineMesh.userData.zviewOutlineMaterial = outlineMaterial;
+  return outlineMesh;
+}
+
 function makeObjectOutline(spec, object, outlineColor, clippingPlanes) {
   if (!object?.isMesh) {
     return null;
   }
-  if (spec.kind === "sphere") {
-    const outlineMaterial = new THREE.MeshBasicMaterial({
-      color: colorValue(outlineColor, "#ffffff"),
-      side: THREE.BackSide,
-      transparent: true,
-      opacity: 0.95,
-      clippingPlanes,
-      depthWrite: false,
-    });
-    const outlineMesh = new THREE.Mesh(object.geometry.clone(), outlineMaterial);
-    outlineMesh.scale.setScalar(1.035);
-    outlineMesh.userData.zviewOutlineMaterial = outlineMaterial;
-    return outlineMesh;
+  if (
+    spec.metadata?.kind !== "structure"
+    || spec.material?.wireframe
+    || Number(spec.material?.opacity ?? 1) <= 0
+  ) {
+    return null;
   }
-  if (spec.kind === "box" || spec.kind === "plane" || spec.kind === "poly_extrusion") {
+  if (spec.kind === "sphere") {
+    return makeOutlineShell(object, outlineColor, clippingPlanes, 1.035);
+  }
+  if (spec.kind === "box" || spec.kind === "poly_extrusion" || spec.kind === "plane") {
     const outlineMaterial = new THREE.LineBasicMaterial({
       color: colorValue(outlineColor, "#ffffff"),
       transparent: true,
       opacity: 0.95,
       clippingPlanes,
+      depthTest: true,
+      depthWrite: false,
     });
+    outlineMaterial.toneMapped = false;
     const outline = new THREE.LineSegments(new THREE.EdgesGeometry(object.geometry), outlineMaterial);
+    outline.frustumCulled = false;
     outline.userData.zviewOutlineMaterial = outlineMaterial;
     return outline;
   }
   return null;
 }
 
-function buildObject(spec, clippingPlanes, outlineColor) {
+function buildObject(spec, clippingPlanes, outlineColor, materialCache, orderIndex = 0) {
   let object = null;
-  const material = makeMaterial(spec.material, clippingPlanes);
+  const material = makeMaterial(spec.material, clippingPlanes, spec.kind, materialCache);
   const geometry = spec.geometry || {};
+  const order = displayOrder(spec, orderIndex);
 
   switch (spec.kind) {
     case "box": {
-      const size = geometry.size || [1, 1, 1];
-      const center = geometry.center || [0, 0, 0];
-      const boxGeometry = new THREE.BoxGeometry(Number(size[0]), Number(size[1]), Number(size[2]));
+      const boxGeometry = boxGeometryFromItem(geometry);
       if (spec.material?.wireframe) {
         const lineMaterial = new THREE.LineBasicMaterial({
           color: colorValue(spec.material?.color, "#0f172a"),
@@ -172,7 +248,6 @@ function buildObject(spec, clippingPlanes, outlineColor) {
       } else {
         object = new THREE.Mesh(boxGeometry, material);
       }
-      object.position.copy(normalizeVec3(center, [0, 0, 0]));
       break;
     }
     case "sphere": {
@@ -183,11 +258,7 @@ function buildObject(spec, clippingPlanes, outlineColor) {
       break;
     }
     case "plane": {
-      const size = geometry.size || [1, 1];
-      const center = geometry.center || [0, 0, 0];
-      object = new THREE.Mesh(new THREE.PlaneGeometry(Number(size[0]), Number(size[1])), material);
-      object.position.copy(normalizeVec3(center, [0, 0, 0]));
-      orientToNormal(object, geometry.normal || [0, 0, 1]);
+      object = new THREE.Mesh(planeGeometryFromItem(geometry), material);
       break;
     }
     case "line": {
@@ -210,10 +281,7 @@ function buildObject(spec, clippingPlanes, outlineColor) {
       break;
     }
     case "poly_extrusion": {
-      const shape = extrusionShape(geometry.vertices || [], geometry.holes || []);
-      const extrudeGeometry = new THREE.ExtrudeGeometry(shape, { depth: Number(geometry.depth || 0), bevelEnabled: false });
-      object = new THREE.Mesh(extrudeGeometry, material);
-      object.position.set(0, 0, Number(geometry.z0 || 0));
+      object = new THREE.Mesh(polyExtrusionGeometryFromItem(geometry), material);
       break;
     }
     default:
@@ -224,10 +292,16 @@ function buildObject(spec, clippingPlanes, outlineColor) {
   if (outline) {
     object.add(outline);
   }
+  object.renderOrder = order;
   object.visible = spec.visible !== false;
   object.userData.zview = spec;
   object.traverse?.((node) => {
     node.userData.zview = spec;
+    if (node.userData?.zviewOutlineMaterial) {
+      node.renderOrder = order + 0.25;
+    } else {
+      node.renderOrder = order;
+    }
   });
   return object;
 }
@@ -372,9 +446,131 @@ function makeSegments(points, material) {
   return new THREE.LineSegments(geometry, material);
 }
 
+function measurementScale(size) {
+  const spans = [size.x, size.y, size.z]
+    .map((value) => Math.abs(Number(value) || 0))
+    .filter((value) => value > 0);
+  if (spans.length === 0) {
+    return 1e-9;
+  }
+  return Math.max(...spans);
+}
+
 function setSegmentsPoints(lineSegments, points) {
   lineSegments.geometry.dispose();
   lineSegments.geometry = new THREE.BufferGeometry().setFromPoints(points);
+}
+
+function measurementBoxCorners(box) {
+  const min = box.min;
+  const max = box.max;
+  return {
+    lbf: new THREE.Vector3(min.x, min.y, min.z),
+    rbf: new THREE.Vector3(max.x, min.y, min.z),
+    ltf: new THREE.Vector3(min.x, min.y, max.z),
+    rtf: new THREE.Vector3(max.x, min.y, max.z),
+    lbb: new THREE.Vector3(min.x, max.y, min.z),
+    rbb: new THREE.Vector3(max.x, max.y, min.z),
+    ltb: new THREE.Vector3(min.x, max.y, max.z),
+    rtb: new THREE.Vector3(max.x, max.y, max.z),
+  };
+}
+
+function measurementProjectedBounds(corners, camera, rect) {
+  const points = Object.values(corners).map((corner) => screenPointForWorld(corner, camera, rect));
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: Math.max(maxX - minX, 1),
+    height: Math.max(maxY - minY, 1),
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
+  };
+}
+
+function measurementAxisCandidates(corners, axisName) {
+  if (axisName === "x") {
+    return [
+      { start: corners.lbf, end: corners.rbf, offsetDir: new THREE.Vector3(0, -1, -1).normalize() },
+      { start: corners.ltf, end: corners.rtf, offsetDir: new THREE.Vector3(0, -1, 1).normalize() },
+      { start: corners.lbb, end: corners.rbb, offsetDir: new THREE.Vector3(0, 1, -1).normalize() },
+      { start: corners.ltb, end: corners.rtb, offsetDir: new THREE.Vector3(0, 1, 1).normalize() },
+    ];
+  }
+  if (axisName === "y") {
+    return [
+      { start: corners.lbf, end: corners.lbb, offsetDir: new THREE.Vector3(-1, 0, -1).normalize() },
+      { start: corners.ltf, end: corners.ltb, offsetDir: new THREE.Vector3(-1, 0, 1).normalize() },
+      { start: corners.rbf, end: corners.rbb, offsetDir: new THREE.Vector3(1, 0, -1).normalize() },
+      { start: corners.rtf, end: corners.rtb, offsetDir: new THREE.Vector3(1, 0, 1).normalize() },
+    ];
+  }
+  return [
+    { start: corners.lbf, end: corners.ltf, offsetDir: new THREE.Vector3(-1, -1, 0).normalize() },
+    { start: corners.lbb, end: corners.ltb, offsetDir: new THREE.Vector3(-1, 1, 0).normalize() },
+    { start: corners.rbf, end: corners.rtf, offsetDir: new THREE.Vector3(1, -1, 0).normalize() },
+    { start: corners.rbb, end: corners.rtb, offsetDir: new THREE.Vector3(1, 1, 0).normalize() },
+  ];
+}
+
+function screenVectorForWorldOffset(point, offset, camera, rect) {
+  const base = screenPointForWorld(point, camera, rect);
+  const shifted = screenPointForWorld(point.clone().add(offset), camera, rect);
+  return new THREE.Vector2(shifted.x - base.x, shifted.y - base.y);
+}
+
+function chooseMeasurementAxisPlacement(axisName, corners, camera, rect) {
+  const projectedBounds = measurementProjectedBounds(corners, camera, rect);
+  const center = new THREE.Vector2(projectedBounds.centerX, projectedBounds.centerY);
+  const viewMatrix = camera.matrixWorldInverse;
+  const candidates = measurementAxisCandidates(corners, axisName);
+  const probeScale = Math.max(
+    corners.rtb.distanceTo(corners.lbf) * 0.03,
+    1e-9,
+  );
+  let best = candidates[0];
+  let bestScore = -Infinity;
+
+  for (const candidate of candidates) {
+    const midpoint = candidate.start.clone().lerp(candidate.end, 0.5);
+    const screen = screenPointForWorld(midpoint, camera, rect);
+    const centerToMid = new THREE.Vector2(screen.x - center.x, screen.y - center.y);
+    const outwardScreen = screenVectorForWorldOffset(
+      midpoint,
+      candidate.offsetDir.clone().multiplyScalar(probeScale),
+      camera,
+      rect,
+    );
+    const outwardScore = centerToMid.lengthSq() > 1e-9 && outwardScreen.lengthSq() > 1e-9
+      ? centerToMid.normalize().dot(outwardScreen.normalize())
+      : -1;
+    const topScore = 1 - ((screen.y - projectedBounds.minY) / projectedBounds.height);
+    const sideScore = Math.abs(screen.x - projectedBounds.centerX) / Math.max(projectedBounds.width * 0.5, 1);
+    const frontScore = midpoint.clone().applyMatrix4(viewMatrix).z;
+
+    const score = axisName === "z"
+      ? outwardScore * 3.0 + sideScore * 1.75 + frontScore * 0.08
+      : outwardScore * 2.4 + topScore * 1.8 + frontScore * 0.08;
+
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  return best;
 }
 
 function makeMeasurementFrame(box, theme = THEMES.dark) {
@@ -387,19 +583,11 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
   const max = box.max.clone();
   const size = box.getSize(new THREE.Vector3());
   const diag = size.length();
+  const scale = measurementScale(size);
+  const corners = measurementBoxCorners(box);
   const edgeMaterial = new THREE.LineBasicMaterial({ color: theme.measurement.edge, transparent: true, opacity: 0.8 });
   const axisMaterial = new THREE.LineBasicMaterial({ color: theme.measurement.axis, transparent: true, opacity: 0.95 });
   const tickMaterial = new THREE.LineBasicMaterial({ color: theme.measurement.tick, transparent: true, opacity: 0.9 });
-  const corners = {
-    lbf: new THREE.Vector3(min.x, min.y, min.z),
-    rbf: new THREE.Vector3(max.x, min.y, min.z),
-    ltf: new THREE.Vector3(min.x, min.y, max.z),
-    rtf: new THREE.Vector3(max.x, min.y, max.z),
-    lbb: new THREE.Vector3(min.x, max.y, min.z),
-    rbb: new THREE.Vector3(max.x, max.y, min.z),
-    ltb: new THREE.Vector3(min.x, max.y, max.z),
-    rtb: new THREE.Vector3(max.x, max.y, max.z),
-  };
 
   group.add(
     makeSegments(
@@ -416,48 +604,50 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
     ),
   );
 
-  const tickLength = Math.max(diag * 0.015, 0.04);
+  const tickLength = Math.max(scale * 0.035, diag * 0.015, 1e-9);
+  group.userData.boundsBox = new THREE.Box3(min.clone(), max.clone());
+  group.userData.tickLength = tickLength;
 
   const axisConfigs = [
     {
+      axisName: "x",
       label: "x (µm)",
       min: min.x,
       max: max.x,
-      start: new THREE.Vector3(min.x, min.y, max.z),
-      end: new THREE.Vector3(max.x, min.y, max.z),
-      offsetDir: new THREE.Vector3(0, -1, 1).normalize(),
+      axisVector: new THREE.Vector3(1, 0, 0),
     },
     {
+      axisName: "y",
       label: "y (µm)",
       min: min.y,
       max: max.y,
-      start: new THREE.Vector3(min.x, min.y, max.z),
-      end: new THREE.Vector3(min.x, max.y, max.z),
-      offsetDir: new THREE.Vector3(-1, 0, 1).normalize(),
+      axisVector: new THREE.Vector3(0, 1, 0),
     },
     {
+      axisName: "z",
       label: "z (µm)",
       min: min.z,
       max: max.z,
-      start: new THREE.Vector3(max.x, min.y, min.z),
-      end: new THREE.Vector3(max.x, min.y, max.z),
-      offsetDir: new THREE.Vector3(1, -1, 0).normalize(),
+      axisVector: new THREE.Vector3(0, 0, 1),
     },
   ];
 
   for (const axis of axisConfigs) {
     const axisGroup = new THREE.Group();
-    axisGroup.userData.axisVector = axis.end.clone().sub(axis.start).normalize();
-    const axisStart = axis.start.clone();
-    const axisEnd = axis.end.clone();
-    axisGroup.add(makeSegments([axisStart, axisEnd], axisMaterial));
-    const values = integerMicronTickValues(axis.min, axis.max, 5);
-    const tickPoints = [];
-    for (const value of values) {
-      const t = Math.abs(axis.max - axis.min) < 1e-9 ? 0 : (value - axis.min) / (axis.max - axis.min);
-      const point = axisStart.clone().lerp(axisEnd, THREE.MathUtils.clamp(t, 0, 1));
-      const tickEnd = point.clone().add(axis.offsetDir.clone().multiplyScalar(tickLength));
-      tickPoints.push(point, tickEnd);
+    axisGroup.userData.axisVector = axis.axisVector.clone();
+    axisGroup.userData.axisName = axis.axisName;
+    axisGroup.userData.min = axis.min;
+    axisGroup.userData.max = axis.max;
+    axisGroup.userData.tickValues = integerMicronTickValues(axis.min, axis.max, 5);
+
+    const axisLine = makeSegments([new THREE.Vector3(), new THREE.Vector3()], axisMaterial);
+    const tickSegments = makeSegments([new THREE.Vector3(), new THREE.Vector3()], tickMaterial);
+    axisGroup.userData.axisLine = axisLine;
+    axisGroup.userData.tickSegments = tickSegments;
+    axisGroup.add(axisLine);
+
+    const tickLabels = [];
+    for (const value of axisGroup.userData.tickValues) {
       const tickLabel = makeSpriteLabel(formatMicron(value), {
         color: theme.measurement.tickText,
         font: "600 60px ui-sans-serif, system-ui, sans-serif",
@@ -465,10 +655,11 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
         height: 160,
         screenSizePx: [92, 36],
       });
-      tickLabel.position.copy(point.clone().add(axis.offsetDir.clone().multiplyScalar(tickLength * 1.7)));
       axisGroup.add(tickLabel);
+      tickLabels.push(tickLabel);
     }
-    axisGroup.add(makeSegments(tickPoints, tickMaterial));
+    axisGroup.userData.tickLabels = tickLabels;
+    axisGroup.add(tickSegments);
 
     const axisLabel = makeSpriteLabel(axis.label, {
       color: theme.measurement.axisText,
@@ -477,8 +668,8 @@ function makeMeasurementFrame(box, theme = THEMES.dark) {
       height: 160,
       screenSizePx: [168, 48],
     });
-    axisLabel.position.copy(axisStart.clone().lerp(axisEnd, 0.5).add(axis.offsetDir.clone().multiplyScalar(tickLength * 4.8)));
     axisGroup.add(axisLabel);
+    axisGroup.userData.axisLabel = axisLabel;
     group.add(axisGroup);
   }
 
@@ -489,6 +680,16 @@ function updateMeasurementFrameLayout(frame, camera, renderer) {
   if (!frame) {
     return;
   }
+  const box = frame.userData?.boundsBox;
+  const tickLength = Number(frame.userData?.tickLength || 0);
+  if (!box || !renderer) {
+    return;
+  }
+  const corners = measurementBoxCorners(box);
+  const rect = {
+    width: renderer.domElement.clientWidth || renderer.domElement.width || 1,
+    height: renderer.domElement.clientHeight || renderer.domElement.height || 1,
+  };
   const viewDir = new THREE.Vector3();
   camera.getWorldDirection(viewDir);
   const hideDepthAxis = camera.isOrthographicCamera;
@@ -498,6 +699,33 @@ function updateMeasurementFrameLayout(frame, camera, renderer) {
       continue;
     }
     child.visible = !hideDepthAxis || Math.abs(axisVector.dot(viewDir)) < 0.96;
+    if (!child.visible) {
+      continue;
+    }
+    const axisName = child.userData.axisName;
+    const placement = chooseMeasurementAxisPlacement(axisName, corners, camera, rect);
+    const axisStart = placement.start.clone();
+    const axisEnd = placement.end.clone();
+    const offsetDir = placement.offsetDir.clone();
+    setSegmentsPoints(child.userData.axisLine, [axisStart, axisEnd]);
+
+    const min = Number(child.userData.min);
+    const max = Number(child.userData.max);
+    const values = child.userData.tickValues || [];
+    const tickPoints = [];
+    for (const [index, value] of values.entries()) {
+      const t = Math.abs(max - min) < 1e-9 ? 0 : (value - min) / (max - min);
+      const point = axisStart.clone().lerp(axisEnd, THREE.MathUtils.clamp(t, 0, 1));
+      const tickEnd = point.clone().add(offsetDir.clone().multiplyScalar(tickLength));
+      tickPoints.push(point, tickEnd);
+      child.userData.tickLabels[index]?.position.copy(
+        point.clone().add(offsetDir.clone().multiplyScalar(tickLength * 1.7)),
+      );
+    }
+    setSegmentsPoints(child.userData.tickSegments, tickPoints);
+    child.userData.axisLabel?.position.copy(
+      axisStart.clone().lerp(axisEnd, 0.5).add(offsetDir.clone().multiplyScalar(tickLength * 4.8)),
+    );
   }
 }
 
@@ -628,6 +856,7 @@ function makeRenderer(container) {
   renderer.setPixelRatio(globalThis.devicePixelRatio || 1);
   renderer.setSize(container.clientWidth || 900, container.clientHeight || 520, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.sortObjects = false;
   renderer.domElement.className = "zview-canvas";
   container.appendChild(renderer.domElement);
   return renderer;
@@ -775,8 +1004,9 @@ function renderObjects(root, sceneSpec, themeName) {
   const planes = clippingPlanes(sceneSpec);
   const content = new THREE.Group();
   const objectMap = new Map();
-  for (const spec of sceneSpec.objects || []) {
-    const object = buildObject(spec, planes, THEMES[themeName].objectOutline);
+  const materialCache = new Map();
+  for (const [index, spec] of (sceneSpec.objects || []).entries()) {
+    const object = buildObject(spec, planes, THEMES[themeName].objectOutline, materialCache, index);
     if (object) {
       content.add(object);
       objectMap.set(spec.id, object);
@@ -862,20 +1092,33 @@ function makeGizmo(rendererHost, themeName = "dark") {
   const axesRoot = new THREE.Group();
   const axisScale = 2.2;
   const axisOrigin = new THREE.Vector3(-1.15, -1.15, -1.15);
-  const xArrow = makeAxisArrow(new THREE.Vector3(1, 0, 0), 0xef4444, axisScale);
+  const axisColors = THEMES[themeName].gizmo;
+  const xArrow = makeAxisArrow(
+    new THREE.Vector3(1, 0, 0),
+    colorValue(axisColors.axisX).getHex(),
+    axisScale,
+  );
   xArrow.position.copy(axisOrigin);
-  const yArrow = makeAxisArrow(new THREE.Vector3(0, 0, 1), 0x84cc16, axisScale);
+  const yArrow = makeAxisArrow(
+    new THREE.Vector3(0, 0, 1),
+    colorValue(axisColors.axisY).getHex(),
+    axisScale,
+  );
   yArrow.position.copy(axisOrigin);
-  const zArrow = makeAxisArrow(new THREE.Vector3(0, 1, 0), 0x3b82f6, axisScale);
+  const zArrow = makeAxisArrow(
+    new THREE.Vector3(0, 1, 0),
+    colorValue(axisColors.axisZ).getHex(),
+    axisScale,
+  );
   zArrow.position.copy(axisOrigin);
   axesRoot.add(xArrow);
   axesRoot.add(yArrow);
   axesRoot.add(zArrow);
-  const xLabel = makeSpriteLabel("X", "#ef4444");
+  const xLabel = makeSpriteLabel("X", axisColors.axisX);
   xLabel.position.set(1.7, -1.16, -1.15);
-  const yLabel = makeSpriteLabel("Y", "#84cc16");
+  const yLabel = makeSpriteLabel("Y", axisColors.axisY);
   yLabel.position.set(-1.15, -1.15, 1.7);
-  const zLabel = makeSpriteLabel("Z", "#3b82f6");
+  const zLabel = makeSpriteLabel("Z", axisColors.axisZ);
   zLabel.position.set(-1.15, 1.7, -1.15);
   axesRoot.add(xLabel);
   axesRoot.add(yLabel);
@@ -1017,7 +1260,7 @@ function mountZView({ el, sceneSpec, onHover = () => {}, onSelect = () => {} }) 
   const key = new THREE.DirectionalLight(0xffffff, 1.2);
   key.position.set(3, -5, 8);
   scene.add(key);
-  const fill = new THREE.DirectionalLight(0xa5b4fc, 0.45);
+  const fill = new THREE.DirectionalLight(0xe5e7eb, 0.35);
   fill.position.set(-4, 2, 3);
   scene.add(fill);
 
@@ -1095,6 +1338,9 @@ function mountZView({ el, sceneSpec, onHover = () => {}, onSelect = () => {} }) 
       parts.push(String(spec.metadata.type));
     } else {
       parts.push(String(spec.kind));
+    }
+    if (Number(spec.metadata?.structure_count || 1) > 1) {
+      parts.push(`${Number(spec.metadata.structure_count)} merged`);
     }
     if (spec.metadata?.material?.permittivity !== undefined && spec.metadata?.kind === "structure") {
       parts.push(`eps ${Number(spec.metadata.material.permittivity).toFixed(2)}`);

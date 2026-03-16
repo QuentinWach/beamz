@@ -14,6 +14,10 @@ try:
 except ImportError:  # pragma: no cover - exercised indirectly when widget extra is missing
     anywidget = None
 
+_ESM = widget_esm()
+_CSS = widget_css()
+
+
 if anywidget is not None:
     _WidgetBase = anywidget.AnyWidget
 else:  # pragma: no cover - import fallback only
@@ -24,8 +28,8 @@ else:  # pragma: no cover - import fallback only
 
 
 class ZViewWidget(_WidgetBase):
-    _esm = widget_esm()
-    _css = widget_css()
+    _esm = _ESM
+    _css = _CSS
 
     scene_json = Dict(default_value={}).tag(sync=True)
     clip_planes = List(default_value=[]).tag(sync=True)
@@ -37,8 +41,6 @@ class ZViewWidget(_WidgetBase):
             raise RuntimeError(
                 "Rendering ZViewWidget requires `anywidget`. Install zview with the `widget` extra."
             )
-        type(self)._esm = widget_esm()
-        type(self)._css = widget_css()
         scene_spec = scene if isinstance(scene, SceneSpec) else scene_from_dict(scene)
         scene_json = scene_spec.to_dict()
         super().__init__(
