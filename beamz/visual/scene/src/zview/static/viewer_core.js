@@ -1041,11 +1041,11 @@ function makeGizmo(rendererHost, themeName = "dark") {
 
   const faceDefs = [
     { label: "RIGHT", position: [1, 0, 0], rotation: [0, Math.PI / 2, 0], direction: [1, 0, 0], up: [0, 0, 1] },
-    { label: "LEFT", position: [-1, 0, 0], rotation: [0, -Math.PI / 2, 0], direction: [-1, 0, 0], up: [0, 1, 0] },
+    { label: "LEFT", position: [-1, 0, 0], rotation: [0, -Math.PI / 2, 0], direction: [-1, 0, 0], up: [0, 0, 1] },
     { label: "TOP", position: [0, 0, 1], rotation: [0, 0, 0], direction: [0, 0, 1], up: [0, 1, 0] },
-    { label: "BOTTOM", position: [0, 0, -1], rotation: [0, Math.PI, 0], direction: [0, 0, -1], up: [0, 1, 0] },
+    { label: "BOTTOM", position: [0, 0, -1], rotation: [0, Math.PI, 0], direction: [0, 0, -1], up: [0, -1, 0] },
     { label: "FRONT", position: [0, -1, 0], rotation: [Math.PI / 2, 0, 0], direction: [0, -1, 0], up: [0, 0, 1] },
-    { label: "BACK", position: [0, 1, 0], rotation: [-Math.PI / 2, 0, 0], direction: [0, 1, 0], up: [1, 0, 0] },
+    { label: "BACK", position: [0, 1, 0], rotation: [-Math.PI / 2, 0, 0], direction: [0, 1, 0], up: [0, 0, 1] },
   ];
 
   const cubeRoot = new THREE.Group();
@@ -1374,17 +1374,6 @@ function mountZView({ el, sceneSpec, onHover = () => {}, onSelect = () => {} }) 
 
     const header = document.createElement("div");
     header.className = "zview-sidebar-header";
-    const heading = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "zview-sidebar-title";
-    title.textContent = sceneSpec.title || "Scene Overview";
-    heading.appendChild(title);
-
-    const subtitle = document.createElement("div");
-    subtitle.className = "zview-sidebar-subtitle";
-    subtitle.textContent = `${objects.length} objects · visibility controls`;
-    heading.appendChild(subtitle);
-    header.appendChild(heading);
 
     const closeButton = document.createElement("button");
     closeButton.type = "button";
