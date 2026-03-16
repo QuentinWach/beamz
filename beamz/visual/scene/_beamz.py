@@ -383,19 +383,24 @@ def _monitor_objects(monitors: Iterable[Any]) -> list[Object3D]:
 def _monitor_plane_object(monitor: Any, label: str) -> Object3D:
     start = getattr(monitor, "start", (0.0, 0.0, 0.0))
     end = getattr(monitor, "end", None)
+    plane_normal = str(getattr(monitor, "plane_normal", "z")).lower()
     if end is not None:
+        dx = abs(float(end[0]) - float(start[0]))
+        dy = abs(float(end[1]) - float(start[1]))
+        dz = abs(float(end[2]) - float(start[2]))
         center = [
             (float(start[0]) + float(end[0])) / 2.0,
             (float(start[1]) + float(end[1])) / 2.0,
             (float(start[2]) + float(end[2])) / 2.0,
         ]
-        size = [
-            max(abs(float(end[0]) - float(start[0])), 1e-12),
-            max(abs(float(end[1]) - float(start[1])), 1e-12),
-        ]
+        if plane_normal == "x":
+            size = [max(dy, 1e-12), max(dz, 1e-12)]
+        elif plane_normal == "y":
+            size = [max(dx, 1e-12), max(dz, 1e-12)]
+        else:
+            size = [max(dx, 1e-12), max(dy, 1e-12)]
     else:
         plane_position = float(getattr(monitor, "plane_position", 0.0))
-        plane_normal = getattr(monitor, "plane_normal", "z")
         size_attr = getattr(monitor, "size", (1.0, 1.0))
         size = [float(size_attr[0]), float(size_attr[1])]
         center = [0.0, 0.0, 0.0]
@@ -404,7 +409,7 @@ def _monitor_plane_object(monitor: Any, label: str) -> Object3D:
     geometry = {
         "center": center,
         "size": size,
-        "normal": _normal_from_axis(getattr(monitor, "plane_normal", "z")),
+        "normal": _normal_from_axis(plane_normal),
     }
     return Object3D(
         kind="plane",

@@ -87,6 +87,16 @@ class FakeMonitor:
         self.plane_normal = "z"
 
 
+class FakeMonitorX:
+    def __init__(self):
+        self.name = "flux_yz"
+        self.is_3d = True
+        self.start = (0.2, 0.1, 0.05)
+        self.end = (0.2, 0.9, 0.45)
+        self.monitor_type = "plane"
+        self.plane_normal = "x"
+
+
 def _make_design():
     source = FakeModeSource()
     monitor = FakeMonitor()
@@ -230,6 +240,29 @@ def test_simulation_to_scene_includes_devices_boundaries_and_metadata():
     assert any(
         obj.metadata.get("type") == "FakeGaussianSource" for obj in source_objects
     )
+
+
+def test_simulation_to_scene_preserves_monitor_extents_for_x_normal_planes():
+    design = _make_design()
+    design.monitors = [FakeMonitorX()]
+    sim = Simulation.__new__(Simulation)
+    sim.design = design
+    sim.devices = [design.monitors[0]]
+    sim.boundaries = []
+    sim.resolution = 2.5e-8
+    sim.is_3d = True
+    sim.plane_2d = "xy"
+    sim.dt = 1e-16
+    sim.num_steps = 8
+
+    scene = simulation_to_scene(sim)
+
+    monitor_object = next(
+        obj for obj in scene.objects if obj.metadata.get("kind") == "monitor"
+    )
+
+    assert monitor_object.geometry["size"] == [0.8, 0.4]
+    assert monitor_object.geometry["normal"] == [1.0, 0.0, 0.0]
 
 
 def test_simulation_show_delegates_to_view3d(monkeypatch):
