@@ -16,10 +16,6 @@ except (
 ):  # pragma: no cover - exercised indirectly when widget extra is missing
     anywidget = None
 
-_ESM = widget_esm()
-_CSS = widget_css()
-
-
 if anywidget is not None:
     _WidgetBase = anywidget.AnyWidget
 else:  # pragma: no cover - import fallback only
@@ -30,8 +26,8 @@ else:  # pragma: no cover - import fallback only
 
 
 class SceneWidget(_WidgetBase):
-    _esm = _ESM
-    _css = _CSS
+    _esm = widget_esm()
+    _css = widget_css()
 
     scene_json = Dict(default_value={}).tag(sync=True)
     clip_planes = List(default_value=[]).tag(sync=True)
@@ -44,6 +40,8 @@ class SceneWidget(_WidgetBase):
                 "Rendering the BEAMZ scene widget requires `anywidget`. "
                 "Reinstall BeamZ or install `anywidget` in this environment."
             )
+        type(self)._esm = widget_esm()
+        type(self)._css = widget_css()
         scene_spec = scene if isinstance(scene, SceneSpec) else scene_from_dict(scene)
         scene_json = scene_spec.to_dict()
         super().__init__(

@@ -16,6 +16,7 @@ from beamz.visual.scene import (
     simulation_to_scene,
     view3d,
 )
+from beamz.visual.scene import _frontend
 from beamz.visual.scene._browser import open_in_browser
 
 
@@ -249,7 +250,7 @@ def test_simulation_show_delegates_to_view3d(monkeypatch):
     assert captured["kwargs"] == {"mode": "browser", "open_browser": False}
 
 
-def test_design_to_scene_merges_adjacent_structures_with_same_material():
+def test_design_to_scene_keeps_adjacent_same_material_structures_separate():
     scene = simulation_to_scene(
         SimpleNamespace(
             design=_make_design_with_repeated_material(),
@@ -267,11 +268,10 @@ def test_design_to_scene_merges_adjacent_structures_with_same_material():
         obj for obj in scene.objects if obj.metadata.get("kind") == "structure"
     ]
 
-    assert len(structure_objects) == 1
-    assert structure_objects[0].geometry["items"]
-    assert len(structure_objects[0].geometry["items"]) == 2
-    assert structure_objects[0].material.color == BLUE
-    assert structure_objects[0].metadata["structure_count"] == 2
+    assert len(structure_objects) == 2
+    assert [obj.material.color for obj in structure_objects] == [BLUE, BLUE]
+    assert all("items" not in obj.geometry for obj in structure_objects)
+    assert all("structure_count" not in obj.metadata for obj in structure_objects)
 
 
 def test_scene_objects_get_stable_display_order_metadata():
@@ -322,8 +322,29 @@ def test_structure_colors_are_deterministic_and_only_air_is_transparent():
         obj for obj in scene.objects if obj.metadata.get("kind") == "structure"
     ]
 
-    assert [obj.material.color for obj in structure_objects] == [BLUE, RED]
-    assert [obj.material.opacity for obj in structure_objects] == [1.0, 0.0]
+    assert [obj.material.color for obj in structure_objects] == [BLUE, BLUE, RED]
+    assert [obj.material.opacity for obj in structure_objects] == [1.0, 1.0, 0.0]
+
+
+def test_frontend_html_reads_static_assets_lazily(monkeypatch):
+    assets = {
+        "viewer_core.js": "console.log('fresh-viewer-core');",
+        "browser_wrapper.js": "console.log('fresh-browser-wrapper');",
+        "widget_wrapper.js": "console.log('fresh-widget-wrapper');",
+        "widget.css": ".zview-root { outline: 1px solid red; }",
+        "viewer.html": (
+            "<html><head><title>__ZVIEW_TITLE__</title><style>__ZVIEW_CSS__</style></head>"
+            "<body><div id='scene'>__ZVIEW_SCENE_JSON__</div><script>__ZVIEW_MODULE_SOURCE__</script></body></html>"
+        ),
+    }
+
+    monkeypatch.setattr(_frontend, "_read_static_text", lambda name: assets[name])
+
+    html = _frontend.browser_html(demo_scene())
+
+    assert "fresh-viewer-core" in html
+    assert "fresh-browser-wrapper" in html
+    assert "outline: 1px solid red" in html
 
 
 def test_view3d_inline_returns_ipython_html():

@@ -234,7 +234,7 @@ def _structure_objects(design: Any) -> list[Object3D]:
                     },
                 )
             )
-    return _merge_adjacent_structure_runs(objects)
+    return objects
 
 
 def _get_deterministic_color(index: int) -> str:
@@ -348,81 +348,6 @@ def _structure_material_key(structure: Any) -> tuple[Any, ...]:
         else None,
         bool(getattr(structure, "is_pml", False)),
     )
-
-
-def _merge_adjacent_structure_runs(objects: list[Object3D]) -> list[Object3D]:
-    merged: list[Object3D] = []
-    current: Object3D | None = None
-    current_count = 0
-    current_labels: list[str] = []
-
-    for obj in objects:
-        if current is None:
-            current = obj
-            current_count = 1
-            current_labels = [obj.label]
-            continue
-        if _can_merge_structure_objects(current, obj):
-            _append_geometry_item(current, obj)
-            current_count += 1
-            current_labels.append(obj.label)
-            continue
-        _finalize_merged_structure(current, current_count, current_labels)
-        merged.append(current)
-        current = obj
-        current_count = 1
-        current_labels = [obj.label]
-
-    if current is not None:
-        _finalize_merged_structure(current, current_count, current_labels)
-        merged.append(current)
-
-    return merged
-
-
-def _can_merge_structure_objects(lhs: Object3D, rhs: Object3D) -> bool:
-    return (
-        lhs.kind == rhs.kind
-        and lhs.metadata.get("kind") == "structure"
-        and rhs.metadata.get("kind") == "structure"
-        and lhs.metadata.get("material_key") == rhs.metadata.get("material_key")
-        and lhs.material.to_dict() == rhs.material.to_dict()
-    )
-
-
-def _append_geometry_item(target: Object3D, source: Object3D) -> None:
-    items = target.geometry.setdefault("items", [_geometry_item(target)])
-    items.append(_geometry_item(source))
-
-
-def _geometry_item(obj: Object3D) -> dict[str, Any]:
-    geometry = obj.geometry
-    if obj.kind == "box":
-        return {
-            "center": list(geometry["center"]),
-            "size": list(geometry["size"]),
-        }
-    if obj.kind == "poly_extrusion":
-        return {
-            "vertices": [list(vertex) for vertex in geometry["vertices"]],
-            "holes": [
-                [list(vertex) for vertex in hole]
-                for hole in geometry.get("holes", [])
-            ],
-            "depth": float(geometry.get("depth", 0.0)),
-            "z0": float(geometry.get("z0", 0.0)),
-        }
-    return dict(geometry)
-
-
-def _finalize_merged_structure(
-    obj: Object3D, count: int, labels: list[str]
-) -> None:
-    obj.metadata["structure_count"] = count
-    obj.metadata["source_labels"] = labels
-    if count <= 1:
-        return
-    obj.label = f"{labels[0]} +{count - 1}"
 
 
 def _monitor_objects(monitors: Iterable[Any]) -> list[Object3D]:
