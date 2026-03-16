@@ -1,5 +1,5 @@
-from zview import demo_scene
-from zview._browser import open_in_browser
+from beamz.visual.scene import demo_scene
+from beamz.visual.scene._browser import open_in_browser
 
 
 def test_open_in_browser_writes_html_without_launching():

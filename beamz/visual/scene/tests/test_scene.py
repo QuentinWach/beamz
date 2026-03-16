@@ -1,4 +1,11 @@
-from zview import CameraSpec, ClipPlaneSpec, MaterialSpec, Object3D, SceneSpec, scene_from_dict
+from beamz.visual.scene import (
+    CameraSpec,
+    ClipPlaneSpec,
+    MaterialSpec,
+    Object3D,
+    SceneSpec,
+    scene_from_dict,
+)
 
 
 def test_scene_round_trip_preserves_structure():

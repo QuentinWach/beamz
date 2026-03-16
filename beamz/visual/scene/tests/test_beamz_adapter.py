@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from zview import beamz_to_scene
+from beamz.visual.scene import beamz_to_scene
 
 
 class FakeMaterial:
