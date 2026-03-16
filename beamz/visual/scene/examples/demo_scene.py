@@ -3,9 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from zview import demo_scene, view3d
+from beamz.visual.scene import demo_scene, view3d
 
 
 def main() -> None:
