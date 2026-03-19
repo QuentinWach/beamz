@@ -403,9 +403,13 @@ def _monitor_plane_object(monitor: Any, label: str) -> Object3D:
         plane_position = float(getattr(monitor, "plane_position", 0.0))
         size_attr = getattr(monitor, "size", (1.0, 1.0))
         size = [float(size_attr[0]), float(size_attr[1])]
-        center = [0.0, 0.0, 0.0]
-        axis = {"x": 0, "y": 1, "z": 2}.get(str(plane_normal), 2)
-        center[axis] = plane_position
+        position = getattr(monitor, "position", None)
+        if position is not None and len(position) >= 3:
+            center = [float(position[0]), float(position[1]), float(position[2])]
+        else:
+            center = [0.0, 0.0, 0.0]
+            axis = {"x": 0, "y": 1, "z": 2}.get(str(plane_normal), 2)
+            center[axis] = plane_position
     geometry = {
         "center": center,
         "size": size,
