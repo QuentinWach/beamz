@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import colorsys
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from shapely.geometry import box as shapely_box
 from shapely.ops import unary_union
@@ -19,6 +19,7 @@ from ._scene import CameraSpec, ClipPlaneSpec, MaterialSpec, Object3D, SceneSpec
 
 
 _STRUCTURE_PALETTE = (BLUE, RED, GREEN, ORANGE, PURPLE)
+_MIN_SIZE = 1e-12
 
 
 @dataclass(slots=True)
@@ -41,9 +42,9 @@ class _Bounds:
     @property
     def size(self) -> tuple[float, float, float]:
         return (
-            max(self.max_x - self.min_x, 1e-12),
-            max(self.max_y - self.min_y, 1e-12),
-            max(self.max_z - self.min_z, 1e-12),
+            max(self.max_x - self.min_x, _MIN_SIZE),
+            max(self.max_y - self.min_y, _MIN_SIZE),
+            max(self.max_z - self.min_z, _MIN_SIZE),
         )
 
     @property
@@ -73,10 +74,12 @@ def beamz_to_scene(value: Any) -> SceneSpec:
 
 def design_to_scene(design: Any) -> SceneSpec:
     bounds = _design_bounds(design)
-    objects: list[Object3D] = [_domain_box(design, bounds)]
-    objects.extend(_structure_objects(design))
-    objects.extend(_monitor_objects(getattr(design, "monitors", [])))
-    objects.extend(_source_objects(getattr(design, "sources", [])))
+    objects = [
+        _domain_box(design, bounds),
+        *_structure_objects(design),
+        *_monitor_objects(getattr(design, "monitors", [])),
+        *_source_objects(getattr(design, "sources", [])),
+    ]
     return _build_scene(
         title="BEAMZ Design",
         bounds=bounds,
@@ -99,28 +102,28 @@ def simulation_to_scene(simulation: Any) -> SceneSpec:
         )
 
     bounds = _design_bounds(design)
-    objects: list[Object3D] = [_domain_box(design, bounds)]
-    objects.extend(_structure_objects(design))
-    objects.extend(_monitor_objects(_simulation_monitors(simulation)))
-    objects.extend(_source_objects(_simulation_sources(simulation)))
-    objects.extend(_boundary_objects(simulation, bounds))
-    objects.extend(_simulation_planes(simulation, bounds))
-
-    metadata = {
-        "object_type": type(simulation).__name__,
-        "resolution": getattr(simulation, "resolution", None),
-        "is_3d": bool(getattr(simulation, "is_3d", False)),
-        "plane_2d": getattr(simulation, "plane_2d", "xy"),
-        "dt": getattr(simulation, "dt", None),
-        "num_steps": getattr(simulation, "num_steps", None),
-        "num_devices": len(getattr(simulation, "devices", [])),
-        "num_boundaries": len(getattr(simulation, "boundaries", [])),
-    }
+    objects = [
+        _domain_box(design, bounds),
+        *_structure_objects(design),
+        *_monitor_objects(_simulation_monitors(simulation)),
+        *_source_objects(_simulation_sources(simulation)),
+        *_boundary_objects(simulation, bounds),
+        *_simulation_planes(simulation, bounds),
+    ]
     return _build_scene(
         title="BEAMZ Simulation Setup",
         bounds=bounds,
         objects=objects,
-        metadata=metadata,
+        metadata={
+            "object_type": type(simulation).__name__,
+            "resolution": getattr(simulation, "resolution", None),
+            "is_3d": bool(getattr(simulation, "is_3d", False)),
+            "plane_2d": getattr(simulation, "plane_2d", "xy"),
+            "dt": getattr(simulation, "dt", None),
+            "num_steps": getattr(simulation, "num_steps", None),
+            "num_devices": len(getattr(simulation, "devices", [])),
+            "num_boundaries": len(getattr(simulation, "boundaries", [])),
+        },
     )
 
 
@@ -132,14 +135,96 @@ def _design_bounds(design: Any) -> _Bounds:
     return _Bounds(0.0, 0.0, 0.0, width, height, max_z)
 
 
-def _material_spec(structure: Any, color: str) -> MaterialSpec:
-    material = getattr(structure, "material", None)
-    permittivity = (
-        getattr(material, "permittivity", 1.0) if material is not None else 1.0
+def _structure_objects(design: Any) -> list[Object3D]:
+    objects: list[Object3D] = []
+    color_by_material_key: dict[tuple[Any, ...], str] = {}
+
+    for index, structure in enumerate(
+        _merged_structures_for_view(getattr(design, "structures", []))
+    ):
+        material_key = _design_material_key(getattr(structure, "material", None))
+        color = color_by_material_key.setdefault(
+            material_key, _get_deterministic_color(len(color_by_material_key))
+        )
+        scene_object = _structure_object(structure, index=index, color=str(color))
+        if scene_object is not None:
+            objects.append(scene_object)
+    return objects
+
+
+def _structure_object(structure: Any, *, index: int, color: str) -> Object3D | None:
+    kind, geometry = _structure_geometry(structure)
+    if kind is None:
+        return None
+    return Object3D(
+        kind=kind,
+        label=_structure_label(structure, index=index),
+        geometry=geometry,
+        material=_material_spec(structure, color),
+        metadata={
+            **_structure_metadata(structure),
+            "material_key": list(_structure_material_key(structure)),
+        },
     )
-    opacity = 0.0 if _is_air_like_material(material) else 1.0
-    wireframe = bool(getattr(structure, "is_pml", False))
-    return MaterialSpec(color=color, opacity=opacity, wireframe=wireframe)
+
+
+def _structure_geometry(structure: Any) -> tuple[str | None, dict[str, Any] | None]:
+    vertices = getattr(structure, "vertices", None) or []
+    interiors = getattr(structure, "interiors", None) or []
+    depth = float(getattr(structure, "depth", 0.0) or 0.0)
+    z0 = float(getattr(structure, "z", 0.0) or 0.0)
+
+    if vertices:
+        return "poly_extrusion", {
+            "vertices": [[float(x), float(y)] for x, y, *_ in vertices],
+            "holes": [
+                [[float(x), float(y)] for x, y, *_ in hole]
+                for hole in interiors
+                if hole
+            ],
+            "depth": depth,
+            "z0": z0,
+        }
+
+    if hasattr(structure, "position") and hasattr(structure, "radius"):
+        px, py, pz = _position3(
+            getattr(structure, "position"), default_z=z0 + depth / 2.0
+        )
+        return "sphere", {
+            "center": [px, py, pz],
+            "radius": float(getattr(structure, "radius")),
+        }
+
+    if (
+        hasattr(structure, "position")
+        and hasattr(structure, "width")
+        and hasattr(structure, "height")
+    ):
+        px, py, pz = _position3(getattr(structure, "position"), default_z=z0)
+        width = float(getattr(structure, "width"))
+        height = float(getattr(structure, "height"))
+        return "box", {
+            "center": [px + width / 2.0, py + height / 2.0, pz + depth / 2.0],
+            "size": [width, height, max(depth, _MIN_SIZE)],
+        }
+
+    return None, None
+
+
+def _structure_label(structure: Any, *, index: int) -> str:
+    if bool(getattr(structure, "is_pml", False)):
+        return f"PML {index + 1}"
+    return f"{type(structure).__name__} {index + 1}"
+
+
+def _material_spec(structure: Any, color: str) -> MaterialSpec:
+    return MaterialSpec(
+        color=color,
+        opacity=0.0
+        if _is_air_like_material(getattr(structure, "material", None))
+        else 1.0,
+        wireframe=bool(getattr(structure, "is_pml", False)),
+    )
 
 
 def _structure_metadata(structure: Any) -> dict[str, Any]:
@@ -157,104 +242,6 @@ def _structure_metadata(structure: Any) -> dict[str, Any]:
             "conductivity": getattr(material, "conductivity", None),
         }
     return metadata
-
-
-def _structure_objects(design: Any) -> list[Object3D]:
-    objects: list[Object3D] = []
-    color_by_material_key: dict[tuple[Any, ...], str] = {}
-    merged_structures = _merged_structures_for_view(getattr(design, "structures", []))
-    for index, structure in enumerate(merged_structures):
-        material_key = _design_material_key(getattr(structure, "material", None))
-        color = color_by_material_key.get(material_key)
-        if color is None:
-            color = _get_deterministic_color(len(color_by_material_key))
-            color_by_material_key[material_key] = color
-        label = (
-            f"PML {index + 1}"
-            if bool(getattr(structure, "is_pml", False))
-            else f"{type(structure).__name__} {index + 1}"
-        )
-        vertices = getattr(structure, "vertices", None) or []
-        interiors = getattr(structure, "interiors", None) or []
-        depth = float(getattr(structure, "depth", 0.0) or 0.0)
-        z0 = float(getattr(structure, "z", 0.0) or 0.0)
-        if vertices:
-            geometry = {
-                "vertices": [[float(x), float(y)] for x, y, *_ in vertices],
-                "holes": [
-                    [[float(x), float(y)] for x, y, *_ in hole]
-                    for hole in interiors
-                    if hole
-                ],
-                "depth": depth,
-                "z0": z0,
-            }
-            objects.append(
-                Object3D(
-                    kind="poly_extrusion",
-                    label=label,
-                    geometry=geometry,
-                    material=_material_spec(structure, str(color)),
-                    metadata={
-                        **_structure_metadata(structure),
-                        "material_key": list(_structure_material_key(structure)),
-                    },
-                )
-            )
-            continue
-
-        if hasattr(structure, "position") and hasattr(structure, "radius"):
-            px, py, *rest = getattr(structure, "position")
-            pz = rest[0] if rest else z0 + depth / 2.0
-            objects.append(
-                Object3D(
-                    kind="sphere",
-                    label=label,
-                    geometry={
-                        "center": [float(px), float(py), float(pz)],
-                        "radius": float(getattr(structure, "radius")),
-                    },
-                    material=_material_spec(structure, str(color)),
-                    metadata={
-                        **_structure_metadata(structure),
-                        "material_key": list(_structure_material_key(structure)),
-                    },
-                )
-            )
-            continue
-
-        if (
-            hasattr(structure, "position")
-            and hasattr(structure, "width")
-            and hasattr(structure, "height")
-        ):
-            px, py, *rest = getattr(structure, "position")
-            pz = rest[0] if rest else z0
-            geometry = {
-                "center": [
-                    float(px) + float(getattr(structure, "width")) / 2.0,
-                    float(py) + float(getattr(structure, "height")) / 2.0,
-                    float(pz) + depth / 2.0,
-                ],
-                "size": [
-                    float(getattr(structure, "width")),
-                    float(getattr(structure, "height")),
-                    max(depth, 1e-12),
-                ],
-            }
-            objects.append(
-                Object3D(
-                    kind="box",
-                    label=label,
-                    geometry=geometry,
-                    material=_material_spec(structure, str(color)),
-                    metadata={
-                        **_structure_metadata(structure),
-                        "material_key": list(_structure_material_key(structure)),
-                    },
-                )
-            )
-    return objects
 
 
 def _get_deterministic_color(index: int) -> str:
@@ -287,43 +274,53 @@ def _merged_structures_for_view(structures: Iterable[Any]) -> list[Any]:
 
     merged_items: list[tuple[float, Any]] = list(passthrough)
     for group_key, entries in material_groups.items():
-        group_pairs = [(structure, shape) for _, structure, shape in entries]
-        structures_to_remove = [structure for _, structure, _ in entries]
-        rings_to_preserve = _find_rings_to_preserve(
+        merged_items.extend(_merged_group_items(group_key, entries))
+    return [
+        structure for _, structure in sorted(merged_items, key=lambda item: item[0])
+    ]
+
+
+def _merged_group_items(
+    group_key: tuple[Any, ...], entries: list[tuple[int, Any, Any]]
+) -> list[tuple[float, Any]]:
+    group_pairs = [(structure, shape) for _, structure, shape in entries]
+    structures_to_remove = [structure for _, structure, _ in entries]
+    ring_ids = {
+        id(structure)
+        for structure in _find_rings_to_preserve(
             {group_key: group_pairs}, structures_to_remove
         )
-        ring_ids = {id(structure) for structure in rings_to_preserve}
-        merge_entries = [
-            (index, structure, shape)
-            for index, structure, shape in entries
-            if id(structure) not in ring_ids
-        ]
+    }
+    merged_items = [
+        (index, structure)
+        for index, structure, _ in entries
+        if id(structure) in ring_ids
+    ]
+    merge_entries = [
+        (index, structure, shape)
+        for index, structure, shape in entries
+        if id(structure) not in ring_ids
+    ]
+    if len(merge_entries) <= 1:
+        merged_items.extend((index, structure) for index, structure, _ in merge_entries)
+        return merged_items
 
-        for index, structure, _ in entries:
-            if id(structure) in ring_ids:
-                merged_items.append((index, structure))
+    merged_geometry = unary_union([shape for _, _, shape in merge_entries])
+    merged_polygons = _shapely_to_polygons(
+        merged_geometry,
+        merge_entries[0][1].material,
+        merge_entries[0][1],
+    )
+    if not merged_polygons:
+        merged_items.extend((index, structure) for index, structure, _ in merge_entries)
+        return merged_items
 
-        if len(merge_entries) <= 1:
-            merged_items.extend((index, structure) for index, structure, _ in merge_entries)
-            continue
-
-        merged_geometry = unary_union([shape for _, _, shape in merge_entries])
-        merged_polygons = _shapely_to_polygons(
-            merged_geometry,
-            merge_entries[0][1].material,
-            merge_entries[0][1],
-        )
-        if not merged_polygons:
-            merged_items.extend((index, structure) for index, structure, _ in merge_entries)
-            continue
-
-        display_order = max(index for index, _, _ in merge_entries)
-        representative_color = getattr(merge_entries[0][1], "color", None)
-        for offset, polygon in enumerate(merged_polygons):
-            polygon.color = representative_color
-            merged_items.append((display_order + offset * 1e-3, polygon))
-
-    return [structure for _, structure in sorted(merged_items, key=lambda item: item[0])]
+    display_order = max(index for index, _, _ in merge_entries)
+    representative_color = getattr(merge_entries[0][1], "color", None)
+    for offset, polygon in enumerate(merged_polygons):
+        polygon.color = representative_color
+        merged_items.append((display_order + offset * 1e-3, polygon))
+    return merged_items
 
 
 def _viewer_structure_group_key(structure: Any) -> tuple[Any, ...]:
@@ -344,12 +341,12 @@ def _viewer_structure_shape(structure: Any) -> Any | None:
         and hasattr(structure, "width")
         and hasattr(structure, "height")
     ):
-        px, py, *_ = getattr(structure, "position")
+        px, py, _ = _position3(getattr(structure, "position"))
         width = float(getattr(structure, "width", 0.0) or 0.0)
         height = float(getattr(structure, "height", 0.0) or 0.0)
         if width <= 0 or height <= 0:
             return None
-        return shapely_box(float(px), float(py), float(px) + width, float(py) + height)
+        return shapely_box(px, py, px + width, py + height)
     return None
 
 
@@ -376,69 +373,41 @@ def _monitor_objects(monitors: Iterable[Any]) -> list[Object3D]:
         label = getattr(monitor, "name", None) or f"Monitor {index + 1}"
         if bool(getattr(monitor, "is_3d", False)):
             objects.append(_monitor_plane_object(monitor, label))
-        else:
-            start = getattr(monitor, "start", (0.0, 0.0))
-            end = getattr(monitor, "end", start)
-            geometry = {
-                "points": [
-                    [float(start[0]), float(start[1]), 0.0],
-                    [float(end[0]), float(end[1]), 0.0],
-                ]
-            }
-            objects.append(
-                Object3D(
-                    kind="line",
-                    label=label,
-                    geometry=geometry,
-                    material=MaterialSpec(color="#dc2626", opacity=1.0),
-                    metadata={
-                        "kind": "monitor",
-                        "type": getattr(monitor, "monitor_type", "line"),
-                    },
-                )
+            continue
+
+        start = getattr(monitor, "start", (0.0, 0.0))
+        end = getattr(monitor, "end", start)
+        objects.append(
+            Object3D(
+                kind="line",
+                label=label,
+                geometry={
+                    "points": [
+                        [float(start[0]), float(start[1]), 0.0],
+                        [float(end[0]), float(end[1]), 0.0],
+                    ]
+                },
+                material=MaterialSpec(color="#dc2626", opacity=1.0),
+                metadata={
+                    "kind": "monitor",
+                    "type": getattr(monitor, "monitor_type", "line"),
+                },
             )
+        )
     return objects
 
 
 def _monitor_plane_object(monitor: Any, label: str) -> Object3D:
-    start = getattr(monitor, "start", (0.0, 0.0, 0.0))
-    end = getattr(monitor, "end", None)
     plane_normal = str(getattr(monitor, "plane_normal", "z")).lower()
-    if end is not None:
-        dx = abs(float(end[0]) - float(start[0]))
-        dy = abs(float(end[1]) - float(start[1]))
-        dz = abs(float(end[2]) - float(start[2]))
-        center = [
-            (float(start[0]) + float(end[0])) / 2.0,
-            (float(start[1]) + float(end[1])) / 2.0,
-            (float(start[2]) + float(end[2])) / 2.0,
-        ]
-        if plane_normal == "x":
-            size = [max(dy, 1e-12), max(dz, 1e-12)]
-        elif plane_normal == "y":
-            size = [max(dx, 1e-12), max(dz, 1e-12)]
-        else:
-            size = [max(dx, 1e-12), max(dy, 1e-12)]
-    else:
-        plane_position = float(getattr(monitor, "plane_position", 0.0))
-        size_attr = getattr(monitor, "size", (1.0, 1.0))
-        size = [float(size_attr[0]), float(size_attr[1])]
-        position = getattr(monitor, "position", None)
-        if position is not None and len(position) >= 3:
-            center = [float(position[0]), float(position[1]), float(position[2])]
-        else:
-            center = [0.0, 0.0, 0.0]
-            axis = {"x": 0, "y": 1, "z": 2}.get(str(plane_normal), 2)
-            center[axis] = plane_position
-    geometry = {
-        "center": center,
-        "size": size,
-        "normal": _normal_from_axis(plane_normal),
-    }
+    center, size = _monitor_plane_geometry(monitor, plane_normal)
     return Object3D(
         kind="plane",
         label=label,
-        geometry=geometry,
+        geometry={
+            "center": center,
+            "size": size,
+            "normal": _normal_from_axis(plane_normal),
+        },
         material=MaterialSpec(color="#dc2626", opacity=0.22),
         metadata={
             "kind": "monitor",
@@ -446,6 +415,41 @@ def _monitor_plane_object(monitor: Any, label: str) -> Object3D:
             "plane_normal": getattr(monitor, "plane_normal", None),
         },
     )
+
+
+def _monitor_plane_geometry(
+    monitor: Any, plane_normal: str
+) -> tuple[list[float], list[float]]:
+    start = getattr(monitor, "start", (0.0, 0.0, 0.0))
+    end = getattr(monitor, "end", None)
+    if end is None:
+        size_attr = getattr(monitor, "size", (1.0, 1.0))
+        return _legacy_plane_center(monitor, plane_normal), [
+            float(size_attr[0]),
+            float(size_attr[1]),
+        ]
+
+    start_xyz = [float(start[0]), float(start[1]), float(start[2])]
+    end_xyz = [float(end[0]), float(end[1]), float(end[2])]
+    extents = [abs(end_xyz[i] - start_xyz[i]) for i in range(3)]
+    center = [(start_xyz[i] + end_xyz[i]) / 2.0 for i in range(3)]
+    if plane_normal == "x":
+        size = [max(extents[1], _MIN_SIZE), max(extents[2], _MIN_SIZE)]
+    elif plane_normal == "y":
+        size = [max(extents[0], _MIN_SIZE), max(extents[2], _MIN_SIZE)]
+    else:
+        size = [max(extents[0], _MIN_SIZE), max(extents[1], _MIN_SIZE)]
+    return center, size
+
+
+def _legacy_plane_center(monitor: Any, plane_normal: str) -> list[float]:
+    position = getattr(monitor, "position", None)
+    if position is not None and len(position) >= 3:
+        return [float(position[0]), float(position[1]), float(position[2])]
+    center = [0.0, 0.0, 0.0]
+    axis = {"x": 0, "y": 1, "z": 2}.get(plane_normal, 2)
+    center[axis] = float(getattr(monitor, "plane_position", 0.0))
+    return center
 
 
 def _source_objects(sources: Iterable[Any]) -> list[Object3D]:
@@ -456,98 +460,87 @@ def _source_objects(sources: Iterable[Any]) -> list[Object3D]:
             and hasattr(source, "width")
             and not hasattr(source, "center")
         ):
-            position = list(getattr(source, "position"))
-            while len(position) < 3:
-                position.append(0.0)
-            radius = max(float(getattr(source, "width", 1.0)) * 0.5, 1e-12)
-            objects.append(
-                Object3D(
-                    kind="sphere",
-                    label=f"GaussianSource {index + 1}",
-                    geometry={
-                        "center": [float(v) for v in position[:3]],
-                        "radius": radius,
-                    },
-                    material=MaterialSpec(color="#f59e0b", opacity=0.85),
-                    metadata={
-                        "kind": "source",
-                        "type": type(source).__name__,
-                        "width": getattr(source, "width", None),
-                    },
-                )
-            )
+            objects.append(_gaussian_source_object(source, index=index))
             continue
-
         if hasattr(source, "center") and hasattr(source, "width"):
-            center = list(getattr(source, "center"))
-            while len(center) < 3:
-                center.append(0.0)
-            height = float(getattr(source, "height", getattr(source, "width", 1.0)))
-            direction = getattr(source, "direction", "+x")
-            normal = _normal_from_direction(direction)
-            objects.append(
-                Object3D(
-                    kind="plane",
-                    label=f"ModeSource {index + 1}",
-                    geometry={
-                        "center": [float(v) for v in center[:3]],
-                        "size": [float(getattr(source, "width")), height],
-                        "normal": normal,
-                    },
-                    material=MaterialSpec(color="#f59e0b", opacity=0.35),
-                    metadata={
-                        "kind": "source",
-                        "type": type(source).__name__,
-                        "direction": direction,
-                        "wavelength": getattr(source, "wavelength", None),
-                        "polarization": getattr(source, "pol", None),
-                    },
-                )
-            )
-            arrow_length = max(
-                float(getattr(source, "wavelength", 1.0)),
-                float(getattr(source, "width", 1.0)) * 0.5,
-            )
-            objects.append(
-                Object3D(
-                    kind="arrow",
-                    label=f"{getattr(source, 'direction', '+x')} launch",
-                    geometry={
-                        "origin": [float(v) for v in center[:3]],
-                        "direction": normal,
-                        "length": arrow_length,
-                    },
-                    material=MaterialSpec(color="#d97706", opacity=1.0),
-                    metadata={
-                        "kind": "source_direction",
-                        "source_direction": direction,
-                    },
-                )
-            )
+            objects.extend(_mode_source_objects(source, index=index))
     return objects
+
+
+def _gaussian_source_object(source: Any, *, index: int) -> Object3D:
+    center = _position3(getattr(source, "position"))
+    radius = max(float(getattr(source, "width", 1.0)) * 0.5, _MIN_SIZE)
+    return Object3D(
+        kind="sphere",
+        label=f"GaussianSource {index + 1}",
+        geometry={"center": list(center), "radius": radius},
+        material=MaterialSpec(color="#f59e0b", opacity=0.85),
+        metadata={
+            "kind": "source",
+            "type": type(source).__name__,
+            "width": getattr(source, "width", None),
+        },
+    )
+
+
+def _mode_source_objects(source: Any, *, index: int) -> list[Object3D]:
+    center = _position3(getattr(source, "center"))
+    width = float(getattr(source, "width"))
+    height = float(getattr(source, "height", getattr(source, "width", 1.0)))
+    direction = getattr(source, "direction", "+x")
+    normal = _normal_from_direction(direction)
+    arrow_length = max(
+        float(getattr(source, "wavelength", 1.0)),
+        width * 0.5,
+    )
+    return [
+        Object3D(
+            kind="plane",
+            label=f"ModeSource {index + 1}",
+            geometry={
+                "center": list(center),
+                "size": [width, height],
+                "normal": normal,
+            },
+            material=MaterialSpec(color="#f59e0b", opacity=0.35),
+            metadata={
+                "kind": "source",
+                "type": type(source).__name__,
+                "direction": direction,
+                "wavelength": getattr(source, "wavelength", None),
+                "polarization": getattr(source, "pol", None),
+            },
+        ),
+        Object3D(
+            kind="arrow",
+            label=f"{direction} launch",
+            geometry={
+                "origin": list(center),
+                "direction": normal,
+                "length": arrow_length,
+            },
+            material=MaterialSpec(color="#d97706", opacity=1.0),
+            metadata={
+                "kind": "source_direction",
+                "source_direction": direction,
+            },
+        ),
+    ]
 
 
 def _simulation_planes(simulation: Any, bounds: _Bounds) -> list[Object3D]:
     resolution = getattr(simulation, "resolution", None)
     if resolution is None:
         return []
+
     plane_2d = str(getattr(simulation, "plane_2d", "xy")).lower()
-    center = list(bounds.center)
-    if plane_2d == "yz":
-        size = [bounds.size[1], bounds.size[2]]
-        normal = [1.0, 0.0, 0.0]
-    elif plane_2d == "xz":
-        size = [bounds.size[0], bounds.size[2]]
-        normal = [0.0, 1.0, 0.0]
-    else:
-        size = [bounds.size[0], bounds.size[1]]
-        normal = [0.0, 0.0, 1.0]
+    size, normal = _simulation_plane_spec(plane_2d, bounds)
     return [
         Object3D(
             kind="plane",
             label="Simulation mid-plane",
             geometry={
-                "center": center,
+                "center": list(bounds.center),
                 "size": size,
                 "normal": normal,
             },
@@ -559,6 +552,16 @@ def _simulation_planes(simulation: Any, bounds: _Bounds) -> list[Object3D]:
             },
         )
     ]
+
+
+def _simulation_plane_spec(
+    plane_2d: str, bounds: _Bounds
+) -> tuple[list[float], list[float]]:
+    if plane_2d == "yz":
+        return [bounds.size[1], bounds.size[2]], [1.0, 0.0, 0.0]
+    if plane_2d == "xz":
+        return [bounds.size[0], bounds.size[2]], [0.0, 1.0, 0.0]
+    return [bounds.size[0], bounds.size[1]], [0.0, 0.0, 1.0]
 
 
 def _domain_box(design: Any, bounds: _Bounds) -> Object3D:
@@ -578,17 +581,15 @@ def _domain_box(design: Any, bounds: _Bounds) -> Object3D:
 
 def _normal_from_direction(direction: str) -> list[float]:
     sign = -1.0 if str(direction).startswith("-") else 1.0
-    axis = str(direction)[-1].lower()
-    return _normal_from_axis(axis, sign)
+    return _normal_from_axis(str(direction)[-1].lower(), sign)
 
 
 def _normal_from_axis(axis: str, sign: float = 1.0) -> list[float]:
-    lookup = {
+    return {
         "x": [sign, 0.0, 0.0],
         "y": [0.0, sign, 0.0],
         "z": [0.0, 0.0, sign],
-    }
-    return lookup.get(str(axis).lower(), [0.0, 0.0, sign])
+    }.get(str(axis).lower(), [0.0, 0.0, sign])
 
 
 def _build_scene(
@@ -599,58 +600,53 @@ def _build_scene(
     metadata: dict[str, Any],
 ) -> SceneSpec:
     for index, obj in enumerate(objects):
-        obj.metadata = {
-            **obj.metadata,
-            "display_order": index,
-        }
+        obj.metadata = {**obj.metadata, "display_order": index}
+
     center = bounds.center
     diagonal = max(bounds.diagonal, 1e-9)
-    camera = CameraSpec(
-        position=(
-            center[0] + diagonal * 0.9,
-            center[1] - diagonal * 1.1,
-            center[2] + diagonal * 0.7,
-        ),
-        target=center,
-        up=(0.0, 0.0, 1.0),
-        fov=40.0,
-    )
-    clip_planes = [
-        ClipPlaneSpec(normal=(1.0, 0.0, 0.0), constant=-center[0], enabled=False),
-        ClipPlaneSpec(normal=(0.0, 1.0, 0.0), constant=-center[1], enabled=False),
-        ClipPlaneSpec(normal=(0.0, 0.0, 1.0), constant=-center[2], enabled=False),
-    ]
     return SceneSpec(
         title=title,
         units="m",
         background="#f8fafc",
-        camera=camera,
-        clip_planes=clip_planes,
+        camera=CameraSpec(
+            position=(
+                center[0] + diagonal * 0.9,
+                center[1] - diagonal * 1.1,
+                center[2] + diagonal * 0.7,
+            ),
+            target=center,
+            up=(0.0, 0.0, 1.0),
+            fov=40.0,
+        ),
+        clip_planes=[
+            ClipPlaneSpec(normal=(1.0, 0.0, 0.0), constant=-center[0], enabled=False),
+            ClipPlaneSpec(normal=(0.0, 1.0, 0.0), constant=-center[1], enabled=False),
+            ClipPlaneSpec(normal=(0.0, 0.0, 1.0), constant=-center[2], enabled=False),
+        ],
         objects=objects,
         metadata=metadata,
     )
 
 
 def _simulation_monitors(simulation: Any) -> list[Any]:
-    items = list(getattr(getattr(simulation, "design", None), "monitors", []))
-    seen = {id(item) for item in items}
-    for device in getattr(simulation, "devices", []):
-        if not _looks_like_monitor(device):
-            continue
-        if id(device) in seen:
-            continue
-        seen.add(id(device))
-        items.append(device)
-    return items
+    return _combined_simulation_items(
+        simulation, attr_name="monitors", predicate=_looks_like_monitor
+    )
 
 
 def _simulation_sources(simulation: Any) -> list[Any]:
-    items = list(getattr(getattr(simulation, "design", None), "sources", []))
+    return _combined_simulation_items(
+        simulation, attr_name="sources", predicate=_looks_like_source
+    )
+
+
+def _combined_simulation_items(
+    simulation: Any, *, attr_name: str, predicate: Callable[[Any], bool]
+) -> list[Any]:
+    items = list(getattr(getattr(simulation, "design", None), attr_name, []))
     seen = {id(item) for item in items}
     for device in getattr(simulation, "devices", []):
-        if not _looks_like_source(device):
-            continue
-        if id(device) in seen:
+        if not predicate(device) or id(device) in seen:
             continue
         seen.add(id(device))
         items.append(device)
@@ -677,17 +673,12 @@ def _looks_like_source(device: Any) -> bool:
 
 def _boundary_objects(simulation: Any, bounds: _Bounds) -> list[Object3D]:
     objects: list[Object3D] = []
+    is_3d = bool(getattr(simulation, "is_3d", False))
     for boundary in getattr(simulation, "boundaries", []):
         thickness = float(getattr(boundary, "thickness", 0.0) or 0.0)
         if thickness <= 0:
             continue
-        is_3d = bool(getattr(simulation, "is_3d", False))
-        if hasattr(boundary, "_get_edges_for_dimensionality"):
-            edges = boundary._get_edges_for_dimensionality(is_3d)
-        else:
-            raw_edges = getattr(boundary, "edges", [])
-            edges = raw_edges if isinstance(raw_edges, list) else [raw_edges]
-        for edge in edges:
+        for edge in _boundary_edges(boundary, is_3d):
             geometry = _boundary_geometry(edge=edge, thickness=thickness, bounds=bounds)
             if geometry is None:
                 continue
@@ -708,11 +699,15 @@ def _boundary_objects(simulation: Any, bounds: _Bounds) -> list[Object3D]:
     return objects
 
 
+def _boundary_edges(boundary: Any, is_3d: bool) -> list[str]:
+    if hasattr(boundary, "_get_edges_for_dimensionality"):
+        return list(boundary._get_edges_for_dimensionality(is_3d))
+    raw_edges = getattr(boundary, "edges", [])
+    return raw_edges if isinstance(raw_edges, list) else [raw_edges]
+
+
 def _boundary_geometry(
-    *,
-    edge: str,
-    thickness: float,
-    bounds: _Bounds,
+    *, edge: str, thickness: float, bounds: _Bounds
 ) -> dict[str, list[float]] | None:
     width, height, depth = bounds.size
     slab_x = min(thickness, width)
@@ -756,3 +751,10 @@ def _boundary_material(boundary: Any) -> MaterialSpec:
     if type(boundary).__name__.lower() == "pml":
         return MaterialSpec(color="#7c3aed", opacity=0.12, wireframe=True)
     return MaterialSpec(color="#475569", opacity=0.1, wireframe=True)
+
+
+def _position3(position: Any, default_z: float = 0.0) -> tuple[float, float, float]:
+    values = list(position)
+    if len(values) < 3:
+        values.extend([default_z] * (3 - len(values)))
+    return float(values[0]), float(values[1]), float(values[2])
