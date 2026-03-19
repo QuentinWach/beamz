@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from beamz.const import BLUE, RED
+from beamz.design.structures import Sphere
 from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML
 from beamz.simulation.core import Simulation
@@ -338,6 +339,37 @@ def test_design_to_scene_keeps_adjacent_same_material_structures_separate():
     assert [obj.material.color for obj in structure_objects] == [BLUE, BLUE]
     assert all("items" not in obj.geometry for obj in structure_objects)
     assert all("structure_count" not in obj.metadata for obj in structure_objects)
+
+
+def test_design_to_scene_includes_sphere_structures():
+    scene = simulation_to_scene(
+        SimpleNamespace(
+            design=SimpleNamespace(
+                structures=[Sphere(position=(1.0, 0.5, 0.3), radius=0.2)],
+                sources=[],
+                monitors=[],
+                width=2.0,
+                height=1.0,
+                depth=0.6,
+                is_3d=True,
+            ),
+            devices=[],
+            boundaries=[],
+            resolution=2.5e-8,
+            is_3d=True,
+            plane_2d="xy",
+            dt=1e-16,
+            num_steps=8,
+        )
+    )
+
+    sphere_object = next(
+        obj for obj in scene.objects if obj.metadata.get("type") == "Sphere"
+    )
+
+    assert sphere_object.kind == "sphere"
+    assert sphere_object.geometry["center"] == [1.0, 0.5, 0.3]
+    assert sphere_object.geometry["radius"] == 0.2
 
 
 def test_scene_objects_get_stable_display_order_metadata():
