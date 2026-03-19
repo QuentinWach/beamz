@@ -203,6 +203,26 @@ def _structure_objects(design: Any) -> list[Object3D]:
             )
             continue
 
+        if hasattr(structure, "position") and hasattr(structure, "radius"):
+            px, py, *rest = getattr(structure, "position")
+            pz = rest[0] if rest else z0 + depth / 2.0
+            objects.append(
+                Object3D(
+                    kind="sphere",
+                    label=label,
+                    geometry={
+                        "center": [float(px), float(py), float(pz)],
+                        "radius": float(getattr(structure, "radius")),
+                    },
+                    material=_material_spec(structure, str(color)),
+                    metadata={
+                        **_structure_metadata(structure),
+                        "material_key": list(_structure_material_key(structure)),
+                    },
+                )
+            )
+            continue
+
         if (
             hasattr(structure, "position")
             and hasattr(structure, "width")
