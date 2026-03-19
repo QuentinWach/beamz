@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from beamz.const import BLUE, RED
+from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.boundaries import PML
 from beamz.simulation.core import Simulation
 from beamz.visual.scene import (
@@ -263,6 +264,38 @@ def test_simulation_to_scene_preserves_monitor_extents_for_x_normal_planes():
 
     assert monitor_object.geometry["size"] == [0.8, 0.4]
     assert monitor_object.geometry["normal"] == [1.0, 0.0, 0.0]
+
+
+def test_simulation_to_scene_preserves_monitor_center_for_legacy_plane_monitors():
+    design = _make_design()
+    legacy_monitor = Monitor(
+        design=design,
+        start=(0.4, 0.2, 0.11),
+        end=None,
+        plane_normal="z",
+        size=(0.8, 0.4),
+        name="legacy_flux",
+    )
+    design.monitors = [legacy_monitor]
+    sim = Simulation.__new__(Simulation)
+    sim.design = design
+    sim.devices = [legacy_monitor]
+    sim.boundaries = []
+    sim.resolution = 2.5e-8
+    sim.is_3d = True
+    sim.plane_2d = "xy"
+    sim.dt = 1e-16
+    sim.num_steps = 8
+
+    scene = simulation_to_scene(sim)
+
+    monitor_object = next(
+        obj for obj in scene.objects if obj.metadata.get("kind") == "monitor"
+    )
+
+    assert monitor_object.geometry["center"] == [0.8, 0.4, 0.11]
+    assert monitor_object.geometry["size"] == [0.8, 0.4]
+    assert monitor_object.geometry["normal"] == [0.0, 0.0, 1.0]
 
 
 def test_simulation_show_delegates_to_view3d(monkeypatch):
