@@ -361,6 +361,48 @@ def test_monitor_dft_accum_recovers_known_sinusoid():
     assert abs(phase_err) < 0.08
 
 
+def test_monitor_dft_accum_preserves_absolute_phase_for_delayed_start():
+    n = 2048
+    dt = 1e-15
+    k_bin = 19
+    freq = k_bin / (n * dt)
+    amp = 0.42
+    phase = -0.27
+    t0 = 137.0 * dt
+    t = t0 + np.arange(n, dtype=float) * dt
+
+    mon = Monitor(
+        start=(0.0, 0.0),
+        end=(0.0, 0.0),
+        name="m_dft_offset",
+        record_fields=False,
+        dft_enabled=True,
+        dft_frequencies=np.array([freq], dtype=float),
+        dft_t_start=float(t[0]),
+        dft_t_end=float(t[-1]),
+        dft_components=("Ez",),
+        dft_window="rect",
+    )
+    for i, ti in enumerate(t):
+        sample = amp * np.cos(2 * np.pi * freq * ti + phase)
+        mon.record_fields_2d(
+            Ez=np.array([[sample]], dtype=float),
+            Hx=np.zeros((1, 1), dtype=float),
+            Hy=np.zeros((1, 1), dtype=float),
+            t=float(ti),
+            dx=1.0,
+            dy=1.0,
+            step=i,
+        )
+
+    recovered = mon.get_dft_component("Ez")
+    assert recovered.shape == (1, 1)
+    z = recovered[0, 0]
+    assert np.isclose(np.abs(z), amp, rtol=0.03)
+    phase_err = np.angle(z / (amp * np.exp(1j * phase)))
+    assert abs(phase_err) < 0.08
+
+
 def test_monitor_get_dft_component_returns_canonical_matrix_shape():
     mon = Monitor(
         start=(0.0, 0.0),

@@ -445,6 +445,7 @@ class Monitor:
     def _dft_current_phase(self, t):
         t_now = float(t)
         if self._dft_last_t is None:
+            self._dft_phase = np.exp(-1j * 2.0 * np.pi * self.dft_frequencies * t_now)
             self._dft_last_t = t_now
             return self._dft_phase
         dt = t_now - float(self._dft_last_t)
