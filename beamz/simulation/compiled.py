@@ -629,8 +629,12 @@ class CompiledSimulation:
                 freq_phase_im = freq_phase_im.at[mi, : mon.freq_count].set(row_ph_im)
             if mon.dft_enabled and mon.freq_count > 0 and mon.dft_point_count > 0:
                 mi = mon.monitor_index
-                cur_ph_re = freq_phase_re[mi, : mon.freq_count]
-                cur_ph_im = freq_phase_im[mi, : mon.freq_count]
+                if mon.accumulate_frequency and mon.freq_count > 0:
+                    dft_ph_re = cur_ph_re
+                    dft_ph_im = cur_ph_im
+                else:
+                    dft_ph_re = freq_phase_re[mi, : mon.freq_count]
+                    dft_ph_im = freq_phase_im[mi, : mon.freq_count]
                 do_dft = (
                     ((abs_step % mon.dft_record_interval) == 0)
                     & (t_phys >= mon.dft_t_start)
@@ -665,8 +669,8 @@ class CompiledSimulation:
                     (ex_vals, ey_vals, ez_vals, hx_vals, hy_vals, hz_vals), axis=0
                 )
                 comp_mask = mon.dft_component_mask[:, None, None]
-                delta_re = w * comp_mask * jnp.einsum("f,cp->cfp", cur_ph_re, vecs)
-                delta_im = w * comp_mask * jnp.einsum("f,cp->cfp", cur_ph_im, vecs)
+                delta_re = w * comp_mask * jnp.einsum("f,cp->cfp", dft_ph_re, vecs)
+                delta_im = w * comp_mask * jnp.einsum("f,cp->cfp", dft_ph_im, vecs)
                 dft_vec_re = dft_vec_re.at[
                     mi, :, : mon.freq_count, : mon.dft_point_count
                 ].add(delta_re[:, : mon.freq_count, : mon.dft_point_count])
