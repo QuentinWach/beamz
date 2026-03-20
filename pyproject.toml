@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.24.4",
+    "anywidget>=0.9.18",
     "matplotlib>=3.7.5",
     "gdspy>=1.6.0",
     "scipy>=1.10.1",
@@ -36,6 +37,7 @@ dependencies = [
     "jaxlib>=0.4.0",
     "optax>=0.1.0",
     "tidy3d>=2.0.0",
+    "traitlets>=5.14.0",
 ]
 
 [project.urls]
@@ -78,3 +80,6 @@ addopts = "-v --cov=beamz --cov-report=term-missing"
 
 [tool.hatch.build.targets.wheel]
 packages = ["beamz"]
+include = [
+    "beamz/visual/scene/static/*",
+]
