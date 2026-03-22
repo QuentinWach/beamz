@@ -11,6 +11,7 @@ Workflow:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -95,6 +96,46 @@ def load_crossing_component(component_name: str = "ebeam_crossing4"):
         f"UBC load reason: {type(ubc_exc).__name__ if ubc_exc else 'n/a'}: {ubc_exc}"
     )
     return gf.components.crossing(), "gdsfactory.components.crossing"
+
+
+QUALITY_PRESETS = {
+    "fast": {
+        "num_freqs": 11,
+        "points_per_wavelength": 10,
+        "run_after_sources_uoc": 18.0,
+        "animation_frames": 0,
+    },
+    "high": {
+        "num_freqs": 51,
+        "points_per_wavelength": 20,
+        "run_after_sources_uoc": 45.0,
+        "animation_frames": 36,
+    },
+}
+
+
+def cli_option_present(argv: list[str], *flags: str) -> bool:
+    for token in argv:
+        for flag in flags:
+            if token == flag or token.startswith(flag + "="):
+                return True
+    return False
+
+
+def apply_quality_preset(args, argv: list[str]):
+    preset = QUALITY_PRESETS[str(args.quality)]
+    option_map = {
+        "num_freqs": ("--num-freqs",),
+        "points_per_wavelength": ("--points-per-wavelength",),
+        "run_after_sources_uoc": ("--run-after-sources-uoc",),
+        "animation_frames": ("--animation-frames",),
+    }
+    applied = {}
+    for attr, value in preset.items():
+        if not cli_option_present(argv, *option_map[attr]):
+            setattr(args, attr, value)
+            applied[attr] = value
+    return applied
 
 
 def _layer_spec_to_tuple(layer_spec, pdk=None) -> tuple[int, int] | None:
@@ -888,6 +929,9 @@ def run_crossing(
     distance_source_to_monitors_um: float,
     run_after_sources_uoc: float,
     animation_frames: int,
+    write_plots: bool,
+    write_mode_plots: bool,
+    write_animation: bool,
     show_progress: bool,
     out_dir: Path,
     wave_dominance_min_db: float = 6.0,
@@ -902,7 +946,8 @@ def run_crossing(
         raise ValueError("--polarization must be 'tm' or 'te'.")
     out_dir.mkdir(parents=True, exist_ok=True)
     mode_dir = out_dir / "modes"
-    mode_dir.mkdir(parents=True, exist_ok=True)
+    if write_mode_plots:
+        mode_dir.mkdir(parents=True, exist_ok=True)
 
     layer_resolved, core_t_um_resolved, clad_below_um_resolved, clad_above_um_resolved, stack_meta = resolve_pdk_stack(
         component,
@@ -1078,7 +1123,8 @@ def run_crossing(
         2.0 * np.pi * f0 * (time - pulse_t0)
     ).astype(np.float32)
     signal_path = out_dir / "beamz_crossing_signal.png"
-    save_signal_plot(time, signal, signal_path)
+    if write_plots:
+        save_signal_plot(time, signal, signal_path)
 
     source = ModeSource(
         grid=grid,
@@ -1167,67 +1213,69 @@ def run_crossing(
         raise RuntimeError(f"Placement overlaps or touches PML-safe region boundary: {formatted}")
 
     overview_path = out_dir / "beamz_crossing_overview.png"
-    save_overview_plot(
-        eps=np.asarray(grid.permittivity, dtype=float),
-        width=design.width,
-        height=design.height,
-        depth=design.depth,
-        imported_bbox=imported_bbox,
-        source_plane=source_plane,
-        monitor_planes=monitor_planes,
-        layer_z=layer_z,
-        pml_xy=pml_xy,
-        pml_z=pml_z,
-        out_path=overview_path,
-    )
+    if write_plots:
+        save_overview_plot(
+            eps=np.asarray(grid.permittivity, dtype=float),
+            width=design.width,
+            height=design.height,
+            depth=design.depth,
+            imported_bbox=imported_bbox,
+            source_plane=source_plane,
+            monitor_planes=monitor_planes,
+            layer_z=layer_z,
+            pml_xy=pml_xy,
+            pml_z=pml_z,
+            out_path=overview_path,
+        )
 
-    # Build and save a mode-profile debug plot for every source/monitor placement.
-    mode_sources = {"source_main": source}
-    mode_sources[f"{source_port}_fwd"] = ModeSource(
-        grid=grid,
-        center=line_center(fwd_plane),
-        width=monitor_span,
-        height=monitor_height,
-        wavelength=wl0,
-        pol=polarization,
-        signal=np.zeros(8, dtype=float),
-        direction=source_drive_direction,
-    )
-    mode_sources[f"{source_port}_ref"] = ModeSource(
-        grid=grid,
-        center=line_center(ref_plane),
-        width=monitor_span,
-        height=monitor_height,
-        wavelength=wl0,
-        pol=polarization,
-        signal=np.zeros(8, dtype=float),
-        direction=outward_direction(source_drive_direction),
-    )
-    for p in output_ports:
-        out_dirn = outward_direction(ports[p]["direction"])
-        for cand in out_candidates[p]:
-            mode_sources[cand["name"]] = ModeSource(
-                grid=grid,
-                center=line_center(cand["plane"]),
-                width=monitor_span,
-                height=monitor_height,
-                wavelength=wl0,
-                pol=polarization,
-                signal=np.zeros(8, dtype=float),
-                direction=out_dirn,
-            )
-    for name, msrc in mode_sources.items():
-        try:
-            msrc.initialize(grid.permittivity, dx, dt=dt)
-            save_mode_profile_plot(
-                label=name,
-                mode_src=msrc,
-                grid_eps=np.asarray(grid.permittivity, dtype=float),
-                dx=dx,
-                out_path=mode_dir / f"{name}_mode.png",
-            )
-        except Exception as exc:
-            print(f"Mode plot skipped for {name}: {type(exc).__name__}: {exc}")
+    if write_mode_plots:
+        # Build and save a mode-profile debug plot for every source/monitor placement.
+        mode_sources = {"source_main": source}
+        mode_sources[f"{source_port}_fwd"] = ModeSource(
+            grid=grid,
+            center=line_center(fwd_plane),
+            width=monitor_span,
+            height=monitor_height,
+            wavelength=wl0,
+            pol=polarization,
+            signal=np.zeros(8, dtype=float),
+            direction=source_drive_direction,
+        )
+        mode_sources[f"{source_port}_ref"] = ModeSource(
+            grid=grid,
+            center=line_center(ref_plane),
+            width=monitor_span,
+            height=monitor_height,
+            wavelength=wl0,
+            pol=polarization,
+            signal=np.zeros(8, dtype=float),
+            direction=outward_direction(source_drive_direction),
+        )
+        for p in output_ports:
+            out_dirn = outward_direction(ports[p]["direction"])
+            for cand in out_candidates[p]:
+                mode_sources[cand["name"]] = ModeSource(
+                    grid=grid,
+                    center=line_center(cand["plane"]),
+                    width=monitor_span,
+                    height=monitor_height,
+                    wavelength=wl0,
+                    pol=polarization,
+                    signal=np.zeros(8, dtype=float),
+                    direction=out_dirn,
+                )
+        for name, msrc in mode_sources.items():
+            try:
+                msrc.initialize(grid.permittivity, dx, dt=dt)
+                save_mode_profile_plot(
+                    label=name,
+                    mode_src=msrc,
+                    grid_eps=np.asarray(grid.permittivity, dtype=float),
+                    dx=dx,
+                    out_path=mode_dir / f"{name}_mode.png",
+                )
+            except Exception as exc:
+                print(f"Mode plot skipped for {name}: {type(exc).__name__}: {exc}")
 
     sim = Simulation(
         design=design,
@@ -1276,18 +1324,19 @@ def run_crossing(
                 f"  monitor {cand['name']}: center=({c_out[0]/µm:.2f},{c_out[1]/µm:.2f},{c_out[2]/µm:.2f})um, "
                 f"offset={cand['offset']/µm:.2f}um, distance_to_source={dist/µm:.2f}um"
             )
-    field_component = "Ey" if polarization == "te" else "Ez"
-    eps_grid = np.asarray(grid.permittivity, dtype=float)
-    capture_z_idx = 0
-    if eps_grid.ndim == 3:
-        core_z0, core_z1 = layer_z.get("core", (0.0, design.depth))
-        dz = design.depth / max(int(eps_grid.shape[0]), 1)
-        capture_z_idx = int(
-            np.clip(round(0.5 * (core_z0 + core_z1) / max(dz, 1e-30)), 0, eps_grid.shape[0] - 1)
-        )
-
     field_hist = np.zeros((0,), dtype=float)
-    n_anim_frames = max(0, int(animation_frames))
+    field_component = "Ey" if polarization == "te" else "Ez"
+    eps_grid = None
+    capture_z_idx = 0
+    n_anim_frames = max(0, int(animation_frames)) if write_animation else 0
+    if n_anim_frames > 0:
+        eps_grid = np.asarray(grid.permittivity, dtype=float)
+        if eps_grid.ndim == 3:
+            core_z0, core_z1 = layer_z.get("core", (0.0, design.depth))
+            dz = design.depth / max(int(eps_grid.shape[0]), 1)
+            capture_z_idx = int(
+                np.clip(round(0.5 * (core_z0 + core_z1) / max(dz, 1e-30)), 0, eps_grid.shape[0] - 1)
+            )
     if n_anim_frames > 0:
         # Avoid storing full 3D volumes every interval: run in chunks and keep one XY z-slice.
         total_steps = len(time)
@@ -1793,95 +1842,98 @@ def run_crossing(
         **{f"s_{p}_{source_port}": s_cols[p] for p in all_ports},
     )
 
-    color_cycle = ["black", "tab:blue", "tab:orange", "tab:green", "tab:red"]
-    plot_series = {}
-    for p in all_ports:
-        y_db = 20.0 * np.log10(np.maximum(np.abs(s_cols[p]), 1e-12))
-        y_db = np.where(valid_mask & port_quality[p], y_db, np.nan)
-        plot_series[p] = y_db
-
-    # Fixed-axis dB plot requested for compact model review.
-    fig_limited, ax_limited = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
-    for i, p in enumerate(all_ports):
-        ax_limited.plot(
-            wl_um,
-            plot_series[p],
-            "o-",
-            color=color_cycle[i % len(color_cycle)],
-            lw=2.0,
-            ms=4.5,
-            label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
-        )
-    ax_limited.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
-    ax_limited.set_ylim(-55.0, 0.0)
-    ax_limited.set_xlabel("Wavelength (um)")
-    ax_limited.set_ylabel("Magnitude (dB)")
-    ax_limited.set_title(f"Crossing S-Parameters ({component_label})")
-    ax_limited.grid(which="major", alpha=0.25, lw=0.6)
-    ax_limited.minorticks_on()
-    ax_limited.grid(which="minor", alpha=0.12, lw=0.4)
-    ax_limited.legend(loc="best", fontsize=9, frameon=False)
-    fig_limited.tight_layout()
     fig_path_limited = out_dir / "beamz_crossing_sparams_db.png"
-    fig_limited.savefig(fig_path_limited, dpi=320)
-    plt.close(fig_limited)
-
-    # Full-range dB plot without y-limit clipping.
-    fig_full, ax_full = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
-    for i, p in enumerate(all_ports):
-        ax_full.plot(
-            wl_um,
-            plot_series[p],
-            "o-",
-            color=color_cycle[i % len(color_cycle)],
-            lw=2.0,
-            ms=4.5,
-            label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
-        )
-    ax_full.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
-    ax_full.set_xlabel("Wavelength (um)")
-    ax_full.set_ylabel("Magnitude (dB)")
-    ax_full.set_title(f"Crossing S-Parameters (Full Range, {component_label})")
-    ax_full.grid(which="major", alpha=0.25, lw=0.6)
-    ax_full.minorticks_on()
-    ax_full.grid(which="minor", alpha=0.12, lw=0.4)
-    ax_full.legend(loc="best", fontsize=9, frameon=False)
-    fig_full.tight_layout()
     fig_path_full = out_dir / "beamz_crossing_sparams_db_full.png"
-    fig_full.savefig(fig_path_full, dpi=320)
-    plt.close(fig_full)
-
     closure_plot_path = out_dir / "beamz_crossing_closure_compare.png"
-    save_closure_compare_plot(
-        wavelengths_um=wl_um,
-        modal_closure=closure,
-        flux_closure=flux_closure,
-        valid_mask=valid_mask,
-        out_path=closure_plot_path,
-    )
-
     anim_path = out_dir / "beamz_crossing_field_propagation.mp4"
-    anim_ok = save_field_animation(
-        field_hist=field_hist,
-        eps=eps_grid,
-        width=design.width,
-        height=design.height,
-        field_label=field_component,
-        out_path=anim_path,
-        fps=20,
-    )
+    anim_ok = False
+    if write_plots:
+        color_cycle = ["black", "tab:blue", "tab:orange", "tab:green", "tab:red"]
+        plot_series = {}
+        for p in all_ports:
+            y_db = 20.0 * np.log10(np.maximum(np.abs(s_cols[p]), 1e-12))
+            y_db = np.where(valid_mask & port_quality[p], y_db, np.nan)
+            plot_series[p] = y_db
+
+        fig_limited, ax_limited = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
+        for i, p in enumerate(all_ports):
+            ax_limited.plot(
+                wl_um,
+                plot_series[p],
+                "o-",
+                color=color_cycle[i % len(color_cycle)],
+                lw=2.0,
+                ms=4.5,
+                label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
+            )
+        ax_limited.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
+        ax_limited.set_ylim(-55.0, 0.0)
+        ax_limited.set_xlabel("Wavelength (um)")
+        ax_limited.set_ylabel("Magnitude (dB)")
+        ax_limited.set_title(f"Crossing S-Parameters ({component_label})")
+        ax_limited.grid(which="major", alpha=0.25, lw=0.6)
+        ax_limited.minorticks_on()
+        ax_limited.grid(which="minor", alpha=0.12, lw=0.4)
+        ax_limited.legend(loc="best", fontsize=9, frameon=False)
+        fig_limited.tight_layout()
+        fig_limited.savefig(fig_path_limited, dpi=320)
+        plt.close(fig_limited)
+
+        fig_full, ax_full = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
+        for i, p in enumerate(all_ports):
+            ax_full.plot(
+                wl_um,
+                plot_series[p],
+                "o-",
+                color=color_cycle[i % len(color_cycle)],
+                lw=2.0,
+                ms=4.5,
+                label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
+            )
+        ax_full.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
+        ax_full.set_xlabel("Wavelength (um)")
+        ax_full.set_ylabel("Magnitude (dB)")
+        ax_full.set_title(f"Crossing S-Parameters (Full Range, {component_label})")
+        ax_full.grid(which="major", alpha=0.25, lw=0.6)
+        ax_full.minorticks_on()
+        ax_full.grid(which="minor", alpha=0.12, lw=0.4)
+        ax_full.legend(loc="best", fontsize=9, frameon=False)
+        fig_full.tight_layout()
+        fig_full.savefig(fig_path_full, dpi=320)
+        plt.close(fig_full)
+
+        save_closure_compare_plot(
+            wavelengths_um=wl_um,
+            modal_closure=closure,
+            flux_closure=flux_closure,
+            valid_mask=valid_mask,
+            out_path=closure_plot_path,
+        )
+    if write_animation and eps_grid is not None:
+        anim_ok = save_field_animation(
+            field_hist=field_hist,
+            eps=eps_grid,
+            width=design.width,
+            height=design.height,
+            field_label=field_component,
+            out_path=anim_path,
+            fps=20,
+        )
 
     print(f"Saved S-parameter data: {data_path}")
-    print(f"Saved dB plot (limited -55..0 dB): {fig_path_limited}")
-    print(f"Saved dB plot (full range): {fig_path_full}")
-    print(f"Saved closure comparison plot: {closure_plot_path}")
-    print(f"Saved overview plot: {overview_path}")
-    print(f"Saved signal plot: {signal_path}")
-    print(f"Saved mode plots directory: {mode_dir}")
-    if anim_ok:
-        print(f"Saved field animation: {anim_path}")
-    else:
-        print("Field animation was not saved (no recorded frames or ffmpeg unavailable).")
+    if write_plots:
+        print(f"Saved dB plot (limited -55..0 dB): {fig_path_limited}")
+        print(f"Saved dB plot (full range): {fig_path_full}")
+        print(f"Saved closure comparison plot: {closure_plot_path}")
+        print(f"Saved overview plot: {overview_path}")
+        print(f"Saved signal plot: {signal_path}")
+    if write_mode_plots:
+        print(f"Saved mode plots directory: {mode_dir}")
+    if write_animation:
+        if anim_ok:
+            print(f"Saved field animation: {anim_path}")
+        else:
+            print("Field animation was not saved (no recorded frames or ffmpeg unavailable).")
 
     return {
         "component_label": component_label,
@@ -2015,6 +2067,13 @@ def choose_best_calibration_direction(
 
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--quality",
+        type=str,
+        default="fast",
+        choices=sorted(QUALITY_PRESETS.keys()),
+        help="Runtime preset. 'fast' is for iteration; 'high' restores the previous heavy defaults.",
+    )
     parser.add_argument(
         "--component",
         type=str,
@@ -2189,7 +2248,22 @@ def build_argparser() -> argparse.ArgumentParser:
         "--animation-frames",
         type=int,
         default=36,
-        help="Number of field-slice frames to capture for MP4 (0 disables animation capture).",
+        help="Number of field-slice frames to capture for MP4 when --write-animation is enabled.",
+    )
+    parser.add_argument(
+        "--write-plots",
+        action="store_true",
+        help="Save signal, overview, closure, and S-parameter PNG plots.",
+    )
+    parser.add_argument(
+        "--write-mode-plots",
+        action="store_true",
+        help="Initialize debug ModeSource probes and save per-placement mode-profile PNGs.",
+    )
+    parser.add_argument(
+        "--write-animation",
+        action="store_true",
+        help="Capture field slices during the run and save an MP4 animation.",
     )
     parser.add_argument(
         "--layer",
@@ -2251,13 +2325,18 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 def main():
-    args = build_argparser().parse_args()
+    argv = sys.argv[1:]
+    args = build_argparser().parse_args(argv)
+    applied_preset = apply_quality_preset(args, argv)
     if args.num_freqs < 2:
         raise ValueError("--num-freqs must be >= 2.")
     if args.wl_min_nm >= args.wl_max_nm:
         raise ValueError("--wl-min-nm must be smaller than --wl-max-nm.")
     if args.wl0_nm < args.wl_min_nm or args.wl0_nm > args.wl_max_nm:
         raise ValueError("--wl0-nm must be within [wl-min-nm, wl-max-nm].")
+    if applied_preset:
+        preset_desc = ", ".join(f"{k}={v}" for k, v in applied_preset.items())
+        print(f"Applied quality preset '{args.quality}': {preset_desc}")
 
     reference_incident = None
     reference_reflection = None
@@ -2312,6 +2391,9 @@ def main():
                 distance_source_to_monitors_um=args.distance_source_to_monitors_um,
                 run_after_sources_uoc=args.run_after_sources_uoc,
                 animation_frames=0,
+                write_plots=False,
+                write_mode_plots=False,
+                write_animation=False,
                 show_progress=not args.quiet_run,
                 out_dir=cal_out,
                 wave_dominance_min_db=args.wave_dominance_min_db,
@@ -2395,6 +2477,9 @@ def main():
         distance_source_to_monitors_um=args.distance_source_to_monitors_um,
         run_after_sources_uoc=args.run_after_sources_uoc,
         animation_frames=args.animation_frames,
+        write_plots=args.write_plots,
+        write_mode_plots=args.write_mode_plots,
+        write_animation=args.write_animation,
         show_progress=not args.quiet_run,
         out_dir=args.out_dir,
         wave_dominance_min_db=args.wave_dominance_min_db,
