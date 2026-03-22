@@ -11,6 +11,7 @@ Workflow:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -334,6 +335,28 @@ def line_clearance_to_box(line, bounds):
             for i in range(len(lo_line))
         )
     )
+
+
+def cleanup_crossing_optional_artifacts(
+    out_dir: Path,
+    *,
+    write_plots: bool,
+    write_mode_plots: bool,
+    write_animation: bool,
+) -> None:
+    if not write_plots:
+        for name in (
+            "beamz_crossing_sparams_db.png",
+            "beamz_crossing_sparams_db_full.png",
+            "beamz_crossing_closure_compare.png",
+            "beamz_crossing_overview.png",
+            "beamz_crossing_signal.png",
+        ):
+            (out_dir / name).unlink(missing_ok=True)
+    if not write_animation:
+        (out_dir / "beamz_crossing_field_propagation.mp4").unlink(missing_ok=True)
+    if not write_mode_plots:
+        shutil.rmtree(out_dir / "modes", ignore_errors=True)
 
 
 def safe_complex_ratio(num: np.ndarray, den: np.ndarray, eps: float = 1e-18) -> np.ndarray:
@@ -1139,7 +1162,7 @@ def prepare_crossing_setup(
 
     df = max(float(np.max(freqs) - np.min(freqs)), 1e-12)
     pulse_sigma = 1.0 / (2.0 * np.pi * df)
-    pulse_t0 = 6.0 * pulse_sigma
+    pulse_t0 = 3.0 * pulse_sigma
     uoc_to_s = 1e-6 / LIGHT_SPEED
     requested_run_after_sources_uoc = max(0.0, float(run_after_sources_uoc))
     min_run_after_sources_uoc = max(18.0, 4.0 * max_output_distance_um)
@@ -1369,6 +1392,12 @@ def prepare_crossing_setup(
         f"min_from_path={min_run_after_sources_uoc:.2f}um/c"
     )
     print(
+        "Signal timing: "
+        f"sigma={pulse_sigma*1e15:.2f}fs, "
+        f"peak={pulse_t0*1e15:.2f}fs, "
+        f"total={time[-1]*1e15:.2f}fs"
+    )
+    print(
         "Placement check: "
         f"source_center=({source_center[0]/µm:.2f},{source_center[1]/µm:.2f},{source_center[2]/µm:.2f})um, "
         f"source_plane_center=({src_plane_center[0]/µm:.2f},{src_plane_center[1]/µm:.2f},{src_plane_center[2]/µm:.2f})um"
@@ -1406,6 +1435,8 @@ def prepare_crossing_setup(
         "requested_run_after_sources_uoc": requested_run_after_sources_uoc,
         "effective_run_after_sources_uoc": effective_run_after_sources_uoc,
         "min_run_after_sources_uoc": min_run_after_sources_uoc,
+        "pulse_sigma_fs": pulse_sigma * 1e15,
+        "pulse_peak_time_fs": pulse_t0 * 1e15,
     }
 
 
@@ -2007,6 +2038,20 @@ def save_crossing_outputs(
         incident_ref_ratio=np.asarray(results["ref_ratio"], dtype=np.complex128),
         ref_norm_applied=np.asarray([results["ref_norm_applied"]], dtype=bool),
         ref_refl_subtracted=np.asarray([results["ref_refl_subtracted"]], dtype=bool),
+        requested_run_after_sources_uoc=np.asarray(
+            [setup["requested_run_after_sources_uoc"]],
+            dtype=float,
+        ),
+        effective_run_after_sources_uoc=np.asarray(
+            [setup["effective_run_after_sources_uoc"]],
+            dtype=float,
+        ),
+        min_run_after_sources_uoc=np.asarray(
+            [setup["min_run_after_sources_uoc"]],
+            dtype=float,
+        ),
+        pulse_sigma_fs=np.asarray([setup["pulse_sigma_fs"]], dtype=float),
+        pulse_peak_time_fs=np.asarray([setup["pulse_peak_time_fs"]], dtype=float),
         port_wave_dominance_db=np.asarray(
             [results["port_wave_dominance_db"][p] for p in all_ports],
             dtype=float,
@@ -2158,6 +2203,13 @@ def run_crossing(
     reference_reflection: np.ndarray | None = None,
     source_direction_mode: str = "inward",
 ) -> dict[str, object]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_crossing_optional_artifacts(
+        out_dir,
+        write_plots=write_plots,
+        write_mode_plots=write_mode_plots,
+        write_animation=write_animation,
+    )
     setup = prepare_crossing_setup(
         component_name=component_name,
         wl0=wl0,
@@ -2536,7 +2588,8 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--write-plots",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Save signal, overview, closure, and S-parameter PNG plots.",
     )
     parser.add_argument(
