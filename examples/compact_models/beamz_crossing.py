@@ -898,7 +898,7 @@ def build_design_with_extensions(
     return design, ports, imported_bbox, layer_z
 
 
-def run_crossing(
+def prepare_crossing_setup(
     *,
     component_name: str,
     wl0: float,
@@ -922,24 +922,16 @@ def run_crossing(
     top_clad_shift_um: float,
     min_bottom_clad_um: float,
     monitor_candidates: int,
-    mode_search_max: int,
     pml_um: float,
     port_margin_um: float,
     source_port_offset_um: float,
     distance_source_to_monitors_um: float,
     run_after_sources_uoc: float,
-    animation_frames: int,
     write_plots: bool,
     write_mode_plots: bool,
-    write_animation: bool,
-    show_progress: bool,
     out_dir: Path,
-    wave_dominance_min_db: float = 6.0,
-    strict_normalization_qa: bool = True,
-    reference_incident: np.ndarray | None = None,
-    reference_reflection: np.ndarray | None = None,
-    source_direction_mode: str = "inward",
-) -> dict[str, object]:
+    source_direction_mode: str,
+):
     component, component_label = load_crossing_component(component_name=component_name)
     polarization = str(polarization).lower()
     if polarization not in {"tm", "te"}:
@@ -1051,8 +1043,6 @@ def run_crossing(
 
     source_offset = source_port_offset
     fwd_offset = source_port_offset + dist_source_to_mon
-    # Keep reflection monitor on the opposite side of the source (towards port/PML)
-    # to improve directional modal separation for normalization.
     ref_offset = source_port_offset - dist_source_to_mon
     source_xy = move_along(src["center"], src["direction"], source_offset)
     source_center = (source_xy[0], source_xy[1], z_center)
@@ -1080,7 +1070,6 @@ def run_crossing(
         offset=ref_offset,
     )
 
-    # Build output-monitor placement candidates outward along each output port.
     out_mag_candidates = []
     n_cands = int(np.clip(monitor_candidates, 1, 3))
     out_base = max(source_port_offset + dist_source_to_mon, 0.10 * µm)
@@ -1229,7 +1218,6 @@ def run_crossing(
         )
 
     if write_mode_plots:
-        # Build and save a mode-profile debug plot for every source/monitor placement.
         mode_sources = {"source_main": source}
         mode_sources[f"{source_port}_fwd"] = ModeSource(
             grid=grid,
@@ -1324,6 +1312,43 @@ def run_crossing(
                 f"  monitor {cand['name']}: center=({c_out[0]/µm:.2f},{c_out[1]/µm:.2f},{c_out[2]/µm:.2f})um, "
                 f"offset={cand['offset']/µm:.2f}um, distance_to_source={dist/µm:.2f}um"
             )
+
+    return {
+        "component_label": component_label,
+        "design": design,
+        "grid": grid,
+        "ports": ports,
+        "freqs": freqs,
+        "wl": wl,
+        "time": time,
+        "layer_z": layer_z,
+        "source_port": source_port,
+        "output_ports": output_ports,
+        "all_ports": all_ports,
+        "layer_resolved": layer_resolved,
+        "stack_meta": stack_meta,
+        "source_drive_direction": source_drive_direction,
+        "source_direction_mode": source_direction_mode,
+        "out_candidates": out_candidates,
+        "m_fwd": m_fwd,
+        "m_ref": m_ref,
+        "output_monitors": output_monitors,
+        "sim": sim,
+    }
+
+
+def run_crossing_simulation(
+    *,
+    sim: Simulation,
+    time: np.ndarray,
+    polarization: str,
+    write_animation: bool,
+    animation_frames: int,
+    grid,
+    layer_z: dict[str, tuple[float, float]],
+    design: Design,
+    show_progress: bool,
+):
     field_hist = np.zeros((0,), dtype=float)
     field_component = "Ey" if polarization == "te" else "Ez"
     eps_grid = None
@@ -1337,8 +1362,6 @@ def run_crossing(
             capture_z_idx = int(
                 np.clip(round(0.5 * (core_z0 + core_z1) / max(dz, 1e-30)), 0, eps_grid.shape[0] - 1)
             )
-    if n_anim_frames > 0:
-        # Avoid storing full 3D volumes every interval: run in chunks and keep one XY z-slice.
         total_steps = len(time)
         chunk_size = max(1, int(np.ceil(total_steps / max(n_anim_frames, 1))))
         frame_list = []
@@ -1375,9 +1398,40 @@ def run_crossing(
     else:
         sim.run_compiled(progress=bool(show_progress))
 
+    return {
+        "field_hist": field_hist,
+        "field_component": field_component,
+        "eps_grid": eps_grid,
+    }
+
+
+def extract_crossing_results(
+    *,
+    setup: dict[str, object],
+    wl0: float,
+    polarization: str,
+    n_clad: float,
+    mode_search_max: int,
+    reference_incident: np.ndarray | None,
+    reference_reflection: np.ndarray | None,
+    wave_dominance_min_db: float,
+    strict_normalization_qa: bool,
+):
+    sim = setup["sim"]
+    freqs = setup["freqs"]
+    wl = setup["wl"]
+    source_port = str(setup["source_port"])
+    output_ports = list(setup["output_ports"])
+    all_ports = list(setup["all_ports"])
+    ports = dict(setup["ports"])
+    source_drive_direction = str(setup["source_drive_direction"])
+    out_candidates = dict(setup["out_candidates"])
+    m_fwd = setup["m_fwd"]
+    m_ref = setup["m_ref"]
+    output_monitors = list(setup["output_monitors"])
+
     cond_threshold = 1e8
     max_mode_search = int(np.clip(mode_search_max, 0, 3))
-
     source_drive_port = f"{source_port}_in"
 
     def source_spec(mode_index: int) -> PortSpec:
@@ -1401,7 +1455,6 @@ def run_crossing(
             scattered_wave="plus",
         )
 
-    # Choose source mode index (batched extraction over source-mode candidates).
     print(f"Selecting source mode over m0..m{max_mode_search}")
     source_mode_ports = {}
     source_mode_alias = {}
@@ -1511,13 +1564,9 @@ def run_crossing(
     source_cond = np.asarray(source_refl_waves.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
 
     s_cols = {source_port: source_refl}
-    port_quality = {}
-    port_quality[source_port] = (
-        valid_mask
-        & np.isfinite(source_cond)
-        & (source_cond < cond_threshold)
-    )
-
+    port_quality = {
+        source_port: valid_mask & np.isfinite(source_cond) & (source_cond < cond_threshold)
+    }
     mode_indices = {source_port: source_mode_idx}
     selected_monitors = {source_port: f"{source_port}_ref"}
     port_diagnostics = {
@@ -1531,7 +1580,6 @@ def run_crossing(
         }
     }
 
-    # Select best monitor placement + mode index for each output port.
     output_search_ports = {source_drive_port: source_spec(source_mode_idx)}
     output_search_meta = []
     for p in output_ports:
@@ -1585,11 +1633,7 @@ def run_crossing(
             a_minus_p = np.asarray(waves_p.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
             neff_p = np.asarray(waves_p.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
             cond_p = np.asarray(waves_p.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
-            qual = (
-                valid_mask
-                & np.isfinite(cond_p)
-                & (cond_p < cond_threshold)
-            )
+            qual = valid_mask & np.isfinite(cond_p) & (cond_p < cond_threshold)
             wave_key, a_sel, a_opp, wave_dom = select_dominant_wave(
                 a_plus_p,
                 a_minus_p,
@@ -1607,7 +1651,6 @@ def run_crossing(
                 mag_med = float(np.nanmedian(np.abs(s_p))) if s_p.size else 0.0
             neff_med = float(np.nanmedian(neff_p[np.isfinite(neff_p)])) if np.any(np.isfinite(neff_p)) else -np.inf
             cond_med = float(np.nanmedian(cond_p[np.isfinite(cond_p)])) if np.any(np.isfinite(cond_p)) else np.inf
-            # Prefer guided, well-conditioned, smooth spectra near expected passive range.
             score = (
                 3.0 * qual_frac
                 + (0.4 if neff_med > (n_clad + 1e-3) else 0.0)
@@ -1714,13 +1757,10 @@ def run_crossing(
         qa_issues.append(
             f"incident dominance {incident_dominance:.2f} dB < threshold {dom_threshold:.2f} dB"
         )
-    # Source-port reflected wave quality is part of the strict normalization gate.
     for p in [source_port]:
         d = float(port_wave_dominance_db[p])
         if (not np.isfinite(d)) or (d < dom_threshold):
             qa_issues.append(f"{p} dominance {d:.2f} dB < threshold {dom_threshold:.2f} dB")
-    # Output-port dominance can be noise-limited when transmission is very small.
-    # Only hard-fail strict QA if the port carries a meaningful signal.
     signal_floor_db = -25.0
     for p in output_ports:
         d = float(port_wave_dominance_db[p])
@@ -1807,28 +1847,96 @@ def run_crossing(
         f"(R={float(flux_ref_ratio[idx0]):.3f}, {flux_out_center})"
     )
 
+    return {
+        "source_port": source_port,
+        "all_ports": all_ports,
+        "output_ports": output_ports,
+        "selected_monitors": selected_monitors,
+        "mode_indices": mode_indices,
+        "port_diagnostics": port_diagnostics,
+        "port_quality": port_quality,
+        "valid_mask": np.asarray(valid_mask, dtype=bool),
+        "s_cols": {p: np.asarray(s_cols[p], dtype=np.complex128) for p in all_ports},
+        "s_cols_raw": {p: np.asarray(s_cols_raw[p], dtype=np.complex128) for p in all_ports},
+        "source_incident": np.asarray(source_incident, dtype=np.complex128),
+        "source_incident_opposite": np.asarray(source_incident_opposite, dtype=np.complex128),
+        "source_incident_key": source_incident_key,
+        "incident_dominance": float(incident_dominance),
+        "ref_ratio": np.asarray(ref_ratio, dtype=np.complex128),
+        "ref_norm_applied": bool(ref_norm_applied),
+        "ref_refl_subtracted": bool(ref_refl_subtracted),
+        "qa_issues": list(qa_issues),
+        "qa_warnings": list(qa_warnings),
+        "closure": np.asarray(closure, dtype=float),
+        "flux_in": np.asarray(flux_in, dtype=float),
+        "flux_ref": np.asarray(flux_ref, dtype=float),
+        "flux_closure": np.asarray(flux_closure, dtype=float),
+        "flux_ref_ratio": np.asarray(flux_ref_ratio, dtype=float),
+        "flux_out": {p: np.asarray(flux_out[p], dtype=float) for p in output_ports},
+        "flux_ratio": {p: np.asarray(flux_ratio[p], dtype=float) for p in output_ports},
+        "port_wave_dominance_db": {
+            p: float(port_wave_dominance_db[p])
+            for p in all_ports
+        },
+        "wave_keys": {p: str(port_diagnostics[p]["wave_key"]) for p in all_ports},
+        "wl_um": np.asarray(wl_um, dtype=float),
+    }
+
+
+def save_crossing_outputs(
+    *,
+    setup: dict[str, object],
+    results: dict[str, object],
+    simulation_state: dict[str, object],
+    out_dir: Path,
+    write_plots: bool,
+    write_mode_plots: bool,
+    write_animation: bool,
+):
+    source_port = str(results["source_port"])
+    all_ports = list(results["all_ports"])
+    output_ports = list(results["output_ports"])
+    s_cols = dict(results["s_cols"])
+    s_cols_raw = dict(results["s_cols_raw"])
+    valid_mask = np.asarray(results["valid_mask"], dtype=bool)
+    port_quality = dict(results["port_quality"])
+    selected_monitors = dict(results["selected_monitors"])
+    mode_indices = dict(results["mode_indices"])
+    port_diagnostics = dict(results["port_diagnostics"])
+    wl_um = np.asarray(results["wl_um"], dtype=float)
+    closure = np.asarray(results["closure"], dtype=float)
+    flux_in = np.asarray(results["flux_in"], dtype=float)
+    flux_ref = np.asarray(results["flux_ref"], dtype=float)
+    flux_closure = np.asarray(results["flux_closure"], dtype=float)
+    flux_ref_ratio = np.asarray(results["flux_ref_ratio"], dtype=float)
+    flux_out = dict(results["flux_out"])
+    flux_ratio = dict(results["flux_ratio"])
+    field_hist = np.asarray(simulation_state["field_hist"], dtype=float)
+    field_component = str(simulation_state["field_component"])
+    eps_grid = simulation_state["eps_grid"]
+
     data_path = out_dir / "beamz_crossing_sparams.npz"
     np.savez(
         data_path,
         source_port=source_port,
         output_ports=np.asarray(all_ports, dtype=object),
-        selected_layer=np.asarray([layer_resolved], dtype=object),
-        stack_used=np.asarray([bool(stack_meta.get("used_pdk_stack", False))], dtype=bool),
+        selected_layer=np.asarray([setup["layer_resolved"]], dtype=object),
+        stack_used=np.asarray([bool(setup["stack_meta"].get("used_pdk_stack", False))], dtype=bool),
         selected_monitors=np.asarray([selected_monitors[p] for p in all_ports], dtype=object),
         mode_indices=np.asarray([mode_indices[p] for p in all_ports], dtype=int),
         wave_keys=np.asarray([port_diagnostics[p]["wave_key"] for p in all_ports], dtype=object),
         wavelengths_um=wl_um,
         valid_mask=valid_mask.astype(bool),
         closure=closure,
-        incident_device=source_incident,
-        incident_opposite=source_incident_opposite,
-        incident_wave_key=np.asarray([source_incident_key], dtype=object),
-        incident_dominance_db=np.asarray([incident_dominance], dtype=float),
-        incident_ref_ratio=ref_ratio,
-        ref_norm_applied=np.asarray([ref_norm_applied], dtype=bool),
-        ref_refl_subtracted=np.asarray([ref_refl_subtracted], dtype=bool),
+        incident_device=np.asarray(results["source_incident"], dtype=np.complex128),
+        incident_opposite=np.asarray(results["source_incident_opposite"], dtype=np.complex128),
+        incident_wave_key=np.asarray([results["source_incident_key"]], dtype=object),
+        incident_dominance_db=np.asarray([results["incident_dominance"]], dtype=float),
+        incident_ref_ratio=np.asarray(results["ref_ratio"], dtype=np.complex128),
+        ref_norm_applied=np.asarray([results["ref_norm_applied"]], dtype=bool),
+        ref_refl_subtracted=np.asarray([results["ref_refl_subtracted"]], dtype=bool),
         port_wave_dominance_db=np.asarray(
-            [port_wave_dominance_db[p] for p in all_ports],
+            [results["port_wave_dominance_db"][p] for p in all_ports],
             dtype=float,
         ),
         flux_in=flux_in,
@@ -1837,9 +1945,9 @@ def run_crossing(
         flux_ref_ratio=flux_ref_ratio,
         **{f"flux_{p}": np.asarray(flux_out[p], dtype=float) for p in output_ports},
         **{f"flux_ratio_{p}": np.asarray(flux_ratio[p], dtype=float) for p in output_ports},
-        **{f"quality_{p}": port_quality[p].astype(bool) for p in all_ports},
-        **{f"s_raw_{p}_{source_port}": s_cols_raw[p] for p in all_ports},
-        **{f"s_{p}_{source_port}": s_cols[p] for p in all_ports},
+        **{f"quality_{p}": np.asarray(port_quality[p], dtype=bool) for p in all_ports},
+        **{f"s_raw_{p}_{source_port}": np.asarray(s_cols_raw[p], dtype=np.complex128) for p in all_ports},
+        **{f"s_{p}_{source_port}": np.asarray(s_cols[p], dtype=np.complex128) for p in all_ports},
     )
 
     fig_path_limited = out_dir / "beamz_crossing_sparams_db.png"
@@ -1851,8 +1959,8 @@ def run_crossing(
         color_cycle = ["black", "tab:blue", "tab:orange", "tab:green", "tab:red"]
         plot_series = {}
         for p in all_ports:
-            y_db = 20.0 * np.log10(np.maximum(np.abs(s_cols[p]), 1e-12))
-            y_db = np.where(valid_mask & port_quality[p], y_db, np.nan)
+            y_db = 20.0 * np.log10(np.maximum(np.abs(np.asarray(s_cols[p], dtype=np.complex128)), 1e-12))
+            y_db = np.where(valid_mask & np.asarray(port_quality[p], dtype=bool), y_db, np.nan)
             plot_series[p] = y_db
 
         fig_limited, ax_limited = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
@@ -1870,7 +1978,7 @@ def run_crossing(
         ax_limited.set_ylim(-55.0, 0.0)
         ax_limited.set_xlabel("Wavelength (um)")
         ax_limited.set_ylabel("Magnitude (dB)")
-        ax_limited.set_title(f"Crossing S-Parameters ({component_label})")
+        ax_limited.set_title(f"Crossing S-Parameters ({setup['component_label']})")
         ax_limited.grid(which="major", alpha=0.25, lw=0.6)
         ax_limited.minorticks_on()
         ax_limited.grid(which="minor", alpha=0.12, lw=0.4)
@@ -1893,7 +2001,7 @@ def run_crossing(
         ax_full.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
         ax_full.set_xlabel("Wavelength (um)")
         ax_full.set_ylabel("Magnitude (dB)")
-        ax_full.set_title(f"Crossing S-Parameters (Full Range, {component_label})")
+        ax_full.set_title(f"Crossing S-Parameters (Full Range, {setup['component_label']})")
         ax_full.grid(which="major", alpha=0.25, lw=0.6)
         ax_full.minorticks_on()
         ax_full.grid(which="minor", alpha=0.12, lw=0.4)
@@ -1913,8 +2021,8 @@ def run_crossing(
         anim_ok = save_field_animation(
             field_hist=field_hist,
             eps=eps_grid,
-            width=design.width,
-            height=design.height,
+            width=setup["design"].width,
+            height=setup["design"].height,
             field_label=field_component,
             out_path=anim_path,
             fps=20,
@@ -1925,52 +2033,156 @@ def run_crossing(
         print(f"Saved dB plot (limited -55..0 dB): {fig_path_limited}")
         print(f"Saved dB plot (full range): {fig_path_full}")
         print(f"Saved closure comparison plot: {closure_plot_path}")
-        print(f"Saved overview plot: {overview_path}")
-        print(f"Saved signal plot: {signal_path}")
+        print(f"Saved overview plot: {out_dir / 'beamz_crossing_overview.png'}")
+        print(f"Saved signal plot: {out_dir / 'beamz_crossing_signal.png'}")
     if write_mode_plots:
-        print(f"Saved mode plots directory: {mode_dir}")
+        print(f"Saved mode plots directory: {out_dir / 'modes'}")
     if write_animation:
         if anim_ok:
             print(f"Saved field animation: {anim_path}")
         else:
             print("Field animation was not saved (no recorded frames or ffmpeg unavailable).")
 
+
+def run_crossing(
+    *,
+    component_name: str,
+    wl0: float,
+    wl_min: float,
+    wl_max: float,
+    num_freqs: int,
+    n_core: float,
+    n_clad: float,
+    polarization: str,
+    points_per_wavelength: int,
+    layer: tuple[int, int] | None,
+    use_pdk_stack: bool,
+    z_crop_auto: bool,
+    margin_z_above_um: float,
+    margin_z_below_um: float,
+    extension_um: float,
+    port_overlap_um: float,
+    core_t_um: float,
+    clad_below_um: float,
+    clad_above_um: float,
+    top_clad_shift_um: float,
+    min_bottom_clad_um: float,
+    monitor_candidates: int,
+    mode_search_max: int,
+    pml_um: float,
+    port_margin_um: float,
+    source_port_offset_um: float,
+    distance_source_to_monitors_um: float,
+    run_after_sources_uoc: float,
+    animation_frames: int,
+    write_plots: bool,
+    write_mode_plots: bool,
+    write_animation: bool,
+    show_progress: bool,
+    out_dir: Path,
+    wave_dominance_min_db: float = 6.0,
+    strict_normalization_qa: bool = True,
+    reference_incident: np.ndarray | None = None,
+    reference_reflection: np.ndarray | None = None,
+    source_direction_mode: str = "inward",
+) -> dict[str, object]:
+    setup = prepare_crossing_setup(
+        component_name=component_name,
+        wl0=wl0,
+        wl_min=wl_min,
+        wl_max=wl_max,
+        num_freqs=num_freqs,
+        n_core=n_core,
+        n_clad=n_clad,
+        polarization=polarization,
+        points_per_wavelength=points_per_wavelength,
+        layer=layer,
+        use_pdk_stack=use_pdk_stack,
+        z_crop_auto=z_crop_auto,
+        margin_z_above_um=margin_z_above_um,
+        margin_z_below_um=margin_z_below_um,
+        extension_um=extension_um,
+        port_overlap_um=port_overlap_um,
+        core_t_um=core_t_um,
+        clad_below_um=clad_below_um,
+        clad_above_um=clad_above_um,
+        top_clad_shift_um=top_clad_shift_um,
+        min_bottom_clad_um=min_bottom_clad_um,
+        monitor_candidates=monitor_candidates,
+        pml_um=pml_um,
+        port_margin_um=port_margin_um,
+        source_port_offset_um=source_port_offset_um,
+        distance_source_to_monitors_um=distance_source_to_monitors_um,
+        run_after_sources_uoc=run_after_sources_uoc,
+        write_plots=write_plots,
+        write_mode_plots=write_mode_plots,
+        out_dir=out_dir,
+        source_direction_mode=source_direction_mode,
+    )
+    simulation_state = run_crossing_simulation(
+        sim=setup["sim"],
+        time=setup["time"],
+        polarization=polarization,
+        write_animation=write_animation,
+        animation_frames=animation_frames,
+        grid=setup["grid"],
+        layer_z=setup["layer_z"],
+        design=setup["design"],
+        show_progress=show_progress,
+    )
+    results = extract_crossing_results(
+        setup=setup,
+        wl0=wl0,
+        polarization=polarization,
+        n_clad=n_clad,
+        mode_search_max=mode_search_max,
+        reference_incident=reference_incident,
+        reference_reflection=reference_reflection,
+        wave_dominance_min_db=wave_dominance_min_db,
+        strict_normalization_qa=strict_normalization_qa,
+    )
+    save_crossing_outputs(
+        setup=setup,
+        results=results,
+        simulation_state=simulation_state,
+        out_dir=out_dir,
+        write_plots=write_plots,
+        write_mode_plots=write_mode_plots,
+        write_animation=write_animation,
+    )
     return {
-        "component_label": component_label,
-        "source_port": source_port,
-        "source_drive_direction": source_drive_direction,
-        "source_direction_mode": source_direction_mode,
-        "all_ports": list(all_ports),
-        "selected_layer": layer_resolved,
-        "stack_used": bool(stack_meta.get("used_pdk_stack", False)),
-        "wavelength_um": np.asarray(wl_um, dtype=float),
-        "s_cols": {p: np.asarray(s_cols[p], dtype=np.complex128) for p in all_ports},
-        "s_cols_raw": {p: np.asarray(s_cols_raw[p], dtype=np.complex128) for p in all_ports},
-        "incident_device": np.asarray(source_incident, dtype=np.complex128),
-        "incident_opposite": np.asarray(source_incident_opposite, dtype=np.complex128),
-        "incident_wave_key": source_incident_key,
-        "incident_dominance_db": float(incident_dominance),
-        "incident_ref_ratio": np.asarray(ref_ratio, dtype=np.complex128),
-        "ref_norm_applied": bool(ref_norm_applied),
-        "ref_refl_subtracted": bool(ref_refl_subtracted),
-        "valid_mask": np.asarray(valid_mask, dtype=bool),
-        "qa_issues": list(qa_issues),
-        "qa_warnings": list(qa_warnings),
-        "port_quality": {p: np.asarray(port_quality[p], dtype=bool) for p in all_ports},
-        "closure": np.asarray(closure, dtype=float),
-        "flux_in": np.asarray(flux_in, dtype=float),
-        "flux_ref": np.asarray(flux_ref, dtype=float),
-        "flux_closure": np.asarray(flux_closure, dtype=float),
-        "flux_ref_ratio": np.asarray(flux_ref_ratio, dtype=float),
-        "flux_out": {p: np.asarray(flux_out[p], dtype=float) for p in output_ports},
-        "flux_ratio": {p: np.asarray(flux_ratio[p], dtype=float) for p in output_ports},
-        "port_wave_dominance_db": {
-            p: float(port_wave_dominance_db[p])
-            for p in all_ports
-        },
-        "wave_keys": {p: str(port_diagnostics[p]["wave_key"]) for p in all_ports},
-        "selected_monitors": dict(selected_monitors),
-        "mode_indices": dict(mode_indices),
+        "component_label": setup["component_label"],
+        "source_port": results["source_port"],
+        "source_drive_direction": setup["source_drive_direction"],
+        "source_direction_mode": setup["source_direction_mode"],
+        "all_ports": list(results["all_ports"]),
+        "selected_layer": setup["layer_resolved"],
+        "stack_used": bool(setup["stack_meta"].get("used_pdk_stack", False)),
+        "wavelength_um": np.asarray(results["wl_um"], dtype=float),
+        "s_cols": dict(results["s_cols"]),
+        "s_cols_raw": dict(results["s_cols_raw"]),
+        "incident_device": np.asarray(results["source_incident"], dtype=np.complex128),
+        "incident_opposite": np.asarray(results["source_incident_opposite"], dtype=np.complex128),
+        "incident_wave_key": results["source_incident_key"],
+        "incident_dominance_db": float(results["incident_dominance"]),
+        "incident_ref_ratio": np.asarray(results["ref_ratio"], dtype=np.complex128),
+        "ref_norm_applied": bool(results["ref_norm_applied"]),
+        "ref_refl_subtracted": bool(results["ref_refl_subtracted"]),
+        "valid_mask": np.asarray(results["valid_mask"], dtype=bool),
+        "qa_issues": list(results["qa_issues"]),
+        "qa_warnings": list(results["qa_warnings"]),
+        "port_quality": {p: np.asarray(results["port_quality"][p], dtype=bool) for p in results["all_ports"]},
+        "closure": np.asarray(results["closure"], dtype=float),
+        "flux_in": np.asarray(results["flux_in"], dtype=float),
+        "flux_ref": np.asarray(results["flux_ref"], dtype=float),
+        "flux_closure": np.asarray(results["flux_closure"], dtype=float),
+        "flux_ref_ratio": np.asarray(results["flux_ref_ratio"], dtype=float),
+        "flux_out": {p: np.asarray(results["flux_out"][p], dtype=float) for p in results["output_ports"]},
+        "flux_ratio": {p: np.asarray(results["flux_ratio"][p], dtype=float) for p in results["output_ports"]},
+        "port_wave_dominance_db": dict(results["port_wave_dominance_db"]),
+        "wave_keys": dict(results["wave_keys"]),
+        "selected_monitors": dict(results["selected_monitors"]),
+        "mode_indices": dict(results["mode_indices"]),
     }
 
 
