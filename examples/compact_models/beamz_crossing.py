@@ -1128,11 +1128,26 @@ def prepare_crossing_setup(
             )
         out_candidates[p] = cand_list
 
+    max_output_distance_um = 0.0
+    for p in output_ports:
+        for cand in out_candidates[p]:
+            c_out = line_center(cand["plane"])
+            max_output_distance_um = max(
+                max_output_distance_um,
+                float(np.hypot(c_out[0] - src_plane_center[0], c_out[1] - src_plane_center[1])) / µm,
+            )
+
     df = max(float(np.max(freqs) - np.min(freqs)), 1e-12)
     pulse_sigma = 1.0 / (2.0 * np.pi * df)
     pulse_t0 = 6.0 * pulse_sigma
     uoc_to_s = 1e-6 / LIGHT_SPEED
-    run_after_s = max(0.0, float(run_after_sources_uoc)) * uoc_to_s
+    requested_run_after_sources_uoc = max(0.0, float(run_after_sources_uoc))
+    min_run_after_sources_uoc = max(18.0, 4.0 * max_output_distance_um)
+    effective_run_after_sources_uoc = max(
+        requested_run_after_sources_uoc,
+        min_run_after_sources_uoc,
+    )
+    run_after_s = effective_run_after_sources_uoc * uoc_to_s
     t_total = pulse_t0 + run_after_s + 12.0 / f0
     time = np.arange(0.0, t_total, dt)
     signal = np.exp(-0.5 * ((time - pulse_t0) / max(pulse_sigma, 1e-30)) ** 2) * np.cos(
@@ -1348,6 +1363,12 @@ def prepare_crossing_setup(
         f"updates~{num_voxels*len(time):.3e}"
     )
     print(
+        "Run window: "
+        f"requested={requested_run_after_sources_uoc:.2f}um/c, "
+        f"used={effective_run_after_sources_uoc:.2f}um/c, "
+        f"min_from_path={min_run_after_sources_uoc:.2f}um/c"
+    )
+    print(
         "Placement check: "
         f"source_center=({source_center[0]/µm:.2f},{source_center[1]/µm:.2f},{source_center[2]/µm:.2f})um, "
         f"source_plane_center=({src_plane_center[0]/µm:.2f},{src_plane_center[1]/µm:.2f},{src_plane_center[2]/µm:.2f})um"
@@ -1382,6 +1403,9 @@ def prepare_crossing_setup(
         "m_ref": m_ref,
         "output_monitors": output_monitors,
         "sim": sim,
+        "requested_run_after_sources_uoc": requested_run_after_sources_uoc,
+        "effective_run_after_sources_uoc": effective_run_after_sources_uoc,
+        "min_run_after_sources_uoc": min_run_after_sources_uoc,
     }
 
 
@@ -2476,7 +2500,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--run-after-sources-uoc",
         type=float,
         default=45.0,
-        help="Approximate run duration after source center, in um/c units (gsim-like fixed-time default).",
+        help="Requested run duration after source center in um/c units; increased automatically when the source-to-monitor path length requires a longer window.",
     )
     parser.add_argument(
         "--source-direction",
