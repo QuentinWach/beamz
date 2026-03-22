@@ -265,6 +265,36 @@ def line_center(line):
     return 0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])
 
 
+def line_box(line):
+    a, b = line
+    dim = len(a)
+    lo = tuple(min(float(a[i]), float(b[i])) for i in range(dim))
+    hi = tuple(max(float(a[i]), float(b[i])) for i in range(dim))
+    return lo, hi
+
+
+def point_clearance_to_box(point, bounds):
+    lo, hi = bounds
+    coords = tuple(float(v) for v in point)
+    return float(
+        min(min(coords[i] - lo[i], hi[i] - coords[i]) for i in range(len(coords)))
+    )
+
+
+def line_clearance_to_box(line, bounds):
+    lo_line, hi_line = line_box(line)
+    lo_box, hi_box = bounds
+    return float(
+        min(
+            min(
+                lo_line[i] - lo_box[i],
+                hi_box[i] - hi_line[i],
+            )
+            for i in range(len(lo_line))
+        )
+    )
+
+
 def safe_complex_ratio(num: np.ndarray, den: np.ndarray, eps: float = 1e-18) -> np.ndarray:
     out = np.zeros_like(np.asarray(num, dtype=np.complex128), dtype=np.complex128)
     den_arr = np.asarray(den, dtype=np.complex128)
@@ -743,6 +773,8 @@ def build_design_with_extensions(
     layer: tuple[int, int],
     n_core: float,
     n_clad: float,
+    xy_padding: float,
+    z_padding: float,
     extension: float,
     port_overlap: float,
     core_t: float,
@@ -756,18 +788,18 @@ def build_design_with_extensions(
         n_clad=n_clad,
         padding=0.0,
     )
-    depth = clad_below + core_t + clad_above
-    core_z0 = clad_below
+    depth = 2.0 * z_padding + clad_below + core_t + clad_above
+    core_z0 = z_padding + clad_below
     core_z1 = core_z0 + core_t
 
     design = Design(
-        width=imported_design.width + 2.0 * extension,
-        height=imported_design.height + 2.0 * extension,
+        width=imported_design.width + 2.0 * xy_padding,
+        height=imported_design.height + 2.0 * xy_padding,
         depth=depth,
         material=Material(n_clad**2),
     )
     for structure in imported_design.structures[1:]:
-        shifted = structure.copy().shift(extension, extension, core_z0)
+        shifted = structure.copy().shift(xy_padding, xy_padding, core_z0)
         shifted.z = core_z0
         shifted.depth = core_t
         design += shifted
@@ -776,8 +808,8 @@ def build_design_with_extensions(
         name: {
             **p,
             "center": (
-                float(p["center"][0] + extension),
-                float(p["center"][1] + extension),
+                float(p["center"][0] + xy_padding),
+                float(p["center"][1] + xy_padding),
             ),
             "width": float(p["width"]),
             "z_center": float(core_z0 + 0.5 * core_t),
@@ -810,15 +842,17 @@ def build_design_with_extensions(
             )
 
     imported_bbox = (
-        float(extension),
-        float(extension + imported_design.width),
-        float(extension),
-        float(extension + imported_design.height),
+        float(xy_padding),
+        float(xy_padding + imported_design.width),
+        float(xy_padding),
+        float(xy_padding + imported_design.height),
     )
     layer_z = {
-        "clad_bottom": (0.0, core_z0),
+        "pad_bottom": (0.0, z_padding),
+        "clad_bottom": (z_padding, core_z0),
         "core": (core_z0, core_z1),
-        "clad_top": (core_z1, depth),
+        "clad_top": (core_z1, depth - z_padding),
+        "pad_top": (depth - z_padding, depth),
     }
     return design, ports, imported_bbox, layer_z
 
@@ -906,13 +940,21 @@ def run_crossing(
     core_t = float(core_t_um_resolved) * µm
     clad_below = float(clad_below_um_resolved) * µm
     clad_above = float(clad_above_um_resolved) * µm
+    pml_xy = max(0.0, float(pml_um)) * µm
+    pml_z = max(0.0, float(pml_um)) * µm
+    domain_guard_xy = 0.25 * µm
+    domain_guard_z = 0.25 * µm
     extension = float(extension_um) * µm
     port_overlap = max(0.0, float(port_overlap_um)) * µm
+    xy_padding = pml_xy + extension + domain_guard_xy
+    z_padding = pml_z + domain_guard_z
     design, ports, imported_bbox, layer_z = build_design_with_extensions(
         component,
         layer=layer_resolved,
         n_core=n_core,
         n_clad=n_clad,
+        xy_padding=xy_padding,
+        z_padding=z_padding,
         extension=extension,
         port_overlap=port_overlap,
         core_t=core_t,
@@ -950,15 +992,15 @@ def run_crossing(
     source_span = max(float(src["width"]) + 2.0 * port_margin, float(src["width"]) + 0.1 * µm)
     monitor_span = source_span
     z_center = float(src["z_center"])
+    z_inner_lo = pml_z + domain_guard_z
+    z_inner_hi = float(design.depth) - pml_z - domain_guard_z
+    plane_z_clearance = 0.10 * µm
     z_span_limit = max(
         0.2 * µm,
-        2.0 * min(z_center, float(design.depth) - z_center) - 0.02 * µm,
+        2.0 * min(z_center - z_inner_lo, z_inner_hi - z_center) - 2.0 * plane_z_clearance,
     )
     source_height = z_span_limit
     monitor_height = z_span_limit
-
-    pml_xy = max(0.0, float(pml_um)) * µm
-    pml_z = max(0.0, float(pml_um)) * µm
     source_port_offset = max(0.0, float(source_port_offset_um)) * µm
     dist_source_to_mon = max(0.0, float(distance_source_to_monitors_um)) * µm
 
@@ -1091,6 +1133,39 @@ def run_crossing(
         for cand in out_candidates[p]:
             monitor_planes[cand["name"]] = cand["plane"]
 
+    inner_xy_bounds = (
+        (pml_xy + domain_guard_xy, pml_xy + domain_guard_xy),
+        (float(design.width) - pml_xy - domain_guard_xy, float(design.height) - pml_xy - domain_guard_xy),
+    )
+    inner_xyz_bounds = (
+        (pml_xy + domain_guard_xy, pml_xy + domain_guard_xy, pml_z + domain_guard_z),
+        (
+            float(design.width) - pml_xy - domain_guard_xy,
+            float(design.height) - pml_xy - domain_guard_xy,
+            float(design.depth) - pml_z - domain_guard_z,
+        ),
+    )
+    placement_clearances = {
+        "imported_design_xy": line_clearance_to_box(
+            (
+                (imported_bbox[0], imported_bbox[2]),
+                (imported_bbox[1], imported_bbox[3]),
+            ),
+            inner_xy_bounds,
+        ),
+        "source_center": point_clearance_to_box(source_center, inner_xyz_bounds),
+        f"{source_port}_source_plane": line_clearance_to_box(source_plane, inner_xyz_bounds),
+        f"{source_port}_fwd": line_clearance_to_box(fwd_plane, inner_xyz_bounds),
+        f"{source_port}_ref": line_clearance_to_box(ref_plane, inner_xyz_bounds),
+    }
+    for p in output_ports:
+        for cand in out_candidates[p]:
+            placement_clearances[cand["name"]] = line_clearance_to_box(cand["plane"], inner_xyz_bounds)
+    bad_clearances = {name: clearance for name, clearance in placement_clearances.items() if clearance <= 0.0}
+    if bad_clearances:
+        formatted = ", ".join(f"{name}={clearance/µm:.3f}um" for name, clearance in bad_clearances.items())
+        raise RuntimeError(f"Placement overlaps or touches PML-safe region boundary: {formatted}")
+
     overview_path = out_dir / "beamz_crossing_overview.png"
     save_overview_plot(
         eps=np.asarray(grid.permittivity, dtype=float),
@@ -1172,6 +1247,16 @@ def run_crossing(
         f"dx={dx/µm:.4f}um, depth={design.depth/µm:.2f}um, "
         f"source_dir={source_drive_direction} ({source_direction_mode}), "
         f"offsets(src/fwd/ref)={source_offset/µm:.2f}/{fwd_offset/µm:.2f}/{ref_offset/µm:.2f}um"
+    )
+    print(
+        "Domain padding: "
+        f"xy_padding={xy_padding/µm:.2f}um, z_padding={z_padding/µm:.2f}um, "
+        f"pml=({pml_xy/µm:.2f}um xy, {pml_z/µm:.2f}um z), "
+        f"guard=({domain_guard_xy/µm:.2f}um xy, {domain_guard_z/µm:.2f}um z)"
+    )
+    print(
+        "PML-safe clearances: "
+        + ", ".join(f"{name}={clearance/µm:.2f}um" for name, clearance in placement_clearances.items())
     )
     print(
         "Workload: "
@@ -1991,7 +2076,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--extension-um",
         type=float,
         default=1.5,
-        help="Port extension length on each side in microns (gsim-like: margin + pml).",
+        help="Waveguide extension length added beyond each imported port before the PML-safe buffer.",
     )
     parser.add_argument(
         "--port-overlap-um",
