@@ -981,10 +981,28 @@ def prepare_crossing_setup(
     pml_z = max(0.0, float(pml_um)) * µm
     domain_guard_xy = 0.25 * µm
     domain_guard_z = 0.25 * µm
-    extension = float(extension_um) * µm
+    extension_requested = float(extension_um) * µm
     port_overlap = max(0.0, float(port_overlap_um)) * µm
-    xy_padding = pml_xy + extension + domain_guard_xy
-    z_padding = pml_z + domain_guard_z
+    port_margin = max(0.0, float(port_margin_um)) * µm
+
+    stack_height = clad_below + core_t + clad_above
+    mode_margin_xy = max(port_margin, 0.75 * µm)
+    mode_margin_z = max(0.40 * µm, 0.35 * stack_height)
+    plane_clearance_xy = 0.50 * µm
+    plane_clearance_z = 0.40 * µm
+    junction_clearance_xy = max(0.50 * µm, port_overlap + 0.35 * µm)
+    source_extra_offset = max(0.0, float(source_port_offset_um)) * µm
+    monitor_spacing_xy = max(0.40 * µm, float(distance_source_to_monitors_um) * µm)
+
+    min_extension_required = (
+        junction_clearance_xy
+        + source_extra_offset
+        + 2.0 * monitor_spacing_xy
+        + plane_clearance_xy
+    )
+    extension = max(extension_requested, min_extension_required)
+    xy_padding = pml_xy + domain_guard_xy + extension + plane_clearance_xy
+    z_padding = pml_z + domain_guard_z + mode_margin_z + plane_clearance_z
     design, ports, imported_bbox, layer_z = build_design_with_extensions(
         component,
         layer=layer_resolved,
@@ -1025,29 +1043,36 @@ def prepare_crossing_setup(
         if source_direction_mode == "inward"
         else outward_direction(src["direction"])
     )
-    port_margin = max(0.0, float(port_margin_um)) * µm
-    source_span = max(float(src["width"]) + 2.0 * port_margin, float(src["width"]) + 0.1 * µm)
+    source_span = max(
+        float(src["width"]) + 2.0 * port_margin,
+        float(src["width"]) + 2.0 * mode_margin_xy,
+    )
     monitor_span = source_span
     z_center = float(src["z_center"])
-    z_inner_lo = pml_z + domain_guard_z
-    z_inner_hi = float(design.depth) - pml_z - domain_guard_z
-    plane_z_clearance = 0.10 * µm
+    z_span_target = stack_height + 2.0 * mode_margin_z
     z_span_limit = max(
         0.2 * µm,
-        2.0 * min(z_center - z_inner_lo, z_inner_hi - z_center) - 2.0 * plane_z_clearance,
+        float(design.depth) - 2.0 * (pml_z + domain_guard_z + plane_clearance_z),
     )
-    source_height = z_span_limit
-    monitor_height = z_span_limit
-    source_port_offset = max(0.0, float(source_port_offset_um)) * µm
-    dist_source_to_mon = max(0.0, float(distance_source_to_monitors_um)) * µm
+    source_height = min(z_span_target, z_span_limit)
+    monitor_height = source_height
 
-    source_offset = source_port_offset
-    fwd_offset = source_port_offset + dist_source_to_mon
-    ref_offset = source_port_offset - dist_source_to_mon
-    source_xy = move_along(src["center"], src["direction"], source_offset)
+    if source_direction_mode == "inward":
+        source_probe_direction = outward_direction(src["direction"])
+        source_probe_label = "extension"
+    else:
+        source_probe_direction = src["direction"]
+        source_probe_label = "device-side"
+    source_probe_port = dict(src)
+    source_probe_port["direction"] = source_probe_direction
+
+    fwd_offset = junction_clearance_xy + source_extra_offset
+    source_offset = fwd_offset + monitor_spacing_xy
+    ref_offset = source_offset + monitor_spacing_xy
+    source_xy = move_along(src["center"], source_probe_port["direction"], source_offset)
     source_center = (source_xy[0], source_xy[1], z_center)
     source_plane = port_plane(
-        src,
+        source_probe_port,
         y_span=source_span,
         z_span=source_height,
         z_center=z_center,
@@ -1056,14 +1081,14 @@ def prepare_crossing_setup(
     src_plane_center = line_center(source_plane)
 
     fwd_plane = port_plane(
-        src,
+        source_probe_port,
         y_span=monitor_span,
         z_span=monitor_height,
         z_center=z_center,
         offset=fwd_offset,
     )
     ref_plane = port_plane(
-        src,
+        source_probe_port,
         y_span=monitor_span,
         z_span=monitor_height,
         z_center=z_center,
@@ -1072,9 +1097,11 @@ def prepare_crossing_setup(
 
     out_mag_candidates = []
     n_cands = int(np.clip(monitor_candidates, 1, 3))
-    out_base = max(source_port_offset + dist_source_to_mon, 0.10 * µm)
+    out_base = source_offset
+    out_step = max(0.20 * µm, 0.5 * monitor_spacing_xy)
+    out_limit = max(out_base, extension - plane_clearance_xy)
     for i in range(n_cands):
-        mag = out_base + float(i) * (0.20 * µm)
+        mag = min(out_base + float(i) * out_step, out_limit)
         if not any(abs(mag - m) < 1e-12 for m in out_mag_candidates):
             out_mag_candidates.append(mag)
 
@@ -1180,11 +1207,24 @@ def prepare_crossing_setup(
             float(design.depth) - pml_z - domain_guard_z,
         ),
     )
+    device_bbox = (
+        float(imported_bbox[0] - extension),
+        float(imported_bbox[1] + extension),
+        float(imported_bbox[2] - extension),
+        float(imported_bbox[3] + extension),
+    )
     placement_clearances = {
         "imported_design_xy": line_clearance_to_box(
             (
                 (imported_bbox[0], imported_bbox[2]),
                 (imported_bbox[1], imported_bbox[3]),
+            ),
+            inner_xy_bounds,
+        ),
+        "extended_design_xy": line_clearance_to_box(
+            (
+                (device_bbox[0], device_bbox[2]),
+                (device_bbox[1], device_bbox[3]),
             ),
             inner_xy_bounds,
         ),
@@ -1288,7 +1328,15 @@ def prepare_crossing_setup(
         "Domain padding: "
         f"xy_padding={xy_padding/µm:.2f}um, z_padding={z_padding/µm:.2f}um, "
         f"pml=({pml_xy/µm:.2f}um xy, {pml_z/µm:.2f}um z), "
-        f"guard=({domain_guard_xy/µm:.2f}um xy, {domain_guard_z/µm:.2f}um z)"
+        f"guard=({domain_guard_xy/µm:.2f}um xy, {domain_guard_z/µm:.2f}um z), "
+        f"extension=requested {extension_requested/µm:.2f}um / used {extension/µm:.2f}um"
+    )
+    print(
+        "Modal planes: "
+        f"side={source_probe_label}, y_span={source_span/µm:.2f}um, z_span={source_height/µm:.2f}um, "
+        f"junction_clearance={junction_clearance_xy/µm:.2f}um, "
+        f"spacing={monitor_spacing_xy/µm:.2f}um, "
+        f"outer_xy_clearance={plane_clearance_xy/µm:.2f}um, outer_z_clearance={plane_clearance_z/µm:.2f}um"
     )
     print(
         "PML-safe clearances: "
@@ -2347,7 +2395,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--extension-um",
         type=float,
         default=1.5,
-        help="Waveguide extension length added beyond each imported port before the PML-safe buffer.",
+        help="Requested straight waveguide extension added beyond each imported port; enlarged automatically if needed for stable source/monitor placement.",
     )
     parser.add_argument(
         "--port-overlap-um",
@@ -2416,13 +2464,13 @@ def build_argparser() -> argparse.ArgumentParser:
         "--source-port-offset-um",
         type=float,
         default=0.1,
-        help="Source offset from port center into device (um).",
+        help="Additional outward shift applied to the source/monitor block beyond the default stable-launch placement (um).",
     )
     parser.add_argument(
         "--distance-source-to-monitors-um",
         type=float,
         default=0.2,
-        help="Additional source-port monitor offset past source into device (um).",
+        help="Requested spacing between the source plane and the adjacent modal monitors; a stability floor is applied automatically (um).",
     )
     parser.add_argument(
         "--run-after-sources-uoc",
