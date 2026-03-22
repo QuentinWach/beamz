@@ -380,6 +380,7 @@ class CompiledSimulation:
         hx: jnp.ndarray,
         hy: jnp.ndarray,
     ) -> jnp.ndarray:
+        power_scale = jnp.asarray(spec.power_scale, dtype=jnp.float32)
         ez_vals = ez[spec.y_ez, spec.x_ez] * spec.valid_ez
         hx_vals = hx[spec.y_hx, spec.x_hx] * spec.valid_hx
         hy_vals = hy[spec.y_hy, spec.x_hy] * spec.valid_hy
@@ -387,7 +388,7 @@ class CompiledSimulation:
         sx = -ez_vals * hy_vals
         sy = ez_vals * hx_vals
         mag = jnp.sqrt(sx * sx + sy * sy)
-        return jnp.sum(mag) * spec.power_scale
+        return jnp.asarray(jnp.sum(mag), dtype=jnp.float32) * power_scale
 
     def _monitor_power_3d(
         self,
@@ -399,6 +400,7 @@ class CompiledSimulation:
         hy: jnp.ndarray,
         hz: jnp.ndarray,
     ) -> jnp.ndarray:
+        power_scale = jnp.asarray(spec.power_scale, dtype=jnp.float32)
         exs = ex[spec.ex_idx][: spec.min_dim0, : spec.min_dim1]
         eys = ey[spec.ey_idx][: spec.min_dim0, : spec.min_dim1]
         ezs = ez[spec.ez_idx][: spec.min_dim0, : spec.min_dim1]
@@ -410,7 +412,7 @@ class CompiledSimulation:
         sy = ezs * hxs - exs * hzs
         sz = exs * hys - eys * hxs
         mag = jnp.sqrt(sx * sx + sy * sy + sz * sz)
-        return jnp.sum(mag) * spec.power_scale
+        return jnp.asarray(jnp.sum(mag), dtype=jnp.float32) * power_scale
 
     def _update_monitors(
         self,
