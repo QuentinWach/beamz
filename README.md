@@ -23,8 +23,8 @@ pip install beamz
 - **Sub-pixel smoothing** (using stratified jittering super-sampling).
 - Gaussian and **mode sources** with TE and TM polarization (using Huygens fields).
 - Custom source time profiles.
-- Monitors for field snapshots, power/Poynting history, and frequency-domain (DFT) accumulation.
-- Single-frequency CW and broadband in-simulation DFT S-parameter extraction workflow.
+- (WIP) Monitors for field snapshots, power/Poynting history, and frequency-domain (DFT) accumulation.
+- (WIP) Single-frequency CW and broadband in-simulation DFT S-parameter extraction workflow.
 - Dedicated visualization module.
 - Streamlined parametric design module.
 - Optimization/autodiff utilities for gradient-based **inverse-design** with Jax.
