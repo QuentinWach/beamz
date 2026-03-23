@@ -1138,7 +1138,6 @@ def prepare_crossing_setup(
 
     source_offset = source_port_offset
     fwd_offset = source_port_offset + dist_source_to_mon
-    ref_offset = source_port_offset - dist_source_to_mon
     source_xy = move_along(src["center"], source_probe_port["direction"], source_offset)
     source_center = (source_xy[0], source_xy[1], z_center)
     source_plane = port_plane(
@@ -1157,14 +1156,6 @@ def prepare_crossing_setup(
         z_center=z_center,
         offset=fwd_offset,
     )
-    ref_plane = port_plane(
-        source_probe_port,
-        y_span=monitor_span,
-        z_span=monitor_height,
-        z_center=z_center,
-        offset=ref_offset,
-    )
-
     out_mag_candidates = []
     n_cands = int(np.clip(monitor_candidates, 1, 3))
     out_base = source_port_offset
@@ -1262,12 +1253,6 @@ def prepare_crossing_setup(
         name=f"{source_port}_fwd",
         **monitor_cfg,
     )
-    m_ref = Monitor(
-        start=ref_plane[0],
-        end=ref_plane[1],
-        name=f"{source_port}_ref",
-        **monitor_cfg,
-    )
     output_monitors = []
     for p in output_ports:
         for cand in out_candidates[p]:
@@ -1282,7 +1267,6 @@ def prepare_crossing_setup(
 
     monitor_planes = {
         f"{source_port}_fwd": fwd_plane,
-        f"{source_port}_ref": ref_plane,
     }
     for p in output_ports:
         for cand in out_candidates[p]:
@@ -1311,7 +1295,6 @@ def prepare_crossing_setup(
         "source_center": point_clearance_to_box(source_center, inner_xyz_bounds),
         f"{source_port}_source_plane": line_clearance_to_box(source_plane, inner_xyz_bounds),
         f"{source_port}_fwd": line_clearance_to_box(fwd_plane, inner_xyz_bounds),
-        f"{source_port}_ref": line_clearance_to_box(ref_plane, inner_xyz_bounds),
     }
     for p in output_ports:
         for cand in out_candidates[p]:
@@ -1351,16 +1334,6 @@ def prepare_crossing_setup(
             signal=np.zeros(8, dtype=float),
             direction=source_drive_direction,
         )
-        mode_sources[f"{source_port}_ref"] = ModeSource(
-            grid=grid,
-            center=line_center(ref_plane),
-            width=monitor_span,
-            height=monitor_height,
-            wavelength=wl0,
-            pol=polarization,
-            signal=np.zeros(8, dtype=float),
-            direction=outward_direction(source_drive_direction),
-        )
         for p in output_ports:
             out_dirn = outward_direction(ports[p]["direction"])
             for cand in out_candidates[p]:
@@ -1389,7 +1362,7 @@ def prepare_crossing_setup(
 
     sim = Simulation(
         design=design,
-        devices=[source, m_fwd, m_ref, *output_monitors],
+        devices=[source, m_fwd, *output_monitors],
         boundaries=[
             PML(edges=["left", "right", "top", "bottom"], thickness=pml_xy),
             PML(edges=["front", "back"], thickness=pml_z),
@@ -1404,7 +1377,7 @@ def prepare_crossing_setup(
         f"pol={polarization}, freq_points={num_freqs}, steps={len(time)}, "
         f"dx={dx/µm:.4f}um, depth={design.depth/µm:.2f}um, "
         f"source_dir={source_drive_direction} ({source_direction_mode}), "
-        f"offsets(src/fwd/ref)={source_offset/µm:.2f}/{fwd_offset/µm:.2f}/{ref_offset/µm:.2f}um"
+        f"offsets(src/mon)={source_offset/µm:.2f}/{fwd_offset/µm:.2f}um"
     )
     print(
         "Domain padding: "
@@ -1473,7 +1446,6 @@ def prepare_crossing_setup(
         "source_direction_mode": source_direction_mode,
         "out_candidates": out_candidates,
         "m_fwd": m_fwd,
-        "m_ref": m_ref,
         "output_monitors": output_monitors,
         "sim": sim,
         "num_voxels": num_voxels,
@@ -1593,7 +1565,6 @@ def extract_crossing_results(
     source_drive_direction = str(setup["source_drive_direction"])
     out_candidates = dict(setup["out_candidates"])
     m_fwd = setup["m_fwd"]
-    m_ref = setup["m_ref"]
     output_monitors = list(setup["output_monitors"])
 
     cond_threshold = 1e8
@@ -1609,16 +1580,6 @@ def extract_crossing_results(
             mode_index=mode_index,
             incident_wave="auto",
             scattered_wave="minus",
-        )
-
-    def source_reflection_spec(mode_index: int) -> PortSpec:
-        return PortSpec(
-            name=source_port,
-            monitor_name=f"{source_port}_ref",
-            direction=outward_direction(source_drive_direction),
-            polarization=polarization,
-            mode_index=mode_index,
-            scattered_wave="plus",
         )
 
     print(f"Selecting source mode over m0..m{max_mode_search}")
@@ -1698,52 +1659,39 @@ def extract_crossing_results(
     source_incident = np.asarray(source_best["incident_wave"], dtype=np.complex128)
     source_incident_opposite = np.asarray(source_best["incident_opposite"], dtype=np.complex128)
     source_incident_key = str(source_best["incident_wave_key"])
-
-    source_refl_result = sim.get_S_matrix_modal_dft(
-        source_port=source_drive_port,
-        ports={
-            source_drive_port: source_spec(source_mode_idx),
-            source_port: source_reflection_spec(source_mode_idx),
-        },
-        output_ports=[source_port],
-        frequencies=freqs,
-        as_sax=False,
-        return_diagnostics=True,
-        min_incident_db=-45.0,
-    )
-    source_refl_waves = source_refl_result["diagnostics"]["waves"].get(source_port, {})
-    source_refl_plus = np.asarray(source_refl_waves.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
-    source_refl_minus = np.asarray(source_refl_waves.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
+    source_waves = source_mode_waves.get(source_mode_alias[source_mode_idx], {})
+    source_plus = np.asarray(source_waves.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
+    source_minus = np.asarray(source_waves.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
     if source_incident_key == "plus":
         source_refl_wave_key = "minus"
-        source_refl_selected = source_refl_minus
-        source_refl_opposite = source_refl_plus
+        source_refl_selected = source_minus
+        source_refl_opposite = source_plus
     else:
         source_refl_wave_key = "plus"
-        source_refl_selected = source_refl_plus
-        source_refl_opposite = source_refl_minus
+        source_refl_selected = source_plus
+        source_refl_opposite = source_minus
     source_refl_dom_db = wave_dominance_db(
         source_refl_selected,
-        source_refl_opposite,
+        source_incident,
         valid_mask,
     )
     source_refl = safe_complex_ratio(source_refl_selected, source_incident)
     source_refl = np.where(valid_mask, source_refl, 0.0 + 0.0j)
-    source_neff = np.asarray(source_refl_waves.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
-    source_cond = np.asarray(source_refl_waves.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
+    source_neff = np.asarray(source_waves.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
+    source_cond = np.asarray(source_waves.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
 
     s_cols = {source_port: source_refl}
     port_quality = {
         source_port: valid_mask & np.isfinite(source_cond) & (source_cond < cond_threshold)
     }
     mode_indices = {source_port: source_mode_idx}
-    selected_monitors = {source_port: f"{source_port}_ref"}
+    selected_monitors = {source_port: f"{source_port}_fwd"}
     port_diagnostics = {
         source_port: {
             "neff": source_neff,
             "cond": source_cond,
             "a_selected": source_refl_selected,
-            "a_opposite": source_refl_opposite,
+            "a_opposite": source_incident,
             "wave_key": source_refl_wave_key,
             "wave_dom_db": float(source_refl_dom_db),
         }
@@ -1956,7 +1904,7 @@ def extract_crossing_results(
     for p in all_ports:
         closure += np.abs(s_cols[p]) ** 2
 
-    monitor_objects = {m.name: m for m in [m_fwd, m_ref, *output_monitors]}
+    monitor_objects = {m.name: m for m in [m_fwd, *output_monitors]}
     flux_in = dft_directional_power_spectrum(
         sim,
         monitor_objects[f"{source_port}_fwd"],
@@ -1965,7 +1913,7 @@ def extract_crossing_results(
     )
     flux_ref = dft_directional_power_spectrum(
         sim,
-        monitor_objects[f"{source_port}_ref"],
+        monitor_objects[f"{source_port}_fwd"],
         outward_direction(source_drive_direction),
         freqs,
     )
