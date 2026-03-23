@@ -18,6 +18,9 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from shapely.geometry import Polygon as ShapelyPolygon
+from shapely.geometry import box as shapely_box
+from shapely.ops import unary_union
 
 from beamz import (
     LIGHT_SPEED,
@@ -26,8 +29,8 @@ from beamz import (
     ModeSource,
     Monitor,
     PML,
+    Polygon,
     PortSpec,
-    Rectangle,
     Simulation,
     dxdt,
     µm,
@@ -847,7 +850,7 @@ def build_design_with_extensions(
     clad_below: float,
     clad_above: float,
 ) -> tuple[Design, dict, tuple[float, float, float, float], dict[str, tuple[float, float]]]:
-    imported_design, ports = gdsf.load(
+    imported_design, raw_ports = gdsf.load(
         component,
         layer=layer,
         n_core=n_core,
@@ -864,48 +867,115 @@ def build_design_with_extensions(
         depth=depth,
         material=Material(n_clad**2),
     )
+    core_shapes_2d = []
+    passthrough_structures = []
     for structure in imported_design.structures[1:]:
-        shifted = structure.copy().shift(xy_padding, xy_padding, core_z0)
-        shifted.z = core_z0
-        shifted.depth = core_t
-        design += shifted
+        verts = getattr(structure, "vertices", None)
+        if not verts:
+            passthrough_structures.append(structure)
+            continue
+        shell = [(float(x), float(y)) for x, y, *_ in verts]
+        holes = [
+            [(float(x), float(y)) for x, y, *_ in interior]
+            for interior in getattr(structure, "interiors", []) or []
+        ]
+        poly = ShapelyPolygon(shell=shell, holes=holes)
+        if poly.is_empty or not poly.is_valid:
+            passthrough_structures.append(structure)
+            continue
+        core_shapes_2d.append(poly)
 
+    def _face_span_for_port(port: dict) -> tuple[float, float] | None:
+        """Return transverse (center, span) from the actual imported core face."""
+        face_coord = float(port["center"][0] if port["direction"].endswith("x") else port["center"][1])
+        tol = max(1e-12, 0.05 * float(port["width"]))
+        transverse_coords = []
+        for structure in imported_design.structures[1:]:
+            verts = getattr(structure, "vertices", None)
+            if not verts:
+                continue
+            for vx, vy, *_ in verts:
+                if port["direction"].endswith("x"):
+                    if abs(float(vx) - face_coord) <= tol:
+                        transverse_coords.append(float(vy))
+                else:
+                    if abs(float(vy) - face_coord) <= tol:
+                        transverse_coords.append(float(vx))
+        if len(transverse_coords) < 2:
+            return None
+        lo = min(transverse_coords)
+        hi = max(transverse_coords)
+        if hi <= lo:
+            return None
+        return 0.5 * (lo + hi), hi - lo
+
+    port_faces = {name: _face_span_for_port(p) for name, p in raw_ports.items()}
     ports = {
         name: {
             **p,
             "center": (
-                float(p["center"][0] + xy_padding),
-                float(p["center"][1] + xy_padding),
+                float(((port_faces[name][0] if port_faces[name] is not None else p["center"][0]) if p["direction"].endswith("y") else p["center"][0]) + xy_padding),
+                float(((port_faces[name][0] if port_faces[name] is not None else p["center"][1]) if p["direction"].endswith("x") else p["center"][1]) + xy_padding),
             ),
-            "width": float(p["width"]),
+            "width": float(port_faces[name][1] if port_faces[name] is not None else p["width"]),
             "z_center": float(core_z0 + 0.5 * core_t),
         }
-        for name, p in ports.items()
+        for name, p in raw_ports.items()
     }
 
-    # Extend each port outward and slightly inward to ensure solid overlap (no seam/gap at the interface).
-    for port in ports.values():
-        cx, cy = port["center"]
+    # Extend each port outward and slightly inward, then merge extensions into the imported
+    # core geometry so rasterization sees one continuous shape without stitched seams.
+    for port in raw_ports.values():
+        cx, cy = map(float, port["center"])
         width = float(port["width"])
         d_out = outward_direction(port["direction"])
         sx, sy = move_along((cx, cy), d_out, -port_overlap)
         ox, oy = move_along((cx, cy), d_out, extension)
         if port["direction"].endswith("x"):
-            design += Rectangle(
-                position=(min(sx, ox), cy - 0.5 * width, core_z0),
-                width=abs(ox - sx),
-                height=width,
-                material=Material(n_core**2),
-                depth=core_t,
+            core_shapes_2d.append(
+                shapely_box(
+                    min(sx, ox),
+                    cy - 0.5 * width,
+                    max(sx, ox),
+                    cy + 0.5 * width,
+                )
             )
         else:
-            design += Rectangle(
-                position=(cx - 0.5 * width, min(sy, oy), core_z0),
-                width=width,
-                height=abs(oy - sy),
+            core_shapes_2d.append(
+                shapely_box(
+                    cx - 0.5 * width,
+                    min(sy, oy),
+                    cx + 0.5 * width,
+                    max(sy, oy),
+                )
+            )
+
+    if core_shapes_2d:
+        merged_core = unary_union(core_shapes_2d)
+        merged_geoms = (
+            [merged_core]
+            if merged_core.geom_type == "Polygon"
+            else list(getattr(merged_core, "geoms", []))
+        )
+        for geom in merged_geoms:
+            shell = [(float(x + xy_padding), float(y + xy_padding), core_z0) for x, y in geom.exterior.coords[:-1]]
+            holes = [
+                [(float(x + xy_padding), float(y + xy_padding), core_z0) for x, y in interior.coords[:-1]]
+                for interior in geom.interiors
+            ]
+            design += Polygon(
+                vertices=shell,
+                interiors=holes,
                 material=Material(n_core**2),
                 depth=core_t,
+                z=core_z0,
             )
+
+    for structure in passthrough_structures:
+        shifted = structure.copy().shift(xy_padding, xy_padding, core_z0)
+        shifted.z = core_z0
+        shifted.depth = core_t
+        design += shifted
 
     imported_bbox = (
         float(xy_padding),
