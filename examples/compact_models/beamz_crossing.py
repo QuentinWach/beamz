@@ -353,6 +353,7 @@ def cleanup_crossing_optional_artifacts(
         for name in (
             "beamz_crossing_sparams_db.png",
             "beamz_crossing_sparams_db_full.png",
+            "beamz_crossing_sparams_raw_vs_corrected.png",
             "beamz_crossing_closure_compare.png",
             "beamz_crossing_overview.png",
             "beamz_crossing_signal.png",
@@ -492,6 +493,58 @@ def save_closure_compare_plot(
     ax.set_title("Modal vs Flux Closure")
     ax.grid(alpha=0.28)
     ax.legend(loc="best", fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def save_raw_vs_corrected_sparams_plot(
+    *,
+    wavelengths_um: np.ndarray,
+    source_port: str,
+    all_ports: list[str],
+    s_cols_raw: dict[str, np.ndarray],
+    s_cols: dict[str, np.ndarray],
+    valid_mask: np.ndarray,
+    port_quality: dict[str, np.ndarray],
+    out_path: Path,
+) -> None:
+    wl = np.asarray(wavelengths_um, dtype=float)
+    mask = np.asarray(valid_mask, dtype=bool)
+    color_cycle = ["black", "tab:blue", "tab:orange", "tab:green", "tab:red"]
+    fig, ax = plt.subplots(1, 1, figsize=(6.0, 3.8), dpi=300)
+    for i, p in enumerate(all_ports):
+        q = np.asarray(port_quality[p], dtype=bool)
+        raw_db = 20.0 * np.log10(np.maximum(np.abs(np.asarray(s_cols_raw[p], dtype=np.complex128)), 1e-12))
+        corr_db = 20.0 * np.log10(np.maximum(np.abs(np.asarray(s_cols[p], dtype=np.complex128)), 1e-12))
+        raw_db = np.where(mask & q, raw_db, np.nan)
+        corr_db = np.where(mask & q, corr_db, np.nan)
+        color = color_cycle[i % len(color_cycle)]
+        ax.plot(
+            wl,
+            raw_db,
+            color=color,
+            lw=1.4,
+            ls="--",
+            alpha=0.8,
+            label=rf"raw $|S_{{{p[1:]}{source_port[1:]}}}|$",
+        )
+        ax.plot(
+            wl,
+            corr_db,
+            color=color,
+            lw=2.0,
+            label=rf"corr $|S_{{{p[1:]}{source_port[1:]}}}|$",
+        )
+    ax.set_xlim(float(np.min(wl)), float(np.max(wl)))
+    ax.set_ylim(-55.0, 2.0)
+    ax.set_xlabel("Wavelength (um)")
+    ax.set_ylabel("Magnitude (dB)")
+    ax.set_title("Raw vs Corrected S-Parameters")
+    ax.grid(which="major", alpha=0.25, lw=0.6)
+    ax.minorticks_on()
+    ax.grid(which="minor", alpha=0.12, lw=0.4)
+    ax.legend(loc="best", fontsize=8, frameon=False, ncol=2)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
@@ -1938,13 +1991,22 @@ def extract_crossing_results(
     print(f"Center wavelength = {wl_um[idx0]:.4f} um")
     for p in all_ports:
         val = complex(s_cols[p][idx0])
+        raw_val = complex(s_cols_raw[p][idx0])
         neff_p = port_diagnostics[p]["neff"]
         cond_p = port_diagnostics[p]["cond"]
         quality = bool(port_quality[p][idx0]) if idx0 < len(port_quality[p]) else False
+        raw_db = 20 * np.log10(max(abs(raw_val), 1e-12))
+        corr_db = 20 * np.log10(max(abs(val), 1e-12))
+        if np.isclose(raw_val, val):
+            mag_part = f"|S|={abs(val):.6f}, {corr_db:.2f} dB"
+        else:
+            mag_part = (
+                f"|S|={abs(val):.6f}, {corr_db:.2f} dB "
+                f"(raw {raw_db:.2f} dB)"
+            )
         print(
             f"S[{p},{source_port}] @ {wl_um[idx0]:.4f}um: "
-            f"|S|={abs(val):.6f}, {20*np.log10(max(abs(val), 1e-12)):.2f} dB, "
-            f"neff={neff_p[idx0]:.4f}, cond={cond_p[idx0]:.2e}, "
+            f"{mag_part}, neff={neff_p[idx0]:.4f}, cond={cond_p[idx0]:.2e}, "
             f"quality={quality}, monitor={selected_monitors[p]}, mode=m{mode_indices[p]}, "
             f"wave={port_diagnostics[p]['wave_key']}, wave_dom={port_wave_dominance_db[p]:.2f}dB"
         )
@@ -2079,6 +2141,7 @@ def save_crossing_outputs(
 
     fig_path_limited = out_dir / "beamz_crossing_sparams_db.png"
     fig_path_full = out_dir / "beamz_crossing_sparams_db_full.png"
+    fig_path_compare = out_dir / "beamz_crossing_sparams_raw_vs_corrected.png"
     closure_plot_path = out_dir / "beamz_crossing_closure_compare.png"
     anim_path = out_dir / "beamz_crossing_field_propagation.mp4"
     anim_ok = False
@@ -2137,6 +2200,16 @@ def save_crossing_outputs(
         fig_full.savefig(fig_path_full, dpi=320)
         plt.close(fig_full)
 
+        save_raw_vs_corrected_sparams_plot(
+            wavelengths_um=wl_um,
+            source_port=source_port,
+            all_ports=all_ports,
+            s_cols_raw=s_cols_raw,
+            s_cols=s_cols,
+            valid_mask=valid_mask,
+            port_quality=port_quality,
+            out_path=fig_path_compare,
+        )
         save_closure_compare_plot(
             wavelengths_um=wl_um,
             modal_closure=closure,
