@@ -426,6 +426,8 @@ sim = Simulation(
     resolution=DX,
 )
 
+sim.show()
+
 t0 = time.perf_counter()
 sim.run_compiled(num_steps=len(time_steps), progress=True)
 elapsed_s = time.perf_counter() - t0

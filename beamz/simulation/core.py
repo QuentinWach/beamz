@@ -2450,3 +2450,15 @@ class Simulation:
         from beamz.visual.runner import run_with_visualization
 
         return run_with_visualization(self, **kwargs)
+
+    def to_scene(self):
+        """Build a 3D scene representation of the simulation setup."""
+        from beamz.visual.scene import simulation_to_scene
+
+        return simulation_to_scene(self)
+
+    def show(self, *, mode="auto", open_browser=True, **kwargs):
+        """Display the simulation setup in the interactive 3D scene viewer."""
+        from beamz.visual.scene import view3d
+
+        return view3d(self.to_scene(), mode=mode, open_browser=open_browser, **kwargs)
