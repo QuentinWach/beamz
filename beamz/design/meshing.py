@@ -2,6 +2,9 @@ import os
 import time
 
 import numpy as np
+from shapely.geometry import Polygon as ShapelyPolygon
+from shapely.geometry import box as shapely_box
+from shapely.prepared import prep
 
 try:
     from matplotlib.path import Path as MplPath
@@ -72,7 +75,7 @@ class BaseMeshGrid:
     """Base class for mesh grids with common functionality."""
 
     _SUPPORTED_AA_MODES = ("legacy_grid", "stratified_jitter")
-    _DEFAULT_AA_MODE = "stratified_jitter"
+    _DEFAULT_AA_MODE = "legacy_grid"
     _DEFAULT_AA_SAMPLES = 64
     _DEFAULT_AA_SEED = 0
 
@@ -107,10 +110,13 @@ class BaseMeshGrid:
 
     @staticmethod
     def _sample_grid_shape(sample_count):
-        """Choose stratification grid shape close to square for N samples."""
-        nx = max(1, int(np.floor(np.sqrt(float(sample_count)))))
-        ny = max(1, int(np.ceil(float(sample_count) / float(nx))))
-        return nx, ny
+        """Choose an exact grid factorization close to square for N samples."""
+        n = max(1, int(sample_count))
+        nx = int(np.floor(np.sqrt(float(n))))
+        while nx > 1 and (n % nx) != 0:
+            nx -= 1
+        ny = max(1, n // max(1, nx))
+        return max(1, nx), max(1, ny)
 
     @staticmethod
     def _splitmix64(value):
@@ -168,22 +174,11 @@ class BaseMeshGrid:
         cell_size = float(cell_size)
         if self.aa_mode == "legacy_grid":
             nx, ny = self._sample_grid_shape(self.aa_samples)
-            if nx == 1:
-                ox = np.array([0.0], dtype=float)
-            else:
-                ox = np.linspace(-0.25, 0.25, nx, dtype=float)
-            if ny == 1:
-                oy = np.array([0.0], dtype=float)
-            else:
-                oy = np.linspace(-0.25, 0.25, ny, dtype=float)
-            ox = ox * cell_size
-            oy = oy * cell_size
+            ox = ((np.arange(nx, dtype=float) + 0.5) / float(nx) - 0.5) * cell_size
+            oy = ((np.arange(ny, dtype=float) + 0.5) / float(ny) - 0.5) * cell_size
             sample_dx, sample_dy = np.meshgrid(ox, oy)
             sample_dx = sample_dx.ravel()
             sample_dy = sample_dy.ravel()
-            if sample_dx.size > self.aa_samples:
-                sample_dx = sample_dx[: self.aa_samples]
-                sample_dy = sample_dy[: self.aa_samples]
             return sample_dx, sample_dy
 
         nx, ny = self._sample_grid_shape(self.aa_samples)
@@ -193,15 +188,31 @@ class BaseMeshGrid:
         strata_y = np.repeat(np.arange(ny, dtype=float), nx)
         jitter_x = rng.random(total)
         jitter_y = rng.random(total)
-        if total > self.aa_samples:
-            keep = rng.permutation(total)[: self.aa_samples]
-            strata_x = strata_x[keep]
-            strata_y = strata_y[keep]
-            jitter_x = jitter_x[keep]
-            jitter_y = jitter_y[keep]
         sample_dx = ((strata_x + jitter_x) / float(nx) - 0.5) * cell_size
         sample_dy = ((strata_y + jitter_y) / float(ny) - 0.5) * cell_size
         return sample_dx, sample_dy
+
+    @staticmethod
+    def _structure_polygon_2d(structure):
+        """Convert a 2D polygonal structure to a valid Shapely polygon."""
+        vertices = getattr(structure, "vertices", None) or []
+        if len(vertices) < 3:
+            return None
+
+        shell = [(float(x), float(y)) for x, y, *_ in vertices]
+        holes = []
+        for hole in getattr(structure, "interiors", None) or []:
+            if len(hole) >= 3:
+                holes.append([(float(x), float(y)) for x, y, *_ in hole])
+
+        poly = ShapelyPolygon(shell=shell, holes=holes)
+        if poly.is_empty:
+            return None
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if poly.is_empty or not poly.is_valid or poly.geom_type != "Polygon":
+            return None
+        return poly
 
     def _build_supersample_offsets_z(self, cell_size_z, depth_samples):
         """Build Z supersample offsets for 3D fallback paths."""
@@ -305,7 +316,7 @@ class RegularGrid(BaseMeshGrid):
         self,
         design,
         resolution,
-        aa_mode="stratified_jitter",
+        aa_mode="legacy_grid",
         aa_samples=64,
         aa_seed=0,
     ):
@@ -557,7 +568,7 @@ class RegularGrid(BaseMeshGrid):
         sample_dy,
         num_samples,
     ):
-        """Fast path for axis-aligned rectangles."""
+        """Exact area coverage for axis-aligned rectangles."""
         rect_min_j = max(0, int(structure.position[0] / cell_size))
         rect_min_i = max(0, int(structure.position[1] / cell_size))
         rect_max_j = min(
@@ -569,82 +580,46 @@ class RegularGrid(BaseMeshGrid):
             int(np.ceil((structure.position[1] + structure.height) / cell_size)),
         )
 
-        # Interior cells (fully covered)
-        inner_min_j = max(
-            0, int((structure.position[0] + 0.25 * cell_size) / cell_size)
-        )
-        inner_min_i = max(
-            0, int((structure.position[1] + 0.25 * cell_size) / cell_size)
-        )
-        inner_max_j = min(
-            grid_width,
-            int(
-                np.floor(
-                    (structure.position[0] + structure.width - 0.25 * cell_size)
-                    / cell_size
-                )
-            ),
-        )
-        inner_max_i = min(
-            grid_height,
-            int(
-                np.floor(
-                    (structure.position[1] + structure.height - 0.25 * cell_size)
-                    / cell_size
-                )
-            ),
-        )
-
-        if inner_max_i > inner_min_i and inner_max_j > inner_min_j:
-            if is_custom_material:
-                for i in range(inner_min_i, inner_max_i):
-                    for j in range(inner_min_j, inner_max_j):
-                        p = self._get_all_material_props(
-                            structure.material, x_centers[j], y_centers[i]
-                        )
-                        grids.set_at((i, j), p)
-            else:
-                s = np.s_[inner_min_i:inner_max_i, inner_min_j:inner_max_j]
-                grids.set_region(s, props)
-
-        # Boundary cells (need super-sampling)
-        boundary_mask = np.zeros(
-            (rect_max_i - rect_min_i, rect_max_j - rect_min_j), dtype=bool
-        )
-        if rect_min_i < inner_min_i:
-            boundary_mask[: inner_min_i - rect_min_i, :] = True
-        if inner_max_i < rect_max_i:
-            boundary_mask[inner_max_i - rect_min_i :, :] = True
-        if rect_min_j < inner_min_j:
-            boundary_mask[:, : inner_min_j - rect_min_j] = True
-        if inner_max_j < rect_max_j:
-            boundary_mask[:, inner_max_j - rect_min_j :] = True
-
         sx, sy = structure.position[0], structure.position[1]
         sw, sh = structure.width, structure.height
+        j_idx = np.arange(rect_min_j, rect_max_j, dtype=float)
+        i_idx = np.arange(rect_min_i, rect_max_i, dtype=float)
+        cell_x0 = j_idx * cell_size
+        cell_x1 = cell_x0 + cell_size
+        cell_y0 = i_idx * cell_size
+        cell_y1 = cell_y0 + cell_size
 
-        boundary_indices = np.where(boundary_mask)
-        for idx in range(len(boundary_indices[0])):
-            i = boundary_indices[0][idx] + rect_min_i
-            j = boundary_indices[1][idx] + rect_min_j
-            cx, cy = x_centers[j], y_centers[i]
+        overlap_x = np.clip(
+            np.minimum(cell_x1, sx + sw) - np.maximum(cell_x0, sx), 0.0, cell_size
+        )
+        overlap_y = np.clip(
+            np.minimum(cell_y1, sy + sh) - np.maximum(cell_y0, sy), 0.0, cell_size
+        )
+        coverage = np.outer(overlap_y, overlap_x) / float(cell_size * cell_size)
 
-            samples_inside = self._supersample_cell(
-                cx,
-                cy,
-                sample_dx,
-                sample_dy,
-                num_samples,
-                lambda x, y: sx <= x < sx + sw and sy <= y < sy + sh,
-                cell_i=i,
-                cell_j=j,
-                cell_size=cell_size,
+        local_i, local_j = np.where(coverage >= 1.0 - 1e-15)
+        for idx in range(len(local_i)):
+            i = local_i[idx] + rect_min_i
+            j = local_j[idx] + rect_min_j
+            rect_props = props
+            if is_custom_material:
+                rect_props = self._get_all_material_props(
+                    structure.material, x_centers[j], y_centers[i]
+                )
+            grids.set_at((i, j), rect_props)
+
+        boundary_i, boundary_j = np.where((coverage > 0.0) & (coverage < 1.0 - 1e-15))
+        for idx in range(len(boundary_i)):
+            i = boundary_i[idx] + rect_min_i
+            j = boundary_j[idx] + rect_min_j
+            rect_props = props
+            if is_custom_material:
+                rect_props = self._get_all_material_props(
+                    structure.material, x_centers[j], y_centers[i]
+                )
+            grids.blend_at(
+                (i, j), rect_props, float(coverage[boundary_i[idx], boundary_j[idx]])
             )
-            if samples_inside > 0:
-                blend_factor = samples_inside / num_samples
-                if is_custom_material:
-                    props = self._get_all_material_props(structure.material, cx, cy)
-                grids.blend_at((i, j), props, blend_factor)
 
     def _rasterize_circle(
         self,
@@ -781,6 +756,41 @@ class RegularGrid(BaseMeshGrid):
         num_samples,
     ):
         """General path for polygons and complex shapes."""
+        polygon = self._structure_polygon_2d(structure)
+        if polygon is not None:
+            prepared_polygon = prep(polygon)
+            cell_area = float(cell_size * cell_size)
+            for i in range(min_i, max_i):
+                cell_y0 = i * cell_size
+                cell_y1 = cell_y0 + cell_size
+                cy = y_centers[i]
+                for j in range(min_j, max_j):
+                    cell_x0 = j * cell_size
+                    cell_x1 = cell_x0 + cell_size
+                    cx = x_centers[j]
+                    cell = shapely_box(cell_x0, cell_y0, cell_x1, cell_y1)
+                    if prepared_polygon.contains(cell):
+                        cell_props = props
+                        if is_custom_material:
+                            cell_props = self._get_all_material_props(
+                                structure.material, cx, cy
+                            )
+                        grids.set_at((i, j), cell_props)
+                        continue
+                    if not prepared_polygon.intersects(cell):
+                        continue
+
+                    blend_factor = polygon.intersection(cell).area / cell_area
+                    if blend_factor <= 0.0:
+                        continue
+                    cell_props = props
+                    if is_custom_material:
+                        cell_props = self._get_all_material_props(
+                            structure.material, cx, cy
+                        )
+                    grids.blend_at((i, j), cell_props, float(blend_factor))
+            return
+
         if hasattr(structure, "point_in_polygon"):
             contains_func = lambda x, y: structure.point_in_polygon(x, y)
         else:
@@ -882,7 +892,7 @@ class RegularGrid3D(BaseMeshGrid):
         design,
         resolution_xy=None,
         resolution_z=None,
-        aa_mode="stratified_jitter",
+        aa_mode="legacy_grid",
         aa_samples=64,
         aa_seed=0,
     ):
@@ -1386,16 +1396,22 @@ class RegularGrid3D(BaseMeshGrid):
                 u_rot = np.where(
                     rot_map == 0,
                     u0,
-                    np.where(rot_map == 1, v0, np.where(rot_map == 2, 1.0 - u0, 1.0 - v0)),
+                    np.where(
+                        rot_map == 1, v0, np.where(rot_map == 2, 1.0 - u0, 1.0 - v0)
+                    ),
                 )
                 v_rot = np.where(
                     rot_map == 0,
                     v0,
-                    np.where(rot_map == 1, 1.0 - u0, np.where(rot_map == 2, 1.0 - v0, u0)),
+                    np.where(
+                        rot_map == 1, 1.0 - u0, np.where(rot_map == 2, 1.0 - v0, u0)
+                    ),
                 )
                 cell_dx = (np.mod(u_rot + shift_x_map, 1.0) - 0.5) * float(cell_size_xy)
                 cell_dy = (np.mod(v_rot + shift_y_map, 1.0) - 0.5) * float(cell_size_xy)
-                points = np.column_stack(((xx + cell_dx).ravel(), (yy + cell_dy).ravel()))
+                points = np.column_stack(
+                    ((xx + cell_dx).ravel(), (yy + cell_dy).ravel())
+                )
             else:
                 points = np.column_stack(
                     ((xx + sample_dx[sidx]).ravel(), (yy + sample_dy[sidx]).ravel())

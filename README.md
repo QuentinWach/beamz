@@ -20,7 +20,7 @@ pip install beamz
 - Built-in layout flow (GDSII import/export).
 - FDTD simulation in 2D and **3D**.
 - PML absorbing boundaries.
-- **Sub-pixel smoothing** (using stratified jittering super-sampling).
+- **Sub-pixel smoothing** (using deterministic centered super-sampling, with optional stratified jitter mode).
 - Gaussian and **mode sources** with TE and TM polarization (using Huygens fields).
 - Custom source time profiles.
 - (WIP) Monitors for field snapshots, power/Poynting history, and frequency-domain (DFT) accumulation.

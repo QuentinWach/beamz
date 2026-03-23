@@ -1,4 +1,4 @@
-"""Compare single-sample vs legacy grid AA vs stratified-jitter on a polygon raster.
+"""Compare naive sampling, deterministic AA, and stratified jitter on a polygon raster.
 
 Usage:
     uv run python examples/8_antialias_polygon_compare.py
@@ -103,10 +103,10 @@ def main() -> None:
         help="Raster cell size in design units.",
     )
     parser.add_argument(
-        "--jitter-samples",
+        "--aa-samples",
         type=int,
-        default=2*2*2*2*2*2,
-        help="Number of stratified-jitter samples per cell.",
+        default=2 * 2 * 2 * 2 * 2 * 2,
+        help="Number of samples per cell for deterministic AA and stratified jitter.",
     )
     parser.add_argument(
         "--seed",
@@ -126,33 +126,33 @@ def main() -> None:
         aa_samples=1,
         aa_seed=0,
     )
-    legacy_grid = design.rasterize(
+    deterministic_grid = design.rasterize(
         resolution=args.resolution,
         force_recompute=True,
         aa_mode="legacy_grid",
-        aa_samples=int(args.jitter_samples),
+        aa_samples=int(args.aa_samples),
         aa_seed=0,
     )
     jitter_grid = design.rasterize(
         resolution=args.resolution,
         force_recompute=True,
         aa_mode="stratified_jitter",
-        aa_samples=args.jitter_samples,
+        aa_samples=args.aa_samples,
         aa_seed=args.seed,
     )
 
     eps_one = one_sample_grid.permittivity
-    eps_legacy = legacy_grid.permittivity
+    eps_deterministic = deterministic_grid.permittivity
     eps_jitter = jitter_grid.permittivity
     extent = (0.0, design.width, 0.0, design.height)
     vmin = min(
         float(np.min(eps_one)),
-        float(np.min(eps_legacy)),
+        float(np.min(eps_deterministic)),
         float(np.min(eps_jitter)),
     )
     vmax = max(
         float(np.max(eps_one)),
-        float(np.max(eps_legacy)),
+        float(np.max(eps_deterministic)),
         float(np.max(eps_jitter)),
     )
 
@@ -175,7 +175,7 @@ def main() -> None:
     axes[1].set_yticks([])
 
     axes[2].imshow(
-        eps_legacy,
+        eps_deterministic,
         origin="lower",
         extent=extent,
         cmap="Greys",
@@ -184,7 +184,10 @@ def main() -> None:
         vmax=vmax,
         aspect="equal",
     )
-    axes[2].set_title(f"Gridded Super-Sampling ({args.jitter_samples} Samples)", fontsize=10)
+    axes[2].set_title(
+        f"Deterministic AA ({args.aa_samples} Samples)",
+        fontsize=10,
+    )
     axes[2].set_xticks([])
     axes[2].set_yticks([])
 
@@ -199,7 +202,7 @@ def main() -> None:
         aspect="equal",
     )
     axes[3].set_title(
-        f"Stratified Jitter ({args.jitter_samples} Samples)",
+        f"Stratified Jitter ({args.aa_samples} Samples)",
         fontsize=10,
     )
     axes[3].set_xticks([])
