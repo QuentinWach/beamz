@@ -303,9 +303,7 @@ def _grid_kind_for_request(design_obj, grid_type, kwargs):
 
 
 def _normalize_aa_config(kwargs):
-    mode = str(
-        kwargs.get("aa_mode", "stratified_jitter") or "stratified_jitter"
-    ).strip().lower()
+    mode = str(kwargs.get("aa_mode", "legacy_grid") or "legacy_grid").strip().lower()
     samples = kwargs.get("aa_samples", 64)
     seed = kwargs.get("aa_seed", 0)
     return {
