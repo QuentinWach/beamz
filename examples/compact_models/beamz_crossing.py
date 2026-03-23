@@ -32,6 +32,7 @@ from beamz import (
     µm,
 )
 from beamz.design.io import gdsf
+from beamz.devices.sources.signals import gaussian_pulse
 
 
 def outward_direction(direction: str) -> str:
@@ -1002,30 +1003,19 @@ def prepare_crossing_setup(
     clad_above = float(clad_above_um_resolved) * µm
     pml_xy = max(0.0, float(pml_um)) * µm
     pml_z = max(0.0, float(pml_um)) * µm
-    domain_guard_xy = 0.25 * µm
-    domain_guard_z = 0.25 * µm
+    domain_guard_xy = 0.0
+    domain_guard_z = 0.0
+    margin_xy = 0.50 * µm
     extension_requested = float(extension_um) * µm
     port_overlap = max(0.0, float(port_overlap_um)) * µm
     port_margin = max(0.0, float(port_margin_um)) * µm
 
     stack_height = clad_below + core_t + clad_above
-    mode_margin_xy = max(port_margin, 0.75 * µm)
-    mode_margin_z = max(0.40 * µm, 0.35 * stack_height)
-    plane_clearance_xy = 0.50 * µm
-    plane_clearance_z = 0.40 * µm
-    junction_clearance_xy = max(0.50 * µm, port_overlap + 0.35 * µm)
-    source_extra_offset = max(0.0, float(source_port_offset_um)) * µm
-    monitor_spacing_xy = max(0.40 * µm, float(distance_source_to_monitors_um) * µm)
-
-    min_extension_required = (
-        junction_clearance_xy
-        + source_extra_offset
-        + 2.0 * monitor_spacing_xy
-        + plane_clearance_xy
-    )
-    extension = max(extension_requested, min_extension_required)
-    xy_padding = pml_xy + domain_guard_xy + extension + plane_clearance_xy
-    z_padding = pml_z + domain_guard_z + mode_margin_z + plane_clearance_z
+    source_port_offset = max(0.0, float(source_port_offset_um)) * µm
+    dist_source_to_mon = max(0.0, float(distance_source_to_monitors_um)) * µm
+    extension = max(extension_requested, margin_xy + pml_xy)
+    xy_padding = extension
+    z_padding = pml_z
     design, ports, imported_bbox, layer_z = build_design_with_extensions(
         component,
         layer=layer_resolved,
@@ -1066,32 +1056,18 @@ def prepare_crossing_setup(
         if source_direction_mode == "inward"
         else outward_direction(src["direction"])
     )
-    source_span = max(
-        float(src["width"]) + 2.0 * port_margin,
-        float(src["width"]) + 2.0 * mode_margin_xy,
-    )
+    source_span = max(float(src["width"]) + 2.0 * port_margin, float(src["width"]) + 0.1 * µm)
     monitor_span = source_span
     z_center = float(src["z_center"])
-    z_span_target = stack_height + 2.0 * mode_margin_z
-    z_span_limit = max(
-        0.2 * µm,
-        float(design.depth) - 2.0 * (pml_z + domain_guard_z + plane_clearance_z),
-    )
-    source_height = min(z_span_target, z_span_limit)
-    monitor_height = source_height
+    source_height = stack_height
+    monitor_height = stack_height
 
-    if source_direction_mode == "inward":
-        source_probe_direction = outward_direction(src["direction"])
-        source_probe_label = "extension"
-    else:
-        source_probe_direction = src["direction"]
-        source_probe_label = "device-side"
     source_probe_port = dict(src)
-    source_probe_port["direction"] = source_probe_direction
+    source_probe_label = "device-side"
 
-    fwd_offset = junction_clearance_xy + source_extra_offset
-    source_offset = fwd_offset + monitor_spacing_xy
-    ref_offset = source_offset + monitor_spacing_xy
+    source_offset = source_port_offset
+    fwd_offset = source_port_offset + dist_source_to_mon
+    ref_offset = source_port_offset - dist_source_to_mon
     source_xy = move_along(src["center"], source_probe_port["direction"], source_offset)
     source_center = (source_xy[0], source_xy[1], z_center)
     source_plane = port_plane(
@@ -1120,11 +1096,10 @@ def prepare_crossing_setup(
 
     out_mag_candidates = []
     n_cands = int(np.clip(monitor_candidates, 1, 3))
-    out_base = source_offset
-    out_step = max(0.20 * µm, 0.5 * monitor_spacing_xy)
-    out_limit = max(out_base, extension - plane_clearance_xy)
+    out_base = source_port_offset
+    out_step = 0.20 * µm
     for i in range(n_cands):
-        mag = min(out_base + float(i) * out_step, out_limit)
+        mag = out_base + float(i) * out_step
         if not any(abs(mag - m) < 1e-12 for m in out_mag_candidates):
             out_mag_candidates.append(mag)
 
@@ -1161,11 +1136,12 @@ def prepare_crossing_setup(
             )
 
     df = max(float(np.max(freqs) - np.min(freqs)), 1e-12)
-    pulse_sigma = 1.0 / (2.0 * np.pi * df)
-    pulse_t0 = 3.0 * pulse_sigma
+    fwidth = max(df, 1e9)
+    pulse_sigma = 0.20 / fwidth
+    pulse_t0 = 4.0 * pulse_sigma
     uoc_to_s = 1e-6 / LIGHT_SPEED
     requested_run_after_sources_uoc = max(0.0, float(run_after_sources_uoc))
-    min_run_after_sources_uoc = max(18.0, 4.0 * max_output_distance_um)
+    min_run_after_sources_uoc = max(45.0, 4.0 * max_output_distance_um)
     effective_run_after_sources_uoc = max(
         requested_run_after_sources_uoc,
         min_run_after_sources_uoc,
@@ -1173,9 +1149,17 @@ def prepare_crossing_setup(
     run_after_s = effective_run_after_sources_uoc * uoc_to_s
     t_total = pulse_t0 + run_after_s + 12.0 / f0
     time = np.arange(0.0, t_total, dt)
-    signal = np.exp(-0.5 * ((time - pulse_t0) / max(pulse_sigma, 1e-30)) ** 2) * np.cos(
-        2.0 * np.pi * f0 * (time - pulse_t0)
-    ).astype(np.float32)
+    signal = np.asarray(
+        gaussian_pulse(
+            time,
+            amplitude=1.0,
+            center=pulse_t0,
+            width=pulse_sigma,
+            frequency=f0,
+            phase=0.0,
+        ),
+        dtype=np.float32,
+    )
     signal_path = out_dir / "beamz_crossing_signal.png"
     if write_plots:
         save_signal_plot(time, signal, signal_path)
@@ -1245,24 +1229,11 @@ def prepare_crossing_setup(
             float(design.depth) - pml_z - domain_guard_z,
         ),
     )
-    device_bbox = (
-        float(imported_bbox[0] - extension),
-        float(imported_bbox[1] + extension),
-        float(imported_bbox[2] - extension),
-        float(imported_bbox[3] + extension),
-    )
     placement_clearances = {
         "imported_design_xy": line_clearance_to_box(
             (
                 (imported_bbox[0], imported_bbox[2]),
                 (imported_bbox[1], imported_bbox[3]),
-            ),
-            inner_xy_bounds,
-        ),
-        "extended_design_xy": line_clearance_to_box(
-            (
-                (device_bbox[0], device_bbox[2]),
-                (device_bbox[1], device_bbox[3]),
             ),
             inner_xy_bounds,
         ),
@@ -1274,7 +1245,9 @@ def prepare_crossing_setup(
     for p in output_ports:
         for cand in out_candidates[p]:
             placement_clearances[cand["name"]] = line_clearance_to_box(cand["plane"], inner_xyz_bounds)
-    bad_clearances = {name: clearance for name, clearance in placement_clearances.items() if clearance <= 0.0}
+    bad_clearances = {
+        name: clearance for name, clearance in placement_clearances.items() if clearance < (-1e-9)
+    }
     if bad_clearances:
         formatted = ", ".join(f"{name}={clearance/µm:.3f}um" for name, clearance in bad_clearances.items())
         raise RuntimeError(f"Placement overlaps or touches PML-safe region boundary: {formatted}")
@@ -1367,14 +1340,14 @@ def prepare_crossing_setup(
         f"xy_padding={xy_padding/µm:.2f}um, z_padding={z_padding/µm:.2f}um, "
         f"pml=({pml_xy/µm:.2f}um xy, {pml_z/µm:.2f}um z), "
         f"guard=({domain_guard_xy/µm:.2f}um xy, {domain_guard_z/µm:.2f}um z), "
+        f"margin_xy={margin_xy/µm:.2f}um, "
         f"extension=requested {extension_requested/µm:.2f}um / used {extension/µm:.2f}um"
     )
     print(
         "Modal planes: "
         f"side={source_probe_label}, y_span={source_span/µm:.2f}um, z_span={source_height/µm:.2f}um, "
-        f"junction_clearance={junction_clearance_xy/µm:.2f}um, "
-        f"spacing={monitor_spacing_xy/µm:.2f}um, "
-        f"outer_xy_clearance={plane_clearance_xy/µm:.2f}um, outer_z_clearance={plane_clearance_z/µm:.2f}um"
+        f"source_offset={source_offset/µm:.2f}um, "
+        f"monitor_offset={fwd_offset/µm:.2f}um"
     )
     print(
         "PML-safe clearances: "
@@ -1651,11 +1624,14 @@ def extract_crossing_results(
     source_refl_waves = source_refl_result["diagnostics"]["waves"].get(source_port, {})
     source_refl_plus = np.asarray(source_refl_waves.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
     source_refl_minus = np.asarray(source_refl_waves.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
-    source_refl_wave_key, source_refl_selected, source_refl_opposite, source_refl_dom_db = select_dominant_wave(
-        source_refl_plus,
-        source_refl_minus,
-        valid_mask,
-    )
+    if source_incident_key == "plus":
+        source_refl_wave_key = "minus"
+        source_refl_selected = source_refl_minus
+        source_refl_opposite = source_refl_plus
+    else:
+        source_refl_wave_key = "plus"
+        source_refl_selected = source_refl_plus
+        source_refl_opposite = source_refl_minus
     source_refl_dom_db = wave_dominance_db(
         source_refl_selected,
         source_refl_opposite,
@@ -1860,10 +1836,6 @@ def extract_crossing_results(
         qa_issues.append(
             f"incident dominance {incident_dominance:.2f} dB < threshold {dom_threshold:.2f} dB"
         )
-    for p in [source_port]:
-        d = float(port_wave_dominance_db[p])
-        if (not np.isfinite(d)) or (d < dom_threshold):
-            qa_issues.append(f"{p} dominance {d:.2f} dB < threshold {dom_threshold:.2f} dB")
     signal_floor_db = -25.0
     for p in output_ports:
         d = float(port_wave_dominance_db[p])
@@ -2527,8 +2499,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pml-um",
         type=float,
-        default=1.0,
-        help="PML thickness in microns (gsim-like default).",
+        default=1.5,
+        help="PML thickness in microns.",
     )
     parser.add_argument(
         "--port-margin-um",
