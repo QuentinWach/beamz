@@ -912,10 +912,8 @@ class Simulation:
             spec_bins = np.fft.rfft(values, axis=0)
 
         if frequencies is None:
-            out = spec_bins
-            if str(component).startswith("H"):
-                phase = np.exp(1j * 2.0 * np.pi * freq_bins * (0.5 * dt))
-                out = out * phase[:, None]
+            phase = self._monitor_projection_phase(component, freq_bins, dt)
+            out = spec_bins * phase[:, None]
             return freq_bins, out
 
         requested = np.atleast_1d(np.asarray(frequencies, dtype=float))
@@ -928,9 +926,8 @@ class Simulation:
                 requested, freq_bins, np.imag(spec_bins[:, col]), left=0.0, right=0.0
             )
             sampled[:, col] = real_part + 1j * imag_part
-        if str(component).startswith("H"):
-            phase = np.exp(1j * 2.0 * np.pi * requested * (0.5 * dt))
-            sampled = sampled * phase[:, None]
+        phase = self._monitor_projection_phase(component, requested, dt)
+        sampled = sampled * phase[:, None]
         return requested, sampled
 
     @staticmethod
@@ -978,6 +975,17 @@ class Simulation:
             out[:, col] = re + 1j * im
         return out
 
+    @staticmethod
+    def _monitor_projection_phase(component, frequencies, dt):
+        """Phase-align sampled monitor spectra to the modal projection convention."""
+        freq_arr = np.atleast_1d(np.asarray(frequencies, dtype=float))
+        comp = str(component)
+        if comp.startswith("E"):
+            return np.exp(-1j * 2.0 * np.pi * freq_arr * float(dt))
+        if comp.startswith("H"):
+            return np.exp(1j * 2.0 * np.pi * freq_arr * (0.5 * float(dt)))
+        return np.ones_like(freq_arr, dtype=np.complex128)
+
     def _sample_monitor_component_dft(self, monitor, component, frequencies):
         if not hasattr(monitor, "get_dft_component"):
             raise ValueError(
@@ -994,9 +1002,8 @@ class Simulation:
         values_src = self._resample_complex_matrix(freq_src, values_src, freq_src)
         freq_dst = np.atleast_1d(np.asarray(frequencies, dtype=float))
         sampled = self._resample_complex_matrix(freq_src, values_src, freq_dst)
-        if str(component).startswith("H"):
-            phase = np.exp(1j * 2.0 * np.pi * freq_dst * (0.5 * float(self.dt)))
-            sampled = sampled * phase[:, None]
+        phase = self._monitor_projection_phase(component, freq_dst, self.dt)
+        sampled = sampled * phase[:, None]
         return freq_dst, sampled
 
     def _demodulate_monitor_component(
@@ -1077,8 +1084,8 @@ class Simulation:
         carrier = np.exp(-1j * 2.0 * np.pi * f0 * t_sel)[:, None]
         denom = max(float(np.sum(w)), 1e-18)
         demod = (2.0 / denom) * np.sum((w[:, None] * v_sel) * carrier, axis=0)
-        if str(component).startswith("H"):
-            demod = demod * np.exp(1j * 2.0 * np.pi * f0 * (0.5 * float(self.dt)))
+        phase = self._monitor_projection_phase(component, np.asarray([f0]), self.dt)[0]
+        demod = demod * phase
         return np.asarray(demod, dtype=np.complex128)
 
     @staticmethod

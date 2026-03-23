@@ -14,7 +14,9 @@ import pytest
 
 from beamz import (
     LIGHT_SPEED,
+    Monitor,
     PML,
+    PortSpec,
     Design,
     Material,
     ModeSource,
@@ -1268,13 +1270,6 @@ class TestModeSourceDirectionality3D:
             f"far_offset_cells={far_offset_cells}, steady_start={steady_start}"
         )
 
-    @pytest.mark.xfail(
-        reason=(
-            "Raw same-monitor 3D source-port reflection is still too high in a straight "
-            "guide; this is the solver-level target for the 3D Huygens source redesign."
-        ),
-        strict=True,
-    )
     def test_raw_same_monitor_reflection_stays_low_in_3d_straight_guide(self):
         """Straight guides should not show large raw source-port reflection."""
         wavelength = TEST_WAVELENGTH
