@@ -1205,13 +1205,11 @@ class Simulation:
             monitor, parts["axis"], mode_pad_cells
         )
         solver_direction = spec.direction
-        if self.is_3d and parts["axis"] in {"x", "y"}:
-            # Keep monitor-side mode orientation consistent with ModeSource's
-            # 3D axis convention, otherwise forward/backward coefficients become
-            # poorly separated (a_plus ~= a_minus).
-            solver_direction = ("-" if spec.direction.startswith("+") else "+") + parts[
-                "axis"
-            ]
+        if self.is_3d:
+            # Anchor 3D monitor-side mode decomposition to a fixed positive-axis
+            # basis. Forward/backward branch selection is handled explicitly from
+            # the port convention, matching the Meep reference workflow.
+            solver_direction = "+" + parts["axis"]
         omega = 2.0 * np.pi * float(frequency)
         eps_profile_arr = np.asarray(eps_profile)
         n_local_max = float(

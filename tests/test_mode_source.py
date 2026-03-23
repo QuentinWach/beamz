@@ -1370,6 +1370,15 @@ class TestModeSourceDirectionality3D:
         major = max(abs(a_plus), abs(a_minus))
         minor = min(abs(a_plus), abs(a_minus))
         reflection_db = 20.0 * np.log10(max(minor / max(major, 1e-18), 1e-12))
+        dominance_db = 20.0 * np.log10(
+            max(abs(a_plus), 1e-18) / max(abs(a_minus), 1e-18)
+        )
+
+        assert dominance_db >= 6.0, (
+            "Expected the +x source-port decomposition to identify the + branch as "
+            f"incident, got dominance={dominance_db:.2f} dB "
+            f"(a_plus={a_plus}, a_minus={a_minus})."
+        )
 
         assert reflection_db <= -20.0, (
             "Expected low raw source-port reflection in a straight guide, "

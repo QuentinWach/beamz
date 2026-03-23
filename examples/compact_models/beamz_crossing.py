@@ -43,6 +43,18 @@ def outward_direction(direction: str) -> str:
     return ("-" if direction.startswith("+") else "+") + direction[1:]
 
 
+def positive_axis_direction(direction: str) -> str:
+    return "+" + str(direction)[1:]
+
+
+def incoming_wave_selector(direction: str) -> str:
+    return "plus" if str(direction).startswith("+") else "minus"
+
+
+def outgoing_wave_selector(direction: str) -> str:
+    return "minus" if str(direction).startswith("+") else "plus"
+
+
 def move_along(center: tuple[float, float], direction: str, distance: float) -> tuple[float, float]:
     if direction == "+x":
         return center[0] + distance, center[1]
@@ -423,6 +435,21 @@ def select_dominant_wave(
     if p_plus >= p_minus:
         return "plus", plus, minus, wave_dominance_db(plus, minus, mask)
     return "minus", minus, plus, wave_dominance_db(minus, plus, mask)
+
+
+def choose_wave_by_selector(
+    a_plus: np.ndarray,
+    a_minus: np.ndarray,
+    selector: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    plus = np.asarray(a_plus, dtype=np.complex128)
+    minus = np.asarray(a_minus, dtype=np.complex128)
+    key = str(selector).lower()
+    if key == "plus":
+        return plus, minus
+    if key == "minus":
+        return minus, plus
+    raise ValueError(f"Unsupported selector {selector!r}; expected 'plus' or 'minus'.")
 
 
 def dft_directional_power_spectrum(
@@ -1385,10 +1412,10 @@ def prepare_crossing_setup(
             wavelength=wl0,
             pol=polarization,
             signal=np.zeros(8, dtype=float),
-            direction=source_drive_direction,
+            direction=positive_axis_direction(source_drive_direction),
         )
         for p in output_ports:
-            out_dirn = outward_direction(ports[p]["direction"])
+            out_dirn = positive_axis_direction(ports[p]["direction"])
             for cand in out_candidates[p]:
                 mode_sources[cand["name"]] = ModeSource(
                     grid=grid,
@@ -1625,14 +1652,15 @@ def extract_crossing_results(
     source_drive_port = f"{source_port}_in"
 
     def source_spec(mode_index: int) -> PortSpec:
+        basis_direction = positive_axis_direction(source_drive_direction)
         return PortSpec(
             name=source_drive_port,
             monitor_name=f"{source_port}_fwd",
-            direction=source_drive_direction,
+            direction=basis_direction,
             polarization=polarization,
             mode_index=mode_index,
-            incident_wave="auto",
-            scattered_wave="minus",
+            incident_wave=incoming_wave_selector(source_drive_direction),
+            scattered_wave=outgoing_wave_selector(source_drive_direction),
         )
 
     print(f"Selecting source mode over m0..m{max_mode_search}")
@@ -1668,9 +1696,11 @@ def extract_crossing_results(
         waves = source_mode_waves.get(alias, {})
         a_plus = np.asarray(waves.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
         a_minus = np.asarray(waves.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
-        inc_key, inc_sel, inc_opp, inc_dom = select_dominant_wave(
-            a_plus,
-            a_minus,
+        inc_key = incoming_wave_selector(source_drive_direction)
+        inc_sel, inc_opp = choose_wave_by_selector(a_plus, a_minus, inc_key)
+        inc_dom = wave_dominance_db(
+            inc_sel,
+            inc_opp,
             np.ones(freqs.shape, dtype=bool),
         )
         neff = np.asarray(waves.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
@@ -1715,14 +1745,12 @@ def extract_crossing_results(
     source_waves = source_mode_waves.get(source_mode_alias[source_mode_idx], {})
     source_plus = np.asarray(source_waves.get("a_plus", np.zeros(freqs.shape)), dtype=np.complex128)
     source_minus = np.asarray(source_waves.get("a_minus", np.zeros(freqs.shape)), dtype=np.complex128)
-    if source_incident_key == "plus":
-        source_refl_wave_key = "minus"
-        source_refl_selected = source_minus
-        source_refl_opposite = source_plus
-    else:
-        source_refl_wave_key = "plus"
-        source_refl_selected = source_plus
-        source_refl_opposite = source_minus
+    source_refl_wave_key = outgoing_wave_selector(source_drive_direction)
+    source_refl_selected, source_refl_opposite = choose_wave_by_selector(
+        source_plus,
+        source_minus,
+        source_refl_wave_key,
+    )
     source_refl_dom_db = wave_dominance_db(
         source_refl_selected,
         source_incident,
@@ -1753,17 +1781,20 @@ def extract_crossing_results(
     output_search_ports = {source_drive_port: source_spec(source_mode_idx)}
     output_search_meta = []
     for p in output_ports:
-        out_dirn = outward_direction(ports[p]["direction"])
+        port_direction = str(ports[p]["direction"])
+        basis_direction = positive_axis_direction(port_direction)
+        scat_key = outgoing_wave_selector(port_direction)
         for cand in out_candidates[p]:
             for mode_idx in range(max_mode_search + 1):
                 alias = f"{p}__{cand['name']}__m{mode_idx}"
                 output_search_ports[alias] = PortSpec(
                     name=alias,
                     monitor_name=cand["name"],
-                    direction=out_dirn,
+                    direction=basis_direction,
                     polarization=polarization,
                     mode_index=mode_idx,
-                    scattered_wave="plus",
+                    incident_wave=incoming_wave_selector(port_direction),
+                    scattered_wave=scat_key,
                 )
                 output_search_meta.append(
                     {
@@ -1771,6 +1802,7 @@ def extract_crossing_results(
                         "port": p,
                         "monitor_name": cand["name"],
                         "mode_index": mode_idx,
+                        "scattered_wave": scat_key,
                     }
                 )
     print(
@@ -1804,11 +1836,9 @@ def extract_crossing_results(
             neff_p = np.asarray(waves_p.get("mode_neff", np.full(freqs.shape, np.nan)), dtype=float)
             cond_p = np.asarray(waves_p.get("condition_number", np.full(freqs.shape, np.inf)), dtype=float)
             qual = valid_mask & np.isfinite(cond_p) & (cond_p < cond_threshold)
-            wave_key, a_sel, a_opp, wave_dom = select_dominant_wave(
-                a_plus_p,
-                a_minus_p,
-                qual,
-            )
+            wave_key = str(entry["scattered_wave"])
+            a_sel, a_opp = choose_wave_by_selector(a_plus_p, a_minus_p, wave_key)
+            wave_dom = wave_dominance_db(a_sel, a_opp, qual)
             s_p = safe_complex_ratio(a_sel, source_incident)
             s_p = np.where(qual, s_p, 0.0 + 0.0j)
             qual_frac = float(np.mean(qual)) if qual.size else 0.0
