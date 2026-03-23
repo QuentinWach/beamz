@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import time as time_module
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -1405,6 +1406,7 @@ def prepare_crossing_setup(
         "m_ref": m_ref,
         "output_monitors": output_monitors,
         "sim": sim,
+        "num_voxels": num_voxels,
         "requested_run_after_sources_uoc": requested_run_after_sources_uoc,
         "effective_run_after_sources_uoc": effective_run_after_sources_uoc,
         "min_run_after_sources_uoc": min_run_after_sources_uoc,
@@ -1416,7 +1418,8 @@ def prepare_crossing_setup(
 def run_crossing_simulation(
     *,
     sim: Simulation,
-    time: np.ndarray,
+    time_points: np.ndarray,
+    num_voxels: int,
     polarization: str,
     write_animation: bool,
     animation_frames: int,
@@ -1429,7 +1432,9 @@ def run_crossing_simulation(
     field_component = "Ey" if polarization == "te" else "Ez"
     eps_grid = None
     capture_z_idx = 0
+    total_steps = len(time_points)
     n_anim_frames = max(0, int(animation_frames)) if write_animation else 0
+    wall_t0 = time_module.perf_counter()
     if n_anim_frames > 0:
         eps_grid = np.asarray(grid.permittivity, dtype=float)
         if eps_grid.ndim == 3:
@@ -1438,7 +1443,6 @@ def run_crossing_simulation(
             capture_z_idx = int(
                 np.clip(round(0.5 * (core_z0 + core_z1) / max(dz, 1e-30)), 0, eps_grid.shape[0] - 1)
             )
-        total_steps = len(time)
         chunk_size = max(1, int(np.ceil(total_steps / max(n_anim_frames, 1))))
         frame_list = []
         steps_done = 0
@@ -1474,10 +1478,26 @@ def run_crossing_simulation(
     else:
         sim.run_compiled(progress=bool(show_progress))
 
+    wall_s = max(time_module.perf_counter() - wall_t0, 1e-12)
+    updates_total = float(max(num_voxels, 0) * max(total_steps, 0))
+    mcups = updates_total / wall_s / 1e6
+    step_rate = float(total_steps) / wall_s
+    sim_time_fs = 0.0
+    if total_steps > 1:
+        sim_time_fs = float(time_points[-1] - time_points[0]) * 1e15
+    print(
+        "Simulation stats: "
+        f"steps={total_steps}, voxels={num_voxels:,}, sim_time={sim_time_fs:.2f}fs, "
+        f"wall={wall_s:.2f}s, step_rate={step_rate:.2f} steps/s, MCUPS={mcups:.2f}"
+    )
+
     return {
         "field_hist": field_hist,
         "field_component": field_component,
         "eps_grid": eps_grid,
+        "solver_wall_s": wall_s,
+        "mcups": mcups,
+        "step_rate": step_rate,
     }
 
 
@@ -2217,7 +2237,8 @@ def run_crossing(
     )
     simulation_state = run_crossing_simulation(
         sim=setup["sim"],
-        time=setup["time"],
+        time_points=setup["time"],
+        num_voxels=setup["num_voxels"],
         polarization=polarization,
         write_animation=write_animation,
         animation_frames=animation_frames,
