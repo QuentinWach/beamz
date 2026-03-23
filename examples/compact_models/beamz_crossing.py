@@ -2520,8 +2520,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pml-um",
         type=float,
-        default=1.5,
-        help="PML thickness in microns.",
+        default=1.0,
+        help="PML thickness in microns (Meep-style crossing runs typically use 1.0 um).",
     )
     parser.add_argument(
         "--port-margin-um",
