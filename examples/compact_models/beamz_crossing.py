@@ -1157,6 +1157,7 @@ def prepare_crossing_setup(
     domain_guard_xy = 0.0
     domain_guard_z = 0.0
     margin_xy = 0.50 * µm
+    extra_z_padding = 0.10 * µm
     extension_requested = float(extension_um) * µm
     port_overlap = max(0.0, float(port_overlap_um)) * µm
     port_margin = max(0.0, float(port_margin_um)) * µm
@@ -1166,7 +1167,7 @@ def prepare_crossing_setup(
     dist_source_to_mon = max(0.0, float(distance_source_to_monitors_um)) * µm
     extension = max(extension_requested, margin_xy + pml_xy)
     xy_padding = extension
-    z_padding = pml_z
+    z_padding = pml_z + extra_z_padding
     design, ports, imported_bbox, layer_z = build_design_with_extensions(
         component,
         layer=layer_resolved,
@@ -1279,8 +1280,12 @@ def prepare_crossing_setup(
 
     df = max(float(np.max(freqs) - np.min(freqs)), 1e-12)
     fwidth = max(df, 1e9)
-    pulse_sigma = 0.20 / fwidth
-    pulse_t0 = 4.0 * pulse_sigma
+    # Match Meep's GaussianSource convention more closely:
+    # time-domain width = 1 / fwidth and the pulse peak occurs after the
+    # default cutoff of 5 widths from t=0.
+    pulse_sigma = 1.0 / fwidth
+    pulse_t0 = 5.0 * pulse_sigma
+    source_end_time = 2.0 * pulse_t0
     uoc_to_s = 1e-6 / LIGHT_SPEED
     requested_run_after_sources_uoc = max(0.0, float(run_after_sources_uoc))
     min_run_after_sources_uoc = max(45.0, 4.0 * max_output_distance_um)
@@ -1289,7 +1294,7 @@ def prepare_crossing_setup(
         min_run_after_sources_uoc,
     )
     run_after_s = effective_run_after_sources_uoc * uoc_to_s
-    t_total = pulse_t0 + run_after_s + 12.0 / f0
+    t_total = source_end_time + run_after_s
     time = np.arange(0.0, t_total, dt)
     signal = np.asarray(
         gaussian_pulse(
@@ -1380,7 +1385,7 @@ def prepare_crossing_setup(
         for cand in out_candidates[p]:
             placement_clearances[cand["name"]] = line_clearance_to_box(cand["plane"], inner_xyz_bounds)
     bad_clearances = {
-        name: clearance for name, clearance in placement_clearances.items() if clearance < (-1e-9)
+        name: clearance for name, clearance in placement_clearances.items() if clearance <= 1e-9
     }
     if bad_clearances:
         formatted = ", ".join(f"{name}={clearance/µm:.3f}um" for name, clearance in bad_clearances.items())
