@@ -132,6 +132,71 @@ QUALITY_PRESETS = {
 }
 
 
+def build_meep_style_pulse(
+    *,
+    freqs: np.ndarray,
+    carrier_frequency: float,
+    dt: float,
+    run_after_sources_uoc: float,
+    max_output_distance_um: float,
+):
+    """Return a Gaussian-modulated carrier using the Meep-style bandwidth map.
+
+    The local Meep-compatible reference flow in
+    ``gdsf_to_sax_meep_style.py`` uses ``sigma_t = 0.20 / fwidth`` with the
+    pulse peak at ``4 * sigma_t``. Keep the same mapping here so the BeamZ
+    crossing example uses the same source bandwidth convention as the Meep
+    reference workflow, rather than the broader ad hoc ``1 / fwidth`` envelope.
+    """
+    df = max(float(np.max(freqs) - np.min(freqs)), 1e-12)
+    fmin = max(float(np.min(freqs)), 1e-12)
+    fwidth = max(df, 1e9)
+    pulse_sigma = 0.20 / fwidth
+    pulse_t0 = 4.0 * pulse_sigma
+    source_end_time = pulse_t0 + 6.0 * pulse_sigma
+
+    uoc_to_s = 1e-6 / LIGHT_SPEED
+    requested_run_after_sources_uoc = max(0.0, float(run_after_sources_uoc))
+    min_run_after_sources_uoc = max(45.0, 4.0 * max_output_distance_um)
+    effective_run_after_sources_uoc = max(
+        requested_run_after_sources_uoc,
+        min_run_after_sources_uoc,
+    )
+
+    extra_decay_time = 18.0 / fmin
+    run_after_s = max(effective_run_after_sources_uoc * uoc_to_s, extra_decay_time)
+    t_total = source_end_time + run_after_s
+    time = np.arange(0.0, t_total, dt)
+    signal = np.asarray(
+        gaussian_pulse(
+            time,
+            amplitude=1.0,
+            center=pulse_t0,
+            width=pulse_sigma,
+            frequency=carrier_frequency,
+            phase=0.0,
+        ),
+        dtype=np.float32,
+    )
+
+    return {
+        "df": df,
+        "fmin": fmin,
+        "fwidth": fwidth,
+        "pulse_sigma": pulse_sigma,
+        "pulse_t0": pulse_t0,
+        "source_end_time": source_end_time,
+        "requested_run_after_sources_uoc": requested_run_after_sources_uoc,
+        "effective_run_after_sources_uoc": effective_run_after_sources_uoc,
+        "min_run_after_sources_uoc": min_run_after_sources_uoc,
+        "extra_decay_time": extra_decay_time,
+        "run_after_s": run_after_s,
+        "t_total": t_total,
+        "time": time,
+        "signal": signal,
+    }
+
+
 def cli_option_present(argv: list[str], *flags: str) -> bool:
     for token in argv:
         for flag in flags:
@@ -1278,35 +1343,22 @@ def prepare_crossing_setup(
                 float(np.hypot(c_out[0] - src_plane_center[0], c_out[1] - src_plane_center[1])) / µm,
             )
 
-    df = max(float(np.max(freqs) - np.min(freqs)), 1e-12)
-    fwidth = max(df, 1e9)
-    # Match Meep's GaussianSource convention more closely:
-    # time-domain width = 1 / fwidth and the pulse peak occurs after the
-    # default cutoff of 5 widths from t=0.
-    pulse_sigma = 1.0 / fwidth
-    pulse_t0 = 5.0 * pulse_sigma
-    source_end_time = 2.0 * pulse_t0
-    uoc_to_s = 1e-6 / LIGHT_SPEED
-    requested_run_after_sources_uoc = max(0.0, float(run_after_sources_uoc))
-    min_run_after_sources_uoc = max(45.0, 4.0 * max_output_distance_um)
-    effective_run_after_sources_uoc = max(
-        requested_run_after_sources_uoc,
-        min_run_after_sources_uoc,
+    pulse = build_meep_style_pulse(
+        freqs=freqs,
+        carrier_frequency=f0,
+        dt=dt,
+        run_after_sources_uoc=run_after_sources_uoc,
+        max_output_distance_um=max_output_distance_um,
     )
-    run_after_s = effective_run_after_sources_uoc * uoc_to_s
-    t_total = source_end_time + run_after_s
-    time = np.arange(0.0, t_total, dt)
-    signal = np.asarray(
-        gaussian_pulse(
-            time,
-            amplitude=1.0,
-            center=pulse_t0,
-            width=pulse_sigma,
-            frequency=f0,
-            phase=0.0,
-        ),
-        dtype=np.float32,
-    )
+    pulse_sigma = pulse["pulse_sigma"]
+    pulse_t0 = pulse["pulse_t0"]
+    source_end_time = pulse["source_end_time"]
+    requested_run_after_sources_uoc = pulse["requested_run_after_sources_uoc"]
+    effective_run_after_sources_uoc = pulse["effective_run_after_sources_uoc"]
+    min_run_after_sources_uoc = pulse["min_run_after_sources_uoc"]
+    run_after_s = pulse["run_after_s"]
+    time = pulse["time"]
+    signal = pulse["signal"]
     signal_path = out_dir / "beamz_crossing_signal.png"
     if write_plots:
         save_signal_plot(time, signal, signal_path)
@@ -1497,6 +1549,8 @@ def prepare_crossing_setup(
         "Signal timing: "
         f"sigma={pulse_sigma*1e15:.2f}fs, "
         f"peak={pulse_t0*1e15:.2f}fs, "
+        f"source_end={source_end_time*1e15:.2f}fs, "
+        f"post_source={run_after_s*1e15:.2f}fs, "
         f"total={time[-1]*1e15:.2f}fs"
     )
     print(
@@ -1539,6 +1593,8 @@ def prepare_crossing_setup(
         "min_run_after_sources_uoc": min_run_after_sources_uoc,
         "pulse_sigma_fs": pulse_sigma * 1e15,
         "pulse_peak_time_fs": pulse_t0 * 1e15,
+        "pulse_source_end_time_fs": source_end_time * 1e15,
+        "pulse_run_after_time_fs": run_after_s * 1e15,
     }
 
 
