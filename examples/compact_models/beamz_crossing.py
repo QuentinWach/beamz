@@ -158,17 +158,24 @@ def build_meep_style_pulse(
     uoc_to_s = 1e-6 / LIGHT_SPEED
     requested_run_after_sources_uoc = max(0.0, float(run_after_sources_uoc))
     # The Meep reference can continue after sources until DFT/field decay.
-    # BeamZ currently uses a fixed cutoff, so keep a larger automatic tail to
-    # avoid over-broadening narrow spectral structure.
+    # BeamZ uses a capped time array plus an adaptive stop based on monitor
+    # decay, so keep both a minimum settling window and a larger hard cap.
     min_run_after_sources_uoc = max(90.0, 6.0 * max_output_distance_um)
     effective_run_after_sources_uoc = max(
         requested_run_after_sources_uoc,
         min_run_after_sources_uoc,
     )
+    max_run_after_sources_uoc = max(
+        effective_run_after_sources_uoc,
+        180.0,
+        12.0 * max_output_distance_um,
+    )
 
     extra_decay_time = 96.0 / fmin
+    max_decay_time = 192.0 / fmin
     run_after_s = max(effective_run_after_sources_uoc * uoc_to_s, extra_decay_time)
-    t_total = source_end_time + run_after_s
+    run_cap_s = max(max_run_after_sources_uoc * uoc_to_s, max_decay_time)
+    t_total = source_end_time + run_cap_s
     time = np.arange(0.0, t_total, dt)
     signal = np.asarray(
         gaussian_pulse(
@@ -191,13 +198,73 @@ def build_meep_style_pulse(
         "source_end_time": source_end_time,
         "requested_run_after_sources_uoc": requested_run_after_sources_uoc,
         "effective_run_after_sources_uoc": effective_run_after_sources_uoc,
+        "max_run_after_sources_uoc": max_run_after_sources_uoc,
         "min_run_after_sources_uoc": min_run_after_sources_uoc,
         "extra_decay_time": extra_decay_time,
+        "max_decay_time": max_decay_time,
         "run_after_s": run_after_s,
+        "run_cap_s": run_cap_s,
         "t_total": t_total,
         "time": time,
         "signal": signal,
     }
+
+
+def run_compiled_until_monitor_decay(
+    sim: Simulation,
+    stop_monitors: list[Monitor],
+    *,
+    chunk_steps: int,
+    min_steps: int,
+    max_steps: int,
+    lookback_records: int,
+    decay_ratio: float,
+    show_progress: bool,
+) -> int:
+    """Run compiled simulation in chunks and stop once monitor power decays."""
+    steps_done = 0
+    peak = 0.0
+    chunk_steps = max(1, int(chunk_steps))
+    min_steps = max(0, int(min_steps))
+    max_steps = max(0, int(max_steps))
+    lookback_records = max(2, int(lookback_records))
+    decay_ratio = max(0.0, float(decay_ratio))
+
+    while steps_done < max_steps:
+        n_chunk = min(chunk_steps, max_steps - steps_done)
+        if n_chunk <= 0:
+            break
+        sim.run_compiled(num_steps=n_chunk, progress=False)
+        steps_done += n_chunk
+
+        latest_vals = []
+        for mon in stop_monitors:
+            if len(mon.power_history) == 0:
+                continue
+            p = np.abs(np.asarray(mon.power_history, dtype=np.float64))
+            peak = max(peak, float(np.max(p)))
+            latest_vals.extend(p[-lookback_records:].tolist())
+
+        if show_progress:
+            pct = 100.0 * steps_done / max(max_steps, 1)
+            print(
+                f"\r● Progress: {pct:.0f}% ({steps_done}/{max_steps} steps)",
+                end="",
+                flush=True,
+            )
+
+        if steps_done < min_steps:
+            continue
+        if peak <= 0.0 or len(latest_vals) == 0:
+            continue
+
+        tail_max = float(np.max(np.asarray(latest_vals, dtype=np.float64)))
+        if tail_max <= decay_ratio * peak:
+            break
+
+    if show_progress:
+        print()
+    return steps_done
 
 
 def cli_option_present(argv: list[str], *flags: str) -> bool:
@@ -1547,6 +1614,7 @@ def prepare_crossing_setup(
         f"requested={requested_run_after_sources_uoc:.2f}um/c, "
         f"used={effective_run_after_sources_uoc:.2f}um/c, "
         f"min_from_path={min_run_after_sources_uoc:.2f}um/c, "
+        f"cap={pulse['max_run_after_sources_uoc']:.2f}um/c, "
         f"decay_floor={pulse['extra_decay_time']*1e15:.2f}fs"
     )
     print(
@@ -1590,15 +1658,19 @@ def prepare_crossing_setup(
         "out_candidates": out_candidates,
         "m_fwd": m_fwd,
         "output_monitors": output_monitors,
+        "stop_monitors": [m_fwd, *output_monitors],
         "sim": sim,
         "num_voxels": num_voxels,
         "requested_run_after_sources_uoc": requested_run_after_sources_uoc,
         "effective_run_after_sources_uoc": effective_run_after_sources_uoc,
+        "max_run_after_sources_uoc": pulse["max_run_after_sources_uoc"],
         "min_run_after_sources_uoc": min_run_after_sources_uoc,
         "pulse_sigma_fs": pulse_sigma * 1e15,
         "pulse_peak_time_fs": pulse_t0 * 1e15,
         "pulse_source_end_time_fs": source_end_time * 1e15,
         "pulse_run_after_time_fs": run_after_s * 1e15,
+        "pulse_run_cap_time_fs": pulse["run_cap_s"] * 1e15,
+        "decay_min_time_s": source_end_time + run_after_s,
     }
 
 
@@ -1613,6 +1685,8 @@ def run_crossing_simulation(
     grid,
     layer_z: dict[str, tuple[float, float]],
     design: Design,
+    stop_monitors: list[Monitor],
+    decay_min_time_s: float,
     show_progress: bool,
 ):
     field_hist = np.zeros((0,), dtype=float)
@@ -1620,6 +1694,11 @@ def run_crossing_simulation(
     eps_grid = None
     capture_z_idx = 0
     total_steps = len(time_points)
+    dt = float(time_points[1] - time_points[0]) if len(time_points) > 1 else 0.0
+    min_decay_steps = int(np.ceil(max(0.0, decay_min_time_s) / max(dt, 1e-30)))
+    chunk_steps = max(64, min(512, int(np.ceil(total_steps / 24.0))))
+    lookback_records = 12
+    decay_ratio = 1e-3
     n_anim_frames = max(0, int(animation_frames)) if write_animation else 0
     wall_t0 = time_module.perf_counter()
     if n_anim_frames > 0:
@@ -1658,12 +1737,39 @@ def run_crossing_simulation(
                     end="",
                     flush=True,
                 )
+            if steps_done >= min_decay_steps:
+                latest_vals = []
+                peak = 0.0
+                for mon in stop_monitors:
+                    if len(mon.power_history) == 0:
+                        continue
+                    p = np.abs(np.asarray(mon.power_history, dtype=np.float64))
+                    peak = max(peak, float(np.max(p)))
+                    latest_vals.extend(p[-lookback_records:].tolist())
+                if peak > 0.0 and latest_vals:
+                    tail_max = float(np.max(np.asarray(latest_vals, dtype=np.float64)))
+                    if tail_max <= decay_ratio * peak:
+                        break
         if show_progress:
             print()
         if frame_list:
             field_hist = np.stack(frame_list, axis=0)
     else:
-        sim.run_compiled(progress=bool(show_progress))
+        print(
+            "Compiled run mode: adaptive monitor-decay stop "
+            f"(chunk_steps={chunk_steps}, min_steps={min_decay_steps}, "
+            f"max_steps={total_steps}, decay_ratio={decay_ratio:.1e})"
+        )
+        total_steps = run_compiled_until_monitor_decay(
+            sim,
+            stop_monitors,
+            chunk_steps=chunk_steps,
+            min_steps=min_decay_steps,
+            max_steps=total_steps,
+            lookback_records=lookback_records,
+            decay_ratio=decay_ratio,
+            show_progress=bool(show_progress),
+        )
 
     wall_s = max(time_module.perf_counter() - wall_t0, 1e-12)
     updates_total = float(max(num_voxels, 0) * max(total_steps, 0))
@@ -1671,7 +1777,7 @@ def run_crossing_simulation(
     step_rate = float(total_steps) / wall_s
     sim_time_fs = 0.0
     if total_steps > 1:
-        sim_time_fs = float(time_points[-1] - time_points[0]) * 1e15
+        sim_time_fs = float((total_steps - 1) * dt) * 1e15
     print(
         "Simulation stats: "
         f"steps={total_steps}, voxels={num_voxels:,}, sim_time={sim_time_fs:.2f}fs, "
@@ -1685,6 +1791,8 @@ def run_crossing_simulation(
         "solver_wall_s": wall_s,
         "mcups": mcups,
         "step_rate": step_rate,
+        "executed_steps": total_steps,
+        "sim_time_fs": sim_time_fs,
     }
 
 
@@ -2213,12 +2321,23 @@ def save_crossing_outputs(
             [setup["effective_run_after_sources_uoc"]],
             dtype=float,
         ),
+        max_run_after_sources_uoc=np.asarray(
+            [setup["max_run_after_sources_uoc"]],
+            dtype=float,
+        ),
         min_run_after_sources_uoc=np.asarray(
             [setup["min_run_after_sources_uoc"]],
             dtype=float,
         ),
         pulse_sigma_fs=np.asarray([setup["pulse_sigma_fs"]], dtype=float),
         pulse_peak_time_fs=np.asarray([setup["pulse_peak_time_fs"]], dtype=float),
+        pulse_source_end_time_fs=np.asarray([setup["pulse_source_end_time_fs"]], dtype=float),
+        pulse_run_after_time_fs=np.asarray([setup["pulse_run_after_time_fs"]], dtype=float),
+        pulse_run_cap_time_fs=np.asarray([setup["pulse_run_cap_time_fs"]], dtype=float),
+        executed_steps=np.asarray([simulation_state["executed_steps"]], dtype=int),
+        sim_time_fs=np.asarray([simulation_state["sim_time_fs"]], dtype=float),
+        solver_wall_s=np.asarray([simulation_state["solver_wall_s"]], dtype=float),
+        solver_mcups=np.asarray([simulation_state["mcups"]], dtype=float),
         port_wave_dominance_db=np.asarray(
             [results["port_wave_dominance_db"][p] for p in all_ports],
             dtype=float,
@@ -2431,6 +2550,8 @@ def run_crossing(
         grid=setup["grid"],
         layer_z=setup["layer_z"],
         design=setup["design"],
+        stop_monitors=setup["stop_monitors"],
+        decay_min_time_s=setup["decay_min_time_s"],
         show_progress=show_progress,
     )
     results = extract_crossing_results(
