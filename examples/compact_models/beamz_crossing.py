@@ -157,13 +157,16 @@ def build_meep_style_pulse(
 
     uoc_to_s = 1e-6 / LIGHT_SPEED
     requested_run_after_sources_uoc = max(0.0, float(run_after_sources_uoc))
-    min_run_after_sources_uoc = max(45.0, 4.0 * max_output_distance_um)
+    # The Meep reference can continue after sources until DFT/field decay.
+    # BeamZ currently uses a fixed cutoff, so keep a larger automatic tail to
+    # avoid over-broadening narrow spectral structure.
+    min_run_after_sources_uoc = max(90.0, 6.0 * max_output_distance_um)
     effective_run_after_sources_uoc = max(
         requested_run_after_sources_uoc,
         min_run_after_sources_uoc,
     )
 
-    extra_decay_time = 18.0 / fmin
+    extra_decay_time = 96.0 / fmin
     run_after_s = max(effective_run_after_sources_uoc * uoc_to_s, extra_decay_time)
     t_total = source_end_time + run_after_s
     time = np.arange(0.0, t_total, dt)
@@ -1543,7 +1546,8 @@ def prepare_crossing_setup(
         "Run window: "
         f"requested={requested_run_after_sources_uoc:.2f}um/c, "
         f"used={effective_run_after_sources_uoc:.2f}um/c, "
-        f"min_from_path={min_run_after_sources_uoc:.2f}um/c"
+        f"min_from_path={min_run_after_sources_uoc:.2f}um/c, "
+        f"decay_floor={pulse['extra_decay_time']*1e15:.2f}fs"
     )
     print(
         "Signal timing: "
@@ -2727,7 +2731,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--run-after-sources-uoc",
         type=float,
         default=45.0,
-        help="Requested run duration after source center in um/c units; increased automatically when the source-to-monitor path length requires a longer window.",
+        help="Requested run duration after the source tail in um/c units; increased automatically when the path length and spectral decay floor require a longer window.",
     )
     parser.add_argument(
         "--source-direction",
