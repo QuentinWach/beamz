@@ -16,13 +16,10 @@ from pathlib import Path
 import numpy as np
 from beamz import (
     LIGHT_SPEED,
-    Design,
-    Material,
     ModeSource,
     Monitor,
     PML,
     PortSpec,
-    Rectangle,
     Simulation,
     dxdt,
     µm,
@@ -52,45 +49,6 @@ MONITOR_OFFSET = 0.30 * µm
 RUN_AFTER_SOURCES_UOC = 90.0
 
 
-def outward(direction: str) -> str:
-    return ("-" if direction.startswith("+") else "+") + direction[1:]
-
-
-def positive_axis(direction: str) -> str:
-    return "+" + direction[1:]
-
-
-def incoming_wave(direction: str) -> str:
-    return "plus" if direction.startswith("+") else "minus"
-
-
-def outgoing_wave(direction: str) -> str:
-    return "minus" if direction.startswith("+") else "plus"
-
-
-def move(center: tuple[float, float], direction: str, distance: float) -> tuple[float, float]:
-    x, y = center
-    return {
-        "+x": (x + distance, y),
-        "-x": (x - distance, y),
-        "+y": (x, y + distance),
-        "-y": (x, y - distance),
-    }[direction]
-
-
-def port_plane(port: dict[str, object], span: float, z_span: float, z_center: float, offset: float):
-    cx, cy = move(port["center"], port["direction"], offset)
-    z0, z1 = z_center - 0.5 * z_span, z_center + 0.5 * z_span
-    if port["direction"].endswith("x"):
-        return (cx, cy - 0.5 * span, z0), (cx, cy + 0.5 * span, z1)
-    return (cx - 0.5 * span, cy, z0), (cx + 0.5 * span, cy, z1)
-
-
-def line_center(line):
-    a, b = line
-    return tuple(0.5 * (float(a[i]) + float(b[i])) for i in range(len(a)))
-
-
 def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, mask: np.ndarray) -> float:
     sel = np.asarray(a_plus if selector == "plus" else a_minus, dtype=np.complex128)
     opp = np.asarray(a_minus if selector == "plus" else a_plus, dtype=np.complex128)
@@ -102,64 +60,22 @@ def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, ma
     return 10.0 * np.log10(max(p_sel, 1e-18) / max(p_opp, 1e-18))
 
 
-def build_crossing_design():
-    try:
-        from ubcpdk import PDK, cells
-
-        PDK.activate()
-        component = getattr(cells, COMPONENT_NAME)()
-        component_label = f"ubcpdk.cells.{COMPONENT_NAME}"
-    except Exception:
-        import gdsfactory as gf
-
-        try:
-            gf.gpdk.PDK.activate()
-        except Exception:
-            pass
-        component = gf.get_component(COMPONENT_NAME)
-        component_label = f"gf.get_component('{COMPONENT_NAME}')"
-
-    imported, raw_ports = gdsf.load(component, layer=LAYER, n_core=N_CORE, n_clad=N_CLAD, padding=0.0)
-    depth = 2.0 * Z_PADDING + CLAD_BELOW + CORE_T + CLAD_ABOVE
-    core_z0 = Z_PADDING + CLAD_BELOW
-    design = Design(
-        width=imported.width + 2.0 * EXTENSION,
-        height=imported.height + 2.0 * EXTENSION,
-        depth=depth,
-        material=Material(N_CLAD**2),
-    )
-    for structure in imported.structures[1:]:
-        shifted = structure.copy().shift(EXTENSION, EXTENSION, core_z0)
-        shifted.z = core_z0
-        shifted.depth = CORE_T
-        design += shifted
-    ports = {
-        name: {
-            **port,
-            "center": (float(port["center"][0] + EXTENSION), float(port["center"][1] + EXTENSION)),
-            "width": float(port["width"]),
-            "z_center": float(core_z0 + 0.5 * CORE_T),
-        }
-        for name, port in raw_ports.items()
-    }
-    edge = {"+x": design.width, "-x": 0.0, "+y": design.height, "-y": 0.0}
-    for port in ports.values():
-        cx, cy = port["center"]
-        w, d_out = float(port["width"]), outward(port["direction"])
-        sx, sy = move((cx, cy), d_out, -PORT_OVERLAP)
-        if d_out.endswith("x"):
-            x1 = edge[d_out]
-            design += Rectangle((min(sx, x1), cy - 0.5 * w, core_z0), abs(x1 - sx), w, CORE_T, Material(N_CORE**2))
-        else:
-            y1 = edge[d_out]
-            design += Rectangle((cx - 0.5 * w, min(sy, y1), core_z0), w, abs(y1 - sy), CORE_T, Material(N_CORE**2))
-    design.unify_polygons()
-    return component_label, design, ports, imported, core_z0
-
-
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    component_label, design, ports, _imported, _core_z0 = build_crossing_design()
+    prepared = gdsf.prepare_component(
+        COMPONENT_NAME,
+        layer=LAYER,
+        n_core=N_CORE,
+        n_clad=N_CLAD,
+        core_thickness=CORE_T,
+        clad_below=CLAD_BELOW,
+        clad_above=CLAD_ABOVE,
+        xy_padding=EXTENSION,
+        z_padding=Z_PADDING,
+        extension=EXTENSION,
+        port_overlap=PORT_OVERLAP,
+    )
+    component_label, design, ports = prepared["component_label"], prepared["design"], prepared["ports"]
     source_port, output_ports = "o1", ["o2", "o3", "o4"]
     dx, dt = dxdt(WL0, n_max=N_CORE, dims=3, safety_factor=0.999, points_per_wavelength=PPW)
     grid = design.rasterize(resolution=dx)
@@ -171,16 +87,16 @@ def main() -> None:
     span = max(float(src["width"]) + 2.0 * PORT_MARGIN, float(src["width"]) + 0.1 * µm)
     z_center = float(src["z_center"])
     z_span = CLAD_BELOW + CORE_T + CLAD_ABOVE
-    source_plane = port_plane(src, span, z_span, z_center, SOURCE_OFFSET)
-    fwd_plane = port_plane(src, span, z_span, z_center, MONITOR_OFFSET)
-    source_center = line_center(source_plane)
+    source_plane = gdsf.port_plane(src, span=span, z_span=z_span, z_center=z_center, offset=SOURCE_OFFSET)
+    fwd_plane = gdsf.port_plane(src, span=span, z_span=z_span, z_center=z_center, offset=MONITOR_OFFSET)
+    source_center = gdsf.line_center(source_plane)
     out_planes = {}
     max_output_distance_um = 0.0
     for port_name in output_ports:
-        out_port = {**ports[port_name], "direction": outward(ports[port_name]["direction"])}
-        plane = port_plane(out_port, span, z_span, z_center, SOURCE_OFFSET)
+        out_port = {**ports[port_name], "direction": gdsf.outward_direction(ports[port_name]["direction"])}
+        plane = gdsf.port_plane(out_port, span=span, z_span=z_span, z_center=z_center, offset=SOURCE_OFFSET)
         out_planes[port_name] = plane
-        c_out = line_center(plane)
+        c_out = gdsf.line_center(plane)
         max_output_distance_um = max(max_output_distance_um, float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm)
 
     pulse = gaussian_band_pulse(
@@ -262,11 +178,11 @@ def main() -> None:
         PortSpec(
             name="o1",
             monitor_name="o1_fwd",
-            direction=positive_axis(source_direction),
+            direction=gdsf.positive_axis_direction(source_direction),
             polarization="te",
             mode_index=0,
-            incident_wave=incoming_wave(source_direction),
-            scattered_wave=outgoing_wave(source_direction),
+            incident_wave=gdsf.incoming_wave(source_direction),
+            scattered_wave=gdsf.outgoing_wave(source_direction),
         )
     ]
     for port_name in output_ports:
@@ -275,11 +191,11 @@ def main() -> None:
             PortSpec(
                 name=port_name,
                 monitor_name=f"{port_name}_cand0",
-                direction=positive_axis(direction),
+                direction=gdsf.positive_axis_direction(direction),
                 polarization="te",
                 mode_index=0,
-                incident_wave=incoming_wave(direction),
-                scattered_wave=outgoing_wave(direction),
+                incident_wave=gdsf.incoming_wave(direction),
+                scattered_wave=gdsf.outgoing_wave(direction),
             )
         )
     result = sim.get_S_matrix_modal_dft(

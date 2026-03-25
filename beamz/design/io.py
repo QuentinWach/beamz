@@ -23,6 +23,220 @@ def _orientation_to_inward_direction(orientation_deg: float) -> str:
 class _GDSFactoryNamespace:
     """Namespace for gdsfactory-to-BeamZ import helpers."""
 
+    @staticmethod
+    def outward_direction(direction: str) -> str:
+        return ("-" if str(direction).startswith("+") else "+") + str(direction)[1:]
+
+    @staticmethod
+    def positive_axis_direction(direction: str) -> str:
+        return "+" + str(direction)[1:]
+
+    @staticmethod
+    def incoming_wave(direction: str) -> str:
+        return "plus" if str(direction).startswith("+") else "minus"
+
+    @staticmethod
+    def outgoing_wave(direction: str) -> str:
+        return "minus" if str(direction).startswith("+") else "plus"
+
+    @staticmethod
+    def move_along(center: tuple[float, float], direction: str, distance: float):
+        x, y = center
+        return {
+            "+x": (x + distance, y),
+            "-x": (x - distance, y),
+            "+y": (x, y + distance),
+            "-y": (x, y - distance),
+        }[str(direction)]
+
+    def port_plane(self, port: dict, *, span: float, z_span: float, z_center: float, offset: float = 0.0):
+        cx, cy = self.move_along(port["center"], port["direction"], offset)
+        z0 = float(z_center) - 0.5 * float(z_span)
+        z1 = float(z_center) + 0.5 * float(z_span)
+        if str(port["direction"]).endswith("x"):
+            return (cx, cy - 0.5 * float(span), z0), (cx, cy + 0.5 * float(span), z1)
+        return (cx - 0.5 * float(span), cy, z0), (cx + 0.5 * float(span), cy, z1)
+
+    @staticmethod
+    def line_center(line):
+        a, b = line
+        return tuple(0.5 * (float(a[i]) + float(b[i])) for i in range(len(a)))
+
+    def activate(self, gf=None):
+        if gf is None:
+            import gdsfactory as gf
+
+        if hasattr(gf, "gpdk") and hasattr(gf.gpdk, "PDK"):
+            gf.gpdk.PDK.activate()
+        else:
+            try:
+                from gdsfactory.pdk import get_active_pdk
+
+                active_pdk = get_active_pdk()
+                if active_pdk is not None and hasattr(active_pdk, "activate"):
+                    active_pdk.activate()
+            except Exception:
+                pass
+        return gf
+
+    def get_component(self, cell="mmi1x2", component_kwargs: dict | None = None):
+        """Resolve a gdsfactory/PDK component and return ``(component, label)``."""
+        component_kwargs = component_kwargs or {}
+        if not isinstance(cell, str):
+            if callable(cell):
+                component = cell(**component_kwargs)
+                return component, getattr(cell, "__name__", type(component).__name__)
+            return cell, getattr(cell, "name", type(cell).__name__)
+
+        try:
+            from ubcpdk import PDK, cells
+
+            PDK.activate()
+            if hasattr(cells, cell):
+                return getattr(cells, cell)(**component_kwargs), f"ubcpdk.cells.{cell}"
+        except Exception:
+            pass
+
+        try:
+            gf = self.activate()
+        except ImportError as exc:
+            raise ImportError(
+                "gdsfactory is required for design.io.gdsf.get_component(...). "
+                "Install it with `pip install gdsfactory`."
+            ) from exc
+
+        try:
+            return gf.get_component(cell, **component_kwargs), f"gf.get_component('{cell}')"
+        except Exception as exc:
+            raise ValueError(f"Could not resolve gdsfactory/PDK component '{cell}'.") from exc
+
+    def extend_ports(
+        self,
+        design,
+        ports,
+        *,
+        core_z0: float,
+        core_thickness: float,
+        core_permittivity: float,
+        extension: float,
+        port_overlap: float = 0.0,
+    ):
+        from beamz.design.materials import Material
+        from beamz.design.structures import Rectangle
+
+        edge = {"+x": float(design.width), "-x": 0.0, "+y": float(design.height), "-y": 0.0}
+        for port in ports.values():
+            cx, cy = map(float, port["center"])
+            width = float(port["width"])
+            d_out = self.outward_direction(port["direction"])
+            sx, sy = self.move_along((cx, cy), d_out, -float(port_overlap))
+            if d_out.endswith("x"):
+                x1 = edge[d_out]
+                design += Rectangle(
+                    position=(min(sx, x1), cy - 0.5 * width, float(core_z0)),
+                    width=abs(x1 - sx),
+                    height=width,
+                    depth=float(core_thickness),
+                    material=Material(float(core_permittivity)),
+                )
+            else:
+                y1 = edge[d_out]
+                design += Rectangle(
+                    position=(cx - 0.5 * width, min(sy, y1), float(core_z0)),
+                    width=width,
+                    height=abs(y1 - sy),
+                    depth=float(core_thickness),
+                    material=Material(float(core_permittivity)),
+                )
+
+    def prepare_component(
+        self,
+        cell="mmi1x2",
+        *,
+        layer=(1, 0),
+        n_core=2.0,
+        n_clad=1.44,
+        core_thickness=0.22e-6,
+        clad_below=0.5e-6,
+        clad_above=0.5e-6,
+        xy_padding=0.0,
+        z_padding=0.0,
+        extension=0.0,
+        port_overlap=0.0,
+        component_kwargs: dict | None = None,
+        unify=True,
+    ):
+        """Resolve, import, extrude, pad, and extend a gdsfactory/PDK component."""
+        from beamz.design.core import Design
+        from beamz.design.materials import Material
+
+        component, component_label = self.get_component(cell, component_kwargs=component_kwargs)
+        imported_design, raw_ports = self.load(
+            component,
+            layer=layer,
+            n_core=n_core,
+            n_clad=n_clad,
+            padding=0.0,
+        )
+        depth = 2.0 * float(z_padding) + float(clad_below) + float(core_thickness) + float(clad_above)
+        core_z0 = float(z_padding) + float(clad_below)
+        core_z1 = core_z0 + float(core_thickness)
+        design = Design(
+            width=float(imported_design.width) + 2.0 * float(xy_padding),
+            height=float(imported_design.height) + 2.0 * float(xy_padding),
+            depth=depth,
+            material=Material(float(n_clad) ** 2),
+        )
+        for structure in imported_design.structures[1:]:
+            shifted = structure.copy().shift(float(xy_padding), float(xy_padding), core_z0)
+            shifted.z = core_z0
+            shifted.depth = float(core_thickness)
+            design += shifted
+        ports = {
+            name: {
+                **port,
+                "center": (
+                    float(port["center"][0] + float(xy_padding)),
+                    float(port["center"][1] + float(xy_padding)),
+                ),
+                "width": float(port["width"]),
+                "z_center": float(core_z0 + 0.5 * float(core_thickness)),
+            }
+            for name, port in raw_ports.items()
+        }
+        if float(extension) > 0.0:
+            self.extend_ports(
+                design,
+                ports,
+                core_z0=core_z0,
+                core_thickness=float(core_thickness),
+                core_permittivity=float(n_core) ** 2,
+                extension=float(extension),
+                port_overlap=float(port_overlap),
+            )
+        if unify:
+            design.unify_polygons()
+        layer_z = {
+            "pad_bottom": (0.0, float(z_padding)),
+            "clad_bottom": (float(z_padding), core_z0),
+            "core": (core_z0, core_z1),
+            "clad_top": (core_z1, depth - float(z_padding)),
+            "pad_top": (depth - float(z_padding), depth),
+        }
+        return {
+            "component": component,
+            "component_label": component_label,
+            "imported_design": imported_design,
+            "design": design,
+            "ports": ports,
+            "layer": tuple(layer),
+            "xy_padding": float(xy_padding),
+            "z_padding": float(z_padding),
+            "core_z0": core_z0,
+            "core_z1": core_z1,
+            "layer_z": layer_z,
+        }
+
     def load(
         self,
         cell: str = "mmi1x2",
@@ -49,40 +263,8 @@ class _GDSFactoryNamespace:
         from beamz.design.materials import Material
         from beamz.design.structures import Polygon
 
-        try:
-            import gdsfactory as gf
-        except ImportError as exc:
-            raise ImportError(
-                "gdsfactory is required for design.io.gdsf.load(...). "
-                "Install it with `pip install gdsfactory`."
-            ) from exc
-
-        if hasattr(gf, "gpdk") and hasattr(gf.gpdk, "PDK"):
-            gf.gpdk.PDK.activate()
-        else:
-            # gdsfactory<9 does not expose gf.gpdk; keep compatibility.
-            try:
-                from gdsfactory.pdk import get_active_pdk
-
-                active_pdk = get_active_pdk()
-                if active_pdk is not None and hasattr(active_pdk, "activate"):
-                    active_pdk.activate()
-            except Exception:
-                pass
         component_kwargs = component_kwargs or {}
-
-        if isinstance(cell, str):
-            factory = getattr(gf.components, cell, None)
-            if factory is None:
-                raise ValueError(
-                    f"Unknown gdsfactory component '{cell}'. "
-                    "Expected a factory in gdsfactory.components."
-                )
-            component = factory(**component_kwargs)
-        elif callable(cell):
-            component = cell(**component_kwargs)
-        else:
-            component = cell
+        component, _ = self.get_component(cell, component_kwargs=component_kwargs)
 
         polygons_by_layer = component.get_polygons_points(by="tuple")
         if layer not in polygons_by_layer:
