@@ -13,7 +13,6 @@ Workflow:
 from __future__ import annotations
 import time as pytime
 from pathlib import Path
-import matplotlib.pyplot as plt
 import numpy as np
 from beamz import (
     LIGHT_SPEED,
@@ -29,7 +28,8 @@ from beamz import (
     µm,
 )
 from beamz.design.io import gdsf
-from beamz.devices.sources.signals import gaussian_pulse
+from beamz.devices.sources.signals import gaussian_band_pulse
+from beamz.visual.example_plots import plot_simulation_overview, plot_sparameters_db
 
 OUT_DIR = Path("benchmarks/results/tiny_beamz_crossing")
 COMPONENT_NAME = "ebeam_crossing4"
@@ -39,7 +39,8 @@ WL0, WL_MIN, WL_MAX = 1550.0e-9, 1530.0e-9, 1570.0e-9
 N_CORE, N_CLAD = 3.47, 1.44
 LAYER = (1, 0)
 CORE_T = 0.22 * µm
-CLAD_BELOW, CLAD_ABOVE = 0.50 * µm
+CLAD_BELOW = 0.50 * µm
+CLAD_ABOVE = 0.50 * µm
 PML_XY, PML_Z = 1.0 * µm, 1.0 * µm
 XY_MARGIN = 0.50 * µm
 Z_PADDING = 1.10 * µm
@@ -101,20 +102,6 @@ def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, ma
     return 10.0 * np.log10(max(p_sel, 1e-18) / max(p_opp, 1e-18))
 
 
-def build_pulse(freqs: np.ndarray, dt: float, max_output_distance_um: float):
-    df = max(float(np.ptp(freqs)), 1e-12)
-    fmin = max(float(np.min(freqs)), 1e-12)
-    sigma = 0.20 / max(df, 1e9)
-    peak = 4.0 * sigma
-    source_end = peak + 6.0 * sigma
-    min_tail_uoc = max(RUN_AFTER_SOURCES_UOC, 6.0 * max_output_distance_um)
-    tail = max(min_tail_uoc * 1e-6 / LIGHT_SPEED, 96.0 / fmin)
-    tail_cap = max(180.0 * 1e-6 / LIGHT_SPEED, 192.0 / fmin)
-    time = np.arange(0.0, source_end + tail_cap, dt)
-    signal = np.asarray(gaussian_pulse(time, 1.0, peak, sigma, LIGHT_SPEED / WL0, 0.0), dtype=np.float32)
-    return time, signal, source_end + tail
-
-
 def build_crossing_design():
     try:
         from ubcpdk import PDK, cells
@@ -170,75 +157,6 @@ def build_crossing_design():
     return component_label, design, ports, imported, core_z0
 
 
-def save_overview(path: Path, eps: np.ndarray, design: Design, source_plane, monitor_planes) -> None:
-    z_idx = int(np.clip(round((Z_PADDING + CLAD_BELOW + 0.5 * CORE_T) / design.depth * (eps.shape[0] - 1)), 0, eps.shape[0] - 1))
-    y_idx = eps.shape[1] // 2
-    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.8), dpi=260)
-    axes[0].imshow(eps[z_idx], origin="lower", extent=[0, design.width / µm, 0, design.height / µm], cmap="viridis", aspect="equal")
-    axes[1].imshow(eps[:, y_idx, :], origin="lower", extent=[0, design.width / µm, 0, design.depth / µm], cmap="viridis", aspect="auto")
-    for ax, title, ylabel in ((axes[0], "XY overview", "y (um)"), (axes[1], "XZ overview", "z (um)")):
-        ax.set_title(title)
-        ax.set_xlabel("x (um)")
-        ax.set_ylabel(ylabel)
-    for name, plane in {"source": source_plane, **monitor_planes}.items():
-        (x0, y0, z0), (x1, y1, z1) = plane
-        color = "red" if name == "source" else "white"
-        axes[0].plot([x0 / µm, x1 / µm], [y0 / µm, y1 / µm], color=color, lw=1.5)
-        axes[1].plot([0.5 * (x0 + x1) / µm, 0.5 * (x0 + x1) / µm], [z0 / µm, z1 / µm], color=color, lw=1.5)
-        axes[0].text(0.5 * (x0 + x1) / µm, 0.5 * (y0 + y1) / µm + 0.08, name, color=color, fontsize=7, ha="center")
-    fig.tight_layout()
-    fig.savefig(path, dpi=320)
-    plt.close(fig)
-
-
-def save_sparams(path: Path, wl_um: np.ndarray, s_matrix: dict[tuple[str, str], np.ndarray]) -> None:
-    fig, ax = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
-    colors = {"o1": "black", "o2": "tab:blue", "o3": "tab:orange", "o4": "tab:green"}
-    for port in ("o1", "o2", "o3", "o4"):
-        y_db = 20.0 * np.log10(np.maximum(np.abs(np.asarray(s_matrix[(port, "o1")], dtype=np.complex128)), 1e-12))
-        ax.plot(wl_um, y_db, "o-", lw=2.0, ms=4.0, color=colors[port], label=rf"$|S_{{{port[1:]}1}}|$")
-    ax.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
-    ax.set_ylim(-55.0, 0.0)
-    ax.set_xlabel("Wavelength (um)")
-    ax.set_ylabel("Magnitude (dB)")
-    ax.set_title("Crossing S-Parameters")
-    ax.grid(which="major", alpha=0.25, lw=0.6)
-    ax.minorticks_on()
-    ax.grid(which="minor", alpha=0.12, lw=0.4)
-    ax.legend(loc="best", fontsize=9, frameon=False)
-    fig.tight_layout()
-    fig.savefig(path, dpi=320)
-    plt.close(fig)
-
-
-def run_until_decay(sim: Simulation, stop_monitors: list[Monitor], time: np.ndarray, min_time_s: float) -> int:
-    total_steps = len(time)
-    dt = float(time[1] - time[0])
-    chunk_steps = max(64, min(512, int(np.ceil(total_steps / 24.0))))
-    min_steps = int(np.ceil(max(0.0, min_time_s) / max(dt, 1e-30)))
-    steps_done = 0
-    peak = 0.0
-    print(
-        "Compiled run mode: adaptive monitor-decay stop "
-        f"(chunk_steps={chunk_steps}, min_steps={min_steps}, max_steps={total_steps}, decay_ratio=1.0e-03)"
-    )
-    while steps_done < total_steps:
-        this_chunk = min(chunk_steps, total_steps - steps_done)
-        sim.run_compiled(num_steps=this_chunk, progress=False)
-        steps_done += this_chunk
-        histories = [np.abs(np.asarray(m.power_history, dtype=np.float64)) for m in stop_monitors if len(m.power_history)]
-        if histories:
-            peak = max(peak, max(float(np.max(h)) for h in histories))
-            tail = max(float(np.max(h[-12:])) for h in histories)
-        else:
-            tail = np.inf
-        print(f"\r● Progress: {100.0 * steps_done / total_steps:.0f}% ({steps_done}/{total_steps} steps)", end="", flush=True)
-        if steps_done >= min_steps and peak > 0.0 and np.isfinite(tail) and tail <= 1e-3 * peak:
-            break
-    print()
-    return steps_done
-
-
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     component_label, design, ports, _imported, _core_z0 = build_crossing_design()
@@ -265,7 +183,13 @@ def main() -> None:
         c_out = line_center(plane)
         max_output_distance_um = max(max_output_distance_um, float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm)
 
-    time, signal, decay_min_time_s = build_pulse(freqs, dt, max_output_distance_um)
+    pulse = gaussian_band_pulse(
+        freqs,
+        carrier_frequency=LIGHT_SPEED / WL0,
+        dt=dt,
+        run_after_sources_uoc=RUN_AFTER_SOURCES_UOC,
+        max_output_distance_um=max_output_distance_um,
+    )
     source = ModeSource(
         grid=grid,
         center=source_center,
@@ -273,7 +197,7 @@ def main() -> None:
         height=z_span,
         wavelength=WL0,
         pol="te",
-        signal=signal,
+        signal=pulse.signal,
         direction=source_direction,
     )
     monitor_cfg = dict(
@@ -293,20 +217,39 @@ def main() -> None:
         design=design,
         devices=[source, m_fwd, *out_monitors],
         boundaries=[PML(edges=["left", "right", "top", "bottom"], thickness=PML_XY), PML(edges=["front", "back"], thickness=PML_Z)],
-        time=time,
+        time=pulse.time,
         resolution=dx,
     )
 
     print(
         "Running crossing modal DFT extraction: "
         f"component={component_label}, source={source_port}, outputs={output_ports}, "
-        f"pol=te, freq_points={NUM_FREQS}, steps={len(time)}, dx={dx/µm:.4f}um"
+        f"pol=te, freq_points={NUM_FREQS}, steps={len(pulse.time)}, dx={dx/µm:.4f}um"
     )
-    print(f"Workload: grid={grid.permittivity.shape}, voxels={int(np.prod(np.asarray(grid.permittivity).shape)):,}, updates~{int(np.prod(np.asarray(grid.permittivity).shape))*len(time):.3e}")
-    save_overview(OUT_DIR / "beamz_crossing_overview.png", np.asarray(grid.permittivity, dtype=float), design, source_plane, {"o1_fwd": fwd_plane, **{f"{p}_cand0": out_planes[p] for p in output_ports}})
+    print(f"Workload: grid={grid.permittivity.shape}, voxels={int(np.prod(np.asarray(grid.permittivity).shape)):,}, updates~{int(np.prod(np.asarray(grid.permittivity).shape))*len(pulse.time):.3e}")
+    plot_simulation_overview(
+        OUT_DIR / "beamz_crossing_overview.png",
+        np.asarray(grid.permittivity, dtype=float),
+        width=design.width,
+        height=design.height,
+        depth=design.depth,
+        z_focus=Z_PADDING + CLAD_BELOW + 0.5 * CORE_T,
+        source_plane=source_plane,
+        monitor_planes={"o1_fwd": fwd_plane, **{f"{p}_cand0": out_planes[p] for p in output_ports}},
+    )
 
     wall_t0 = pytime.perf_counter()
-    executed_steps = run_until_decay(sim, [m_fwd, *out_monitors], time, decay_min_time_s)
+    print(
+        "Compiled run mode: adaptive monitor-decay stop "
+        f"(chunk_steps={max(64, min(512, int(np.ceil(len(pulse.time) / 24.0))))}, "
+        f"min_steps={int(np.ceil(max(0.0, pulse.source_end_time + pulse.tail_time) / max(dt, 1e-30)))}, "
+        f"max_steps={len(pulse.time)}, decay_ratio=1.0e-03)"
+    )
+    executed_steps = sim.run_compiled_until_decay(
+        [m_fwd, *out_monitors],
+        min_time_s=pulse.source_end_time + pulse.tail_time,
+        progress=True,
+    )
     wall_s = max(pytime.perf_counter() - wall_t0, 1e-12)
     num_voxels = int(np.prod(np.asarray(grid.permittivity).shape))
     print(
@@ -359,7 +302,7 @@ def main() -> None:
         mag = abs(s_matrix[(port_name, "o1")][i0])
         print(f"S[{port_name},o1] @ {wl_um[i0]:.4f}um: {20.0 * np.log10(max(mag, 1e-12)):.2f} dB")
 
-    save_sparams(OUT_DIR / "beamz_crossing_sparams.png", wl_um, s_matrix)
+    plot_sparameters_db(OUT_DIR / "beamz_crossing_sparams.png", wl_um, s_matrix)
     print(f"Saved S-parameter plot: {OUT_DIR / 'beamz_crossing_sparams.png'}")
     print(f"Saved overview plot: {OUT_DIR / 'beamz_crossing_overview.png'}")
 
