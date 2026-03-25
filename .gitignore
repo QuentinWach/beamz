@@ -29,6 +29,12 @@ venv/
 env/
 ENV/
 .venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.claude
+.cursor
+.becnhmarks
 
 # IDE
 .idea/
