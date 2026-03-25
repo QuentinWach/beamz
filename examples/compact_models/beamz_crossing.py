@@ -14,6 +14,7 @@ import argparse
 import shutil
 import sys
 import time as time_module
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -132,6 +133,36 @@ QUALITY_PRESETS = {
 }
 
 
+@dataclass(frozen=True)
+class PulseRunWindow:
+    df: float
+    fmin: float
+    fwidth: float
+    pulse_sigma: float
+    pulse_t0: float
+    source_end_time: float
+    requested_run_after_sources_uoc: float
+    effective_run_after_sources_uoc: float
+    max_run_after_sources_uoc: float
+    min_run_after_sources_uoc: float
+    extra_decay_time: float
+    max_decay_time: float
+    run_after_s: float
+    run_cap_s: float
+    t_total: float
+    time: np.ndarray
+    signal: np.ndarray
+
+
+@dataclass(frozen=True)
+class DecayStopConfig:
+    chunk_steps: int
+    min_steps: int
+    max_steps: int
+    lookback_records: int
+    decay_ratio: float
+
+
 def build_meep_style_pulse(
     *,
     freqs: np.ndarray,
@@ -189,25 +220,59 @@ def build_meep_style_pulse(
         dtype=np.float32,
     )
 
-    return {
-        "df": df,
-        "fmin": fmin,
-        "fwidth": fwidth,
-        "pulse_sigma": pulse_sigma,
-        "pulse_t0": pulse_t0,
-        "source_end_time": source_end_time,
-        "requested_run_after_sources_uoc": requested_run_after_sources_uoc,
-        "effective_run_after_sources_uoc": effective_run_after_sources_uoc,
-        "max_run_after_sources_uoc": max_run_after_sources_uoc,
-        "min_run_after_sources_uoc": min_run_after_sources_uoc,
-        "extra_decay_time": extra_decay_time,
-        "max_decay_time": max_decay_time,
-        "run_after_s": run_after_s,
-        "run_cap_s": run_cap_s,
-        "t_total": t_total,
-        "time": time,
-        "signal": signal,
-    }
+    return PulseRunWindow(
+        df=df,
+        fmin=fmin,
+        fwidth=fwidth,
+        pulse_sigma=pulse_sigma,
+        pulse_t0=pulse_t0,
+        source_end_time=source_end_time,
+        requested_run_after_sources_uoc=requested_run_after_sources_uoc,
+        effective_run_after_sources_uoc=effective_run_after_sources_uoc,
+        max_run_after_sources_uoc=max_run_after_sources_uoc,
+        min_run_after_sources_uoc=min_run_after_sources_uoc,
+        extra_decay_time=extra_decay_time,
+        max_decay_time=max_decay_time,
+        run_after_s=run_after_s,
+        run_cap_s=run_cap_s,
+        t_total=t_total,
+        time=time,
+        signal=signal,
+    )
+
+
+def build_decay_stop_config(
+    time_points: np.ndarray,
+    decay_min_time_s: float,
+) -> DecayStopConfig:
+    total_steps = int(len(time_points))
+    dt = float(time_points[1] - time_points[0]) if len(time_points) > 1 else 0.0
+    return DecayStopConfig(
+        chunk_steps=max(64, min(512, int(np.ceil(total_steps / 24.0)))),
+        min_steps=int(np.ceil(max(0.0, decay_min_time_s) / max(dt, 1e-30))),
+        max_steps=total_steps,
+        lookback_records=12,
+        decay_ratio=1e-3,
+    )
+
+
+def monitor_decay_metrics(
+    stop_monitors: list[Monitor],
+    *,
+    lookback_records: int,
+) -> tuple[float, float]:
+    peak = 0.0
+    latest_vals: list[float] = []
+    for mon in stop_monitors:
+        if len(mon.power_history) == 0:
+            continue
+        p = np.abs(np.asarray(mon.power_history, dtype=np.float64))
+        peak = max(peak, float(np.max(p)))
+        latest_vals.extend(p[-max(2, int(lookback_records)):].tolist())
+    if peak <= 0.0 or not latest_vals:
+        return peak, np.inf
+    tail_max = float(np.max(np.asarray(latest_vals, dtype=np.float64)))
+    return peak, tail_max
 
 
 def run_compiled_until_monitor_decay(
@@ -237,13 +302,11 @@ def run_compiled_until_monitor_decay(
         sim.run_compiled(num_steps=n_chunk, progress=False)
         steps_done += n_chunk
 
-        latest_vals = []
-        for mon in stop_monitors:
-            if len(mon.power_history) == 0:
-                continue
-            p = np.abs(np.asarray(mon.power_history, dtype=np.float64))
-            peak = max(peak, float(np.max(p)))
-            latest_vals.extend(p[-lookback_records:].tolist())
+        peak_now, tail_max = monitor_decay_metrics(
+            stop_monitors,
+            lookback_records=lookback_records,
+        )
+        peak = max(peak, peak_now)
 
         if show_progress:
             pct = 100.0 * steps_done / max(max_steps, 1)
@@ -255,10 +318,8 @@ def run_compiled_until_monitor_decay(
 
         if steps_done < min_steps:
             continue
-        if peak <= 0.0 or len(latest_vals) == 0:
+        if peak <= 0.0 or not np.isfinite(tail_max):
             continue
-
-        tail_max = float(np.max(np.asarray(latest_vals, dtype=np.float64)))
         if tail_max <= decay_ratio * peak:
             break
 
@@ -1420,15 +1481,15 @@ def prepare_crossing_setup(
         run_after_sources_uoc=run_after_sources_uoc,
         max_output_distance_um=max_output_distance_um,
     )
-    pulse_sigma = pulse["pulse_sigma"]
-    pulse_t0 = pulse["pulse_t0"]
-    source_end_time = pulse["source_end_time"]
-    requested_run_after_sources_uoc = pulse["requested_run_after_sources_uoc"]
-    effective_run_after_sources_uoc = pulse["effective_run_after_sources_uoc"]
-    min_run_after_sources_uoc = pulse["min_run_after_sources_uoc"]
-    run_after_s = pulse["run_after_s"]
-    time = pulse["time"]
-    signal = pulse["signal"]
+    pulse_sigma = pulse.pulse_sigma
+    pulse_t0 = pulse.pulse_t0
+    source_end_time = pulse.source_end_time
+    requested_run_after_sources_uoc = pulse.requested_run_after_sources_uoc
+    effective_run_after_sources_uoc = pulse.effective_run_after_sources_uoc
+    min_run_after_sources_uoc = pulse.min_run_after_sources_uoc
+    run_after_s = pulse.run_after_s
+    time = pulse.time
+    signal = pulse.signal
     signal_path = out_dir / "beamz_crossing_signal.png"
     if write_plots:
         save_signal_plot(time, signal, signal_path)
@@ -1614,8 +1675,8 @@ def prepare_crossing_setup(
         f"requested={requested_run_after_sources_uoc:.2f}um/c, "
         f"used={effective_run_after_sources_uoc:.2f}um/c, "
         f"min_from_path={min_run_after_sources_uoc:.2f}um/c, "
-        f"cap={pulse['max_run_after_sources_uoc']:.2f}um/c, "
-        f"decay_floor={pulse['extra_decay_time']*1e15:.2f}fs"
+        f"cap={pulse.max_run_after_sources_uoc:.2f}um/c, "
+        f"decay_floor={pulse.extra_decay_time*1e15:.2f}fs"
     )
     print(
         "Signal timing: "
@@ -1663,13 +1724,13 @@ def prepare_crossing_setup(
         "num_voxels": num_voxels,
         "requested_run_after_sources_uoc": requested_run_after_sources_uoc,
         "effective_run_after_sources_uoc": effective_run_after_sources_uoc,
-        "max_run_after_sources_uoc": pulse["max_run_after_sources_uoc"],
+        "max_run_after_sources_uoc": pulse.max_run_after_sources_uoc,
         "min_run_after_sources_uoc": min_run_after_sources_uoc,
         "pulse_sigma_fs": pulse_sigma * 1e15,
         "pulse_peak_time_fs": pulse_t0 * 1e15,
         "pulse_source_end_time_fs": source_end_time * 1e15,
         "pulse_run_after_time_fs": run_after_s * 1e15,
-        "pulse_run_cap_time_fs": pulse["run_cap_s"] * 1e15,
+        "pulse_run_cap_time_fs": pulse.run_cap_s * 1e15,
         "decay_min_time_s": source_end_time + run_after_s,
     }
 
@@ -1695,10 +1756,7 @@ def run_crossing_simulation(
     capture_z_idx = 0
     total_steps = len(time_points)
     dt = float(time_points[1] - time_points[0]) if len(time_points) > 1 else 0.0
-    min_decay_steps = int(np.ceil(max(0.0, decay_min_time_s) / max(dt, 1e-30)))
-    chunk_steps = max(64, min(512, int(np.ceil(total_steps / 24.0))))
-    lookback_records = 12
-    decay_ratio = 1e-3
+    stop_cfg = build_decay_stop_config(time_points, decay_min_time_s)
     n_anim_frames = max(0, int(animation_frames)) if write_animation else 0
     wall_t0 = time_module.perf_counter()
     if n_anim_frames > 0:
@@ -1737,37 +1795,33 @@ def run_crossing_simulation(
                     end="",
                     flush=True,
                 )
-            if steps_done >= min_decay_steps:
-                latest_vals = []
-                peak = 0.0
-                for mon in stop_monitors:
-                    if len(mon.power_history) == 0:
-                        continue
-                    p = np.abs(np.asarray(mon.power_history, dtype=np.float64))
-                    peak = max(peak, float(np.max(p)))
-                    latest_vals.extend(p[-lookback_records:].tolist())
-                if peak > 0.0 and latest_vals:
-                    tail_max = float(np.max(np.asarray(latest_vals, dtype=np.float64)))
-                    if tail_max <= decay_ratio * peak:
+            if steps_done >= stop_cfg.min_steps:
+                peak, tail_max = monitor_decay_metrics(
+                    stop_monitors,
+                    lookback_records=stop_cfg.lookback_records,
+                )
+                if peak > 0.0 and np.isfinite(tail_max):
+                    if tail_max <= stop_cfg.decay_ratio * peak:
                         break
         if show_progress:
             print()
         if frame_list:
             field_hist = np.stack(frame_list, axis=0)
+        total_steps = steps_done
     else:
         print(
             "Compiled run mode: adaptive monitor-decay stop "
-            f"(chunk_steps={chunk_steps}, min_steps={min_decay_steps}, "
-            f"max_steps={total_steps}, decay_ratio={decay_ratio:.1e})"
+            f"(chunk_steps={stop_cfg.chunk_steps}, min_steps={stop_cfg.min_steps}, "
+            f"max_steps={stop_cfg.max_steps}, decay_ratio={stop_cfg.decay_ratio:.1e})"
         )
         total_steps = run_compiled_until_monitor_decay(
             sim,
             stop_monitors,
-            chunk_steps=chunk_steps,
-            min_steps=min_decay_steps,
-            max_steps=total_steps,
-            lookback_records=lookback_records,
-            decay_ratio=decay_ratio,
+            chunk_steps=stop_cfg.chunk_steps,
+            min_steps=stop_cfg.min_steps,
+            max_steps=stop_cfg.max_steps,
+            lookback_records=stop_cfg.lookback_records,
+            decay_ratio=stop_cfg.decay_ratio,
             show_progress=bool(show_progress),
         )
 
