@@ -11,8 +11,6 @@ Workflow:
 from __future__ import annotations
 
 import argparse
-import shutil
-import sys
 import time as time_module
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,22 +113,6 @@ def load_crossing_component(component_name: str = "ebeam_crossing4"):
         f"UBC load reason: {type(ubc_exc).__name__ if ubc_exc else 'n/a'}: {ubc_exc}"
     )
     return gf.components.crossing(), "gdsfactory.components.crossing"
-
-
-QUALITY_PRESETS = {
-    "fast": {
-        "num_freqs": 11,
-        "points_per_wavelength": 10,
-        "run_after_sources_uoc": 18.0,
-        "animation_frames": 0,
-    },
-    "high": {
-        "num_freqs": 51,
-        "points_per_wavelength": 20,
-        "run_after_sources_uoc": 45.0,
-        "animation_frames": 36,
-    },
-}
 
 
 @dataclass(frozen=True)
@@ -326,30 +308,6 @@ def run_compiled_until_monitor_decay(
     if show_progress:
         print()
     return steps_done
-
-
-def cli_option_present(argv: list[str], *flags: str) -> bool:
-    for token in argv:
-        for flag in flags:
-            if token == flag or token.startswith(flag + "="):
-                return True
-    return False
-
-
-def apply_quality_preset(args, argv: list[str]):
-    preset = QUALITY_PRESETS[str(args.quality)]
-    option_map = {
-        "num_freqs": ("--num-freqs",),
-        "points_per_wavelength": ("--points-per-wavelength",),
-        "run_after_sources_uoc": ("--run-after-sources-uoc",),
-        "animation_frames": ("--animation-frames",),
-    }
-    applied = {}
-    for attr, value in preset.items():
-        if not cli_option_present(argv, *option_map[attr]):
-            setattr(args, attr, value)
-            applied[attr] = value
-    return applied
 
 
 def _layer_spec_to_tuple(layer_spec, pdk=None) -> tuple[int, int] | None:
@@ -552,25 +510,17 @@ def line_clearance_to_box(line, bounds):
 
 def cleanup_crossing_optional_artifacts(
     out_dir: Path,
-    *,
-    write_plots: bool,
-    write_mode_plots: bool,
-    write_animation: bool,
 ) -> None:
-    if not write_plots:
-        for name in (
-            "beamz_crossing_sparams_db.png",
-            "beamz_crossing_sparams_db_full.png",
-            "beamz_crossing_sparams_raw_vs_corrected.png",
-            "beamz_crossing_closure_compare.png",
-            "beamz_crossing_overview.png",
-            "beamz_crossing_signal.png",
-        ):
-            (out_dir / name).unlink(missing_ok=True)
-    if not write_animation:
-        (out_dir / "beamz_crossing_field_propagation.mp4").unlink(missing_ok=True)
-    if not write_mode_plots:
-        shutil.rmtree(out_dir / "modes", ignore_errors=True)
+    for name in (
+        "beamz_crossing_sparams_db.png",
+        "beamz_crossing_sparams.png",
+        "beamz_crossing_sparams_db_full.png",
+        "beamz_crossing_sparams_raw_vs_corrected.png",
+        "beamz_crossing_closure_compare.png",
+        "beamz_crossing_signal.png",
+        "beamz_crossing_field_propagation.mp4",
+    ):
+        (out_dir / name).unlink(missing_ok=True)
 
 
 def safe_complex_ratio(num: np.ndarray, den: np.ndarray, eps: float = 1e-18) -> np.ndarray:
@@ -680,97 +630,6 @@ def dft_directional_power_spectrum(
         raise ValueError(f"Unsupported direction '{direction}'.")
     d_area = float(sim.resolution) * float(sim.resolution)
     return np.asarray(sign * np.sum(s_axis, axis=1) * d_area, dtype=float)
-
-
-def save_signal_plot(time: np.ndarray, signal: np.ndarray, out_path: Path) -> None:
-    fig, ax = plt.subplots(1, 1, figsize=(6.4, 2.6), dpi=260)
-    ax.plot(time / 1e-15, signal, color="black", lw=1.5)
-    ax.set_xlabel("time (fs)")
-    ax.set_ylabel("amplitude")
-    ax.set_title("Excitation Signal")
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=300)
-    plt.close(fig)
-
-
-def save_closure_compare_plot(
-    wavelengths_um: np.ndarray,
-    modal_closure: np.ndarray,
-    flux_closure: np.ndarray,
-    valid_mask: np.ndarray,
-    out_path: Path,
-) -> None:
-    wl = np.asarray(wavelengths_um, dtype=float)
-    modal = np.asarray(modal_closure, dtype=float)
-    flux = np.asarray(flux_closure, dtype=float)
-    mask = np.asarray(valid_mask, dtype=bool)
-    modal = np.where(mask, modal, np.nan)
-    flux = np.where(mask, flux, np.nan)
-    fig, ax = plt.subplots(1, 1, figsize=(5.8, 3.4), dpi=280)
-    ax.plot(wl, modal, color="tab:blue", lw=1.9, label="Modal closure")
-    ax.plot(wl, flux, color="tab:orange", lw=1.9, label="Flux closure")
-    ax.axhline(1.0, color="black", lw=1.0, ls="--", alpha=0.7)
-    ax.set_xlabel("Wavelength (um)")
-    ax.set_ylabel("Closure")
-    ax.set_title("Modal vs Flux Closure")
-    ax.grid(alpha=0.28)
-    ax.legend(loc="best", fontsize=8, frameon=False)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=300)
-    plt.close(fig)
-
-
-def save_raw_vs_corrected_sparams_plot(
-    *,
-    wavelengths_um: np.ndarray,
-    source_port: str,
-    all_ports: list[str],
-    s_cols_raw: dict[str, np.ndarray],
-    s_cols: dict[str, np.ndarray],
-    valid_mask: np.ndarray,
-    port_quality: dict[str, np.ndarray],
-    out_path: Path,
-) -> None:
-    wl = np.asarray(wavelengths_um, dtype=float)
-    mask = np.asarray(valid_mask, dtype=bool)
-    color_cycle = ["black", "tab:blue", "tab:orange", "tab:green", "tab:red"]
-    fig, ax = plt.subplots(1, 1, figsize=(6.0, 3.8), dpi=300)
-    for i, p in enumerate(all_ports):
-        q = np.asarray(port_quality[p], dtype=bool)
-        raw_db = 20.0 * np.log10(np.maximum(np.abs(np.asarray(s_cols_raw[p], dtype=np.complex128)), 1e-12))
-        corr_db = 20.0 * np.log10(np.maximum(np.abs(np.asarray(s_cols[p], dtype=np.complex128)), 1e-12))
-        raw_db = np.where(mask & q, raw_db, np.nan)
-        corr_db = np.where(mask & q, corr_db, np.nan)
-        color = color_cycle[i % len(color_cycle)]
-        ax.plot(
-            wl,
-            raw_db,
-            color=color,
-            lw=1.4,
-            ls="--",
-            alpha=0.8,
-            label=rf"raw $|S_{{{p[1:]}{source_port[1:]}}}|$",
-        )
-        ax.plot(
-            wl,
-            corr_db,
-            color=color,
-            lw=2.0,
-            label=rf"corr $|S_{{{p[1:]}{source_port[1:]}}}|$",
-        )
-    ax.set_xlim(float(np.min(wl)), float(np.max(wl)))
-    ax.set_ylim(-55.0, 2.0)
-    ax.set_xlabel("Wavelength (um)")
-    ax.set_ylabel("Magnitude (dB)")
-    ax.set_title("Raw vs Corrected S-Parameters")
-    ax.grid(which="major", alpha=0.25, lw=0.6)
-    ax.minorticks_on()
-    ax.grid(which="minor", alpha=0.12, lw=0.4)
-    ax.legend(loc="best", fontsize=8, frameon=False, ncol=2)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=300)
-    plt.close(fig)
 
 
 def save_mode_profile_plot(
@@ -1490,10 +1349,6 @@ def prepare_crossing_setup(
     run_after_s = pulse.run_after_s
     time = pulse.time
     signal = pulse.signal
-    signal_path = out_dir / "beamz_crossing_signal.png"
-    if write_plots:
-        save_signal_plot(time, signal, signal_path)
-
     source = ModeSource(
         grid=grid,
         center=source_center,
@@ -2322,8 +2177,6 @@ def save_crossing_outputs(
     simulation_state: dict[str, object],
     out_dir: Path,
     write_plots: bool,
-    write_mode_plots: bool,
-    write_animation: bool,
 ):
     source_port = str(results["source_port"])
     all_ports = list(results["all_ports"])
@@ -2343,76 +2196,7 @@ def save_crossing_outputs(
     flux_ref_ratio = np.asarray(results["flux_ref_ratio"], dtype=float)
     flux_out = dict(results["flux_out"])
     flux_ratio = dict(results["flux_ratio"])
-    field_hist = np.asarray(simulation_state["field_hist"], dtype=float)
-    field_component = str(simulation_state["field_component"])
-    eps_grid = simulation_state["eps_grid"]
-
-    data_path = out_dir / "beamz_crossing_sparams.npz"
-    np.savez(
-        data_path,
-        source_port=source_port,
-        output_ports=np.asarray(all_ports, dtype=object),
-        selected_layer=np.asarray([setup["layer_resolved"]], dtype=object),
-        stack_used=np.asarray([bool(setup["stack_meta"].get("used_pdk_stack", False))], dtype=bool),
-        selected_monitors=np.asarray([selected_monitors[p] for p in all_ports], dtype=object),
-        mode_indices=np.asarray([mode_indices[p] for p in all_ports], dtype=int),
-        wave_keys=np.asarray([port_diagnostics[p]["wave_key"] for p in all_ports], dtype=object),
-        wavelengths_um=wl_um,
-        valid_mask=valid_mask.astype(bool),
-        closure=closure,
-        incident_device=np.asarray(results["source_incident"], dtype=np.complex128),
-        incident_opposite=np.asarray(results["source_incident_opposite"], dtype=np.complex128),
-        incident_wave_key=np.asarray([results["source_incident_key"]], dtype=object),
-        incident_dominance_db=np.asarray([results["incident_dominance"]], dtype=float),
-        incident_ref_ratio=np.asarray(results["ref_ratio"], dtype=np.complex128),
-        ref_norm_applied=np.asarray([results["ref_norm_applied"]], dtype=bool),
-        ref_refl_subtracted=np.asarray([results["ref_refl_subtracted"]], dtype=bool),
-        requested_run_after_sources_uoc=np.asarray(
-            [setup["requested_run_after_sources_uoc"]],
-            dtype=float,
-        ),
-        effective_run_after_sources_uoc=np.asarray(
-            [setup["effective_run_after_sources_uoc"]],
-            dtype=float,
-        ),
-        max_run_after_sources_uoc=np.asarray(
-            [setup["max_run_after_sources_uoc"]],
-            dtype=float,
-        ),
-        min_run_after_sources_uoc=np.asarray(
-            [setup["min_run_after_sources_uoc"]],
-            dtype=float,
-        ),
-        pulse_sigma_fs=np.asarray([setup["pulse_sigma_fs"]], dtype=float),
-        pulse_peak_time_fs=np.asarray([setup["pulse_peak_time_fs"]], dtype=float),
-        pulse_source_end_time_fs=np.asarray([setup["pulse_source_end_time_fs"]], dtype=float),
-        pulse_run_after_time_fs=np.asarray([setup["pulse_run_after_time_fs"]], dtype=float),
-        pulse_run_cap_time_fs=np.asarray([setup["pulse_run_cap_time_fs"]], dtype=float),
-        executed_steps=np.asarray([simulation_state["executed_steps"]], dtype=int),
-        sim_time_fs=np.asarray([simulation_state["sim_time_fs"]], dtype=float),
-        solver_wall_s=np.asarray([simulation_state["solver_wall_s"]], dtype=float),
-        solver_mcups=np.asarray([simulation_state["mcups"]], dtype=float),
-        port_wave_dominance_db=np.asarray(
-            [results["port_wave_dominance_db"][p] for p in all_ports],
-            dtype=float,
-        ),
-        flux_in=flux_in,
-        flux_ref=flux_ref,
-        flux_closure=flux_closure,
-        flux_ref_ratio=flux_ref_ratio,
-        **{f"flux_{p}": np.asarray(flux_out[p], dtype=float) for p in output_ports},
-        **{f"flux_ratio_{p}": np.asarray(flux_ratio[p], dtype=float) for p in output_ports},
-        **{f"quality_{p}": np.asarray(port_quality[p], dtype=bool) for p in all_ports},
-        **{f"s_raw_{p}_{source_port}": np.asarray(s_cols_raw[p], dtype=np.complex128) for p in all_ports},
-        **{f"s_{p}_{source_port}": np.asarray(s_cols[p], dtype=np.complex128) for p in all_ports},
-    )
-
-    fig_path_limited = out_dir / "beamz_crossing_sparams_db.png"
-    fig_path_full = out_dir / "beamz_crossing_sparams_db_full.png"
-    fig_path_compare = out_dir / "beamz_crossing_sparams_raw_vs_corrected.png"
-    closure_plot_path = out_dir / "beamz_crossing_closure_compare.png"
-    anim_path = out_dir / "beamz_crossing_field_propagation.mp4"
-    anim_ok = False
+    fig_path_limited = out_dir / "beamz_crossing_sparams.png"
     if write_plots:
         color_cycle = ["black", "tab:blue", "tab:orange", "tab:green", "tab:red"]
         plot_series = {}
@@ -2444,72 +2228,9 @@ def save_crossing_outputs(
         fig_limited.tight_layout()
         fig_limited.savefig(fig_path_limited, dpi=320)
         plt.close(fig_limited)
-
-        fig_full, ax_full = plt.subplots(1, 1, figsize=(5.6, 3.5), dpi=320)
-        for i, p in enumerate(all_ports):
-            ax_full.plot(
-                wl_um,
-                plot_series[p],
-                "o-",
-                color=color_cycle[i % len(color_cycle)],
-                lw=2.0,
-                ms=4.5,
-                label=rf"$|S_{{{p[1:]}{source_port[1:]}}}|$",
-            )
-        ax_full.set_xlim(float(np.min(wl_um)), float(np.max(wl_um)))
-        ax_full.set_xlabel("Wavelength (um)")
-        ax_full.set_ylabel("Magnitude (dB)")
-        ax_full.set_title(f"Crossing S-Parameters (Full Range, {setup['component_label']})")
-        ax_full.grid(which="major", alpha=0.25, lw=0.6)
-        ax_full.minorticks_on()
-        ax_full.grid(which="minor", alpha=0.12, lw=0.4)
-        ax_full.legend(loc="best", fontsize=9, frameon=False)
-        fig_full.tight_layout()
-        fig_full.savefig(fig_path_full, dpi=320)
-        plt.close(fig_full)
-
-        save_raw_vs_corrected_sparams_plot(
-            wavelengths_um=wl_um,
-            source_port=source_port,
-            all_ports=all_ports,
-            s_cols_raw=s_cols_raw,
-            s_cols=s_cols,
-            valid_mask=valid_mask,
-            port_quality=port_quality,
-            out_path=fig_path_compare,
-        )
-        save_closure_compare_plot(
-            wavelengths_um=wl_um,
-            modal_closure=closure,
-            flux_closure=flux_closure,
-            valid_mask=valid_mask,
-            out_path=closure_plot_path,
-        )
-    if write_animation and eps_grid is not None:
-        anim_ok = save_field_animation(
-            field_hist=field_hist,
-            eps=eps_grid,
-            width=setup["design"].width,
-            height=setup["design"].height,
-            field_label=field_component,
-            out_path=anim_path,
-            fps=20,
-        )
-
-    print(f"Saved S-parameter data: {data_path}")
     if write_plots:
-        print(f"Saved dB plot (limited -55..0 dB): {fig_path_limited}")
-        print(f"Saved dB plot (full range): {fig_path_full}")
-        print(f"Saved closure comparison plot: {closure_plot_path}")
+        print(f"Saved S-parameter plot: {fig_path_limited}")
         print(f"Saved overview plot: {out_dir / 'beamz_crossing_overview.png'}")
-        print(f"Saved signal plot: {out_dir / 'beamz_crossing_signal.png'}")
-    if write_mode_plots:
-        print(f"Saved mode plots directory: {out_dir / 'modes'}")
-    if write_animation:
-        if anim_ok:
-            print(f"Saved field animation: {anim_path}")
-        else:
-            print("Field animation was not saved (no recorded frames or ffmpeg unavailable).")
 
 
 def run_crossing(
@@ -2555,12 +2276,7 @@ def run_crossing(
     source_direction_mode: str = "inward",
 ) -> dict[str, object]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    cleanup_crossing_optional_artifacts(
-        out_dir,
-        write_plots=write_plots,
-        write_mode_plots=write_mode_plots,
-        write_animation=write_animation,
-    )
+    cleanup_crossing_optional_artifacts(out_dir)
     setup = prepare_crossing_setup(
         component_name=component_name,
         wl0=wl0,
@@ -2625,8 +2341,6 @@ def run_crossing(
         simulation_state=simulation_state,
         out_dir=out_dir,
         write_plots=write_plots,
-        write_mode_plots=write_mode_plots,
-        write_animation=write_animation,
     )
     return {
         "component_label": setup["component_label"],
@@ -2664,270 +2378,34 @@ def run_crossing(
     }
 
 
-def evaluate_straight_calibration(
-    result: dict[str, object],
-    *,
-    min_through_db: float,
-    max_reflection_db: float,
-    max_closure_error: float,
-) -> tuple[bool, dict[str, float | str]]:
-    source_port = str(result["source_port"])
-    all_ports = [str(p) for p in result["all_ports"]]
-    s_cols = result["s_cols"]
-    valid_mask = np.asarray(result["valid_mask"], dtype=bool)
-    port_quality = result["port_quality"]
-    closure = np.asarray(result["closure"], dtype=float)
-    if source_port not in all_ports:
-        raise ValueError("Calibration result missing source port in all_ports.")
-
-    def _masked_db(port_name: str) -> np.ndarray:
-        s = np.asarray(s_cols[port_name], dtype=np.complex128)
-        q = np.asarray(port_quality[port_name], dtype=bool)
-        m = valid_mask & q
-        db = 20.0 * np.log10(np.maximum(np.abs(s), 1e-12))
-        return np.where(m, db, np.nan)
-
-    refl_db = _masked_db(source_port)
-    refl_peak_db = float(np.nanmax(refl_db)) if np.any(np.isfinite(refl_db)) else float("inf")
-
-    output_ports = [p for p in all_ports if p != source_port]
-    if not output_ports:
-        raise ValueError("Calibration requires at least one output port.")
-    through_port = max(
-        output_ports,
-        key=lambda p: float(
-            np.nanmedian(np.abs(np.asarray(s_cols[p], dtype=np.complex128)[valid_mask]))
-            if np.any(valid_mask)
-            else -np.inf
-        ),
-    )
-    through_db = _masked_db(through_port)
-    through_med_db = (
-        float(np.nanmedian(through_db)) if np.any(np.isfinite(through_db)) else float("-inf")
-    )
-
-    closure_valid = np.where(valid_mask, closure, np.nan)
-    closure_err = (
-        float(np.nanmax(np.abs(closure_valid - 1.0)))
-        if np.any(np.isfinite(closure_valid))
-        else float("inf")
-    )
-
-    passed = (
-        through_med_db >= float(min_through_db)
-        and refl_peak_db <= float(max_reflection_db)
-        and closure_err <= float(max_closure_error)
-    )
-    summary = {
-        "through_port": through_port,
-        "through_median_db": through_med_db,
-        "reflection_peak_db": refl_peak_db,
-        "closure_max_abs_error": closure_err,
-    }
-    return passed, summary
-
-
-def choose_best_calibration_direction(
-    summaries: dict[str, tuple[bool, dict[str, float | str]]],
-    *,
-    min_through_db: float,
-    max_reflection_db: float,
-    max_closure_error: float,
-) -> str:
-    def _score(item: tuple[bool, dict[str, float | str]]) -> float:
-        passed, summary = item
-        through = float(summary.get("through_median_db", -np.inf))
-        refl = float(summary.get("reflection_peak_db", np.inf))
-        closure = float(summary.get("closure_max_abs_error", np.inf))
-        score = through - 0.30 * refl - 8.0 * closure
-        if passed:
-            score += 100.0
-        score -= 10.0 * max(0.0, min_through_db - through)
-        score -= 2.0 * max(0.0, refl - max_reflection_db)
-        score -= 25.0 * max(0.0, closure - max_closure_error)
-        return score
-
-    ranked = sorted(
-        summaries.items(),
-        key=lambda kv: _score(kv[1]),
-        reverse=True,
-    )
-    return str(ranked[0][0])
-
-
 def build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--quality",
-        type=str,
-        default="fast",
-        choices=sorted(QUALITY_PRESETS.keys()),
-        help="Runtime preset. 'fast' is for iteration; 'high' restores the previous heavy defaults.",
-    )
+    parser = argparse.ArgumentParser(description="Run the standard BeamZ crossing example.")
     parser.add_argument(
         "--component",
         type=str,
         default="ebeam_crossing4",
-        help="Preferred crossing component name from active PDK.",
+        help="Crossing component name from the active PDK.",
     )
     parser.add_argument("--wl0-nm", type=float, default=1550.0, help="Center wavelength in nm.")
-    parser.add_argument("--wl-min-nm", type=float, default=1530.0, help="Sweep min wavelength in nm.")
-    parser.add_argument("--wl-max-nm", type=float, default=1570.0, help="Sweep max wavelength in nm.")
+    parser.add_argument("--wl-min-nm", type=float, default=1530.0, help="Sweep minimum wavelength in nm.")
+    parser.add_argument("--wl-max-nm", type=float, default=1570.0, help="Sweep maximum wavelength in nm.")
     parser.add_argument(
         "--num-freqs",
         type=int,
         default=51,
-        help="Number of DFT frequency points (recommended 11..51).",
-    )
-    parser.add_argument(
-        "--n-core",
-        type=float,
-        default=3.47,
-        help="Core refractive index (default Si-like, matching gsim reference).",
-    )
-    parser.add_argument(
-        "--n-clad",
-        type=float,
-        default=1.44,
-        help="Cladding refractive index (default SiO2-like).",
-    )
-    parser.add_argument(
-        "--polarization",
-        type=str,
-        default="te",
-        choices=["te", "tm"],
-        help="Modal polarization used for source/ports.",
+        help="Number of DFT frequency points.",
     )
     parser.add_argument(
         "--points-per-wavelength",
         type=int,
-        default=20,
-        help="Grid resolution in points per wavelength (gsim-like default).",
-    )
-    parser.add_argument(
-        "--no-z-crop-auto",
-        action="store_true",
-        help="Disable core-centered z-crop style margins (gsim-like behavior is enabled by default).",
-    )
-    parser.add_argument(
-        "--margin-z-above-um",
-        type=float,
-        default=0.5,
-        help="Top z-margin above core when z-crop-auto is enabled (um).",
-    )
-    parser.add_argument(
-        "--margin-z-below-um",
-        type=float,
-        default=0.5,
-        help="Bottom z-margin below core when z-crop-auto is enabled (um).",
-    )
-    parser.add_argument(
-        "--extension-um",
-        type=float,
-        default=1.5,
-        help="Requested straight waveguide extension added beyond each imported port; enlarged automatically if needed for stable source/monitor placement.",
-    )
-    parser.add_argument(
-        "--port-overlap-um",
-        type=float,
-        default=0.10,
-        help="Extra inward overlap of extension waveguides into the imported cell (um).",
-    )
-    parser.add_argument(
-        "--core-thickness-um",
-        type=float,
-        default=0.22,
-        help="Core layer thickness in microns (3D).",
-    )
-    parser.add_argument(
-        "--clad-below-um",
-        type=float,
-        default=0.5,
-        help="Bottom cladding thickness in microns (3D).",
-    )
-    parser.add_argument(
-        "--clad-above-um",
-        type=float,
-        default=0.5,
-        help="Top cladding thickness in microns (3D).",
-    )
-    parser.add_argument(
-        "--top-clad-shift-um",
-        type=float,
-        default=0.0,
-        help=(
-            "Transfer this much cladding thickness from bottom to top "
-            "to increase top clearance without growing total depth."
-        ),
-    )
-    parser.add_argument(
-        "--min-bottom-clad-um",
-        type=float,
-        default=0.8,
-        help="Minimum bottom cladding retained when applying --top-clad-shift-um.",
-    )
-    parser.add_argument(
-        "--monitor-candidates",
-        type=int,
-        default=1,
-        help="Number of output-monitor placement candidates per port (1..3).",
-    )
-    parser.add_argument(
-        "--mode-search-max",
-        type=int,
-        default=0,
-        help="Max mode index for automatic search (0..3).",
-    )
-    parser.add_argument(
-        "--pml-um",
-        type=float,
-        default=1.0,
-        help="PML thickness in microns (Meep-style crossing runs typically use 1.0 um).",
-    )
-    parser.add_argument(
-        "--port-margin-um",
-        type=float,
-        default=0.5,
-        help="Extra monitor/source span added on each side of port width (um).",
-    )
-    parser.add_argument(
-        "--source-port-offset-um",
-        type=float,
-        default=0.1,
-        help="Additional outward shift applied to the source/monitor block beyond the default stable-launch placement (um).",
-    )
-    parser.add_argument(
-        "--distance-source-to-monitors-um",
-        type=float,
-        default=0.2,
-        help="Requested spacing between the source plane and the adjacent modal monitors; a stability floor is applied automatically (um).",
+        default=10,
+        help="Grid resolution in points per wavelength.",
     )
     parser.add_argument(
         "--run-after-sources-uoc",
         type=float,
-        default=45.0,
-        help="Requested run duration after the source tail in um/c units; increased automatically when the path length and spectral decay floor require a longer window.",
-    )
-    parser.add_argument(
-        "--source-direction",
-        type=str,
-        default="auto",
-        choices=["auto", "inward", "outward"],
-        help=(
-            "Source launch direction policy relative to gdsf port mapping. "
-            "'auto' uses straight calibration (if enabled) to choose inward/outward."
-        ),
-    )
-    parser.add_argument(
-        "--wave-dominance-min-db",
-        type=float,
-        default=6.0,
-        help="Minimum selected/opposite modal power dominance (dB) required per port.",
-    )
-    parser.add_argument(
-        "--no-strict-normalization-qa",
-        action="store_true",
-        help="Do not fail the run when wave-dominance QA checks fail.",
+        default=90.0,
+        help="Requested minimum settling window after the source tail in um/c units.",
     )
     parser.add_argument(
         "--quiet-run",
@@ -2935,249 +2413,60 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Disable compiled-run progress output.",
     )
     parser.add_argument(
-        "--animation-frames",
-        type=int,
-        default=36,
-        help="Number of field-slice frames to capture for MP4 when --write-animation is enabled.",
-    )
-    parser.add_argument(
-        "--write-plots",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Save signal, overview, closure, and S-parameter PNG plots.",
-    )
-    parser.add_argument(
-        "--write-mode-plots",
-        action="store_true",
-        help="Initialize debug ModeSource probes and save per-placement mode-profile PNGs.",
-    )
-    parser.add_argument(
-        "--write-animation",
-        action="store_true",
-        help="Capture field slices during the run and save an MP4 animation.",
-    )
-    parser.add_argument(
-        "--layer",
-        type=str,
-        default="auto",
-        help="GDS layer,datatype used for core extraction (example: 1,0), or 'auto'.",
-    )
-    parser.add_argument(
-        "--no-use-pdk-stack",
-        action="store_true",
-        help="Disable PDK layer-stack based layer/thickness/cladding resolution.",
-    )
-    parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("benchmarks/results/compact_models"),
-        help="Output directory for compact-model data and plots.",
-    )
-    parser.add_argument(
-        "--run-calibration",
-        action="store_true",
-        help="Run straight-waveguide calibration before extracting crossing S-parameters.",
-    )
-    parser.add_argument(
-        "--calibration-component",
-        type=str,
-        default="straight",
-        help="Component used for calibration sanity check.",
-    )
-    parser.add_argument(
-        "--cal-min-through-db",
-        type=float,
-        default=-1.5,
-        help="Calibration pass threshold: median through must be >= this dB value.",
-    )
-    parser.add_argument(
-        "--cal-max-reflection-db",
-        type=float,
-        default=-15.0,
-        help="Calibration pass threshold: worst reflection must be <= this dB value.",
-    )
-    parser.add_argument(
-        "--cal-max-closure-error",
-        type=float,
-        default=0.35,
-        help="Calibration pass threshold: max |closure-1| over valid frequencies.",
-    )
-    parser.add_argument(
-        "--no-calibration-reference-normalization",
-        action="store_true",
-        help="Disable applying calibration incident normalization to the device run.",
-    )
-    parser.add_argument(
-        "--no-calibration-reflection-subtraction",
-        action="store_true",
-        help="Disable calibration-based source reflection subtraction on the device run.",
+        default=Path("benchmarks/results/beamz_crossing"),
+        help="Output directory for the S-parameter and overview plots.",
     )
     return parser
 
 
 def main():
-    argv = sys.argv[1:]
-    args = build_argparser().parse_args(argv)
-    applied_preset = apply_quality_preset(args, argv)
+    args = build_argparser().parse_args()
     if args.num_freqs < 2:
         raise ValueError("--num-freqs must be >= 2.")
     if args.wl_min_nm >= args.wl_max_nm:
         raise ValueError("--wl-min-nm must be smaller than --wl-max-nm.")
     if args.wl0_nm < args.wl_min_nm or args.wl0_nm > args.wl_max_nm:
         raise ValueError("--wl0-nm must be within [wl-min-nm, wl-max-nm].")
-    if applied_preset:
-        preset_desc = ", ".join(f"{k}={v}" for k, v in applied_preset.items())
-        print(f"Applied quality preset '{args.quality}': {preset_desc}")
-
-    reference_incident = None
-    reference_reflection = None
-    selected_source_direction_mode = (
-        args.source_direction if args.source_direction in {"inward", "outward"} else "inward"
-    )
-    if args.source_direction == "auto" and not args.run_calibration:
-        print(
-            "source-direction=auto requested without calibration; defaulting to 'inward'. "
-            "Use --run-calibration to audit inward/outward automatically."
-        )
-    if args.run_calibration:
-        direction_candidates = (
-            ["inward", "outward"] if args.source_direction == "auto" else [args.source_direction]
-        )
-        cal_runs: dict[str, dict[str, object]] = {}
-        cal_summaries: dict[str, tuple[bool, dict[str, float | str]]] = {}
-        for dir_mode in direction_candidates:
-            cal_out = args.out_dir / "calibration" / dir_mode
-            print(
-                "Running straight-waveguide calibration gate: "
-                f"component={args.calibration_component}, out_dir={cal_out}, "
-                f"source_direction={dir_mode}"
-            )
-            cal_result = run_crossing(
-                component_name=args.calibration_component,
-                wl0=args.wl0_nm * 1e-9,
-                wl_min=args.wl_min_nm * 1e-9,
-                wl_max=args.wl_max_nm * 1e-9,
-                num_freqs=args.num_freqs,
-                n_core=args.n_core,
-                n_clad=args.n_clad,
-                polarization=args.polarization,
-                points_per_wavelength=args.points_per_wavelength,
-                layer=parse_layer(args.layer),
-                use_pdk_stack=not args.no_use_pdk_stack,
-                z_crop_auto=not args.no_z_crop_auto,
-                margin_z_above_um=args.margin_z_above_um,
-                margin_z_below_um=args.margin_z_below_um,
-                extension_um=args.extension_um,
-                port_overlap_um=args.port_overlap_um,
-                core_t_um=args.core_thickness_um,
-                clad_below_um=args.clad_below_um,
-                clad_above_um=args.clad_above_um,
-                top_clad_shift_um=args.top_clad_shift_um,
-                min_bottom_clad_um=args.min_bottom_clad_um,
-                monitor_candidates=args.monitor_candidates,
-                mode_search_max=args.mode_search_max,
-                pml_um=args.pml_um,
-                port_margin_um=args.port_margin_um,
-                source_port_offset_um=args.source_port_offset_um,
-                distance_source_to_monitors_um=args.distance_source_to_monitors_um,
-                run_after_sources_uoc=args.run_after_sources_uoc,
-                animation_frames=0,
-                write_plots=False,
-                write_mode_plots=False,
-                write_animation=False,
-                show_progress=not args.quiet_run,
-                out_dir=cal_out,
-                wave_dominance_min_db=args.wave_dominance_min_db,
-                # Audit run should not abort before we can compare candidates.
-                strict_normalization_qa=False,
-                source_direction_mode=dir_mode,
-            )
-            cal_ok, cal_summary = evaluate_straight_calibration(
-                cal_result,
-                min_through_db=args.cal_min_through_db,
-                max_reflection_db=args.cal_max_reflection_db,
-                max_closure_error=args.cal_max_closure_error,
-            )
-            cal_runs[dir_mode] = cal_result
-            cal_summaries[dir_mode] = (cal_ok, cal_summary)
-            print(
-                f"Calibration summary ({dir_mode}): "
-                f"through_port={cal_summary['through_port']}, "
-                f"through_median_db={cal_summary['through_median_db']:.2f}, "
-                f"reflection_peak_db={cal_summary['reflection_peak_db']:.2f}, "
-                f"closure_max_abs_error={cal_summary['closure_max_abs_error']:.3f}, "
-                f"pass={cal_ok}"
-            )
-
-        selected_source_direction_mode = choose_best_calibration_direction(
-            cal_summaries,
-            min_through_db=args.cal_min_through_db,
-            max_reflection_db=args.cal_max_reflection_db,
-            max_closure_error=args.cal_max_closure_error,
-        )
-        print(
-            f"Selected source-direction mode from calibration audit: {selected_source_direction_mode}"
-        )
-        cal_ok, cal_summary = cal_summaries[selected_source_direction_mode]
-        cal_result = cal_runs[selected_source_direction_mode]
-        if not cal_ok:
-            raise RuntimeError(
-                "Calibration gate failed for selected direction mode "
-                f"'{selected_source_direction_mode}'. "
-                "Adjust source/monitor placement and normalization before device extraction."
-            )
-        if not args.no_calibration_reference_normalization:
-            reference_incident = np.asarray(cal_result["incident_device"], dtype=np.complex128)
-            if not args.no_calibration_reflection_subtraction:
-                cal_source = str(cal_result["source_port"])
-                reference_reflection = np.asarray(
-                    cal_result["s_cols"][cal_source], dtype=np.complex128
-                )
-            print(
-                "Using calibration-derived reference normalization for device extraction: "
-                f"incident=yes, reflection_subtraction={not args.no_calibration_reflection_subtraction}"
-            )
-
     run_crossing(
         component_name=args.component,
         wl0=args.wl0_nm * 1e-9,
         wl_min=args.wl_min_nm * 1e-9,
         wl_max=args.wl_max_nm * 1e-9,
         num_freqs=args.num_freqs,
-        n_core=args.n_core,
-        n_clad=args.n_clad,
-        polarization=args.polarization,
+        n_core=3.47,
+        n_clad=1.44,
+        polarization="te",
         points_per_wavelength=args.points_per_wavelength,
-        layer=parse_layer(args.layer),
-        use_pdk_stack=not args.no_use_pdk_stack,
-        z_crop_auto=not args.no_z_crop_auto,
-        margin_z_above_um=args.margin_z_above_um,
-        margin_z_below_um=args.margin_z_below_um,
-        extension_um=args.extension_um,
-        port_overlap_um=args.port_overlap_um,
-        core_t_um=args.core_thickness_um,
-        clad_below_um=args.clad_below_um,
-        clad_above_um=args.clad_above_um,
-        top_clad_shift_um=args.top_clad_shift_um,
-        min_bottom_clad_um=args.min_bottom_clad_um,
-        monitor_candidates=args.monitor_candidates,
-        mode_search_max=args.mode_search_max,
-        pml_um=args.pml_um,
-        port_margin_um=args.port_margin_um,
-        source_port_offset_um=args.source_port_offset_um,
-        distance_source_to_monitors_um=args.distance_source_to_monitors_um,
+        layer=None,
+        use_pdk_stack=True,
+        z_crop_auto=True,
+        margin_z_above_um=0.5,
+        margin_z_below_um=0.5,
+        extension_um=1.5,
+        port_overlap_um=0.10,
+        core_t_um=0.22,
+        clad_below_um=0.5,
+        clad_above_um=0.5,
+        top_clad_shift_um=0.0,
+        min_bottom_clad_um=0.8,
+        monitor_candidates=1,
+        mode_search_max=0,
+        pml_um=1.0,
+        port_margin_um=0.5,
+        source_port_offset_um=0.1,
+        distance_source_to_monitors_um=0.2,
         run_after_sources_uoc=args.run_after_sources_uoc,
-        animation_frames=args.animation_frames,
-        write_plots=args.write_plots,
-        write_mode_plots=args.write_mode_plots,
-        write_animation=args.write_animation,
+        animation_frames=0,
+        write_plots=True,
+        write_mode_plots=False,
+        write_animation=False,
         show_progress=not args.quiet_run,
         out_dir=args.out_dir,
-        wave_dominance_min_db=args.wave_dominance_min_db,
-        strict_normalization_qa=not args.no_strict_normalization_qa,
-        reference_incident=reference_incident,
-        reference_reflection=reference_reflection,
-        source_direction_mode=selected_source_direction_mode,
+        wave_dominance_min_db=6.0,
+        strict_normalization_qa=False,
+        source_direction_mode="inward",
     )
 
 
