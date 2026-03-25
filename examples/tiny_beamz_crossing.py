@@ -28,6 +28,8 @@ from beamz.design.io import gdsf
 from beamz.devices.sources.signals import gaussian_band_pulse
 from beamz.visual.example_plots import plot_simulation_overview, plot_sparameters_db
 
+# Fixed example hyperparameters. Edit these directly when using the example as a
+# starting point for another component or sweep.
 OUT_DIR = Path("benchmarks/results/tiny_beamz_crossing")
 COMPONENT_NAME = "ebeam_crossing4"
 NUM_FREQS = 51
@@ -50,6 +52,8 @@ RUN_AFTER_SOURCES_UOC = 90.0
 
 
 def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, mask: np.ndarray) -> float:
+    # Report how cleanly a monitor separates the selected traveling wave from
+    # the opposite-going component.
     sel = np.asarray(a_plus if selector == "plus" else a_minus, dtype=np.complex128)
     opp = np.asarray(a_minus if selector == "plus" else a_plus, dtype=np.complex128)
     valid = np.asarray(mask, dtype=bool)
@@ -60,6 +64,8 @@ def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, ma
     return 10.0 * np.log10(max(p_sel, 1e-18) / max(p_opp, 1e-18))
 
 
+# 1. Import the GDSFactory/PDK component, extrude it to 3D, pad the domain,
+# and extend the ports into uniform straight sections.
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 prepared = gdsf.prepare_component(
     COMPONENT_NAME,
@@ -81,6 +87,8 @@ grid = design.rasterize(resolution=dx)
 freqs = np.linspace(LIGHT_SPEED / WL_MAX, LIGHT_SPEED / WL_MIN, NUM_FREQS, dtype=np.float32)
 wl_um = LIGHT_SPEED / freqs / µm
 
+# 2. Build the source plane and one output monitor plane per port from the
+# imported port metadata.
 src = ports[source_port]
 source_direction = src["direction"]
 span = max(float(src["width"]) + 2.0 * PORT_MARGIN, float(src["width"]) + 0.1 * µm)
@@ -98,6 +106,7 @@ for port_name in output_ports:
     c_out = gdsf.line_center(plane)
     max_output_distance_um = max(max_output_distance_um, float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm)
 
+# 3. Generate the broadband Gaussian pulse and build the source / DFT monitors.
 pulse = gaussian_band_pulse(
     freqs,
     carrier_frequency=LIGHT_SPEED / WL0,
@@ -128,14 +137,21 @@ out_monitors = [
     Monitor(start=out_planes[p][0], end=out_planes[p][1], name=f"{p}_cand0", **monitor_cfg)
     for p in output_ports
 ]
+
+# 4. Feed the design, source, monitors, boundaries, and time array into the
+# simulation object.
 sim = Simulation(
     design=design,
     devices=[source, m_fwd, *out_monitors],
-    boundaries=[PML(edges=["left", "right", "top", "bottom"], thickness=PML_XY), PML(edges=["front", "back"], thickness=PML_Z)],
+    boundaries=[
+        PML(edges=["left", "right", "top", "bottom"], thickness=PML_XY), 
+        PML(edges=["front", "back"], thickness=PML_Z)],
     time=pulse.time,
     resolution=dx,
 )
 
+# 5. Save a compact overview plot of the rasterized structure with the source
+# and monitor planes overlaid.
 print(f"Workload: grid={grid.permittivity.shape}, voxels={int(np.prod(np.asarray(grid.permittivity).shape)):,}, updates~{int(np.prod(np.asarray(grid.permittivity).shape))*len(pulse.time):.3e}")
 plot_simulation_overview(
     OUT_DIR / "beamz_crossing_overview.png",
@@ -148,6 +164,8 @@ plot_simulation_overview(
     monitor_planes={"o1_fwd": fwd_plane, **{f"{p}_cand0": out_planes[p] for p in output_ports}},
 )
 
+# 6. Run in compiled chunks until the monitor power has decayed sufficiently
+# after the pulse leaves the device.
 wall_t0 = pytime.perf_counter()
 executed_steps = sim.run_compiled_until_decay(
     [m_fwd, *out_monitors],
@@ -162,6 +180,8 @@ print(
     f"wall={wall_s:.2f}s, step_rate={executed_steps / wall_s:.2f} steps/s, MCUPS={num_voxels * executed_steps / wall_s / 1e6:.2f}"
 )
 
+# 7. Define one modal port per monitor plane and extract the broadband S-matrix
+# directly from the in-simulation DFT accumulators.
 specs = [
     PortSpec(
         name="o1",
@@ -206,4 +226,6 @@ for port_name in ("o1", "o2", "o3", "o4"):
     mag = abs(s_matrix[(port_name, "o1")][i0])
     print(f"S[{port_name},o1] @ {wl_um[i0]:.4f}um: {20.0 * np.log10(max(mag, 1e-12)):.2f} dB")
 
+# 8. Save the final S-parameter plot using the same helper style as the full
+# example so regression checks remain straightforward.
 plot_sparameters_db(OUT_DIR / "beamz_crossing_sparams.png", wl_um, s_matrix)
