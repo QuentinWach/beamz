@@ -11,13 +11,10 @@ Workflow:
 """
 
 from __future__ import annotations
-
 import time as pytime
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
-
 from beamz import (
     LIGHT_SPEED,
     Design,
@@ -36,18 +33,14 @@ from beamz.devices.sources.signals import gaussian_pulse
 
 OUT_DIR = Path("benchmarks/results/tiny_beamz_crossing")
 COMPONENT_NAME = "ebeam_crossing4"
-WL0 = 1550.0e-9
-WL_MIN = 1530.0e-9
-WL_MAX = 1570.0e-9
 NUM_FREQS = 51
 PPW = 10
+WL0, WL_MIN, WL_MAX = 1550.0e-9, 1530.0e-9, 1570.0e-9
 N_CORE, N_CLAD = 3.47, 1.44
 LAYER = (1, 0)
 CORE_T = 0.22 * µm
-CLAD_BELOW = 0.50 * µm
-CLAD_ABOVE = 0.50 * µm
-PML_XY = 1.0 * µm
-PML_Z = 1.0 * µm
+CLAD_BELOW, CLAD_ABOVE = 0.50 * µm
+PML_XY, PML_Z = 1.0 * µm, 1.0 * µm
 XY_MARGIN = 0.50 * µm
 Z_PADDING = 1.10 * µm
 EXTENSION = 1.50 * µm
