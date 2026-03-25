@@ -685,6 +685,68 @@ class Simulation:
             result["monitors"] = monitors
         return result if result else None
 
+    def run_compiled_until_decay(
+        self,
+        monitors,
+        *,
+        min_time_s=0.0,
+        chunk_steps=None,
+        lookback_records=12,
+        decay_ratio=1e-3,
+        progress=True,
+    ):
+        """Run compiled chunks until monitor power decays after a minimum time."""
+        total_steps = int(self.num_steps - self.current_step)
+        if total_steps <= 0:
+            return 0
+        dt = float(self.dt)
+        chunk_steps = (
+            max(64, min(512, int(np.ceil(total_steps / 24.0))))
+            if chunk_steps is None
+            else max(1, int(chunk_steps))
+        )
+        lookback_records = max(2, int(lookback_records))
+        min_steps = int(np.ceil(max(0.0, float(min_time_s)) / max(dt, 1e-30)))
+        steps_done = 0
+        peak = 0.0
+
+        while steps_done < total_steps:
+            this_chunk = min(chunk_steps, total_steps - steps_done)
+            self.run_compiled(num_steps=this_chunk, progress=False)
+            steps_done += this_chunk
+
+            histories = [
+                np.abs(np.asarray(mon.power_history, dtype=np.float64))
+                for mon in monitors
+                if len(mon.power_history)
+            ]
+            tail = np.inf
+            if histories:
+                peak = max(peak, max(float(np.max(hist)) for hist in histories))
+                tail = max(
+                    float(np.max(hist[-lookback_records:])) for hist in histories
+                )
+
+            if progress:
+                pct = 100.0 * steps_done / max(total_steps, 1)
+                print(
+                    f"\r● Progress: {pct:.0f}% ({steps_done}/{total_steps} steps)",
+                    end="",
+                    flush=True,
+                )
+
+            if (
+                steps_done >= min_steps
+                and peak > 0.0
+                and np.isfinite(tail)
+                and tail <= float(decay_ratio) * peak
+            ):
+                break
+
+        if progress:
+            print()
+        return steps_done
+
     def run_fast(
         self, num_steps=None, record_interval=None, record_fields=None, progress=True
     ):
