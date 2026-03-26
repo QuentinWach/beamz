@@ -110,8 +110,8 @@ def apply_source_specs(
     """Apply unpacked source specs directly."""
     out = arr
     for spec in specs:
-        safe_idx = jnp.clip(abs_step, 0, spec.waveform.shape[0] - 1)
-        amp = spec.waveform[safe_idx]
+        # The compiled loop never advances past the precomputed waveform horizon.
+        amp = spec.waveform[abs_step]
         if spec.is_slab and spec.slab_starts is not None and spec.slab_sizes is not None:
             patch = spec.coeff * amp
             cur = jax.lax.dynamic_slice(out, spec.slab_starts, spec.slab_sizes)
@@ -129,11 +129,10 @@ def apply_batched_slab_sources(
     source_single_slab_dense: bool = False,
 ) -> jnp.ndarray:
     """Apply stacked slab sources via a constant-size fori_loop."""
-    safe_idx = jnp.clip(abs_step, 0, group.waveforms.shape[1] - 1)
     ndim = len(group.max_sizes)
 
     if group.n == 1:
-        amp = group.waveforms[0, safe_idx]
+        amp = group.waveforms[0, abs_step]
         starts_0 = group.starts_tuple[0]
         if source_single_slab_dense:
             pad_width = tuple(
@@ -152,7 +151,7 @@ def apply_batched_slab_sources(
     if group.n == 2:
 
         def apply_one(out, i: int):
-            amp_i = group.waveforms[i, safe_idx]
+            amp_i = group.waveforms[i, abs_step]
             patch_i = group.coeffs[i] * amp_i
             starts_i = group.starts_tuple[i]
             cur_i = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
@@ -161,7 +160,7 @@ def apply_batched_slab_sources(
         return apply_one(apply_one(arr, 0), 1)
 
     def body(i, out):
-        amp = group.waveforms[i, safe_idx]
+        amp = group.waveforms[i, abs_step]
         patch = group.coeffs[i] * amp
         starts_i = [group.starts[i, d] for d in range(ndim)]
         cur = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)

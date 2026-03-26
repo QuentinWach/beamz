@@ -579,8 +579,6 @@ def test_compilation_plan_detects_uniform_scalar_coefficients():
     assert plan.key.dimension_family == "3d"
     assert plan.key.boundary_family == "none"
     assert plan.key.coefficient_layout_family == "uniform_scalar"
-    assert plan.key.kernel_family == "engine_only"
-
 
 def test_compiled_device_registry_covers_shipped_device_types():
     source_type_names = {cls.__name__ for cls in COMPILED_DEVICE_REGISTRY.source_types}

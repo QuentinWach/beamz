@@ -294,6 +294,41 @@ class CompiledSimulation:
             hy_flat = hy.ravel()
             hz_flat = hz.ravel()
 
+            if bm.n_monitors == 1:
+                mi = bm.monitor_indices[0]
+                should_record = (abs_step % bm.record_intervals[0]) == 0
+                can_record = counts[mi] < max_records
+                do_record = should_record & can_record & bm.accumulate_flags[0]
+
+                mask = bm.valid_mask[0]
+                exs = ex_flat[bm.ex_flat_idx[0]] * mask
+                eys = ey_flat[bm.ey_flat_idx[0]] * mask
+                ezs = ez_flat[bm.ez_flat_idx[0]] * mask
+                hxs = hx_flat[bm.hx_flat_idx[0]] * mask
+                hys = hy_flat[bm.hy_flat_idx[0]] * mask
+                hzs = hz_flat[bm.hz_flat_idx[0]] * mask
+
+                sx = eys * hzs - ezs * hys
+                sy = ezs * hxs - exs * hzs
+                sz = exs * hys - eys * hxs
+                power_val = (
+                    jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz))
+                    * bm.power_scales[0]
+                )
+                slot = jnp.minimum(counts[mi], max_records - 1)
+                powers = powers.at[mi, slot].set(
+                    jnp.where(do_record, power_val, powers[mi, slot])
+                )
+                timestamps = timestamps.at[mi, slot].set(
+                    jnp.where(do_record, t_phys, timestamps[mi, slot])
+                )
+                counts = counts.at[mi].set(counts[mi] + jnp.where(do_record, 1, 0))
+                return PowerMonitorState(
+                    powers=powers,
+                    timestamps=timestamps,
+                    counts=counts,
+                )
+
             def _mon_body(i, carry):
                 pwr, ts, cnt = carry
                 mi = bm.monitor_indices[i]
@@ -402,6 +437,74 @@ class CompiledSimulation:
             hx_flat = hx.ravel()
             hy_flat = hy.ravel()
             hz_flat = hz.ravel()
+
+            if bm.n_monitors == 1:
+                mi = bm.monitor_indices[0]
+                should_record = (abs_step % bm.record_intervals[0]) == 0
+                can_record = counts[mi] < max_records
+                do_record = should_record & can_record & bm.accumulate_flags[0]
+
+                mask = bm.valid_mask[0]
+                exs = ex_flat[bm.ex_flat_idx[0]] * mask
+                eys = ey_flat[bm.ey_flat_idx[0]] * mask
+                ezs = ez_flat[bm.ez_flat_idx[0]] * mask
+                hxs = hx_flat[bm.hx_flat_idx[0]] * mask
+                hys = hy_flat[bm.hy_flat_idx[0]] * mask
+                hzs = hz_flat[bm.hz_flat_idx[0]] * mask
+
+                sx = eys * hzs - ezs * hys
+                sy = ezs * hxs - exs * hzs
+                sz = exs * hys - eys * hxs
+                power_val = (
+                    jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz))
+                    * bm.power_scales[0]
+                )
+                axis_i = bm.normal_axes[0]
+                normal_flux = (
+                    jnp.sum(jnp.where(axis_i == 0, sx, jnp.where(axis_i == 1, sy, sz)))
+                    * bm.power_scales[0]
+                )
+                flux_sample = jnp.where(axis_i < 0, power_val, normal_flux)
+
+                slot = jnp.minimum(counts[mi], max_records - 1)
+                powers = powers.at[mi, slot].set(
+                    jnp.where(do_record, power_val, powers[mi, slot])
+                )
+                timestamps = timestamps.at[mi, slot].set(
+                    jnp.where(do_record, t_phys, timestamps[mi, slot])
+                )
+                counts = counts.at[mi].set(counts[mi] + jnp.where(do_record, 1, 0))
+                do_freq = bm.freq_enabled[0] & (
+                    (abs_step % bm.freq_record_intervals[0]) == 0
+                )
+                mask_f = bm.freq_mask[0]
+                row_f_re = freq_flux_re[mi]
+                row_f_im = freq_flux_im[mi]
+                row_ph_re = freq_phase_re[mi]
+                row_ph_im = freq_phase_im[mi]
+                delta_re = flux_sample * dt_scalar * row_ph_re * mask_f
+                delta_im = flux_sample * dt_scalar * row_ph_im * mask_f
+                row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
+                row_f_im = row_f_im + jnp.where(do_freq, delta_im, 0.0)
+                rot_re = bm.freq_rot_re[0]
+                rot_im = bm.freq_rot_im[0]
+                next_ph_re = row_ph_re * rot_re - row_ph_im * rot_im
+                next_ph_im = row_ph_re * rot_im + row_ph_im * rot_re
+                row_ph_re = jnp.where(do_freq, next_ph_re, row_ph_re)
+                row_ph_im = jnp.where(do_freq, next_ph_im, row_ph_im)
+                freq_flux_re = freq_flux_re.at[mi].set(row_f_re)
+                freq_flux_im = freq_flux_im.at[mi].set(row_f_im)
+                freq_phase_re = freq_phase_re.at[mi].set(row_ph_re)
+                freq_phase_im = freq_phase_im.at[mi].set(row_ph_im)
+                return SpectralMonitorState(
+                    powers=powers,
+                    timestamps=timestamps,
+                    counts=counts,
+                    freq_flux_re=freq_flux_re,
+                    freq_flux_im=freq_flux_im,
+                    freq_phase_re=freq_phase_re,
+                    freq_phase_im=freq_phase_im,
+                )
 
             def _mon_body(i, carry):
                 pwr, ts, cnt, f_re, f_im, ph_re, ph_im, d_re, d_im, d_w = carry
