@@ -1049,13 +1049,12 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
         return program, engine_state, monitor_state, coeffs
 
     program, engine_state, monitor_state, coeffs = _compiled_inputs()
-    hlo_text = (
-        program._compiled_scan
-        .lower(engine_state, monitor_state, coeffs)
-        .compile()
-        .as_text()
-        .lower()
+    lowered = (
+        program._compiled_scan.lower(engine_state, coeffs)
+        if getattr(program, "_compiled_mode", "general") == "engine_only"
+        else program._compiled_scan.lower(engine_state, monitor_state, coeffs)
     )
+    hlo_text = lowered.compile().as_text().lower()
     return {"text_len": len(hlo_text), **_hlo_op_counts(hlo_text)}
 
 
@@ -1125,11 +1124,18 @@ def dump_compiled_ir_artifacts(
         current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
     )
     coeffs = program._update_coefficients()
-    lowered = program._compiled_scan.lower(engine_state, monitor_state, coeffs)
+    lowered = (
+        program._compiled_scan.lower(engine_state, coeffs)
+        if getattr(program, "_compiled_mode", "general") == "engine_only"
+        else program._compiled_scan.lower(engine_state, monitor_state, coeffs)
+    )
     hlo_comp = lowered.compiler_ir(dialect="hlo")
 
     # Graph-level view before XLA optimization.
-    jaxpr = jax.make_jaxpr(program._compiled_scan)(engine_state, monitor_state, coeffs)
+    if getattr(program, "_compiled_mode", "general") == "engine_only":
+        jaxpr = jax.make_jaxpr(program._compiled_scan)(engine_state, coeffs)
+    else:
+        jaxpr = jax.make_jaxpr(program._compiled_scan)(engine_state, monitor_state, coeffs)
     (out_dir / "compiled_jaxpr.txt").write_text(str(jaxpr))
 
     # Pre-optimization HLO and optional graph.

@@ -465,9 +465,11 @@ def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
     )
 
     program._build_scan()
-    jaxpr = jax.make_jaxpr(program._compiled_scan)(
-        eng0, mon0, program._update_coefficients()
-    )
+    coeffs = program._update_coefficients()
+    if getattr(program, "_compiled_mode", "general") == "engine_only":
+        jaxpr = jax.make_jaxpr(program._compiled_scan)(eng0, coeffs)
+    else:
+        jaxpr = jax.make_jaxpr(program._compiled_scan)(eng0, mon0, coeffs)
     assert "host_callback" not in str(jaxpr).lower()
 
 

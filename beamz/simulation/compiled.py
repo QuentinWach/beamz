@@ -203,6 +203,7 @@ class CompiledSimulation:
 
     _compiled_scan: callable | None = None
     _compile_count: int = 0
+    _compiled_mode: str = "general"
 
     def _update_coefficients(self) -> UpdateCoefficients:
         """Build runtime coefficient container for jitted scan entrypoint."""
@@ -748,6 +749,357 @@ class CompiledSimulation:
         elif self.monitor_specs:
             monitors_2d = tuple(self.monitor_specs)
 
+        hot_linear_no_monitor = (
+            self.material_spec.model_kind == "linear" and not self.monitor_specs
+        )
+
+        # Hot-path field advance shared by the general loop and the
+        # linear/no-monitor specialization below.
+        def advance_fields(
+            ex: jnp.ndarray,
+            ey: jnp.ndarray,
+            ez: jnp.ndarray,
+            hx: jnp.ndarray,
+            hy: jnp.ndarray,
+            hz: jnp.ndarray,
+            abs_step: jnp.ndarray,
+            coeffs: UpdateCoefficients,
+        ) -> tuple[
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+            jnp.ndarray,
+        ]:
+            h_decay_x, h_source_x = coeffs.h_decay_x, coeffs.h_source_x
+            h_source_lossless_x = coeffs.h_source_lossless_x
+            h_decay_y, h_source_y = coeffs.h_decay_y, coeffs.h_source_y
+            h_source_lossless_y = coeffs.h_source_lossless_y
+            h_decay_z, h_source_z = coeffs.h_decay_z, coeffs.h_source_z
+            h_source_lossless_z = coeffs.h_source_lossless_z
+            e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
+            e_source_lossless_x = coeffs.e_source_lossless_x
+            e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
+            e_source_lossless_y = coeffs.e_source_lossless_y
+            e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
+            e_source_lossless_z = coeffs.e_source_lossless_z
+
+            use_lossy_shell_ex = self.e_use_lossy_shell_x
+            use_lossy_shell_ey = self.e_use_lossy_shell_y
+            use_lossy_shell_ez = self.e_use_lossy_shell_z
+            lossy_shell_ex = self.e_lossy_shell_x
+            lossy_shell_ey = self.e_lossy_shell_y
+            lossy_shell_ez = self.e_lossy_shell_z
+            use_lossy_shell_hx = self.h_use_lossy_shell_x
+            use_lossy_shell_hy = self.h_use_lossy_shell_y
+            use_lossy_shell_hz = self.h_use_lossy_shell_z
+            lossy_shell_hx = self.h_lossy_shell_x
+            lossy_shell_hy = self.h_lossy_shell_y
+            lossy_shell_hz = self.h_lossy_shell_z
+
+            ex = self._apply_source_group(ex, abs_step, pre_e_ex_batch, pre_e_ex_rest)
+            ey = self._apply_source_group(ey, abs_step, pre_e_ey_batch, pre_e_ey_rest)
+            ez = self._apply_source_group(ez, abs_step, pre_e_ez_batch, pre_e_ez_rest)
+
+            if is_3d:
+                any_h_shell = (
+                    use_lossy_shell_hx or use_lossy_shell_hy or use_lossy_shell_hz
+                )
+                if any_h_shell:
+                    hx_old, hy_old, hz_old = hx, hy, hz
+                    hx, hy, hz = ops.fused_update_h_lossless_3d(
+                        ex,
+                        ey,
+                        ez,
+                        hx,
+                        hy,
+                        hz,
+                        h_source_lossless_x,
+                        h_source_lossless_y,
+                        h_source_lossless_z,
+                        resolution,
+                    )
+                    if use_lossy_shell_hx:
+                        hx = self._apply_lossy_shell_from_lossless(
+                            updated_lossless=hx,
+                            old=hx_old,
+                            decay=h_decay_x,
+                            source=h_source_x,
+                            source_lossless=h_source_lossless_x,
+                            slabs=lossy_shell_hx,
+                        )
+                    if use_lossy_shell_hy:
+                        hy = self._apply_lossy_shell_from_lossless(
+                            updated_lossless=hy,
+                            old=hy_old,
+                            decay=h_decay_y,
+                            source=h_source_y,
+                            source_lossless=h_source_lossless_y,
+                            slabs=lossy_shell_hy,
+                        )
+                    if use_lossy_shell_hz:
+                        hz = self._apply_lossy_shell_from_lossless(
+                            updated_lossless=hz,
+                            old=hz_old,
+                            decay=h_decay_z,
+                            source=h_source_z,
+                            source_lossless=h_source_lossless_z,
+                            slabs=lossy_shell_hz,
+                        )
+                else:
+                    hx, hy, hz = ops.fused_update_h_lossy_3d(
+                        ex,
+                        ey,
+                        ez,
+                        hx,
+                        hy,
+                        hz,
+                        h_decay_x,
+                        h_source_x,
+                        h_decay_y,
+                        h_source_y,
+                        h_decay_z,
+                        h_source_z,
+                        resolution,
+                    )
+            else:
+                curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_2d(
+                    (ex, ey, ez),
+                    resolution,
+                    plane=plane_2d,
+                )
+
+                hx_old, hy_old, hz_old = hx, hy, hz
+
+                if use_lossy_shell_hx:
+                    hx = hx_old - h_source_lossless_x * curl_ex
+                    hx = self._apply_lossy_shell(
+                        updated=hx,
+                        old=hx_old,
+                        curl=curl_ex,
+                        decay=h_decay_x,
+                        source=-h_source_x,
+                        slabs=lossy_shell_hx,
+                    )
+                else:
+                    hx = h_decay_x * hx_old - h_source_x * curl_ex
+
+                if use_lossy_shell_hy:
+                    hy = hy_old - h_source_lossless_y * curl_ey
+                    hy = self._apply_lossy_shell(
+                        updated=hy,
+                        old=hy_old,
+                        curl=curl_ey,
+                        decay=h_decay_y,
+                        source=-h_source_y,
+                        slabs=lossy_shell_hy,
+                    )
+                else:
+                    hy = h_decay_y * hy_old - h_source_y * curl_ey
+
+                if use_lossy_shell_hz:
+                    hz = hz_old - h_source_lossless_z * curl_ez
+                    hz = self._apply_lossy_shell(
+                        updated=hz,
+                        old=hz_old,
+                        curl=curl_ez,
+                        decay=h_decay_z,
+                        source=-h_source_z,
+                        slabs=lossy_shell_hz,
+                    )
+                else:
+                    hz = h_decay_z * hz_old - h_source_z * curl_ez
+
+            hx = self._apply_source_group(hx, abs_step, h_batch_x, h_rest_x)
+            hy = self._apply_source_group(hy, abs_step, h_batch_y, h_rest_y)
+            hz = self._apply_source_group(hz, abs_step, h_batch_z, h_rest_z)
+
+            if is_3d:
+                any_e_shell = (
+                    use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
+                )
+                if any_e_shell:
+                    ex_old, ey_old, ez_old = ex, ey, ez
+                    ex, ey, ez = ops.fused_update_e_lossless_3d(
+                        hx,
+                        hy,
+                        hz,
+                        ex,
+                        ey,
+                        ez,
+                        e_source_lossless_x,
+                        e_source_lossless_y,
+                        e_source_lossless_z,
+                        resolution,
+                    )
+                    if use_lossy_shell_ex:
+                        ex = self._apply_lossy_shell_from_lossless(
+                            updated_lossless=ex,
+                            old=ex_old,
+                            decay=e_decay_x,
+                            source=e_source_x,
+                            source_lossless=e_source_lossless_x,
+                            slabs=lossy_shell_ex,
+                        )
+                    if use_lossy_shell_ey:
+                        ey = self._apply_lossy_shell_from_lossless(
+                            updated_lossless=ey,
+                            old=ey_old,
+                            decay=e_decay_y,
+                            source=e_source_y,
+                            source_lossless=e_source_lossless_y,
+                            slabs=lossy_shell_ey,
+                        )
+                    if use_lossy_shell_ez:
+                        ez = self._apply_lossy_shell_from_lossless(
+                            updated_lossless=ez,
+                            old=ez_old,
+                            decay=e_decay_z,
+                            source=e_source_z,
+                            source_lossless=e_source_lossless_z,
+                            slabs=lossy_shell_ez,
+                        )
+                else:
+                    ex, ey, ez = ops.fused_update_e_lossy_3d(
+                        hx,
+                        hy,
+                        hz,
+                        ex,
+                        ey,
+                        ez,
+                        e_decay_x,
+                        e_source_x,
+                        e_decay_y,
+                        e_source_y,
+                        e_decay_z,
+                        e_source_z,
+                        resolution,
+                    )
+            else:
+                curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_2d(
+                    (hx, hy, hz),
+                    resolution,
+                    (ex.shape, ey.shape, ez.shape),
+                    plane=plane_2d,
+                )
+
+                ex_old, ey_old, ez_old = ex, ey, ez
+
+                if use_lossy_shell_ex:
+                    ex = ex_old + e_source_lossless_x * curl_hx
+                    ex = self._apply_lossy_shell(
+                        updated=ex,
+                        old=ex_old,
+                        curl=curl_hx,
+                        decay=e_decay_x,
+                        source=e_source_x,
+                        slabs=lossy_shell_ex,
+                    )
+                else:
+                    ex = e_decay_x * ex_old + e_source_x * curl_hx
+
+                if use_lossy_shell_ey:
+                    ey = ey_old + e_source_lossless_y * curl_hy
+                    ey = self._apply_lossy_shell(
+                        updated=ey,
+                        old=ey_old,
+                        curl=curl_hy,
+                        decay=e_decay_y,
+                        source=e_source_y,
+                        slabs=lossy_shell_ey,
+                    )
+                else:
+                    ey = e_decay_y * ey_old + e_source_y * curl_hy
+
+                if use_lossy_shell_ez:
+                    ez = ez_old + e_source_lossless_z * curl_hz
+                    ez = self._apply_lossy_shell(
+                        updated=ez,
+                        old=ez_old,
+                        curl=curl_hz,
+                        decay=e_decay_z,
+                        source=e_source_z,
+                        slabs=lossy_shell_ez,
+                    )
+                else:
+                    ez = e_decay_z * ez_old + e_source_z * curl_hz
+
+            ex = self._apply_source_group(ex, abs_step, e_batch_x, e_rest_x)
+            ey = self._apply_source_group(ey, abs_step, e_batch_y, e_rest_y)
+            ez = self._apply_source_group(ez, abs_step, e_batch_z, e_rest_z)
+            return ex, ey, ez, hx, hy, hz
+
+        def run_scan_engine_only(
+            engine_state: EngineState,
+            coeffs: UpdateCoefficients,
+        ) -> EngineState:
+
+            def body_engine_only(carry):
+                ex, ey, ez, hx, hy, hz, abs_step = carry
+                ex, ey, ez, hx, hy, hz = advance_fields(
+                    ex, ey, ez, hx, hy, hz, abs_step, coeffs
+                )
+                return (
+                    ex,
+                    ey,
+                    ez,
+                    hx,
+                    hy,
+                    hz,
+                    abs_step + jnp.array(1, dtype=jnp.int32),
+                )
+
+            init_engine_carry = (
+                engine_state.ex,
+                engine_state.ey,
+                engine_state.ez,
+                engine_state.hx,
+                engine_state.hy,
+                engine_state.hz,
+                engine_state.current_step,
+            )
+
+            if self.config.loop_kind == "scan":
+
+                def _scan_engine_body(carry, _unused):
+                    return body_engine_only(carry), None
+
+                (
+                    ex_f,
+                    ey_f,
+                    ez_f,
+                    hx_f,
+                    hy_f,
+                    hz_f,
+                    step_f,
+                ), _ = jax.lax.scan(
+                    _scan_engine_body,
+                    init_engine_carry,
+                    xs=None,
+                    length=self.config.num_steps,
+                    unroll=temporal_block_steps,
+                )
+            else:
+                ex_f, ey_f, ez_f, hx_f, hy_f, hz_f, step_f = jax.lax.fori_loop(
+                    0,
+                    self.config.num_steps,
+                    lambda _i, c: body_engine_only(c),
+                    init_engine_carry,
+                )
+
+            return EngineState(
+                ex=ex_f,
+                ey=ey_f,
+                ez=ez_f,
+                hx=hx_f,
+                hy=hy_f,
+                hz=hz_f,
+                t=engine_state.t
+                + jnp.asarray(self.config.num_steps * dt, dtype=jnp.float32),
+                current_step=step_f,
+            )
+
         def run_scan(
             engine_state: EngineState,
             monitor_state: MonitorState,
@@ -779,262 +1131,6 @@ class CompiledSimulation:
             lossy_shell_hy = self.h_lossy_shell_y
             lossy_shell_hz = self.h_lossy_shell_z
 
-            # Hot-path field advance shared by the general loop and the
-            # linear/no-monitor specialization below.
-            def advance_fields(
-                ex: jnp.ndarray,
-                ey: jnp.ndarray,
-                ez: jnp.ndarray,
-                hx: jnp.ndarray,
-                hy: jnp.ndarray,
-                hz: jnp.ndarray,
-                abs_step: jnp.ndarray,
-            ) -> tuple[
-                jnp.ndarray,
-                jnp.ndarray,
-                jnp.ndarray,
-                jnp.ndarray,
-                jnp.ndarray,
-                jnp.ndarray,
-            ]:
-                ex = self._apply_source_group(
-                    ex, abs_step, pre_e_ex_batch, pre_e_ex_rest
-                )
-                ey = self._apply_source_group(
-                    ey, abs_step, pre_e_ey_batch, pre_e_ey_rest
-                )
-                ez = self._apply_source_group(
-                    ez, abs_step, pre_e_ez_batch, pre_e_ez_rest
-                )
-
-                if is_3d:
-                    any_h_shell = (
-                        use_lossy_shell_hx or use_lossy_shell_hy or use_lossy_shell_hz
-                    )
-                    if any_h_shell:
-                        hx_old, hy_old, hz_old = hx, hy, hz
-                        hx, hy, hz = ops.fused_update_h_lossless_3d(
-                            ex,
-                            ey,
-                            ez,
-                            hx,
-                            hy,
-                            hz,
-                            h_source_lossless_x,
-                            h_source_lossless_y,
-                            h_source_lossless_z,
-                            resolution,
-                        )
-                        if use_lossy_shell_hx:
-                            hx = self._apply_lossy_shell_from_lossless(
-                                updated_lossless=hx,
-                                old=hx_old,
-                                decay=h_decay_x,
-                                source=h_source_x,
-                                source_lossless=h_source_lossless_x,
-                                slabs=lossy_shell_hx,
-                            )
-                        if use_lossy_shell_hy:
-                            hy = self._apply_lossy_shell_from_lossless(
-                                updated_lossless=hy,
-                                old=hy_old,
-                                decay=h_decay_y,
-                                source=h_source_y,
-                                source_lossless=h_source_lossless_y,
-                                slabs=lossy_shell_hy,
-                            )
-                        if use_lossy_shell_hz:
-                            hz = self._apply_lossy_shell_from_lossless(
-                                updated_lossless=hz,
-                                old=hz_old,
-                                decay=h_decay_z,
-                                source=h_source_z,
-                                source_lossless=h_source_lossless_z,
-                                slabs=lossy_shell_hz,
-                            )
-                    else:
-                        hx, hy, hz = ops.fused_update_h_lossy_3d(
-                            ex,
-                            ey,
-                            ez,
-                            hx,
-                            hy,
-                            hz,
-                            h_decay_x,
-                            h_source_x,
-                            h_decay_y,
-                            h_source_y,
-                            h_decay_z,
-                            h_source_z,
-                            resolution,
-                        )
-                else:
-                    curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_2d(
-                        (ex, ey, ez),
-                        resolution,
-                        plane=plane_2d,
-                    )
-
-                    hx_old, hy_old, hz_old = hx, hy, hz
-
-                    if use_lossy_shell_hx:
-                        hx = hx_old - h_source_lossless_x * curl_ex
-                        hx = self._apply_lossy_shell(
-                            updated=hx,
-                            old=hx_old,
-                            curl=curl_ex,
-                            decay=h_decay_x,
-                            source=-h_source_x,
-                            slabs=lossy_shell_hx,
-                        )
-                    else:
-                        hx = h_decay_x * hx_old - h_source_x * curl_ex
-
-                    if use_lossy_shell_hy:
-                        hy = hy_old - h_source_lossless_y * curl_ey
-                        hy = self._apply_lossy_shell(
-                            updated=hy,
-                            old=hy_old,
-                            curl=curl_ey,
-                            decay=h_decay_y,
-                            source=-h_source_y,
-                            slabs=lossy_shell_hy,
-                        )
-                    else:
-                        hy = h_decay_y * hy_old - h_source_y * curl_ey
-
-                    if use_lossy_shell_hz:
-                        hz = hz_old - h_source_lossless_z * curl_ez
-                        hz = self._apply_lossy_shell(
-                            updated=hz,
-                            old=hz_old,
-                            curl=curl_ez,
-                            decay=h_decay_z,
-                            source=-h_source_z,
-                            slabs=lossy_shell_hz,
-                        )
-                    else:
-                        hz = h_decay_z * hz_old - h_source_z * curl_ez
-
-                hx = self._apply_source_group(hx, abs_step, h_batch_x, h_rest_x)
-                hy = self._apply_source_group(hy, abs_step, h_batch_y, h_rest_y)
-                hz = self._apply_source_group(hz, abs_step, h_batch_z, h_rest_z)
-
-                if is_3d:
-                    any_e_shell = (
-                        use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
-                    )
-                    if any_e_shell:
-                        ex_old, ey_old, ez_old = ex, ey, ez
-                        ex, ey, ez = ops.fused_update_e_lossless_3d(
-                            hx,
-                            hy,
-                            hz,
-                            ex,
-                            ey,
-                            ez,
-                            e_source_lossless_x,
-                            e_source_lossless_y,
-                            e_source_lossless_z,
-                            resolution,
-                        )
-                        if use_lossy_shell_ex:
-                            ex = self._apply_lossy_shell_from_lossless(
-                                updated_lossless=ex,
-                                old=ex_old,
-                                decay=e_decay_x,
-                                source=e_source_x,
-                                source_lossless=e_source_lossless_x,
-                                slabs=lossy_shell_ex,
-                            )
-                        if use_lossy_shell_ey:
-                            ey = self._apply_lossy_shell_from_lossless(
-                                updated_lossless=ey,
-                                old=ey_old,
-                                decay=e_decay_y,
-                                source=e_source_y,
-                                source_lossless=e_source_lossless_y,
-                                slabs=lossy_shell_ey,
-                            )
-                        if use_lossy_shell_ez:
-                            ez = self._apply_lossy_shell_from_lossless(
-                                updated_lossless=ez,
-                                old=ez_old,
-                                decay=e_decay_z,
-                                source=e_source_z,
-                                source_lossless=e_source_lossless_z,
-                                slabs=lossy_shell_ez,
-                            )
-                    else:
-                        ex, ey, ez = ops.fused_update_e_lossy_3d(
-                            hx,
-                            hy,
-                            hz,
-                            ex,
-                            ey,
-                            ez,
-                            e_decay_x,
-                            e_source_x,
-                            e_decay_y,
-                            e_source_y,
-                            e_decay_z,
-                            e_source_z,
-                            resolution,
-                        )
-                else:
-                    curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_2d(
-                        (hx, hy, hz),
-                        resolution,
-                        (ex.shape, ey.shape, ez.shape),
-                        plane=plane_2d,
-                    )
-
-                    ex_old, ey_old, ez_old = ex, ey, ez
-
-                    if use_lossy_shell_ex:
-                        ex = ex_old + e_source_lossless_x * curl_hx
-                        ex = self._apply_lossy_shell(
-                            updated=ex,
-                            old=ex_old,
-                            curl=curl_hx,
-                            decay=e_decay_x,
-                            source=e_source_x,
-                            slabs=lossy_shell_ex,
-                        )
-                    else:
-                        ex = e_decay_x * ex_old + e_source_x * curl_hx
-
-                    if use_lossy_shell_ey:
-                        ey = ey_old + e_source_lossless_y * curl_hy
-                        ey = self._apply_lossy_shell(
-                            updated=ey,
-                            old=ey_old,
-                            curl=curl_hy,
-                            decay=e_decay_y,
-                            source=e_source_y,
-                            slabs=lossy_shell_ey,
-                        )
-                    else:
-                        ey = e_decay_y * ey_old + e_source_y * curl_hy
-
-                    if use_lossy_shell_ez:
-                        ez = ez_old + e_source_lossless_z * curl_hz
-                        ez = self._apply_lossy_shell(
-                            updated=ez,
-                            old=ez_old,
-                            curl=curl_hz,
-                            decay=e_decay_z,
-                            source=e_source_z,
-                            slabs=lossy_shell_ez,
-                        )
-                    else:
-                        ez = e_decay_z * ez_old + e_source_z * curl_hz
-
-                ex = self._apply_source_group(ex, abs_step, e_batch_x, e_rest_x)
-                ey = self._apply_source_group(ey, abs_step, e_batch_y, e_rest_y)
-                ez = self._apply_source_group(ez, abs_step, e_batch_z, e_rest_z)
-                return ex, ey, ez, hx, hy, hz
-
             def body_with_coeffs(carry):
                 eng, mon, mat = carry
                 abs_step = eng.current_step
@@ -1043,7 +1139,7 @@ class CompiledSimulation:
                 hx, hy, hz = eng.hx, eng.hy, eng.hz
 
                 ex, ey, ez, hx, hy, hz = advance_fields(
-                    ex, ey, ez, hx, hy, hz, abs_step
+                    ex, ey, ez, hx, hy, hz, abs_step, coeffs
                 )
 
                 mat, _ = material_model.update(mat, ex, ey, ez, abs_step)
@@ -1075,79 +1171,7 @@ class CompiledSimulation:
                     current_step=eng.current_step + jnp.array(1, dtype=jnp.int32),
                 )
                 return (new_eng, mon, mat)
-
-            hot_linear_no_monitor = (
-                self.material_spec.model_kind == "linear" and not self.monitor_specs
-            )
-
-            if hot_linear_no_monitor:
-
-                def body_engine_only(carry):
-                    ex, ey, ez, hx, hy, hz, abs_step = carry
-                    ex, ey, ez, hx, hy, hz = advance_fields(
-                        ex, ey, ez, hx, hy, hz, abs_step
-                    )
-                    return (
-                        ex,
-                        ey,
-                        ez,
-                        hx,
-                        hy,
-                        hz,
-                        abs_step + jnp.array(1, dtype=jnp.int32),
-                    )
-
-                init_engine_carry = (
-                    engine_state.ex,
-                    engine_state.ey,
-                    engine_state.ez,
-                    engine_state.hx,
-                    engine_state.hy,
-                    engine_state.hz,
-                    engine_state.current_step,
-                )
-
-                if self.config.loop_kind == "scan":
-
-                    def _scan_engine_body(carry, _unused):
-                        return body_engine_only(carry), None
-
-                    (
-                        ex_f,
-                        ey_f,
-                        ez_f,
-                        hx_f,
-                        hy_f,
-                        hz_f,
-                        step_f,
-                    ), _ = jax.lax.scan(
-                        _scan_engine_body,
-                        init_engine_carry,
-                        xs=None,
-                        length=self.config.num_steps,
-                        unroll=temporal_block_steps,
-                    )
-                else:
-                    ex_f, ey_f, ez_f, hx_f, hy_f, hz_f, step_f = jax.lax.fori_loop(
-                        0,
-                        self.config.num_steps,
-                        lambda _i, c: body_engine_only(c),
-                        init_engine_carry,
-                    )
-
-                engine_final = EngineState(
-                    ex=ex_f,
-                    ey=ey_f,
-                    ez=ez_f,
-                    hx=hx_f,
-                    hy=hy_f,
-                    hz=hz_f,
-                    t=engine_state.t
-                    + jnp.asarray(self.config.num_steps * dt, dtype=jnp.float32),
-                    current_step=step_f,
-                )
-                return engine_final, monitor_state, material_state0
-            elif self.config.loop_kind == "scan":
+            if self.config.loop_kind == "scan":
 
                 def _scan_body(carry, _unused):
                     return body_with_coeffs(carry), None
@@ -1171,9 +1195,14 @@ class CompiledSimulation:
                 )
             return engine_final, monitor_final, material_final
 
-        # Use function-style JIT wrapping for compatibility with older JAX
-        # versions where decorator kwargs require the callable as first arg.
-        self._compiled_scan = jax.jit(run_scan, donate_argnums=(0, 1))
+        if hot_linear_no_monitor:
+            self._compiled_scan = jax.jit(run_scan_engine_only, donate_argnums=(0,))
+            self._compiled_mode = "engine_only"
+        else:
+            # Use function-style JIT wrapping for compatibility with older JAX
+            # versions where decorator kwargs require the callable as first arg.
+            self._compiled_scan = jax.jit(run_scan, donate_argnums=(0, 1))
+            self._compiled_mode = "general"
         self._compile_count += 1
 
     @property
@@ -1242,11 +1271,17 @@ class CompiledSimulation:
         if self._compiled_scan is None:
             self._build_scan()
 
-        eng, mon, mat = self._compiled_scan(
-            engine_state,
-            monitor_state,
-            self._update_coefficients(),
-        )
+        coeffs = self._update_coefficients()
+        if self._compiled_mode == "engine_only":
+            eng = self._compiled_scan(engine_state, coeffs)
+            mon = monitor_state
+            mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
+        else:
+            eng, mon, mat = self._compiled_scan(
+                engine_state,
+                monitor_state,
+                coeffs,
+            )
         return eng, mon, mat
 
     def apply_monitor_state(self, monitor_state: MonitorState):
