@@ -7,6 +7,7 @@ from typing import Literal
 
 import numpy as np
 
+from beamz.devices.compiler import validate_compilable_devices
 from beamz.devices.monitors.compiler import (
     CompiledMonitorSpec,
     compile_monitor_specs,
@@ -113,6 +114,7 @@ def build_compilation_plan(
     source_single_slab_dense: bool,
     temporal_block_steps: int,
 ) -> CompiledPlan:
+    validate_compilable_devices(simulation.devices)
     fields = simulation.fields
     source_specs = compile_source_specs(
         devices=simulation.devices,

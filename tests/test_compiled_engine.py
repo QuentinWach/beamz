@@ -17,6 +17,7 @@ from beamz import (
     ramped_cosine,
     um,
 )
+from beamz.devices import COMPILED_DEVICE_REGISTRY
 from beamz.simulation.compiled import EngineState, MonitorState
 from beamz.simulation.plans import build_compilation_plan
 
@@ -579,6 +580,33 @@ def test_compilation_plan_detects_uniform_scalar_coefficients():
     assert plan.key.boundary_family == "none"
     assert plan.key.coefficient_layout_family == "uniform_scalar"
     assert plan.key.kernel_family == "engine_only"
+
+
+def test_compiled_device_registry_covers_shipped_device_types():
+    source_type_names = {cls.__name__ for cls in COMPILED_DEVICE_REGISTRY.source_types}
+    monitor_type_names = {cls.__name__ for cls in COMPILED_DEVICE_REGISTRY.monitor_types}
+
+    assert source_type_names == {"GaussianSource", "ModeSource"}
+    assert monitor_type_names == {"Monitor"}
+
+
+def test_run_compiled_rejects_unsupported_device_type(small_sim_params):
+    class DummyLegacySource:
+        def inject(self, fields, t, dt, current_step, resolution, design):
+            del fields, t, dt, current_step, resolution, design
+
+    wl, dx, _dt, domain, _steps, t, _signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    sim = Simulation(
+        design=design,
+        devices=[DummyLegacySource()],
+        boundaries=[],
+        time=t,
+        resolution=dx,
+    )
+
+    with pytest.raises(NotImplementedError, match="DummyLegacySource"):
+        sim.compile(num_steps=8)
 
 
 def test_run_compiled_matches_python_in_3d_uniform_no_boundary():
