@@ -1366,6 +1366,12 @@ def main():
         default=None,
         help="Override BEAMZ_SOURCE_SINGLE_SLAB_DENSE for compiled source injection.",
     )
+    parser.add_argument(
+        "--temporal-block-steps",
+        type=int,
+        default=None,
+        help="Override BEAMZ_TEMPORAL_BLOCK_STEPS for the compiled engine.",
+    )
     args = parser.parse_args()
     if args.compiled_loop_kind != "auto":
         os.environ["BEAMZ_COMPILED_LOOP_KIND"] = args.compiled_loop_kind
@@ -1377,6 +1383,8 @@ def main():
         os.environ["BEAMZ_SOURCE_SINGLE_SLAB_DENSE"] = (
             "1" if args.source_single_slab_dense else "0"
         )
+    if args.temporal_block_steps is not None:
+        os.environ["BEAMZ_TEMPORAL_BLOCK_STEPS"] = str(max(1, args.temporal_block_steps))
 
     compiled_loop_kind = os.environ.get("BEAMZ_COMPILED_LOOP_KIND", "scan").strip().lower()
     if compiled_loop_kind in {"fori", "fori-loop"}:
@@ -1396,6 +1404,9 @@ def main():
     source_single_slab_dense = os.environ.get(
         "BEAMZ_SOURCE_SINGLE_SLAB_DENSE", ""
     ).strip().lower() in {"1", "true", "yes", "on"}
+    temporal_block_steps = max(
+        1, int(os.environ.get("BEAMZ_TEMPORAL_BLOCK_STEPS", "1").strip() or "1")
+    )
 
     modes = parse_modes(args.modes)
     if not modes:
@@ -1467,6 +1478,7 @@ def main():
     print(f"e_shell_split={e_shell_split}")
     print(f"h_shell_split={h_shell_split}")
     print(f"source_single_slab_dense={source_single_slab_dense}")
+    print(f"temporal_block_steps={temporal_block_steps}")
     if e_shell_split or h_shell_split:
         print("warning: shell-split is currently slower on M4 in our measurements.")
     if args.source_sweep and (cfg.source_kind != "auto"):

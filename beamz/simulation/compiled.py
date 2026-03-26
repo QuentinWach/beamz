@@ -154,6 +154,7 @@ class CompiledRunConfig:
     precision: str = "float32"
     loop_kind: str = "scan"
     source_single_slab_dense: bool = False
+    temporal_block_steps: int = 1
 
 
 @dataclass
@@ -698,6 +699,7 @@ class CompiledSimulation:
         dt_scalar = jnp.asarray(dt, dtype=jnp.float32)
         plane_2d = self.config.plane_2d
         is_3d = self.config.is_3d
+        temporal_block_steps = max(1, int(self.config.temporal_block_steps))
 
         # Batch slab sources by (timing, component) for fori_loop application
         pre_e_ex_batch, pre_e_ex_rest = batch_slab_specs(
@@ -1067,6 +1069,9 @@ class CompiledSimulation:
                     (engine_state, monitor_state, material_state0),
                     xs=None,
                     length=self.config.num_steps,
+                    # Static scan unrolling lets us benchmark temporal blocking
+                    # without changing the public compiled-engine API.
+                    unroll=temporal_block_steps,
                 )
             else:
                 init_carry = (engine_state, monitor_state, material_state0)
@@ -1433,6 +1438,15 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         "BEAMZ_SOURCE_SINGLE_SLAB_DENSE",
         str(getattr(run_cfg, "source_single_slab_dense", False)),
     ).strip().lower() in {"1", "true", "yes", "on"}
+    temporal_block_steps = max(
+        1,
+        int(
+            os.getenv(
+                "BEAMZ_TEMPORAL_BLOCK_STEPS",
+                str(getattr(run_cfg, "temporal_block_steps", 1)),
+            )
+        ),
+    )
 
     config = CompiledRunConfig(
         resolution=resolution,
@@ -1443,6 +1457,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         precision=getattr(run_cfg, "precision", "float32"),
         loop_kind=loop_kind,
         source_single_slab_dense=source_single_slab_dense,
+        temporal_block_steps=temporal_block_steps,
     )
 
     h_decay_x, h_source_x, h_source_lossless_x = ops.precompute_h_update_coefficients(

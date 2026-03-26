@@ -468,6 +468,9 @@ class Simulation:
         source_single_slab_dense = os.getenv(
             "BEAMZ_SOURCE_SINGLE_SLAB_DENSE", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
+        temporal_block_steps = max(
+            1, int(os.getenv("BEAMZ_TEMPORAL_BLOCK_STEPS", "1").strip() or "1")
+        )
 
         signature = (
             num_steps,
@@ -478,6 +481,7 @@ class Simulation:
             e_shell_split,
             h_shell_split,
             source_single_slab_dense,
+            temporal_block_steps,
         )
         cached = self._compiled_program_cache.get(signature)
         if cached is not None:
@@ -497,6 +501,7 @@ class Simulation:
             precision="float32",
             loop_kind=loop_kind,
             source_single_slab_dense=source_single_slab_dense,
+            temporal_block_steps=temporal_block_steps,
         )
         program = compile_simulation(
             design=self.design,
