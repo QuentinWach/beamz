@@ -120,6 +120,18 @@ class PowerMonitorState(NamedTuple):
     counts: jnp.ndarray
 
 
+class SpectralMonitorState(NamedTuple):
+    """Monitor state for power + frequency accumulation without DFT tensors."""
+
+    powers: jnp.ndarray
+    timestamps: jnp.ndarray
+    counts: jnp.ndarray
+    freq_flux_re: jnp.ndarray
+    freq_flux_im: jnp.ndarray
+    freq_phase_re: jnp.ndarray
+    freq_phase_im: jnp.ndarray
+
+
 class UpdateCoefficients(NamedTuple):
     """Static update coefficients passed as runtime arguments to avoid constant capture."""
 
@@ -799,6 +811,184 @@ class CompiledSimulation:
             dft_weight_sum=dft_weight_sum,
         )
 
+    def _update_spectral_monitors(
+        self,
+        monitor_state: SpectralMonitorState,
+        abs_step: jnp.ndarray,
+        t_phys: jnp.ndarray,
+        dt_scalar: jnp.ndarray,
+        ex: jnp.ndarray,
+        ey: jnp.ndarray,
+        ez: jnp.ndarray,
+        hx: jnp.ndarray,
+        hy: jnp.ndarray,
+        hz: jnp.ndarray,
+        batched_mon: BatchedMonitorData | None = None,
+        monitors_2d: tuple[CompiledMonitorSpec, ...] = (),
+    ) -> SpectralMonitorState:
+        powers = monitor_state.powers
+        timestamps = monitor_state.timestamps
+        counts = monitor_state.counts
+        freq_flux_re = monitor_state.freq_flux_re
+        freq_flux_im = monitor_state.freq_flux_im
+        freq_phase_re = monitor_state.freq_phase_re
+        freq_phase_im = monitor_state.freq_phase_im
+        max_records = powers.shape[1]
+
+        if batched_mon is not None:
+            bm = batched_mon
+            ex_flat = ex.ravel()
+            ey_flat = ey.ravel()
+            ez_flat = ez.ravel()
+            hx_flat = hx.ravel()
+            hy_flat = hy.ravel()
+            hz_flat = hz.ravel()
+
+            def _mon_body(i, carry):
+                pwr, ts, cnt, f_re, f_im, ph_re, ph_im = carry
+                mi = bm.monitor_indices[i]
+
+                should_record = (abs_step % bm.record_intervals[i]) == 0
+                can_record = cnt[mi] < max_records
+                do_record = should_record & can_record & bm.accumulate_flags[i]
+
+                mask = bm.valid_mask[i]
+                exs = ex_flat[bm.ex_flat_idx[i]] * mask
+                eys = ey_flat[bm.ey_flat_idx[i]] * mask
+                ezs = ez_flat[bm.ez_flat_idx[i]] * mask
+                hxs = hx_flat[bm.hx_flat_idx[i]] * mask
+                hys = hy_flat[bm.hy_flat_idx[i]] * mask
+                hzs = hz_flat[bm.hz_flat_idx[i]] * mask
+
+                sx = eys * hzs - ezs * hys
+                sy = ezs * hxs - exs * hzs
+                sz = exs * hys - eys * hxs
+                power_val = (
+                    jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz)) * bm.power_scales[i]
+                )
+                axis_i = bm.normal_axes[i]
+                normal_flux = (
+                    jnp.sum(jnp.where(axis_i == 0, sx, jnp.where(axis_i == 1, sy, sz)))
+                    * bm.power_scales[i]
+                )
+                flux_sample = jnp.where(axis_i < 0, power_val, normal_flux)
+
+                slot = jnp.minimum(cnt[mi], max_records - 1)
+                pwr = pwr.at[mi, slot].set(
+                    jnp.where(do_record, power_val, pwr[mi, slot])
+                )
+                ts = ts.at[mi, slot].set(jnp.where(do_record, t_phys, ts[mi, slot]))
+                cnt = cnt.at[mi].set(cnt[mi] + jnp.where(do_record, 1, 0))
+                do_freq = bm.freq_enabled[i] & (
+                    (abs_step % bm.freq_record_intervals[i]) == 0
+                )
+                mask_f = bm.freq_mask[i]
+                row_f_re = f_re[mi]
+                row_f_im = f_im[mi]
+                row_ph_re = ph_re[mi]
+                row_ph_im = ph_im[mi]
+                delta_re = flux_sample * dt_scalar * row_ph_re * mask_f
+                delta_im = flux_sample * dt_scalar * row_ph_im * mask_f
+                row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
+                row_f_im = row_f_im + jnp.where(do_freq, delta_im, 0.0)
+                rot_re = bm.freq_rot_re[i]
+                rot_im = bm.freq_rot_im[i]
+                next_ph_re = row_ph_re * rot_re - row_ph_im * rot_im
+                next_ph_im = row_ph_re * rot_im + row_ph_im * rot_re
+                row_ph_re = jnp.where(do_freq, next_ph_re, row_ph_re)
+                row_ph_im = jnp.where(do_freq, next_ph_im, row_ph_im)
+                f_re = f_re.at[mi].set(row_f_re)
+                f_im = f_im.at[mi].set(row_f_im)
+                ph_re = ph_re.at[mi].set(row_ph_re)
+                ph_im = ph_im.at[mi].set(row_ph_im)
+                return pwr, ts, cnt, f_re, f_im, ph_re, ph_im
+
+            (
+                powers,
+                timestamps,
+                counts,
+                freq_flux_re,
+                freq_flux_im,
+                freq_phase_re,
+                freq_phase_im,
+            ) = jax.lax.fori_loop(
+                0,
+                bm.n_monitors,
+                _mon_body,
+                (
+                    powers,
+                    timestamps,
+                    counts,
+                    freq_flux_re,
+                    freq_flux_im,
+                    freq_phase_re,
+                    freq_phase_im,
+                ),
+            )
+
+        for mon in monitors_2d:
+            should_record = (abs_step % mon.record_interval) == 0
+            can_record = counts[mon.monitor_index] < max_records
+            do_record = should_record & can_record & mon.accumulate_power
+            do_freq = (
+                (abs_step % mon.freq_record_interval) == 0
+                if mon.accumulate_frequency and mon.freq_count > 0
+                else jnp.array(False)
+            )
+            need_sample = do_record | do_freq
+
+            power_sample = jnp.where(
+                need_sample,
+                (
+                    self._monitor_power_3d(mon, ex, ey, ez, hx, hy, hz)
+                    if mon.is_3d
+                    else self._monitor_power_2d(mon, ez, hx, hy)
+                ),
+                jnp.array(0.0, dtype=jnp.float32),
+            )
+            power_val = jnp.where(
+                do_record, power_sample, jnp.array(0.0, dtype=jnp.float32)
+            )
+
+            slot = jnp.minimum(counts[mon.monitor_index], max_records - 1)
+            powers = powers.at[mon.monitor_index, slot].set(
+                jnp.where(do_record, power_val, powers[mon.monitor_index, slot])
+            )
+            timestamps = timestamps.at[mon.monitor_index, slot].set(
+                jnp.where(do_record, t_phys, timestamps[mon.monitor_index, slot])
+            )
+            counts = counts.at[mon.monitor_index].set(
+                counts[mon.monitor_index] + jnp.where(do_record, 1, 0)
+            )
+            if mon.accumulate_frequency and mon.freq_count > 0:
+                mi = mon.monitor_index
+                row_f_re = freq_flux_re[mi, : mon.freq_count]
+                row_f_im = freq_flux_im[mi, : mon.freq_count]
+                row_ph_re = freq_phase_re[mi, : mon.freq_count]
+                row_ph_im = freq_phase_im[mi, : mon.freq_count]
+                delta_re = power_sample * dt_scalar * row_ph_re
+                delta_im = power_sample * dt_scalar * row_ph_im
+                row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
+                row_f_im = row_f_im + jnp.where(do_freq, delta_im, 0.0)
+                next_ph_re = row_ph_re * mon.freq_rot_re - row_ph_im * mon.freq_rot_im
+                next_ph_im = row_ph_re * mon.freq_rot_im + row_ph_im * mon.freq_rot_re
+                row_ph_re = jnp.where(do_freq, next_ph_re, row_ph_re)
+                row_ph_im = jnp.where(do_freq, next_ph_im, row_ph_im)
+                freq_flux_re = freq_flux_re.at[mi, : mon.freq_count].set(row_f_re)
+                freq_flux_im = freq_flux_im.at[mi, : mon.freq_count].set(row_f_im)
+                freq_phase_re = freq_phase_re.at[mi, : mon.freq_count].set(row_ph_re)
+                freq_phase_im = freq_phase_im.at[mi, : mon.freq_count].set(row_ph_im)
+
+        return SpectralMonitorState(
+            powers=powers,
+            timestamps=timestamps,
+            counts=counts,
+            freq_flux_re=freq_flux_re,
+            freq_flux_im=freq_flux_im,
+            freq_phase_re=freq_phase_re,
+            freq_phase_im=freq_phase_im,
+        )
+
     def _build_scan(self):
         material_model = create_material_model(self.material_spec)
         material_state0 = material_model.init_state(self.material_spec)
@@ -835,6 +1025,30 @@ class CompiledSimulation:
         e_batch_y, e_rest_y = batch_slab_specs(self._sources_for("e", "Ey"))
         e_batch_z, e_rest_z = batch_slab_specs(self._sources_for("e", "Ez"))
 
+        def _make_source_applier(
+            batch: BatchedSlabGroup | None,
+            rest: tuple[CompiledSourceSpec, ...],
+        ):
+            if batch is None and not rest:
+                return lambda arr, _abs_step: arr
+            if batch is not None and not rest:
+                return lambda arr, abs_step: self._apply_batched_slabs(arr, abs_step, batch)
+            if batch is None:
+                return lambda arr, abs_step: self._apply_specs(arr, abs_step, rest)
+            return lambda arr, abs_step: self._apply_source_group(
+                arr, abs_step, batch, rest
+            )
+
+        apply_pre_e_ex = _make_source_applier(pre_e_ex_batch, pre_e_ex_rest)
+        apply_pre_e_ey = _make_source_applier(pre_e_ey_batch, pre_e_ey_rest)
+        apply_pre_e_ez = _make_source_applier(pre_e_ez_batch, pre_e_ez_rest)
+        apply_h_x = _make_source_applier(h_batch_x, h_rest_x)
+        apply_h_y = _make_source_applier(h_batch_y, h_rest_y)
+        apply_h_z = _make_source_applier(h_batch_z, h_rest_z)
+        apply_e_x = _make_source_applier(e_batch_x, e_rest_x)
+        apply_e_y = _make_source_applier(e_batch_y, e_rest_y)
+        apply_e_z = _make_source_applier(e_batch_z, e_rest_z)
+
         # Batch 3D monitors for fori_loop power computation
         batched_mon = None
         monitors_2d: tuple[CompiledMonitorSpec, ...] = ()
@@ -867,10 +1081,17 @@ class CompiledSimulation:
             "engine_only",
             "engine_plus_sources",
         }
-        fast_power_monitor_family = (
+        fast_monitor_family = (
             self.plan.kernel_family in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
-            and self.plan.monitors.family == "power_only"
             and self.material_spec.model_kind == "linear"
+        )
+        fast_power_monitor_family = (
+            fast_monitor_family and self.plan.monitors.family == "power_only"
+        )
+        fast_spectral_monitor_family = (
+            fast_monitor_family
+            and self.plan.monitors.family != "power_only"
+            and self.plan.monitors.dft_count == 0
         )
 
         # Hot-path field advance shared by the general loop and the
@@ -918,9 +1139,9 @@ class CompiledSimulation:
             lossy_shell_hy = self.h_lossy_shell_y
             lossy_shell_hz = self.h_lossy_shell_z
 
-            ex = self._apply_source_group(ex, abs_step, pre_e_ex_batch, pre_e_ex_rest)
-            ey = self._apply_source_group(ey, abs_step, pre_e_ey_batch, pre_e_ey_rest)
-            ez = self._apply_source_group(ez, abs_step, pre_e_ez_batch, pre_e_ez_rest)
+            ex = apply_pre_e_ex(ex, abs_step)
+            ey = apply_pre_e_ey(ey, abs_step)
+            ez = apply_pre_e_ez(ez, abs_step)
 
             if is_3d:
                 any_h_shell = (
@@ -1031,9 +1252,9 @@ class CompiledSimulation:
                 else:
                     hz = h_decay_z * hz_old - h_source_z * curl_ez
 
-            hx = self._apply_source_group(hx, abs_step, h_batch_x, h_rest_x)
-            hy = self._apply_source_group(hy, abs_step, h_batch_y, h_rest_y)
-            hz = self._apply_source_group(hz, abs_step, h_batch_z, h_rest_z)
+            hx = apply_h_x(hx, abs_step)
+            hy = apply_h_y(hy, abs_step)
+            hz = apply_h_z(hz, abs_step)
 
             if is_3d:
                 any_e_shell = (
@@ -1179,9 +1400,9 @@ class CompiledSimulation:
                 else:
                     ez = e_decay_z * ez_old + e_source_z * curl_hz
 
-            ex = self._apply_source_group(ex, abs_step, e_batch_x, e_rest_x)
-            ey = self._apply_source_group(ey, abs_step, e_batch_y, e_rest_y)
-            ez = self._apply_source_group(ez, abs_step, e_batch_z, e_rest_z)
+            ex = apply_e_x(ex, abs_step)
+            ey = apply_e_y(ey, abs_step)
+            ez = apply_e_z(ez, abs_step)
             return ex, ey, ez, hx, hy, hz
 
         def run_scan_engine_core(
@@ -1254,38 +1475,12 @@ class CompiledSimulation:
                 current_step=step_f,
             )
 
-        def run_scan(
+        def run_scan_general(
             engine_state: EngineState,
             monitor_state: MonitorState,
             coeffs: UpdateCoefficients,
         ):
-            h_decay_x, h_source_x = coeffs.h_decay_x, coeffs.h_source_x
-            h_source_lossless_x = coeffs.h_source_lossless_x
-            h_decay_y, h_source_y = coeffs.h_decay_y, coeffs.h_source_y
-            h_source_lossless_y = coeffs.h_source_lossless_y
-            h_decay_z, h_source_z = coeffs.h_decay_z, coeffs.h_source_z
-            h_source_lossless_z = coeffs.h_source_lossless_z
-            e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
-            e_source_lossless_x = coeffs.e_source_lossless_x
-            e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
-            e_source_lossless_y = coeffs.e_source_lossless_y
-            e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
-            e_source_lossless_z = coeffs.e_source_lossless_z
-
-            use_lossy_shell_ex = self.e_use_lossy_shell_x
-            use_lossy_shell_ey = self.e_use_lossy_shell_y
-            use_lossy_shell_ez = self.e_use_lossy_shell_z
-            lossy_shell_ex = self.e_lossy_shell_x
-            lossy_shell_ey = self.e_lossy_shell_y
-            lossy_shell_ez = self.e_lossy_shell_z
-            use_lossy_shell_hx = self.h_use_lossy_shell_x
-            use_lossy_shell_hy = self.h_use_lossy_shell_y
-            use_lossy_shell_hz = self.h_use_lossy_shell_z
-            lossy_shell_hx = self.h_lossy_shell_x
-            lossy_shell_hy = self.h_lossy_shell_y
-            lossy_shell_hz = self.h_lossy_shell_z
-
-            def body_with_coeffs(carry):
+            def body_with_monitors(carry):
                 eng, mon, mat = carry
                 abs_step = eng.current_step
 
@@ -1297,7 +1492,6 @@ class CompiledSimulation:
                 )
 
                 mat, _ = material_model.update(mat, ex, ey, ez, abs_step)
-
                 t_phys = eng.t
                 mon = self._update_monitors(
                     mon,
@@ -1328,15 +1522,13 @@ class CompiledSimulation:
             if self.config.loop_kind == "scan":
 
                 def _scan_body(carry, _unused):
-                    return body_with_coeffs(carry), None
+                    return body_with_monitors(carry), None
 
                 (engine_final, monitor_final, material_final), _ = jax.lax.scan(
                     _scan_body,
                     (engine_state, monitor_state, material_state0),
                     xs=None,
                     length=self.config.num_steps,
-                    # Static scan unrolling lets us benchmark temporal blocking
-                    # without changing the public compiled-engine API.
                     unroll=temporal_block_steps,
                 )
             else:
@@ -1344,7 +1536,7 @@ class CompiledSimulation:
                 engine_final, monitor_final, material_final = jax.lax.fori_loop(
                     0,
                     self.config.num_steps,
-                    lambda _i, c: body_with_coeffs(c),
+                    lambda _i, c: body_with_monitors(c),
                     init_carry,
                 )
             return engine_final, monitor_final, material_final
@@ -1414,16 +1606,88 @@ class CompiledSimulation:
                 )
             return engine_final, monitor_final
 
+        def run_scan_spectral_monitors(
+            engine_state: EngineState,
+            monitor_state: SpectralMonitorState,
+            coeffs: UpdateCoefficients,
+        ):
+            def body_with_spectral_monitors(carry):
+                eng, mon = carry
+                abs_step = eng.current_step
+                ex, ey, ez, hx, hy, hz = advance_fields(
+                    eng.ex,
+                    eng.ey,
+                    eng.ez,
+                    eng.hx,
+                    eng.hy,
+                    eng.hz,
+                    abs_step,
+                    coeffs,
+                )
+                mon = self._update_spectral_monitors(
+                    mon,
+                    abs_step,
+                    eng.t,
+                    dt_scalar,
+                    ex,
+                    ey,
+                    ez,
+                    hx,
+                    hy,
+                    hz,
+                    batched_mon=batched_mon,
+                    monitors_2d=monitors_2d,
+                )
+                new_eng = EngineState(
+                    ex=ex,
+                    ey=ey,
+                    ez=ez,
+                    hx=hx,
+                    hy=hy,
+                    hz=hz,
+                    t=eng.t + dt,
+                    current_step=eng.current_step + jnp.array(1, dtype=jnp.int32),
+                )
+                return new_eng, mon
+
+            if self.config.loop_kind == "scan":
+
+                def _scan_body(carry, _unused):
+                    return body_with_spectral_monitors(carry), None
+
+                (engine_final, monitor_final), _ = jax.lax.scan(
+                    _scan_body,
+                    (engine_state, monitor_state),
+                    xs=None,
+                    length=self.config.num_steps,
+                    unroll=temporal_block_steps,
+                )
+            else:
+                init_carry = (engine_state, monitor_state)
+                engine_final, monitor_final = jax.lax.fori_loop(
+                    0,
+                    self.config.num_steps,
+                    lambda _i, c: body_with_spectral_monitors(c),
+                    init_carry,
+                )
+            return engine_final, monitor_final
+
         if fast_engine_family:
             self._compiled_scan = jax.jit(run_scan_engine_core, donate_argnums=(0,))
             self._compiled_mode = self.plan.kernel_family
         elif fast_power_monitor_family:
             self._compiled_scan = jax.jit(run_scan_power_monitors, donate_argnums=(0, 1))
             self._compiled_mode = self.plan.kernel_family
+        elif fast_spectral_monitor_family:
+            self._compiled_scan = jax.jit(
+                run_scan_spectral_monitors,
+                donate_argnums=(0, 1),
+            )
+            self._compiled_mode = self.plan.kernel_family
         else:
             # Use function-style JIT wrapping for compatibility with older JAX
             # versions where decorator kwargs require the callable as first arg.
-            self._compiled_scan = jax.jit(run_scan, donate_argnums=(0, 1))
+            self._compiled_scan = jax.jit(run_scan_general, donate_argnums=(0, 1))
             self._compiled_mode = self.plan.kernel_family
         self._compile_count += 1
 
@@ -1459,6 +1723,24 @@ class CompiledSimulation:
             eng, power_mon = self._compiled_scan(engine_state, power_monitor_state, coeffs)
             mon = _unpack_power_monitor_state(power_mon, self.monitor_specs)
             mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
+        elif (
+            self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
+            and self.plan.monitors.dft_count == 0
+        ):
+            spectral_monitor_state = _pack_spectral_monitor_state(monitor_state)
+            eng, spectral_mon = self._compiled_scan(
+                engine_state,
+                spectral_monitor_state,
+                coeffs,
+            )
+            mon = _unpack_spectral_monitor_state(spectral_mon, self.monitor_specs)
+            mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
+        elif self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}:
+            eng, mon, mat = self._compiled_scan(
+                engine_state,
+                monitor_state,
+                coeffs,
+            )
         else:
             eng, mon, mat = self._compiled_scan(
                 engine_state,
@@ -1618,6 +1900,37 @@ def _unpack_power_monitor_state(
         freq_flux_im=jnp.zeros((n_specs, 0), dtype=jnp.float32),
         freq_phase_re=jnp.ones((n_specs, 0), dtype=jnp.float32),
         freq_phase_im=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+    )
+
+
+def _pack_spectral_monitor_state(monitor_state: MonitorState) -> SpectralMonitorState:
+    return SpectralMonitorState(
+        powers=monitor_state.powers,
+        timestamps=monitor_state.timestamps,
+        counts=monitor_state.counts,
+        freq_flux_re=monitor_state.freq_flux_re,
+        freq_flux_im=monitor_state.freq_flux_im,
+        freq_phase_re=monitor_state.freq_phase_re,
+        freq_phase_im=monitor_state.freq_phase_im,
+    )
+
+
+def _unpack_spectral_monitor_state(
+    spectral_state: SpectralMonitorState,
+    specs: tuple[CompiledMonitorSpec, ...],
+) -> MonitorState:
+    n_specs = len(specs)
+    return MonitorState(
+        powers=spectral_state.powers,
+        timestamps=spectral_state.timestamps,
+        counts=spectral_state.counts,
+        freq_flux_re=spectral_state.freq_flux_re,
+        freq_flux_im=spectral_state.freq_flux_im,
+        freq_phase_re=spectral_state.freq_phase_re,
+        freq_phase_im=spectral_state.freq_phase_im,
         dft_vec_re=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
         dft_vec_im=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
         dft_weight_sum=jnp.zeros((n_specs, 0), dtype=jnp.float32),
@@ -1860,7 +2173,7 @@ def compile_simulation(simulation, plan: CompiledPlan) -> CompiledSimulation:
         "yes",
         "on",
     }
-    if bool(simulation.is_3d):
+    if bool(simulation.is_3d) and plan.key.boundary_family == "pml":
         e_use_lossy_shell_x, e_lossy_shell_x = _infer_lossy_shell_slabs(
             field_shape=tuple(fields.Ex.shape),
             region=fields.region_x,

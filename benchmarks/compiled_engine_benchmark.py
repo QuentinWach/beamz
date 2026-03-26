@@ -996,6 +996,7 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
         EngineState,
         MonitorState,
         PowerMonitorState,
+        SpectralMonitorState,
         monitor_dft_point_size,
         monitor_frequency_size,
         monitor_state_size,
@@ -1057,6 +1058,19 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
                 timestamps=monitor_state.timestamps,
                 counts=monitor_state.counts,
             )
+        elif (
+            compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
+            and getattr(program.plan.monitors, "dft_count", 0) == 0
+        ):
+            monitor_state = SpectralMonitorState(
+                powers=monitor_state.powers,
+                timestamps=monitor_state.timestamps,
+                counts=monitor_state.counts,
+                freq_flux_re=monitor_state.freq_flux_re,
+                freq_flux_im=monitor_state.freq_flux_im,
+                freq_phase_re=monitor_state.freq_phase_re,
+                freq_phase_im=monitor_state.freq_phase_im,
+            )
         return program, engine_state, monitor_state, coeffs
 
     program, engine_state, monitor_state, coeffs = _compiled_inputs()
@@ -1091,6 +1105,7 @@ def dump_compiled_ir_artifacts(
         EngineState,
         MonitorState,
         PowerMonitorState,
+        SpectralMonitorState,
         monitor_dft_point_size,
         monitor_frequency_size,
         monitor_state_size,
@@ -1152,6 +1167,19 @@ def dump_compiled_ir_artifacts(
             powers=monitor_state.powers,
             timestamps=monitor_state.timestamps,
             counts=monitor_state.counts,
+        )
+    elif (
+        compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
+        and getattr(program.plan.monitors, "dft_count", 0) == 0
+    ):
+        monitor_state = SpectralMonitorState(
+            powers=monitor_state.powers,
+            timestamps=monitor_state.timestamps,
+            counts=monitor_state.counts,
+            freq_flux_re=monitor_state.freq_flux_re,
+            freq_flux_im=monitor_state.freq_flux_im,
+            freq_phase_re=monitor_state.freq_phase_re,
+            freq_phase_im=monitor_state.freq_phase_im,
         )
     lowered = (
         program._compiled_scan.lower(engine_state, coeffs)
