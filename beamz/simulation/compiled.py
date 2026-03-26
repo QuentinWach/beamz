@@ -779,13 +779,24 @@ class CompiledSimulation:
             lossy_shell_hy = self.h_lossy_shell_y
             lossy_shell_hz = self.h_lossy_shell_z
 
-            def body_with_coeffs(carry):
-                eng, mon, mat = carry
-                abs_step = eng.current_step
-
-                ex, ey, ez = eng.ex, eng.ey, eng.ez
-                hx, hy, hz = eng.hx, eng.hy, eng.hz
-
+            # Hot-path field advance shared by the general loop and the
+            # linear/no-monitor specialization below.
+            def advance_fields(
+                ex: jnp.ndarray,
+                ey: jnp.ndarray,
+                ez: jnp.ndarray,
+                hx: jnp.ndarray,
+                hy: jnp.ndarray,
+                hz: jnp.ndarray,
+                abs_step: jnp.ndarray,
+            ) -> tuple[
+                jnp.ndarray,
+                jnp.ndarray,
+                jnp.ndarray,
+                jnp.ndarray,
+                jnp.ndarray,
+                jnp.ndarray,
+            ]:
                 ex = self._apply_source_group(
                     ex, abs_step, pre_e_ex_batch, pre_e_ex_rest
                 )
@@ -801,8 +812,6 @@ class CompiledSimulation:
                         use_lossy_shell_hx or use_lossy_shell_hy or use_lossy_shell_hz
                     )
                     if any_h_shell:
-                        # Shell path: lossless fused update, then lossy shell correction
-                        # without explicit curl arrays.
                         hx_old, hy_old, hz_old = hx, hy, hz
                         hx, hy, hz = ops.fused_update_h_lossless_3d(
                             ex,
@@ -844,7 +853,6 @@ class CompiledSimulation:
                                 slabs=lossy_shell_hz,
                             )
                     else:
-                        # Fused path: no intermediate curl arrays
                         hx, hy, hz = ops.fused_update_h_lossy_3d(
                             ex,
                             ey,
@@ -917,8 +925,6 @@ class CompiledSimulation:
                         use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
                     )
                     if any_e_shell:
-                        # Shell path: lossless fused update, then lossy shell correction
-                        # without explicit curl arrays.
                         ex_old, ey_old, ez_old = ex, ey, ez
                         ex, ey, ez = ops.fused_update_e_lossless_3d(
                             hx,
@@ -960,7 +966,6 @@ class CompiledSimulation:
                                 slabs=lossy_shell_ez,
                             )
                     else:
-                        # Fused path: no intermediate curl arrays
                         ex, ey, ez = ops.fused_update_e_lossy_3d(
                             hx,
                             hy,
@@ -1028,6 +1033,18 @@ class CompiledSimulation:
                 ex = self._apply_source_group(ex, abs_step, e_batch_x, e_rest_x)
                 ey = self._apply_source_group(ey, abs_step, e_batch_y, e_rest_y)
                 ez = self._apply_source_group(ez, abs_step, e_batch_z, e_rest_z)
+                return ex, ey, ez, hx, hy, hz
+
+            def body_with_coeffs(carry):
+                eng, mon, mat = carry
+                abs_step = eng.current_step
+
+                ex, ey, ez = eng.ex, eng.ey, eng.ez
+                hx, hy, hz = eng.hx, eng.hy, eng.hz
+
+                ex, ey, ez, hx, hy, hz = advance_fields(
+                    ex, ey, ez, hx, hy, hz, abs_step
+                )
 
                 mat, _ = material_model.update(mat, ex, ey, ez, abs_step)
 
@@ -1059,7 +1076,78 @@ class CompiledSimulation:
                 )
                 return (new_eng, mon, mat)
 
-            if self.config.loop_kind == "scan":
+            hot_linear_no_monitor = (
+                self.material_spec.model_kind == "linear" and not self.monitor_specs
+            )
+
+            if hot_linear_no_monitor:
+
+                def body_engine_only(carry):
+                    ex, ey, ez, hx, hy, hz, abs_step = carry
+                    ex, ey, ez, hx, hy, hz = advance_fields(
+                        ex, ey, ez, hx, hy, hz, abs_step
+                    )
+                    return (
+                        ex,
+                        ey,
+                        ez,
+                        hx,
+                        hy,
+                        hz,
+                        abs_step + jnp.array(1, dtype=jnp.int32),
+                    )
+
+                init_engine_carry = (
+                    engine_state.ex,
+                    engine_state.ey,
+                    engine_state.ez,
+                    engine_state.hx,
+                    engine_state.hy,
+                    engine_state.hz,
+                    engine_state.current_step,
+                )
+
+                if self.config.loop_kind == "scan":
+
+                    def _scan_engine_body(carry, _unused):
+                        return body_engine_only(carry), None
+
+                    (
+                        ex_f,
+                        ey_f,
+                        ez_f,
+                        hx_f,
+                        hy_f,
+                        hz_f,
+                        step_f,
+                    ), _ = jax.lax.scan(
+                        _scan_engine_body,
+                        init_engine_carry,
+                        xs=None,
+                        length=self.config.num_steps,
+                        unroll=temporal_block_steps,
+                    )
+                else:
+                    ex_f, ey_f, ez_f, hx_f, hy_f, hz_f, step_f = jax.lax.fori_loop(
+                        0,
+                        self.config.num_steps,
+                        lambda _i, c: body_engine_only(c),
+                        init_engine_carry,
+                    )
+
+                engine_final = EngineState(
+                    ex=ex_f,
+                    ey=ey_f,
+                    ez=ez_f,
+                    hx=hx_f,
+                    hy=hy_f,
+                    hz=hz_f,
+                    t=engine_state.t
+                    + jnp.asarray(self.config.num_steps * dt, dtype=jnp.float32),
+                    current_step=step_f,
+                )
+                return engine_final, monitor_state, material_state0
+            elif self.config.loop_kind == "scan":
 
                 def _scan_body(carry, _unused):
                     return body_with_coeffs(carry), None
