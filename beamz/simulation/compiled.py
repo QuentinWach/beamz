@@ -22,14 +22,12 @@ from beamz.devices.monitors.compiler import (
     BatchedMonitorData,
     CompiledMonitorSpec,
     compile_batched_monitor_data,
-    compile_monitor_specs,
 )
 from beamz.devices.monitors.monitors import Monitor
 from beamz.devices.sources.compiler import (
     BatchedSlabGroup,
     CompiledSourceSpec,
     batch_slab_specs,
-    compile_source_specs,
 )
 from beamz.simulation import ops
 from beamz.simulation.material_models import (
@@ -37,6 +35,7 @@ from beamz.simulation.material_models import (
     MaterialState,
     create_material_model,
 )
+from beamz.simulation.plans import CompiledPlan
 
 
 def _init_persistent_cache():
@@ -113,6 +112,14 @@ class MonitorState(NamedTuple):
     dft_weight_sum: jnp.ndarray
 
 
+class PowerMonitorState(NamedTuple):
+    """Narrow monitor state for power-only accumulation."""
+
+    powers: jnp.ndarray
+    timestamps: jnp.ndarray
+    counts: jnp.ndarray
+
+
 class UpdateCoefficients(NamedTuple):
     """Static update coefficients passed as runtime arguments to avoid constant capture."""
 
@@ -161,6 +168,7 @@ class CompiledRunConfig:
 class CompiledSimulation:
     """Compiled simulation program and packed static specs."""
 
+    plan: CompiledPlan
     config: CompiledRunConfig
     material_spec: CompiledMaterialSpec
     source_specs: tuple[CompiledSourceSpec, ...]
@@ -413,6 +421,106 @@ class CompiledSimulation:
         sz = exs * hys - eys * hxs
         mag = jnp.sqrt(sx * sx + sy * sy + sz * sz)
         return jnp.sum(mag) * spec.power_scale
+
+    def _update_power_monitors(
+        self,
+        monitor_state: PowerMonitorState,
+        abs_step: jnp.ndarray,
+        t_phys: jnp.ndarray,
+        ex: jnp.ndarray,
+        ey: jnp.ndarray,
+        ez: jnp.ndarray,
+        hx: jnp.ndarray,
+        hy: jnp.ndarray,
+        hz: jnp.ndarray,
+        batched_mon: BatchedMonitorData | None = None,
+        monitors_2d: tuple[CompiledMonitorSpec, ...] = (),
+    ) -> PowerMonitorState:
+        if not self.monitor_specs:
+            return monitor_state
+
+        powers = monitor_state.powers
+        timestamps = monitor_state.timestamps
+        counts = monitor_state.counts
+        max_records = powers.shape[1]
+
+        if batched_mon is not None:
+            bm = batched_mon
+            ex_flat = ex.ravel()
+            ey_flat = ey.ravel()
+            ez_flat = ez.ravel()
+            hx_flat = hx.ravel()
+            hy_flat = hy.ravel()
+            hz_flat = hz.ravel()
+
+            def _mon_body(i, carry):
+                pwr, ts, cnt = carry
+                mi = bm.monitor_indices[i]
+
+                should_record = (abs_step % bm.record_intervals[i]) == 0
+                can_record = cnt[mi] < max_records
+                do_record = should_record & can_record & bm.accumulate_flags[i]
+
+                mask = bm.valid_mask[i]
+                exs = ex_flat[bm.ex_flat_idx[i]] * mask
+                eys = ey_flat[bm.ey_flat_idx[i]] * mask
+                ezs = ez_flat[bm.ez_flat_idx[i]] * mask
+                hxs = hx_flat[bm.hx_flat_idx[i]] * mask
+                hys = hy_flat[bm.hy_flat_idx[i]] * mask
+                hzs = hz_flat[bm.hz_flat_idx[i]] * mask
+
+                sx = eys * hzs - ezs * hys
+                sy = ezs * hxs - exs * hzs
+                sz = exs * hys - eys * hxs
+                power_val = (
+                    jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz)) * bm.power_scales[i]
+                )
+
+                slot = jnp.minimum(cnt[mi], max_records - 1)
+                pwr = pwr.at[mi, slot].set(
+                    jnp.where(do_record, power_val, pwr[mi, slot])
+                )
+                ts = ts.at[mi, slot].set(jnp.where(do_record, t_phys, ts[mi, slot]))
+                cnt = cnt.at[mi].set(cnt[mi] + jnp.where(do_record, 1, 0))
+                return pwr, ts, cnt
+
+            powers, timestamps, counts = jax.lax.fori_loop(
+                0,
+                bm.n_monitors,
+                _mon_body,
+                (powers, timestamps, counts),
+            )
+
+        for mon in monitors_2d:
+            should_record = (abs_step % mon.record_interval) == 0
+            can_record = counts[mon.monitor_index] < max_records
+            do_record = should_record & can_record & mon.accumulate_power
+            power_val = jnp.where(
+                do_record,
+                (
+                    self._monitor_power_3d(mon, ex, ey, ez, hx, hy, hz)
+                    if mon.is_3d
+                    else self._monitor_power_2d(mon, ez, hx, hy)
+                ),
+                jnp.asarray(0.0, dtype=jnp.float32),
+            )
+
+            slot = jnp.minimum(counts[mon.monitor_index], max_records - 1)
+            powers = powers.at[mon.monitor_index, slot].set(
+                jnp.where(do_record, power_val, powers[mon.monitor_index, slot])
+            )
+            timestamps = timestamps.at[mon.monitor_index, slot].set(
+                jnp.where(do_record, t_phys, timestamps[mon.monitor_index, slot])
+            )
+            counts = counts.at[mon.monitor_index].set(
+                counts[mon.monitor_index] + jnp.where(do_record, 1, 0)
+            )
+
+        return PowerMonitorState(
+            powers=powers,
+            timestamps=timestamps,
+            counts=counts,
+        )
 
     def _update_monitors(
         self,
@@ -701,6 +809,12 @@ class CompiledSimulation:
         plane_2d = self.config.plane_2d
         is_3d = self.config.is_3d
         temporal_block_steps = max(1, int(self.config.temporal_block_steps))
+        use_uniform_scalar_3d = (
+            is_3d
+            and self.plan.key.boundary_family == "none"
+            and self.plan.key.coefficient_layout_family == "uniform_scalar"
+            and self.plan.key.source_family != "none"
+        )
 
         # Batch slab sources by (timing, component) for fori_loop application
         pre_e_ex_batch, pre_e_ex_rest = batch_slab_specs(
@@ -749,8 +863,14 @@ class CompiledSimulation:
         elif self.monitor_specs:
             monitors_2d = tuple(self.monitor_specs)
 
-        hot_linear_no_monitor = (
-            self.material_spec.model_kind == "linear" and not self.monitor_specs
+        fast_engine_family = self.plan.kernel_family in {
+            "engine_only",
+            "engine_plus_sources",
+        }
+        fast_power_monitor_family = (
+            self.plan.kernel_family in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
+            and self.plan.monitors.family == "power_only"
+            and self.material_spec.model_kind == "linear"
         )
 
         # Hot-path field advance shared by the general loop and the
@@ -919,7 +1039,41 @@ class CompiledSimulation:
                 any_e_shell = (
                     use_lossy_shell_ex or use_lossy_shell_ey or use_lossy_shell_ez
                 )
-                if any_e_shell:
+                if use_uniform_scalar_3d and not any_e_shell:
+                    if (
+                        e_decay_x.shape == ()
+                        and e_decay_y.shape == ()
+                        and e_decay_z.shape == ()
+                    ):
+                        ex, ey, ez = ops.fused_update_e_lossy_uniform_3d(
+                            hx,
+                            hy,
+                            hz,
+                            ex,
+                            ey,
+                            ez,
+                            e_decay_x,
+                            e_source_x,
+                            e_decay_y,
+                            e_source_y,
+                            e_decay_z,
+                            e_source_z,
+                            resolution,
+                        )
+                    else:
+                        ex, ey, ez = ops.fused_update_e_lossless_uniform_3d(
+                            hx,
+                            hy,
+                            hz,
+                            ex,
+                            ey,
+                            ez,
+                            e_source_lossless_x,
+                            e_source_lossless_y,
+                            e_source_lossless_z,
+                            resolution,
+                        )
+                elif any_e_shell:
                     ex_old, ey_old, ez_old = ex, ey, ez
                     ex, ey, ez = ops.fused_update_e_lossless_3d(
                         hx,
@@ -1030,7 +1184,7 @@ class CompiledSimulation:
             ez = self._apply_source_group(ez, abs_step, e_batch_z, e_rest_z)
             return ex, ey, ez, hx, hy, hz
 
-        def run_scan_engine_only(
+        def run_scan_engine_core(
             engine_state: EngineState,
             coeffs: UpdateCoefficients,
         ) -> EngineState:
@@ -1195,14 +1349,82 @@ class CompiledSimulation:
                 )
             return engine_final, monitor_final, material_final
 
-        if hot_linear_no_monitor:
-            self._compiled_scan = jax.jit(run_scan_engine_only, donate_argnums=(0,))
-            self._compiled_mode = "engine_only"
+        def run_scan_power_monitors(
+            engine_state: EngineState,
+            monitor_state: PowerMonitorState,
+            coeffs: UpdateCoefficients,
+        ):
+            def body_with_power_monitors(carry):
+                eng, mon = carry
+                abs_step = eng.current_step
+                ex, ey, ez, hx, hy, hz = advance_fields(
+                    eng.ex,
+                    eng.ey,
+                    eng.ez,
+                    eng.hx,
+                    eng.hy,
+                    eng.hz,
+                    abs_step,
+                    coeffs,
+                )
+                mon = self._update_power_monitors(
+                    mon,
+                    abs_step,
+                    eng.t,
+                    ex,
+                    ey,
+                    ez,
+                    hx,
+                    hy,
+                    hz,
+                    batched_mon=batched_mon,
+                    monitors_2d=monitors_2d,
+                )
+                new_eng = EngineState(
+                    ex=ex,
+                    ey=ey,
+                    ez=ez,
+                    hx=hx,
+                    hy=hy,
+                    hz=hz,
+                    t=eng.t + dt,
+                    current_step=eng.current_step + jnp.array(1, dtype=jnp.int32),
+                )
+                return new_eng, mon
+
+            if self.config.loop_kind == "scan":
+
+                def _scan_body(carry, _unused):
+                    return body_with_power_monitors(carry), None
+
+                (engine_final, monitor_final), _ = jax.lax.scan(
+                    _scan_body,
+                    (engine_state, monitor_state),
+                    xs=None,
+                    length=self.config.num_steps,
+                    unroll=temporal_block_steps,
+                )
+            else:
+                init_carry = (engine_state, monitor_state)
+                engine_final, monitor_final = jax.lax.fori_loop(
+                    0,
+                    self.config.num_steps,
+                    lambda _i, c: body_with_power_monitors(c),
+                    init_carry,
+                )
+            return engine_final, monitor_final
+
+        if fast_engine_family:
+            self._compiled_scan = jax.jit(run_scan_engine_core, donate_argnums=(0,))
+            self._compiled_mode = self.plan.kernel_family
+        elif fast_power_monitor_family:
+            self._compiled_scan = jax.jit(run_scan_power_monitors, donate_argnums=(0, 1))
+            self._compiled_mode = self.plan.kernel_family
         else:
             # Use function-style JIT wrapping for compatibility with older JAX
             # versions where decorator kwargs require the callable as first arg.
             self._compiled_scan = jax.jit(run_scan, donate_argnums=(0, 1))
-            self._compiled_mode = "general"
+            self._compiled_mode = self.plan.kernel_family
         self._compile_count += 1
 
     @property
@@ -1216,65 +1438,26 @@ class CompiledSimulation:
     ) -> tuple[EngineState, MonitorState, MaterialState]:
         """Execute the compiled simulation loop."""
         if monitor_state is None:
-            if self.monitor_specs:
-                max_records = max(
-                    1, monitor_state_size(self.monitor_specs, self.config.num_steps)
-                )
-                max_freq = monitor_frequency_size(self.monitor_specs)
-                max_points = monitor_dft_point_size(self.monitor_specs)
-                monitor_state = MonitorState(
-                    powers=jnp.zeros(
-                        (len(self.monitor_specs), max_records), dtype=jnp.float32
-                    ),
-                    timestamps=jnp.zeros(
-                        (len(self.monitor_specs), max_records), dtype=jnp.float32
-                    ),
-                    counts=jnp.zeros((len(self.monitor_specs),), dtype=jnp.int32),
-                    freq_flux_re=jnp.zeros(
-                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
-                    ),
-                    freq_flux_im=jnp.zeros(
-                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
-                    ),
-                    freq_phase_re=jnp.ones(
-                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
-                    ),
-                    freq_phase_im=jnp.zeros(
-                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
-                    ),
-                    dft_vec_re=jnp.zeros(
-                        (len(self.monitor_specs), 6, max_freq, max_points),
-                        dtype=jnp.float32,
-                    ),
-                    dft_vec_im=jnp.zeros(
-                        (len(self.monitor_specs), 6, max_freq, max_points),
-                        dtype=jnp.float32,
-                    ),
-                    dft_weight_sum=jnp.zeros(
-                        (len(self.monitor_specs), max_freq), dtype=jnp.float32
-                    ),
-                )
-            else:
-                monitor_state = MonitorState(
-                    powers=jnp.zeros((0, 0), dtype=jnp.float32),
-                    timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
-                    counts=jnp.zeros((0,), dtype=jnp.int32),
-                    freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
-                    freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
-                    freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
-                    freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
-                    dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-                    dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-                    dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
-                )
+            monitor_state = _zero_monitor_state_from_specs(
+                self.monitor_specs,
+                self.config.num_steps,
+            )
 
         if self._compiled_scan is None:
             self._build_scan()
 
         coeffs = self._update_coefficients()
-        if self._compiled_mode == "engine_only":
+        if self._compiled_mode in {"engine_only", "engine_plus_sources"}:
             eng = self._compiled_scan(engine_state, coeffs)
             mon = monitor_state
+            mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
+        elif (
+            self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
+            and self.plan.monitors.family == "power_only"
+        ):
+            power_monitor_state = _pack_power_monitor_state(monitor_state)
+            eng, power_mon = self._compiled_scan(engine_state, power_monitor_state, coeffs)
+            mon = _unpack_power_monitor_state(power_mon, self.monitor_specs)
             mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
         else:
             eng, mon, mat = self._compiled_scan(
@@ -1373,6 +1556,72 @@ def monitor_dft_point_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
     if not specs:
         return 0
     return int(max(int(getattr(spec, "dft_point_count", 0)) for spec in specs))
+
+
+def power_monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -> int:
+    return monitor_state_size(specs, num_steps)
+
+
+def _zero_monitor_state_from_specs(
+    specs: tuple[CompiledMonitorSpec, ...],
+    num_steps: int,
+) -> MonitorState:
+    if specs:
+        max_records = max(1, monitor_state_size(specs, num_steps))
+        max_freq = monitor_frequency_size(specs)
+        max_points = monitor_dft_point_size(specs)
+        n_specs = len(specs)
+        return MonitorState(
+            powers=jnp.zeros((n_specs, max_records), dtype=jnp.float32),
+            timestamps=jnp.zeros((n_specs, max_records), dtype=jnp.float32),
+            counts=jnp.zeros((n_specs,), dtype=jnp.int32),
+            freq_flux_re=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
+            freq_flux_im=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
+            freq_phase_re=jnp.ones((n_specs, max_freq), dtype=jnp.float32),
+            freq_phase_im=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
+            dft_vec_re=jnp.zeros((n_specs, 6, max_freq, max_points), dtype=jnp.float32),
+            dft_vec_im=jnp.zeros((n_specs, 6, max_freq, max_points), dtype=jnp.float32),
+            dft_weight_sum=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
+        )
+    return MonitorState(
+        powers=jnp.zeros((0, 0), dtype=jnp.float32),
+        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
+        counts=jnp.zeros((0,), dtype=jnp.int32),
+        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
+    )
+
+
+def _pack_power_monitor_state(monitor_state: MonitorState) -> PowerMonitorState:
+    return PowerMonitorState(
+        powers=monitor_state.powers,
+        timestamps=monitor_state.timestamps,
+        counts=monitor_state.counts,
+    )
+
+
+def _unpack_power_monitor_state(
+    power_state: PowerMonitorState,
+    specs: tuple[CompiledMonitorSpec, ...],
+) -> MonitorState:
+    n_specs = len(specs)
+    return MonitorState(
+        powers=power_state.powers,
+        timestamps=power_state.timestamps,
+        counts=power_state.counts,
+        freq_flux_re=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+        freq_phase_re=jnp.ones((n_specs, 0), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+    )
 
 
 def _edge_full_thickness(mask: np.ndarray, axis: int) -> tuple[int, int]:
@@ -1497,87 +1746,33 @@ def _lossy_fraction(
     return float(full_mask.mean())
 
 
-def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulation:
-    """Build a CompiledSimulation from design/devices/boundaries and a run config.
+def _scalar_from_array(arr: jnp.ndarray) -> jnp.ndarray:
+    return jnp.asarray(np.asarray(arr).reshape(-1)[0], dtype=jnp.float32)
 
-    Required run_cfg attributes:
-    - fields
-    - resolution
-    - dt
-    - num_steps
-    - plane_2d
-    - is_3d
-    Optional:
-    - total_steps: full simulation length for absolute waveform indexing
-    - t0: simulation time origin used when sampling source waveforms
-    """
-    del design, boundaries
 
-    fields = run_cfg.fields
-    resolution = float(run_cfg.resolution)
-    dt = float(run_cfg.dt)
-    num_steps = int(run_cfg.num_steps)
-    total_steps = int(getattr(run_cfg, "total_steps", num_steps))
-    t0 = float(getattr(run_cfg, "t0", 0.0))
+def _scalar_from_region(arr: jnp.ndarray, region: tuple[slice, ...]) -> jnp.ndarray:
+    region_arr = np.asarray(arr[region])
+    return jnp.asarray(region_arr.reshape(-1)[0], dtype=jnp.float32)
 
-    source_specs = compile_source_specs(
-        devices=devices,
-        fields=fields,
-        dt=dt,
-        resolution=resolution,
-        num_steps=num_steps,
-        t0=t0,
-        total_steps=total_steps,
-    )
 
-    monitor_specs, _ = compile_monitor_specs(
-        devices=devices,
-        fields=fields,
-        resolution=resolution,
-        num_steps=num_steps,
-        dt=dt,
-    )
+def compile_simulation(simulation, plan: CompiledPlan) -> CompiledSimulation:
+    """Build a CompiledSimulation from a Simulation object and compilation plan."""
 
-    monitor_devices = tuple(d for d in devices if isinstance(d, Monitor))
-
-    loop_kind_raw = (
-        str(
-            getattr(
-                run_cfg,
-                "loop_kind",
-                os.getenv("BEAMZ_COMPILED_LOOP_KIND", "scan"),
-            )
-        )
-        .strip()
-        .lower()
-    )
-    if loop_kind_raw in {"fori", "fori_loop", "fori-loop"}:
-        loop_kind = "fori_loop"
-    elif loop_kind_raw in {"scan"}:
-        loop_kind = "scan"
-    else:
-        raise ValueError("Invalid compiled loop kind. Use one of: scan, fori_loop.")
-    source_single_slab_dense = os.getenv(
-        "BEAMZ_SOURCE_SINGLE_SLAB_DENSE",
-        str(getattr(run_cfg, "source_single_slab_dense", False)),
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    temporal_block_steps = max(
-        1,
-        int(
-            os.getenv(
-                "BEAMZ_TEMPORAL_BLOCK_STEPS",
-                str(getattr(run_cfg, "temporal_block_steps", 1)),
-            )
-        ),
-    )
+    fields = simulation.fields
+    resolution = float(simulation.resolution)
+    dt = float(simulation.dt)
+    num_steps = int(plan.key.num_steps)
+    loop_kind = str(plan.key.loop_kind)
+    source_single_slab_dense = bool(plan.key.source_single_slab_dense)
+    temporal_block_steps = max(1, int(plan.key.temporal_block_steps))
 
     config = CompiledRunConfig(
         resolution=resolution,
         dt=dt,
         num_steps=num_steps,
-        plane_2d=run_cfg.plane_2d,
-        is_3d=bool(run_cfg.is_3d),
-        precision=getattr(run_cfg, "precision", "float32"),
+        plane_2d=simulation.plane_2d,
+        is_3d=bool(simulation.is_3d),
+        precision="float32",
         loop_kind=loop_kind,
         source_single_slab_dense=source_single_slab_dense,
         temporal_block_steps=temporal_block_steps,
@@ -1615,6 +1810,38 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         region=fields.region_z,
     )
 
+    use_uniform_scalar_3d = (
+        bool(simulation.is_3d)
+        and plan.key.boundary_family == "none"
+        and plan.key.coefficient_layout_family == "uniform_scalar"
+        and plan.key.source_family != "none"
+    )
+    if use_uniform_scalar_3d:
+        h_decay_x = _scalar_from_array(h_decay_x)
+        h_source_x = _scalar_from_array(h_source_x)
+        h_source_lossless_x = _scalar_from_array(h_source_lossless_x)
+        h_decay_y = _scalar_from_array(h_decay_y)
+        h_source_y = _scalar_from_array(h_source_y)
+        h_source_lossless_y = _scalar_from_array(h_source_lossless_y)
+        h_decay_z = _scalar_from_array(h_decay_z)
+        h_source_z = _scalar_from_array(h_source_z)
+        h_source_lossless_z = _scalar_from_array(h_source_lossless_z)
+        e_decay_x = _scalar_from_region(e_decay_x, fields.region_x)
+        e_source_x = _scalar_from_region(e_source_x, fields.region_x)
+        e_source_lossless_x = _scalar_from_region(
+            e_source_lossless_x, fields.region_x
+        )
+        e_decay_y = _scalar_from_region(e_decay_y, fields.region_y)
+        e_source_y = _scalar_from_region(e_source_y, fields.region_y)
+        e_source_lossless_y = _scalar_from_region(
+            e_source_lossless_y, fields.region_y
+        )
+        e_decay_z = _scalar_from_region(e_decay_z, fields.region_z)
+        e_source_z = _scalar_from_region(e_source_z, fields.region_z)
+        e_source_lossless_z = _scalar_from_region(
+            e_source_lossless_z, fields.region_z
+        )
+
     e_shell_frac_threshold = 0.35
     h_shell_frac_threshold = 0.20
     enable_e_shell_split = os.getenv(
@@ -1633,7 +1860,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         "yes",
         "on",
     }
-    if bool(run_cfg.is_3d):
+    if bool(simulation.is_3d):
         e_use_lossy_shell_x, e_lossy_shell_x = _infer_lossy_shell_slabs(
             field_shape=tuple(fields.Ex.shape),
             region=fields.region_x,
@@ -1724,11 +1951,12 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
         h_use_lossy_shell_z, h_lossy_shell_z = False, tuple()
 
     return CompiledSimulation(
+        plan=plan,
         config=config,
-        material_spec=CompiledMaterialSpec(model_kind="linear"),
-        source_specs=source_specs,
-        monitor_specs=monitor_specs,
-        monitor_devices=monitor_devices,
+        material_spec=plan.material.spec,
+        source_specs=plan.source_specs,
+        monitor_specs=plan.monitor_specs,
+        monitor_devices=plan.monitor_devices,
         h_decay_x=h_decay_x,
         h_source_x=h_source_x,
         h_source_lossless_x=h_source_lossless_x,

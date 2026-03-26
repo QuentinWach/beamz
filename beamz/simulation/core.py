@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Literal
 
 import jax
@@ -22,6 +21,7 @@ from beamz.simulation.compiled import (
 )
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
+from beamz.simulation.plans import build_compilation_plan
 
 
 @dataclass(frozen=True)
@@ -471,17 +471,20 @@ class Simulation:
         temporal_block_steps = max(
             1, int(os.getenv("BEAMZ_TEMPORAL_BLOCK_STEPS", "1").strip() or "1")
         )
+        backend_platform = jax.default_backend()
 
+        plan = build_compilation_plan(
+            self,
+            backend_platform=backend_platform,
+            num_steps=num_steps,
+            loop_kind=loop_kind,
+            source_single_slab_dense=source_single_slab_dense,
+            temporal_block_steps=temporal_block_steps,
+        )
         signature = (
-            num_steps,
-            self.fields.permittivity.shape,
-            self.is_3d,
-            self.plane_2d,
-            loop_kind,
+            plan.key,
             e_shell_split,
             h_shell_split,
-            source_single_slab_dense,
-            temporal_block_steps,
         )
         cached = self._compiled_program_cache.get(signature)
         if cached is not None:
@@ -489,25 +492,9 @@ class Simulation:
             self._compiled_program_signature = signature
             return cached
 
-        run_cfg = SimpleNamespace(
-            fields=self.fields,
-            resolution=self.resolution,
-            dt=self.dt,
-            num_steps=num_steps,
-            plane_2d=self.plane_2d,
-            is_3d=self.is_3d,
-            total_steps=self.num_steps,
-            t0=float(self.time[0]),
-            precision="float32",
-            loop_kind=loop_kind,
-            source_single_slab_dense=source_single_slab_dense,
-            temporal_block_steps=temporal_block_steps,
-        )
         program = compile_simulation(
-            design=self.design,
-            devices=self.devices,
-            boundaries=self.boundaries,
-            run_cfg=run_cfg,
+            simulation=self,
+            plan=plan,
         )
         self._compiled_program_cache[signature] = program
         self._compiled_program = program

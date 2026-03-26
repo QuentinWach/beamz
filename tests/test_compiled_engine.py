@@ -18,6 +18,7 @@ from beamz import (
     um,
 )
 from beamz.simulation.compiled import EngineState, MonitorState
+from beamz.simulation.plans import build_compilation_plan
 
 
 @pytest.fixture
@@ -466,11 +467,176 @@ def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
 
     program._build_scan()
     coeffs = program._update_coefficients()
-    if getattr(program, "_compiled_mode", "general") == "engine_only":
+    if getattr(program, "_compiled_mode", "general") in {
+        "engine_only",
+        "engine_plus_sources",
+    }:
         jaxpr = jax.make_jaxpr(program._compiled_scan)(eng0, coeffs)
     else:
         jaxpr = jax.make_jaxpr(program._compiled_scan)(eng0, mon0, coeffs)
     assert "host_callback" not in str(jaxpr).lower()
+
+
+def test_compilation_plan_classifies_families(small_sim_params):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    monitor = Monitor(
+        start=(domain * 0.35, domain * 0.35),
+        end=(domain * 0.35, domain * 0.65),
+        record_interval=2,
+    )
+
+    sim = Simulation(
+        design=design,
+        devices=[source, monitor],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    plan = build_compilation_plan(
+        sim,
+        backend_platform="cpu",
+        num_steps=16,
+        loop_kind="scan",
+        source_single_slab_dense=False,
+        temporal_block_steps=1,
+    )
+
+    assert plan.key.boundary_family == "pml"
+    assert plan.key.source_family == "single_slab"
+    assert plan.key.monitor_family == "power_only"
+    assert plan.key.kernel_family == "engine_plus_sources_and_monitors"
+
+
+def test_compilation_plan_key_varies_with_num_steps(small_sim_params):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    sim = Simulation(
+        design=design,
+        devices=[source],
+        boundaries=[],
+        time=t,
+        resolution=dx,
+    )
+
+    plan_a = build_compilation_plan(
+        sim,
+        backend_platform="cpu",
+        num_steps=8,
+        loop_kind="scan",
+        source_single_slab_dense=False,
+        temporal_block_steps=1,
+    )
+    plan_b = build_compilation_plan(
+        sim,
+        backend_platform="cpu",
+        num_steps=12,
+        loop_kind="scan",
+        source_single_slab_dense=False,
+        temporal_block_steps=1,
+    )
+
+    assert plan_a.key != plan_b.key
+
+
+def test_compilation_plan_detects_uniform_scalar_coefficients():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
+    )
+    t = np.arange(0, 10 * dt, dt)
+    design = Design(
+        width=4 * wl,
+        height=4 * wl,
+        depth=4 * wl,
+        material=Material(permittivity=1.0),
+    )
+    sim = Simulation(
+        design=design,
+        devices=[],
+        boundaries=[],
+        time=t,
+        resolution=dx,
+    )
+
+    plan = build_compilation_plan(
+        sim,
+        backend_platform="cpu",
+        num_steps=8,
+        loop_kind="scan",
+        source_single_slab_dense=False,
+        temporal_block_steps=1,
+    )
+
+    assert plan.key.dimension_family == "3d"
+    assert plan.key.boundary_family == "none"
+    assert plan.key.coefficient_layout_family == "uniform_scalar"
+    assert plan.key.kernel_family == "engine_only"
+
+
+def test_run_compiled_matches_python_in_3d_uniform_no_boundary():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
+    )
+    steps = 12
+    t = np.arange(0, steps * dt, dt)
+    design = Design(
+        width=4 * wl,
+        height=4 * wl,
+        depth=4 * wl,
+        material=Material(permittivity=1.0),
+    )
+    freq = LIGHT_SPEED / wl
+    signal = ramped_cosine(
+        t,
+        amplitude=1.0,
+        frequency=freq,
+        ramp_duration=2 / freq,
+        t_max=t[-1] * 0.5,
+    )
+    source_a = GaussianSource(
+        position=(2 * wl, 2 * wl, 2 * wl),
+        width=wl / 5,
+        signal=signal,
+    )
+    source_b = GaussianSource(
+        position=(2 * wl, 2 * wl, 2 * wl),
+        width=wl / 5,
+        signal=signal,
+    )
+    sim_python = Simulation(
+        design=design.copy(),
+        devices=[source_a],
+        boundaries=[],
+        time=t,
+        resolution=dx,
+    )
+    sim_compiled = Simulation(
+        design=design.copy(),
+        devices=[source_b],
+        boundaries=[],
+        time=t,
+        resolution=dx,
+    )
+
+    while sim_python.step():
+        pass
+    sim_compiled.run_compiled(progress=False)
+
+    assert np.allclose(
+        np.asarray(sim_compiled.fields.Ez),
+        np.asarray(sim_python.fields.Ez),
+        rtol=3e-3,
+        atol=3e-4,
+    )
 
 
 def test_compile_mode_source_builds_e_and_h_specs():

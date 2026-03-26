@@ -995,6 +995,7 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
     from beamz.simulation.compiled import (
         EngineState,
         MonitorState,
+        PowerMonitorState,
         monitor_dft_point_size,
         monitor_frequency_size,
         monitor_state_size,
@@ -1046,16 +1047,33 @@ def compiled_hlo_stats(sim: Simulation, steps: int) -> dict[str, int]:
             current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
         )
         coeffs = program._update_coefficients()
+        compiled_mode = getattr(program, "_compiled_mode", "general")
+        if (
+            compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
+            and getattr(program.plan.monitors, "family", "mixed") == "power_only"
+        ):
+            monitor_state = PowerMonitorState(
+                powers=monitor_state.powers,
+                timestamps=monitor_state.timestamps,
+                counts=monitor_state.counts,
+            )
         return program, engine_state, monitor_state, coeffs
 
     program, engine_state, monitor_state, coeffs = _compiled_inputs()
     lowered = (
         program._compiled_scan.lower(engine_state, coeffs)
-        if getattr(program, "_compiled_mode", "general") == "engine_only"
+        if getattr(program, "_compiled_mode", "general")
+        in {"engine_only", "engine_plus_sources"}
         else program._compiled_scan.lower(engine_state, monitor_state, coeffs)
     )
     hlo_text = lowered.compile().as_text().lower()
-    return {"text_len": len(hlo_text), **_hlo_op_counts(hlo_text)}
+    return {
+        "text_len": len(hlo_text),
+        "plan_kernel_family": str(program.plan.key.kernel_family),
+        "plan_source_family": str(program.plan.key.source_family),
+        "plan_monitor_family": str(program.plan.key.monitor_family),
+        **_hlo_op_counts(hlo_text),
+    }
 
 
 def dump_compiled_ir_artifacts(
@@ -1072,6 +1090,7 @@ def dump_compiled_ir_artifacts(
     from beamz.simulation.compiled import (
         EngineState,
         MonitorState,
+        PowerMonitorState,
         monitor_dft_point_size,
         monitor_frequency_size,
         monitor_state_size,
@@ -1124,15 +1143,25 @@ def dump_compiled_ir_artifacts(
         current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
     )
     coeffs = program._update_coefficients()
+    compiled_mode = getattr(program, "_compiled_mode", "general")
+    if (
+        compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
+        and getattr(program.plan.monitors, "family", "mixed") == "power_only"
+    ):
+        monitor_state = PowerMonitorState(
+            powers=monitor_state.powers,
+            timestamps=monitor_state.timestamps,
+            counts=monitor_state.counts,
+        )
     lowered = (
         program._compiled_scan.lower(engine_state, coeffs)
-        if getattr(program, "_compiled_mode", "general") == "engine_only"
+        if compiled_mode in {"engine_only", "engine_plus_sources"}
         else program._compiled_scan.lower(engine_state, monitor_state, coeffs)
     )
     hlo_comp = lowered.compiler_ir(dialect="hlo")
 
     # Graph-level view before XLA optimization.
-    if getattr(program, "_compiled_mode", "general") == "engine_only":
+    if compiled_mode in {"engine_only", "engine_plus_sources"}:
         jaxpr = jax.make_jaxpr(program._compiled_scan)(engine_state, coeffs)
     else:
         jaxpr = jax.make_jaxpr(program._compiled_scan)(engine_state, monitor_state, coeffs)
@@ -1523,6 +1552,14 @@ def main():
         print(f"resolved_dt_fs={dt_used * 1e15:.6g}")
         print(f"resolved_courant_factor={courant_used:.6g}")
         print(f"resolved_steps={steps}")
+        compiled_plan = sim_base.compile(num_steps=steps).plan.key
+        print(f"compiled_plan_kernel_family={compiled_plan.kernel_family}")
+        print(f"compiled_plan_source_family={compiled_plan.source_family}")
+        print(f"compiled_plan_monitor_family={compiled_plan.monitor_family}")
+        print(f"compiled_plan_boundary_family={compiled_plan.boundary_family}")
+        print(
+            f"compiled_plan_coeff_layout_family={compiled_plan.coefficient_layout_family}"
+        )
 
         t_py, py_runs = float("nan"), []
         t_split, split_runs = float("nan"), []

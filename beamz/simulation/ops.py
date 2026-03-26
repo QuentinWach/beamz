@@ -485,6 +485,70 @@ def fused_update_e_lossy_3d(
     return ex, ey, ez
 
 
+def fused_update_e_lossless_uniform_3d(
+    hx, hy, hz, ex, ey, ez, e_src_ll_x, e_src_ll_y, e_src_ll_z, resolution
+):
+    """Boundary-free 3D E update with scalar coefficients and explicit interiors."""
+    inv_res = 1.0 / resolution
+
+    curl_ex = (
+        (hz[1:-1, 1:, :] - hz[1:-1, :-1, :])
+        - (hy[1:, 1:-1, :] - hy[:-1, 1:-1, :])
+    ) * inv_res
+    ex = ex.at[1:-1, 1:-1, :].set(ex[1:-1, 1:-1, :] + e_src_ll_x * curl_ex)
+
+    curl_ey = (
+        (hx[1:, :, 1:-1] - hx[:-1, :, 1:-1])
+        - (hz[1:-1, :, 1:] - hz[1:-1, :, :-1])
+    ) * inv_res
+    ey = ey.at[1:-1, :, 1:-1].set(ey[1:-1, :, 1:-1] + e_src_ll_y * curl_ey)
+
+    curl_ez = (
+        (hy[:, 1:-1, 1:] - hy[:, 1:-1, :-1])
+        - (hx[:, 1:, 1:-1] - hx[:, :-1, 1:-1])
+    ) * inv_res
+    ez = ez.at[:, 1:-1, 1:-1].set(ez[:, 1:-1, 1:-1] + e_src_ll_z * curl_ez)
+    return ex, ey, ez
+
+
+def fused_update_e_lossy_uniform_3d(
+    hx,
+    hy,
+    hz,
+    ex,
+    ey,
+    ez,
+    e_decay_x,
+    e_src_x,
+    e_decay_y,
+    e_src_y,
+    e_decay_z,
+    e_src_z,
+    resolution,
+):
+    """Boundary-free 3D lossy E update with scalar coefficients and explicit interiors."""
+    inv_res = 1.0 / resolution
+
+    curl_ex = (
+        (hz[1:-1, 1:, :] - hz[1:-1, :-1, :])
+        - (hy[1:, 1:-1, :] - hy[:-1, 1:-1, :])
+    ) * inv_res
+    ex = ex.at[1:-1, 1:-1, :].set(e_decay_x * ex[1:-1, 1:-1, :] + e_src_x * curl_ex)
+
+    curl_ey = (
+        (hx[1:, :, 1:-1] - hx[:-1, :, 1:-1])
+        - (hz[1:-1, :, 1:] - hz[1:-1, :, :-1])
+    ) * inv_res
+    ey = ey.at[1:-1, :, 1:-1].set(e_decay_y * ey[1:-1, :, 1:-1] + e_src_y * curl_ey)
+
+    curl_ez = (
+        (hy[:, 1:-1, 1:] - hy[:, 1:-1, :-1])
+        - (hx[:, 1:, 1:-1] - hx[:, :-1, 1:-1])
+    ) * inv_res
+    ez = ez.at[:, 1:-1, 1:-1].set(e_decay_z * ez[:, 1:-1, 1:-1] + e_src_z * curl_ez)
+    return ex, ey, ez
+
+
 def magnetic_conductivity_terms_3d(
     conductivity, permeability, hx_shape, hy_shape, hz_shape
 ):
