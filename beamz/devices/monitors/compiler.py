@@ -10,6 +10,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.devices.monitors.monitors import Monitor
+from beamz.simulation.compiler.runtime import (
+    MonitorState,
+    PowerMonitorState,
+    SpectralMonitorState,
+)
 
 
 @dataclass(frozen=True)
@@ -218,6 +223,197 @@ def compile_batched_monitor_data(
         dft_window_code=jnp.array(dft_window_code, dtype=jnp.int32),
         dft_component_mask=jnp.array(dft_component_mask, dtype=jnp.float32),
     )
+
+
+def monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -> int:
+    if not specs:
+        return 0
+    return int(
+        max(
+            int(np.ceil(num_steps / max(1, int(spec.record_interval))))
+            for spec in specs
+        )
+    )
+
+
+def monitor_frequency_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
+    if not specs:
+        return 0
+    return int(max(int(spec.freq_count) for spec in specs))
+
+
+def monitor_dft_point_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
+    if not specs:
+        return 0
+    return int(max(int(getattr(spec, "dft_point_count", 0)) for spec in specs))
+
+
+def power_monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -> int:
+    return monitor_state_size(specs, num_steps)
+
+
+def zero_monitor_state_from_specs(
+    specs: tuple[CompiledMonitorSpec, ...],
+    num_steps: int,
+) -> MonitorState:
+    if specs:
+        max_records = max(1, monitor_state_size(specs, num_steps))
+        max_freq = monitor_frequency_size(specs)
+        max_points = monitor_dft_point_size(specs)
+        n_specs = len(specs)
+        return MonitorState(
+            powers=jnp.zeros((n_specs, max_records), dtype=jnp.float32),
+            timestamps=jnp.zeros((n_specs, max_records), dtype=jnp.float32),
+            counts=jnp.zeros((n_specs,), dtype=jnp.int32),
+            freq_flux_re=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
+            freq_flux_im=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
+            freq_phase_re=jnp.ones((n_specs, max_freq), dtype=jnp.float32),
+            freq_phase_im=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
+            dft_vec_re=jnp.zeros((n_specs, 6, max_freq, max_points), dtype=jnp.float32),
+            dft_vec_im=jnp.zeros((n_specs, 6, max_freq, max_points), dtype=jnp.float32),
+            dft_weight_sum=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
+        )
+    return MonitorState(
+        powers=jnp.zeros((0, 0), dtype=jnp.float32),
+        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
+        counts=jnp.zeros((0,), dtype=jnp.int32),
+        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
+    )
+
+
+def pack_power_monitor_state(monitor_state: MonitorState) -> PowerMonitorState:
+    return PowerMonitorState(
+        powers=monitor_state.powers,
+        timestamps=monitor_state.timestamps,
+        counts=monitor_state.counts,
+    )
+
+
+def unpack_power_monitor_state(
+    power_state: PowerMonitorState,
+    specs: tuple[CompiledMonitorSpec, ...],
+) -> MonitorState:
+    n_specs = len(specs)
+    return MonitorState(
+        powers=power_state.powers,
+        timestamps=power_state.timestamps,
+        counts=power_state.counts,
+        freq_flux_re=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+        freq_phase_re=jnp.ones((n_specs, 0), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+    )
+
+
+def pack_spectral_monitor_state(monitor_state: MonitorState) -> SpectralMonitorState:
+    return SpectralMonitorState(
+        powers=monitor_state.powers,
+        timestamps=monitor_state.timestamps,
+        counts=monitor_state.counts,
+        freq_flux_re=monitor_state.freq_flux_re,
+        freq_flux_im=monitor_state.freq_flux_im,
+        freq_phase_re=monitor_state.freq_phase_re,
+        freq_phase_im=monitor_state.freq_phase_im,
+    )
+
+
+def unpack_spectral_monitor_state(
+    spectral_state: SpectralMonitorState,
+    specs: tuple[CompiledMonitorSpec, ...],
+) -> MonitorState:
+    n_specs = len(specs)
+    return MonitorState(
+        powers=spectral_state.powers,
+        timestamps=spectral_state.timestamps,
+        counts=spectral_state.counts,
+        freq_flux_re=spectral_state.freq_flux_re,
+        freq_flux_im=spectral_state.freq_flux_im,
+        freq_phase_re=spectral_state.freq_phase_re,
+        freq_phase_im=spectral_state.freq_phase_im,
+        dft_vec_re=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((n_specs, 0), dtype=jnp.float32),
+    )
+
+
+def apply_compiled_monitor_state(
+    specs: tuple[CompiledMonitorSpec, ...],
+    monitor_devices: tuple[Monitor, ...],
+    monitor_state: MonitorState,
+):
+    """Push compiled monitor buffers back to their Monitor objects."""
+    for spec in specs:
+        dev = monitor_devices[spec.monitor_index]
+        count = int(np.asarray(monitor_state.counts[spec.monitor_index]))
+        powers = np.asarray(monitor_state.powers[spec.monitor_index, :count], dtype=float)
+        timestamps = np.asarray(
+            monitor_state.timestamps[spec.monitor_index, :count],
+            dtype=float,
+        )
+
+        dev.power_history = list(powers.tolist())
+        dev.power_timestamps = list(timestamps.tolist())
+        dev.power_accumulation_count = count
+        if spec.freq_count > 0:
+            re = np.asarray(
+                monitor_state.freq_flux_re[spec.monitor_index, : spec.freq_count],
+                dtype=np.float32,
+            )
+            im = np.asarray(
+                monitor_state.freq_flux_im[spec.monitor_index, : spec.freq_count],
+                dtype=np.float32,
+            )
+            dev.frequency_flux_spectrum = (re + 1j * im).astype(np.complex64)
+        else:
+            dev.frequency_flux_spectrum = np.zeros((0,), dtype=np.complex64)
+
+        if spec.dft_enabled and spec.freq_count > 0 and spec.dft_point_count > 0:
+            comp_names = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+            comp_mask = (
+                np.asarray(spec.dft_component_mask, dtype=np.float32)
+                if spec.dft_component_mask is not None
+                else np.ones((6,), dtype=np.float32)
+            )
+            weight_sum = np.asarray(
+                monitor_state.dft_weight_sum[spec.monitor_index, : spec.freq_count],
+                dtype=np.float64,
+            )
+            dev._dft_weight_sum = weight_sum
+            dev._dft_accum = {}
+            for comp_i, comp_name in enumerate(comp_names):
+                if comp_mask[comp_i] <= 0.0:
+                    continue
+                re = np.asarray(
+                    monitor_state.dft_vec_re[
+                        spec.monitor_index,
+                        comp_i,
+                        : spec.freq_count,
+                        : spec.dft_point_count,
+                    ],
+                    dtype=np.float64,
+                )
+                im = np.asarray(
+                    monitor_state.dft_vec_im[
+                        spec.monitor_index,
+                        comp_i,
+                        : spec.freq_count,
+                        : spec.dft_point_count,
+                    ],
+                    dtype=np.float64,
+                )
+                dev._dft_accum[comp_name] = re + 1j * im
+        else:
+            dev._dft_weight_sum = np.zeros((0,), dtype=np.float64)
+            dev._dft_accum = {}
 
 
 def _clip_indices(x_idx: np.ndarray, y_idx: np.ndarray, shape: tuple[int, int]):

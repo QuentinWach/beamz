@@ -8,6 +8,7 @@ import numpy as np
 
 from beamz.const import µm
 from beamz.design.core import Design
+from beamz.devices.monitors.compiler import zero_monitor_state_from_specs
 from beamz.devices.monitors.monitors import Monitor
 from beamz.devices.sources.solve import solve_modes
 from beamz.simulation.boundaries import PML, Boundary
@@ -15,13 +16,10 @@ from beamz.simulation.compiled import (
     EngineState,
     MonitorState,
     compile_simulation,
-    monitor_dft_point_size,
-    monitor_frequency_size,
-    monitor_state_size,
 )
+from beamz.simulation.compiler.plans import build_compilation_plan
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
-from beamz.simulation.plans import build_compilation_plan
 
 
 @dataclass(frozen=True)
@@ -569,58 +567,12 @@ class Simulation:
                     monitor_state = self._compiled_monitor_state
                 elif program.monitor_specs:
                     records_horizon = max(1, int(self.num_steps - self.current_step))
-                    max_records = max(
-                        1, monitor_state_size(program.monitor_specs, records_horizon)
-                    )
-                    max_freq = monitor_frequency_size(program.monitor_specs)
-                    max_points = monitor_dft_point_size(program.monitor_specs)
-                    monitor_state = MonitorState(
-                        powers=jnp.zeros(
-                            (len(program.monitor_specs), max_records), dtype=jnp.float32
-                        ),
-                        timestamps=jnp.zeros(
-                            (len(program.monitor_specs), max_records), dtype=jnp.float32
-                        ),
-                        counts=jnp.zeros(
-                            (len(program.monitor_specs),), dtype=jnp.int32
-                        ),
-                        freq_flux_re=jnp.zeros(
-                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
-                        ),
-                        freq_flux_im=jnp.zeros(
-                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
-                        ),
-                        freq_phase_re=jnp.ones(
-                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
-                        ),
-                        freq_phase_im=jnp.zeros(
-                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
-                        ),
-                        dft_vec_re=jnp.zeros(
-                            (len(program.monitor_specs), 6, max_freq, max_points),
-                            dtype=jnp.float32,
-                        ),
-                        dft_vec_im=jnp.zeros(
-                            (len(program.monitor_specs), 6, max_freq, max_points),
-                            dtype=jnp.float32,
-                        ),
-                        dft_weight_sum=jnp.zeros(
-                            (len(program.monitor_specs), max_freq), dtype=jnp.float32
-                        ),
+                    monitor_state = zero_monitor_state_from_specs(
+                        program.monitor_specs,
+                        records_horizon,
                     )
                 else:
-                    monitor_state = MonitorState(
-                        powers=jnp.zeros((0, 0), dtype=jnp.float32),
-                        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
-                        counts=jnp.zeros((0,), dtype=jnp.int32),
-                        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
-                        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
-                        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
-                        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
-                        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-                        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-                        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
-                    )
+                    monitor_state = zero_monitor_state_from_specs((), 0)
             self._compiled_monitor_state = monitor_state
 
             engine_state, monitor_state, _ = program.run(

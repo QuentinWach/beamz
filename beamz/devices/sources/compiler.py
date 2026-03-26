@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -76,6 +77,169 @@ class CompiledSourceSpec:
     is_slab: bool = False
     slab_starts: tuple[int, ...] | None = None
     slab_sizes: tuple[int, ...] | None = None
+
+
+@dataclass(frozen=True)
+class SourceExecutionGroup:
+    """One compiled source execution group for a (timing, component) slot."""
+
+    batch: BatchedSlabGroup | None
+    rest: tuple[CompiledSourceSpec, ...]
+
+
+@dataclass(frozen=True)
+class SourceExecutionPlan:
+    """Compiled source execution groups arranged by timestep phase."""
+
+    pre_e_ex: SourceExecutionGroup
+    pre_e_ey: SourceExecutionGroup
+    pre_e_ez: SourceExecutionGroup
+    h_x: SourceExecutionGroup
+    h_y: SourceExecutionGroup
+    h_z: SourceExecutionGroup
+    e_x: SourceExecutionGroup
+    e_y: SourceExecutionGroup
+    e_z: SourceExecutionGroup
+
+
+def apply_source_specs(
+    arr: jnp.ndarray,
+    abs_step: jnp.ndarray,
+    specs: tuple[CompiledSourceSpec, ...],
+) -> jnp.ndarray:
+    """Apply unpacked source specs directly."""
+    out = arr
+    for spec in specs:
+        safe_idx = jnp.clip(abs_step, 0, spec.waveform.shape[0] - 1)
+        amp = spec.waveform[safe_idx]
+        if spec.is_slab and spec.slab_starts is not None and spec.slab_sizes is not None:
+            patch = spec.coeff * amp
+            cur = jax.lax.dynamic_slice(out, spec.slab_starts, spec.slab_sizes)
+            out = jax.lax.dynamic_update_slice(out, cur + patch, spec.slab_starts)
+        else:
+            out = out.at[spec.index].add(spec.coeff * amp)
+    return out
+
+
+def apply_batched_slab_sources(
+    arr: jnp.ndarray,
+    abs_step: jnp.ndarray,
+    group: BatchedSlabGroup,
+    *,
+    source_single_slab_dense: bool = False,
+) -> jnp.ndarray:
+    """Apply stacked slab sources via a constant-size fori_loop."""
+    safe_idx = jnp.clip(abs_step, 0, group.waveforms.shape[1] - 1)
+    ndim = len(group.max_sizes)
+
+    if group.n == 1:
+        amp = group.waveforms[0, safe_idx]
+        starts_0 = group.starts_tuple[0]
+        if source_single_slab_dense:
+            pad_width = tuple(
+                (
+                    starts_0[d],
+                    int(arr.shape[d]) - starts_0[d] - group.max_sizes[d],
+                )
+                for d in range(ndim)
+            )
+            dense_coeff = jnp.pad(group.coeffs[0], pad_width)
+            return arr + dense_coeff * amp
+        patch = group.coeffs[0] * amp
+        cur = jax.lax.dynamic_slice(arr, starts_0, group.max_sizes)
+        return jax.lax.dynamic_update_slice(arr, cur + patch, starts_0)
+
+    if group.n == 2:
+
+        def apply_one(out, i: int):
+            amp_i = group.waveforms[i, safe_idx]
+            patch_i = group.coeffs[i] * amp_i
+            starts_i = group.starts_tuple[i]
+            cur_i = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
+            return jax.lax.dynamic_update_slice(out, cur_i + patch_i, starts_i)
+
+        return apply_one(apply_one(arr, 0), 1)
+
+    def body(i, out):
+        amp = group.waveforms[i, safe_idx]
+        patch = group.coeffs[i] * amp
+        starts_i = [group.starts[i, d] for d in range(ndim)]
+        cur = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
+        return jax.lax.dynamic_update_slice(out, cur + patch, starts_i)
+
+    return jax.lax.fori_loop(0, group.n, body, arr)
+
+
+def apply_source_group(
+    arr: jnp.ndarray,
+    abs_step: jnp.ndarray,
+    group: SourceExecutionGroup,
+    *,
+    source_single_slab_dense: bool = False,
+) -> jnp.ndarray:
+    """Apply a compiled source execution group."""
+    if group.batch is not None:
+        arr = apply_batched_slab_sources(
+            arr,
+            abs_step,
+            group.batch,
+            source_single_slab_dense=source_single_slab_dense,
+        )
+    if group.rest:
+        arr = apply_source_specs(arr, abs_step, group.rest)
+    return arr
+
+
+def build_source_applier(
+    group: SourceExecutionGroup,
+    *,
+    source_single_slab_dense: bool = False,
+):
+    """Return the narrowest applier closure for a source execution group."""
+    if group.batch is None and not group.rest:
+        return lambda arr, _abs_step: arr
+    if group.batch is not None and not group.rest:
+        return lambda arr, abs_step: apply_batched_slab_sources(
+            arr,
+            abs_step,
+            group.batch,
+            source_single_slab_dense=source_single_slab_dense,
+        )
+    if group.batch is None:
+        return lambda arr, abs_step: apply_source_specs(arr, abs_step, group.rest)
+    return lambda arr, abs_step: apply_source_group(
+        arr,
+        abs_step,
+        group,
+        source_single_slab_dense=source_single_slab_dense,
+    )
+
+
+def build_source_execution_plan(
+    specs: tuple[CompiledSourceSpec, ...],
+) -> SourceExecutionPlan:
+    """Group compiled source specs by timestep phase and field component."""
+
+    def _group(timing: str, component: str) -> SourceExecutionGroup:
+        matched = tuple(
+            spec
+            for spec in specs
+            if spec.timing == timing and spec.component == component
+        )
+        batch, rest = batch_slab_specs(matched)
+        return SourceExecutionGroup(batch=batch, rest=rest)
+
+    return SourceExecutionPlan(
+        pre_e_ex=_group("pre_e", "Ex"),
+        pre_e_ey=_group("pre_e", "Ey"),
+        pre_e_ez=_group("pre_e", "Ez"),
+        h_x=_group("h", "Hx"),
+        h_y=_group("h", "Hy"),
+        h_z=_group("h", "Hz"),
+        e_x=_group("e", "Ex"),
+        e_y=_group("e", "Ey"),
+        e_z=_group("e", "Ez"),
+    )
 
 
 def _as_slab_spec(

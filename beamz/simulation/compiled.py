@@ -12,7 +12,6 @@ import pathlib
 import platform
 import sys
 from dataclasses import dataclass
-from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -21,21 +20,40 @@ import numpy as np
 from beamz.devices.monitors.compiler import (
     BatchedMonitorData,
     CompiledMonitorSpec,
+    apply_compiled_monitor_state,
     compile_batched_monitor_data,
+    monitor_dft_point_size,
+    monitor_frequency_size,
+    monitor_state_size,
+    pack_power_monitor_state,
+    pack_spectral_monitor_state,
+    unpack_power_monitor_state,
+    unpack_spectral_monitor_state,
+    zero_monitor_state_from_specs,
 )
 from beamz.devices.monitors.monitors import Monitor
 from beamz.devices.sources.compiler import (
-    BatchedSlabGroup,
     CompiledSourceSpec,
-    batch_slab_specs,
+    SourceExecutionPlan,
+    build_source_applier,
+    build_source_execution_plan,
 )
 from beamz.simulation import ops
+from beamz.simulation.compiler.runtime import (
+    CompiledRunConfig,
+    EngineState,
+    MonitorState,
+    PowerMonitorState,
+    RunState,
+    SpectralMonitorState,
+    UpdateCoefficients,
+)
 from beamz.simulation.material_models import (
     CompiledMaterialSpec,
     MaterialState,
     create_material_model,
 )
-from beamz.simulation.plans import CompiledPlan
+from beamz.simulation.compiler.plans import CompiledPlan
 
 
 def _init_persistent_cache():
@@ -82,98 +100,6 @@ def _init_persistent_cache():
 
 
 _init_persistent_cache()
-
-
-class EngineState(NamedTuple):
-    """Runtime EM field state."""
-
-    ex: jnp.ndarray
-    ey: jnp.ndarray
-    ez: jnp.ndarray
-    hx: jnp.ndarray
-    hy: jnp.ndarray
-    hz: jnp.ndarray
-    t: jnp.ndarray
-    current_step: jnp.ndarray
-
-
-class MonitorState(NamedTuple):
-    """Packed monitor accumulators."""
-
-    powers: jnp.ndarray
-    timestamps: jnp.ndarray
-    counts: jnp.ndarray
-    freq_flux_re: jnp.ndarray
-    freq_flux_im: jnp.ndarray
-    freq_phase_re: jnp.ndarray
-    freq_phase_im: jnp.ndarray
-    dft_vec_re: jnp.ndarray
-    dft_vec_im: jnp.ndarray
-    dft_weight_sum: jnp.ndarray
-
-
-class PowerMonitorState(NamedTuple):
-    """Narrow monitor state for power-only accumulation."""
-
-    powers: jnp.ndarray
-    timestamps: jnp.ndarray
-    counts: jnp.ndarray
-
-
-class SpectralMonitorState(NamedTuple):
-    """Monitor state for power + frequency accumulation without DFT tensors."""
-
-    powers: jnp.ndarray
-    timestamps: jnp.ndarray
-    counts: jnp.ndarray
-    freq_flux_re: jnp.ndarray
-    freq_flux_im: jnp.ndarray
-    freq_phase_re: jnp.ndarray
-    freq_phase_im: jnp.ndarray
-
-
-class UpdateCoefficients(NamedTuple):
-    """Static update coefficients passed as runtime arguments to avoid constant capture."""
-
-    h_decay_x: jnp.ndarray
-    h_source_x: jnp.ndarray
-    h_source_lossless_x: jnp.ndarray
-    h_decay_y: jnp.ndarray
-    h_source_y: jnp.ndarray
-    h_source_lossless_y: jnp.ndarray
-    h_decay_z: jnp.ndarray
-    h_source_z: jnp.ndarray
-    h_source_lossless_z: jnp.ndarray
-    e_decay_x: jnp.ndarray
-    e_source_x: jnp.ndarray
-    e_source_lossless_x: jnp.ndarray
-    e_decay_y: jnp.ndarray
-    e_source_y: jnp.ndarray
-    e_source_lossless_y: jnp.ndarray
-    e_decay_z: jnp.ndarray
-    e_source_z: jnp.ndarray
-    e_source_lossless_z: jnp.ndarray
-
-
-class RunState(NamedTuple):
-    """Auxiliary run counters."""
-
-    compile_count: jnp.ndarray
-
-
-@dataclass(frozen=True)
-class CompiledRunConfig:
-    """Static compiled run configuration."""
-
-    resolution: float
-    dt: float
-    num_steps: int
-    plane_2d: str
-    is_3d: bool
-    precision: str = "float32"
-    loop_kind: str = "scan"
-    source_single_slab_dense: bool = False
-    temporal_block_steps: int = 1
 
 
 @dataclass
@@ -247,103 +173,6 @@ class CompiledSimulation:
             e_source_z=self.e_source_z,
             e_source_lossless_z=self.e_source_lossless_z,
         )
-
-    def _sources_for(
-        self, timing: str, component: str
-    ) -> tuple[CompiledSourceSpec, ...]:
-        return tuple(
-            s
-            for s in self.source_specs
-            if s.timing == timing and s.component == component
-        )
-
-    def _apply_specs(
-        self,
-        arr: jnp.ndarray,
-        abs_step: jnp.ndarray,
-        specs: tuple[CompiledSourceSpec, ...],
-    ) -> jnp.ndarray:
-        out = arr
-        for spec in specs:
-            safe_idx = jnp.clip(abs_step, 0, spec.waveform.shape[0] - 1)
-            amp = spec.waveform[safe_idx]
-            if (
-                spec.is_slab
-                and spec.slab_starts is not None
-                and spec.slab_sizes is not None
-            ):
-                patch = spec.coeff * amp
-                cur = jax.lax.dynamic_slice(out, spec.slab_starts, spec.slab_sizes)
-                out = jax.lax.dynamic_update_slice(out, cur + patch, spec.slab_starts)
-            else:
-                out = out.at[spec.index].add(spec.coeff * amp)
-        return out
-
-    def _apply_batched_slabs(
-        self,
-        arr: jnp.ndarray,
-        abs_step: jnp.ndarray,
-        group: BatchedSlabGroup,
-    ) -> jnp.ndarray:
-        """Apply stacked slab sources via fori_loop (constant HLO size)."""
-        safe_idx = jnp.clip(abs_step, 0, group.waveforms.shape[1] - 1)
-        ndim = len(group.max_sizes)
-
-        # Common hot path for benchmarks and many production setups:
-        # one slab source only (e.g., single Gaussian source). Avoid nested
-        # fori_loop overhead in the timestep kernel.
-        if group.n == 1:
-            amp = group.waveforms[0, safe_idx]
-            starts_0 = group.starts_tuple[0]
-            if self.config.source_single_slab_dense:
-                # Optional DUS-free path for diagnostics: materialize a full-grid
-                # coefficient tensor once and inject via dense add.
-                pad_width = tuple(
-                    (
-                        starts_0[d],
-                        int(arr.shape[d]) - starts_0[d] - group.max_sizes[d],
-                    )
-                    for d in range(ndim)
-                )
-                dense_coeff = jnp.pad(group.coeffs[0], pad_width)
-                return arr + dense_coeff * amp
-            patch = group.coeffs[0] * amp
-            cur = jax.lax.dynamic_slice(arr, starts_0, group.max_sizes)
-            return jax.lax.dynamic_update_slice(arr, cur + patch, starts_0)
-
-        if group.n == 2:
-
-            def apply_one(out, i: int):
-                amp_i = group.waveforms[i, safe_idx]
-                patch_i = group.coeffs[i] * amp_i
-                starts_i = group.starts_tuple[i]
-                cur_i = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
-                return jax.lax.dynamic_update_slice(out, cur_i + patch_i, starts_i)
-
-            return apply_one(apply_one(arr, 0), 1)
-
-        def body(i, out):
-            amp = group.waveforms[i, safe_idx]
-            patch = group.coeffs[i] * amp
-            starts_i = [group.starts[i, d] for d in range(ndim)]
-            cur = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
-            return jax.lax.dynamic_update_slice(out, cur + patch, starts_i)
-
-        return jax.lax.fori_loop(0, group.n, body, arr)
-
-    def _apply_source_group(
-        self,
-        arr: jnp.ndarray,
-        abs_step: jnp.ndarray,
-        batch: BatchedSlabGroup | None,
-        rest: tuple[CompiledSourceSpec, ...],
-    ) -> jnp.ndarray:
-        """Apply batched slab sources then remaining non-slab sources."""
-        if batch is not None:
-            arr = self._apply_batched_slabs(arr, abs_step, batch)
-        if rest:
-            arr = self._apply_specs(arr, abs_step, rest)
-        return arr
 
     def _apply_lossy_shell(
         self,
@@ -1006,48 +835,43 @@ class CompiledSimulation:
             and self.plan.key.source_family != "none"
         )
 
-        # Batch slab sources by (timing, component) for fori_loop application
-        pre_e_ex_batch, pre_e_ex_rest = batch_slab_specs(
-            self._sources_for("pre_e", "Ex")
+        source_plan: SourceExecutionPlan = build_source_execution_plan(self.source_specs)
+        apply_pre_e_ex = build_source_applier(
+            source_plan.pre_e_ex,
+            source_single_slab_dense=self.config.source_single_slab_dense,
         )
-        pre_e_ey_batch, pre_e_ey_rest = batch_slab_specs(
-            self._sources_for("pre_e", "Ey")
+        apply_pre_e_ey = build_source_applier(
+            source_plan.pre_e_ey,
+            source_single_slab_dense=self.config.source_single_slab_dense,
         )
-        pre_e_ez_batch, pre_e_ez_rest = batch_slab_specs(
-            self._sources_for("pre_e", "Ez")
+        apply_pre_e_ez = build_source_applier(
+            source_plan.pre_e_ez,
+            source_single_slab_dense=self.config.source_single_slab_dense,
         )
-
-        h_batch_x, h_rest_x = batch_slab_specs(self._sources_for("h", "Hx"))
-        h_batch_y, h_rest_y = batch_slab_specs(self._sources_for("h", "Hy"))
-        h_batch_z, h_rest_z = batch_slab_specs(self._sources_for("h", "Hz"))
-
-        e_batch_x, e_rest_x = batch_slab_specs(self._sources_for("e", "Ex"))
-        e_batch_y, e_rest_y = batch_slab_specs(self._sources_for("e", "Ey"))
-        e_batch_z, e_rest_z = batch_slab_specs(self._sources_for("e", "Ez"))
-
-        def _make_source_applier(
-            batch: BatchedSlabGroup | None,
-            rest: tuple[CompiledSourceSpec, ...],
-        ):
-            if batch is None and not rest:
-                return lambda arr, _abs_step: arr
-            if batch is not None and not rest:
-                return lambda arr, abs_step: self._apply_batched_slabs(arr, abs_step, batch)
-            if batch is None:
-                return lambda arr, abs_step: self._apply_specs(arr, abs_step, rest)
-            return lambda arr, abs_step: self._apply_source_group(
-                arr, abs_step, batch, rest
-            )
-
-        apply_pre_e_ex = _make_source_applier(pre_e_ex_batch, pre_e_ex_rest)
-        apply_pre_e_ey = _make_source_applier(pre_e_ey_batch, pre_e_ey_rest)
-        apply_pre_e_ez = _make_source_applier(pre_e_ez_batch, pre_e_ez_rest)
-        apply_h_x = _make_source_applier(h_batch_x, h_rest_x)
-        apply_h_y = _make_source_applier(h_batch_y, h_rest_y)
-        apply_h_z = _make_source_applier(h_batch_z, h_rest_z)
-        apply_e_x = _make_source_applier(e_batch_x, e_rest_x)
-        apply_e_y = _make_source_applier(e_batch_y, e_rest_y)
-        apply_e_z = _make_source_applier(e_batch_z, e_rest_z)
+        apply_h_x = build_source_applier(
+            source_plan.h_x,
+            source_single_slab_dense=self.config.source_single_slab_dense,
+        )
+        apply_h_y = build_source_applier(
+            source_plan.h_y,
+            source_single_slab_dense=self.config.source_single_slab_dense,
+        )
+        apply_h_z = build_source_applier(
+            source_plan.h_z,
+            source_single_slab_dense=self.config.source_single_slab_dense,
+        )
+        apply_e_x = build_source_applier(
+            source_plan.e_x,
+            source_single_slab_dense=self.config.source_single_slab_dense,
+        )
+        apply_e_y = build_source_applier(
+            source_plan.e_y,
+            source_single_slab_dense=self.config.source_single_slab_dense,
+        )
+        apply_e_z = build_source_applier(
+            source_plan.e_z,
+            source_single_slab_dense=self.config.source_single_slab_dense,
+        )
 
         # Batch 3D monitors for fori_loop power computation
         batched_mon = None
@@ -1702,7 +1526,7 @@ class CompiledSimulation:
     ) -> tuple[EngineState, MonitorState, MaterialState]:
         """Execute the compiled simulation loop."""
         if monitor_state is None:
-            monitor_state = _zero_monitor_state_from_specs(
+            monitor_state = zero_monitor_state_from_specs(
                 self.monitor_specs,
                 self.config.num_steps,
             )
@@ -1719,21 +1543,21 @@ class CompiledSimulation:
             self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
             and self.plan.monitors.family == "power_only"
         ):
-            power_monitor_state = _pack_power_monitor_state(monitor_state)
+            power_monitor_state = pack_power_monitor_state(monitor_state)
             eng, power_mon = self._compiled_scan(engine_state, power_monitor_state, coeffs)
-            mon = _unpack_power_monitor_state(power_mon, self.monitor_specs)
+            mon = unpack_power_monitor_state(power_mon, self.monitor_specs)
             mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
         elif (
             self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
             and self.plan.monitors.dft_count == 0
         ):
-            spectral_monitor_state = _pack_spectral_monitor_state(monitor_state)
+            spectral_monitor_state = pack_spectral_monitor_state(monitor_state)
             eng, spectral_mon = self._compiled_scan(
                 engine_state,
                 spectral_monitor_state,
                 coeffs,
             )
-            mon = _unpack_spectral_monitor_state(spectral_mon, self.monitor_specs)
+            mon = unpack_spectral_monitor_state(spectral_mon, self.monitor_specs)
             mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
         elif self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}:
             eng, mon, mat = self._compiled_scan(
@@ -1751,191 +1575,11 @@ class CompiledSimulation:
 
     def apply_monitor_state(self, monitor_state: MonitorState):
         """Push monitor-state buffers back to Monitor objects."""
-        for spec in self.monitor_specs:
-            dev = self.monitor_devices[spec.monitor_index]
-            count = int(np.asarray(monitor_state.counts[spec.monitor_index]))
-            powers = np.asarray(
-                monitor_state.powers[spec.monitor_index, :count], dtype=float
-            )
-            ts = np.asarray(
-                monitor_state.timestamps[spec.monitor_index, :count], dtype=float
-            )
-
-            dev.power_history = list(powers.tolist())
-            dev.power_timestamps = list(ts.tolist())
-            dev.power_accumulation_count = count
-            if spec.freq_count > 0:
-                re = np.asarray(
-                    monitor_state.freq_flux_re[spec.monitor_index, : spec.freq_count],
-                    dtype=np.float32,
-                )
-                im = np.asarray(
-                    monitor_state.freq_flux_im[spec.monitor_index, : spec.freq_count],
-                    dtype=np.float32,
-                )
-                dev.frequency_flux_spectrum = (re + 1j * im).astype(np.complex64)
-            else:
-                dev.frequency_flux_spectrum = np.zeros((0,), dtype=np.complex64)
-
-            if spec.dft_enabled and spec.freq_count > 0 and spec.dft_point_count > 0:
-                comp_names = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
-                comp_mask = (
-                    np.asarray(spec.dft_component_mask, dtype=np.float32)
-                    if spec.dft_component_mask is not None
-                    else np.ones((6,), dtype=np.float32)
-                )
-                weight_sum = np.asarray(
-                    monitor_state.dft_weight_sum[spec.monitor_index, : spec.freq_count],
-                    dtype=np.float64,
-                )
-                dev._dft_weight_sum = weight_sum
-                dev._dft_accum = {}
-                for comp_i, comp_name in enumerate(comp_names):
-                    if comp_mask[comp_i] <= 0.0:
-                        continue
-                    re = np.asarray(
-                        monitor_state.dft_vec_re[
-                            spec.monitor_index,
-                            comp_i,
-                            : spec.freq_count,
-                            : spec.dft_point_count,
-                        ],
-                        dtype=np.float64,
-                    )
-                    im = np.asarray(
-                        monitor_state.dft_vec_im[
-                            spec.monitor_index,
-                            comp_i,
-                            : spec.freq_count,
-                            : spec.dft_point_count,
-                        ],
-                        dtype=np.float64,
-                    )
-                    dev._dft_accum[comp_name] = re + 1j * im
-            else:
-                dev._dft_weight_sum = np.zeros((0,), dtype=np.float64)
-                dev._dft_accum = {}
-
-
-def monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -> int:
-    if not specs:
-        return 0
-    return int(
-        max(
-            int(np.ceil(num_steps / max(1, int(spec.record_interval))))
-            for spec in specs
+        apply_compiled_monitor_state(
+            self.monitor_specs,
+            self.monitor_devices,
+            monitor_state,
         )
-    )
-
-
-def monitor_frequency_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
-    if not specs:
-        return 0
-    return int(max(int(spec.freq_count) for spec in specs))
-
-
-def monitor_dft_point_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
-    if not specs:
-        return 0
-    return int(max(int(getattr(spec, "dft_point_count", 0)) for spec in specs))
-
-
-def power_monitor_state_size(specs: tuple[CompiledMonitorSpec, ...], num_steps: int) -> int:
-    return monitor_state_size(specs, num_steps)
-
-
-def _zero_monitor_state_from_specs(
-    specs: tuple[CompiledMonitorSpec, ...],
-    num_steps: int,
-) -> MonitorState:
-    if specs:
-        max_records = max(1, monitor_state_size(specs, num_steps))
-        max_freq = monitor_frequency_size(specs)
-        max_points = monitor_dft_point_size(specs)
-        n_specs = len(specs)
-        return MonitorState(
-            powers=jnp.zeros((n_specs, max_records), dtype=jnp.float32),
-            timestamps=jnp.zeros((n_specs, max_records), dtype=jnp.float32),
-            counts=jnp.zeros((n_specs,), dtype=jnp.int32),
-            freq_flux_re=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
-            freq_flux_im=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
-            freq_phase_re=jnp.ones((n_specs, max_freq), dtype=jnp.float32),
-            freq_phase_im=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
-            dft_vec_re=jnp.zeros((n_specs, 6, max_freq, max_points), dtype=jnp.float32),
-            dft_vec_im=jnp.zeros((n_specs, 6, max_freq, max_points), dtype=jnp.float32),
-            dft_weight_sum=jnp.zeros((n_specs, max_freq), dtype=jnp.float32),
-        )
-    return MonitorState(
-        powers=jnp.zeros((0, 0), dtype=jnp.float32),
-        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
-        counts=jnp.zeros((0,), dtype=jnp.int32),
-        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
-        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
-    )
-
-
-def _pack_power_monitor_state(monitor_state: MonitorState) -> PowerMonitorState:
-    return PowerMonitorState(
-        powers=monitor_state.powers,
-        timestamps=monitor_state.timestamps,
-        counts=monitor_state.counts,
-    )
-
-
-def _unpack_power_monitor_state(
-    power_state: PowerMonitorState,
-    specs: tuple[CompiledMonitorSpec, ...],
-) -> MonitorState:
-    n_specs = len(specs)
-    return MonitorState(
-        powers=power_state.powers,
-        timestamps=power_state.timestamps,
-        counts=power_state.counts,
-        freq_flux_re=jnp.zeros((n_specs, 0), dtype=jnp.float32),
-        freq_flux_im=jnp.zeros((n_specs, 0), dtype=jnp.float32),
-        freq_phase_re=jnp.ones((n_specs, 0), dtype=jnp.float32),
-        freq_phase_im=jnp.zeros((n_specs, 0), dtype=jnp.float32),
-        dft_vec_re=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
-        dft_vec_im=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
-        dft_weight_sum=jnp.zeros((n_specs, 0), dtype=jnp.float32),
-    )
-
-
-def _pack_spectral_monitor_state(monitor_state: MonitorState) -> SpectralMonitorState:
-    return SpectralMonitorState(
-        powers=monitor_state.powers,
-        timestamps=monitor_state.timestamps,
-        counts=monitor_state.counts,
-        freq_flux_re=monitor_state.freq_flux_re,
-        freq_flux_im=monitor_state.freq_flux_im,
-        freq_phase_re=monitor_state.freq_phase_re,
-        freq_phase_im=monitor_state.freq_phase_im,
-    )
-
-
-def _unpack_spectral_monitor_state(
-    spectral_state: SpectralMonitorState,
-    specs: tuple[CompiledMonitorSpec, ...],
-) -> MonitorState:
-    n_specs = len(specs)
-    return MonitorState(
-        powers=spectral_state.powers,
-        timestamps=spectral_state.timestamps,
-        counts=spectral_state.counts,
-        freq_flux_re=spectral_state.freq_flux_re,
-        freq_flux_im=spectral_state.freq_flux_im,
-        freq_phase_re=spectral_state.freq_phase_re,
-        freq_phase_im=spectral_state.freq_phase_im,
-        dft_vec_re=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
-        dft_vec_im=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
-        dft_weight_sum=jnp.zeros((n_specs, 0), dtype=jnp.float32),
-    )
-
 
 def _edge_full_thickness(mask: np.ndarray, axis: int) -> tuple[int, int]:
     """Count leading/trailing planes that are fully lossy along a given axis."""
