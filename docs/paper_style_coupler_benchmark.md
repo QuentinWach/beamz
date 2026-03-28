@@ -43,6 +43,34 @@ python benchmarks/paper_style_coupler_compare.py --mode accuracy --accuracy-reso
 python benchmarks/paper_style_coupler_compare.py --mode performance --resolutions-nm 25,20,10
 ```
 
+## Repeated interleaved benchmarking
+
+The performance runner supports repeated interleaved execution to reduce thermal-drift bias. With `--performance-repeats 5`, each resolution is run 5 times per backend and the schedule alternates backend and reverses order every round.
+
+```bash
+python benchmarks/paper_style_coupler_compare.py \
+  --backend both \
+  --mode performance \
+  --resolutions-nm 25,20,10 \
+  --performance-repeats 5
+```
+
+Artifacts are written to a timestamped directory under `benchmarks/results/` unless `--results-dir` is provided.
+
+Saved files:
+
+- `benchmark_manifest.json`
+- `performance_raw_runs.csv`
+- `performance_summary.csv`
+- `performance_paper_table.csv`
+
+The CSV files include:
+
+- raw per-run `setup_s`, `compile_s`, `run_s`, `total_s`
+- `gcups_run` and `gcups_total`
+- `gcompups_run` and `gcompups_total`
+- summary statistics: mean, std, sem, and 95% CI
+
 ## Notes
 
 - The paper’s `0.99` Courant value is a safety factor relative to the 3D CFL limit.
