@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -88,19 +90,20 @@ class PaperBenchmarkConfig:
 
     @property
     def meep_polygon_vertices_um(self) -> list[tuple[float, float]]:
-        return [(x - 0.5 * self.cell_x_um, y - 0.5 * self.cell_y_um) for x, y, _ in self.beamz_polygon_vertices_um]
+        return [
+            (x - 0.5 * self.cell_x_um, y - 0.5 * self.cell_y_um)
+            for x, y, _ in self.beamz_polygon_vertices_um
+        ]
 
 
-def _beamz_xyz(x_um: float, y_um: float, z_um: float, cfg: PaperBenchmarkConfig) -> tuple[float, float, float]:
-    return (
-        x_um * 1e-6,
-        y_um * 1e-6,
-        z_um * 1e-6,
-    )
-
-
-def _beamz_xy(x_um: float, y_um: float) -> tuple[float, float]:
-    return (x_um * 1e-6, y_um * 1e-6)
+def _beamz_xyz(
+    x_um: float,
+    y_um: float,
+    z_um: float,
+    cfg: PaperBenchmarkConfig,
+) -> tuple[float, float, float]:
+    del cfg
+    return (x_um * 1e-6, y_um * 1e-6, z_um * 1e-6)
 
 
 def _rect_position_from_center(
@@ -113,14 +116,18 @@ def _rect_position_from_center(
     return (x0_um * 1e-6, (yc_um - 0.5 * width_um) * 1e-6, z0_um * 1e-6)
 
 
-def _num_steps_for_resolution(resolution_nm: float, cfg: PaperBenchmarkConfig) -> tuple[int, float]:
+def _num_steps_for_resolution(
+    resolution_nm: float, cfg: PaperBenchmarkConfig
+) -> tuple[int, float]:
     dx_m = resolution_nm * 1e-9
     dt_s = cfg.courant_safety * dx_m / (C0 * math.sqrt(3.0))
     num_steps = int(math.floor(cfg.total_time_s / dt_s))
     return max(num_steps, 2), dt_s
 
 
-def _paper_cells(resolution_nm: float, cfg: PaperBenchmarkConfig) -> tuple[int, int, int]:
+def _paper_cells(
+    resolution_nm: float, cfg: PaperBenchmarkConfig
+) -> tuple[int, int, int]:
     return (
         int(round((cfg.cell_x_um * 1000.0) / resolution_nm)),
         int(round((cfg.cell_y_um * 1000.0) / resolution_nm)),
@@ -146,6 +153,7 @@ def _scalar_runtime(
     cell_updates = cells * int(num_steps)
     comp_updates = 6 * cell_updates
     run_den = max(run_s, 1e-12)
+    total_den = max(total_s, 1e-12)
     return {
         "setup_s": float(setup_s),
         "compile_s": float(compile_s),
@@ -156,8 +164,10 @@ def _scalar_runtime(
         "cells": cells,
         "cell_updates": int(cell_updates),
         "component_updates": int(comp_updates),
-        "mcells_per_s": float(cell_updates / run_den / 1e6),
-        "mcomponents_per_s": float(comp_updates / run_den / 1e6),
+        "gcups_run": float(cell_updates / run_den / 1e9),
+        "gcups_total": float(cell_updates / total_den / 1e9),
+        "gcompups_run": float(comp_updates / run_den / 1e9),
+        "gcompups_total": float(comp_updates / total_den / 1e9),
     }
 
 
@@ -196,10 +206,14 @@ def _shape_or_transpose(arr: np.ndarray, target_shape: tuple[int, int]) -> np.nd
         return arr
     if arr.T.shape == target_shape:
         return arr.T
-    raise ValueError(f"Plane shape mismatch: got {arr.shape}, expected {target_shape}")
+    raise ValueError(
+        f"Plane shape mismatch: got {arr.shape}, expected {target_shape}"
+    )
 
 
-def _center_component(arr: np.ndarray, axis: int, target_shape: tuple[int, int, int]) -> np.ndarray:
+def _center_component(
+    arr: np.ndarray, axis: int, target_shape: tuple[int, int, int]
+) -> np.ndarray:
     arr = np.asarray(arr, dtype=np.float64)
     out = np.zeros(target_shape, dtype=np.float64)
     if axis == 2:
@@ -287,7 +301,10 @@ def run_beamz_single(
         material=Material(cfg.n_core**2),
     )
     design += Polygon(
-        vertices=[_beamz_xyz(x, y, z, cfg) for x, y, z in cfg.beamz_polygon_vertices_um],
+        vertices=[
+            _beamz_xyz(x, y, z, cfg)
+            for x, y, z in cfg.beamz_polygon_vertices_um
+        ],
         material=Material(cfg.n_core**2),
         depth=cfg.slab_thickness_um * 1e-6,
         z=cfg.slab_z0_um * 1e-6,
@@ -296,7 +313,9 @@ def run_beamz_single(
     grid = design.rasterize(resolution=dx_m)
     source = ModeSource(
         grid=grid,
-        center=_beamz_xyz(cfg.source_x_um, cfg.source_y_um, cfg.slab_center_z_um, cfg),
+        center=_beamz_xyz(
+            cfg.source_x_um, cfg.source_y_um, cfg.slab_center_z_um, cfg
+        ),
         width=cfg.source_span_y_um * 1e-6,
         height=cfg.source_span_z_um * 1e-6,
         wavelength=cfg.wavelength_um * 1e-6,
@@ -333,15 +352,21 @@ def run_beamz_single(
             run_s=run_s,
             total_s=total_s,
             num_steps=num_steps,
-            grid_shape=tuple(int(v) for v in np.asarray(sim.fields.permittivity).shape),
+            grid_shape=tuple(
+                int(v) for v in np.asarray(sim.fields.permittivity).shape
+            ),
         ),
     }
     if capture_accuracy:
-        payload["planes"] = {k: v.tolist() for k, v in _extract_beamz_planes(sim).items()}
+        payload["planes"] = {
+            k: v.tolist() for k, v in _extract_beamz_planes(sim).items()
+        }
     return payload
 
 
-def _meep_center(x_um: float, y_um: float, z_um: float, cfg: PaperBenchmarkConfig) -> tuple[float, float, float]:
+def _meep_center(
+    x_um: float, y_um: float, z_um: float, cfg: PaperBenchmarkConfig
+) -> tuple[float, float, float]:
     return (
         x_um - 0.5 * cfg.cell_x_um,
         y_um - 0.5 * cfg.cell_y_um,
@@ -349,21 +374,46 @@ def _meep_center(x_um: float, y_um: float, z_um: float, cfg: PaperBenchmarkConfi
     )
 
 
-def _extract_meep_planes(sim, cfg: PaperBenchmarkConfig, resolution_nm: float) -> dict[str, np.ndarray]:
+def _extract_meep_planes(
+    sim, cfg: PaperBenchmarkConfig, resolution_nm: float
+) -> dict[str, np.ndarray]:
     import meep as mp
 
     nx, ny, nz = _paper_cells(resolution_nm, cfg)
 
-    def e_mag(center: mp.Vector3, size: mp.Vector3, target_shape: tuple[int, int]) -> np.ndarray:
-        ex = _shape_or_transpose(np.asarray(sim.get_array(center=center, size=size, component=mp.Ex)), target_shape)
-        ey = _shape_or_transpose(np.asarray(sim.get_array(center=center, size=size, component=mp.Ey)), target_shape)
-        ez = _shape_or_transpose(np.asarray(sim.get_array(center=center, size=size, component=mp.Ez)), target_shape)
+    def e_mag(
+        center: mp.Vector3, size: mp.Vector3, target_shape: tuple[int, int]
+    ) -> np.ndarray:
+        ex = _shape_or_transpose(
+            np.asarray(sim.get_array(center=center, size=size, component=mp.Ex)),
+            target_shape,
+        )
+        ey = _shape_or_transpose(
+            np.asarray(sim.get_array(center=center, size=size, component=mp.Ey)),
+            target_shape,
+        )
+        ez = _shape_or_transpose(
+            np.asarray(sim.get_array(center=center, size=size, component=mp.Ez)),
+            target_shape,
+        )
         return np.sqrt(np.abs(ex) ** 2 + np.abs(ey) ** 2 + np.abs(ez) ** 2)
 
     return {
-        "xy": e_mag(mp.Vector3(0, 0, 0), mp.Vector3(cfg.cell_x_um, cfg.cell_y_um, 0), (ny, nx)),
-        "xz": e_mag(mp.Vector3(0, 0, 0), mp.Vector3(cfg.cell_x_um, 0, cfg.cell_z_um), (nz, nx)),
-        "yz": e_mag(mp.Vector3(0, 0, 0), mp.Vector3(0, cfg.cell_y_um, cfg.cell_z_um), (nz, ny)),
+        "xy": e_mag(
+            mp.Vector3(0, 0, 0),
+            mp.Vector3(cfg.cell_x_um, cfg.cell_y_um, 0),
+            (ny, nx),
+        ),
+        "xz": e_mag(
+            mp.Vector3(0, 0, 0),
+            mp.Vector3(cfg.cell_x_um, 0, cfg.cell_z_um),
+            (nz, nx),
+        ),
+        "yz": e_mag(
+            mp.Vector3(0, 0, 0),
+            mp.Vector3(0, cfg.cell_y_um, cfg.cell_z_um),
+            (nz, ny),
+        ),
     }
 
 
@@ -376,7 +426,6 @@ def run_meep_single(
     import meep as mp
 
     num_steps, dt_s = _num_steps_for_resolution(resolution_nm, cfg)
-    dx_m = resolution_nm * 1e-9
     resolution_px_per_um = 1000.0 / resolution_nm
     meep_courant = cfg.courant_safety / math.sqrt(3.0)
     run_time_um_c = (num_steps * dt_s) * C0 / 1e-6
@@ -391,17 +440,27 @@ def run_meep_single(
     slab_center = cfg.slab_center_z_um - 0.5 * cfg.cell_z_um
     input_cx = 0.5 * (cfg.input_wg_x0_um + cfg.input_wg_x1_um) - 0.5 * cfg.cell_x_um
     input_cy = cfg.input_wg_yc_um - 0.5 * cfg.cell_y_um
-    output_cx = 0.5 * (cfg.output_wg_x0_um + cfg.output_wg_x1_um) - 0.5 * cfg.cell_x_um
+    output_cx = (
+        0.5 * (cfg.output_wg_x0_um + cfg.output_wg_x1_um) - 0.5 * cfg.cell_x_um
+    )
     output_cy = cfg.output_wg_yc_um - 0.5 * cfg.cell_y_um
 
     geometry = [
         mp.Block(
-            size=mp.Vector3(cfg.input_wg_x1_um - cfg.input_wg_x0_um, cfg.input_wg_width_um, cfg.slab_thickness_um),
+            size=mp.Vector3(
+                cfg.input_wg_x1_um - cfg.input_wg_x0_um,
+                cfg.input_wg_width_um,
+                cfg.slab_thickness_um,
+            ),
             center=mp.Vector3(input_cx, input_cy, slab_center),
             material=core,
         ),
         mp.Block(
-            size=mp.Vector3(cfg.output_wg_x1_um - cfg.output_wg_x0_um, cfg.output_wg_width_um, cfg.slab_thickness_um),
+            size=mp.Vector3(
+                cfg.output_wg_x1_um - cfg.output_wg_x0_um,
+                cfg.output_wg_width_um,
+                cfg.slab_thickness_um,
+            ),
             center=mp.Vector3(output_cx, output_cy, slab_center),
             material=core,
         ),
@@ -412,7 +471,9 @@ def run_meep_single(
             material=core,
         ),
     ]
-    sx, sy, sz = _meep_center(cfg.source_x_um, cfg.source_y_um, cfg.slab_center_z_um, cfg)
+    sx, sy, sz = _meep_center(
+        cfg.source_x_um, cfg.source_y_um, cfg.slab_center_z_um, cfg
+    )
     sources = [
         mp.EigenModeSource(
             src=mp.ContinuousSource(frequency=cfg.meep_frequency, width=ramp_um_c),
@@ -455,11 +516,16 @@ def run_meep_single(
         "meep_courant": float(meep_courant),
     }
     if capture_accuracy:
-        payload["planes"] = {k: v.tolist() for k, v in _extract_meep_planes(sim, cfg, resolution_nm).items()}
+        payload["planes"] = {
+            k: v.tolist()
+            for k, v in _extract_meep_planes(sim, cfg, resolution_nm).items()
+        }
     return payload
 
 
-def _compare_accuracy(beamz_planes: dict[str, Any], meep_planes: dict[str, Any]) -> dict[str, Any]:
+def _compare_accuracy(
+    beamz_planes: dict[str, Any], meep_planes: dict[str, Any]
+) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for plane in ("xy", "xz", "yz"):
         b = _normalize_plane(np.asarray(beamz_planes[plane], dtype=np.float64))
@@ -470,16 +536,18 @@ def _compare_accuracy(beamz_planes: dict[str, Any], meep_planes: dict[str, Any])
             "max_abs_diff": float(np.max(np.abs(b - m))) if b.size else 0.0,
         }
     out["summary"] = {
-        "mean_relative_l2": float(np.mean([out[p]["relative_l2"] for p in ("xy", "xz", "yz")])),
-        "mean_correlation": float(np.mean([out[p]["correlation"] for p in ("xy", "xz", "yz")])),
+        "mean_relative_l2": float(
+            np.mean([out[p]["relative_l2"] for p in ("xy", "xz", "yz")])
+        ),
+        "mean_correlation": float(
+            np.mean([out[p]["correlation"] for p in ("xy", "xz", "yz")])
+        ),
     }
     return out
 
 
 def _run_meep_subprocess(
-    cfg: PaperBenchmarkConfig,
-    meep_env: str,
-    args: list[str],
+    meep_env: str, args: list[str], *, emit_json_only: bool = True
 ) -> dict[str, Any]:
     cmd = [
         "conda",
@@ -490,8 +558,10 @@ def _run_meep_subprocess(
         str(Path(__file__).resolve()),
         "--backend",
         "meep",
-        "--emit-json-only",
-    ] + args
+    ]
+    if emit_json_only:
+        cmd.append("--emit-json-only")
+    cmd.extend(args)
     proc = subprocess.run(
         cmd,
         cwd=str(REPO_ROOT),
@@ -514,10 +584,216 @@ def _parse_resolutions(spec: str) -> list[float]:
     return vals
 
 
+def _safe_slug(spec: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in spec)
+
+
+def _sample_stats(values: list[float]) -> dict[str, float]:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return {
+            "count": 0,
+            "mean": float("nan"),
+            "std": float("nan"),
+            "sem": float("nan"),
+            "ci95": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+        }
+    mean = float(np.mean(arr))
+    std = float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0
+    sem = float(std / math.sqrt(arr.size)) if arr.size > 1 else 0.0
+    return {
+        "count": int(arr.size),
+        "mean": mean,
+        "std": std,
+        "sem": sem,
+        "ci95": float(1.96 * sem),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+    }
+
+
+def _paper_row_info(
+    resolution_nm: float, cfg: PaperBenchmarkConfig
+) -> dict[str, Any]:
+    nx, ny, nz = _paper_cells(resolution_nm, cfg)
+    num_steps, _ = _num_steps_for_resolution(resolution_nm, cfg)
+    return {
+        "resolution_nm": float(resolution_nm),
+        "cells": int(nx * ny * nz),
+        "steps": int(num_steps),
+        "nx": int(nx),
+        "ny": int(ny),
+        "nz": int(nz),
+    }
+
+
+def _build_interleaved_schedule(
+    backends: list[str],
+    resolutions_nm: list[float],
+    repeats: int,
+) -> list[dict[str, Any]]:
+    schedule: list[dict[str, Any]] = []
+    order_index = 0
+    for round_index in range(repeats):
+        backend_order = list(backends)
+        resolution_order = list(resolutions_nm)
+        if round_index % 2 == 1:
+            backend_order.reverse()
+            resolution_order.reverse()
+        for resolution_nm in resolution_order:
+            for backend in backend_order:
+                schedule.append(
+                    {
+                        "order_index": order_index,
+                        "round_index": round_index,
+                        "repeat_index": round_index + 1,
+                        "backend": backend,
+                        "resolution_nm": float(resolution_nm),
+                    }
+                )
+                order_index += 1
+    return schedule
+
+
+def _run_single_backend_entry(
+    entry: dict[str, Any],
+    cfg: PaperBenchmarkConfig,
+    *,
+    meep_env: str,
+    meep_available: bool,
+) -> dict[str, Any]:
+    backend = str(entry["backend"])
+    resolution_nm = float(entry["resolution_nm"])
+    if backend == "beamz":
+        result = run_beamz_single(cfg, resolution_nm, capture_accuracy=False)
+    elif backend == "meep":
+        if meep_available:
+            result = run_meep_single(cfg, resolution_nm, capture_accuracy=False)
+        else:
+            payload = _run_meep_subprocess(
+                meep_env,
+                [
+                    "--mode",
+                    "performance",
+                    "--resolutions-nm",
+                    str(resolution_nm),
+                ],
+            )
+            result = payload["performance"]["meep"][0]
+    else:
+        raise ValueError(f"Unsupported backend {backend!r}")
+
+    runtime = dict(result["runtime"])
+    runtime["resolution_nm"] = resolution_nm
+    runtime["backend"] = backend
+    runtime["order_index"] = int(entry["order_index"])
+    runtime["round_index"] = int(entry["round_index"])
+    runtime["repeat_index"] = int(entry["repeat_index"])
+    runtime["timestamp_utc"] = datetime.now(UTC).isoformat(timespec="seconds")
+    return runtime
+
+
+def _summarize_performance_runs(
+    rows: list[dict[str, Any]], cfg: PaperBenchmarkConfig
+) -> list[dict[str, Any]]:
+    metrics = (
+        "setup_s",
+        "compile_s",
+        "run_s",
+        "total_s",
+        "gcups_run",
+        "gcups_total",
+        "gcompups_run",
+        "gcompups_total",
+    )
+    grouped: dict[tuple[str, float], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (str(row["backend"]), float(row["resolution_nm"]))
+        grouped.setdefault(key, []).append(row)
+
+    summary_rows: list[dict[str, Any]] = []
+    for (backend, resolution_nm), group in sorted(
+        grouped.items(), key=lambda item: (item[0][1], item[0][0])
+    ):
+        base = {
+            "backend": backend,
+            **_paper_row_info(resolution_nm, cfg),
+            "repeats": len(group),
+        }
+        for metric in metrics:
+            stats = _sample_stats([float(row[metric]) for row in group])
+            for key, value in stats.items():
+                suffix = "n" if key == "count" else key
+                base[f"{metric}_{suffix}"] = value
+        summary_rows.append(base)
+    return summary_rows
+
+
+def _build_paper_table(
+    summary_rows: list[dict[str, Any]], cfg: PaperBenchmarkConfig
+) -> list[dict[str, Any]]:
+    by_key = {
+        (str(row["backend"]), float(row["resolution_nm"])): row for row in summary_rows
+    }
+    backends = sorted({str(row["backend"]) for row in summary_rows})
+    rows: list[dict[str, Any]] = []
+    for resolution_nm in sorted({float(row["resolution_nm"]) for row in summary_rows}):
+        row = _paper_row_info(resolution_nm, cfg)
+        for backend in backends:
+            src = by_key.get((backend, resolution_nm))
+            if src is None:
+                continue
+            for metric in ("run_s", "total_s", "gcups_run", "gcups_total"):
+                row[f"{backend}_{metric}_mean"] = src[f"{metric}_mean"]
+                row[f"{backend}_{metric}_std"] = src[f"{metric}_std"]
+                row[f"{backend}_{metric}_sem"] = src[f"{metric}_sem"]
+                row[f"{backend}_{metric}_ci95"] = src[f"{metric}_ci95"]
+        rows.append(row)
+    return rows
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("")
+        return
+    headers: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                headers.append(key)
+                seen.add(key)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _default_results_dir(
+    backend: str, mode: str, resolutions_nm: list[float], repeats: int
+) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    res_slug = _safe_slug("-".join(f"{v:g}" for v in resolutions_nm))
+    return (
+        REPO_ROOT
+        / "benchmarks"
+        / "results"
+        / f"paper_style_coupler_{backend}_{mode}_{res_slug}_r{repeats}_{stamp}"
+    )
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", choices=("beamz", "meep", "both"), default="both")
-    parser.add_argument("--mode", choices=("performance", "accuracy", "both"), default="both")
+    parser.add_argument(
+        "--backend", choices=("beamz", "meep", "both"), default="both"
+    )
+    parser.add_argument(
+        "--mode", choices=("performance", "accuracy", "both"), default="both"
+    )
     parser.add_argument(
         "--resolutions-nm",
         default="25,20,10,5,2.5",
@@ -528,6 +804,17 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=20.0,
         help="Resolution used for solver-to-solver accuracy capture.",
+    )
+    parser.add_argument(
+        "--performance-repeats",
+        type=int,
+        default=3,
+        help="Number of interleaved repeats per backend/resolution for performance mode.",
+    )
+    parser.add_argument(
+        "--results-dir",
+        default="",
+        help="Directory for JSON/CSV benchmark artifacts.",
     )
     parser.add_argument(
         "--meep-env",
@@ -543,6 +830,15 @@ def main() -> int:
     args = _parse_args()
     cfg = PaperBenchmarkConfig()
     perf_resolutions = _parse_resolutions(args.resolutions_nm)
+    if args.performance_repeats < 1:
+        raise ValueError("--performance-repeats must be >= 1.")
+
+    try:
+        import meep as _meep  # noqa: F401
+
+        meep_available = True
+    except ModuleNotFoundError:
+        meep_available = False
 
     payload: dict[str, Any] = {
         "paper_setup": {
@@ -552,13 +848,17 @@ def main() -> int:
             "meep_courant": cfg.courant_safety / math.sqrt(3.0),
             "performance_resolutions_nm": perf_resolutions,
             "accuracy_resolution_nm": float(args.accuracy_resolution_nm),
+            "performance_repeats": int(args.performance_repeats),
         },
         "design": {
             "type": "plausible_silicon_compact_coupler",
             "wavelength_um": cfg.wavelength_um,
             "n_clad": cfg.n_clad,
             "n_core": cfg.n_core,
-            "notes": "Synthetic silicon slab coupler used to match the paper's box, duration, and resolution sweep.",
+            "notes": (
+                "Synthetic silicon slab coupler used to match the paper's box, "
+                "duration, and resolution sweep."
+            ),
         },
     }
 
@@ -567,55 +867,76 @@ def main() -> int:
     want_perf = args.mode in {"performance", "both"}
     want_acc = args.mode in {"accuracy", "both"}
 
-    if want_perf and want_beamz:
-        payload.setdefault("performance", {})["beamz"] = [
-            run_beamz_single(cfg, res_nm, capture_accuracy=False) for res_nm in perf_resolutions
-        ]
-
-    if want_perf and want_meep:
-        try:
-            if args.backend == "meep":
-                payload.setdefault("performance", {})["meep"] = [
-                    run_meep_single(cfg, res_nm, capture_accuracy=False) for res_nm in perf_resolutions
-                ]
-            else:
-                import meep  # noqa: F401
-
-                payload.setdefault("performance", {})["meep"] = [
-                    run_meep_single(cfg, res_nm, capture_accuracy=False) for res_nm in perf_resolutions
-                ]
-        except ModuleNotFoundError:
-            if args.backend == "meep":
-                raise
-            meep_payload = _run_meep_subprocess(
-                cfg,
-                args.meep_env,
-                [
-                    "--mode",
-                    "performance",
-                    "--resolutions-nm",
-                    args.resolutions_nm,
-                ],
+    result_dir: Path | None = None
+    if not args.emit_json_only:
+        result_dir = (
+            Path(args.results_dir)
+            if args.results_dir
+            else _default_results_dir(
+                args.backend,
+                args.mode,
+                perf_resolutions,
+                int(args.performance_repeats),
             )
-            payload.setdefault("performance", {})["meep"] = meep_payload.get("performance", {}).get("meep", [])
+        )
+        result_dir.mkdir(parents=True, exist_ok=True)
+
+    if want_perf:
+        perf_backends: list[str] = []
+        if want_beamz:
+            perf_backends.append("beamz")
+        if want_meep:
+            perf_backends.append("meep")
+        schedule = _build_interleaved_schedule(
+            perf_backends, perf_resolutions, int(args.performance_repeats)
+        )
+        raw_rows: list[dict[str, Any]] = []
+        for entry in schedule:
+            raw_rows.append(
+                _run_single_backend_entry(
+                    entry,
+                    cfg,
+                    meep_env=args.meep_env,
+                    meep_available=meep_available,
+                )
+            )
+        summary_rows = _summarize_performance_runs(raw_rows, cfg)
+        table_rows = _build_paper_table(summary_rows, cfg)
+        payload["performance"] = {
+            "schedule": schedule,
+            "raw_runs": raw_rows,
+            "summary": summary_rows,
+            "paper_table": table_rows,
+        }
+
+        if result_dir is not None:
+            raw_csv = result_dir / "performance_raw_runs.csv"
+            summary_csv = result_dir / "performance_summary.csv"
+            table_csv = result_dir / "performance_paper_table.csv"
+            _write_csv(raw_csv, raw_rows)
+            _write_csv(summary_csv, summary_rows)
+            _write_csv(table_csv, table_rows)
+            payload.setdefault("artifacts", {})["performance_raw_csv"] = str(raw_csv)
+            payload.setdefault("artifacts", {})["performance_summary_csv"] = str(
+                summary_csv
+            )
+            payload.setdefault("artifacts", {})["performance_paper_table_csv"] = str(
+                table_csv
+            )
 
     if want_acc and want_beamz:
-        beamz_acc = run_beamz_single(cfg, args.accuracy_resolution_nm, capture_accuracy=True)
+        beamz_acc = run_beamz_single(
+            cfg, args.accuracy_resolution_nm, capture_accuracy=True
+        )
         payload.setdefault("accuracy", {})["beamz"] = beamz_acc
 
     if want_acc and want_meep:
-        try:
-            if args.backend == "meep":
-                meep_acc = run_meep_single(cfg, args.accuracy_resolution_nm, capture_accuracy=True)
-            else:
-                import meep  # noqa: F401
-
-                meep_acc = run_meep_single(cfg, args.accuracy_resolution_nm, capture_accuracy=True)
-        except ModuleNotFoundError:
-            if args.backend == "meep":
-                raise
+        if meep_available:
+            meep_acc = run_meep_single(
+                cfg, args.accuracy_resolution_nm, capture_accuracy=True
+            )
+        else:
             meep_payload = _run_meep_subprocess(
-                cfg,
                 args.meep_env,
                 [
                     "--mode",
@@ -633,9 +954,19 @@ def main() -> int:
             payload["accuracy"]["meep"]["planes"],
         )
 
-    output = json.dumps(payload, indent=None if args.emit_json_only else 2, sort_keys=True)
+    if result_dir is not None:
+        payload.setdefault("artifacts", {})["results_dir"] = str(result_dir)
+
+    output = json.dumps(
+        payload, indent=None if args.emit_json_only else 2, sort_keys=True
+    )
     if args.out_json:
         Path(args.out_json).write_text(output)
+    elif result_dir is not None:
+        manifest = result_dir / "benchmark_manifest.json"
+        manifest.write_text(output)
+        payload.setdefault("artifacts", {})["manifest_json"] = str(manifest)
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(output)
     return 0
