@@ -102,6 +102,21 @@ class SourceExecutionPlan:
     e_z: SourceExecutionGroup
 
 
+@dataclass(frozen=True)
+class SourceApplierPlan:
+    """Phase-ordered source appliers built from compiled source specs."""
+
+    pre_e_ex: Any
+    pre_e_ey: Any
+    pre_e_ez: Any
+    h_x: Any
+    h_y: Any
+    h_z: Any
+    e_x: Any
+    e_y: Any
+    e_z: Any
+
+
 def apply_source_specs(
     arr: jnp.ndarray,
     abs_step: jnp.ndarray,
@@ -238,6 +253,53 @@ def build_source_execution_plan(
         e_x=_group("e", "Ex"),
         e_y=_group("e", "Ey"),
         e_z=_group("e", "Ez"),
+    )
+
+
+def build_source_applier_plan(
+    specs: tuple[CompiledSourceSpec, ...],
+    *,
+    source_single_slab_dense: bool = False,
+) -> SourceApplierPlan:
+    """Assemble the narrowest per-phase source appliers for a run."""
+    source_plan = build_source_execution_plan(specs)
+    return SourceApplierPlan(
+        pre_e_ex=build_source_applier(
+            source_plan.pre_e_ex,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
+        pre_e_ey=build_source_applier(
+            source_plan.pre_e_ey,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
+        pre_e_ez=build_source_applier(
+            source_plan.pre_e_ez,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
+        h_x=build_source_applier(
+            source_plan.h_x,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
+        h_y=build_source_applier(
+            source_plan.h_y,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
+        h_z=build_source_applier(
+            source_plan.h_z,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
+        e_x=build_source_applier(
+            source_plan.e_x,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
+        e_y=build_source_applier(
+            source_plan.e_y,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
+        e_z=build_source_applier(
+            source_plan.e_z,
+            source_single_slab_dense=source_single_slab_dense,
+        ),
     )
 
 

@@ -18,6 +18,7 @@ from beamz import (
     um,
 )
 from beamz.devices import COMPILED_DEVICE_REGISTRY
+from beamz.devices.monitors.compiler import pack_monitor_state_for_runtime
 from beamz.simulation.compiled import EngineState, MonitorState
 from beamz.simulation.plans import build_compilation_plan
 
@@ -468,11 +469,14 @@ def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
 
     program._build_scan()
     coeffs = program._update_coefficients()
-    if getattr(program, "_compiled_mode", "general") in {
-        "engine_only",
-        "engine_plus_sources",
-    }:
+    if getattr(program, "_monitor_runtime_kind", "full") == "none":
         jaxpr = jax.make_jaxpr(program._compiled_scan)(eng0, coeffs)
+    elif getattr(program, "_monitor_runtime_kind", "full") in {"power", "spectral"}:
+        packed = pack_monitor_state_for_runtime(
+            mon0,
+            getattr(program, "_monitor_runtime_kind", "full"),
+        )
+        jaxpr = jax.make_jaxpr(program._compiled_scan)(eng0, packed, coeffs)
     else:
         jaxpr = jax.make_jaxpr(program._compiled_scan)(eng0, mon0, coeffs)
     assert "host_callback" not in str(jaxpr).lower()
@@ -579,6 +583,7 @@ def test_compilation_plan_detects_uniform_scalar_coefficients():
     assert plan.key.dimension_family == "3d"
     assert plan.key.boundary_family == "none"
     assert plan.key.coefficient_layout_family == "uniform_scalar"
+
 
 def test_compiled_device_registry_covers_shipped_device_types():
     source_type_names = {cls.__name__ for cls in COMPILED_DEVICE_REGISTRY.source_types}

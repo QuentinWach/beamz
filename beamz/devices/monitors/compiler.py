@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import jax.numpy as jnp
 import numpy as np
@@ -108,6 +108,9 @@ class BatchedMonitorData:
     dft_t_end: jnp.ndarray  # (n,) float32
     dft_window_code: jnp.ndarray  # (n,) int32
     dft_component_mask: jnp.ndarray  # (n, 6) float32
+
+
+CompiledMonitorRuntimeKind = Literal["none", "power", "spectral", "full"]
 
 
 def compile_batched_monitor_data(
@@ -343,6 +346,36 @@ def unpack_spectral_monitor_state(
         dft_vec_im=jnp.zeros((n_specs, 6, 0, 0), dtype=jnp.float32),
         dft_weight_sum=jnp.zeros((n_specs, 0), dtype=jnp.float32),
     )
+
+
+def pack_monitor_state_for_runtime(
+    monitor_state: MonitorState,
+    runtime_kind: CompiledMonitorRuntimeKind,
+) -> MonitorState | PowerMonitorState | SpectralMonitorState | None:
+    """Pack monitor state for the compiled entrypoint chosen at build time."""
+    if runtime_kind == "none":
+        return None
+    if runtime_kind == "power":
+        return pack_power_monitor_state(monitor_state)
+    if runtime_kind == "spectral":
+        return pack_spectral_monitor_state(monitor_state)
+    return monitor_state
+
+
+def unpack_monitor_state_for_runtime(
+    packed_state: MonitorState | PowerMonitorState | SpectralMonitorState | None,
+    specs: tuple[CompiledMonitorSpec, ...],
+    runtime_kind: CompiledMonitorRuntimeKind,
+    fallback_state: MonitorState,
+) -> MonitorState:
+    """Rebuild the full monitor-state shape expected by monitor devices."""
+    if runtime_kind == "none" or packed_state is None:
+        return fallback_state
+    if runtime_kind == "power":
+        return unpack_power_monitor_state(packed_state, specs)
+    if runtime_kind == "spectral":
+        return unpack_spectral_monitor_state(packed_state, specs)
+    return packed_state
 
 
 def apply_compiled_monitor_state(

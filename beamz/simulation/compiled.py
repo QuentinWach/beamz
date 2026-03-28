@@ -19,24 +19,19 @@ import numpy as np
 
 from beamz.devices.monitors.compiler import (
     BatchedMonitorData,
+    CompiledMonitorRuntimeKind,
     CompiledMonitorSpec,
     apply_compiled_monitor_state,
     compile_batched_monitor_data,
-    monitor_dft_point_size,
-    monitor_frequency_size,
-    monitor_state_size,
-    pack_power_monitor_state,
-    pack_spectral_monitor_state,
-    unpack_power_monitor_state,
-    unpack_spectral_monitor_state,
+    pack_monitor_state_for_runtime,
+    unpack_monitor_state_for_runtime,
     zero_monitor_state_from_specs,
 )
 from beamz.devices.monitors.monitors import Monitor
 from beamz.devices.sources.compiler import (
     CompiledSourceSpec,
-    SourceExecutionPlan,
-    build_source_applier,
-    build_source_execution_plan,
+    SourceApplierPlan,
+    build_source_applier_plan,
 )
 from beamz.simulation import ops
 from beamz.simulation.compiler.runtime import (
@@ -44,9 +39,9 @@ from beamz.simulation.compiler.runtime import (
     EngineState,
     MonitorState,
     PowerMonitorState,
-    RunState,
     SpectralMonitorState,
     UpdateCoefficients,
+    RunState,
 )
 from beamz.simulation.material_models import (
     CompiledMaterialSpec,
@@ -101,6 +96,15 @@ def _init_persistent_cache():
 
 _init_persistent_cache()
 
+__all__ = [
+    "CompiledRunConfig",
+    "CompiledSimulation",
+    "EngineState",
+    "MonitorState",
+    "RunState",
+    "compile_simulation",
+]
+
 
 @dataclass
 class CompiledSimulation:
@@ -149,7 +153,7 @@ class CompiledSimulation:
 
     _compiled_scan: callable | None = None
     _compile_count: int = 0
-    _compiled_mode: str = "general"
+    _monitor_runtime_kind: CompiledMonitorRuntimeKind = "full"
 
     def _update_coefficients(self) -> UpdateCoefficients:
         """Build runtime coefficient container for jitted scan entrypoint."""
@@ -173,6 +177,10 @@ class CompiledSimulation:
             e_source_z=self.e_source_z,
             e_source_lossless_z=self.e_source_lossless_z,
         )
+
+    @staticmethod
+    def _empty_material_state() -> MaterialState:
+        return MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
 
     def _apply_lossy_shell(
         self,
@@ -938,43 +946,19 @@ class CompiledSimulation:
             and self.plan.key.source_family != "none"
         )
 
-        source_plan: SourceExecutionPlan = build_source_execution_plan(self.source_specs)
-        apply_pre_e_ex = build_source_applier(
-            source_plan.pre_e_ex,
+        source_appliers: SourceApplierPlan = build_source_applier_plan(
+            self.source_specs,
             source_single_slab_dense=self.config.source_single_slab_dense,
         )
-        apply_pre_e_ey = build_source_applier(
-            source_plan.pre_e_ey,
-            source_single_slab_dense=self.config.source_single_slab_dense,
-        )
-        apply_pre_e_ez = build_source_applier(
-            source_plan.pre_e_ez,
-            source_single_slab_dense=self.config.source_single_slab_dense,
-        )
-        apply_h_x = build_source_applier(
-            source_plan.h_x,
-            source_single_slab_dense=self.config.source_single_slab_dense,
-        )
-        apply_h_y = build_source_applier(
-            source_plan.h_y,
-            source_single_slab_dense=self.config.source_single_slab_dense,
-        )
-        apply_h_z = build_source_applier(
-            source_plan.h_z,
-            source_single_slab_dense=self.config.source_single_slab_dense,
-        )
-        apply_e_x = build_source_applier(
-            source_plan.e_x,
-            source_single_slab_dense=self.config.source_single_slab_dense,
-        )
-        apply_e_y = build_source_applier(
-            source_plan.e_y,
-            source_single_slab_dense=self.config.source_single_slab_dense,
-        )
-        apply_e_z = build_source_applier(
-            source_plan.e_z,
-            source_single_slab_dense=self.config.source_single_slab_dense,
-        )
+        apply_pre_e_ex = source_appliers.pre_e_ex
+        apply_pre_e_ey = source_appliers.pre_e_ey
+        apply_pre_e_ez = source_appliers.pre_e_ez
+        apply_h_x = source_appliers.h_x
+        apply_h_y = source_appliers.h_y
+        apply_h_z = source_appliers.h_z
+        apply_e_x = source_appliers.e_x
+        apply_e_y = source_appliers.e_y
+        apply_e_z = source_appliers.e_z
 
         # Batch 3D monitors for fori_loop power computation
         batched_mon = None
@@ -1601,21 +1585,21 @@ class CompiledSimulation:
 
         if fast_engine_family:
             self._compiled_scan = jax.jit(run_scan_engine_core, donate_argnums=(0,))
-            self._compiled_mode = self.plan.kernel_family
+            self._monitor_runtime_kind = "none"
         elif fast_power_monitor_family:
             self._compiled_scan = jax.jit(run_scan_power_monitors, donate_argnums=(0, 1))
-            self._compiled_mode = self.plan.kernel_family
+            self._monitor_runtime_kind = "power"
         elif fast_spectral_monitor_family:
             self._compiled_scan = jax.jit(
                 run_scan_spectral_monitors,
                 donate_argnums=(0, 1),
             )
-            self._compiled_mode = self.plan.kernel_family
+            self._monitor_runtime_kind = "spectral"
         else:
             # Use function-style JIT wrapping for compatibility with older JAX
             # versions where decorator kwargs require the callable as first arg.
             self._compiled_scan = jax.jit(run_scan_general, donate_argnums=(0, 1))
-            self._compiled_mode = self.plan.kernel_family
+            self._monitor_runtime_kind = "full"
         self._compile_count += 1
 
     @property
@@ -1638,36 +1622,27 @@ class CompiledSimulation:
             self._build_scan()
 
         coeffs = self._update_coefficients()
-        if self._compiled_mode in {"engine_only", "engine_plus_sources"}:
+        if self._monitor_runtime_kind == "none":
             eng = self._compiled_scan(engine_state, coeffs)
             mon = monitor_state
-            mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
-        elif (
-            self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
-            and self.plan.monitors.family == "power_only"
-        ):
-            power_monitor_state = pack_power_monitor_state(monitor_state)
-            eng, power_mon = self._compiled_scan(engine_state, power_monitor_state, coeffs)
-            mon = unpack_power_monitor_state(power_mon, self.monitor_specs)
-            mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
-        elif (
-            self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}
-            and self.plan.monitors.dft_count == 0
-        ):
-            spectral_monitor_state = pack_spectral_monitor_state(monitor_state)
-            eng, spectral_mon = self._compiled_scan(
-                engine_state,
-                spectral_monitor_state,
-                coeffs,
-            )
-            mon = unpack_spectral_monitor_state(spectral_mon, self.monitor_specs)
-            mat = MaterialState(aux=jnp.zeros((0,), dtype=jnp.float32))
-        elif self._compiled_mode in {"engine_plus_monitors", "engine_plus_sources_and_monitors"}:
-            eng, mon, mat = self._compiled_scan(
-                engine_state,
+            mat = self._empty_material_state()
+        elif self._monitor_runtime_kind in {"power", "spectral"}:
+            packed_monitor_state = pack_monitor_state_for_runtime(
                 monitor_state,
+                self._monitor_runtime_kind,
+            )
+            eng, packed_mon = self._compiled_scan(
+                engine_state,
+                packed_monitor_state,
                 coeffs,
             )
+            mon = unpack_monitor_state_for_runtime(
+                packed_mon,
+                self.monitor_specs,
+                self._monitor_runtime_kind,
+                monitor_state,
+            )
+            mat = self._empty_material_state()
         else:
             eng, mon, mat = self._compiled_scan(
                 engine_state,
@@ -1683,6 +1658,7 @@ class CompiledSimulation:
             self.monitor_devices,
             monitor_state,
         )
+
 
 def _edge_full_thickness(mask: np.ndarray, axis: int) -> tuple[int, int]:
     """Count leading/trailing planes that are fully lossy along a given axis."""
@@ -1779,7 +1755,7 @@ def _infer_lossy_shell_slabs(
     for starts, sizes in slabs:
         z, y, x = starts
         dz, dy, dx = sizes
-        recon[z : z + dz, y : y + dy, x : x + dx] = True
+        recon[z:z + dz, y:y + dy, x:x + dx] = True
 
     if not np.array_equal(recon, local_mask):
         return False, tuple()
