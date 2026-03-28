@@ -567,9 +567,42 @@ def _run_meep_subprocess(
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
-        check=True,
     )
-    return json.loads(proc.stdout)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        detail = stderr or stdout or f"exit status {proc.returncode}"
+        env_hint = (
+            f"Meep subprocess failed for conda env '{meep_env}'. "
+            "If the environment does not exist yet, create it with:\n"
+            "  conda env create -f benchmarks/meep_environment.yml\n"
+            f"Underlying error: {detail}"
+        )
+        raise RuntimeError(env_hint)
+    try:
+        return _extract_json_object(proc.stdout)
+    except ValueError as exc:
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        detail = stderr or stdout or "no subprocess output captured"
+        raise RuntimeError(
+            "Meep subprocess completed but did not return a parseable JSON payload. "
+            f"Captured output: {detail}"
+        ) from exc
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for index, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise ValueError("No JSON object found in subprocess stdout.")
 
 
 def _parse_resolutions(spec: str) -> list[float]:
@@ -679,9 +712,16 @@ def _run_single_backend_entry(
                     "performance",
                     "--resolutions-nm",
                     str(resolution_nm),
+                    "--performance-repeats",
+                    "1",
                 ],
             )
-            result = payload["performance"]["meep"][0]
+            raw_runs = payload.get("performance", {}).get("raw_runs", [])
+            if not raw_runs:
+                raise RuntimeError(
+                    "Nested Meep performance run returned no raw run entries."
+                )
+            result = {"runtime": raw_runs[0]}
     else:
         raise ValueError(f"Unsupported backend {backend!r}")
 
