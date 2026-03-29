@@ -34,7 +34,7 @@ from beamz.visual.example_plots import plot_simulation_overview, plot_sparameter
 OUT_DIR = Path("benchmarks/results/tiny_beamz_crossing")
 COMPONENT_NAME = "ebeam_crossing4"
 NUM_FREQS = 51
-PPW = 10
+PPW = 13
 WL0, WL_MIN, WL_MAX = 1550.0e-9, 1530.0e-9, 1570.0e-9
 N_CORE, N_CLAD = 3.47, 1.44
 LAYER = (1, 0)
@@ -62,6 +62,17 @@ def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, ma
     p_sel = float(np.mean(np.abs(sel[valid]) ** 2))
     p_opp = float(np.mean(np.abs(opp[valid]) ** 2))
     return 10.0 * np.log10(max(p_sel, 1e-18) / max(p_opp, 1e-18))
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(float(seconds), 0.0)
+    if seconds < 60.0:
+        return f"{seconds:.1f}s"
+    minutes, sec = divmod(seconds, 60.0)
+    if minutes < 60.0:
+        return f"{int(minutes)}m {sec:.0f}s"
+    hours, minutes = divmod(minutes, 60.0)
+    return f"{int(hours)}h {int(minutes)}m"
 
 
 def expected_mode_components(axis: str, pol: str) -> tuple[str, str]:
@@ -313,6 +324,13 @@ sim.show()
 # 5. Save a compact overview plot of the rasterized structure with the source
 # and monitor planes overlaid.
 print(f"Workload: grid={grid.permittivity.shape}, voxels={int(np.prod(np.asarray(grid.permittivity).shape)):,}, updates~{int(np.prod(np.asarray(grid.permittivity).shape))*len(pulse.time):.3e}")
+estimated_updates = float(int(np.prod(np.asarray(grid.permittivity).shape)) * len(pulse.time))
+print(
+    "Estimated runtime: "
+    f"100 MCUPS ~ {format_duration(estimated_updates / 100e6)}, "
+    f"250 MCUPS ~ {format_duration(estimated_updates / 250e6)}, "
+    f"500 MCUPS ~ {format_duration(estimated_updates / 500e6)}"
+)
 plot_simulation_overview(
     OUT_DIR / "beamz_crossing_overview.png",
     np.asarray(grid.permittivity, dtype=float),
