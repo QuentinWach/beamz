@@ -96,6 +96,34 @@ def pick_output_candidate(candidates: list[dict], min_dominance_db: float) -> di
     )
 
 
+def pick_shared_output_candidate(
+    candidates_a: list[dict], candidates_b: list[dict], min_dominance_db: float
+) -> tuple[dict, dict]:
+    # Keep symmetric ports at the same offset so their extracted weak-port
+    # phases are referenced to equivalent planes.
+    paired = []
+    by_idx_b = {int(c["idx"]): c for c in candidates_b}
+    for cand_a in candidates_a:
+        cand_b = by_idx_b.get(int(cand_a["idx"]))
+        if cand_b is None:
+            continue
+        dom_a = float(cand_a["dominance_db"]) if np.isfinite(cand_a["dominance_db"]) else -1e9
+        dom_b = float(cand_b["dominance_db"]) if np.isfinite(cand_b["dominance_db"]) else -1e9
+        paired.append(
+            (
+                int(min(dom_a, dom_b) >= float(min_dominance_db)),
+                float(cand_a["offset_um"]),
+                min(dom_a, dom_b),
+                cand_a,
+                cand_b,
+            )
+        )
+    if not paired:
+        raise ValueError("No shared output monitor candidates available.")
+    _, _, _, chosen_a, chosen_b = max(paired, key=lambda item: (item[0], item[1], item[2]))
+    return chosen_a, chosen_b
+
+
 def expected_mode_components(axis: str, pol: str) -> tuple[str, str]:
     pol_key = str(pol).lower()
     if pol_key == "te":
@@ -452,6 +480,7 @@ print(f"o1 wave dominance: {source_dom:.2f} dB")
 selected_specs = [source_spec]
 selected_monitor_planes = {"o1_fwd": fwd_plane}
 selected_s = {("o1", "o1"): np.asarray(result["s_matrix"][("o1", "o1")], dtype=np.complex128)}
+candidate_data = {}
 for port_name in output_ports:
     candidates = []
     for idx, offset in enumerate(OUTPUT_MONITOR_OFFSETS):
@@ -467,7 +496,16 @@ for port_name in output_ports:
                 "s": np.asarray(result["s_matrix"][(name, "o1")], dtype=np.complex128),
             }
         )
-    chosen = pick_output_candidate(candidates, OUTPUT_SELECTION_MIN_DOM_DB)
+    candidate_data[port_name] = candidates
+
+shared_o2, shared_o4 = pick_shared_output_candidate(
+    candidate_data["o2"],
+    candidate_data["o4"],
+    OUTPUT_SELECTION_MIN_DOM_DB,
+)
+chosen_by_port = {"o2": shared_o2, "o3": pick_output_candidate(candidate_data["o3"], OUTPUT_SELECTION_MIN_DOM_DB), "o4": shared_o4}
+for port_name in output_ports:
+    chosen = chosen_by_port[port_name]
     selected_specs.append(
         PortSpec(
             name=port_name,
