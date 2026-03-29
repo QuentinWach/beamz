@@ -34,7 +34,7 @@ from beamz.visual.example_plots import plot_simulation_overview, plot_sparameter
 OUT_DIR = Path("benchmarks/results/tiny_beamz_crossing")
 COMPONENT_NAME = "ebeam_crossing4"
 NUM_FREQS = 51
-PPW = 16
+PPW = 10
 WL0, WL_MIN, WL_MAX = 1550.0e-9, 1530.0e-9, 1570.0e-9
 N_CORE, N_CLAD = 3.47, 1.44
 LAYER = (1, 0)
@@ -49,6 +49,8 @@ PORT_OVERLAP = 0.10 * µm
 PORT_MARGIN = 0.50 * µm
 SOURCE_OFFSET = 0.10 * µm
 DISTANCE_SOURCE_TO_MONITORS = 0.20 * µm
+OUTPUT_MONITOR_OFFSETS = (0.10 * µm, 0.30 * µm, 0.50 * µm)
+OUTPUT_SELECTION_MIN_DOM_DB = 10.0
 RUN_AFTER_SOURCES_UOC = 90.0
 
 
@@ -73,6 +75,19 @@ def format_duration(seconds: float) -> str:
         return f"{int(minutes)}m {sec:.0f}s"
     hours, minutes = divmod(minutes, 60.0)
     return f"{int(hours)}h {int(minutes)}m"
+
+
+def pick_output_candidate(candidates: list[dict], min_dominance_db: float) -> dict:
+    # Prefer the farthest monitor that still sees a clean outgoing mode.
+    eligible = [c for c in candidates if np.isfinite(c["dominance_db"]) and c["dominance_db"] >= float(min_dominance_db)]
+    pool = eligible if eligible else candidates
+    return max(
+        pool,
+        key=lambda c: (
+            float(c["offset_um"]),
+            float(c["dominance_db"]) if np.isfinite(c["dominance_db"]) else -1e9,
+        ),
+    )
 
 
 def expected_mode_components(axis: str, pol: str) -> tuple[str, str]:
@@ -224,7 +239,8 @@ wl_um = LIGHT_SPEED / freqs / µm
 # imported port metadata. This matches the Meep setup:
 #   - source at source_port_offset inward from the source port center
 #   - source monitor farther inward by source_port_offset + distance_to_monitor
-#   - output monitors source_port_offset inward from each output port center
+#   - output monitors are evaluated at a few inward offsets and the cleanest
+#     far-field candidate is selected after the run
 src = ports[source_port]
 source_direction = src["direction"]
 span = max(float(src["width"]) + 2.0 * PORT_MARGIN, float(src["width"]) + 0.1 * µm)
@@ -242,16 +258,18 @@ source_center = gdsf.line_center(source_plane)
 out_planes = {}
 max_output_distance_um = 0.0
 for port_name in output_ports:
-    plane = gdsf.port_plane(
-        ports[port_name],
-        span=span,
-        z_span=z_span,
-        z_center=z_center,
-        offset=SOURCE_OFFSET,
-    )
-    out_planes[port_name] = plane
-    c_out = gdsf.line_center(plane)
-    max_output_distance_um = max(max_output_distance_um, float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm)
+    out_planes[port_name] = {}
+    for idx, offset in enumerate(OUTPUT_MONITOR_OFFSETS):
+        plane = gdsf.port_plane(
+            ports[port_name],
+            span=span,
+            z_span=z_span,
+            z_center=z_center,
+            offset=offset,
+        )
+        out_planes[port_name][idx] = plane
+        c_out = gdsf.line_center(plane)
+        max_output_distance_um = max(max_output_distance_um, float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm)
 
 # 3. Generate the broadband Gaussian pulse and build the source / DFT monitors.
 pulse = gaussian_band_pulse(
@@ -282,8 +300,14 @@ monitor_cfg = dict(
 )
 m_fwd = Monitor(start=fwd_plane[0], end=fwd_plane[1], name="o1_fwd", **monitor_cfg)
 out_monitors = [
-    Monitor(start=out_planes[p][0], end=out_planes[p][1], name=f"{p}_cand0", **monitor_cfg)
+    Monitor(
+        start=out_planes[p][idx][0],
+        end=out_planes[p][idx][1],
+        name=f"{p}_cand{idx}",
+        **monitor_cfg,
+    )
     for p in output_ports
+    for idx in range(len(OUTPUT_MONITOR_OFFSETS))
 ]
 
 # Create one diagnostic modal basis plot per source/monitor location before
@@ -297,7 +321,7 @@ save_mode_profile_plot(
 )
 mode_plot_paths = [OUT_DIR / "beamz_crossing_mode_source_o1.png"]
 for port_name in output_ports:
-    plane_center = gdsf.line_center(out_planes[port_name])
+    plane_center = gdsf.line_center(out_planes[port_name][len(OUTPUT_MONITOR_OFFSETS) - 1])
     mode_probe = ModeSource(
         grid=grid,
         center=plane_center,
@@ -353,7 +377,14 @@ plot_simulation_overview(
     depth=design.depth,
     z_focus=Z_PADDING + CLAD_BELOW + 0.5 * CORE_T,
     source_plane=source_plane,
-    monitor_planes={"o1_fwd": fwd_plane, **{f"{p}_cand0": out_planes[p] for p in output_ports}},
+    monitor_planes={
+        "o1_fwd": fwd_plane,
+        **{
+            f"{p}_cand{idx}": out_planes[p][idx]
+            for p in output_ports
+            for idx in range(len(OUTPUT_MONITOR_OFFSETS))
+        },
+    },
 )
 
 # 6. Run in compiled chunks until the monitor power has decayed sufficiently
@@ -374,49 +405,98 @@ print(
 
 # 7. Define one modal port per monitor plane and extract the broadband S-matrix
 # directly from the in-simulation DFT accumulators.
-specs = [
-    PortSpec(
-        name="o1",
-        monitor_name="o1_fwd",
-        direction=gdsf.positive_axis_direction(source_direction),
-        polarization="te",
-        mode_index=0,
-        incident_wave=gdsf.incoming_wave(source_direction),
-        scattered_wave=gdsf.outgoing_wave(source_direction),
-    )
-]
+source_spec = PortSpec(
+    name="o1",
+    monitor_name="o1_fwd",
+    direction=gdsf.positive_axis_direction(source_direction),
+    polarization="te",
+    mode_index=0,
+    incident_wave=gdsf.incoming_wave(source_direction),
+    scattered_wave=gdsf.outgoing_wave(source_direction),
+)
+candidate_specs = [source_spec]
 for port_name in output_ports:
     direction = ports[port_name]["direction"]
-    specs.append(
-        PortSpec(
-            name=port_name,
-            monitor_name=f"{port_name}_cand0",
-            direction=gdsf.positive_axis_direction(direction),
-            polarization="te",
-            mode_index=0,
-            incident_wave=gdsf.incoming_wave(direction),
-            scattered_wave=gdsf.outgoing_wave(direction),
+    for idx in range(len(OUTPUT_MONITOR_OFFSETS)):
+        candidate_specs.append(
+            PortSpec(
+                name=f"{port_name}_cand{idx}",
+                monitor_name=f"{port_name}_cand{idx}",
+                direction=gdsf.positive_axis_direction(direction),
+                polarization="te",
+                mode_index=0,
+                incident_wave=gdsf.incoming_wave(direction),
+                scattered_wave=gdsf.outgoing_wave(direction),
+            )
         )
-    )
 result = sim.get_S_matrix_modal_dft(
     source_port="o1",
-    ports=specs,
-    output_ports=["o1", "o2", "o3", "o4"],
+    ports=candidate_specs,
+    output_ports=["o1", *[f"{p}_cand{idx}" for p in output_ports for idx in range(len(OUTPUT_MONITOR_OFFSETS))]],
     frequencies=freqs,
     as_sax=False,
     return_diagnostics=True,
     min_incident_db=-45.0,
 )
 valid = np.asarray(result["diagnostics"]["valid_mask"], dtype=bool)
-for spec in specs:
-    waves = result["diagnostics"]["waves"][spec.name]
-    dom = wave_dominance_db(waves["a_plus"], waves["a_minus"], spec.scattered_wave if spec.name != "o1" else spec.incident_wave, valid)
-    print(f"{spec.name} wave dominance: {dom:.2f} dB")
-s_matrix = {key: np.asarray(val, dtype=np.complex128) for key, val in result["s_matrix"].items()}
+source_waves = result["diagnostics"]["waves"]["o1"]
+source_dom = wave_dominance_db(source_waves["a_plus"], source_waves["a_minus"], source_spec.incident_wave, valid)
+print(f"o1 wave dominance: {source_dom:.2f} dB")
+
+selected_specs = [source_spec]
+selected_monitor_planes = {"o1_fwd": fwd_plane}
+selected_s = {("o1", "o1"): np.asarray(result["s_matrix"][("o1", "o1")], dtype=np.complex128)}
+for port_name in output_ports:
+    candidates = []
+    for idx, offset in enumerate(OUTPUT_MONITOR_OFFSETS):
+        name = f"{port_name}_cand{idx}"
+        waves = result["diagnostics"]["waves"][name]
+        dom = wave_dominance_db(waves["a_plus"], waves["a_minus"], gdsf.outgoing_wave(ports[port_name]["direction"]), valid)
+        candidates.append(
+            {
+                "name": name,
+                "idx": idx,
+                "offset_um": float(offset / µm),
+                "dominance_db": dom,
+                "s": np.asarray(result["s_matrix"][(name, "o1")], dtype=np.complex128),
+            }
+        )
+    chosen = pick_output_candidate(candidates, OUTPUT_SELECTION_MIN_DOM_DB)
+    selected_specs.append(
+        PortSpec(
+            name=port_name,
+            monitor_name=chosen["name"],
+            direction=gdsf.positive_axis_direction(ports[port_name]["direction"]),
+            polarization="te",
+            mode_index=0,
+            incident_wave=gdsf.incoming_wave(ports[port_name]["direction"]),
+            scattered_wave=gdsf.outgoing_wave(ports[port_name]["direction"]),
+        )
+    )
+    selected_monitor_planes[chosen["name"]] = out_planes[port_name][chosen["idx"]]
+    selected_s[(port_name, "o1")] = chosen["s"]
+    print(
+        f"{port_name} selected {chosen['name']} at {chosen['offset_um']:.2f} um "
+        f"(dominance={chosen['dominance_db']:.2f} dB)"
+    )
+s_matrix = selected_s
 i0 = int(np.argmin(np.abs(wl_um - WL0 / µm)))
 for port_name in ("o1", "o2", "o3", "o4"):
     mag = abs(s_matrix[(port_name, "o1")][i0])
     print(f"S[{port_name},o1] @ {wl_um[i0]:.4f}um: {20.0 * np.log10(max(mag, 1e-12)):.2f} dB")
+
+# Overwrite the overview with the selected monitor planes so the saved figure
+# matches the final S-matrix extraction path.
+plot_simulation_overview(
+    OUT_DIR / "beamz_crossing_overview.png",
+    np.asarray(grid.permittivity, dtype=float),
+    width=design.width,
+    height=design.height,
+    depth=design.depth,
+    z_focus=Z_PADDING + CLAD_BELOW + 0.5 * CORE_T,
+    source_plane=source_plane,
+    monitor_planes=selected_monitor_planes,
+)
 
 # 8. Save the final S-parameter plot using the same helper style as the full
 # example so regression checks remain straightforward.
