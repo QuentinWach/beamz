@@ -49,7 +49,13 @@ PORT_OVERLAP = 0.10 * µm
 PORT_MARGIN = 0.50 * µm
 SOURCE_OFFSET = 0.10 * µm
 DISTANCE_SOURCE_TO_MONITORS = 0.20 * µm
-OUTPUT_MONITOR_OFFSETS = (0.10 * µm, 0.30 * µm, 0.50 * µm)
+OUTPUT_MONITOR_OFFSETS = (
+    0.10 * µm,
+    0.30 * µm,
+    0.50 * µm,
+    0.70 * µm,
+    0.90 * µm,
+)
 OUTPUT_SELECTION_MIN_DOM_DB = 10.0
 RUN_AFTER_SOURCES_UOC = 90.0
 
