@@ -454,6 +454,9 @@ sim_mid = Simulation(
     time=time_steps,
     resolution=DX,
 )
+
+
+
 sim_mid.run_compiled(num_steps=mid_steps, progress=False)
 ez_mid = np.asarray(sim_mid.fields.Ez, dtype=np.float32)
 z_mid_idx = ez_mid.shape[0] // 2

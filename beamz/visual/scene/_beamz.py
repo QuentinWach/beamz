@@ -485,14 +485,13 @@ def _gaussian_source_object(source: Any, *, index: int) -> Object3D:
 
 def _mode_source_objects(source: Any, *, index: int) -> list[Object3D]:
     center = _position3(getattr(source, "center"))
-    width = float(getattr(source, "width"))
-    height = float(getattr(source, "height", getattr(source, "width", 1.0)))
+    width = max(float(getattr(source, "width")), _MIN_SIZE)
+    height = max(
+        float(getattr(source, "height", getattr(source, "width", 1.0))),
+        _MIN_SIZE,
+    )
     direction = getattr(source, "direction", "+x")
     normal = _normal_from_direction(direction)
-    arrow_length = max(
-        float(getattr(source, "wavelength", 1.0)),
-        width * 0.5,
-    )
     return [
         Object3D(
             kind="plane",
@@ -510,21 +509,7 @@ def _mode_source_objects(source: Any, *, index: int) -> list[Object3D]:
                 "wavelength": getattr(source, "wavelength", None),
                 "polarization": getattr(source, "pol", None),
             },
-        ),
-        Object3D(
-            kind="arrow",
-            label=f"{direction} launch",
-            geometry={
-                "origin": list(center),
-                "direction": normal,
-                "length": arrow_length,
-            },
-            material=MaterialSpec(color="#d97706", opacity=1.0),
-            metadata={
-                "kind": "source_direction",
-                "source_direction": direction,
-            },
-        ),
+        )
     ]
 
 
