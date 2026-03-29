@@ -380,8 +380,10 @@ def _remap_3d_solver_components(Ex, Ey, Ez, Hx, Hy, Hz, axis):
     if axis == "x":
         return Ex, Ey, Ez, Hx, Hy, Hz
     if axis == "y":
-        # Match the rotated-basis correction already used by 2D y-propagation.
-        return Ey, Ex, Ez, Hy, Hx, Hz
+        # Use the same right-handed x'->+y, y'->-x, z'->+z basis as the
+        # monitor-side modal extraction. Without the sign flip, y-directed 3D
+        # launches carry a persistent opposite-going modal component.
+        return -Ey, Ex, Ez, -Hy, Hx, Hz
     if axis == "z":
         # Cyclic remap from x-basis -> z-basis.
         return Ey, Ez, Ex, Hy, Hz, Hx

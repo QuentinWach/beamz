@@ -1551,8 +1551,8 @@ class TestModeSourceDirectionality3D:
         y_dominance = run_axis("y", "+y", long_span - 1.2 * wavelength)
 
         assert x_dominance > 0.0
-        assert y_dominance > 0.0, (
-            "Expected y-normal 3D monitors to keep the transmitted branch dominant, "
+        assert y_dominance > 2.0, (
+            "Expected y-normal 3D mode launch/extraction to keep the transmitted branch clearly dominant, "
             f"got {y_dominance:.2f} dB."
         )
 
