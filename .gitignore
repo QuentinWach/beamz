@@ -81,7 +81,7 @@ MARKETING_2.md
 !BEAMZ_logo.png
 *.npy
 tmp/
-benchmarks/
+.benchmarks/
 benchmarks/results/ir/
 benchmarks/results/trace/
 benchmarks/results/**
