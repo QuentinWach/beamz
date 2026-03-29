@@ -73,6 +73,8 @@ project_ideas/
 MARKETING_2.md
 !BEAMZ_logo.png
 *.npy
+tmp/
+.benchmarks/
 benchmarks/results/ir/
 benchmarks/results/trace/
 benchmarks/results/**
