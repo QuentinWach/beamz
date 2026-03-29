@@ -57,8 +57,7 @@ def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, ma
     sel = np.asarray(a_plus if selector == "plus" else a_minus, dtype=np.complex128)
     opp = np.asarray(a_minus if selector == "plus" else a_plus, dtype=np.complex128)
     valid = np.asarray(mask, dtype=bool)
-    if not np.any(valid):
-        return float("nan")
+    if not np.any(valid): return float("nan")
     p_sel = float(np.mean(np.abs(sel[valid]) ** 2))
     p_opp = float(np.mean(np.abs(opp[valid]) ** 2))
     return 10.0 * np.log10(max(p_sel, 1e-18) / max(p_opp, 1e-18))
@@ -149,6 +148,7 @@ sim = Simulation(
     time=pulse.time,
     resolution=dx,
 )
+sim.show()
 
 # 5. Save a compact overview plot of the rasterized structure with the source
 # and monitor planes overlaid.

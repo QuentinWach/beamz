@@ -34,7 +34,7 @@ def plot_sparameters_db(path: Path, wavelengths_um: np.ndarray, s_matrix: dict[t
         y_db = 20.0 * np.log10(np.maximum(np.abs(np.asarray(s_matrix[(port, source_port)], dtype=np.complex128)), 1e-12))
         ax.plot(wavelengths_um, y_db, "o-", lw=2.0, ms=4.0, color=colors.get(port), label=rf"$|S_{{{port[1:]}{source_port[1:]}}}|$")
     ax.set_xlim(float(np.min(wavelengths_um)), float(np.max(wavelengths_um)))
-    ax.set_ylim(-55.0, 0.0)
+    #ax.set_ylim(-55.0, 0.0)
     ax.set_xlabel("Wavelength (um)")
     ax.set_ylabel("Magnitude (dB)")
     ax.set_title("Crossing S-Parameters")
