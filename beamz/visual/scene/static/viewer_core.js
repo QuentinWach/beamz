@@ -924,8 +924,27 @@ function createLayout(host) {
   return { resetButton, rotateButton, axesButton, themeButton, canvasHost, gizmoHost, sidebar, sidebarToggleButton };
 }
 
+function sceneBoundsBox(objectRoot) {
+  const box = new THREE.Box3();
+  const nodeBox = new THREE.Box3();
+  objectRoot.updateMatrixWorld(true);
+  objectRoot.traverse((node) => {
+    if (!node.visible || !(node.isMesh || node.isLine)) {
+      return;
+    }
+    if (node.userData?.zview?.metadata?.exclude_from_bounds) {
+      return;
+    }
+    nodeBox.setFromObject(node);
+    if (!nodeBox.isEmpty()) {
+      box.union(nodeBox);
+    }
+  });
+  return box;
+}
+
 function fitCamera(camera, controls, objectRoot) {
-  const box = new THREE.Box3().setFromObject(objectRoot);
+  const box = sceneBoundsBox(objectRoot);
   if (box.isEmpty()) {
     return null;
   }
