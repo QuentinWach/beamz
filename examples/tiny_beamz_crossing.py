@@ -34,7 +34,7 @@ from beamz.visual.example_plots import plot_simulation_overview, plot_sparameter
 OUT_DIR = Path("benchmarks/results/tiny_beamz_crossing")
 COMPONENT_NAME = "ebeam_crossing4"
 NUM_FREQS = 51
-PPW = 13
+PPW = 16
 WL0, WL_MIN, WL_MAX = 1550.0e-9, 1530.0e-9, 1570.0e-9
 N_CORE, N_CLAD = 3.47, 1.44
 LAYER = (1, 0)
@@ -48,7 +48,7 @@ EXTENSION = 1.50 * µm
 PORT_OVERLAP = 0.10 * µm
 PORT_MARGIN = 0.50 * µm
 SOURCE_OFFSET = 0.10 * µm
-MONITOR_OFFSET = 0.30 * µm
+DISTANCE_SOURCE_TO_MONITORS = 0.20 * µm
 RUN_AFTER_SOURCES_UOC = 90.0
 
 
@@ -221,20 +221,34 @@ freqs = np.linspace(LIGHT_SPEED / WL_MAX, LIGHT_SPEED / WL_MIN, NUM_FREQS, dtype
 wl_um = LIGHT_SPEED / freqs / µm
 
 # 2. Build the source plane and one output monitor plane per port from the
-# imported port metadata.
+# imported port metadata. This matches the Meep setup:
+#   - source at source_port_offset inward from the source port center
+#   - source monitor farther inward by source_port_offset + distance_to_monitor
+#   - output monitors source_port_offset inward from each output port center
 src = ports[source_port]
 source_direction = src["direction"]
 span = max(float(src["width"]) + 2.0 * PORT_MARGIN, float(src["width"]) + 0.1 * µm)
 z_center = float(src["z_center"])
 z_span = CLAD_BELOW + CORE_T + CLAD_ABOVE
 source_plane = gdsf.port_plane(src, span=span, z_span=z_span, z_center=z_center, offset=SOURCE_OFFSET)
-fwd_plane = gdsf.port_plane(src, span=span, z_span=z_span, z_center=z_center, offset=MONITOR_OFFSET)
+fwd_plane = gdsf.port_plane(
+    src,
+    span=span,
+    z_span=z_span,
+    z_center=z_center,
+    offset=SOURCE_OFFSET + DISTANCE_SOURCE_TO_MONITORS,
+)
 source_center = gdsf.line_center(source_plane)
 out_planes = {}
 max_output_distance_um = 0.0
 for port_name in output_ports:
-    out_port = {**ports[port_name], "direction": gdsf.outward_direction(ports[port_name]["direction"])}
-    plane = gdsf.port_plane(out_port, span=span, z_span=z_span, z_center=z_center, offset=SOURCE_OFFSET)
+    plane = gdsf.port_plane(
+        ports[port_name],
+        span=span,
+        z_span=z_span,
+        z_center=z_center,
+        offset=SOURCE_OFFSET,
+    )
     out_planes[port_name] = plane
     c_out = gdsf.line_center(plane)
     max_output_distance_um = max(max_output_distance_um, float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm)
