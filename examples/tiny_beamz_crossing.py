@@ -64,6 +64,15 @@ def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, ma
     return 10.0 * np.log10(max(p_sel, 1e-18) / max(p_opp, 1e-18))
 
 
+def expected_mode_components(axis: str, pol: str) -> tuple[str, str]:
+    pol_key = str(pol).lower()
+    if pol_key == "te":
+        mapping = {"x": ("Ey", "Hz"), "y": ("Ex", "Hz"), "z": ("Ex", "Hy")}
+    else:
+        mapping = {"x": ("Ez", "Hy"), "y": ("Ez", "Hx"), "z": ("Ey", "Hx")}
+    return mapping[str(axis)]
+
+
 def save_mode_profile_plot(
     *,
     label: str,
@@ -73,6 +82,7 @@ def save_mode_profile_plot(
     out_path: Path,
 ) -> None:
     axis = mode_src.direction[1]
+    e_expected, h_expected = expected_mode_components(axis, mode_src.pol)
     eps2d = np.asarray(getattr(mode_src, "_eps_profile_2d", np.array([])))
     if eps2d.ndim == 2 and eps2d.size > 0:
         profile_map = {
@@ -107,6 +117,7 @@ def save_mode_profile_plot(
                 f"pol={mode_src.pol}\n"
                 f"dir={mode_src.direction}\n"
                 f"axis={axis}\n"
+                f"expected E/H={e_expected}/{h_expected}\n"
                 f"neff={float(np.real(getattr(mode_src, '_neff', np.nan))):.5f}\n"
                 f"width={float(mode_src.width)/µm:.3f}um\n"
                 f"height={float(getattr(mode_src, 'height', 0.0) or 0.0)/µm:.3f}um"
@@ -163,7 +174,7 @@ def save_mode_profile_plot(
         ax1.text(0.02, 0.7, "No mode profile data", transform=ax1.transAxes)
     ax1.set_title(
         f"{label}: mode profile ({mode_src.pol}, {mode_src.direction})\n"
-        f"neff={float(np.real(getattr(mode_src, '_neff', np.nan))):.4f}"
+        f"expected {e_expected}/{h_expected}, neff={float(np.real(getattr(mode_src, '_neff', np.nan))):.4f}"
     )
     ax1.set_xlabel("transverse coordinate (um)")
     ax1.set_ylabel("normalized magnitude")
