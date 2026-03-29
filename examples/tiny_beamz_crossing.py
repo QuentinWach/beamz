@@ -34,7 +34,7 @@ from beamz.visual.example_plots import plot_simulation_overview, plot_sparameter
 OUT_DIR = Path("benchmarks/results/tiny_beamz_crossing")
 COMPONENT_NAME = "ebeam_crossing4"
 NUM_FREQS = 51
-PPW = 10
+PPW = 14
 WL0, WL_MIN, WL_MAX = 1550.0e-9, 1530.0e-9, 1570.0e-9
 N_CORE, N_CLAD = 3.47, 1.44
 LAYER = (1, 0)
@@ -503,7 +503,10 @@ shared_o2, shared_o4 = pick_shared_output_candidate(
     candidate_data["o4"],
     OUTPUT_SELECTION_MIN_DOM_DB,
 )
-chosen_by_port = {"o2": shared_o2, "o3": pick_output_candidate(candidate_data["o3"], OUTPUT_SELECTION_MIN_DOM_DB), "o4": shared_o4}
+# Match the Meep reference on the through port: keep o3 at the canonical
+# 0.10 um inward monitor plane instead of selecting a deeper candidate.
+o3_fixed = next(c for c in candidate_data["o3"] if int(c["idx"]) == 0)
+chosen_by_port = {"o2": shared_o2, "o3": o3_fixed, "o4": shared_o4}
 for port_name in output_ports:
     chosen = chosen_by_port[port_name]
     selected_specs.append(
