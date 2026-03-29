@@ -317,6 +317,26 @@ def test_simulation_show_delegates_to_view3d(monkeypatch):
     assert captured["kwargs"] == {"mode": "browser", "open_browser": False}
 
 
+def test_mode_source_visualization_does_not_emit_direction_arrow():
+    design = _make_design()
+    design.sources[0].wavelength = 99.0
+    sim = Simulation.__new__(Simulation)
+    sim.design = design
+    sim.devices = [design.sources[0]]
+    sim.boundaries = []
+    sim.resolution = 2.5e-8
+    sim.is_3d = True
+    sim.plane_2d = "xy"
+    sim.dt = 1e-16
+    sim.num_steps = 8
+
+    scene = simulation_to_scene(sim)
+
+    assert not any(
+        obj.metadata.get("kind") == "source_direction" for obj in scene.objects
+    )
+
+
 def test_design_to_scene_keeps_adjacent_same_material_structures_separate():
     scene = simulation_to_scene(
         SimpleNamespace(
