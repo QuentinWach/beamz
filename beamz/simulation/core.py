@@ -10,6 +10,10 @@ import numpy as np
 from beamz.const import µm
 from beamz.design.core import Design
 from beamz.devices.monitors.monitors import Monitor
+from beamz.devices.sources.mode import (
+    _make_3d_mode_basis_profiles,
+    _modal_overlap_3d_profiles,
+)
 from beamz.devices.sources.solve import solve_modes
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.compiled import (
@@ -1475,25 +1479,50 @@ class Simulation:
                 comp_samples[name] = comp_samples[name] * phase_rot
 
         if self.is_3d:
-            mode_components = {
+            raw_mode_components = {
                 name: np.asarray(comp_samples[name], dtype=np.complex128).reshape(-1)
                 for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
                 if name in comp_samples
             }
-            p_mode = self._modal_power_3d(mode_components, parts["axis"], float(dl))
-            norm = np.sqrt(max(abs(float(p_mode)), 1e-30))
-            mode_components = {
-                name: arr / norm for name, arr in mode_components.items()
-            }
-            comp_samples = mode_components
-            fwd_vec = np.concatenate([comp_samples[c] for c in proj_components])
-            bwd_vec = np.concatenate(
-                [
-                    (-comp_samples[c] if c.startswith("H") else comp_samples[c])
-                    for c in proj_components
-                ]
+            mode_components, mode_components_bwd = _make_3d_mode_basis_profiles(
+                raw_mode_components,
+                axis=parts["axis"],
+                d_area=float(dl),
             )
+            comp_samples = mode_components
+            fwd_vec = np.concatenate([mode_components[c] for c in proj_components])
+            bwd_vec = np.concatenate([mode_components_bwd[c] for c in proj_components])
             mode_matrix = np.column_stack([fwd_vec, bwd_vec])
+            overlap_matrix = np.asarray(
+                [
+                    [
+                        _modal_overlap_3d_profiles(
+                            mode_components, mode_components, parts["axis"], float(dl)
+                        ),
+                        _modal_overlap_3d_profiles(
+                            mode_components_bwd,
+                            mode_components,
+                            parts["axis"],
+                            float(dl),
+                        ),
+                    ],
+                    [
+                        _modal_overlap_3d_profiles(
+                            mode_components,
+                            mode_components_bwd,
+                            parts["axis"],
+                            float(dl),
+                        ),
+                        _modal_overlap_3d_profiles(
+                            mode_components_bwd,
+                            mode_components_bwd,
+                            parts["axis"],
+                            float(dl),
+                        ),
+                    ],
+                ],
+                dtype=np.complex128,
+            )
         else:
             if e_fwd_full.ndim > 1:
                 e_fwd_full = e_fwd_full[:, 0]
@@ -1520,7 +1549,9 @@ class Simulation:
             "h_component": parts["h_component"],
             "components": tuple(proj_components),
             "mode_matrix": mode_matrix,
-            "condition_number": float(np.linalg.cond(mode_matrix)),
+            "condition_number": float(
+                np.linalg.cond(overlap_matrix if self.is_3d else mode_matrix)
+            ),
             "pinv": np.linalg.pinv(mode_matrix),
             "mode_neff": float(np.real(np.asarray(neff_vals[mode]))),
         }
@@ -1530,42 +1561,17 @@ class Simulation:
                 for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
                 if name in comp_samples
             }
+            projection["mode_components_bwd"] = {
+                name: np.asarray(mode_components_bwd[name], dtype=np.complex128)
+                for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+                if name in mode_components_bwd
+            }
+            projection["overlap_matrix"] = np.asarray(
+                overlap_matrix, dtype=np.complex128
+            )
             projection["axis"] = parts["axis"]
             projection["d_area"] = float(dl)
             projection["power_norm"] = 1.0
-            # Calibrate extraction so the discretized forward/backward basis
-            # maps back to ideal coefficients (1, 0) and (0, 1).
-            mode_fwd = {
-                k: np.asarray(v, dtype=np.complex128)
-                for k, v in projection["mode_components"].items()
-            }
-            mode_bwd = {
-                k: (
-                    -np.asarray(v, dtype=np.complex128)
-                    if k.startswith("H")
-                    else np.asarray(v, dtype=np.complex128)
-                )
-                for k, v in mode_fwd.items()
-            }
-            c_fwd = self._project_modal_coefficients_3d(
-                mode_fwd, projection, apply_calibration=False
-            )
-            c_bwd = self._project_modal_coefficients_3d(
-                mode_bwd, projection, apply_calibration=False
-            )
-            calib = np.asarray(
-                [[c_fwd[0], c_bwd[0]], [c_fwd[1], c_bwd[1]]], dtype=np.complex128
-            )
-            corr = np.eye(2, dtype=np.complex128)
-            try:
-                cond = float(np.linalg.cond(calib))
-                if np.all(np.isfinite(calib)) and np.isfinite(cond) and cond < 1e8:
-                    inv = np.linalg.inv(calib)
-                    if np.all(np.isfinite(inv)):
-                        corr = np.asarray(inv, dtype=np.complex128)
-            except np.linalg.LinAlgError:
-                pass
-            projection["coeff_correction"] = corr
         cache[key] = projection
         return projection
 
@@ -1616,10 +1622,18 @@ class Simulation:
     def _project_modal_coefficients_3d(
         field_components, projection, apply_calibration=True
     ):
+        del apply_calibration
         mode_components = projection.get("mode_components", None)
+        mode_components_bwd = projection.get("mode_components_bwd", None)
+        overlap_matrix = projection.get("overlap_matrix", None)
         axis = str(projection.get("axis", "")).lower()
         d_area = float(projection.get("d_area", 1.0))
-        if isinstance(mode_components, dict) and axis in {"x", "y", "z"}:
+        if (
+            isinstance(mode_components, dict)
+            and isinstance(mode_components_bwd, dict)
+            and overlap_matrix is not None
+            and axis in {"x", "y", "z"}
+        ):
             if axis == "x":
                 e1, e2, h1, h2 = "Ey", "Ez", "Hz", "Hy"
             elif axis == "y":
@@ -1654,39 +1668,29 @@ class Simulation:
                     hm1 = arrays[h1][1][:n_common]
                     hm2 = arrays[h2][1][:n_common]
 
-                    s1 = (
-                        0.5
-                        * np.sum(ef1 * np.conjugate(hm1) - ef2 * np.conjugate(hm2))
-                        * d_area
+                    del ef1, ef2, hf1, hf2, em1, em2, hm1, hm2
+                    rhs = np.asarray(
+                        [
+                            _modal_overlap_3d_profiles(
+                                field_components,
+                                mode_components,
+                                axis,
+                                d_area,
+                            ),
+                            _modal_overlap_3d_profiles(
+                                field_components,
+                                mode_components_bwd,
+                                axis,
+                                d_area,
+                            ),
+                        ],
+                        dtype=np.complex128,
                     )
-                    s2 = (
-                        0.5
-                        * np.sum(np.conjugate(em1) * hf1 - np.conjugate(em2) * hf2)
-                        * d_area
-                    )
-                    q1 = (
-                        0.5
-                        * np.sum(em1 * np.conjugate(hm1) - em2 * np.conjugate(hm2))
-                        * d_area
-                    )
-                    q2 = (
-                        0.5
-                        * np.sum(np.conjugate(em1) * hm1 - np.conjugate(em2) * hm2)
-                        * d_area
-                    )
-
-                    if np.abs(q1) > 1e-30 and np.abs(q2) > 1e-30:
-                        x = s1 / q1
-                        y = s2 / q2
-                        a_plus = np.complex128(0.5 * (x + y))
-                        a_minus = np.complex128(0.5 * (x - y))
-                        if apply_calibration:
-                            corr = projection.get("coeff_correction", None)
-                            if corr is not None:
-                                vec = np.asarray([a_plus, a_minus], dtype=np.complex128)
-                                vec = np.asarray(corr, dtype=np.complex128) @ vec
-                                a_plus, a_minus = vec[0], vec[1]
-                        return np.complex128(a_plus), np.complex128(a_minus)
+                    overlap = np.asarray(overlap_matrix, dtype=np.complex128)
+                    cond = float(np.linalg.cond(overlap))
+                    if np.all(np.isfinite(overlap)) and np.isfinite(cond) and cond < 1e8:
+                        coeff = np.linalg.solve(overlap, rhs)
+                        return np.complex128(coeff[0]), np.complex128(coeff[1])
             except Exception:
                 # Fall back to pseudo-inverse extraction if overlap inputs are incomplete.
                 pass
@@ -1721,12 +1725,6 @@ class Simulation:
         coeff = pinv @ field_vec
         a_plus = coeff[0]
         a_minus = coeff[1]
-        if apply_calibration:
-            corr = projection.get("coeff_correction", None)
-            if corr is not None:
-                vec = np.asarray([a_plus, a_minus], dtype=np.complex128)
-                vec = np.asarray(corr, dtype=np.complex128) @ vec
-                a_plus, a_minus = vec[0], vec[1]
         return np.complex128(a_plus), np.complex128(a_minus)
 
     def extract_port_waves(

@@ -534,7 +534,7 @@ def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
     np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
 
 
-def test_build_port_projection_3d_sets_coeff_correction(monkeypatch):
+def test_build_port_projection_3d_builds_power_orthogonal_basis(monkeypatch):
     import beamz.simulation.core as core_mod
 
     sim = Simulation.__new__(Simulation)
@@ -585,22 +585,6 @@ def test_build_port_projection_3d_sets_coeff_correction(monkeypatch):
 
     monkeypatch.setattr(core_mod, "solve_modes", fake_solve_modes)
 
-    bias = np.array([[2.0 + 0.0j, 0.25 + 0.0j], [0.5 + 0.0j, 1.5 + 0.0j]])
-
-    def fake_project(field_components, projection, apply_calibration=True):
-        del apply_calibration
-        hy = np.asarray(field_components["Hy"], dtype=np.complex128)
-        hy_mode = np.asarray(projection["mode_components"]["Hy"], dtype=np.complex128)
-        if np.allclose(hy, hy_mode):
-            return np.complex128(bias[0, 0]), np.complex128(bias[1, 0])
-        if np.allclose(hy, -hy_mode):
-            return np.complex128(bias[0, 1]), np.complex128(bias[1, 1])
-        return np.complex128(0.0 + 0.0j), np.complex128(0.0 + 0.0j)
-
-    monkeypatch.setattr(
-        Simulation, "_project_modal_coefficients_3d", staticmethod(fake_project)
-    )
-
     class DummyMonitor:
         name = "m3d"
 
@@ -627,11 +611,27 @@ def test_build_port_projection_3d_sets_coeff_correction(monkeypatch):
         frequency=1.0,
         cache={},
     )
+    overlap = np.asarray(projection["overlap_matrix"], dtype=np.complex128)
+    assert overlap.shape == (2, 2)
+    assert np.isfinite(overlap).all()
+
+    a_fwd = Simulation._project_modal_coefficients_3d(
+        projection["mode_components"], projection
+    )
+    a_bwd = Simulation._project_modal_coefficients_3d(
+        projection["mode_components_bwd"], projection
+    )
     np.testing.assert_allclose(
-        projection["coeff_correction"],
-        np.linalg.inv(bias),
-        rtol=1e-12,
-        atol=1e-12,
+        np.asarray(a_fwd, dtype=np.complex128),
+        np.asarray([1.0 + 0.0j, 0.0 + 0.0j], dtype=np.complex128),
+        rtol=1e-9,
+        atol=1e-9,
+    )
+    np.testing.assert_allclose(
+        np.asarray(a_bwd, dtype=np.complex128),
+        np.asarray([0.0 + 0.0j, 1.0 + 0.0j], dtype=np.complex128),
+        rtol=1e-9,
+        atol=1e-9,
     )
 
 
