@@ -1190,7 +1190,10 @@ class Simulation:
         if axis == "x":
             return ex, ey, ez, hx, hy, hz
         if axis == "y":
-            return ey, ex, ez, hy, hx, hz
+            # Use the right-handed basis x'->+y, y'->-x, z'->+z.
+            # Without the sign flip on the transverse x-like component, +y
+            # ports end up with their forward/backward modal labels reversed.
+            return -ey, ex, ez, -hy, hx, hz
         if axis == "z":
             return ey, ez, ex, hy, hz, hx
         raise ValueError(f"Unsupported axis {axis!r} for 3D mode remap.")
