@@ -13,6 +13,7 @@ Workflow:
 from __future__ import annotations
 import time as pytime
 from pathlib import Path
+import matplotlib.pyplot as plt
 import numpy as np
 from beamz import (
     LIGHT_SPEED,
@@ -61,6 +62,117 @@ def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, ma
     p_sel = float(np.mean(np.abs(sel[valid]) ** 2))
     p_opp = float(np.mean(np.abs(opp[valid]) ** 2))
     return 10.0 * np.log10(max(p_sel, 1e-18) / max(p_opp, 1e-18))
+
+
+def save_mode_profile_plot(
+    *,
+    label: str,
+    mode_src: ModeSource,
+    grid_eps: np.ndarray,
+    dx: float,
+    out_path: Path,
+) -> None:
+    axis = mode_src.direction[1]
+    eps2d = np.asarray(getattr(mode_src, "_eps_profile_2d", np.array([])))
+    if eps2d.ndim == 2 and eps2d.size > 0:
+        profile_map = {
+            "Ex": getattr(mode_src, "_Ex_profile", None),
+            "Ey": getattr(mode_src, "_Ey_profile", None),
+            "Ez": getattr(mode_src, "_Ez_profile", None),
+            "Hx": getattr(mode_src, "_Hx_profile", None),
+            "Hy": getattr(mode_src, "_Hy_profile", None),
+            "Hz": getattr(mode_src, "_Hz_profile", None),
+        }
+        fig, ax = plt.subplots(2, 4, figsize=(10.8, 5.4), dpi=250)
+        ax = ax.ravel()
+        im_eps = ax[0].imshow(eps2d, origin="lower", cmap="viridis", aspect="equal")
+        ax[0].set_title(f"{label}: eps")
+        fig.colorbar(im_eps, ax=ax[0], fraction=0.046, pad=0.04)
+        for i, name in enumerate(["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"], start=1):
+            arr = profile_map[name]
+            if arr is None:
+                ax[i].axis("off")
+                continue
+            a2 = np.asarray(arr).squeeze()
+            if a2.ndim != 2:
+                a2 = np.atleast_2d(a2)
+            im = ax[i].imshow(np.abs(a2), origin="lower", cmap="magma", aspect="equal")
+            ax[i].set_title(f"{label}: |{name}|")
+            fig.colorbar(im, ax=ax[i], fraction=0.046, pad=0.04)
+        ax[7].axis("off")
+        ax[7].text(
+            0.02,
+            0.95,
+            (
+                f"pol={mode_src.pol}\n"
+                f"dir={mode_src.direction}\n"
+                f"axis={axis}\n"
+                f"neff={float(np.real(getattr(mode_src, '_neff', np.nan))):.5f}\n"
+                f"width={float(mode_src.width)/µm:.3f}um\n"
+                f"height={float(getattr(mode_src, 'height', 0.0) or 0.0)/µm:.3f}um"
+            ),
+            va="top",
+            ha="left",
+            fontsize=9,
+            family="monospace",
+        )
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=300)
+        plt.close(fig)
+        return
+
+    if grid_eps.ndim == 3:
+        zc = int(np.clip(round(float(mode_src.center[2]) / dx), 0, grid_eps.shape[0] - 1))
+        yc = int(np.clip(round(float(mode_src.center[1]) / dx), 0, grid_eps.shape[1] - 1))
+        xc = int(np.clip(round(float(mode_src.center[0]) / dx), 0, grid_eps.shape[2] - 1))
+        eps_profile = np.asarray(grid_eps[zc, :, xc] if axis == "x" else grid_eps[zc, yc, :], dtype=float)
+    else:
+        if axis == "x":
+            x_idx = int(np.clip(round(float(mode_src.center[0]) / dx), 0, grid_eps.shape[1] - 1))
+            eps_profile = np.asarray(grid_eps[:, x_idx], dtype=float)
+        else:
+            y_idx = int(np.clip(round(float(mode_src.center[1]) / dx), 0, grid_eps.shape[0] - 1))
+            eps_profile = np.asarray(grid_eps[y_idx, :], dtype=float)
+
+    profiles = {
+        "jz": getattr(mode_src, "_jz_profile", None),
+        "jy": getattr(mode_src, "_jy_profile", None),
+        "jx": getattr(mode_src, "_jx_profile", None),
+        "my": getattr(mode_src, "_my_profile", None),
+        "mz": getattr(mode_src, "_mz_profile", None),
+    }
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(8.2, 2.8), dpi=260)
+    u = np.arange(eps_profile.size, dtype=float) * dx / µm
+    ax0.plot(u, eps_profile, color="tab:blue", lw=1.6)
+    ax0.set_title(f"{label}: eps profile")
+    ax0.set_xlabel("transverse coordinate (um)")
+    ax0.set_ylabel("permittivity")
+    ax0.grid(alpha=0.3)
+
+    plotted = False
+    for name, arr in profiles.items():
+        if arr is None:
+            continue
+        a = np.asarray(arr, dtype=np.complex128).reshape(-1)
+        if a.size == 0:
+            continue
+        uu = np.arange(a.size, dtype=float) * dx / µm
+        ax1.plot(uu, np.abs(a), lw=1.5, label=f"|{name}|")
+        plotted = True
+    if not plotted:
+        ax1.text(0.02, 0.7, "No mode profile data", transform=ax1.transAxes)
+    ax1.set_title(
+        f"{label}: mode profile ({mode_src.pol}, {mode_src.direction})\n"
+        f"neff={float(np.real(getattr(mode_src, '_neff', np.nan))):.4f}"
+    )
+    ax1.set_xlabel("transverse coordinate (um)")
+    ax1.set_ylabel("normalized magnitude")
+    ax1.grid(alpha=0.3)
+    if plotted:
+        ax1.legend(loc="best", fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
 
 
 # 1. Import the GDSFactory/PDK component, extrude it to 3D, pad the domain,
@@ -123,6 +235,7 @@ source = ModeSource(
     signal=pulse.signal,
     direction=source_direction,
 )
+source.initialize(grid.permittivity, dx)
 monitor_cfg = dict(
     record_fields=False,
     dft_enabled=True,
@@ -136,6 +249,42 @@ out_monitors = [
     Monitor(start=out_planes[p][0], end=out_planes[p][1], name=f"{p}_cand0", **monitor_cfg)
     for p in output_ports
 ]
+
+# Create one diagnostic modal basis plot per source/monitor location before
+# time stepping so monitor placement issues are visible immediately.
+save_mode_profile_plot(
+    label="source_o1",
+    mode_src=source,
+    grid_eps=np.asarray(grid.permittivity),
+    dx=dx,
+    out_path=OUT_DIR / "beamz_crossing_mode_source_o1.png",
+)
+mode_plot_paths = [OUT_DIR / "beamz_crossing_mode_source_o1.png"]
+for port_name in output_ports:
+    plane_center = gdsf.line_center(out_planes[port_name])
+    mode_probe = ModeSource(
+        grid=grid,
+        center=plane_center,
+        width=span,
+        height=z_span,
+        wavelength=WL0,
+        pol="te",
+        signal=np.zeros((1,), dtype=np.float32),
+        direction=gdsf.outward_direction(ports[port_name]["direction"]),
+    )
+    mode_probe.initialize(grid.permittivity, dx)
+    out_path = OUT_DIR / f"beamz_crossing_mode_{port_name}.png"
+    save_mode_profile_plot(
+        label=f"monitor_{port_name}",
+        mode_src=mode_probe,
+        grid_eps=np.asarray(grid.permittivity),
+        dx=dx,
+        out_path=out_path,
+    )
+    mode_plot_paths.append(out_path)
+print("Saved mode profile plots:")
+for path in mode_plot_paths:
+    print(f"  - {path}")
 
 # 4. Feed the design, source, monitors, boundaries, and time array into the
 # simulation object.
