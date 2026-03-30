@@ -534,6 +534,52 @@ def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
     np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
 
 
+def test_project_modal_coefficients_3d_uses_overlap_space_when_ill_conditioned(
+    monkeypatch,
+):
+    import beamz.simulation.core as core_mod
+
+    mode_components = {
+        "Ex": np.zeros((1,), dtype=np.complex128),
+        "Ey": np.array([1.0 + 0.0j], dtype=np.complex128),
+        "Ez": np.array([0.25 + 0.1j], dtype=np.complex128),
+        "Hx": np.zeros((1,), dtype=np.complex128),
+        "Hy": np.array([0.4 - 0.1j], dtype=np.complex128),
+        "Hz": np.array([0.3 + 0.05j], dtype=np.complex128),
+    }
+    mode_components_bwd = {
+        name: (-arr if name.startswith("H") else arr)
+        for name, arr in mode_components.items()
+    }
+    overlap = np.array(
+        [[1.0, 1.0 - 1e-12], [1.0 - 1e-12, 1.0]], dtype=np.complex128
+    )
+
+    def fake_overlap(field, mode, axis, d_area):
+        del field, axis, d_area
+        if mode is mode_components:
+            return overlap[0, 0]
+        if mode is mode_components_bwd:
+            return overlap[1, 0]
+        raise AssertionError("unexpected mode basis")
+
+    monkeypatch.setattr(core_mod, "_modal_overlap_3d_profiles", fake_overlap)
+
+    projection = {
+        "components": ("Ey", "Ez", "Hy", "Hz"),
+        "axis": "x",
+        "d_area": 1.0,
+        "mode_components": mode_components,
+        "mode_components_bwd": mode_components_bwd,
+        "overlap_matrix": overlap,
+        "pinv": np.zeros((2, 0), dtype=np.complex128),
+    }
+
+    a_p, a_m = Simulation._project_modal_coefficients_3d(mode_components, projection)
+    np.testing.assert_allclose(a_p, 1.0 + 0.0j, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-4, atol=1e-4)
+
+
 def test_build_port_projection_3d_builds_power_orthogonal_basis(monkeypatch):
     import beamz.simulation.core as core_mod
 

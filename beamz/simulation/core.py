@@ -1688,8 +1688,16 @@ class Simulation:
                     )
                     overlap = np.asarray(overlap_matrix, dtype=np.complex128)
                     cond = float(np.linalg.cond(overlap))
-                    if np.all(np.isfinite(overlap)) and np.isfinite(cond) and cond < 1e8:
-                        coeff = np.linalg.solve(overlap, rhs)
+                    if np.all(np.isfinite(overlap)) and np.isfinite(cond):
+                        if cond < 1e8:
+                            coeff = np.linalg.solve(overlap, rhs)
+                        else:
+                            # Stay in the modal-overlap space even when the
+                            # biorthogonal system is poorly conditioned. This
+                            # matches the Meep-style coefficient extraction more
+                            # closely than falling back to a raw field-vector
+                            # pseudo-inverse over sampled monitor points.
+                            coeff = np.linalg.pinv(overlap) @ rhs
                         return np.complex128(coeff[0]), np.complex128(coeff[1])
             except Exception:
                 # Fall back to pseudo-inverse extraction if overlap inputs are incomplete.
