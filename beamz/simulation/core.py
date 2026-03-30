@@ -1634,74 +1634,35 @@ class Simulation:
             and overlap_matrix is not None
             and axis in {"x", "y", "z"}
         ):
-            if axis == "x":
-                e1, e2, h1, h2 = "Ey", "Ez", "Hz", "Hy"
-            elif axis == "y":
-                e1, e2, h1, h2 = "Ez", "Ex", "Hx", "Hz"
+            rhs = np.asarray(
+                [
+                    _modal_overlap_3d_profiles(
+                        field_components,
+                        mode_components,
+                        axis,
+                        d_area,
+                    ),
+                    _modal_overlap_3d_profiles(
+                        field_components,
+                        mode_components_bwd,
+                        axis,
+                        d_area,
+                    ),
+                ],
+                dtype=np.complex128,
+            )
+            overlap = np.asarray(overlap_matrix, dtype=np.complex128)
+            cond = float(np.linalg.cond(overlap))
+            if not np.all(np.isfinite(overlap)) or not np.all(np.isfinite(rhs)) or not np.isfinite(cond):
+                raise ValueError("Invalid 3D modal overlap system.")
+            if cond < 1e8:
+                coeff = np.linalg.solve(overlap, rhs)
             else:
-                e1, e2, h1, h2 = "Ex", "Ey", "Hy", "Hx"
-            needed = (e1, e2, h1, h2)
-
-            try:
-                arrays = {}
-                n_common = None
-                for name in needed:
-                    f_arr = np.asarray(
-                        field_components[name], dtype=np.complex128
-                    ).reshape(-1)
-                    m_arr = np.asarray(
-                        mode_components[name], dtype=np.complex128
-                    ).reshape(-1)
-                    n_local = int(min(f_arr.size, m_arr.size))
-                    if n_local <= 0:
-                        raise ValueError("empty component")
-                    n_common = n_local if n_common is None else min(n_common, n_local)
-                    arrays[name] = (f_arr, m_arr)
-                n_common = int(max(0, n_common or 0))
-                if n_common > 0:
-                    ef1 = arrays[e1][0][:n_common]
-                    ef2 = arrays[e2][0][:n_common]
-                    hf1 = arrays[h1][0][:n_common]
-                    hf2 = arrays[h2][0][:n_common]
-                    em1 = arrays[e1][1][:n_common]
-                    em2 = arrays[e2][1][:n_common]
-                    hm1 = arrays[h1][1][:n_common]
-                    hm2 = arrays[h2][1][:n_common]
-
-                    del ef1, ef2, hf1, hf2, em1, em2, hm1, hm2
-                    rhs = np.asarray(
-                        [
-                            _modal_overlap_3d_profiles(
-                                field_components,
-                                mode_components,
-                                axis,
-                                d_area,
-                            ),
-                            _modal_overlap_3d_profiles(
-                                field_components,
-                                mode_components_bwd,
-                                axis,
-                                d_area,
-                            ),
-                        ],
-                        dtype=np.complex128,
-                    )
-                    overlap = np.asarray(overlap_matrix, dtype=np.complex128)
-                    cond = float(np.linalg.cond(overlap))
-                    if np.all(np.isfinite(overlap)) and np.isfinite(cond):
-                        if cond < 1e8:
-                            coeff = np.linalg.solve(overlap, rhs)
-                        else:
-                            # Stay in the modal-overlap space even when the
-                            # biorthogonal system is poorly conditioned. This
-                            # matches the Meep-style coefficient extraction more
-                            # closely than falling back to a raw field-vector
-                            # pseudo-inverse over sampled monitor points.
-                            coeff = np.linalg.pinv(overlap) @ rhs
-                        return np.complex128(coeff[0]), np.complex128(coeff[1])
-            except Exception:
-                # Fall back to pseudo-inverse extraction if overlap inputs are incomplete.
-                pass
+                # Stay in modal-overlap space even when the biorthogonal system
+                # is poorly conditioned. This is the closest analogue to
+                # Meep-style eigenmode coefficient extraction we have.
+                coeff = np.linalg.pinv(overlap) @ rhs
+            return np.complex128(coeff[0]), np.complex128(coeff[1])
 
         components = tuple(projection.get("components", ()))
         if len(components) == 0:
