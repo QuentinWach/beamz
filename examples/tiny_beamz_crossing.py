@@ -34,7 +34,7 @@ from beamz.visual.example_plots import plot_simulation_overview, plot_sparameter
 OUT_DIR = Path("benchmarks/results/tiny_beamz_crossing")
 COMPONENT_NAME = "ebeam_crossing4"
 NUM_FREQS = 51
-PPW = 14
+PPW = 10
 WL0, WL_MIN, WL_MAX = 1550.0e-9, 1530.0e-9, 1570.0e-9
 N_CORE, N_CLAD = 3.47, 1.44
 LAYER = (1, 0)
@@ -49,14 +49,7 @@ PORT_OVERLAP = 0.10 * µm
 PORT_MARGIN = 0.50 * µm
 SOURCE_OFFSET = 0.10 * µm
 DISTANCE_SOURCE_TO_MONITORS = 0.20 * µm
-OUTPUT_MONITOR_OFFSETS = (
-    0.10 * µm,
-    0.30 * µm,
-    0.50 * µm,
-    0.70 * µm,
-    0.90 * µm,
-)
-OUTPUT_SELECTION_MIN_DOM_DB = 10.0
+OUTPUT_MONITOR_OFFSETS = {"o2": 0.70 * µm, "o3": 0.10 * µm, "o4": 0.70 * µm}
 RUN_AFTER_SOURCES_UOC = 90.0
 
 
@@ -81,47 +74,6 @@ def format_duration(seconds: float) -> str:
         return f"{int(minutes)}m {sec:.0f}s"
     hours, minutes = divmod(minutes, 60.0)
     return f"{int(hours)}h {int(minutes)}m"
-
-
-def pick_output_candidate(candidates: list[dict], min_dominance_db: float) -> dict:
-    # Prefer the farthest monitor that still sees a clean outgoing mode.
-    eligible = [c for c in candidates if np.isfinite(c["dominance_db"]) and c["dominance_db"] >= float(min_dominance_db)]
-    pool = eligible if eligible else candidates
-    return max(
-        pool,
-        key=lambda c: (
-            float(c["offset_um"]),
-            float(c["dominance_db"]) if np.isfinite(c["dominance_db"]) else -1e9,
-        ),
-    )
-
-
-def pick_shared_output_candidate(
-    candidates_a: list[dict], candidates_b: list[dict], min_dominance_db: float
-) -> tuple[dict, dict]:
-    # Keep symmetric ports at the same offset so their extracted weak-port
-    # phases are referenced to equivalent planes.
-    paired = []
-    by_idx_b = {int(c["idx"]): c for c in candidates_b}
-    for cand_a in candidates_a:
-        cand_b = by_idx_b.get(int(cand_a["idx"]))
-        if cand_b is None:
-            continue
-        dom_a = float(cand_a["dominance_db"]) if np.isfinite(cand_a["dominance_db"]) else -1e9
-        dom_b = float(cand_b["dominance_db"]) if np.isfinite(cand_b["dominance_db"]) else -1e9
-        paired.append(
-            (
-                int(min(dom_a, dom_b) >= float(min_dominance_db)),
-                float(cand_a["offset_um"]),
-                min(dom_a, dom_b),
-                cand_a,
-                cand_b,
-            )
-        )
-    if not paired:
-        raise ValueError("No shared output monitor candidates available.")
-    _, _, _, chosen_a, chosen_b = max(paired, key=lambda item: (item[0], item[1], item[2]))
-    return chosen_a, chosen_b
 
 
 def expected_mode_components(axis: str, pol: str) -> tuple[str, str]:
@@ -269,18 +221,25 @@ grid = design.rasterize(resolution=dx)
 freqs = np.linspace(LIGHT_SPEED / WL_MAX, LIGHT_SPEED / WL_MIN, NUM_FREQS, dtype=np.float32)
 wl_um = LIGHT_SPEED / freqs / µm
 
-# 2. Build the source plane and one output monitor plane per port from the
-# imported port metadata. This matches the Meep setup:
-#   - source at source_port_offset inward from the source port center
-#   - source monitor farther inward by source_port_offset + distance_to_monitor
-#   - output monitors are evaluated at a few inward offsets and the cleanest
-#     far-field candidate is selected after the run
+# 2. Place the source and monitors directly from the imported port metadata.
+# BeamZ's current raw port extraction is most stable with the source on the
+# source port and fixed monitor planes on the device side of the ports:
+#   - source at 0.10 um inward from o1
+#   - source monitor at 0.30 um inward from o1
+#   - weak ports o2/o4 at 0.70 um inward
+#   - through port o3 at 0.10 um inward
 src = ports[source_port]
 source_direction = src["direction"]
 span = max(float(src["width"]) + 2.0 * PORT_MARGIN, float(src["width"]) + 0.1 * µm)
 z_center = float(src["z_center"])
 z_span = CLAD_BELOW + CORE_T + CLAD_ABOVE
-source_plane = gdsf.port_plane(src, span=span, z_span=z_span, z_center=z_center, offset=SOURCE_OFFSET)
+source_plane = gdsf.port_plane(
+    src,
+    span=span,
+    z_span=z_span,
+    z_center=z_center,
+    offset=SOURCE_OFFSET,
+)
 fwd_plane = gdsf.port_plane(
     src,
     span=span,
@@ -289,21 +248,28 @@ fwd_plane = gdsf.port_plane(
     offset=SOURCE_OFFSET + DISTANCE_SOURCE_TO_MONITORS,
 )
 source_center = gdsf.line_center(source_plane)
-out_planes = {}
-max_output_distance_um = 0.0
+out_planes = {
+    port_name: gdsf.port_plane(
+        ports[port_name],
+        span=span,
+        z_span=z_span,
+        z_center=z_center,
+        offset=OUTPUT_MONITOR_OFFSETS[port_name],
+    )
+    for port_name in output_ports
+}
+print("Plane positions (um inward from imported ports):")
+print(f"  o1_fwd: {(SOURCE_OFFSET + DISTANCE_SOURCE_TO_MONITORS) / µm:.2f}")
+print(f"  source: {SOURCE_OFFSET / µm:.2f}")
 for port_name in output_ports:
-    out_planes[port_name] = {}
-    for idx, offset in enumerate(OUTPUT_MONITOR_OFFSETS):
-        plane = gdsf.port_plane(
-            ports[port_name],
-            span=span,
-            z_span=z_span,
-            z_center=z_center,
-            offset=offset,
-        )
-        out_planes[port_name][idx] = plane
-        c_out = gdsf.line_center(plane)
-        max_output_distance_um = max(max_output_distance_um, float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm)
+    print(f"  {port_name}: {OUTPUT_MONITOR_OFFSETS[port_name] / µm:.2f}")
+runtime_output_distance_um = 0.0
+for port_name in output_ports:
+    c_out = gdsf.line_center(out_planes[port_name])
+    runtime_output_distance_um = max(
+        runtime_output_distance_um,
+        float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm,
+    )
 
 # 3. Generate the broadband Gaussian pulse and build the source / DFT monitors.
 pulse = gaussian_band_pulse(
@@ -311,7 +277,7 @@ pulse = gaussian_band_pulse(
     carrier_frequency=LIGHT_SPEED / WL0,
     dt=dt,
     run_after_sources_uoc=RUN_AFTER_SOURCES_UOC,
-    max_output_distance_um=max_output_distance_um,
+    max_output_distance_um=runtime_output_distance_um,
 )
 source = ModeSource(
     grid=grid,
@@ -335,14 +301,14 @@ monitor_cfg = dict(
 m_fwd = Monitor(start=fwd_plane[0], end=fwd_plane[1], name="o1_fwd", **monitor_cfg)
 out_monitors = [
     Monitor(
-        start=out_planes[p][idx][0],
-        end=out_planes[p][idx][1],
-        name=f"{p}_cand{idx}",
+        start=out_planes[p][0],
+        end=out_planes[p][1],
+        name=p,
         **monitor_cfg,
     )
     for p in output_ports
-    for idx in range(len(OUTPUT_MONITOR_OFFSETS))
 ]
+decay_monitors = [m_fwd, *out_monitors]
 
 # Create one diagnostic modal basis plot per source/monitor location before
 # time stepping so monitor placement issues are visible immediately.
@@ -355,7 +321,7 @@ save_mode_profile_plot(
 )
 mode_plot_paths = [OUT_DIR / "beamz_crossing_mode_source_o1.png"]
 for port_name in output_ports:
-    plane_center = gdsf.line_center(out_planes[port_name][len(OUTPUT_MONITOR_OFFSETS) - 1])
+    plane_center = gdsf.line_center(out_planes[port_name])
     mode_probe = ModeSource(
         grid=grid,
         center=plane_center,
@@ -413,11 +379,7 @@ plot_simulation_overview(
     source_plane=source_plane,
     monitor_planes={
         "o1_fwd": fwd_plane,
-        **{
-            f"{p}_cand{idx}": out_planes[p][idx]
-            for p in output_ports
-            for idx in range(len(OUTPUT_MONITOR_OFFSETS))
-        },
+        **out_planes,
     },
 )
 
@@ -425,7 +387,7 @@ plot_simulation_overview(
 # after the pulse leaves the device.
 wall_t0 = pytime.perf_counter()
 executed_steps = sim.run_compiled_until_decay(
-    [m_fwd, *out_monitors],
+    decay_monitors,
     min_time_s=pulse.source_end_time + pulse.tail_time,
     progress=True,
 )
@@ -448,25 +410,24 @@ source_spec = PortSpec(
     incident_wave=gdsf.incoming_wave(source_direction),
     scattered_wave=gdsf.outgoing_wave(source_direction),
 )
-candidate_specs = [source_spec]
+selected_specs = [source_spec]
 for port_name in output_ports:
     direction = ports[port_name]["direction"]
-    for idx in range(len(OUTPUT_MONITOR_OFFSETS)):
-        candidate_specs.append(
-            PortSpec(
-                name=f"{port_name}_cand{idx}",
-                monitor_name=f"{port_name}_cand{idx}",
-                direction=gdsf.positive_axis_direction(direction),
-                polarization="te",
-                mode_index=0,
-                incident_wave=gdsf.incoming_wave(direction),
-                scattered_wave=gdsf.outgoing_wave(direction),
-            )
+    selected_specs.append(
+        PortSpec(
+            name=port_name,
+            monitor_name=port_name,
+            direction=gdsf.positive_axis_direction(direction),
+            polarization="te",
+            mode_index=0,
+            incident_wave=gdsf.incoming_wave(direction),
+            scattered_wave=gdsf.outgoing_wave(direction),
         )
+    )
 result = sim.get_S_matrix_modal_dft(
     source_port="o1",
-    ports=candidate_specs,
-    output_ports=["o1", *[f"{p}_cand{idx}" for p in output_ports for idx in range(len(OUTPUT_MONITOR_OFFSETS))]],
+    ports=selected_specs,
+    output_ports=["o1", *output_ports],
     frequencies=freqs,
     as_sax=False,
     return_diagnostics=True,
@@ -477,54 +438,23 @@ source_waves = result["diagnostics"]["waves"]["o1"]
 source_dom = wave_dominance_db(source_waves["a_plus"], source_waves["a_minus"], source_spec.incident_wave, valid)
 print(f"o1 wave dominance: {source_dom:.2f} dB")
 
-selected_specs = [source_spec]
 selected_monitor_planes = {"o1_fwd": fwd_plane}
 selected_s = {("o1", "o1"): np.asarray(result["s_matrix"][("o1", "o1")], dtype=np.complex128)}
-candidate_data = {}
 for port_name in output_ports:
-    candidates = []
-    for idx, offset in enumerate(OUTPUT_MONITOR_OFFSETS):
-        name = f"{port_name}_cand{idx}"
-        waves = result["diagnostics"]["waves"][name]
-        dom = wave_dominance_db(waves["a_plus"], waves["a_minus"], gdsf.outgoing_wave(ports[port_name]["direction"]), valid)
-        candidates.append(
-            {
-                "name": name,
-                "idx": idx,
-                "offset_um": float(offset / µm),
-                "dominance_db": dom,
-                "s": np.asarray(result["s_matrix"][(name, "o1")], dtype=np.complex128),
-            }
-        )
-    candidate_data[port_name] = candidates
-
-shared_o2, shared_o4 = pick_shared_output_candidate(
-    candidate_data["o2"],
-    candidate_data["o4"],
-    OUTPUT_SELECTION_MIN_DOM_DB,
-)
-# Match the Meep reference on the through port: keep o3 at the canonical
-# 0.10 um inward monitor plane instead of selecting a deeper candidate.
-o3_fixed = next(c for c in candidate_data["o3"] if int(c["idx"]) == 0)
-chosen_by_port = {"o2": shared_o2, "o3": o3_fixed, "o4": shared_o4}
-for port_name in output_ports:
-    chosen = chosen_by_port[port_name]
-    selected_specs.append(
-        PortSpec(
-            name=port_name,
-            monitor_name=chosen["name"],
-            direction=gdsf.positive_axis_direction(ports[port_name]["direction"]),
-            polarization="te",
-            mode_index=0,
-            incident_wave=gdsf.incoming_wave(ports[port_name]["direction"]),
-            scattered_wave=gdsf.outgoing_wave(ports[port_name]["direction"]),
-        )
+    waves = result["diagnostics"]["waves"][port_name]
+    dom = wave_dominance_db(
+        waves["a_plus"],
+        waves["a_minus"],
+        gdsf.outgoing_wave(ports[port_name]["direction"]),
+        valid,
     )
-    selected_monitor_planes[chosen["name"]] = out_planes[port_name][chosen["idx"]]
-    selected_s[(port_name, "o1")] = chosen["s"]
+    selected_monitor_planes[port_name] = out_planes[port_name]
+    selected_s[(port_name, "o1")] = np.asarray(
+        result["s_matrix"][(port_name, "o1")], dtype=np.complex128
+    )
     print(
-        f"{port_name} selected {chosen['name']} at {chosen['offset_um']:.2f} um "
-        f"(dominance={chosen['dominance_db']:.2f} dB)"
+        f"{port_name} fixed plane at {OUTPUT_MONITOR_OFFSETS[port_name] / µm:.2f} um inward "
+        f"(dominance={dom:.2f} dB)"
     )
 s_matrix = selected_s
 i0 = int(np.argmin(np.abs(wl_um - WL0 / µm)))
