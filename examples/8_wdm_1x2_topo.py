@@ -829,7 +829,7 @@ for step in range(STEPS):
             if np.isfinite(g_rms) and g_rms > 0:
                 grad_total[mask] = g / g_rms
 
-    lr_ratio = phase_lr / max(LEARNING_RATE, 1e-30)
+    lr_ratio = phase_lr / max(OPT_SETTINGS.learning_rate, 1e-30)
     grad_total[mask] *= grad_scale * lr_ratio
 
     total_objective = objective_route + binary_push * binarity
