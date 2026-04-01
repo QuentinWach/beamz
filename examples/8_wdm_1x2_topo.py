@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle as MplRectangle
@@ -29,6 +30,41 @@ Gradients use modal output-power overlaps with fixed-input normalization.
 UM = 1e-6
 
 
+@dataclass(frozen=True)
+class WdmCase:
+    wavelength: float
+    target_port: str
+
+
+@dataclass(frozen=True)
+class PhaseSettings:
+    learning_rate: float
+    beta: float
+    blur_radius: float
+    leak_weight: float
+    grad_scale: float
+    binary_push: float = 0.0
+
+
+@dataclass(frozen=True)
+class Waveform:
+    time: np.ndarray
+    signal: np.ndarray
+    gate_start: float
+    gate_index: int
+
+
+@dataclass
+class ForwardResult:
+    case: WdmCase
+    waveform: Waveform
+    field_history: list[np.ndarray]
+    norm_scale: float
+    target_tx: float
+    leak_tx: float
+    refl_tx: float
+
+
 # --- 1) Setup ---
 WG_W = 0.55 * UM
 OUT_GAP = 0.95 * UM
@@ -46,10 +82,10 @@ PML_T = 1.2 * UM
 
 WL_SHORT = 1.30 * UM
 WL_LONG = 1.55 * UM
-WAVELENGTH_CASES = [
-    (WL_SHORT, "top"),
-    (WL_LONG, "bottom"),
-]
+WAVELENGTH_CASES = (
+    WdmCase(WL_SHORT, "top"),
+    WdmCase(WL_LONG, "bottom"),
+)
 
 N_CORE = 3.48 # Si
 N_CLAD = 1.0 # Air
@@ -71,42 +107,14 @@ CLIP_PCT = 99.5
 GRAD_ABS_HARD_CAP = 50.0
 NORMALIZE_GRAD_RMS = True
 
-# Optimizer and blur continuation:
-# Use piecewise-constant phases; final phase is dedicated binarization.
-LEARNING_RATE_PHASE_VALUES = (0.005, 0.005, 0.005)
-LEARNING_RATE = LEARNING_RATE_PHASE_VALUES[0]
-BETA_PHASE_VALUES = (2.0, 2.0, 2.0)
-BLUR_PHASE_VALUES = (0.25 * UM, 0.25 * UM, 0.25 * UM)
-LEAK_W_PHASE_VALUES = (0.80, 0.80, 0.80)
-GRAD_SCALE_PHASE_VALUES = (1.00, 1.00, 1.00)
-# Extra objective/gradient pressure to push density away from 0.5 in late phases.
-BINARY_PUSH_PHASE_VALUES = (0.00, 0.00, 0.00)
-PHASE_FRACTIONS = (0.30, 0.30, 0.40)
-# Smooth each phase transition over this half-width in normalized progress units.
-PHASE_TRANSITION_HALF_WIDTH = 0.00
-if len(BETA_PHASE_VALUES) != len(BLUR_PHASE_VALUES):
-    raise ValueError("BETA_PHASE_VALUES and BLUR_PHASE_VALUES must have same length.")
-if len(PHASE_FRACTIONS) != len(BETA_PHASE_VALUES):
-    raise ValueError("PHASE_FRACTIONS must match number of phases.")
-if len(LEAK_W_PHASE_VALUES) != len(BETA_PHASE_VALUES):
-    raise ValueError("LEAK_W_PHASE_VALUES must match number of phases.")
-if len(GRAD_SCALE_PHASE_VALUES) != len(BETA_PHASE_VALUES):
-    raise ValueError("GRAD_SCALE_PHASE_VALUES must match number of phases.")
-if len(BINARY_PUSH_PHASE_VALUES) != len(BETA_PHASE_VALUES):
-    raise ValueError("BINARY_PUSH_PHASE_VALUES must match number of phases.")
-if len(LEARNING_RATE_PHASE_VALUES) != len(BETA_PHASE_VALUES):
-    raise ValueError("LEARNING_RATE_PHASE_VALUES must match number of phases.")
-if not np.isclose(sum(PHASE_FRACTIONS), 1.0, atol=1e-12):
-    raise ValueError("PHASE_FRACTIONS must sum to 1.0.")
-if PHASE_TRANSITION_HALF_WIDTH < 0.0:
-    raise ValueError("PHASE_TRANSITION_HALF_WIDTH must be non-negative.")
-
-_phase_boundaries = np.cumsum(np.asarray(PHASE_FRACTIONS[:-1], dtype=float))
-_phase_gap_min = np.min(np.diff(np.concatenate(([0.0], _phase_boundaries, [1.0]))))
-if PHASE_TRANSITION_HALF_WIDTH >= 0.5 * _phase_gap_min:
-    raise ValueError(
-        "PHASE_TRANSITION_HALF_WIDTH is too large; transition windows overlap."
-    )
+OPT_SETTINGS = PhaseSettings(
+    learning_rate=0.005,
+    beta=2.0,
+    blur_radius=0.25 * UM,
+    leak_weight=0.80,
+    grad_scale=1.00,
+    binary_push=0.00,
+)
 
 # Debug outputs cadence.
 DEBUG_EVERY = 5
@@ -168,52 +176,6 @@ if X_MON_IN >= X_INV0:
     raise ValueError("Input monitor must stay in straight input waveguide (before design region).")
 X_MON_OUT = W - PML_T - 0.35 * UM
 MON_SPAN = 2.6 * WG_W
-
-
-def continuation_value(step, total_steps, start, end, power=1.0):
-    if total_steps <= 1:
-        return end
-    frac = step / (total_steps - 1)
-    frac = np.clip(frac, 0.0, 1.0) ** power
-    return start + frac * (end - start)
-
-
-def get_phase_index(step, total_steps):
-    frac = (step + 1) / max(1, total_steps)
-    cumulative = 0.0
-    for idx, f in enumerate(PHASE_FRACTIONS):
-        cumulative += f
-        if frac <= cumulative or idx == len(PHASE_FRACTIONS) - 1:
-            return idx
-    return len(PHASE_FRACTIONS) - 1
-
-
-def smoothstep01(x):
-    x = np.clip(x, 0.0, 1.0)
-    return x * x * (3.0 - 2.0 * x)
-
-
-def get_smoothed_phase_value(step, total_steps, phase_values):
-    if len(phase_values) == 1:
-        return float(phase_values[0])
-
-    frac = (step + 1) / max(1, total_steps)
-    half_w = float(PHASE_TRANSITION_HALF_WIDTH)
-    boundaries = _phase_boundaries
-
-    value = float(phase_values[0])
-    for i, boundary in enumerate(boundaries):
-        lo = boundary - half_w
-        hi = boundary + half_w
-        if frac < lo:
-            return value
-        if frac <= hi:
-            t = (frac - lo) / max(hi - lo, 1e-12)
-            s = smoothstep01(t)
-            return (1.0 - s) * float(phase_values[i]) + s * float(phase_values[i + 1])
-        value = float(phase_values[i + 1])
-
-    return float(phase_values[-1])
 
 
 def build_time_and_signal(wavelength):
@@ -654,11 +616,11 @@ opt = TopologyManager(
     region_mask=mask,
     resolution=DX,
     optimizer="Adam",
-    learning_rate=LEARNING_RATE,
-    filter_radius=BLUR_PHASE_VALUES[0],
+    learning_rate=OPT_SETTINGS.learning_rate,
+    filter_radius=OPT_SETTINGS.blur_radius,
     eps_min=EPS_CLAD,
     eps_max=EPS_CORE,
-    beta_schedule=(BETA_PHASE_VALUES[0], BETA_PHASE_VALUES[-1]),
+    beta_schedule=(OPT_SETTINGS.beta, OPT_SETTINGS.beta),
     filter_type="conic",
 )
 
@@ -677,12 +639,12 @@ print("Saved setup plot: wdm_setup_sources_monitors.png")
 
 waveforms = {}
 print("Waveform timing check (pulse should clear the full device):")
-for wl, _target in WAVELENGTH_CASES:
-    t_axis, sig, t_total, t_flight, t_gate = build_time_and_signal(wl)
+for case in WAVELENGTH_CASES:
+    t_axis, sig, t_total, t_flight, t_gate = build_time_and_signal(case.wavelength)
     gate_idx = int(np.searchsorted(t_axis, t_gate, side="left"))
-    waveforms[wl] = (t_axis, sig, t_gate, gate_idx)
+    waveforms[case.wavelength] = Waveform(t_axis, sig, t_gate, gate_idx)
     print(
-        f"  wl={wl / UM:.3f} um | total={t_total * 1e15:.1f} fs | "
+        f"  wl={case.wavelength / UM:.3f} um | total={t_total * 1e15:.1f} fs | "
         f"flight_est={t_flight * 1e15:.1f} fs | gate={t_gate * 1e15:.1f} fs | "
         f"ratio={t_total / t_flight:.2f}x"
     )
@@ -705,13 +667,12 @@ prev_design_density = None
 print(f"Starting simplified 1x2 WDM topology optimization for {STEPS} steps...")
 for step in range(STEPS):
     step_id = step + 1
-    phase_idx = get_phase_index(step, STEPS)
-    phase_lr = get_smoothed_phase_value(step, STEPS, LEARNING_RATE_PHASE_VALUES)
-    beta = get_smoothed_phase_value(step, STEPS, BETA_PHASE_VALUES)
-    blur_radius = get_smoothed_phase_value(step, STEPS, BLUR_PHASE_VALUES)
-    leak_weight = get_smoothed_phase_value(step, STEPS, LEAK_W_PHASE_VALUES)
-    grad_scale = get_smoothed_phase_value(step, STEPS, GRAD_SCALE_PHASE_VALUES)
-    binary_push = get_smoothed_phase_value(step, STEPS, BINARY_PUSH_PHASE_VALUES)
+    phase_lr = OPT_SETTINGS.learning_rate
+    beta = OPT_SETTINGS.beta
+    blur_radius = OPT_SETTINGS.blur_radius
+    leak_weight = OPT_SETTINGS.leak_weight
+    grad_scale = OPT_SETTINGS.grad_scale
+    binary_push = OPT_SETTINGS.binary_push
     opt.filter_radius = blur_radius
     # Keep at least one filter cell to avoid zero-radius speckle phase.
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
@@ -727,42 +688,39 @@ for step in range(STEPS):
     step_report = []
     forward_cache = []
 
-    for wl, target_port in WAVELENGTH_CASES:
-        t_axis, sig, t_gate, gate_idx = waveforms[wl]
+    for case in WAVELENGTH_CASES:
+        waveform = waveforms[case.wavelength]
         fwd_hist, in_energy, top_energy, bot_energy, refl_energy, total_out = run_forward(
             grid=grid,
-            wavelength=wl,
-            time=t_axis,
-            signal=sig,
-            gate_start=t_gate,
+            wavelength=case.wavelength,
+            time=waveform.time,
+            signal=waveform.signal,
+            gate_start=waveform.gate_start,
             save_fields=True,
         )
 
         norm_scale = max(float(in_energy), 1e-30)
-        target_e = top_energy if target_port == "top" else bot_energy
-        leak_e = bot_energy if target_port == "top" else top_energy
+        target_e = top_energy if case.target_port == "top" else bot_energy
+        leak_e = bot_energy if case.target_port == "top" else top_energy
         target_tx = target_e / norm_scale
         leak_tx = leak_e / norm_scale
         refl_tx = refl_energy / norm_scale
 
         route_mean += target_tx
         refl_mean += refl_tx
-        tx_hist[wl]["target"].append(100.0 * target_tx)
-        tx_hist[wl]["leak"].append(100.0 * leak_tx)
+        tx_hist[case.wavelength]["target"].append(100.0 * target_tx)
+        tx_hist[case.wavelength]["leak"].append(100.0 * leak_tx)
 
         forward_cache.append(
-            {
-                "wl": wl,
-                "target_port": target_port,
-                "time": t_axis,
-                "signal": sig,
-                "gate_idx": gate_idx,
-                "fwd_hist": fwd_hist,
-                "norm_scale": norm_scale,
-                "target_tx": target_tx,
-                "leak_tx": leak_tx,
-                "refl_tx": refl_tx,
-            }
+            ForwardResult(
+                case=case,
+                waveform=waveform,
+                field_history=fwd_hist,
+                norm_scale=norm_scale,
+                target_tx=target_tx,
+                leak_tx=leak_tx,
+                refl_tx=refl_tx,
+            )
         )
 
     route_mean /= len(WAVELENGTH_CASES)
@@ -771,50 +729,60 @@ for step in range(STEPS):
 
     grad_maps_by_wl = {}
 
-    for item in forward_cache:
-        wl = item["wl"]
-        target_port = item["target_port"]
-        t_axis = item["time"]
-        sig = item["signal"]
-        gate_idx = item["gate_idx"]
-        fwd_hist = item["fwd_hist"]
+    for result in forward_cache:
+        case = result.case
+        waveform = result.waveform
+        adj_top = run_adjoint(
+            grid=grid,
+            wavelength=case.wavelength,
+            target_port="top",
+            time=waveform.time,
+            signal=waveform.signal,
+        )
+        adj_bot = run_adjoint(
+            grid=grid,
+            wavelength=case.wavelength,
+            target_port="bottom",
+            time=waveform.time,
+            signal=waveform.signal,
+        )
 
-        target_tx = item["target_tx"]
-        leak_tx = item["leak_tx"]
-        refl_tx = item["refl_tx"]
-        norm_scale = item["norm_scale"]
-
-        adj_top = run_adjoint(grid=grid, wavelength=wl, target_port="top", time=t_axis, signal=sig)
-        adj_bot = run_adjoint(grid=grid, wavelength=wl, target_port="bottom", time=t_axis, signal=sig)
-
-        inv_in = 1.0 / max(norm_scale, 1e-30)
+        inv_in = 1.0 / max(result.norm_scale, 1e-30)
         grad_top = np.array(
-            compute_overlap_gradient(fwd_hist, adj_top, forward_start=gate_idx)
+            compute_overlap_gradient(
+                result.field_history,
+                adj_top,
+                forward_start=waveform.gate_index,
+            )
         )
         grad_bot = np.array(
-            compute_overlap_gradient(fwd_hist, adj_bot, forward_start=gate_idx)
+            compute_overlap_gradient(
+                result.field_history,
+                adj_bot,
+                forward_start=waveform.gate_index,
+            )
         )
 
-        if target_port == "top":
+        if case.target_port == "top":
             coeff_top = inv_in
             coeff_bot = -leak_weight * inv_in
         else:
             coeff_top = -leak_weight * inv_in
             coeff_bot = inv_in
 
-        fom_k = target_tx - leak_weight * leak_tx
+        fom_k = result.target_tx - leak_weight * result.leak_tx
         grad_fom_k = coeff_top * grad_top + coeff_bot * grad_bot
 
         per_wl_fom.append(fom_k)
         per_wl_grad.append(grad_fom_k)
-        fom_hist[wl].append(100.0 * fom_k)
-        grad_maps_by_wl[wl] = grad_fom_k
+        fom_hist[case.wavelength].append(100.0 * fom_k)
+        grad_maps_by_wl[case.wavelength] = grad_fom_k
 
         step_report.append(
-            f"{wl / UM:.3f}um->{target_port}: "
-            f"T={100.0 * target_tx:5.1f}% "
-            f"L={100.0 * leak_tx:5.1f}% "
-            f"R={100.0 * refl_tx:5.1f}% "
+            f"{case.wavelength / UM:.3f}um->{case.target_port}: "
+            f"T={100.0 * result.target_tx:5.1f}% "
+            f"L={100.0 * result.leak_tx:5.1f}% "
+            f"R={100.0 * result.refl_tx:5.1f}% "
             f"FoM={100.0 * fom_k:5.1f}%"
         )
 
@@ -884,8 +852,7 @@ for step in range(STEPS):
             f"wL={leak_weight:.2f} "
             f"lr={phase_lr:.4f} s={grad_scale:.2f} "
             f"wB={binary_push:.2f} bin={binarity:.2f} "
-            f"mat={current_density:.2f} ph={phase_idx + 1}/{len(PHASE_FRACTIONS)} beta={beta:.2f} "
-            f"blur={blur_radius / UM:.3f}um "
+            f"mat={current_density:.2f} beta={beta:.2f} blur={blur_radius / UM:.3f}um "
             f"fc={opt.filter_radius_cells} dmax={max_update:.3e}) | "
             + " | ".join(step_report)
         )
@@ -955,10 +922,22 @@ for step in range(STEPS):
         save_gradient_debug_image(f"wdm_grad_short_{step_id:03d}.png", grad_maps_by_wl[WL_SHORT])
         save_gradient_debug_image(f"wdm_grad_long_{step_id:03d}.png", grad_maps_by_wl[WL_LONG])
 
-        t_short, s_short, g_short, _ = waveforms[WL_SHORT]
-        t_long, s_long, g_long, _ = waveforms[WL_LONG]
-        _, _, flux_short = run_forward_flux_map(grid, WL_SHORT, t_short, s_short, g_short)
-        _, _, flux_long = run_forward_flux_map(grid, WL_LONG, t_long, s_long, g_long)
+        short_waveform = waveforms[WL_SHORT]
+        long_waveform = waveforms[WL_LONG]
+        _, _, flux_short = run_forward_flux_map(
+            grid,
+            WL_SHORT,
+            short_waveform.time,
+            short_waveform.signal,
+            short_waveform.gate_start,
+        )
+        _, _, flux_long = run_forward_flux_map(
+            grid,
+            WL_LONG,
+            long_waveform.time,
+            long_waveform.signal,
+            long_waveform.gate_start,
+        )
         save_flux_debug_image(f"wdm_flux_short_{step_id:03d}.png", flux_short)
         save_flux_debug_image(f"wdm_flux_long_{step_id:03d}.png", flux_long)
 
@@ -977,7 +956,7 @@ for step in range(STEPS):
 
 
 # --- 4) Project to binary and run final wavelength-resolved flux maps ---
-beta_final = BETA_PHASE_VALUES[-1]
+beta_final = OPT_SETTINGS.beta
 phys_final = opt.get_physical_density(beta_final)
 phys_binary = (phys_final >= 0.5).astype(float)
 
@@ -988,20 +967,20 @@ binary_design = (grid.permittivity > 0.5 * (EPS_CLAD + EPS_CORE)).astype(float)
 
 final_flux_maps = {}
 print("\nFinal routing check on binary projected design:")
-for wl, target_port in WAVELENGTH_CASES:
-    t_axis, sig, t_gate, _ = waveforms[wl]
+for case in WAVELENGTH_CASES:
+    waveform = waveforms[case.wavelength]
     tx_top, tx_bot, flux_map = run_forward_flux_map(
         grid=grid,
-        wavelength=wl,
-        time=t_axis,
-        signal=sig,
-        gate_start=t_gate,
+        wavelength=case.wavelength,
+        time=waveform.time,
+        signal=waveform.signal,
+        gate_start=waveform.gate_start,
     )
-    final_flux_maps[wl] = flux_map
-    target_tx = tx_top if target_port == "top" else tx_bot
-    leak_tx = tx_bot if target_port == "top" else tx_top
+    final_flux_maps[case.wavelength] = flux_map
+    target_tx = tx_top if case.target_port == "top" else tx_bot
+    leak_tx = tx_bot if case.target_port == "top" else tx_top
     print(
-        f"  wl={wl / UM:.3f} um target={target_port}: "
+        f"  wl={case.wavelength / UM:.3f} um target={case.target_port}: "
         f"target={100.0 * target_tx:.2f}% leak={100.0 * leak_tx:.2f}%"
     )
 
