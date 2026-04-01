@@ -116,8 +116,11 @@ OPT_SETTINGS = PhaseSettings(
     binary_push=0.00,
 )
 
-# Debug outputs cadence.
-DEBUG_EVERY = 5
+# Runtime/output controls.
+PRINT_EVERY = 5
+SAVE_SETUP_PLOT = True
+SAVE_STEP_DEBUG = False
+STEP_DEBUG_EVERY = 25
 
 # Small deterministic perturbation to break exact geometric symmetry.
 INITIAL_ASYM_NOISE = 1e-3
@@ -369,15 +372,13 @@ def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
     results = sim.run(save_fields=save, field_subsample=FIELD_SUBSAMPLE)
 
     in_energy, top_energy, bot_energy, refl_energy = extract_modal_port_energies(sim, wavelength)
-    total_out = max(top_energy + bot_energy, 0.0)
-
     ez_hist = []
     if save_fields:
         ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
         if not ez_hist:
             raise RuntimeError("Forward simulation returned no Ez history.")
 
-    return ez_hist, in_energy, top_energy, bot_energy, refl_energy, total_out
+    return ez_hist, in_energy, top_energy, bot_energy, refl_energy
 
 
 def run_adjoint(grid, wavelength, target_port, time, signal):
@@ -631,11 +632,13 @@ if INITIAL_ASYM_NOISE > 0.0:
     opt.design_density = np.clip(opt.design_density + noise, 0.0, 1.0)
 
 base_eps = grid.permittivity.copy()
-removed_files = cleanup_old_wdm_outputs()
-if removed_files > 0:
-    print(f"Removed {removed_files} stale WDM output files from previous runs.")
-save_setup_sources_monitors_plot(grid, path="wdm_setup_sources_monitors.png")
-print("Saved setup plot: wdm_setup_sources_monitors.png")
+if SAVE_SETUP_PLOT or SAVE_STEP_DEBUG:
+    removed_files = cleanup_old_wdm_outputs()
+    if removed_files > 0:
+        print(f"Removed {removed_files} stale WDM output files from previous runs.")
+if SAVE_SETUP_PLOT:
+    save_setup_sources_monitors_plot(grid, path="wdm_setup_sources_monitors.png")
+    print("Saved setup plot: wdm_setup_sources_monitors.png")
 
 waveforms = {}
 print("Waveform timing check (pulse should clear the full device):")
@@ -654,7 +657,7 @@ for case in WAVELENGTH_CASES:
 objective_history = []
 objective_ema_history = []
 route_mean_history = []
-softmin_history = []
+route_fom_history = []
 tx_hist = {
     WL_SHORT: {"target": [], "leak": []},
     WL_LONG: {"target": [], "leak": []},
@@ -690,7 +693,7 @@ for step in range(STEPS):
 
     for case in WAVELENGTH_CASES:
         waveform = waveforms[case.wavelength]
-        fwd_hist, in_energy, top_energy, bot_energy, refl_energy, total_out = run_forward(
+        fwd_hist, in_energy, top_energy, bot_energy, refl_energy = run_forward(
             grid=grid,
             wavelength=case.wavelength,
             time=waveform.time,
@@ -789,7 +792,7 @@ for step in range(STEPS):
     wl_weights = np.full(len(WAVELENGTH_CASES), 1.0 / len(WAVELENGTH_CASES), dtype=float)
 
     objective_route = float(np.dot(wl_weights, np.asarray(per_wl_fom, dtype=float)))
-    softmin_history.append(objective_route)
+    route_fom_history.append(objective_route)
 
     grad_total = np.zeros_like(grid.permittivity, dtype=float)
     for w_i, grad_i in zip(wl_weights, per_wl_grad):
@@ -843,8 +846,12 @@ for step in range(STEPS):
         ema_objective = EMA_ALPHA * total_objective + (1.0 - EMA_ALPHA) * ema_objective
     objective_ema_history.append(ema_objective)
 
-    should_debug = (step == 0) or (step_id % DEBUG_EVERY == 0) or (step_id == STEPS)
-    if should_debug:
+    should_log = (step == 0) or (step_id % PRINT_EVERY == 0) or (step_id == STEPS)
+    should_save_debug = SAVE_STEP_DEBUG and (
+        (step == 0) or (step_id % STEP_DEBUG_EVERY == 0) or (step_id == STEPS)
+    )
+
+    if should_log:
         print(
             f"[{step_id:03d}/{STEPS}] Obj={total_objective:.4f} "
             f"(meanFoM={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
@@ -857,7 +864,7 @@ for step in range(STEPS):
             + " | ".join(step_report)
         )
 
-    if should_debug:
+    if should_save_debug:
         is_baseline_debug = prev_phys_plot is None
         phys_plot = opt.get_physical_density(beta)
         grid.permittivity[:] = base_eps
@@ -1029,7 +1036,7 @@ plt.plot(
     label=f"Objective EMA (alpha={EMA_ALPHA:.2f})",
 )
 plt.plot(steps, 100.0 * np.array(route_mean_history), "g--", linewidth=1.4, label="Mean target T")
-plt.plot(steps, 100.0 * np.array(softmin_history), "b--", linewidth=1.4, label="Mean route FoM")
+plt.plot(steps, 100.0 * np.array(route_fom_history), "b--", linewidth=1.4, label="Mean route FoM")
 plt.xlabel("Optimization step")
 plt.ylabel("FoM (%)")
 plt.title("1x2 WDM objective progress (simplified)")
@@ -1065,8 +1072,21 @@ plt.tight_layout()
 plt.savefig("wdm_per_channel_fom_vs_step.png", dpi=160)
 plt.close()
 
-print(
-    "Saved: wdm_objective_vs_step.png, wdm_routing_vs_step.png, "
-    "wdm_per_channel_fom_vs_step.png, wdm_final_binary_flux_overlay.png, "
-    "wdm_topo_*.png, wdm_density_*.png, wdm_grad_*.png, wdm_flux_*.png"
-)
+saved_outputs = [
+    "wdm_objective_vs_step.png",
+    "wdm_routing_vs_step.png",
+    "wdm_per_channel_fom_vs_step.png",
+    "wdm_final_binary_flux_overlay.png",
+]
+if SAVE_SETUP_PLOT:
+    saved_outputs.append("wdm_setup_sources_monitors.png")
+if SAVE_STEP_DEBUG:
+    saved_outputs.extend(
+        [
+            "wdm_topo_*.png",
+            "wdm_density_*.png",
+            "wdm_grad_*.png",
+            "wdm_flux_*.png",
+        ]
+    )
+print("Saved: " + ", ".join(saved_outputs))
