@@ -202,6 +202,28 @@ class TestGradientComputation:
             grad, expected_value
         ), f"Time reversal incorrect: got {grad[0,0]}, expected {expected_value}"
 
+    def test_compute_overlap_gradient_forward_start(self):
+        """Forward-start gating should skip the same leading frames as zero-padding."""
+        n_steps = 5
+        ny, nx = 6, 6
+
+        forward_history = [np.ones((ny, nx)) * i for i in range(n_steps)]
+        adjoint_history = [np.ones((ny, nx)) * i for i in range(n_steps)]
+
+        grad = compute_overlap_gradient(
+            forward_history,
+            adjoint_history,
+            forward_start=2,
+        )
+
+        # Equivalent to zeroing forward[0:2]:
+        # 0*4 + 0*3 + 2*2 + 3*1 + 4*0 = 7
+        expected_value = 2 * 2 + 3 * 1 + 4 * 0
+
+        assert np.allclose(
+            grad, expected_value
+        ), f"Forward-start gating incorrect: got {grad[0,0]}, expected {expected_value}"
+
     def test_vjp_gradient_vs_finite_difference(self):
         """VJP gradient should match finite difference approximation."""
         # Create small test case
