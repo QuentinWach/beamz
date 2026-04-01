@@ -936,7 +936,9 @@ for step in range(STEPS):
 
     total_objective = objective_route + binary_push * binarity
 
-    max_update = opt.apply_gradient(grad_total, beta)
+    # `compute_overlap_gradient` is opposite to TopologyManager's maximize-by-descent
+    # convention, so negate here before applying the optimizer step.
+    max_update = opt.apply_gradient(-grad_total, beta)
 
     objective_history.append(total_objective)
     opt.objective_history.append(total_objective)
