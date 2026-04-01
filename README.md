@@ -1,7 +1,7 @@
 <div align="left">
 <img src="docs/assets/BEAMZ_logo.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
 
-BEAMZ is an **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method** written in Jax. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**.
+BEAMZ is an **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method** and written in Jax. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**.
 </div>
 
 ```bash
@@ -16,7 +16,7 @@ pip install beamz
 ## Core Features
 - **100% Python**, free (MIT license) & open-source.
 - Modular architecture with a high-level API.
-- **GPU-accelerated** (but CPU-capable).
+- **GPU-accelerated** (yet super fast on CPUs as well).
 - Built-in layout flow (GDSII import/export).
 - FDTD simulation in 2D and **3D**.
 - PML absorbing boundaries.
@@ -46,7 +46,7 @@ BEAMZ's goal is to become the **pragmatic** FDTD engine of choice for **photonic
 
 It focuses on **streamlined workflows** to produce **useful results** without tedious setup or configuration files. This is _not_ a research project with the goal to demo a novel framework we can publish, nor a costly, closed API that hides how it works and gives you no ownership. 
 
-We are building in Python and choosing a **modular architecture** that is composable over a brutalist object-oriented architecture to **make the code readable and development easy**. So that, if there is something that isn't working or missing, you can quickly add it yourself!
+We are building in Python and choosing a **modular architecture** that is composable over a brutalist object-oriented architecture to **make the code readable and development easy**. So that, if there is something that isn't working or missing, you can quickly add it yourself.
 
 This project is part of my long-term ambition to push towards something like COMSOL + Tidy3D, a programmatic, **differentiable multi-physics engine** for coupled electromagnetics + thermodynamics + charge carrier dynamics + mechanics (maybe even microfluidics) simulations and optimization of complex devices. Who doesn't dream of that? And I am wondering what devices AI could create with a tool like that, too.
 
@@ -54,6 +54,6 @@ This project is part of my long-term ambition to push towards something like COM
 ## Contributing
 If any of this excites you or if have any questions, please open an issue on GitHub!
 
-Feel free to fork this project, to suggest or contribute new features. The WIP section contains a list of features that are planned to be implemented. Help is very much appreciated! That said, the easiest way to support the project is to **give this repo a ⭐!**
+Feel free to fork this project, to suggest or contribute new features. The WIP section contains a list of features that are planned to be implemented. Help is very much appreciated! That said, the easiest way to support the project is to **give this repo a star.**
 
 Thank you!
