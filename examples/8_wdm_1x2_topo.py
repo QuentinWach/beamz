@@ -22,6 +22,7 @@ Per optimization step:
 Objective (modal transmission based, simplified):
 For each wavelength k,
   J_k = T_target - w_leak*T_leak
+Forward metrics come from DFT modal S extraction with an input reference monitor.
 Gradients use modal output-power overlaps with fixed-input normalization.
 """
 
@@ -62,7 +63,8 @@ class ForwardResult:
     norm_scale: float
     target_tx: float
     leak_tx: float
-    refl_tx: float
+    power_sum: float
+    loss_est: float
 
 
 # --- 1) Setup ---
@@ -111,7 +113,7 @@ OPT_SETTINGS = PhaseSettings(
     learning_rate=0.005,
     beta=2.0,
     blur_radius=0.25 * UM,
-    leak_weight=0.80,
+    leak_weight=1.25,
     grad_scale=1.00,
     binary_push=0.00,
 )
@@ -171,12 +173,14 @@ X_INV1 = X_INV0 + INV_W
 Y_INV1 = Y_INV0 + INV_H
 
 X_SRC = PML_T + 0.70 * UM
-X_MON_REFL = X_SRC - 0.35 * UM
-if X_MON_REFL <= PML_T:
-    raise ValueError("Reflection monitor must be to the right of left PML.")
-X_MON_IN = X_SRC + 0.35 * UM
+X_MON_IN_REF = X_INV0 - 0.70 * UM
+if X_MON_IN_REF <= X_SRC:
+    raise ValueError("Reference input monitor must be to the right of the source plane.")
+X_MON_IN = X_INV0 - 0.35 * UM
 if X_MON_IN >= X_INV0:
     raise ValueError("Input monitor must stay in straight input waveguide (before design region).")
+if X_MON_IN <= X_MON_IN_REF:
+    raise ValueError("Input monitor must be to the right of the reference monitor.")
 X_MON_OUT = W - PML_T - 0.35 * UM
 MON_SPAN = 2.6 * WG_W
 
@@ -203,36 +207,37 @@ def make_modal_port_specs():
         PortSpec(
             name="in",
             monitor_name="in_norm",
+            reference_monitor="in_ref",
             direction="+x",
             polarization="tm",
+            incident_wave="plus",
+            scattered_wave="minus",
         ),
         PortSpec(
             name="top",
             monitor_name="out_top",
             direction="+x",
             polarization="tm",
+            incident_wave="minus",
+            scattered_wave="plus",
         ),
         PortSpec(
             name="bottom",
             monitor_name="out_bottom",
             direction="+x",
             polarization="tm",
-        ),
-        PortSpec(
-            name="refl",
-            monitor_name="in_refl",
-            direction="-x",
-            polarization="tm",
+            incident_wave="minus",
+            scattered_wave="plus",
         ),
     ]
 
 
-def extract_modal_port_energies(sim, wavelength):
+def extract_modal_port_metrics(sim, wavelength):
     frequency = LIGHT_SPEED / wavelength
     modal = sim.get_S_matrix_modal_dft(
         source_port="in",
         ports=make_modal_port_specs(),
-        output_ports=["top", "bottom", "refl"],
+        output_ports=["top", "bottom"],
         frequencies=np.array([frequency], dtype=float),
         as_sax=False,
         return_diagnostics=True,
@@ -246,14 +251,22 @@ def extract_modal_port_energies(sim, wavelength):
     s_matrix = modal["s_matrix"]
     tx_top = float(np.abs(np.asarray(s_matrix[("top", "in")], dtype=np.complex128)[0]) ** 2)
     tx_bot = float(np.abs(np.asarray(s_matrix[("bottom", "in")], dtype=np.complex128)[0]) ** 2)
-    tx_refl = float(np.abs(np.asarray(s_matrix[("refl", "in")], dtype=np.complex128)[0]) ** 2)
 
     p_in = float(np.asarray(modal["diagnostics"]["P_in"], dtype=float)[0])
     p_in = max(p_in, 1e-30)
+    power_sum = float(np.asarray(modal["diagnostics"]["power_sum"], dtype=float)[0])
+    loss_est = float(np.asarray(modal["diagnostics"]["loss_est"], dtype=float)[0])
     p_top = max(tx_top * p_in, 0.0)
     p_bot = max(tx_bot * p_in, 0.0)
-    p_refl = max(tx_refl * p_in, 0.0)
-    return p_in, p_top, p_bot, p_refl
+    return {
+        "p_in": p_in,
+        "p_top": p_top,
+        "p_bot": p_bot,
+        "tx_top": tx_top,
+        "tx_bot": tx_bot,
+        "power_sum": power_sum,
+        "loss_est": loss_est,
+    }
 
 
 def make_vertical_monitor(
@@ -294,12 +307,12 @@ def build_port_monitors(
     dft_t_start=0.0,
     dft_t_end=None,
 ):
-    mon_refl = make_vertical_monitor(
+    mon_in_ref = make_vertical_monitor(
         grid,
-        X_MON_REFL,
+        X_MON_IN_REF,
         Y_IN,
         MON_SPAN,
-        name="in_refl",
+        name="in_ref",
         record_fields=record_fields,
         dft_frequency=dft_frequency,
         dft_t_start=dft_t_start,
@@ -338,7 +351,7 @@ def build_port_monitors(
         dft_t_start=dft_t_start,
         dft_t_end=dft_t_end,
     )
-    return mon_refl, mon_in, mon_top, mon_bot
+    return mon_in_ref, mon_in, mon_top, mon_bot
 
 
 def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
@@ -352,7 +365,7 @@ def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
         direction="+x",
     )
     dft_frequency = LIGHT_SPEED / wavelength
-    mon_refl, mon_in, mon_top, mon_bot = build_port_monitors(
+    mon_in_ref, mon_in, mon_top, mon_bot = build_port_monitors(
         grid,
         record_fields=False,
         dft_frequency=dft_frequency,
@@ -362,7 +375,7 @@ def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
 
     sim = Simulation(
         grid,
-        [src, mon_refl, mon_in, mon_top, mon_bot],
+        [src, mon_in_ref, mon_in, mon_top, mon_bot],
         [PML(edges="all", thickness=PML_T)],
         time=time,
         resolution=DX,
@@ -371,14 +384,24 @@ def run_forward(grid, wavelength, time, signal, gate_start, save_fields=True):
     save = ["Ez"] if save_fields else []
     results = sim.run(save_fields=save, field_subsample=FIELD_SUBSAMPLE)
 
-    in_energy, top_energy, bot_energy, refl_energy = extract_modal_port_energies(sim, wavelength)
+    modal = extract_modal_port_metrics(sim, wavelength)
+    in_energy = modal["p_in"]
+    top_energy = modal["p_top"]
+    bot_energy = modal["p_bot"]
     ez_hist = []
     if save_fields:
         ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
         if not ez_hist:
             raise RuntimeError("Forward simulation returned no Ez history.")
 
-    return ez_hist, in_energy, top_energy, bot_energy, refl_energy
+    return (
+        ez_hist,
+        in_energy,
+        top_energy,
+        bot_energy,
+        modal["power_sum"],
+        modal["loss_est"],
+    )
 
 
 def run_adjoint(grid, wavelength, target_port, time, signal):
@@ -429,7 +452,7 @@ def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
         direction="+x",
     )
     dft_frequency = LIGHT_SPEED / wavelength
-    _mon_refl, _mon_in, _mon_top, _mon_bot = build_port_monitors(
+    _mon_in_ref, _mon_in, _mon_top, _mon_bot = build_port_monitors(
         grid,
         record_fields=False,
         dft_frequency=dft_frequency,
@@ -439,17 +462,16 @@ def run_forward_flux_map(grid, wavelength, time, signal, gate_start):
 
     sim = Simulation(
         grid,
-        [src, _mon_refl, _mon_in, _mon_top, _mon_bot],
+        [src, _mon_in_ref, _mon_in, _mon_top, _mon_bot],
         [PML(edges="all", thickness=PML_T)],
         time=time,
         resolution=DX,
     )
     results = sim.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=1)
 
-    in_energy, top_energy, bot_energy, _refl_energy = extract_modal_port_energies(sim, wavelength)
-    in_energy = max(in_energy, 1e-30)
-    tx_top = max(0.0, top_energy / in_energy)
-    tx_bot = max(0.0, bot_energy / in_energy)
+    modal = extract_modal_port_metrics(sim, wavelength)
+    tx_top = max(0.0, modal["tx_top"])
+    tx_bot = max(0.0, modal["tx_bot"])
 
     ez_hist = [np.array(frame) for frame in results.get("fields", {}).get("Ez", [])]
     hx_hist = [np.array(frame) for frame in results.get("fields", {}).get("Hx", [])]
@@ -658,6 +680,7 @@ objective_history = []
 objective_ema_history = []
 route_mean_history = []
 route_fom_history = []
+power_sum_history = []
 tx_hist = {
     WL_SHORT: {"target": [], "leak": []},
     WL_LONG: {"target": [], "leak": []},
@@ -687,13 +710,20 @@ for step in range(STEPS):
     per_wl_fom = []
     per_wl_grad = []
     route_mean = 0.0
-    refl_mean = 0.0
+    power_sum_mean = 0.0
     step_report = []
     forward_cache = []
 
     for case in WAVELENGTH_CASES:
         waveform = waveforms[case.wavelength]
-        fwd_hist, in_energy, top_energy, bot_energy, refl_energy = run_forward(
+        (
+            fwd_hist,
+            in_energy,
+            top_energy,
+            bot_energy,
+            power_sum,
+            loss_est,
+        ) = run_forward(
             grid=grid,
             wavelength=case.wavelength,
             time=waveform.time,
@@ -707,10 +737,9 @@ for step in range(STEPS):
         leak_e = bot_energy if case.target_port == "top" else top_energy
         target_tx = target_e / norm_scale
         leak_tx = leak_e / norm_scale
-        refl_tx = refl_energy / norm_scale
 
         route_mean += target_tx
-        refl_mean += refl_tx
+        power_sum_mean += power_sum
         tx_hist[case.wavelength]["target"].append(100.0 * target_tx)
         tx_hist[case.wavelength]["leak"].append(100.0 * leak_tx)
 
@@ -722,13 +751,15 @@ for step in range(STEPS):
                 norm_scale=norm_scale,
                 target_tx=target_tx,
                 leak_tx=leak_tx,
-                refl_tx=refl_tx,
+                power_sum=power_sum,
+                loss_est=loss_est,
             )
         )
 
     route_mean /= len(WAVELENGTH_CASES)
-    refl_mean /= len(WAVELENGTH_CASES)
+    power_sum_mean /= len(WAVELENGTH_CASES)
     route_mean_history.append(route_mean)
+    power_sum_history.append(power_sum_mean)
 
     grad_maps_by_wl = {}
 
@@ -785,7 +816,7 @@ for step in range(STEPS):
             f"{case.wavelength / UM:.3f}um->{case.target_port}: "
             f"T={100.0 * result.target_tx:5.1f}% "
             f"L={100.0 * result.leak_tx:5.1f}% "
-            f"R={100.0 * result.refl_tx:5.1f}% "
+            f"Psum={100.0 * result.power_sum:5.1f}% "
             f"FoM={100.0 * fom_k:5.1f}%"
         )
 
@@ -834,9 +865,7 @@ for step in range(STEPS):
 
     total_objective = objective_route + binary_push * binarity
 
-    # `compute_overlap_gradient` is opposite to TopologyManager's maximize-by-descent
-    # convention, so negate here before applying the optimizer step.
-    max_update = opt.apply_gradient(-grad_total, beta)
+    max_update = opt.apply_gradient(grad_total, beta)
 
     objective_history.append(total_objective)
     opt.objective_history.append(total_objective)
@@ -855,7 +884,7 @@ for step in range(STEPS):
         print(
             f"[{step_id:03d}/{STEPS}] Obj={total_objective:.4f} "
             f"(meanFoM={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
-            f"meanR={100.0 * refl_mean:.1f}% "
+            f"meanPsum={100.0 * power_sum_mean:.1f}% "
             f"wL={leak_weight:.2f} "
             f"lr={phase_lr:.4f} s={grad_scale:.2f} "
             f"wB={binary_push:.2f} bin={binarity:.2f} "
@@ -1037,6 +1066,7 @@ plt.plot(
 )
 plt.plot(steps, 100.0 * np.array(route_mean_history), "g--", linewidth=1.4, label="Mean target T")
 plt.plot(steps, 100.0 * np.array(route_fom_history), "b--", linewidth=1.4, label="Mean route FoM")
+plt.plot(steps, 100.0 * np.array(power_sum_history), color="tab:purple", linewidth=1.1, label="Mean guided power sum")
 plt.xlabel("Optimization step")
 plt.ylabel("FoM (%)")
 plt.title("1x2 WDM objective progress (simplified)")
@@ -1052,8 +1082,8 @@ plt.plot(steps, tx_hist[WL_SHORT]["leak"], "b--", linewidth=1.8, label="1.31 um 
 plt.plot(steps, tx_hist[WL_LONG]["target"], "r-", linewidth=2, label="1.55 um -> bottom (target)")
 plt.plot(steps, tx_hist[WL_LONG]["leak"], "r--", linewidth=1.8, label="1.55 um leak")
 plt.xlabel("Optimization step")
-plt.ylabel("Transmission (%)")
-plt.title("Port routing and leakage")
+plt.ylabel("Guided modal power (%)")
+plt.title("Port routing and leakage (DFT modal extraction)")
 plt.grid(alpha=0.3)
 plt.legend()
 plt.tight_layout()
@@ -1065,7 +1095,7 @@ plt.plot(steps, fom_hist[WL_SHORT], "b-", linewidth=2, label="FoM 1.31 um")
 plt.plot(steps, fom_hist[WL_LONG], "r-", linewidth=2, label="FoM 1.55 um")
 plt.xlabel("Optimization step")
 plt.ylabel("Per-wavelength FoM (%)")
-plt.title("Per-channel FoM = normalized (Ttarget - wL*Tleak - wR*Trefl + wT*Tout)")
+plt.title(f"Per-channel FoM = Ttarget - {OPT_SETTINGS.leak_weight:.2f} * Tleak")
 plt.grid(alpha=0.3)
 plt.legend()
 plt.tight_layout()
