@@ -41,18 +41,23 @@ FIELD_SUBSAMPLE = 1
 EMA_ALPHA = 0.20
 
 LEARNING_RATE = 0.0010
+POLISH_LR = 0.0002
 BETA_START = 12.0
 BETA_END = 40.0
+POLISH_BETA = 96.0
 BLUR_START = 0.18 * UM
 BLUR_END = 0.14 * UM
+POLISH_BLUR = 0.10 * UM
 LOSS_WEIGHT = 0.50
 BINARITY_START = 0.01
-BINARITY_END = 0.05
+BINARITY_END = 0.14
+POLISH_BINARITY = 0.45
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
 INITIAL_ASYM_NOISE = 1e-3
 EARLY_STOP_PATIENCE = 20
+POLISH_STEPS = 30
 
 Y_IN = 0.5 * H
 Y_TOP = Y_IN + 0.5 * (WG_W + OUT_GAP)
@@ -61,8 +66,8 @@ X_INV0 = INPUT_WG_LEN
 X_INV1 = X_INV0 + INV_W
 Y_INV0 = 0.5 * (H - INV_H)
 X_SRC = PML_T + 0.70 * UM
-X_MON_REF = X_INV0 - 0.70 * UM
-X_MON_IN = X_INV0 - 0.35 * UM
+X_MON_SRC_REF = X_SRC + 0.18 * UM
+X_MON_SRC = X_SRC + 0.42 * UM
 X_MON_OUT = W - PML_T - 0.35 * UM
 MON_SPAN = 2.6 * WG_W
 def cleanup_outputs():
@@ -110,18 +115,25 @@ def smoothstep01(x):
     return x * x * (3.0 - 2.0 * x)
 
 def step_settings(step):
-    frac = 0.0 if STEPS <= 1 else (step - 1) / (STEPS - 1)
-    beta = BETA_START + (BETA_END - BETA_START) * smoothstep01(frac)
-    blur = BLUR_START + (BLUR_END - BLUR_START) * smoothstep01(frac)
-    w_bin = BINARITY_START + (BINARITY_END - BINARITY_START) * smoothstep01(frac)
-    return beta, blur, w_bin
+    main_steps = max(STEPS - POLISH_STEPS, 1)
+    if step <= main_steps:
+        frac = 0.0 if main_steps <= 1 else (step - 1) / (main_steps - 1)
+        beta = BETA_START + (BETA_END - BETA_START) * smoothstep01(frac)
+        blur = BLUR_START + (BLUR_END - BLUR_START) * smoothstep01(frac)
+        w_bin = BINARITY_START + (BINARITY_END - BINARITY_START) * smoothstep01(frac)
+        return beta, blur, w_bin, False
+    frac = 1.0 if POLISH_STEPS <= 1 else (step - main_steps - 1) / (POLISH_STEPS - 1)
+    beta = BETA_END + (POLISH_BETA - BETA_END) * smoothstep01(frac)
+    blur = BLUR_END + (POLISH_BLUR - BLUR_END) * smoothstep01(frac)
+    w_bin = BINARITY_END + (POLISH_BINARITY - BINARITY_END) * smoothstep01(frac)
+    return beta, blur, w_bin, True
 
 def modal_specs():
     return [
         PortSpec(
             name="in",
-            monitor_name="in_norm",
-            reference_monitor="in_ref",
+            monitor_name="src_in",
+            reference_monitor="src_ref",
             direction="+x",
             polarization="tm",
             incident_wave="plus",
@@ -147,7 +159,7 @@ def modal_specs():
 
 
 def build_monitors(grid, frequency, gate_start, record_fields=False):
-    def mon(name, x, y):
+    def mon(name, x, y, t_start):
         return Monitor(
             design=grid,
             start=(x, y - 0.5 * MON_SPAN),
@@ -159,14 +171,14 @@ def build_monitors(grid, frequency, gate_start, record_fields=False):
             dft_frequencies=np.array([frequency], dtype=float),
             dft_components=("Ez", "Hx", "Hy"),
             dft_window="rect",
-            dft_t_start=float(gate_start),
+            dft_t_start=float(t_start),
         )
 
     return [
-        mon("in_ref", X_MON_REF, Y_IN),
-        mon("in_norm", X_MON_IN, Y_IN),
-        mon("out_top", X_MON_OUT, Y_TOP),
-        mon("out_bottom", X_MON_OUT, Y_BOT),
+        mon("src_ref", X_MON_SRC_REF, Y_IN, 0.0),
+        mon("src_in", X_MON_SRC, Y_IN, 0.0),
+        mon("out_top", X_MON_OUT, Y_TOP, gate_start),
+        mon("out_bottom", X_MON_OUT, Y_BOT, gate_start),
     ]
 
 def modal_metrics(sim, wavelength):
@@ -185,12 +197,15 @@ def modal_metrics(sim, wavelength):
     tx_top = float(np.abs(np.asarray(smat[("top", "in")], dtype=np.complex128)[0]) ** 2)
     tx_bot = float(np.abs(np.asarray(smat[("bottom", "in")], dtype=np.complex128)[0]) ** 2)
     p_in = max(float(np.asarray(result["diagnostics"]["P_in"], dtype=float)[0]), 1e-30)
+    p_top = max(tx_top * p_in, 0.0)
+    p_bot = max(tx_bot * p_in, 0.0)
+    power_sum = (p_top + p_bot) / p_in
     return {
         "p_in": p_in,
-        "p_top": max(tx_top * p_in, 0.0),
-        "p_bot": max(tx_bot * p_in, 0.0),
-        "power_sum": float(np.asarray(result["diagnostics"]["power_sum"], dtype=float)[0]),
-        "loss_est": float(np.asarray(result["diagnostics"]["loss_est"], dtype=float)[0]),
+        "p_top": p_top,
+        "p_bot": p_bot,
+        "power_sum": power_sum,
+        "loss_est": max(0.0, 1.0 - power_sum),
         "tx_top": tx_top,
         "tx_bot": tx_bot,
     }
@@ -205,9 +220,10 @@ def run_forward(grid, wavelength, wave, fields=("Ez",)):
         signal=wave["signal"],
         direction="+x",
     )
+    monitors = build_monitors(grid, LIGHT_SPEED / wavelength, wave["gate_start"])
     sim = Simulation(
         grid,
-        [source, *build_monitors(grid, LIGHT_SPEED / wavelength, wave["gate_start"])],
+        [source, *monitors],
         [PML(edges="all", thickness=PML_T)],
         time=wave["time"],
         resolution=DX,
@@ -375,9 +391,16 @@ best_projected_density = None
 best_projected_step = 0
 best_binary_score = -np.inf
 best_binary_density = None
+polish_started = False
 
 for step in range(1, STEPS + 1):
-    beta, blur_radius, binarity_weight = step_settings(step)
+    beta, blur_radius, binarity_weight, is_polish = step_settings(step)
+    if is_polish and not polish_started:
+        import optax
+
+        opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
+        opt._opt_state = None
+        polish_started = True
     opt.filter_radius = blur_radius
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
     density = opt.get_physical_density(beta)
@@ -435,7 +458,8 @@ for step in range(1, STEPS + 1):
         hist["fom"][wl].append(100.0 * fom)
         report.append(
             f"{wl / UM:.3f}um: T={100.0 * cache['target_tx']:5.1f}% "
-            f"L={100.0 * cache['leak_tx']:5.1f}% Loss={100.0 * cache['loss_est']:5.1f}% FoM={100.0 * fom:5.1f}%"
+            f"L={100.0 * cache['leak_tx']:5.1f}% Loss={100.0 * cache['loss_est']:5.1f}% "
+            f"FoM={100.0 * fom:5.1f}%"
         )
 
     grad_total = sum(grad_terms) / len(grad_terms)
@@ -467,11 +491,12 @@ for step in range(1, STEPS + 1):
         print(
             f"[{step:03d}/{STEPS}] Obj={objective:.4f} meanT={100.0 * target_mean:.1f}% "
             f"Psum={100.0 * power_sum_mean:.1f}% bin={binarity:.2f} "
-            f"beta={beta:.1f} dmax={dmax:.3e} | "
+            f"{'polish' if is_polish else 'main'} beta={beta:.1f} dmax={dmax:.3e} | "
             + " | ".join(report)
         )
 
-    if SAVE_DEBUG and (step == 1 or step % DEBUG_EVERY == 0 or step == STEPS):
+    should_debug = step == 1 or step % DEBUG_EVERY == 0 or step == STEPS or is_polish
+    if SAVE_DEBUG and should_debug:
         binary_density = (density >= 0.5).astype(float)
         binary_score, _, _ = score_density(grid, binary_density)
         if binary_score > best_binary_score:
