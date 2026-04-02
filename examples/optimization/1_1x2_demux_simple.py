@@ -41,22 +41,18 @@ FIELD_SUBSAMPLE = 1
 EMA_ALPHA = 0.20
 
 LEARNING_RATE = 0.0010
-POLISH_LR = 0.0003
 BETA_START = 12.0
-BETA_END = 36.0
-POLISH_BETA = 64.0
+BETA_END = 40.0
 BLUR_START = 0.18 * UM
 BLUR_END = 0.14 * UM
-POLISH_BLUR = 0.12 * UM
 LOSS_WEIGHT = 0.50
 BINARITY_START = 0.01
-BINARITY_END = 0.06
-POLISH_BINARITY = 0.18
+BINARITY_END = 0.05
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
 INITIAL_ASYM_NOISE = 1e-3
-POLISH_STEPS = 20
+EARLY_STOP_PATIENCE = 20
 
 Y_IN = 0.5 * H
 Y_TOP = Y_IN + 0.5 * (WG_W + OUT_GAP)
@@ -114,14 +110,11 @@ def smoothstep01(x):
     return x * x * (3.0 - 2.0 * x)
 
 def step_settings(step):
-    main_steps = max(STEPS - POLISH_STEPS, 1)
-    frac = 0.0 if main_steps <= 1 else min(step - 1, main_steps - 1) / (main_steps - 1)
+    frac = 0.0 if STEPS <= 1 else (step - 1) / (STEPS - 1)
     beta = BETA_START + (BETA_END - BETA_START) * smoothstep01(frac)
     blur = BLUR_START + (BLUR_END - BLUR_START) * smoothstep01(frac)
     w_bin = BINARITY_START + (BINARITY_END - BINARITY_START) * smoothstep01(frac)
-    if step > main_steps:
-        return POLISH_BETA, POLISH_BLUR, POLISH_BINARITY, True
-    return beta, blur, w_bin, False
+    return beta, blur, w_bin
 
 def modal_specs():
     return [
@@ -308,6 +301,21 @@ def set_design(grid, base_eps, mask, density, opt):
     grid.permittivity[mask] = opt.eps_min + density[mask] * (opt.eps_max - opt.eps_min)
 
 
+def score_density(grid, density, with_fields=False):
+    set_design(grid, base_eps, mask, density, opt)
+    fields = ("Ez", "Hx", "Hy") if with_fields else ()
+    route_terms, modal_data, field_data = [], {}, {}
+    for wl, target_port in CASES:
+        modal, saved = run_forward(grid, wl, waves[wl], fields=fields)
+        target = modal["p_top"] if target_port == "top" else modal["p_bot"]
+        leak = modal["p_bot"] if target_port == "top" else modal["p_top"]
+        norm = max(modal["p_in"], 1e-30)
+        route_terms.append(target / norm - leak / norm - LOSS_WEIGHT * modal["loss_est"])
+        modal_data[wl] = modal
+        field_data[wl] = saved
+    return float(np.mean(route_terms)), modal_data, field_data
+
+
 cleanup_outputs()
 
 design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
@@ -362,18 +370,14 @@ hist = {
     "fom": {WL_SHORT: [], WL_LONG: []},
 }
 ema = None
-polish_initialized = False
+best_projected_score = -np.inf
+best_projected_density = None
+best_projected_step = 0
+best_binary_score = -np.inf
+best_binary_density = None
 
 for step in range(1, STEPS + 1):
-    beta, blur_radius, binarity_weight, is_polish = step_settings(step)
-    if is_polish and not polish_initialized:
-        seed = (opt.get_physical_density(BETA_END) >= 0.5).astype(float)
-        opt.design_density[mask] = seed[mask]
-        import optax
-
-        opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
-        opt._opt_state = None
-        polish_initialized = True
+    beta, blur_radius, binarity_weight = step_settings(step)
     opt.filter_radius = blur_radius
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
     density = opt.get_physical_density(beta)
@@ -449,6 +453,10 @@ for step in range(1, STEPS + 1):
 
     route_obj = float(np.mean(route_terms))
     objective = route_obj + binarity_weight * binarity
+    if route_obj > best_projected_score:
+        best_projected_score = route_obj
+        best_projected_density = density.copy()
+        best_projected_step = step
     dmax = opt.apply_gradient(-grad_total, beta)
     hist["route"].append(route_obj)
     hist["objective"].append(objective)
@@ -459,11 +467,16 @@ for step in range(1, STEPS + 1):
         print(
             f"[{step:03d}/{STEPS}] Obj={objective:.4f} meanT={100.0 * target_mean:.1f}% "
             f"Psum={100.0 * power_sum_mean:.1f}% bin={binarity:.2f} "
-            f"{'polish' if is_polish else 'main'} beta={beta:.1f} dmax={dmax:.3e} | "
+            f"beta={beta:.1f} dmax={dmax:.3e} | "
             + " | ".join(report)
         )
 
     if SAVE_DEBUG and (step == 1 or step % DEBUG_EVERY == 0 or step == STEPS):
+        binary_density = (density >= 0.5).astype(float)
+        binary_score, _, _ = score_density(grid, binary_density)
+        if binary_score > best_binary_score:
+            best_binary_score = binary_score
+            best_binary_density = binary_density.copy()
         set_design(grid, base_eps, mask, density, opt)
         plt.imsave(f"{PREFIX}_topo_{step:03d}.png", grid.permittivity.T, cmap="gray", origin="lower")
         plt.imsave(
@@ -480,12 +493,20 @@ for step in range(1, STEPS + 1):
         save_flux(f"{PREFIX}_flux_long_{step:03d}.png", flux_map(long_fields, waves[WL_LONG]["time"], waves[WL_LONG]["gate_start"]))
         save_progress(f"{PREFIX}_progress_{step:03d}.png", hist)
         save_progress(f"{PREFIX}_progress_latest.png", hist)
+    if step > 0.7 * STEPS and step - best_projected_step >= EARLY_STOP_PATIENCE and route_obj < best_projected_score - 0.05:
+        print(f"Stopping early at step {step:03d}; best projected checkpoint was step {best_projected_step:03d}.")
+        break
 
 save_progress(f"{PREFIX}_progress_final.png", hist)
 
+if best_projected_density is None:
+    best_projected_density = opt.get_physical_density(BETA_END)
+if best_binary_density is None:
+    best_binary_density = (best_projected_density >= 0.5).astype(float)
+
 for label, density, path in (
-    ("projected", opt.get_physical_density(BETA_END), f"{PREFIX}_final_projected_flux_overlay.png"),
-    ("binary", (opt.get_physical_density(BETA_END) >= 0.5).astype(float), f"{PREFIX}_final_binary_flux_overlay.png"),
+    ("projected", best_projected_density, f"{PREFIX}_final_projected_flux_overlay.png"),
+    ("binary", best_binary_density, f"{PREFIX}_final_binary_flux_overlay.png"),
 ):
     set_design(grid, base_eps, mask, density, opt)
     short_modal, short_fields = run_forward(grid, WL_SHORT, waves[WL_SHORT], fields=("Ez", "Hx", "Hy"))
