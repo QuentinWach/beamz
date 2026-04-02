@@ -49,13 +49,16 @@ BLUR_START = 0.18 * UM
 BLUR_END = 0.14 * UM
 POLISH_BLUR = 0.10 * UM
 LOSS_WEIGHT = 0.50
+POWER_BOUND_WEIGHT = 4.0
+POWER_SUM_TOL = 1.02
 BINARITY_START = 0.01
-BINARITY_END = 0.14
-POLISH_BINARITY = 0.45
+BINARITY_END = 0.18
+POLISH_BINARITY = 0.65
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
 INITIAL_ASYM_NOISE = 1e-3
+ENABLE_EARLY_STOP = False
 EARLY_STOP_PATIENCE = 20
 POLISH_STEPS = 30
 
@@ -66,8 +69,9 @@ X_INV0 = INPUT_WG_LEN
 X_INV1 = X_INV0 + INV_W
 Y_INV0 = 0.5 * (H - INV_H)
 X_SRC = PML_T + 0.70 * UM
-X_MON_SRC_REF = X_SRC + 0.18 * UM
-X_MON_SRC = X_SRC + 0.42 * UM
+X_MON_SRC = X_SRC + 0.30 * UM
+X_MON_REF = X_INV0 - 0.70 * UM
+X_MON_IN = X_INV0 - 0.35 * UM
 X_MON_OUT = W - PML_T - 0.35 * UM
 MON_SPAN = 2.6 * WG_W
 def cleanup_outputs():
@@ -132,8 +136,8 @@ def modal_specs():
     return [
         PortSpec(
             name="in",
-            monitor_name="src_in",
-            reference_monitor="src_ref",
+            monitor_name="in_norm",
+            reference_monitor="in_ref",
             direction="+x",
             polarization="tm",
             incident_wave="plus",
@@ -175,8 +179,9 @@ def build_monitors(grid, frequency, gate_start, record_fields=False):
         )
 
     return [
-        mon("src_ref", X_MON_SRC_REF, Y_IN, 0.0),
-        mon("src_in", X_MON_SRC, Y_IN, 0.0),
+        mon("src_flux", X_MON_SRC, Y_IN, 0.0),
+        mon("in_ref", X_MON_REF, Y_IN, gate_start),
+        mon("in_norm", X_MON_IN, Y_IN, gate_start),
         mon("out_top", X_MON_OUT, Y_TOP, gate_start),
         mon("out_bottom", X_MON_OUT, Y_BOT, gate_start),
     ]
@@ -326,7 +331,13 @@ def score_density(grid, density, with_fields=False):
         target = modal["p_top"] if target_port == "top" else modal["p_bot"]
         leak = modal["p_bot"] if target_port == "top" else modal["p_top"]
         norm = max(modal["p_in"], 1e-30)
-        route_terms.append(target / norm - leak / norm - LOSS_WEIGHT * modal["loss_est"])
+        overflow = max(float(modal["power_sum"]) - 1.0, 0.0)
+        route_terms.append(
+            target / norm
+            - leak / norm
+            - LOSS_WEIGHT * modal["loss_est"]
+            - POWER_BOUND_WEIGHT * overflow * overflow
+        )
         modal_data[wl] = modal
         field_data[wl] = saved
     return float(np.mean(route_terms)), modal_data, field_data
@@ -389,6 +400,8 @@ ema = None
 best_projected_score = -np.inf
 best_projected_density = None
 best_projected_step = 0
+best_projected_fallback_score = -np.inf
+best_projected_fallback_density = None
 best_binary_score = -np.inf
 best_binary_density = None
 polish_started = False
@@ -451,7 +464,13 @@ for step in range(1, STEPS + 1):
             coeff_top, coeff_bot = (1.0 + LOSS_WEIGHT) / cache["norm"], (LOSS_WEIGHT - 1.0) / cache["norm"]
         else:
             coeff_top, coeff_bot = (LOSS_WEIGHT - 1.0) / cache["norm"], (1.0 + LOSS_WEIGHT) / cache["norm"]
-        fom = cache["target_tx"] - cache["leak_tx"] - LOSS_WEIGHT * cache["loss_est"]
+        overflow = max(cache["power_sum"] - 1.0, 0.0)
+        fom = (
+            cache["target_tx"]
+            - cache["leak_tx"]
+            - LOSS_WEIGHT * cache["loss_est"]
+            - POWER_BOUND_WEIGHT * overflow * overflow
+        )
         grad = coeff_top * grad_top + coeff_bot * grad_bot
         route_terms.append(fom)
         grad_terms.append(grad / max(float(np.sqrt(np.mean(grad[mask] ** 2))), 1e-30) if NORMALIZE_PER_WL_GRAD else grad)
@@ -459,7 +478,7 @@ for step in range(1, STEPS + 1):
         report.append(
             f"{wl / UM:.3f}um: T={100.0 * cache['target_tx']:5.1f}% "
             f"L={100.0 * cache['leak_tx']:5.1f}% Loss={100.0 * cache['loss_est']:5.1f}% "
-            f"FoM={100.0 * fom:5.1f}%"
+            f"Psum={100.0 * cache['power_sum']:5.1f}% FoM={100.0 * fom:5.1f}%"
         )
 
     grad_total = sum(grad_terms) / len(grad_terms)
@@ -477,7 +496,11 @@ for step in range(1, STEPS + 1):
 
     route_obj = float(np.mean(route_terms))
     objective = route_obj + binarity_weight * binarity
-    if route_obj > best_projected_score:
+    max_power_sum = max(cache["power_sum"] for cache in caches)
+    if route_obj > best_projected_fallback_score:
+        best_projected_fallback_score = route_obj
+        best_projected_fallback_density = density.copy()
+    if max_power_sum <= POWER_SUM_TOL and route_obj > best_projected_score:
         best_projected_score = route_obj
         best_projected_density = density.copy()
         best_projected_step = step
@@ -498,8 +521,8 @@ for step in range(1, STEPS + 1):
     should_debug = step == 1 or step % DEBUG_EVERY == 0 or step == STEPS or is_polish
     if SAVE_DEBUG and should_debug:
         binary_density = (density >= 0.5).astype(float)
-        binary_score, _, _ = score_density(grid, binary_density)
-        if binary_score > best_binary_score:
+        binary_score, binary_modal, _ = score_density(grid, binary_density)
+        if max(m["power_sum"] for m in binary_modal.values()) <= POWER_SUM_TOL and binary_score > best_binary_score:
             best_binary_score = binary_score
             best_binary_density = binary_density.copy()
         set_design(grid, base_eps, mask, density, opt)
@@ -518,14 +541,16 @@ for step in range(1, STEPS + 1):
         save_flux(f"{PREFIX}_flux_long_{step:03d}.png", flux_map(long_fields, waves[WL_LONG]["time"], waves[WL_LONG]["gate_start"]))
         save_progress(f"{PREFIX}_progress_{step:03d}.png", hist)
         save_progress(f"{PREFIX}_progress_latest.png", hist)
-    if step > 0.7 * STEPS and step - best_projected_step >= EARLY_STOP_PATIENCE and route_obj < best_projected_score - 0.05:
+    if ENABLE_EARLY_STOP and step > 0.7 * STEPS and step - best_projected_step >= EARLY_STOP_PATIENCE and route_obj < best_projected_score - 0.05:
         print(f"Stopping early at step {step:03d}; best projected checkpoint was step {best_projected_step:03d}.")
         break
 
 save_progress(f"{PREFIX}_progress_final.png", hist)
 
 if best_projected_density is None:
-    best_projected_density = opt.get_physical_density(BETA_END)
+    best_projected_density = (
+        best_projected_fallback_density if best_projected_fallback_density is not None else opt.get_physical_density(BETA_END)
+    )
 if best_binary_density is None:
     best_binary_density = (best_projected_density >= 0.5).astype(float)
 
