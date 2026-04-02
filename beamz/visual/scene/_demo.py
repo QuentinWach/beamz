@@ -87,7 +87,7 @@ def demo_scene() -> SceneSpec:
     return SceneSpec(
         title="BEAMZ Scene Demo",
         units="um",
-        background="#f8fafc",
+        background="#ffffff",
         camera=CameraSpec(
             position=(11.0, -3.5, 5.5), target=(5.0, 3.0, 0.33), fov=36.0
         ),

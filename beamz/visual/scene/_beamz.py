@@ -592,7 +592,7 @@ def _build_scene(
     return SceneSpec(
         title=title,
         units="m",
-        background="#f8fafc",
+        background="#ffffff",
         camera=CameraSpec(
             position=(
                 center[0] + diagonal * 0.9,

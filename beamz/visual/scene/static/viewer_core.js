@@ -26,7 +26,7 @@ const THEMES = {
     },
   },
   light: {
-    sceneBackground: "#f8fafc",
+    sceneBackground: "#ffffff",
     objectOutline: "#000000",
     gizmo: {
       cubeColor: "#f4f4f5",
