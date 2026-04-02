@@ -132,6 +132,9 @@ def cleanup_old_wdm_outputs():
         "wdm_density_*.png",
         "wdm_flux_short_*.png",
         "wdm_flux_long_*.png",
+        "wdm_progress_*.png",
+        "wdm_progress_latest.png",
+        "wdm_progress_vs_step.png",
         "wdm_objective_vs_step.png",
         "wdm_routing_vs_step.png",
         "wdm_per_channel_fom_vs_step.png",
@@ -511,6 +514,100 @@ def save_flux_debug_image(path, flux):
         scale = 1.0
     vis = np.clip(flux / scale, 0.0, 1.0)
     plt.imsave(path, vis.T, cmap="inferno", origin="lower")
+
+
+def save_history_summary_plot(path):
+    n_steps = len(objective_history)
+    if n_steps == 0:
+        return
+
+    steps_local = np.arange(1, n_steps + 1)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
+
+    axes[0].plot(
+        steps_local,
+        100.0 * np.array(objective_history),
+        "k-",
+        linewidth=1.6,
+        label="Total objective",
+    )
+    axes[0].plot(
+        steps_local,
+        100.0 * np.array(objective_ema_history),
+        color="tab:orange",
+        linewidth=2.0,
+        label=f"Objective EMA (alpha={EMA_ALPHA:.2f})",
+    )
+    axes[0].plot(
+        steps_local,
+        100.0 * np.array(route_fom_history),
+        "b--",
+        linewidth=1.4,
+        label="Mean route FoM",
+    )
+    axes[0].set_ylabel("FoM (%)")
+    axes[0].set_title("Objective and FoM history")
+    axes[0].grid(alpha=0.3)
+    axes[0].legend(loc="best")
+
+    axes[1].plot(
+        steps_local,
+        tx_hist[WL_SHORT]["target"],
+        "b-",
+        linewidth=2.0,
+        label="1.31 um -> top (target)",
+    )
+    axes[1].plot(
+        steps_local,
+        tx_hist[WL_SHORT]["leak"],
+        "b--",
+        linewidth=1.8,
+        label="1.31 um leak",
+    )
+    axes[1].plot(
+        steps_local,
+        tx_hist[WL_LONG]["target"],
+        "r-",
+        linewidth=2.0,
+        label="1.55 um -> bottom (target)",
+    )
+    axes[1].plot(
+        steps_local,
+        tx_hist[WL_LONG]["leak"],
+        "r--",
+        linewidth=1.8,
+        label="1.55 um leak",
+    )
+    axes[1].set_ylabel("Guided modal power (%)")
+    axes[1].set_title("Transmission and leakage history")
+    axes[1].grid(alpha=0.3)
+    axes[1].legend(loc="best")
+
+    axes[2].plot(steps_local, fom_hist[WL_SHORT], "b-", linewidth=2.0, label="FoM 1.31 um")
+    axes[2].plot(steps_local, fom_hist[WL_LONG], "r-", linewidth=2.0, label="FoM 1.55 um")
+    axes[2].plot(
+        steps_local,
+        100.0 * np.array(route_mean_history),
+        "g--",
+        linewidth=1.4,
+        label="Mean target T",
+    )
+    axes[2].plot(
+        steps_local,
+        100.0 * np.array(power_sum_history),
+        color="tab:purple",
+        linewidth=1.1,
+        label="Mean guided power sum",
+    )
+    axes[2].set_xlabel("Optimization step")
+    axes[2].set_ylabel("Percent (%)")
+    axes[2].set_title("Per-channel FoM and guided power history")
+    axes[2].grid(alpha=0.3)
+    axes[2].legend(loc="best")
+
+    plt.tight_layout()
+    plt.savefig(path, dpi=160)
+    plt.close(fig)
 
 
 def save_setup_sources_monitors_plot(grid, path="wdm_setup_sources_monitors.png"):
@@ -898,10 +995,13 @@ for step in range(STEPS):
         )
         save_flux_debug_image(f"wdm_flux_short_{step_id:03d}.png", flux_short)
         save_flux_debug_image(f"wdm_flux_long_{step_id:03d}.png", flux_long)
+        save_history_summary_plot(f"wdm_progress_{step_id:03d}.png")
+        save_history_summary_plot("wdm_progress_latest.png")
         print(
             f"    saved evolution plots for step {step_id:03d}: "
             f"wdm_topo_{step_id:03d}.png, wdm_density_{step_id:03d}.png, "
-            f"wdm_flux_short_{step_id:03d}.png, wdm_flux_long_{step_id:03d}.png"
+            f"wdm_flux_short_{step_id:03d}.png, wdm_flux_long_{step_id:03d}.png, "
+            f"wdm_progress_{step_id:03d}.png"
         )
 
 
@@ -983,56 +1083,60 @@ set_design_from_density(grid, phys_binary)
 
 
 # --- 5) Plots ---
-steps = np.arange(1, STEPS + 1)
+steps = np.arange(1, len(objective_history) + 1)
 
-plt.figure(figsize=(9, 5))
-plt.plot(steps, 100.0 * np.array(objective_history), "k-", linewidth=1.5, label="Total objective")
-plt.plot(
-    steps,
-    100.0 * np.array(objective_ema_history),
-    color="tab:orange",
-    linewidth=2.2,
-    label=f"Objective EMA (alpha={EMA_ALPHA:.2f})",
-)
-plt.plot(steps, 100.0 * np.array(route_mean_history), "g--", linewidth=1.4, label="Mean target T")
-plt.plot(steps, 100.0 * np.array(route_fom_history), "b--", linewidth=1.4, label="Mean route FoM")
-plt.plot(steps, 100.0 * np.array(power_sum_history), color="tab:purple", linewidth=1.1, label="Mean guided power sum")
-plt.xlabel("Optimization step")
-plt.ylabel("FoM (%)")
-plt.title("1x2 WDM objective progress (simplified)")
-plt.grid(alpha=0.3)
-plt.legend()
-plt.tight_layout()
-plt.savefig("wdm_objective_vs_step.png", dpi=160)
-plt.close()
+save_history_summary_plot("wdm_progress_vs_step.png")
 
-plt.figure(figsize=(9, 5))
-plt.plot(steps, tx_hist[WL_SHORT]["target"], "b-", linewidth=2, label="1.31 um -> top (target)")
-plt.plot(steps, tx_hist[WL_SHORT]["leak"], "b--", linewidth=1.8, label="1.31 um leak")
-plt.plot(steps, tx_hist[WL_LONG]["target"], "r-", linewidth=2, label="1.55 um -> bottom (target)")
-plt.plot(steps, tx_hist[WL_LONG]["leak"], "r--", linewidth=1.8, label="1.55 um leak")
-plt.xlabel("Optimization step")
-plt.ylabel("Guided modal power (%)")
-plt.title("Port routing and leakage (DFT modal extraction)")
-plt.grid(alpha=0.3)
-plt.legend()
-plt.tight_layout()
-plt.savefig("wdm_routing_vs_step.png", dpi=160)
-plt.close()
+if len(steps) > 0:
+    plt.figure(figsize=(9, 5))
+    plt.plot(steps, 100.0 * np.array(objective_history), "k-", linewidth=1.5, label="Total objective")
+    plt.plot(
+        steps,
+        100.0 * np.array(objective_ema_history),
+        color="tab:orange",
+        linewidth=2.2,
+        label=f"Objective EMA (alpha={EMA_ALPHA:.2f})",
+    )
+    plt.plot(steps, 100.0 * np.array(route_mean_history), "g--", linewidth=1.4, label="Mean target T")
+    plt.plot(steps, 100.0 * np.array(route_fom_history), "b--", linewidth=1.4, label="Mean route FoM")
+    plt.plot(steps, 100.0 * np.array(power_sum_history), color="tab:purple", linewidth=1.1, label="Mean guided power sum")
+    plt.xlabel("Optimization step")
+    plt.ylabel("FoM (%)")
+    plt.title("1x2 WDM objective progress (simplified)")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("wdm_objective_vs_step.png", dpi=160)
+    plt.close()
 
-plt.figure(figsize=(9, 4.8))
-plt.plot(steps, fom_hist[WL_SHORT], "b-", linewidth=2, label="FoM 1.31 um")
-plt.plot(steps, fom_hist[WL_LONG], "r-", linewidth=2, label="FoM 1.55 um")
-plt.xlabel("Optimization step")
-plt.ylabel("Per-wavelength FoM (%)")
-plt.title("Per-channel FoM = Ttarget - Tleak")
-plt.grid(alpha=0.3)
-plt.legend()
-plt.tight_layout()
-plt.savefig("wdm_per_channel_fom_vs_step.png", dpi=160)
-plt.close()
+    plt.figure(figsize=(9, 5))
+    plt.plot(steps, tx_hist[WL_SHORT]["target"], "b-", linewidth=2, label="1.31 um -> top (target)")
+    plt.plot(steps, tx_hist[WL_SHORT]["leak"], "b--", linewidth=1.8, label="1.31 um leak")
+    plt.plot(steps, tx_hist[WL_LONG]["target"], "r-", linewidth=2, label="1.55 um -> bottom (target)")
+    plt.plot(steps, tx_hist[WL_LONG]["leak"], "r--", linewidth=1.8, label="1.55 um leak")
+    plt.xlabel("Optimization step")
+    plt.ylabel("Guided modal power (%)")
+    plt.title("Port routing and leakage (DFT modal extraction)")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("wdm_routing_vs_step.png", dpi=160)
+    plt.close()
+
+    plt.figure(figsize=(9, 4.8))
+    plt.plot(steps, fom_hist[WL_SHORT], "b-", linewidth=2, label="FoM 1.31 um")
+    plt.plot(steps, fom_hist[WL_LONG], "r-", linewidth=2, label="FoM 1.55 um")
+    plt.xlabel("Optimization step")
+    plt.ylabel("Per-wavelength FoM (%)")
+    plt.title("Per-channel FoM = Ttarget - Tleak")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("wdm_per_channel_fom_vs_step.png", dpi=160)
+    plt.close()
 
 saved_outputs = [
+    "wdm_progress_vs_step.png",
     "wdm_objective_vs_step.png",
     "wdm_routing_vs_step.png",
     "wdm_per_channel_fom_vs_step.png",
@@ -1047,6 +1151,8 @@ if SAVE_STEP_DEBUG:
             "wdm_topo_*.png",
             "wdm_density_*.png",
             "wdm_flux_*.png",
+            "wdm_progress_*.png",
+            "wdm_progress_latest.png",
         ]
     )
 print("Saved: " + ", ".join(saved_outputs))
