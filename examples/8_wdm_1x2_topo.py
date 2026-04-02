@@ -21,7 +21,9 @@ Per optimization step:
 
 Objective (modal transmission based, simplified):
 For each wavelength k,
-  J_k = T_target - T_leak
+  J_k = T_target - T_leak - w_loss*T_loss
+Total objective:
+  J = mean_k(J_k) + w_bin*mean((2*rho - 1)^2)
 Forward metrics come from DFT modal S extraction with an input reference monitor.
 Gradients use modal output-power overlaps with fixed-input normalization.
 """
@@ -42,6 +44,8 @@ class OptimizationSettings:
     learning_rate: float
     beta: float
     blur_radius: float
+    loss_weight: float
+    binarity_weight: float
 
 
 @dataclass(frozen=True)
@@ -104,12 +108,14 @@ EMA_ALPHA = 0.20
 
 CLIP_PCT = 99.5
 GRAD_ABS_HARD_CAP = 50.0
-NORMALIZE_GRAD_RMS = True
+NORMALIZE_GRAD_RMS = False
 
 OPT_SETTINGS = OptimizationSettings(
-    learning_rate=0.0025,
-    beta=8.0,
-    blur_radius=0.20 * UM,
+    learning_rate=0.0010,
+    beta=16.0,
+    blur_radius=0.15 * UM,
+    loss_weight=0.50,
+    binarity_weight=0.02,
 )
 
 # Runtime/output controls.
@@ -122,7 +128,7 @@ STEP_DEBUG_EVERY = 10
 INITIAL_ASYM_NOISE = 1e-3
 
 # Normalize each wavelength gradient before averaging to prevent single-wavelength domination.
-NORMALIZE_PER_WL_GRAD = False
+NORMALIZE_PER_WL_GRAD = True
 
 
 def cleanup_old_wdm_outputs():
@@ -546,7 +552,7 @@ def save_history_summary_plot(path):
         label="Mean route FoM",
     )
     axes[0].set_ylabel("FoM (%)")
-    axes[0].set_title("Objective and FoM history")
+    axes[0].set_title("Objective history (route + weak binarity)")
     axes[0].grid(alpha=0.3)
     axes[0].legend(loc="best")
 
@@ -861,6 +867,7 @@ for step in range(STEPS):
         )
 
         inv_in = 1.0 / max(result.norm_scale, 1e-30)
+        loss_weight = OPT_SETTINGS.loss_weight
         grad_top = np.array(
             compute_overlap_gradient(
                 result.field_history,
@@ -876,14 +883,16 @@ for step in range(STEPS):
             )
         )
 
+        # Approximate loss-gradient support via the guided output-power complement:
+        # T_loss ~= 1 - (T_top + T_bottom).
         if case.target_port == "top":
-            coeff_top = inv_in
-            coeff_bot = -inv_in
+            coeff_top = (1.0 + loss_weight) * inv_in
+            coeff_bot = (loss_weight - 1.0) * inv_in
         else:
-            coeff_top = -inv_in
-            coeff_bot = inv_in
+            coeff_top = (loss_weight - 1.0) * inv_in
+            coeff_bot = (1.0 + loss_weight) * inv_in
 
-        fom_k = result.target_tx - result.leak_tx
+        fom_k = result.target_tx - result.leak_tx - loss_weight * result.loss_est
         grad_fom_k = coeff_top * grad_top + coeff_bot * grad_bot
 
         per_wl_fom.append(fom_k)
@@ -894,6 +903,7 @@ for step in range(STEPS):
             f"{case.wavelength / UM:.3f}um->{case.target_port}: "
             f"T={100.0 * result.target_tx:5.1f}% "
             f"L={100.0 * result.leak_tx:5.1f}% "
+            f"Loss={100.0 * result.loss_est:5.1f}% "
             f"Psum={100.0 * result.power_sum:5.1f}% "
             f"FoM={100.0 * fom_k:5.1f}%"
         )
@@ -916,6 +926,14 @@ for step in range(STEPS):
     current_density = np.mean(phys_density[mask])
     rho_slice = phys_density[mask]
     binarity = float(np.mean((2.0 * rho_slice - 1.0) ** 2)) if rho_slice.size > 0 else 0.0
+    binarity_weight = OPT_SETTINGS.binarity_weight
+
+    if binarity_weight > 0.0 and rho_slice.size > 0:
+        eps_span = max(opt.eps_max - opt.eps_min, 1e-30)
+        n_pix = float(rho_slice.size)
+        grad_total[mask] += binarity_weight * (
+            4.0 * (2.0 * rho_slice - 1.0) / (eps_span * n_pix)
+        )
 
     grad_abs = np.abs(grad_total[mask])
     if grad_abs.size > 0:
@@ -929,7 +947,7 @@ for step in range(STEPS):
             if np.isfinite(g_rms) and g_rms > 0:
                 grad_total[mask] = g / g_rms
 
-    total_objective = objective_route
+    total_objective = objective_route + binarity_weight * binarity
 
     max_update = opt.apply_gradient(grad_total, beta)
 
@@ -951,6 +969,7 @@ for step in range(STEPS):
             f"[{step_id:03d}/{STEPS}] Obj={total_objective:.4f} "
             f"(meanFoM={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
             f"meanPsum={100.0 * power_sum_mean:.1f}% "
+            f"wLoss={OPT_SETTINGS.loss_weight:.2f} wBin={binarity_weight:.3f} "
             f"lr={phase_lr:.4f} bin={binarity:.2f} "
             f"mat={current_density:.2f} beta={beta:.2f} blur={blur_radius / UM:.3f}um "
             f"fc={opt.filter_radius_cells} dmax={max_update:.3e}) | "
@@ -1102,7 +1121,7 @@ if len(steps) > 0:
     plt.plot(steps, 100.0 * np.array(power_sum_history), color="tab:purple", linewidth=1.1, label="Mean guided power sum")
     plt.xlabel("Optimization step")
     plt.ylabel("FoM (%)")
-    plt.title("1x2 WDM objective progress (simplified)")
+    plt.title("1x2 WDM objective progress (loss-aware)")
     plt.grid(alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -1128,7 +1147,9 @@ if len(steps) > 0:
     plt.plot(steps, fom_hist[WL_LONG], "r-", linewidth=2, label="FoM 1.55 um")
     plt.xlabel("Optimization step")
     plt.ylabel("Per-wavelength FoM (%)")
-    plt.title("Per-channel FoM = Ttarget - Tleak")
+    plt.title(
+        f"Per-channel FoM = Ttarget - Tleak - {OPT_SETTINGS.loss_weight:.2f} * Tloss"
+    )
     plt.grid(alpha=0.3)
     plt.legend()
     plt.tight_layout()
