@@ -1,0 +1,484 @@
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from beamz import *
+from beamz.optimization.topology import (
+    TopologyManager,
+    compute_overlap_gradient,
+    create_optimization_mask,
+)
+
+
+UM = 1e-6
+PREFIX = "wdm_simple"
+
+WG_W = 0.55 * UM
+OUT_GAP = 0.95 * UM
+INV_W = 3.50 * UM
+INV_H = INV_W
+INPUT_WG_LEN = 3.10 * UM
+OUTPUT_WG_LEN = 3.10 * UM
+W = INPUT_WG_LEN + INV_W + OUTPUT_WG_LEN
+H = 7.0 * UM
+PML_T = 1.2 * UM
+
+WL_SHORT = 1.30 * UM
+WL_LONG = 1.55 * UM
+CASES = ((WL_SHORT, "top"), (WL_LONG, "bottom"))
+
+N_CORE = 3.48
+N_CLAD = 1.0
+EPS_CORE = N_CORE**2
+EPS_CLAD = N_CLAD**2
+
+DX, DT = calc_optimal_fdtd_params(wavelength=WL_SHORT, n_max=N_CORE, points_per_wavelength=8)
+
+STEPS = 150
+PRINT_EVERY = 5
+DEBUG_EVERY = 10
+SAVE_DEBUG = True
+FIELD_SUBSAMPLE = 1
+EMA_ALPHA = 0.20
+
+LEARNING_RATE = 0.0010
+BETA = 16.0
+BLUR_RADIUS = 0.15 * UM
+LOSS_WEIGHT = 0.50
+BINARITY_WEIGHT = 0.02
+GRAD_CLIP_PCT = 99.5
+GRAD_HARD_CAP = 50.0
+NORMALIZE_PER_WL_GRAD = True
+INITIAL_ASYM_NOISE = 1e-3
+
+Y_IN = 0.5 * H
+Y_TOP = Y_IN + 0.5 * (WG_W + OUT_GAP)
+Y_BOT = Y_IN - 0.5 * (WG_W + OUT_GAP)
+X_INV0 = INPUT_WG_LEN
+X_INV1 = X_INV0 + INV_W
+Y_INV0 = 0.5 * (H - INV_H)
+X_SRC = PML_T + 0.70 * UM
+X_MON_REF = X_INV0 - 0.70 * UM
+X_MON_IN = X_INV0 - 0.35 * UM
+X_MON_OUT = W - PML_T - 0.35 * UM
+MON_SPAN = 2.6 * WG_W
+
+
+def cleanup_outputs():
+    patterns = [
+        f"{PREFIX}_topo_*.png",
+        f"{PREFIX}_density_*.png",
+        f"{PREFIX}_flux_short_*.png",
+        f"{PREFIX}_flux_long_*.png",
+        f"{PREFIX}_progress_*.png",
+        f"{PREFIX}_progress_final.png",
+        f"{PREFIX}_progress_latest.png",
+        f"{PREFIX}_final_projected_flux_overlay.png",
+        f"{PREFIX}_final_binary_flux_overlay.png",
+    ]
+    for pattern in patterns:
+        for path in Path(".").glob(pattern):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def build_waveform(wavelength):
+    flight = (X_MON_OUT - X_SRC) * N_CORE / LIGHT_SPEED
+    ramp = 12.0 * wavelength / LIGHT_SPEED
+    total = 3.6 * flight + 4.5 * ramp
+    gate = 1.2 * flight + 0.9 * ramp
+    time = np.arange(0.0, total, DT)
+    signal = ramped_cosine(
+        time,
+        1.0,
+        LIGHT_SPEED / wavelength,
+        ramp_duration=ramp,
+        t_max=0.78 * total,
+    )
+    return {
+        "time": time,
+        "signal": signal,
+        "gate_start": gate,
+        "gate_index": int(np.searchsorted(time, gate, side="left")),
+        "total": total,
+        "flight": flight,
+    }
+
+
+def modal_specs():
+    return [
+        PortSpec(
+            name="in",
+            monitor_name="in_norm",
+            reference_monitor="in_ref",
+            direction="+x",
+            polarization="tm",
+            incident_wave="plus",
+            scattered_wave="minus",
+        ),
+        PortSpec(
+            name="top",
+            monitor_name="out_top",
+            direction="+x",
+            polarization="tm",
+            incident_wave="minus",
+            scattered_wave="plus",
+        ),
+        PortSpec(
+            name="bottom",
+            monitor_name="out_bottom",
+            direction="+x",
+            polarization="tm",
+            incident_wave="minus",
+            scattered_wave="plus",
+        ),
+    ]
+
+
+def build_monitors(grid, frequency, gate_start, record_fields=False):
+    def mon(name, x, y):
+        return Monitor(
+            design=grid,
+            start=(x, y - 0.5 * MON_SPAN),
+            end=(x, y + 0.5 * MON_SPAN),
+            name=name,
+            accumulate_power=True,
+            record_fields=record_fields,
+            dft_enabled=True,
+            dft_frequencies=np.array([frequency], dtype=float),
+            dft_components=("Ez", "Hx", "Hy"),
+            dft_window="rect",
+            dft_t_start=float(gate_start),
+        )
+
+    return [
+        mon("in_ref", X_MON_REF, Y_IN),
+        mon("in_norm", X_MON_IN, Y_IN),
+        mon("out_top", X_MON_OUT, Y_TOP),
+        mon("out_bottom", X_MON_OUT, Y_BOT),
+    ]
+
+
+def modal_metrics(sim, wavelength):
+    result = sim.get_S_matrix_modal_dft(
+        source_port="in",
+        ports=modal_specs(),
+        output_ports=["top", "bottom"],
+        frequencies=np.array([LIGHT_SPEED / wavelength], dtype=float),
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-80.0,
+    )
+    if not bool(np.asarray(result["diagnostics"]["valid_mask"], dtype=bool)[0]):
+        raise RuntimeError("Invalid incident amplitude at source port.")
+    smat = result["s_matrix"]
+    tx_top = float(np.abs(np.asarray(smat[("top", "in")], dtype=np.complex128)[0]) ** 2)
+    tx_bot = float(np.abs(np.asarray(smat[("bottom", "in")], dtype=np.complex128)[0]) ** 2)
+    p_in = max(float(np.asarray(result["diagnostics"]["P_in"], dtype=float)[0]), 1e-30)
+    return {
+        "p_in": p_in,
+        "p_top": max(tx_top * p_in, 0.0),
+        "p_bot": max(tx_bot * p_in, 0.0),
+        "power_sum": float(np.asarray(result["diagnostics"]["power_sum"], dtype=float)[0]),
+        "loss_est": float(np.asarray(result["diagnostics"]["loss_est"], dtype=float)[0]),
+        "tx_top": tx_top,
+        "tx_bot": tx_bot,
+    }
+
+
+def run_forward(grid, wavelength, wave, fields=("Ez",)):
+    source = ModeSource(
+        grid,
+        center=(X_SRC, Y_IN),
+        width=3.0 * WG_W,
+        wavelength=wavelength,
+        pol="tm",
+        signal=wave["signal"],
+        direction="+x",
+    )
+    sim = Simulation(
+        grid,
+        [source, *build_monitors(grid, LIGHT_SPEED / wavelength, wave["gate_start"])],
+        [PML(edges="all", thickness=PML_T)],
+        time=wave["time"],
+        resolution=DX,
+    )
+    results = sim.run(save_fields=list(fields), field_subsample=FIELD_SUBSAMPLE)
+    return modal_metrics(sim, wavelength), results.get("fields", {})
+
+
+def run_adjoint(grid, wavelength, target_port, wave):
+    source = ModeSource(
+        grid,
+        center=(X_MON_OUT, Y_TOP if target_port == "top" else Y_BOT),
+        width=3.0 * WG_W,
+        wavelength=wavelength,
+        pol="tm",
+        signal=wave["signal"],
+        direction="-x",
+    )
+    sim = Simulation(
+        grid,
+        [source],
+        [PML(edges="all", thickness=PML_T)],
+        time=wave["time"],
+        resolution=DX,
+    )
+    return [np.array(frame) for frame in sim.run(save_fields=["Ez"], field_subsample=FIELD_SUBSAMPLE)["fields"]["Ez"]]
+
+
+def flux_map(fields, time, gate_start):
+    ez_hist = [np.array(frame) for frame in fields["Ez"]]
+    hx_hist = [np.array(frame) for frame in fields["Hx"]]
+    hy_hist = [np.array(frame) for frame in fields["Hy"]]
+    n = min(len(ez_hist), len(hx_hist), len(hy_hist), len(time))
+    flux = np.zeros_like(ez_hist[0], dtype=float)
+    for i in range(n):
+        if time[i] < gate_start:
+            continue
+        ny = min(ez_hist[i].shape[0], hx_hist[i].shape[0], hy_hist[i].shape[0])
+        nx = min(ez_hist[i].shape[1], hx_hist[i].shape[1], hy_hist[i].shape[1])
+        ez = ez_hist[i][:ny, :nx]
+        hx = hx_hist[i][:ny, :nx]
+        hy = hy_hist[i][:ny, :nx]
+        flux[:ny, :nx] += np.sqrt((-ez * hy) ** 2 + (ez * hx) ** 2) * DT
+    return flux
+
+
+def save_flux(path, flux):
+    scale = max(float(np.percentile(flux, 99.0)), 1.0)
+    plt.imsave(path, np.clip(flux / scale, 0.0, 1.0).T, cmap="inferno", origin="lower")
+
+
+def save_progress(path, hist):
+    steps = np.arange(1, len(hist["objective"]) + 1)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
+    axes[0].plot(steps, 100.0 * np.array(hist["objective"]), "k-", lw=1.6, label="Objective")
+    axes[0].plot(steps, 100.0 * np.array(hist["ema"]), color="tab:orange", lw=2.0, label="EMA")
+    axes[0].plot(steps, 100.0 * np.array(hist["route"]), "b--", lw=1.4, label="Route FoM")
+    axes[0].legend(loc="best")
+    axes[0].grid(alpha=0.3)
+    axes[0].set_ylabel("FoM (%)")
+    axes[1].plot(steps, hist["tx"][WL_SHORT]["target"], "b-", lw=2.0, label="1.30 um target")
+    axes[1].plot(steps, hist["tx"][WL_SHORT]["leak"], "b--", lw=1.8, label="1.30 um leak")
+    axes[1].plot(steps, hist["tx"][WL_LONG]["target"], "r-", lw=2.0, label="1.55 um target")
+    axes[1].plot(steps, hist["tx"][WL_LONG]["leak"], "r--", lw=1.8, label="1.55 um leak")
+    axes[1].legend(loc="best")
+    axes[1].grid(alpha=0.3)
+    axes[1].set_ylabel("Power (%)")
+    axes[2].plot(steps, hist["fom"][WL_SHORT], "b-", lw=2.0, label="FoM 1.30 um")
+    axes[2].plot(steps, hist["fom"][WL_LONG], "r-", lw=2.0, label="FoM 1.55 um")
+    axes[2].plot(steps, 100.0 * np.array(hist["power_sum"]), color="tab:purple", lw=1.2, label="Guided power sum")
+    axes[2].legend(loc="best")
+    axes[2].grid(alpha=0.3)
+    axes[2].set_xlabel("Optimization step")
+    axes[2].set_ylabel("Percent (%)")
+    plt.tight_layout()
+    plt.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def save_overlay(path, short_flux, long_flux, design_mask):
+    r = np.clip(short_flux / max(float(np.percentile(short_flux, 99.0)), 1.0), 0.0, 1.0).T ** 0.72
+    b = np.clip(long_flux / max(float(np.percentile(long_flux, 99.0)), 1.0), 0.0, 1.0).T ** 0.72
+    mask = design_mask.T > 0.5
+    rgb = np.zeros(mask.shape + (3,), dtype=float)
+    rgb[..., 0] = r
+    rgb[..., 2] = b
+    eroded = np.zeros_like(mask, dtype=bool)
+    eroded[1:-1, 1:-1] = (
+        mask[1:-1, 1:-1] & mask[:-2, 1:-1] & mask[2:, 1:-1] & mask[1:-1, :-2] & mask[1:-1, 2:]
+    )
+    rgb[mask & (~eroded)] = 1.0
+    plt.imsave(path, rgb, origin="lower")
+
+
+def set_design(grid, base_eps, mask, density, opt):
+    grid.permittivity[:] = base_eps
+    grid.permittivity[mask] = opt.eps_min + density[mask] * (opt.eps_max - opt.eps_min)
+
+
+cleanup_outputs()
+
+design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
+for x, y in ((0.0, Y_IN), (X_INV1, Y_TOP), (X_INV1, Y_BOT)):
+    design += Rectangle(
+        position=(x, y - 0.5 * WG_W),
+        width=(X_INV0 if x == 0.0 else W - X_INV1),
+        height=WG_W,
+        material=Material(permittivity=EPS_CORE),
+    )
+opt_region = Rectangle(
+    position=(X_INV0, Y_INV0),
+    width=INV_W,
+    height=INV_H,
+    material=Material(permittivity=EPS_CORE),
+)
+design += opt_region
+grid = design.rasterize(DX)
+mask = create_optimization_mask(grid, opt_region)
+opt = TopologyManager(
+    design=design,
+    region_mask=mask,
+    resolution=DX,
+    optimizer="Adam",
+    learning_rate=LEARNING_RATE,
+    filter_radius=BLUR_RADIUS,
+    eps_min=EPS_CLAD,
+    eps_max=EPS_CORE,
+    beta_schedule=(BETA, BETA),
+    filter_type="conic",
+)
+if INITIAL_ASYM_NOISE > 0:
+    rng = np.random.default_rng(7)
+    noise = np.zeros_like(opt.design_density)
+    noise[mask] = INITIAL_ASYM_NOISE * (rng.random(np.count_nonzero(mask)) - 0.5)
+    opt.design_density = np.clip(opt.design_density + noise, 0.0, 1.0)
+base_eps = grid.permittivity.copy()
+waves = {wl: build_waveform(wl) for wl, _ in CASES}
+for wl, _ in CASES:
+    w = waves[wl]
+    print(
+        f"wl={wl / UM:.3f} um | total={w['total'] * 1e15:.1f} fs | "
+        f"flight={w['flight'] * 1e15:.1f} fs | gate={w['gate_start'] * 1e15:.1f} fs"
+    )
+
+hist = {
+    "objective": [],
+    "ema": [],
+    "route": [],
+    "power_sum": [],
+    "tx": {WL_SHORT: {"target": [], "leak": []}, WL_LONG: {"target": [], "leak": []}},
+    "fom": {WL_SHORT: [], WL_LONG: []},
+}
+ema = None
+
+for step in range(1, STEPS + 1):
+    opt.filter_radius = BLUR_RADIUS
+    opt.filter_radius_cells = max(1, int(round(BLUR_RADIUS / opt.resolution)))
+    density = opt.get_physical_density(BETA)
+    set_design(grid, base_eps, mask, density, opt)
+    route_terms, grad_terms, caches = [], [], []
+    target_mean = 0.0
+    power_sum_mean = 0.0
+
+    for wl, target_port in CASES:
+        modal, fields = run_forward(grid, wl, waves[wl], fields=("Ez",))
+        ez_hist = [np.array(frame) for frame in fields["Ez"]]
+        norm = max(modal["p_in"], 1e-30)
+        target_tx = (modal["p_top"] if target_port == "top" else modal["p_bot"]) / norm
+        leak_tx = (modal["p_bot"] if target_port == "top" else modal["p_top"]) / norm
+        target_mean += target_tx
+        power_sum_mean += modal["power_sum"]
+        hist["tx"][wl]["target"].append(100.0 * target_tx)
+        hist["tx"][wl]["leak"].append(100.0 * leak_tx)
+        caches.append(
+            {
+                "wl": wl,
+                "target": target_port,
+                "wave": waves[wl],
+                "ez_hist": ez_hist,
+                "norm": norm,
+                "target_tx": target_tx,
+                "leak_tx": leak_tx,
+                "loss_est": modal["loss_est"],
+                "power_sum": modal["power_sum"],
+            }
+        )
+
+    target_mean /= len(CASES)
+    power_sum_mean /= len(CASES)
+    hist["power_sum"].append(power_sum_mean)
+
+    report = []
+    for cache in caches:
+        wl = cache["wl"]
+        wave = cache["wave"]
+        grad_top = np.array(
+            compute_overlap_gradient(cache["ez_hist"], run_adjoint(grid, wl, "top", wave), forward_start=wave["gate_index"])
+        )
+        grad_bot = np.array(
+            compute_overlap_gradient(cache["ez_hist"], run_adjoint(grid, wl, "bottom", wave), forward_start=wave["gate_index"])
+        )
+        if cache["target"] == "top":
+            coeff_top, coeff_bot = (1.0 + LOSS_WEIGHT) / cache["norm"], (LOSS_WEIGHT - 1.0) / cache["norm"]
+        else:
+            coeff_top, coeff_bot = (LOSS_WEIGHT - 1.0) / cache["norm"], (1.0 + LOSS_WEIGHT) / cache["norm"]
+        fom = cache["target_tx"] - cache["leak_tx"] - LOSS_WEIGHT * cache["loss_est"]
+        grad = coeff_top * grad_top + coeff_bot * grad_bot
+        route_terms.append(fom)
+        grad_terms.append(grad / max(float(np.sqrt(np.mean(grad[mask] ** 2))), 1e-30) if NORMALIZE_PER_WL_GRAD else grad)
+        hist["fom"][wl].append(100.0 * fom)
+        report.append(
+            f"{wl / UM:.3f}um: T={100.0 * cache['target_tx']:5.1f}% "
+            f"L={100.0 * cache['leak_tx']:5.1f}% Loss={100.0 * cache['loss_est']:5.1f}% FoM={100.0 * fom:5.1f}%"
+        )
+
+    grad_total = sum(grad_terms) / len(grad_terms)
+    rho = density[mask]
+    binarity = float(np.mean((2.0 * rho - 1.0) ** 2)) if rho.size > 0 else 0.0
+    if rho.size > 0:
+        grad_total[mask] += BINARITY_WEIGHT * (4.0 * (2.0 * rho - 1.0) / (max(opt.eps_max - opt.eps_min, 1e-30) * float(rho.size)))
+    if np.any(mask):
+        clip = np.percentile(np.abs(grad_total[mask]), GRAD_CLIP_PCT)
+        if clip > 0:
+            grad_total[mask] = np.clip(grad_total[mask], -clip, clip)
+        grad_total[mask] = np.clip(grad_total[mask], -GRAD_HARD_CAP, GRAD_HARD_CAP)
+
+    route_obj = float(np.mean(route_terms))
+    objective = route_obj + BINARITY_WEIGHT * binarity
+    dmax = opt.apply_gradient(-grad_total, BETA)
+    hist["route"].append(route_obj)
+    hist["objective"].append(objective)
+    ema = objective if ema is None else EMA_ALPHA * objective + (1.0 - EMA_ALPHA) * ema
+    hist["ema"].append(ema)
+
+    if step == 1 or step % PRINT_EVERY == 0 or step == STEPS:
+        print(
+            f"[{step:03d}/{STEPS}] Obj={objective:.4f} meanT={100.0 * target_mean:.1f}% "
+            f"Psum={100.0 * power_sum_mean:.1f}% bin={binarity:.2f} dmax={dmax:.3e} | "
+            + " | ".join(report)
+        )
+
+    if SAVE_DEBUG and (step == 1 or step % DEBUG_EVERY == 0 or step == STEPS):
+        set_design(grid, base_eps, mask, density, opt)
+        plt.imsave(f"{PREFIX}_topo_{step:03d}.png", grid.permittivity.T, cmap="gray", origin="lower")
+        plt.imsave(
+            f"{PREFIX}_density_{step:03d}.png",
+            density.T,
+            cmap="gray",
+            vmin=0.0,
+            vmax=1.0,
+            origin="lower",
+        )
+        short_modal, short_fields = run_forward(grid, WL_SHORT, waves[WL_SHORT], fields=("Ez", "Hx", "Hy"))
+        long_modal, long_fields = run_forward(grid, WL_LONG, waves[WL_LONG], fields=("Ez", "Hx", "Hy"))
+        save_flux(f"{PREFIX}_flux_short_{step:03d}.png", flux_map(short_fields, waves[WL_SHORT]["time"], waves[WL_SHORT]["gate_start"]))
+        save_flux(f"{PREFIX}_flux_long_{step:03d}.png", flux_map(long_fields, waves[WL_LONG]["time"], waves[WL_LONG]["gate_start"]))
+        save_progress(f"{PREFIX}_progress_{step:03d}.png", hist)
+        save_progress(f"{PREFIX}_progress_latest.png", hist)
+
+save_progress(f"{PREFIX}_progress_final.png", hist)
+
+for label, density, path in (
+    ("projected", opt.get_physical_density(BETA), f"{PREFIX}_final_projected_flux_overlay.png"),
+    ("binary", (opt.get_physical_density(BETA) >= 0.5).astype(float), f"{PREFIX}_final_binary_flux_overlay.png"),
+):
+    set_design(grid, base_eps, mask, density, opt)
+    short_modal, short_fields = run_forward(grid, WL_SHORT, waves[WL_SHORT], fields=("Ez", "Hx", "Hy"))
+    long_modal, long_fields = run_forward(grid, WL_LONG, waves[WL_LONG], fields=("Ez", "Hx", "Hy"))
+    design_mask = (grid.permittivity > 0.5 * (EPS_CLAD + EPS_CORE)).astype(float)
+    save_overlay(
+        path,
+        flux_map(short_fields, waves[WL_SHORT]["time"], waves[WL_SHORT]["gate_start"]),
+        flux_map(long_fields, waves[WL_LONG]["time"], waves[WL_LONG]["gate_start"]),
+        design_mask,
+    )
+    print(
+        f"{label}: "
+        f"short target={100.0 * short_modal['tx_top']:.2f}% leak={100.0 * short_modal['tx_bot']:.2f}% | "
+        f"long target={100.0 * long_modal['tx_bot']:.2f}% leak={100.0 * long_modal['tx_top']:.2f}%"
+    )
