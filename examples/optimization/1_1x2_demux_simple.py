@@ -41,17 +41,22 @@ FIELD_SUBSAMPLE = 1
 EMA_ALPHA = 0.20
 
 LEARNING_RATE = 0.0010
+POLISH_LR = 0.0003
 BETA_START = 12.0
-BETA_END = 48.0
+BETA_END = 36.0
+POLISH_BETA = 64.0
 BLUR_START = 0.18 * UM
-BLUR_END = 0.12 * UM
+BLUR_END = 0.14 * UM
+POLISH_BLUR = 0.12 * UM
 LOSS_WEIGHT = 0.50
 BINARITY_START = 0.01
-BINARITY_END = 0.12
+BINARITY_END = 0.06
+POLISH_BINARITY = 0.18
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
 INITIAL_ASYM_NOISE = 1e-3
+POLISH_STEPS = 20
 
 Y_IN = 0.5 * H
 Y_TOP = Y_IN + 0.5 * (WG_W + OUT_GAP)
@@ -82,6 +87,7 @@ def cleanup_outputs():
                 path.unlink()
             except OSError:
                 pass
+
 def build_waveform(wavelength):
     flight = (X_MON_OUT - X_SRC) * N_CORE / LIGHT_SPEED
     ramp = 12.0 * wavelength / LIGHT_SPEED
@@ -106,13 +112,17 @@ def build_waveform(wavelength):
 def smoothstep01(x):
     x = np.clip(x, 0.0, 1.0)
     return x * x * (3.0 - 2.0 * x)
+
 def step_settings(step):
-    frac = 0.0 if STEPS <= 1 else (step - 1) / (STEPS - 1)
+    main_steps = max(STEPS - POLISH_STEPS, 1)
+    frac = 0.0 if main_steps <= 1 else min(step - 1, main_steps - 1) / (main_steps - 1)
     beta = BETA_START + (BETA_END - BETA_START) * smoothstep01(frac)
     blur = BLUR_START + (BLUR_END - BLUR_START) * smoothstep01(frac)
     w_bin = BINARITY_START + (BINARITY_END - BINARITY_START) * smoothstep01(frac)
-    bin_mix = smoothstep01((frac - 0.45) / 0.55)
-    return beta, blur, w_bin, bin_mix
+    if step > main_steps:
+        return POLISH_BETA, POLISH_BLUR, POLISH_BINARITY, True
+    return beta, blur, w_bin, False
+
 def modal_specs():
     return [
         PortSpec(
@@ -166,7 +176,6 @@ def build_monitors(grid, frequency, gate_start, record_fields=False):
         mon("out_bottom", X_MON_OUT, Y_BOT),
     ]
 
-
 def modal_metrics(sim, wavelength):
     result = sim.get_S_matrix_modal_dft(
         source_port="in",
@@ -193,7 +202,6 @@ def modal_metrics(sim, wavelength):
         "tx_bot": tx_bot,
     }
 
-
 def run_forward(grid, wavelength, wave, fields=("Ez",)):
     source = ModeSource(
         grid,
@@ -214,7 +222,6 @@ def run_forward(grid, wavelength, wave, fields=("Ez",)):
     results = sim.run(save_fields=list(fields), field_subsample=FIELD_SUBSAMPLE)
     return modal_metrics(sim, wavelength), results.get("fields", {})
 
-
 def run_adjoint(grid, wavelength, target_port, wave):
     source = ModeSource(
         grid,
@@ -234,7 +241,6 @@ def run_adjoint(grid, wavelength, target_port, wave):
     )
     return [np.array(frame) for frame in sim.run(save_fields=["Ez"], field_subsample=FIELD_SUBSAMPLE)["fields"]["Ez"]]
 
-
 def flux_map(fields, time, gate_start):
     ez_hist = [np.array(frame) for frame in fields["Ez"]]
     hx_hist = [np.array(frame) for frame in fields["Hx"]]
@@ -252,11 +258,9 @@ def flux_map(fields, time, gate_start):
         flux[:ny, :nx] += np.sqrt((-ez * hy) ** 2 + (ez * hx) ** 2) * DT
     return flux
 
-
 def save_flux(path, flux):
     scale = max(float(np.percentile(flux, 99.0)), 1.0)
     plt.imsave(path, np.clip(flux / scale, 0.0, 1.0).T, cmap="inferno", origin="lower")
-
 
 def save_progress(path, hist):
     steps = np.arange(1, len(hist["objective"]) + 1)
@@ -285,21 +289,19 @@ def save_progress(path, hist):
     plt.savefig(path, dpi=160)
     plt.close(fig)
 
-
 def save_overlay(path, short_flux, long_flux, design_mask):
     r = np.clip(short_flux / max(float(np.percentile(short_flux, 99.0)), 1.0), 0.0, 1.0).T ** 0.72
     b = np.clip(long_flux / max(float(np.percentile(long_flux, 99.0)), 1.0), 0.0, 1.0).T ** 0.72
     mask = design_mask.T > 0.5
-    rgb = np.zeros(mask.shape + (3,), dtype=float)
-    rgb[..., 0] = r
-    rgb[..., 2] = b
+    base = np.zeros(mask.shape + (3,), dtype=float)
+    base[mask] = 0.16
+    rgb = np.maximum(base, np.stack([r, np.zeros_like(r), b], axis=-1))
     eroded = np.zeros_like(mask, dtype=bool)
     eroded[1:-1, 1:-1] = (
         mask[1:-1, 1:-1] & mask[:-2, 1:-1] & mask[2:, 1:-1] & mask[1:-1, :-2] & mask[1:-1, 2:]
     )
     rgb[mask & (~eroded)] = 1.0
     plt.imsave(path, rgb, origin="lower")
-
 
 def set_design(grid, base_eps, mask, density, opt):
     grid.permittivity[:] = base_eps
@@ -360,14 +362,22 @@ hist = {
     "fom": {WL_SHORT: [], WL_LONG: []},
 }
 ema = None
+polish_initialized = False
 
 for step in range(1, STEPS + 1):
-    beta, blur_radius, binarity_weight, binary_mix = step_settings(step)
+    beta, blur_radius, binarity_weight, is_polish = step_settings(step)
+    if is_polish and not polish_initialized:
+        seed = (opt.get_physical_density(BETA_END) >= 0.5).astype(float)
+        opt.design_density[mask] = seed[mask]
+        import optax
+
+        opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
+        opt._opt_state = None
+        polish_initialized = True
     opt.filter_radius = blur_radius
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
     density = opt.get_physical_density(beta)
-    eval_density = (1.0 - binary_mix) * density + binary_mix * (density >= 0.5).astype(float)
-    set_design(grid, base_eps, mask, eval_density, opt)
+    set_design(grid, base_eps, mask, density, opt)
     route_terms, grad_terms, caches = [], [], []
     target_mean = 0.0
     power_sum_mean = 0.0
@@ -449,16 +459,16 @@ for step in range(1, STEPS + 1):
         print(
             f"[{step:03d}/{STEPS}] Obj={objective:.4f} meanT={100.0 * target_mean:.1f}% "
             f"Psum={100.0 * power_sum_mean:.1f}% bin={binarity:.2f} "
-            f"mix={binary_mix:.2f} beta={beta:.1f} dmax={dmax:.3e} | "
+            f"{'polish' if is_polish else 'main'} beta={beta:.1f} dmax={dmax:.3e} | "
             + " | ".join(report)
         )
 
     if SAVE_DEBUG and (step == 1 or step % DEBUG_EVERY == 0 or step == STEPS):
-        set_design(grid, base_eps, mask, eval_density, opt)
+        set_design(grid, base_eps, mask, density, opt)
         plt.imsave(f"{PREFIX}_topo_{step:03d}.png", grid.permittivity.T, cmap="gray", origin="lower")
         plt.imsave(
             f"{PREFIX}_density_{step:03d}.png",
-            eval_density.T,
+            density.T,
             cmap="gray",
             vmin=0.0,
             vmax=1.0,
