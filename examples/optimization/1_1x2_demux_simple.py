@@ -9,8 +9,6 @@ from beamz.optimization.topology import (
     compute_overlap_gradient,
     create_optimization_mask,
 )
-
-
 UM = 1e-6
 PREFIX = "wdm_simple"
 
@@ -43,10 +41,13 @@ FIELD_SUBSAMPLE = 1
 EMA_ALPHA = 0.20
 
 LEARNING_RATE = 0.0010
-BETA = 16.0
-BLUR_RADIUS = 0.15 * UM
+BETA_START = 12.0
+BETA_END = 48.0
+BLUR_START = 0.18 * UM
+BLUR_END = 0.12 * UM
 LOSS_WEIGHT = 0.50
-BINARITY_WEIGHT = 0.02
+BINARITY_START = 0.01
+BINARITY_END = 0.12
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
@@ -63,8 +64,6 @@ X_MON_REF = X_INV0 - 0.70 * UM
 X_MON_IN = X_INV0 - 0.35 * UM
 X_MON_OUT = W - PML_T - 0.35 * UM
 MON_SPAN = 2.6 * WG_W
-
-
 def cleanup_outputs():
     patterns = [
         f"{PREFIX}_topo_*.png",
@@ -83,8 +82,6 @@ def cleanup_outputs():
                 path.unlink()
             except OSError:
                 pass
-
-
 def build_waveform(wavelength):
     flight = (X_MON_OUT - X_SRC) * N_CORE / LIGHT_SPEED
     ramp = 12.0 * wavelength / LIGHT_SPEED
@@ -106,8 +103,16 @@ def build_waveform(wavelength):
         "total": total,
         "flight": flight,
     }
-
-
+def smoothstep01(x):
+    x = np.clip(x, 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
+def step_settings(step):
+    frac = 0.0 if STEPS <= 1 else (step - 1) / (STEPS - 1)
+    beta = BETA_START + (BETA_END - BETA_START) * smoothstep01(frac)
+    blur = BLUR_START + (BLUR_END - BLUR_START) * smoothstep01(frac)
+    w_bin = BINARITY_START + (BINARITY_END - BINARITY_START) * smoothstep01(frac)
+    bin_mix = smoothstep01((frac - 0.45) / 0.55)
+    return beta, blur, w_bin, bin_mix
 def modal_specs():
     return [
         PortSpec(
@@ -326,10 +331,10 @@ opt = TopologyManager(
     resolution=DX,
     optimizer="Adam",
     learning_rate=LEARNING_RATE,
-    filter_radius=BLUR_RADIUS,
+    filter_radius=BLUR_START,
     eps_min=EPS_CLAD,
     eps_max=EPS_CORE,
-    beta_schedule=(BETA, BETA),
+    beta_schedule=(BETA_START, BETA_END),
     filter_type="conic",
 )
 if INITIAL_ASYM_NOISE > 0:
@@ -357,10 +362,12 @@ hist = {
 ema = None
 
 for step in range(1, STEPS + 1):
-    opt.filter_radius = BLUR_RADIUS
-    opt.filter_radius_cells = max(1, int(round(BLUR_RADIUS / opt.resolution)))
-    density = opt.get_physical_density(BETA)
-    set_design(grid, base_eps, mask, density, opt)
+    beta, blur_radius, binarity_weight, binary_mix = step_settings(step)
+    opt.filter_radius = blur_radius
+    opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
+    density = opt.get_physical_density(beta)
+    eval_density = (1.0 - binary_mix) * density + binary_mix * (density >= 0.5).astype(float)
+    set_design(grid, base_eps, mask, eval_density, opt)
     route_terms, grad_terms, caches = [], [], []
     target_mean = 0.0
     power_sum_mean = 0.0
@@ -421,7 +428,9 @@ for step in range(1, STEPS + 1):
     rho = density[mask]
     binarity = float(np.mean((2.0 * rho - 1.0) ** 2)) if rho.size > 0 else 0.0
     if rho.size > 0:
-        grad_total[mask] += BINARITY_WEIGHT * (4.0 * (2.0 * rho - 1.0) / (max(opt.eps_max - opt.eps_min, 1e-30) * float(rho.size)))
+        grad_total[mask] += binarity_weight * (
+            4.0 * (2.0 * rho - 1.0) / (max(opt.eps_max - opt.eps_min, 1e-30) * float(rho.size))
+        )
     if np.any(mask):
         clip = np.percentile(np.abs(grad_total[mask]), GRAD_CLIP_PCT)
         if clip > 0:
@@ -429,8 +438,8 @@ for step in range(1, STEPS + 1):
         grad_total[mask] = np.clip(grad_total[mask], -GRAD_HARD_CAP, GRAD_HARD_CAP)
 
     route_obj = float(np.mean(route_terms))
-    objective = route_obj + BINARITY_WEIGHT * binarity
-    dmax = opt.apply_gradient(-grad_total, BETA)
+    objective = route_obj + binarity_weight * binarity
+    dmax = opt.apply_gradient(-grad_total, beta)
     hist["route"].append(route_obj)
     hist["objective"].append(objective)
     ema = objective if ema is None else EMA_ALPHA * objective + (1.0 - EMA_ALPHA) * ema
@@ -439,16 +448,17 @@ for step in range(1, STEPS + 1):
     if step == 1 or step % PRINT_EVERY == 0 or step == STEPS:
         print(
             f"[{step:03d}/{STEPS}] Obj={objective:.4f} meanT={100.0 * target_mean:.1f}% "
-            f"Psum={100.0 * power_sum_mean:.1f}% bin={binarity:.2f} dmax={dmax:.3e} | "
+            f"Psum={100.0 * power_sum_mean:.1f}% bin={binarity:.2f} "
+            f"mix={binary_mix:.2f} beta={beta:.1f} dmax={dmax:.3e} | "
             + " | ".join(report)
         )
 
     if SAVE_DEBUG and (step == 1 or step % DEBUG_EVERY == 0 or step == STEPS):
-        set_design(grid, base_eps, mask, density, opt)
+        set_design(grid, base_eps, mask, eval_density, opt)
         plt.imsave(f"{PREFIX}_topo_{step:03d}.png", grid.permittivity.T, cmap="gray", origin="lower")
         plt.imsave(
             f"{PREFIX}_density_{step:03d}.png",
-            density.T,
+            eval_density.T,
             cmap="gray",
             vmin=0.0,
             vmax=1.0,
@@ -464,8 +474,8 @@ for step in range(1, STEPS + 1):
 save_progress(f"{PREFIX}_progress_final.png", hist)
 
 for label, density, path in (
-    ("projected", opt.get_physical_density(BETA), f"{PREFIX}_final_projected_flux_overlay.png"),
-    ("binary", (opt.get_physical_density(BETA) >= 0.5).astype(float), f"{PREFIX}_final_binary_flux_overlay.png"),
+    ("projected", opt.get_physical_density(BETA_END), f"{PREFIX}_final_projected_flux_overlay.png"),
+    ("binary", (opt.get_physical_density(BETA_END) >= 0.5).astype(float), f"{PREFIX}_final_binary_flux_overlay.png"),
 ):
     set_design(grid, base_eps, mask, density, opt)
     short_modal, short_fields = run_forward(grid, WL_SHORT, waves[WL_SHORT], fields=("Ez", "Hx", "Hy"))
