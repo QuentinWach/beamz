@@ -41,26 +41,26 @@ FIELD_SUBSAMPLE = 1
 EMA_ALPHA = 0.20
 
 LEARNING_RATE = 0.0010
-POLISH_LR = 0.0002
+POLISH_LR = 0.0001
 BETA_START = 12.0
 BETA_END = 40.0
-POLISH_BETA = 96.0
+POLISH_BETA = 64.0
 BLUR_START = 0.18 * UM
 BLUR_END = 0.14 * UM
-POLISH_BLUR = 0.10 * UM
+POLISH_BLUR = 0.12 * UM
 LOSS_WEIGHT = 0.50
 POWER_BOUND_WEIGHT = 4.0
 POWER_SUM_TOL = 1.02
 BINARITY_START = 0.01
 BINARITY_END = 0.18
-POLISH_BINARITY = 0.65
+POLISH_BINARITY = 0.30
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
 INITIAL_ASYM_NOISE = 1e-3
-ENABLE_EARLY_STOP = False
+ENABLE_EARLY_STOP = True
 EARLY_STOP_PATIENCE = 20
-POLISH_STEPS = 30
+POLISH_STEPS = 60
 
 Y_IN = 0.5 * H
 Y_TOP = Y_IN + 0.5 * (WG_W + OUT_GAP)
@@ -404,6 +404,7 @@ best_projected_fallback_score = -np.inf
 best_projected_fallback_density = None
 best_binary_score = -np.inf
 best_binary_density = None
+best_binary_step = 0
 polish_started = False
 
 for step in range(1, STEPS + 1):
@@ -525,6 +526,7 @@ for step in range(1, STEPS + 1):
         if max(m["power_sum"] for m in binary_modal.values()) <= POWER_SUM_TOL and binary_score > best_binary_score:
             best_binary_score = binary_score
             best_binary_density = binary_density.copy()
+            best_binary_step = step
         set_design(grid, base_eps, mask, density, opt)
         plt.imsave(f"{PREFIX}_topo_{step:03d}.png", grid.permittivity.T, cmap="gray", origin="lower")
         plt.imsave(
@@ -541,9 +543,15 @@ for step in range(1, STEPS + 1):
         save_flux(f"{PREFIX}_flux_long_{step:03d}.png", flux_map(long_fields, waves[WL_LONG]["time"], waves[WL_LONG]["gate_start"]))
         save_progress(f"{PREFIX}_progress_{step:03d}.png", hist)
         save_progress(f"{PREFIX}_progress_latest.png", hist)
-    if ENABLE_EARLY_STOP and step > 0.7 * STEPS and step - best_projected_step >= EARLY_STOP_PATIENCE and route_obj < best_projected_score - 0.05:
-        print(f"Stopping early at step {step:03d}; best projected checkpoint was step {best_projected_step:03d}.")
-        break
+        if (
+            ENABLE_EARLY_STOP
+            and is_polish
+            and best_binary_step > 0
+            and step - best_binary_step >= EARLY_STOP_PATIENCE
+            and binary_score < best_binary_score - 0.03
+        ):
+            print(f"Stopping polish at step {step:03d}; best binary checkpoint was step {best_binary_step:03d}.")
+            break
 
 save_progress(f"{PREFIX}_progress_final.png", hist)
 
