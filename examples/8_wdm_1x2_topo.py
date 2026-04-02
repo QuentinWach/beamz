@@ -21,7 +21,7 @@ Per optimization step:
 
 Objective (modal transmission based, simplified):
 For each wavelength k,
-  J_k = T_target - w_leak*T_leak + w_throughput*(T_target + T_leak)
+  J_k = T_target - T_leak
 Forward metrics come from DFT modal S extraction with an input reference monitor.
 Gradients use modal output-power overlaps with fixed-input normalization.
 """
@@ -38,14 +38,10 @@ class WdmCase:
 
 
 @dataclass(frozen=True)
-class PhaseSettings:
+class OptimizationSettings:
     learning_rate: float
     beta: float
     blur_radius: float
-    leak_weight: float
-    throughput_weight: float
-    grad_scale: float
-    binary_push: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -110,23 +106,10 @@ CLIP_PCT = 99.5
 GRAD_ABS_HARD_CAP = 50.0
 NORMALIZE_GRAD_RMS = True
 
-OPT_SETTINGS_START = PhaseSettings(
-    learning_rate=0.004,
-    beta=2.0,
-    blur_radius=0.28 * UM,
-    leak_weight=1.10,
-    throughput_weight=0.30,
-    grad_scale=1.00,
-    binary_push=0.00,
-)
-OPT_SETTINGS_END = PhaseSettings(
-    learning_rate=0.0018,
-    beta=14.0,
-    blur_radius=0.16 * UM,
-    leak_weight=1.65,
-    throughput_weight=0.30,
-    grad_scale=0.35,
-    binary_push=0.10,
+OPT_SETTINGS = OptimizationSettings(
+    learning_rate=0.0025,
+    beta=8.0,
+    blur_radius=0.20 * UM,
 )
 
 # Runtime/output controls.
@@ -146,17 +129,13 @@ def cleanup_old_wdm_outputs():
     patterns = [
         "wdm_setup_sources_monitors.png",
         "wdm_topo_*.png",
-        "wdm_topo_delta_*.png",
         "wdm_density_*.png",
-        "wdm_density_delta_*.png",
-        "wdm_grad_total_*.png",
-        "wdm_grad_short_*.png",
-        "wdm_grad_long_*.png",
         "wdm_flux_short_*.png",
         "wdm_flux_long_*.png",
         "wdm_objective_vs_step.png",
         "wdm_routing_vs_step.png",
         "wdm_per_channel_fom_vs_step.png",
+        "wdm_final_projected_flux_overlay.png",
         "wdm_final_binary_flux_overlay.png",
         "[0-9]_wdm_*.png",
     ]
@@ -211,40 +190,6 @@ def build_time_and_signal(wavelength):
         t_max=0.78 * total_time,
     )
     return time, signal, total_time, flight_time, gate_start
-
-
-def _interp(step, total_steps, start, end, power=1.0):
-    if total_steps <= 1:
-        return float(end)
-    frac = np.clip(step / (total_steps - 1), 0.0, 1.0) ** power
-    return float(start + (end - start) * frac)
-
-
-def get_step_settings(step, total_steps):
-    return PhaseSettings(
-        learning_rate=_interp(
-            step, total_steps, OPT_SETTINGS_START.learning_rate, OPT_SETTINGS_END.learning_rate
-        ),
-        beta=_interp(step, total_steps, OPT_SETTINGS_START.beta, OPT_SETTINGS_END.beta, power=1.2),
-        blur_radius=_interp(
-            step, total_steps, OPT_SETTINGS_START.blur_radius, OPT_SETTINGS_END.blur_radius
-        ),
-        leak_weight=_interp(
-            step, total_steps, OPT_SETTINGS_START.leak_weight, OPT_SETTINGS_END.leak_weight, power=1.1
-        ),
-        throughput_weight=_interp(
-            step,
-            total_steps,
-            OPT_SETTINGS_START.throughput_weight,
-            OPT_SETTINGS_END.throughput_weight,
-        ),
-        grad_scale=_interp(
-            step, total_steps, OPT_SETTINGS_START.grad_scale, OPT_SETTINGS_END.grad_scale
-        ),
-        binary_push=_interp(
-            step, total_steps, OPT_SETTINGS_START.binary_push, OPT_SETTINGS_END.binary_push, power=2.0
-        ),
-    )
 
 
 def make_modal_port_specs():
@@ -684,11 +629,11 @@ opt = TopologyManager(
     region_mask=mask,
     resolution=DX,
     optimizer="Adam",
-    learning_rate=OPT_SETTINGS_START.learning_rate,
-    filter_radius=OPT_SETTINGS_START.blur_radius,
+    learning_rate=OPT_SETTINGS.learning_rate,
+    filter_radius=OPT_SETTINGS.blur_radius,
     eps_min=EPS_CLAD,
     eps_max=EPS_CORE,
-    beta_schedule=(OPT_SETTINGS_START.beta, OPT_SETTINGS_END.beta),
+    beta_schedule=(OPT_SETTINGS.beta, OPT_SETTINGS.beta),
     filter_type="conic",
 )
 
@@ -736,16 +681,10 @@ ema_objective = None
 print(f"Starting simplified 1x2 WDM topology optimization for {STEPS} steps...")
 for step in range(STEPS):
     step_id = step + 1
-    step_settings = get_step_settings(step, STEPS)
-    phase_lr = step_settings.learning_rate
-    beta = step_settings.beta
-    blur_radius = step_settings.blur_radius
-    leak_weight = step_settings.leak_weight
-    throughput_weight = step_settings.throughput_weight
-    grad_scale = step_settings.grad_scale
-    binary_push = step_settings.binary_push
+    phase_lr = OPT_SETTINGS.learning_rate
+    beta = OPT_SETTINGS.beta
+    blur_radius = OPT_SETTINGS.blur_radius
     opt.filter_radius = blur_radius
-    # Keep at least one filter cell to avoid zero-radius speckle phase.
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
     phys_density = opt.get_physical_density(beta)
 
@@ -780,10 +719,8 @@ for step in range(STEPS):
         norm_scale = max(float(in_energy), 1e-30)
         target_e = top_energy if case.target_port == "top" else bot_energy
         leak_e = bot_energy if case.target_port == "top" else top_energy
-        total_out = top_energy + bot_energy
         target_tx = target_e / norm_scale
         leak_tx = leak_e / norm_scale
-        total_out_tx = total_out / norm_scale
 
         route_mean += target_tx
         power_sum_mean += power_sum
@@ -807,8 +744,6 @@ for step in range(STEPS):
     power_sum_mean /= len(WAVELENGTH_CASES)
     route_mean_history.append(route_mean)
     power_sum_history.append(power_sum_mean)
-
-    grad_maps_by_wl = {}
 
     for result in forward_cache:
         case = result.case
@@ -845,29 +780,23 @@ for step in range(STEPS):
         )
 
         if case.target_port == "top":
-            coeff_top = (1.0 + throughput_weight) * inv_in
-            coeff_bot = (throughput_weight - leak_weight) * inv_in
+            coeff_top = inv_in
+            coeff_bot = -inv_in
         else:
-            coeff_top = (throughput_weight - leak_weight) * inv_in
-            coeff_bot = (1.0 + throughput_weight) * inv_in
+            coeff_top = -inv_in
+            coeff_bot = inv_in
 
-        fom_k = (
-            result.target_tx
-            - leak_weight * result.leak_tx
-            + throughput_weight * total_out_tx
-        )
+        fom_k = result.target_tx - result.leak_tx
         grad_fom_k = coeff_top * grad_top + coeff_bot * grad_bot
 
         per_wl_fom.append(fom_k)
         per_wl_grad.append(grad_fom_k)
         fom_hist[case.wavelength].append(100.0 * fom_k)
-        grad_maps_by_wl[case.wavelength] = grad_fom_k
 
         step_report.append(
             f"{case.wavelength / UM:.3f}um->{case.target_port}: "
             f"T={100.0 * result.target_tx:5.1f}% "
             f"L={100.0 * result.leak_tx:5.1f}% "
-            f"Tout={100.0 * total_out_tx:5.1f}% "
             f"Psum={100.0 * result.power_sum:5.1f}% "
             f"FoM={100.0 * fom_k:5.1f}%"
         )
@@ -891,15 +820,6 @@ for step in range(STEPS):
     rho_slice = phys_density[mask]
     binarity = float(np.mean((2.0 * rho_slice - 1.0) ** 2)) if rho_slice.size > 0 else 0.0
 
-    if binary_push > 0.0 and rho_slice.size > 0:
-        # J_bin = mean((2*rho-1)^2), maximize in late phases to push rho -> {0,1}.
-        # dJ_bin/deps = [4*(2*rho-1)] / [(eps_max-eps_min) * N]
-        eps_span = max(opt.eps_max - opt.eps_min, 1e-30)
-        n_pix = float(rho_slice.size)
-        grad_total[mask] += binary_push * (
-            4.0 * (2.0 * rho_slice - 1.0) / (eps_span * n_pix)
-        )
-
     grad_abs = np.abs(grad_total[mask])
     if grad_abs.size > 0:
         clip_val = np.percentile(grad_abs, CLIP_PCT)
@@ -912,12 +832,9 @@ for step in range(STEPS):
             if np.isfinite(g_rms) and g_rms > 0:
                 grad_total[mask] = g / g_rms
 
-    lr_ratio = phase_lr / max(OPT_SETTINGS_START.learning_rate, 1e-30)
-    grad_total[mask] *= grad_scale * lr_ratio
+    total_objective = objective_route
 
-    total_objective = objective_route + binary_push * binarity
-
-    max_update = opt.apply_gradient(-grad_total, beta)
+    max_update = opt.apply_gradient(grad_total, beta)
 
     objective_history.append(total_objective)
     opt.objective_history.append(total_objective)
@@ -937,9 +854,7 @@ for step in range(STEPS):
             f"[{step_id:03d}/{STEPS}] Obj={total_objective:.4f} "
             f"(meanFoM={100.0 * objective_route:.1f}% meanT={100.0 * route_mean:.1f}% "
             f"meanPsum={100.0 * power_sum_mean:.1f}% "
-            f"wL={leak_weight:.2f} wTout={throughput_weight:.2f} "
-            f"lr={phase_lr:.4f} s={grad_scale:.2f} "
-            f"wB={binary_push:.2f} bin={binarity:.2f} "
+            f"lr={phase_lr:.4f} bin={binarity:.2f} "
             f"mat={current_density:.2f} beta={beta:.2f} blur={blur_radius / UM:.3f}um "
             f"fc={opt.filter_radius_cells} dmax={max_update:.3e}) | "
             + " | ".join(step_report)
@@ -990,66 +905,81 @@ for step in range(STEPS):
         )
 
 
-# --- 4) Project to binary and run final wavelength-resolved flux maps ---
-final_settings = get_step_settings(STEPS - 1, STEPS)
-beta_final = final_settings.beta
-phys_final = opt.get_physical_density(beta_final)
-phys_binary = (phys_final >= 0.5).astype(float)
+# --- 4) Final projected and binary checks ---
+def set_design_from_density(grid_obj, density):
+    grid_obj.permittivity[:] = base_eps
+    grid_obj.permittivity[mask] = opt.eps_min + density[mask] * (opt.eps_max - opt.eps_min)
 
-grid.permittivity[:] = base_eps
-grid.permittivity[mask] = opt.eps_min + phys_binary[mask] * (opt.eps_max - opt.eps_min)
 
-binary_design = (grid.permittivity > 0.5 * (EPS_CLAD + EPS_CORE)).astype(float)
+def save_final_flux_overlay(path, flux_short, flux_long, design_mask):
+    red_flux = flux_short
+    blue_flux = flux_long
+    red_scale = np.percentile(red_flux, 99.0)
+    blue_scale = np.percentile(blue_flux, 99.0)
+    red_scale = red_scale if red_scale > 0 else 1.0
+    blue_scale = blue_scale if blue_scale > 0 else 1.0
+    red_norm = np.clip(red_flux / red_scale, 0.0, 1.0)
+    blue_norm = np.clip(blue_flux / blue_scale, 0.0, 1.0)
 
-final_flux_maps = {}
-print("\nFinal routing check on binary projected design:")
-for case in WAVELENGTH_CASES:
-    waveform = waveforms[case.wavelength]
-    tx_top, tx_bot, flux_map = run_forward_flux_map(
-        grid=grid,
-        wavelength=case.wavelength,
-        time=waveform.time,
-        signal=waveform.signal,
-        gate_start=waveform.gate_start,
+    plot_mask = design_mask.T > 0.5
+    red_layer = np.clip(red_norm.T, 0.0, 1.0) ** 0.72
+    blue_layer = np.clip(blue_norm.T, 0.0, 1.0) ** 0.72
+
+    ny_plot, nx_plot = plot_mask.shape
+    overlay_rgb = np.zeros((ny_plot, nx_plot, 3), dtype=float)
+    overlay_rgb[..., 0] = red_layer
+    overlay_rgb[..., 2] = blue_layer
+
+    eroded = np.zeros_like(plot_mask, dtype=bool)
+    eroded[1:-1, 1:-1] = (
+        plot_mask[1:-1, 1:-1]
+        & plot_mask[:-2, 1:-1]
+        & plot_mask[2:, 1:-1]
+        & plot_mask[1:-1, :-2]
+        & plot_mask[1:-1, 2:]
     )
-    final_flux_maps[case.wavelength] = flux_map
-    target_tx = tx_top if case.target_port == "top" else tx_bot
-    leak_tx = tx_bot if case.target_port == "top" else tx_top
-    print(
-        f"  wl={case.wavelength / UM:.3f} um target={case.target_port}: "
-        f"target={100.0 * target_tx:.2f}% leak={100.0 * leak_tx:.2f}%"
+    outline = plot_mask & (~eroded)
+    overlay_rgb[outline] = 1.0
+    plt.imsave(path, overlay_rgb, origin="lower")
+
+
+phys_projected = opt.get_physical_density(OPT_SETTINGS.beta)
+phys_binary = (phys_projected >= 0.5).astype(float)
+
+final_checks = [
+    ("projected", phys_projected, "wdm_final_projected_flux_overlay.png"),
+    ("binary", phys_binary, "wdm_final_binary_flux_overlay.png"),
+]
+
+for label, density, overlay_path in final_checks:
+    set_design_from_density(grid, density)
+    design_mask = (grid.permittivity > 0.5 * (EPS_CLAD + EPS_CORE)).astype(float)
+    final_flux_maps = {}
+    print(f"\nFinal routing check on {label} design:")
+    for case in WAVELENGTH_CASES:
+        waveform = waveforms[case.wavelength]
+        tx_top, tx_bot, flux_map = run_forward_flux_map(
+            grid=grid,
+            wavelength=case.wavelength,
+            time=waveform.time,
+            signal=waveform.signal,
+            gate_start=waveform.gate_start,
+        )
+        final_flux_maps[case.wavelength] = flux_map
+        target_tx = tx_top if case.target_port == "top" else tx_bot
+        leak_tx = tx_bot if case.target_port == "top" else tx_top
+        print(
+            f"  wl={case.wavelength / UM:.3f} um target={case.target_port}: "
+            f"target={100.0 * target_tx:.2f}% leak={100.0 * leak_tx:.2f}%"
+        )
+    save_final_flux_overlay(
+        overlay_path,
+        final_flux_maps[WL_SHORT],
+        final_flux_maps[WL_LONG],
+        design_mask,
     )
 
-red_flux = final_flux_maps[WL_SHORT]
-blue_flux = final_flux_maps[WL_LONG]
-red_scale = np.percentile(red_flux, 99.0)
-blue_scale = np.percentile(blue_flux, 99.0)
-red_scale = red_scale if red_scale > 0 else 1.0
-blue_scale = blue_scale if blue_scale > 0 else 1.0
-red_norm = np.clip(red_flux / red_scale, 0.0, 1.0)
-blue_norm = np.clip(blue_flux / blue_scale, 0.0, 1.0)
-
-plot_mask = binary_design.T > 0.5
-red_layer = np.clip(red_norm.T, 0.0, 1.0) ** 0.72
-blue_layer = np.clip(blue_norm.T, 0.0, 1.0) ** 0.72
-
-ny_plot, nx_plot = plot_mask.shape
-overlay_rgb = np.zeros((ny_plot, nx_plot, 3), dtype=float)
-overlay_rgb[..., 0] = red_layer
-overlay_rgb[..., 2] = blue_layer
-
-eroded = np.zeros_like(plot_mask, dtype=bool)
-eroded[1:-1, 1:-1] = (
-    plot_mask[1:-1, 1:-1]
-    & plot_mask[:-2, 1:-1]
-    & plot_mask[2:, 1:-1]
-    & plot_mask[1:-1, :-2]
-    & plot_mask[1:-1, 2:]
-)
-outline = plot_mask & (~eroded)
-overlay_rgb[outline] = 1.0
-
-plt.imsave("wdm_final_binary_flux_overlay.png", overlay_rgb, origin="lower")
+set_design_from_density(grid, phys_binary)
 
 
 # --- 5) Plots ---
@@ -1095,10 +1025,7 @@ plt.plot(steps, fom_hist[WL_SHORT], "b-", linewidth=2, label="FoM 1.31 um")
 plt.plot(steps, fom_hist[WL_LONG], "r-", linewidth=2, label="FoM 1.55 um")
 plt.xlabel("Optimization step")
 plt.ylabel("Per-wavelength FoM (%)")
-plt.title(
-    f"Per-channel FoM = Ttarget - {final_settings.leak_weight:.2f} * Tleak + "
-    f"{final_settings.throughput_weight:.2f} * Tout"
-)
+plt.title("Per-channel FoM = Ttarget - Tleak")
 plt.grid(alpha=0.3)
 plt.legend()
 plt.tight_layout()
@@ -1109,6 +1036,7 @@ saved_outputs = [
     "wdm_objective_vs_step.png",
     "wdm_routing_vs_step.png",
     "wdm_per_channel_fom_vs_step.png",
+    "wdm_final_projected_flux_overlay.png",
     "wdm_final_binary_flux_overlay.png",
 ]
 if SAVE_SETUP_PLOT:
