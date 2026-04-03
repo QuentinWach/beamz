@@ -4,7 +4,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
-
 ObjectKind = Literal["arrow", "box", "line", "plane", "poly_extrusion", "sphere"]
 ProjectionKind = Literal["perspective", "orthographic"]
 

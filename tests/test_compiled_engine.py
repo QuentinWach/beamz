@@ -435,8 +435,12 @@ def test_compiled_static_monitor_dft_uses_current_sample_phase():
         monitors_2d=program.monitor_specs,
     )
 
-    np.testing.assert_allclose(updated.dft_vec_re[0, 2, 0, 0], 2.0, rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(updated.dft_vec_im[0, 2, 0, 0], 0.0, rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(
+        updated.dft_vec_re[0, 2, 0, 0], 2.0, rtol=1e-7, atol=1e-7
+    )
+    np.testing.assert_allclose(
+        updated.dft_vec_im[0, 2, 0, 0], 0.0, rtol=1e-7, atol=1e-7
+    )
     np.testing.assert_allclose(updated.freq_phase_re[0, 0], 0.0, rtol=1e-7, atol=1e-7)
     np.testing.assert_allclose(updated.freq_phase_im[0, 0], -1.0, rtol=1e-7, atol=1e-7)
 

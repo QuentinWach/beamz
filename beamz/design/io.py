@@ -49,7 +49,15 @@ class _GDSFactoryNamespace:
             "-y": (x, y - distance),
         }[str(direction)]
 
-    def port_plane(self, port: dict, *, span: float, z_span: float, z_center: float, offset: float = 0.0):
+    def port_plane(
+        self,
+        port: dict,
+        *,
+        span: float,
+        z_span: float,
+        z_center: float,
+        offset: float = 0.0,
+    ):
         cx, cy = self.move_along(port["center"], port["direction"], offset)
         z0 = float(z_center) - 0.5 * float(z_span)
         z1 = float(z_center) + 0.5 * float(z_span)
@@ -106,9 +114,14 @@ class _GDSFactoryNamespace:
             ) from exc
 
         try:
-            return gf.get_component(cell, **component_kwargs), f"gf.get_component('{cell}')"
+            return (
+                gf.get_component(cell, **component_kwargs),
+                f"gf.get_component('{cell}')",
+            )
         except Exception as exc:
-            raise ValueError(f"Could not resolve gdsfactory/PDK component '{cell}'.") from exc
+            raise ValueError(
+                f"Could not resolve gdsfactory/PDK component '{cell}'."
+            ) from exc
 
     def extend_ports(
         self,
@@ -124,7 +137,12 @@ class _GDSFactoryNamespace:
         from beamz.design.materials import Material
         from beamz.design.structures import Rectangle
 
-        edge = {"+x": float(design.width), "-x": 0.0, "+y": float(design.height), "-y": 0.0}
+        edge = {
+            "+x": float(design.width),
+            "-x": 0.0,
+            "+y": float(design.height),
+            "-y": 0.0,
+        }
         for port in ports.values():
             cx, cy = map(float, port["center"])
             width = float(port["width"])
@@ -170,7 +188,9 @@ class _GDSFactoryNamespace:
         from beamz.design.core import Design
         from beamz.design.materials import Material
 
-        component, component_label = self.get_component(cell, component_kwargs=component_kwargs)
+        component, component_label = self.get_component(
+            cell, component_kwargs=component_kwargs
+        )
         imported_design, raw_ports = self.load(
             component,
             layer=layer,
@@ -178,7 +198,12 @@ class _GDSFactoryNamespace:
             n_clad=n_clad,
             padding=0.0,
         )
-        depth = 2.0 * float(z_padding) + float(clad_below) + float(core_thickness) + float(clad_above)
+        depth = (
+            2.0 * float(z_padding)
+            + float(clad_below)
+            + float(core_thickness)
+            + float(clad_above)
+        )
         core_z0 = float(z_padding) + float(clad_below)
         core_z1 = core_z0 + float(core_thickness)
         design = Design(
@@ -188,7 +213,9 @@ class _GDSFactoryNamespace:
             material=Material(float(n_clad) ** 2),
         )
         for structure in imported_design.structures[1:]:
-            shifted = structure.copy().shift(float(xy_padding), float(xy_padding), core_z0)
+            shifted = structure.copy().shift(
+                float(xy_padding), float(xy_padding), core_z0
+            )
             shifted.z = core_z0
             shifted.depth = float(core_thickness)
             design += shifted

@@ -36,8 +36,7 @@ def by_name(name: str) -> Material:
     }
     if key not in table:
         raise ValueError(
-            f"Unknown material preset {name!r}. "
-            f"Available: {sorted(table.keys())}"
+            f"Unknown material preset {name!r}. " f"Available: {sorted(table.keys())}"
         )
 
     src = table[key]

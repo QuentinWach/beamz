@@ -551,9 +551,7 @@ def test_project_modal_coefficients_3d_uses_overlap_space_when_ill_conditioned(
         name: (-arr if name.startswith("H") else arr)
         for name, arr in mode_components.items()
     }
-    overlap = np.array(
-        [[1.0, 1.0 - 1e-12], [1.0 - 1e-12, 1.0]], dtype=np.complex128
-    )
+    overlap = np.array([[1.0, 1.0 - 1e-12], [1.0 - 1e-12, 1.0]], dtype=np.complex128)
 
     def fake_overlap(field, mode, axis, d_area):
         del field, axis, d_area

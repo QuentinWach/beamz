@@ -14,6 +14,7 @@ from beamz.visual.design_viz import (
     show_design,
     show_design_2d,
 )
+from beamz.visual.example_plots import plot_simulation_overview, plot_sparameters_db
 from beamz.visual.helpers import (
     calc_optimal_fdtd_params,
     check_fdtd_stability,
@@ -21,7 +22,6 @@ from beamz.visual.helpers import (
     display_status,
     get_si_scale_and_label,
 )
-from beamz.visual.example_plots import plot_simulation_overview, plot_sparameters_db
 from beamz.visual.scene import beamz_to_scene, view3d
 from beamz.visual.source_plots import plot_signal, show_mode_profile
 from beamz.visual.video import VideoRecorder

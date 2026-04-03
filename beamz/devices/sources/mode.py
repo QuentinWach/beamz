@@ -1031,8 +1031,7 @@ def _backward_3d_mode_from_forward(profiles):
 def _make_3d_mode_basis_profiles(profiles, axis, d_area=1.0):
     """Build unit-flux forward/backward 3D basis fields from one solved mode."""
     forward = {
-        key: np.asarray(value, dtype=np.complex128)
-        for key, value in profiles.items()
+        key: np.asarray(value, dtype=np.complex128) for key, value in profiles.items()
     }
     forward = _normalize_3d_profiles_by_flux(forward, axis=axis, d_area=d_area)
     backward = _backward_3d_mode_from_forward(forward)
@@ -1075,12 +1074,16 @@ def _modal_overlap_3d_profiles(field_profiles, mode_profiles, axis, d_area):
     hm1 = arrays[h1][1][:n_common]
     hm2 = arrays[h2][1][:n_common]
 
-    overlap = 0.25 * np.sum(
-        ef1 * np.conjugate(hm1)
-        - ef2 * np.conjugate(hm2)
-        + np.conjugate(em1) * hf1
-        - np.conjugate(em2) * hf2
-    ) * float(d_area)
+    overlap = (
+        0.25
+        * np.sum(
+            ef1 * np.conjugate(hm1)
+            - ef2 * np.conjugate(hm2)
+            + np.conjugate(em1) * hf1
+            - np.conjugate(em2) * hf2
+        )
+        * float(d_area)
+    )
     return np.complex128(overlap)
 
 

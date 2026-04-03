@@ -11,6 +11,7 @@ from beamz.visual.scene import (
     MaterialSpec,
     Object3D,
     SceneSpec,
+    _frontend,
     demo_scene,
     inline_iframe_html,
     inline_iframe_src,
@@ -18,7 +19,6 @@ from beamz.visual.scene import (
     simulation_to_scene,
     view3d,
 )
-from beamz.visual.scene import _frontend
 from beamz.visual.scene._browser import open_in_browser
 
 

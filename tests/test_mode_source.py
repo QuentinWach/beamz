@@ -14,12 +14,12 @@ import pytest
 
 from beamz import (
     LIGHT_SPEED,
-    Monitor,
     PML,
-    PortSpec,
     Design,
     Material,
     ModeSource,
+    Monitor,
+    PortSpec,
     Rectangle,
     Simulation,
     calc_optimal_fdtd_params,
@@ -449,6 +449,7 @@ class TestModeSourceProfile:
         else:
             # 2D profile - check it has some structure
             assert np.max(np.abs(profile)) > 0, "Profile should have non-zero values"
+
 
 @pytest.mark.simulation
 class TestModeSourcePropagation:
@@ -1417,7 +1418,11 @@ class TestModeSourceDirectionality3D:
                     material=Material(permittivity=n_core**2),
                 )
                 source_center = (
-                    1.2 * wavelength if direction == "+x" else long_span - 1.2 * wavelength,
+                    (
+                        1.2 * wavelength
+                        if direction == "+x"
+                        else long_span - 1.2 * wavelength
+                    ),
                     transverse_span / 2,
                     transverse_span / 2,
                 )
@@ -1451,7 +1456,11 @@ class TestModeSourceDirectionality3D:
                 )
                 source_center = (
                     transverse_span / 2,
-                    1.2 * wavelength if direction == "+y" else long_span - 1.2 * wavelength,
+                    (
+                        1.2 * wavelength
+                        if direction == "+y"
+                        else long_span - 1.2 * wavelength
+                    ),
                     transverse_span / 2,
                 )
                 start = (
@@ -1529,8 +1538,16 @@ class TestModeSourceDirectionality3D:
                         monitor_name="m",
                         direction="+" + axis,
                         polarization="te",
-                        incident_wave="plus" if physical_port_direction.startswith("+") else "minus",
-                        scattered_wave="minus" if physical_port_direction.startswith("+") else "plus",
+                        incident_wave=(
+                            "plus"
+                            if physical_port_direction.startswith("+")
+                            else "minus"
+                        ),
+                        scattered_wave=(
+                            "minus"
+                            if physical_port_direction.startswith("+")
+                            else "plus"
+                        ),
                     )
                 ],
                 frequencies=np.array([freq]),

@@ -1653,7 +1653,11 @@ class Simulation:
             )
             overlap = np.asarray(overlap_matrix, dtype=np.complex128)
             cond = float(np.linalg.cond(overlap))
-            if not np.all(np.isfinite(overlap)) or not np.all(np.isfinite(rhs)) or not np.isfinite(cond):
+            if (
+                not np.all(np.isfinite(overlap))
+                or not np.all(np.isfinite(rhs))
+                or not np.isfinite(cond)
+            ):
                 raise ValueError("Invalid 3D modal overlap system.")
             if cond < 1e8:
                 coeff = np.linalg.solve(overlap, rhs)
@@ -2094,13 +2098,16 @@ class Simulation:
         p_guided_out = np.zeros_like(p_in, dtype=float)
         for out_port in output_ports:
             out_spec = port_map[out_port]
-            p_guided_out += np.abs(
-                self._select_wave_component(
-                    waves[out_port],
-                    selector=out_spec.scattered_wave,
-                    use_reference=False,
+            p_guided_out += (
+                np.abs(
+                    self._select_wave_component(
+                        waves[out_port],
+                        selector=out_spec.scattered_wave,
+                        use_reference=False,
+                    )
                 )
-            ) ** 2
+                ** 2
+            )
         power_sum = p_guided_out / np.maximum(p_in, 1e-18)
         loss_est = 1.0 - power_sum
         power_sum = np.where(valid_mask, power_sum, np.nan)
@@ -2238,7 +2245,9 @@ class Simulation:
                 if return_power:
                     port_waves["P_incident"] = float(np.abs(a_incident_plus) ** 2)
                     port_waves["P_incident_plus"] = float(np.abs(a_incident_plus) ** 2)
-                    port_waves["P_incident_minus"] = float(np.abs(a_incident_minus) ** 2)
+                    port_waves["P_incident_minus"] = float(
+                        np.abs(a_incident_minus) ** 2
+                    )
 
             waves[spec.name] = port_waves
         return waves
@@ -2318,13 +2327,16 @@ class Simulation:
         p_guided_out = np.zeros_like(p_in, dtype=float)
         for out_port in output_ports:
             out_spec = port_map[out_port]
-            p_guided_out += np.abs(
-                self._select_wave_component(
-                    waves[out_port],
-                    selector=out_spec.scattered_wave,
-                    use_reference=False,
+            p_guided_out += (
+                np.abs(
+                    self._select_wave_component(
+                        waves[out_port],
+                        selector=out_spec.scattered_wave,
+                        use_reference=False,
+                    )
                 )
-            ) ** 2
+                ** 2
+            )
         power_sum = p_guided_out / np.maximum(p_in, 1e-18)
         diagnostics = {
             "frequencies": np.asarray(frequencies, dtype=float),
@@ -2405,7 +2417,9 @@ class Simulation:
         if not return_diagnostics:
             return s_output
 
-        p_in = float(np.abs(np.atleast_1d(np.asarray(a_incident, dtype=np.complex128))[0]) ** 2)
+        p_in = float(
+            np.abs(np.atleast_1d(np.asarray(a_incident, dtype=np.complex128))[0]) ** 2
+        )
         p_guided_out = float(
             np.sum(
                 [

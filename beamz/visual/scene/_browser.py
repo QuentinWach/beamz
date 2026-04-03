@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import base64
 import html
-import webbrowser
 import tempfile
+import webbrowser
 from pathlib import Path
 from typing import Any
 

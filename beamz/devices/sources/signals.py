@@ -86,8 +86,12 @@ def gaussian_band_pulse(
         float(min_tail_uoc),
         float(min_tail_distance_factor) * float(max_output_distance_um),
     )
-    tail_time = max(min_tail_uoc_eff * 1e-6 / LIGHT_SPEED, float(min_tail_cycles) / fmin)
-    tail_cap_time = max(float(max_tail_uoc) * 1e-6 / LIGHT_SPEED, float(max_tail_cycles) / fmin)
+    tail_time = max(
+        min_tail_uoc_eff * 1e-6 / LIGHT_SPEED, float(min_tail_cycles) / fmin
+    )
+    tail_cap_time = max(
+        float(max_tail_uoc) * 1e-6 / LIGHT_SPEED, float(max_tail_cycles) / fmin
+    )
     time = np.arange(0.0, source_end_time + tail_cap_time, float(dt))
     signal = np.asarray(
         gaussian_pulse(time, 1.0, peak_time, sigma, float(carrier_frequency), 0.0),
