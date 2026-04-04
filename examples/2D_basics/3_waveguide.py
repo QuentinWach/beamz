@@ -35,7 +35,7 @@ source = ModeSource(
     wavelength=WL,
     pol="tm",
     signal=signal,
-    direction="-x",
+    direction="+x",
 )
 
 # Run the simulation
@@ -48,7 +48,7 @@ sim = Simulation(
 )
 sim.run(animate_live="Ez",
     animation_interval=20,
-    axis_scale=[-5e-5, 5e-5],
-    #axis_scale=None,
+    #axis_scale=[-5e-5, 5e-5],
+    axis_scale=None,
     cmap="twilight_zero",
     clean_visualization=True)
