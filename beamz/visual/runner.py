@@ -47,7 +47,7 @@ def run_with_visualization(sim, **kwargs):
     """
     cfg = VizConfig(**kwargs)
 
-    active_monitor, use_jupyter, jupyter_animator, video_recorder, viz_context = (
+    active_monitor, use_jupyter, jupyter_animator, video_animator, viz_context = (
         _setup_visualization(sim, cfg)
     )
 
@@ -60,16 +60,23 @@ def run_with_visualization(sim, **kwargs):
             if sim.current_step % cfg.animation_interval != 0:
                 continue
 
-            if video_recorder:
-                _record_video_frame(sim, video_recorder, cfg)
+            if video_animator:
+                _record_video_frame(sim, video_animator, cfg)
 
             if cfg.animate_live:
                 viz_context = _update_live_display(
                     sim, cfg, active_monitor, use_jupyter, jupyter_animator, viz_context
                 )
     finally:
-        if video_recorder:
-            video_recorder.save()
+        if video_animator:
+            from beamz.visual.animation import save_animation_mp4
+
+            save_animation_mp4(
+                video_animator,
+                filename=cfg.save_video,
+                fps=cfg.video_fps,
+                dpi=cfg.video_dpi,
+            )
         if jupyter_animator:
             jupyter_animator.finalize()
         if not use_jupyter and viz_context and viz_context.get("fig"):
@@ -124,10 +131,8 @@ def _setup_visualization(sim, cfg):
             store_frames=cfg.store_animation,
         )
 
-    video_recorder = None
+    video_animator = None
     if cfg.save_video:
-        from beamz.visual.video import VideoRecorder
-
         record_field = cfg.video_field or cfg.animate_live or "Ez"
         available = sim.fields.available_components()
         if record_field not in available:
@@ -136,10 +141,7 @@ def _setup_visualization(sim, cfg):
             )
             record_field = available[0] if available else None
         if record_field:
-            video_recorder = VideoRecorder(
-                filename=cfg.save_video,
-                fps=cfg.video_fps,
-                dpi=cfg.video_dpi,
+            video_animator = JupyterAnimator(
                 cmap=cfg.cmap,
                 axis_scale=cfg.axis_scale,
                 clean_visualization=cfg.clean_visualization,
@@ -147,9 +149,11 @@ def _setup_visualization(sim, cfg):
                 line_color=cfg.line_color,
                 line_opacity=cfg.line_opacity,
                 interpolation=cfg.interpolation,
+                live_display=False,
+                store_frames=True,
             )
 
-    return active_monitor, use_jupyter, jupyter_animator, video_recorder, None
+    return active_monitor, use_jupyter, jupyter_animator, video_animator, None
 
 
 def _store_fields(sim, field_history, cfg):
@@ -161,7 +165,7 @@ def _store_fields(sim, field_history, cfg):
             field_history[field_name].append(getattr(sim.fields, field_name).copy())
 
 
-def _record_video_frame(sim, video_recorder, cfg):
+def _record_video_frame(sim, video_animator, cfg):
     """Record a single video frame."""
     record_field = cfg.video_field or cfg.animate_live or "Ez"
     if not hasattr(sim.fields, record_field):
@@ -169,7 +173,7 @@ def _record_video_frame(sim, video_recorder, cfg):
     field_display = getattr(sim.fields, record_field)
     if "E" in record_field:
         field_display = field_display * 1e-6
-    video_recorder.add_frame(
+    video_animator.update(
         field_display,
         t=sim.t,
         step=sim.current_step,

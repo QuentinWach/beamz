@@ -23,7 +23,6 @@ from beamz.visual.helpers import (
     get_si_scale_and_label,
 )
 from beamz.visual.scene import beamz_to_scene, view3d
-from beamz.visual.video import VideoRecorder
 
 __all__ = [
     "draw_polygon",
@@ -32,7 +31,6 @@ __all__ = [
     "show_design_2d",
     "show_design_3d",
     "animate_manual_field",
-    "VideoRecorder",
     "JupyterAnimator",
     "is_jupyter_environment",
     "Slice2D",
