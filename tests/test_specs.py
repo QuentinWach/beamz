@@ -3,6 +3,10 @@ import json
 import numpy as np
 import pytest
 
+import beamz
+import beamz.design as design_api
+import beamz.devices.monitors as monitor_api
+import beamz.devices.sources as source_api
 from beamz import Design, Material, Simulation
 from beamz.design.materials import (
     CustomMaterial,
@@ -20,6 +24,33 @@ from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
 from beamz.simulation.boundaries import Boundary, PML
 from beamz.simulation.boundary_specs import BoundarySpec, PMLSpec
 from beamz.simulation.spec import SimulationSpec
+
+
+def test_public_api_exports_spec_and_runtime_types():
+    assert beamz.DesignSpec is DesignSpec
+    assert beamz.MaterialSpec is MaterialSpec
+    assert beamz.CustomMaterialSpec is CustomMaterialSpec
+    assert beamz.StructureSpec is StructureSpec
+    assert beamz.MonitorSpec is MonitorSpec
+    assert beamz.GaussianSourceSpec is GaussianSourceSpec
+    assert beamz.ModeSourceSpec is ModeSourceSpec
+    assert beamz.SimulationSpec is SimulationSpec
+    assert beamz.BoundarySpec is BoundarySpec
+    assert beamz.PMLSpec is PMLSpec
+    assert beamz.SimulationSession is not None
+
+    assert design_api.DesignSpec is DesignSpec
+    assert design_api.StructureSpec is StructureSpec
+    assert design_api.MaterialSpec is MaterialSpec
+    assert design_api.CustomMaterialSpec is CustomMaterialSpec
+
+    assert source_api.GaussianSourceSpec is GaussianSourceSpec
+    assert source_api.ModeSourceSpec is ModeSourceSpec
+    assert source_api.GaussianSourceState is beamz.GaussianSourceState
+    assert source_api.ModeSourceState is beamz.ModeSourceState
+
+    assert monitor_api.MonitorSpec is MonitorSpec
+    assert monitor_api.MonitorRecorder is beamz.MonitorRecorder
 
 
 def test_material_spec_rejects_nonphysical_values():
