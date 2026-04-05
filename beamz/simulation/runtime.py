@@ -287,21 +287,3 @@ def run_compiled_until_decay(
     if progress:
         print()
     return steps_done
-
-
-def run_fast(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):
-    return sim.run_compiled(
-        num_steps=num_steps,
-        record_interval=record_interval,
-        record_fields=record_fields,
-        progress=progress,
-    )
-
-
-def run_jit_scan(sim, num_steps=None, progress=True):
-    return sim.run_compiled(
-        num_steps=num_steps,
-        record_interval=None,
-        record_fields=None,
-        progress=progress,
-    )
