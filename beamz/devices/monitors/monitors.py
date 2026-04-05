@@ -1,14 +1,12 @@
-import logging
 from typing import Callable, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 from beamz.devices.monitors import dft as dft_helpers
 from beamz.devices.monitors import geom as geom_helpers
+from beamz.devices.monitors import live as live_helpers
 from beamz.devices.monitors import record as record_helpers
-
-logger = logging.getLogger(__name__)
+from beamz.devices.monitors import store as store_helpers
 
 
 class Monitor:
@@ -151,21 +149,7 @@ class Monitor:
 
     def evaluate_objective(self) -> Optional[float]:
         """Evaluate the objective function associated with this monitor, if any."""
-        if self.objective_function is None:
-            return None
-        try:
-            value = self.objective_function(self)
-        except Exception as exc:
-            print(f"Warning: monitor objective evaluation failed: {exc}")
-            return None
-        if value is None:
-            return None
-        try:
-            self.objective_value = float(value)
-        except (TypeError, ValueError):
-            print(f"Warning: monitor objective returned non-numeric value: {value}")
-            return None
-        return self.objective_value
+        return store_helpers.evaluate_objective(self)
 
     def _determine_3d_mode(self, start, end, design):
         """Determine if this should be a 3D monitor based on inputs."""
@@ -268,114 +252,23 @@ class Monitor:
 
     def start_live_visualization(self, field_component="Ez"):
         """Start live field visualization."""
-        if not self.live_update:
-            self.live_update = True
-        if self.is_3d:
-            self._setup_live_plot_3d(field_component)
-        else:
-            self._setup_live_plot_2d(field_component)
+        live_helpers.start_visualization(self, field_component=field_component)
 
     def _setup_live_plot_2d(self, field_component):
         """Setup live plotting for 2D monitor."""
-        self.live_fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        # Field amplitude plot
-        ax1.set_title(f"{field_component} along monitor line")
-        ax1.set_xlabel("Position along line")
-        ax1.set_ylabel(f"{field_component} amplitude")
-        self.live_plots["field_line"] = ax1.plot([], [], "b-")[0]
-        # Power history plot
-        ax2.set_title("Power vs Time")
-        ax2.set_xlabel("Time step")
-        ax2.set_ylabel("Total power")
-        self.live_plots["power_time"] = ax2.plot([], [], "r-")[0]
-        plt.tight_layout()
-        plt.ion()
-        plt.show()
+        live_helpers.setup_plot_2d(self, field_component)
 
     def _setup_live_plot_3d(self, field_component):
         """Setup live plotting for 3D monitor."""
-        self.live_fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
-        # Field magnitude plot
-        ax1.set_title(f"{field_component} magnitude on plane")
-        self.live_plots["field_2d"] = ax1.imshow(
-            np.zeros((10, 10)), cmap="RdBu", animated=True
-        )
-        ax1.set_xlabel("X")
-        ax1.set_ylabel("Y")
-        # Power history
-        ax2.set_title("Power vs Time")
-        ax2.set_xlabel("Time step")
-        ax2.set_ylabel("Total power")
-        self.live_plots["power_time"] = ax2.plot([], [], "r-")[0]
-        # Field profile along X
-        ax3.set_title(f"{field_component} along X (center)")
-        ax3.set_xlabel("X position")
-        ax3.set_ylabel(f"{field_component} amplitude")
-        self.live_plots["field_x"] = ax3.plot([], [], "b-")[0]
-        # Field profile along Y
-        ax4.set_title(f"{field_component} along Y (center)")
-        ax4.set_xlabel("Y position")
-        ax4.set_ylabel(f"{field_component} amplitude")
-        self.live_plots["field_y"] = ax4.plot([], [], "g-")[0]
-        plt.tight_layout()
-        plt.ion()
-        plt.show()
+        live_helpers.setup_plot_3d(self, field_component)
 
     def _update_live_plot_2d(self):
         """Update live plot for 2D monitor."""
-        if self.live_fig is None or not self.fields["t"]:
-            return
-        try:
-            # Update field line plot
-            latest_field = self.fields["Ez"][-1]
-            x_pos = range(len(latest_field))
-            self.live_plots["field_line"].set_data(x_pos, latest_field)
-            # Update power history
-            self.live_plots["power_time"].set_data(
-                range(len(self.power_history)), self.power_history
-            )
-            # Rescale axes
-            for ax in self.live_fig.axes:
-                ax.relim()
-                ax.autoscale_view()
-            self.live_fig.canvas.draw()
-            self.live_fig.canvas.flush_events()
-        except Exception:
-            logger.debug("Failed to update 2D monitor live plot.", exc_info=True)
+        live_helpers.update_plot_2d(self)
 
     def _update_live_plot_3d(self):
         """Update live plot for 3D monitor."""
-        if self.live_fig is None or not self.fields["t"]:
-            return
-        try:
-            # Get latest field data
-            latest_field = self.fields["Ez"][-1]  # Default to Ez
-            # Update 2D field plot
-            self.live_plots["field_2d"].set_array(latest_field)
-            self.live_plots["field_2d"].set_clim(
-                vmin=np.min(latest_field), vmax=np.max(latest_field)
-            )
-            # Update power history
-            self.live_plots["power_time"].set_data(
-                range(len(self.power_history)), self.power_history
-            )
-            # Update field profiles
-            center_y = latest_field.shape[0] // 2
-            center_x = latest_field.shape[1] // 2
-            self.live_plots["field_x"].set_data(
-                range(latest_field.shape[1]), latest_field[center_y, :]
-            )
-            self.live_plots["field_y"].set_data(
-                range(latest_field.shape[0]), latest_field[:, center_x]
-            )
-            # Rescale axes
-            for ax in self.live_fig.axes[1:]:  # Skip imshow axis
-                ax.relim()
-                ax.autoscale_view()
-            self.live_fig.canvas.draw()
-            self.live_fig.canvas.flush_events()
-        except Exception:
-            logger.debug("Failed to update 3D monitor live plot.", exc_info=True)
+        live_helpers.update_plot_3d(self)
 
     def get_field_statistics(self):
         """Get statistical information about recorded fields."""
@@ -383,36 +276,11 @@ class Monitor:
 
     def save_data(self, filename, format="npz"):
         """Save recorded data to file."""
-        if format == "npz":
-            np.savez(
-                filename,
-                fields=self.fields,
-                power_history=self.power_history,
-                power_timestamps=self.power_timestamps,
-                frequency_points=self.frequency_points,
-                frequency_flux_spectrum=self.frequency_flux_spectrum,
-                monitor_info={"type": self.monitor_type, "is_3d": self.is_3d},
-            )
-        else:
-            raise ValueError(f"Unsupported format: {format}")
+        store_helpers.save_data(self, filename, format=format)
 
     def load_data(self, filename):
         """Load data from file."""
-        data = np.load(filename, allow_pickle=True)
-        self.fields = data["fields"].item()
-        self.power_history = list(data["power_history"])
-        if "power_timestamps" in data:
-            self.power_timestamps = list(data["power_timestamps"])
-        else:
-            self.power_timestamps = list(range(len(self.power_history)))
-        if "frequency_points" in data:
-            self.frequency_points = np.asarray(
-                data["frequency_points"], dtype=np.float64
-            )
-        if "frequency_flux_spectrum" in data:
-            self.frequency_flux_spectrum = np.asarray(
-                data["frequency_flux_spectrum"], dtype=np.complex64
-            )
+        store_helpers.load_data(self, filename)
 
     def add_to_plot(
         self, ax, facecolor="none", edgecolor="navy", alpha=1, linestyle="-"
@@ -433,21 +301,15 @@ class Monitor:
 
     def plot_fields(self, **kwargs):
         """Plot field data from the monitor. Delegates to visual.monitor_plots."""
-        from beamz.visual.monitor_plots import plot_monitor_fields
-
-        return plot_monitor_fields(self, **kwargs)
+        return store_helpers.plot_fields(self, **kwargs)
 
     def plot_power(self, **kwargs):
         """Plot power history from the monitor. Delegates to visual.monitor_plots."""
-        from beamz.visual.monitor_plots import plot_monitor_power
-
-        return plot_monitor_power(self, **kwargs)
+        return store_helpers.plot_power(self, **kwargs)
 
     def animate_fields(self, **kwargs):
         """Create an animation of field evolution. Delegates to visual.monitor_plots."""
-        from beamz.visual.monitor_plots import animate_monitor_fields
-
-        return animate_monitor_fields(self, **kwargs)
+        return store_helpers.animate_fields(self, **kwargs)
 
     def get_field_at_time(self, field="Ez", time_value=None, time_index=None):
         """Get field data at a specific time.
@@ -484,74 +346,8 @@ class Monitor:
         )
 
     def __str__(self):
-        if not self.fields["t"]:
-            return f"Monitor: {self.monitor_type} ({'3D' if self.is_3d else '2D'}), 0 records"
-        stats = self.get_field_statistics()
-        return f"Monitor: {stats['monitor_type']} ({'3D' if stats['is_3d'] else '2D'}), {stats['total_records']} records"
+        return store_helpers.describe(self)
 
     def copy(self):
         """Create a deep copy of the Monitor."""
-        if self.is_3d:
-            # 3D monitor
-            if hasattr(self, "end") and self.end is not None:
-                # Defined by start and end points
-                return Monitor(
-                    design=self.design,  # Reference to same design is okay
-                    start=self.start,
-                    end=self.end,
-                    record_fields=self.should_record_fields,
-                    accumulate_power=self.accumulate_power,
-                    live_update=self.live_update,
-                    record_interval=self.record_interval,
-                    max_history_steps=self.max_history_steps,
-                    dft_frequencies=self.dft_frequencies.copy(),
-                    dft_t_start=self.dft_t_start,
-                    dft_t_end=self.dft_t_end,
-                    dft_enabled=self.dft_enabled,
-                    dft_components=self.dft_components,
-                    dft_record_every_step=self.dft_record_every_step,
-                    dft_record_interval=self.dft_record_interval,
-                    dft_window=self.dft_window,
-                )
-            else:
-                # Defined by plane normal and position
-                return Monitor(
-                    design=self.design,  # Reference to same design is okay
-                    start=self.start,
-                    plane_normal=self.plane_normal,
-                    plane_position=self.plane_position,
-                    size=self.size,
-                    record_fields=self.should_record_fields,
-                    accumulate_power=self.accumulate_power,
-                    live_update=self.live_update,
-                    record_interval=self.record_interval,
-                    max_history_steps=self.max_history_steps,
-                    dft_frequencies=self.dft_frequencies.copy(),
-                    dft_t_start=self.dft_t_start,
-                    dft_t_end=self.dft_t_end,
-                    dft_enabled=self.dft_enabled,
-                    dft_components=self.dft_components,
-                    dft_record_every_step=self.dft_record_every_step,
-                    dft_record_interval=self.dft_record_interval,
-                    dft_window=self.dft_window,
-                )
-        else:
-            # 2D monitor
-            return Monitor(
-                design=self.design,  # Reference to same design is okay
-                start=self.start,
-                end=self.end,
-                record_fields=self.should_record_fields,
-                accumulate_power=self.accumulate_power,
-                live_update=self.live_update,
-                record_interval=self.record_interval,
-                max_history_steps=self.max_history_steps,
-                dft_frequencies=self.dft_frequencies.copy(),
-                dft_t_start=self.dft_t_start,
-                dft_t_end=self.dft_t_end,
-                dft_enabled=self.dft_enabled,
-                dft_components=self.dft_components,
-                dft_record_every_step=self.dft_record_every_step,
-                dft_record_interval=self.dft_record_interval,
-                dft_window=self.dft_window,
-            )
+        return store_helpers.copy_monitor(self)
