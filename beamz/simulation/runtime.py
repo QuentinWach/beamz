@@ -134,9 +134,6 @@ def _make_chunk_monitor_state(sim, program):
 
 def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):
     """Run the simulation using the compiled scan engine."""
-    if sim.thermal is not None and getattr(sim.thermal, "enabled", True):
-        raise NotImplementedError("run_compiled currently does not support thermal coupling.")
-
     if num_steps is None:
         num_steps = sim.num_steps - sim.current_step
     num_steps = int(num_steps)

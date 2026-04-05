@@ -210,28 +210,10 @@ class BaseMeshGrid:
             )
             return 1.0, 1.0, 0.0
 
-    def _get_thermal_properties_safe(self, material, x=0, y=0, z=0):
-        """Safely get thermal properties from material objects."""
-        if material is None:
-            return 0.0, 0.0, 0.0, 0.0, 300.0
-
-        # CustomMaterial or Material: thermal params are constants
-        k = getattr(material, "k", 0.0)
-        rho = getattr(material, "rho", 0.0)
-        cp = getattr(material, "cp", 0.0)
-        dn_dT = getattr(material, "dn_dT", 0.0)
-        T0 = getattr(material, "T0", 300.0)
-        return k, rho, cp, dn_dT, T0
-
     def _get_all_material_props(self, material, x=0, y=0, z=0):
-        """Get all 8 material properties as a single tuple matching MaterialGrids.NAMES order."""
+        """Get all material properties as a tuple matching MaterialGrids.NAMES order."""
         perm, permb, cond = self._get_material_properties_safe(material, x, y, z)
-        k, rho, cp, dn_dT, T0 = self._get_thermal_properties_safe(material, x, y, z)
-        return (perm, permb, cond, k, rho, cp, dn_dT, T0)
-
-    def get_thermal_grids(self):
-        """Get thermal property grids."""
-        return self.k, self.rho, self.cp, self.dn_dT, self.T0
+        return (perm, permb, cond)
 
     def get_material_grids(self, resolution=None):
         """Get the material property grids."""
@@ -274,7 +256,7 @@ class RegularGrid(BaseMeshGrid):
         # Determine is_3d property for compatibility with Simulation class
         self.is_3d = design.is_3d and design.depth > 0
 
-        # Rasterize the design (assigns all 8 material grids via MaterialGrids)
+        # Rasterize the design (assigns all material grids via MaterialGrids)
         self.__rasterize__()
 
         # Set grid properties

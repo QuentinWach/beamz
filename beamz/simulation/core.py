@@ -93,7 +93,6 @@ class Simulation:
         design: Design = None,
         devices: list = None,
         boundaries: list[Boundary] = None,
-        thermal=None,
         resolution: float = 0.02 * µm,
         time: np.ndarray = None,
         plane_2d: str = "xy",
@@ -165,11 +164,6 @@ class Simulation:
 
         # Store boundary references (no duplication)
         self.boundaries = boundaries
-
-        # Optional thermal coupling
-        self.thermal = thermal
-        if self.thermal is not None and getattr(self.thermal, "enabled", True):
-            self.thermal.initialize(self)
 
         # Compiled program cache for v0.3 packed-source/monitor execution.
         self._compiled_program = None

@@ -5,21 +5,10 @@ class Material:
         permittivity=1.0,
         permeability=1.0,
         conductivity=0.0,
-        k=0.0,
-        rho=0.0,
-        cp=0.0,
-        dn_dT=0.0,
-        T0=300.0,
     ):
         self.permittivity = permittivity
         self.permeability = permeability
         self.conductivity = conductivity
-        # Thermal parameters (per-material constants)
-        self.k = k
-        self.rho = rho
-        self.cp = cp
-        self.dn_dT = dn_dT
-        self.T0 = T0
 
     def get_sample(self):
         return self.permittivity, self.permeability, self.conductivity
@@ -35,11 +24,6 @@ class CustomMaterial:
         permittivity_grid=None,
         permeability_grid=None,
         conductivity_grid=None,
-        k=0.0,
-        rho=0.0,
-        cp=0.0,
-        dn_dT=0.0,
-        T0=300.0,
         bounds=None,
         interpolation="linear",
     ):
@@ -81,12 +65,6 @@ class CustomMaterial:
         self.permittivity_grid = permittivity_grid
         self.permeability_grid = permeability_grid
         self.conductivity_grid = conductivity_grid
-        # Thermal parameters (per-material constants)
-        self.k = k
-        self.rho = rho
-        self.cp = cp
-        self.dn_dT = dn_dT
-        self.T0 = T0
 
         # Validate bounds if grid is provided
         if bounds is not None:
@@ -291,11 +269,6 @@ class CustomMaterial:
             permittivity_grid=perm_grid,  # Deep copied grids
             permeability_grid=permeability_grid,
             conductivity_grid=cond_grid,
-            k=self.k,
-            rho=self.rho,
-            cp=self.cp,
-            dn_dT=self.dn_dT,
-            T0=self.T0,
             bounds=self.bounds,  # Bounds can be shared (tuples are immutable)
             interpolation=self.interpolation,
         )

@@ -2,19 +2,10 @@ import numpy as np
 
 
 class MaterialGrids:
-    """Bundles the 8 material property arrays with bulk operations."""
+    """Bundles the core EM material property arrays with bulk operations."""
 
-    NAMES = (
-        "permittivity",
-        "permeability",
-        "conductivity",
-        "k",
-        "rho",
-        "cp",
-        "dn_dT",
-        "T0",
-    )
-    DEFAULTS = (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 300.0)
+    NAMES = ("permittivity", "permeability", "conductivity")
+    DEFAULTS = (1.0, 1.0, 0.0)
 
     def __init__(self, shape):
         for name, default in zip(self.NAMES, self.DEFAULTS):

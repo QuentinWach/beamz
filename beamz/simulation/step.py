@@ -126,9 +126,6 @@ def run_step(sim) -> bool:
 
     record_monitors(sim)
 
-    if sim.thermal is not None and getattr(sim.thermal, "enabled", True):
-        sim.thermal.step(sim)
-
     sim.t += sim.dt
     sim.current_step += 1
     return True

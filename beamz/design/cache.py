@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-RASTER_CACHE_VERSION = "v4"
+RASTER_CACHE_VERSION = "v5"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -47,16 +47,7 @@ def _to_jsonable(value):
 def _material_signature(material):
     if material is None:
         return None
-    keys = (
-        "permittivity",
-        "permeability",
-        "conductivity",
-        "k",
-        "rho",
-        "cp",
-        "dn_dT",
-        "T0",
-    )
+    keys = ("permittivity", "permeability", "conductivity")
     return {k: _to_jsonable(getattr(material, k, None)) for k in keys}
 
 
@@ -189,11 +180,6 @@ def _save_grid_to_cache(grid, cache_path: Path):
         permittivity=np.asarray(grid.permittivity),
         permeability=np.asarray(grid.permeability),
         conductivity=np.asarray(grid.conductivity),
-        k=np.asarray(grid.k),
-        rho=np.asarray(grid.rho),
-        cp=np.asarray(grid.cp),
-        dn_dT=np.asarray(grid.dn_dT),
-        T0=np.asarray(grid.T0),
     )
 
 
@@ -230,16 +216,7 @@ def _build_grid_from_cached_arrays(
         grid.width = design_obj.width
         grid.height = design_obj.height
 
-    for name in (
-        "permittivity",
-        "permeability",
-        "conductivity",
-        "k",
-        "rho",
-        "cp",
-        "dn_dT",
-        "T0",
-    ):
+    for name in ("permittivity", "permeability", "conductivity"):
         setattr(grid, name, np.asarray(arrays[name]))
     grid.shape = grid.permittivity.shape
     return grid
