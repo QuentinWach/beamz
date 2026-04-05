@@ -153,11 +153,79 @@ class ModeSource:
         """Inject electric current into E-fields for 2D (after E update)."""
         apply_helpers.inject_2d_e(self, fields, signal_e, dt, resolution)
 
+    def profile_data(self, field=None):
+        """Return the current source profile as plotting-ready data."""
+        from beamz.visual.data import Slice2D, Trace1D
+
+        if self._Ez_profile is None and self._jz_profile is None:
+            if self.grid is not None and hasattr(self.grid, "permittivity"):
+                resolution = getattr(self.grid, "resolution", 0.05e-6)
+                self.initialize(self.grid.permittivity, resolution)
+            else:
+                raise ValueError(
+                    "Mode source is not initialized and no grid permittivity is available."
+                )
+
+        choices = {
+            "ez": ("Ez", self._Ez_profile),
+            "hz": ("Hz", self._jz_profile),
+            "jz": ("Hz", self._jz_profile),
+        }
+        key = None if field is None else str(field).strip().lower()
+        if key is None:
+            label, profile = ("Ez", self._Ez_profile)
+            if profile is None:
+                label, profile = ("Hz", self._jz_profile)
+        elif key in choices:
+            label, profile = choices[key]
+        else:
+            raise ValueError("field must be one of None, 'Ez', 'Hz', or 'Jz'.")
+
+        if profile is None:
+            raise ValueError(f"No profile data available for field '{field}'.")
+
+        profile = np.squeeze(np.asarray(profile))
+        title = f"{label} mode profile"
+        if self._neff is not None:
+            title = f"{title} (neff={self._neff:.4f})"
+
+        if profile.ndim == 2:
+            if self.direction in {"+x", "-x"}:
+                plane, x_label, y_label = "yz", "Y index", "Z index"
+            else:
+                plane, x_label, y_label = "xz", "X index", "Z index"
+            height, width = profile.shape
+            return Slice2D(
+                values=profile,
+                extent=(0.0, float(max(width - 1, 1)), 0.0, float(max(height - 1, 1))),
+                value_label="Amplitude",
+                plane=plane,
+                title=title,
+                x_label=x_label,
+                y_label=y_label,
+            )
+
+        return Trace1D(
+            values=profile.reshape(-1),
+            coords=np.arange(profile.size, dtype=float),
+            coord_label="index",
+            value_label="Amplitude",
+            title=title,
+        )
+
     def show(self, field=None):
         """Visualize the 2D mode profile (for 3D simulations) or 1D profile (for 2D)."""
-        from beamz.visual.source_plots import show_mode_profile
+        import matplotlib.pyplot as plt
+        from beamz.visual.data import Slice2D
 
-        show_mode_profile(self, field=field)
+        plot_data = self.profile_data(field=field)
+        if isinstance(plot_data, Slice2D):
+            plot_data.plot(cmap="magma", abs_value=True, aspect="auto")
+        else:
+            ax = plot_data.plot(color="k", abs_value=True)
+            ax.grid(True)
+        plt.tight_layout()
+        plt.show()
 
     def add_to_plot(
         self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"

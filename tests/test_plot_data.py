@@ -2,6 +2,7 @@ import numpy as np
 
 from beamz import Circle, Design, Material
 from beamz.devices.monitors.monitors import Monitor
+from beamz.devices.sources.mode import ModeSource
 from beamz.simulation.core import Simulation
 from beamz.visual.data import Slice2D, Trace1D
 
@@ -123,3 +124,22 @@ def test_simulation_monitor_trace_returns_trace_data():
     trace = sim.monitor_trace(mon, field_component="Ez", reduction="mean")
     assert isinstance(trace, Trace1D)
     np.testing.assert_allclose(trace.values, np.array([1.0, 2.0]))
+
+
+def test_mode_source_profile_data_returns_plot_data():
+    src = ModeSource.__new__(ModeSource)
+    src.grid = None
+    src.direction = "+x"
+    src._neff = 2.1
+    src._Ez_profile = np.ones((4, 6))
+    src._jz_profile = None
+
+    sl = src.profile_data()
+    assert isinstance(sl, Slice2D)
+    assert sl.plane == "yz"
+
+    src._Ez_profile = None
+    src._jz_profile = np.array([0.0, 1.0, 0.5])
+    trace = src.profile_data("Hz")
+    assert isinstance(trace, Trace1D)
+    np.testing.assert_allclose(trace.values, np.array([0.0, 1.0, 0.5]))
