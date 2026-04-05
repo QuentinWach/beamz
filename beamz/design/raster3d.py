@@ -63,9 +63,6 @@ def rasterize(mesh):
         prefer_fast = voxel_count >= fast_min_voxels
     else:
         prefer_fast = _env_bool("BEAMZ_RASTER_FAST_3D", True)
-    fast_rect_count = 0
-    fast_poly_count = 0
-    fallback_count = 0
 
     struct_start = time.perf_counter()
     with create_rich_progress() as progress:
@@ -117,7 +114,6 @@ def rasterize(mesh):
                         cell_size_xy=cell_size_xy,
                         cell_size_z=cell_size_z,
                     )
-                    fast_rect_count += 1
                     fast_done = True
 
                 if not fast_done and prefer_fast:
@@ -138,7 +134,6 @@ def rasterize(mesh):
                         cell_size_z=cell_size_z,
                     )
                     if poly_done:
-                        fast_poly_count += 1
                         fast_done = True
 
                 if not fast_done:
@@ -159,7 +154,6 @@ def rasterize(mesh):
                         y_centers=y_centers,
                         z_centers=z_centers,
                     )
-                    fallback_count += 1
 
             except (AttributeError, TypeError) as exc:
                 display_status(
@@ -194,16 +188,6 @@ def rasterize(mesh):
                 f"structures={struct_end - struct_start:.2f}s, "
                 f"pml={pml_end - pml_start:.2f}s, "
                 f"total={total_end - total_start:.2f}s"
-            ),
-            "info",
-        )
-        display_status(
-            (
-                "3D raster kernels: "
-                f"fast_enabled={prefer_fast}, "
-                f"fast_rect={fast_rect_count}, "
-                f"fast_poly={fast_poly_count}, "
-                f"fallback={fallback_count}"
             ),
             "info",
         )

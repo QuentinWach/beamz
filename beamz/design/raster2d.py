@@ -430,54 +430,6 @@ def rasterize_polygon(
             )
         )
 
-    if hasattr(structure, "vertices") and len(getattr(structure, "vertices", [])) > 0:
-        inside_mask = np.zeros((max_i - min_i, max_j - min_j), dtype=bool)
-        boundary_mask = np.zeros((max_i - min_i, max_j - min_j), dtype=bool)
-        sample_points = [(0, 0), (-0.4, -0.4), (-0.4, 0.4), (0.4, -0.4), (0.4, 0.4)]
-
-        for i_rel in range(max_i - min_i):
-            for j_rel in range(max_j - min_j):
-                cx = x_centers[j_rel + min_j]
-                cy = y_centers[i_rel + min_i]
-                points_inside = 0
-                center_inside = False
-                if contains_func(cx, cy):
-                    center_inside = True
-                    points_inside += 1
-                for dx_pt, dy_pt in sample_points[1:]:
-                    if contains_func(cx + dx_pt * cell_size, cy + dy_pt * cell_size):
-                        points_inside += 1
-                if center_inside and points_inside == len(sample_points):
-                    inside_mask[i_rel, j_rel] = True
-                elif points_inside > 0:
-                    boundary_mask[i_rel, j_rel] = True
-
-        inside_i, inside_j = np.where(inside_mask)
-        for idx in range(len(inside_i)):
-            i, j = inside_i[idx] + min_i, inside_j[idx] + min_j
-            grids.set_at((i, j), props)
-
-        for mask in (boundary_mask, ~inside_mask & ~boundary_mask):
-            boundary_i, boundary_j = np.where(mask)
-            for idx in range(len(boundary_i)):
-                i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
-                cx, cy = x_centers[j], y_centers[i]
-                samples_inside = supersample_cell(
-                    mesh,
-                    cx,
-                    cy,
-                    sample_dx,
-                    sample_dy,
-                    num_samples,
-                    contains_func,
-                    cell_i=i,
-                    cell_j=j,
-                    cell_size=cell_size,
-                )
-                if samples_inside > 0:
-                    grids.blend_at((i, j), props, samples_inside / num_samples)
-        return
-
     for i in range(min_i, max_i):
         for j in range(min_j, max_j):
             cx, cy = x_centers[j], y_centers[i]
