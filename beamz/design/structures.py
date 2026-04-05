@@ -1,4 +1,5 @@
 import colorsys
+import copy
 import random
 
 import numpy as np
@@ -268,6 +269,9 @@ class Polygon:
     ):
         from beamz.visual.design_viz import draw_polygon
 
+        facecolor, alpha, linestyle = _default_plot_style(
+            self, facecolor, alpha, linestyle
+        )
         return draw_polygon(
             ax,
             self,
@@ -278,18 +282,10 @@ class Polygon:
         )
 
     def copy(self):
-        copied_interiors = (
-            [list(path) for path in self.interiors if path] if self.interiors else []
-        )
-        return Polygon(
-            vertices=list(self.vertices) if self.vertices else [],
-            interiors=copied_interiors,
-            material=self.material,
-            color=self.color,
-            optimize=self.optimize,
-            depth=self.depth,
-            z=self.z,
-        )
+        duplicated = copy.copy(self)
+        duplicated.vertices = list(self.vertices) if self.vertices else []
+        duplicated.interiors = [list(path) for path in self.interiors if path]
+        return duplicated
 
     def get_bounding_box(self):
         if not self.vertices or len(self.vertices) == 0:
@@ -403,21 +399,6 @@ class Rectangle(Polygon):
         self.depth *= s_z
         return self
 
-    def copy(self):
-        new_rect = Rectangle(
-            self.position,
-            self.width,
-            self.height,
-            self.depth,
-            self.material,
-            self.color,
-            self.is_pml,
-            self.optimize,
-        )
-        new_rect.vertices = [(x, y, z) for x, y, z in self.vertices]
-        return new_rect
-
-
 class Circle(Polygon):
     def __init__(
         self,
@@ -451,19 +432,6 @@ class Circle(Polygon):
         self.radius *= s_x
         self.vertices = _circle_vertices(self.position, self.radius, self.points)
         return self
-
-    def copy(self):
-        return Circle(
-            position=self.position,
-            radius=self.radius,
-            points=self.points,
-            material=self.material,
-            color=self.color,
-            optimize=self.optimize,
-            depth=self.depth,
-            z=self.z,
-        )
-
 
 class Ring(Polygon):
     def __init__(
@@ -512,34 +480,6 @@ class Ring(Polygon):
         self.vertices = outer_vertices
         self.interiors = [inner_vertices]
         return self
-
-    def add_to_plot(
-        self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
-    ):
-        facecolor, alpha, linestyle = _default_plot_style(
-            self, facecolor, alpha, linestyle
-        )
-        return super().add_to_plot(
-            ax,
-            facecolor=facecolor,
-            edgecolor=edgecolor,
-            alpha=alpha,
-            linestyle=linestyle,
-        )
-
-    def copy(self):
-        return Ring(
-            position=self.position,
-            inner_radius=self.inner_radius,
-            outer_radius=self.outer_radius,
-            material=self.material,
-            color=self.color,
-            optimize=self.optimize,
-            points=self.points,
-            depth=self.depth,
-            z=self.z,
-        )
-
 
 class CircularBend(Polygon):
     def __init__(
@@ -600,36 +540,6 @@ class CircularBend(Polygon):
         )
         return self
 
-    def add_to_plot(
-        self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
-    ):
-        facecolor, alpha, linestyle = _default_plot_style(
-            self, facecolor, alpha, linestyle
-        )
-        return super().add_to_plot(
-            ax,
-            facecolor=facecolor,
-            edgecolor=edgecolor,
-            alpha=alpha,
-            linestyle=linestyle,
-        )
-
-    def copy(self):
-        return CircularBend(
-            self.position,
-            self.inner_radius,
-            self.outer_radius,
-            self.angle,
-            self.rotation,
-            self.material,
-            self.color,
-            self.optimize,
-            self.points,
-            self.depth,
-            self.z,
-        )
-
-
 class Taper(Polygon):
     def __init__(
         self,
@@ -677,22 +587,6 @@ class Taper(Polygon):
         self.length = max_x - min_x
         return self
 
-    def copy(self):
-        new_taper = Taper(
-            self.position,
-            self.input_width,
-            self.output_width,
-            self.length,
-            self.material,
-            self.color,
-            self.optimize,
-            self.depth,
-            self.z,
-        )
-        new_taper.vertices = [(x, y, z) for x, y, z in self.vertices]
-        return new_taper
-
-
 class Sphere(Polygon):
     def __init__(
         self, position=(0, 0, 0), radius=1, material=None, color=None, optimize=False
@@ -720,8 +614,3 @@ class Sphere(Polygon):
     def point_in_polygon(self, x, y, z=0):
         cx, cy, cz = self.position
         return (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2 <= self.radius**2
-
-    def copy(self):
-        return Sphere(
-            self.position, self.radius, self.material, self.color, self.optimize
-        )
