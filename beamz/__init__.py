@@ -61,7 +61,6 @@ from beamz.visual.helpers import (
     dxdt,
     get_si_scale_and_label,
 )
-from beamz.visual.source_plots import plot_signal
 
 # Prepare a dictionary of all our exports
 _exports = {
@@ -95,7 +94,6 @@ _exports = {
     "Monitor": Monitor,
     # Signals
     "ramped_cosine": ramped_cosine,
-    "plot_signal": plot_signal,
     # Mode calculations
     "solve_modes": solve_modes,
     # Simulation
