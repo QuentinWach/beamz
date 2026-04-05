@@ -126,6 +126,57 @@ class Design:
 
         return [epsilon, mu, sigma_base]
 
+    def slice2d(
+        self,
+        *,
+        field="permittivity",
+        resolution=None,
+        z_index=None,
+        z_position=None,
+        title=None,
+        **raster_kwargs,
+    ):
+        """Return a rasterized 2D material slice prepared for plotting."""
+        from beamz.visual.data import Slice2D
+
+        if resolution is None:
+            resolution = getattr(self, "_grid_resolution", None)
+        if resolution is None:
+            raise ValueError(
+                "resolution is required for Design.slice2d(...) unless the design "
+                "has already been rasterized."
+            )
+
+        grid = self.rasterize(resolution, **raster_kwargs)
+        if not hasattr(grid, field):
+            raise ValueError(f"Unknown grid field: {field!r}")
+
+        if getattr(grid, "is_3d", False):
+            if z_index is None and z_position is None:
+                z_index = grid.shape[0] // 2
+            elif z_position is not None:
+                z_index = int(float(z_position) / float(grid.resolution_z))
+                z_index = max(0, min(grid.shape[0] - 1, z_index))
+            values = np.asarray(getattr(grid, field)[z_index, :, :])
+            position = float(z_index) * float(grid.resolution_z)
+        else:
+            values = np.asarray(getattr(grid, field))
+            position = None
+
+        plane = "xy"
+        extent = (0.0, float(self.width), 0.0, float(self.height))
+        default_title = title or f"{field} slice" + (
+            f" ({plane}, z={position:.3e} m)" if position is not None else f" ({plane})"
+        )
+        return Slice2D(
+            values=values,
+            extent=extent,
+            value_label=field,
+            plane=plane,
+            position=position,
+            title=default_title,
+        )
+
     def rasterize(
         self,
         resolution: float,
