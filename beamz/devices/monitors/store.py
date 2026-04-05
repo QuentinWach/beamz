@@ -5,33 +5,36 @@ import numpy as np
 
 def evaluate_objective(monitor) -> Optional[float]:
     """Evaluate the monitor objective function, if any."""
-    if monitor.objective_function is None:
+    spec = monitor.spec
+    state = monitor.state
+    if spec.objective_function is None:
         return None
     try:
-        value = monitor.objective_function(monitor)
+        value = spec.objective_function(monitor)
     except Exception as exc:
         print(f"Warning: monitor objective evaluation failed: {exc}")
         return None
     if value is None:
         return None
     try:
-        monitor.objective_value = float(value)
+        state.objective_value = float(value)
     except (TypeError, ValueError):
         print(f"Warning: monitor objective returned non-numeric value: {value}")
         return None
-    return monitor.objective_value
+    return state.objective_value
 
 
 def save_data(monitor, filename, format="npz"):
     """Save recorded monitor data to disk."""
+    state = monitor.state
     if format == "npz":
         np.savez(
             filename,
-            fields=monitor.fields,
-            power_history=monitor.power_history,
-            power_timestamps=monitor.power_timestamps,
-            frequency_points=monitor.frequency_points,
-            frequency_flux_spectrum=monitor.frequency_flux_spectrum,
+            fields=state.fields,
+            power_history=state.power_history,
+            power_timestamps=state.power_timestamps,
+            frequency_points=monitor.spec.frequency_points,
+            frequency_flux_spectrum=state.frequency_flux_spectrum,
             monitor_info={"type": monitor.monitor_type, "is_3d": monitor.is_3d},
         )
         return
@@ -40,30 +43,30 @@ def save_data(monitor, filename, format="npz"):
 
 def load_data(monitor, filename):
     """Load recorded monitor data from disk."""
+    state = monitor.state
     data = np.load(filename, allow_pickle=True)
-    monitor.fields = data["fields"].item()
-    monitor.power_history = list(data["power_history"])
+    state.fields = data["fields"].item()
+    state.power_history = list(data["power_history"])
     if "power_timestamps" in data:
-        monitor.power_timestamps = list(data["power_timestamps"])
+        state.power_timestamps = list(data["power_timestamps"])
     else:
-        monitor.power_timestamps = list(range(len(monitor.power_history)))
-    if "frequency_points" in data:
-        monitor.frequency_points = np.asarray(data["frequency_points"], dtype=np.float64)
+        state.power_timestamps = list(range(len(state.power_history)))
     if "frequency_flux_spectrum" in data:
-        monitor.frequency_flux_spectrum = np.asarray(
+        state.frequency_flux_spectrum = np.asarray(
             data["frequency_flux_spectrum"], dtype=np.complex64
         )
 
 
 def _field_time_index(monitor, time_value=None, time_index=None):
+    state = monitor.state
     if time_index is not None:
         idx = int(time_index)
-        count = len(monitor.fields.get("t", []))
+        count = len(state.fields.get("t", []))
         if idx < 0:
             idx += count
         return idx
-    if time_value is not None and monitor.fields["t"]:
-        times = np.asarray(monitor.fields["t"], dtype=float)
+    if time_value is not None and state.fields["t"]:
+        times = np.asarray(state.fields["t"], dtype=float)
         return int(np.argmin(np.abs(times - float(time_value))))
     return -1
 
@@ -141,17 +144,18 @@ def power_trace(monitor, *, db_scale=False):
     """Return monitor power history as plotting-ready data."""
     from beamz.visual.data import Trace1D
 
-    if not monitor.power_history:
+    state = monitor.state
+    if not state.power_history:
         raise ValueError("No power data recorded.")
-    values = np.asarray(monitor.power_history, dtype=float)
+    values = np.asarray(state.power_history, dtype=float)
     if db_scale:
         values = 10.0 * np.log10(np.maximum(values, 1e-12))
         value_label = "Power (dB)"
     else:
         value_label = "Power"
     coords = (
-        np.asarray(monitor.power_timestamps, dtype=float)
-        if monitor.power_timestamps
+        np.asarray(state.power_timestamps, dtype=float)
+        if state.power_timestamps
         else np.arange(values.size, dtype=float)
     )
     return Trace1D(
@@ -204,30 +208,35 @@ def describe(monitor):
 
 def copy_monitor(monitor):
     """Create a deep copy of the monitor configuration."""
+    spec = monitor.spec
     kwargs = dict(
         design=monitor.design,
-        start=monitor.start,
-        record_fields=monitor.should_record_fields,
-        accumulate_power=monitor.accumulate_power,
-        live_update=monitor.live_update,
-        record_interval=monitor.record_interval,
-        max_history_steps=monitor.max_history_steps,
-        dft_frequencies=monitor.dft_frequencies.copy(),
-        dft_t_start=monitor.dft_t_start,
-        dft_t_end=monitor.dft_t_end,
-        dft_enabled=monitor.dft_enabled,
-        dft_components=monitor.dft_components,
-        dft_record_every_step=monitor.dft_record_every_step,
-        dft_record_interval=monitor.dft_record_interval,
-        dft_window=monitor.dft_window,
+        start=spec.start,
+        record_fields=spec.should_record_fields,
+        accumulate_power=spec.accumulate_power,
+        live_update=spec.live_update,
+        record_interval=spec.record_interval,
+        max_history_steps=spec.max_history_steps,
+        dft_frequencies=spec.dft_frequencies.copy(),
+        dft_t_start=spec.dft_t_start,
+        dft_t_end=spec.dft_t_end,
+        dft_enabled=spec.dft_enabled,
+        dft_components=spec.dft_components,
+        dft_record_every_step=spec.dft_record_every_step,
+        dft_record_interval=spec.dft_record_interval,
+        dft_window=spec.dft_window,
+        objective_function=spec.objective_function,
+        name=spec.name,
+        frequency_points=spec.frequency_points.copy(),
+        frequency_record_interval=spec.frequency_record_interval,
     )
-    if monitor.is_3d:
-        if hasattr(monitor, "end") and monitor.end is not None:
-            kwargs["end"] = monitor.end
+    if spec.is_3d:
+        if spec.end is not None:
+            kwargs["end"] = spec.end
         else:
-            kwargs["plane_normal"] = monitor.plane_normal
-            kwargs["plane_position"] = monitor.plane_position
-            kwargs["size"] = monitor.size
+            kwargs["plane_normal"] = spec.plane_normal
+            kwargs["plane_position"] = spec.plane_position
+            kwargs["size"] = spec.size
     else:
-        kwargs["end"] = monitor.end
+        kwargs["end"] = spec.end
     return monitor.__class__(**kwargs)

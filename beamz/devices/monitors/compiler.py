@@ -292,22 +292,19 @@ def compile_monitor_specs(
     max_records = 0
 
     for mon_idx, monitor in enumerate(monitors):
-        interval = max(1, int(monitor.record_interval))
+        spec = monitor.spec
+        interval = max(1, int(spec.record_interval))
         records = int(math.ceil(num_steps / interval))
         max_records = max(max_records, records)
 
-        dft_enabled = bool(getattr(monitor, "dft_enabled", False))
-        dft_freqs = np.asarray(
-            getattr(monitor, "dft_frequencies", np.zeros((0,))), dtype=np.float64
-        ).ravel()
+        dft_enabled = bool(spec.dft_enabled)
+        dft_freqs = np.asarray(spec.dft_frequencies, dtype=np.float64).ravel()
         if dft_freqs.size > 0 and not np.all(np.isfinite(dft_freqs)):
             raise ValueError("Monitor dft_frequencies must be finite values in Hz")
         if dft_freqs.size > 0 and np.any(dft_freqs <= 0.0):
             raise ValueError("Monitor dft_frequencies must be strictly positive")
 
-        flux_freqs = np.asarray(
-            getattr(monitor, "frequency_points", np.zeros((0,))), dtype=np.float64
-        ).ravel()
+        flux_freqs = np.asarray(spec.frequency_points, dtype=np.float64).ravel()
         if flux_freqs.size > 0 and not np.all(np.isfinite(flux_freqs)):
             raise ValueError("Monitor frequency_points must be finite values in Hz")
         if dft_enabled and dft_freqs.size > 0:
@@ -315,37 +312,27 @@ def compile_monitor_specs(
             freq_interval = max(
                 1,
                 int(
-                    getattr(
-                        monitor,
-                        "dft_record_interval",
-                        (
-                            1
-                            if bool(getattr(monitor, "dft_record_every_step", True))
-                            else interval
-                        ),
-                    )
+                    spec.dft_record_interval
                 ),
             )
         else:
             freq_points = flux_freqs
-            freq_interval = max(
-                1, int(getattr(monitor, "frequency_record_interval", 1))
-            )
+            freq_interval = max(1, int(spec.frequency_record_interval))
         theta = -2.0 * np.pi * freq_points * float(dt) * float(freq_interval)
         freq_rot_re = np.cos(theta).astype(np.float32, copy=False)
         freq_rot_im = np.sin(theta).astype(np.float32, copy=False)
-        dft_window = str(getattr(monitor, "dft_window", "rect")).lower()
+        dft_window = str(spec.dft_window).lower()
         if dft_window in {"none", "rectangular"}:
             dft_window = "rect"
         dft_window_code = 1 if dft_window == "hann" else 0
         dft_t_end_val = float(
             np.inf
-            if getattr(monitor, "dft_t_end", None) is None
-            else getattr(monitor, "dft_t_end")
+            if spec.dft_t_end is None
+            else spec.dft_t_end
         )
         if dft_window_code == 1 and not np.isfinite(dft_t_end_val):
             dft_window_code = 0
-        dft_components = getattr(monitor, "dft_components", None)
+        dft_components = spec.dft_components
         if dft_components is None:
             dft_component_mask = np.ones((6,), dtype=np.float32)
         else:
@@ -355,7 +342,7 @@ def compile_monitor_specs(
                 [1.0 if c in wanted else 0.0 for c in ordered], dtype=np.float32
             )
 
-        if not monitor.is_3d:
+        if not spec.is_3d:
             points = monitor.get_grid_points_2d(resolution, resolution)
             if points:
                 x_raw = np.asarray([p[0] for p in points], dtype=np.int32)
@@ -373,11 +360,11 @@ def compile_monitor_specs(
 
             specs.append(
                 CompiledMonitorSpec(
-                    name=monitor.name or f"monitor_{mon_idx}",
+                    name=spec.name or f"monitor_{mon_idx}",
                     monitor_index=mon_idx,
                     is_3d=False,
                     record_interval=interval,
-                    accumulate_power=bool(monitor.accumulate_power),
+                    accumulate_power=bool(spec.accumulate_power),
                     power_scale=float(resolution * resolution),
                     normal_axis=-1,
                     accumulate_frequency=bool(freq_points.size > 0),
@@ -388,7 +375,7 @@ def compile_monitor_specs(
                     freq_rot_im=jnp.asarray(freq_rot_im),
                     dft_enabled=bool(dft_enabled and dft_freqs.size > 0),
                     dft_record_interval=freq_interval,
-                    dft_t_start=float(getattr(monitor, "dft_t_start", 0.0)),
+                    dft_t_start=float(spec.dft_t_start),
                     dft_t_end=float(dft_t_end_val),
                     dft_window_code=dft_window_code,
                     dft_point_count=int(x_ez.size),
@@ -430,15 +417,13 @@ def compile_monitor_specs(
 
             specs.append(
                 CompiledMonitorSpec(
-                    name=monitor.name or f"monitor_{mon_idx}",
+                    name=spec.name or f"monitor_{mon_idx}",
                     monitor_index=mon_idx,
                     is_3d=True,
                     record_interval=interval,
-                    accumulate_power=bool(monitor.accumulate_power),
+                    accumulate_power=bool(spec.accumulate_power),
                     power_scale=float(resolution * resolution),
-                    normal_axis={"x": 0, "y": 1, "z": 2}.get(
-                        str(getattr(monitor, "plane_normal", "z")).lower(), -1
-                    ),
+                    normal_axis={"x": 0, "y": 1, "z": 2}.get(str(spec.plane_normal or "z").lower(), -1),
                     accumulate_frequency=bool(freq_points.size > 0),
                     freq_record_interval=freq_interval,
                     freq_count=int(freq_points.size),
@@ -447,7 +432,7 @@ def compile_monitor_specs(
                     freq_rot_im=jnp.asarray(freq_rot_im),
                     dft_enabled=bool(dft_enabled and dft_freqs.size > 0),
                     dft_record_interval=freq_interval,
-                    dft_t_start=float(getattr(monitor, "dft_t_start", 0.0)),
+                    dft_t_start=float(spec.dft_t_start),
                     dft_t_end=float(dft_t_end_val),
                     dft_window_code=dft_window_code,
                     dft_point_count=int(min_dim0 * min_dim1),

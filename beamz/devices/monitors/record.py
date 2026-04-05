@@ -5,13 +5,17 @@ import numpy as np
 
 def should_record(monitor, step):
     """Check if this step should be recorded based on interval."""
-    return (step - monitor.last_record_step) >= monitor.record_interval
+    spec = monitor.spec
+    state = monitor.state
+    return (step - state.last_record_step) >= spec.record_interval
 
 
 def record_fields_2d(
     monitor, Ez, Hx, Hy, t, dx, dy, step=0, Ex=None, Ey=None, Hz=None
 ):
     """Record 2D field data."""
+    spec = monitor.spec
+    state = monitor.state
     do_record = monitor.should_record(step)
     do_dft = monitor._dft_should_accumulate(step, t)
     if not do_record and not do_dft:
@@ -51,17 +55,17 @@ def record_fields_2d(
         else:
             Hz_values.append(0.0)
 
-    if do_record and monitor.should_record_fields:
-        monitor.fields["Ex"].append(Ex_values)
-        monitor.fields["Ey"].append(Ey_values)
-        monitor.fields["Ez"].append(Ez_values)
-        monitor.fields["Hx"].append(Hx_values)
-        monitor.fields["Hy"].append(Hy_values)
-        monitor.fields["Hz"].append(Hz_values)
-        monitor.fields["t"].append(t)
+    if do_record and spec.should_record_fields:
+        state.fields["Ex"].append(Ex_values)
+        state.fields["Ey"].append(Ey_values)
+        state.fields["Ez"].append(Ez_values)
+        state.fields["Hx"].append(Hx_values)
+        state.fields["Hy"].append(Hy_values)
+        state.fields["Hz"].append(Hz_values)
+        state.fields["t"].append(t)
 
     if do_dft:
-        dft_components = monitor.dft_components or ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        dft_components = spec.dft_components or ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
         vectors = {}
         if "Ex" in dft_components:
             vectors["Ex"] = Ex_values
@@ -77,23 +81,25 @@ def record_fields_2d(
             vectors["Hz"] = Hz_values
         monitor._update_dft(t, vectors)
 
-    if do_record and monitor.accumulate_power:
+    if do_record and spec.accumulate_power:
         calculate_power_2d(monitor, Ez_values, Hx_values, Hy_values, t, dx, dy)
 
     if do_record:
-        monitor.last_record_step = step
+        state.last_record_step = step
     manage_memory(monitor)
 
     if (
         do_record
-        and monitor.live_update
-        and (len(monitor.fields["t"]) % monitor.update_interval == 0)
+        and spec.live_update
+        and (len(state.fields["t"]) % state.update_interval == 0)
     ):
         monitor._update_live_plot_2d()
 
 
 def record_fields_3d(monitor, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy, dz, step=0):
     """Record 3D field data from plane slice."""
+    spec = monitor.spec
+    state = monitor.state
     do_record = monitor.should_record(step)
     do_dft = monitor._dft_should_accumulate(step, t)
     if not do_record and not do_dft:
@@ -143,17 +149,17 @@ def record_fields_3d(monitor, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy, dz, step=0):
     Hy_slice = Hy_slice[:min_dim0, :min_dim1]
     Hz_slice = Hz_slice[:min_dim0, :min_dim1]
 
-    if do_record and monitor.should_record_fields:
-        monitor.fields["Ex"].append(Ex_slice)
-        monitor.fields["Ey"].append(Ey_slice)
-        monitor.fields["Ez"].append(Ez_slice)
-        monitor.fields["Hx"].append(Hx_slice)
-        monitor.fields["Hy"].append(Hy_slice)
-        monitor.fields["Hz"].append(Hz_slice)
-        monitor.fields["t"].append(t)
+    if do_record and spec.should_record_fields:
+        state.fields["Ex"].append(Ex_slice)
+        state.fields["Ey"].append(Ey_slice)
+        state.fields["Ez"].append(Ez_slice)
+        state.fields["Hx"].append(Hx_slice)
+        state.fields["Hy"].append(Hy_slice)
+        state.fields["Hz"].append(Hz_slice)
+        state.fields["t"].append(t)
 
     if do_dft:
-        dft_components = monitor.dft_components or ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        dft_components = spec.dft_components or ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
         vectors = {}
         if "Ex" in dft_components:
             vectors["Ex"] = Ex_slice.reshape(-1)
@@ -169,17 +175,17 @@ def record_fields_3d(monitor, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy, dz, step=0):
             vectors["Hz"] = Hz_slice.reshape(-1)
         monitor._update_dft(t, vectors)
 
-    if do_record and monitor.accumulate_power:
+    if do_record and spec.accumulate_power:
         calculate_power_3d(monitor, Ex_slice, Ey_slice, Ez_slice, Hx_slice, Hy_slice, Hz_slice, t, dx, dy)
 
     if do_record:
-        monitor.last_record_step = step
+        state.last_record_step = step
     manage_memory(monitor)
 
     if (
         do_record
-        and monitor.live_update
-        and (len(monitor.fields["t"]) % monitor.update_interval == 0)
+        and spec.live_update
+        and (len(state.fields["t"]) % state.update_interval == 0)
     ):
         monitor._update_live_plot_3d()
 
@@ -194,6 +200,7 @@ def record_fields(monitor, *args, **kwargs):
 
 def calculate_power_2d(monitor, Ez_values, Hx_values, Hy_values, t, dx, dy):
     """Calculate Poynting vector magnitude for 2D fields."""
+    state = monitor.state
     Ez_array = np.array(Ez_values)
     Hx_array = np.array(Hx_values)
     Hy_array = np.array(Hy_values)
@@ -201,91 +208,98 @@ def calculate_power_2d(monitor, Ez_values, Hx_values, Hy_values, t, dx, dy):
     Sy = Ez_array * Hx_array
     power_mag = np.sqrt(Sx**2 + Sy**2)
     total_power = np.sum(power_mag) * dx * dy
-    if monitor.power_accumulated is None:
-        monitor.power_accumulated = power_mag
+    if state.power_accumulated is None:
+        state.power_accumulated = power_mag
     else:
-        monitor.power_accumulated += power_mag
-    monitor.power_history.append(total_power)
-    monitor.power_timestamps.append(float(t))
-    monitor.power_accumulation_count += 1
+        state.power_accumulated += power_mag
+    state.power_history.append(total_power)
+    state.power_timestamps.append(float(t))
+    state.power_accumulation_count += 1
 
 
 def calculate_power_3d(monitor, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy):
     """Calculate Poynting vector magnitude for 3D fields."""
+    state = monitor.state
     Sx = Ey * Hz - Ez * Hy
     Sy = Ez * Hx - Ex * Hz
     Sz = Ex * Hy - Ey * Hx
     power_mag = np.sqrt(Sx**2 + Sy**2 + Sz**2)
     total_power = np.sum(power_mag) * dx * dy
-    if monitor.power_accumulated is None:
-        monitor.power_accumulated = power_mag.copy()
+    if state.power_accumulated is None:
+        state.power_accumulated = power_mag.copy()
     else:
-        monitor.power_accumulated += power_mag
-    monitor.power_history.append(total_power)
-    monitor.power_timestamps.append(float(t))
-    monitor.power_accumulation_count += 1
+        state.power_accumulated += power_mag
+    state.power_history.append(total_power)
+    state.power_timestamps.append(float(t))
+    state.power_accumulation_count += 1
 
 
 def manage_memory(monitor):
     """Manage history limits for recorded monitor data."""
-    if monitor.max_history_steps is None:
+    spec = monitor.spec
+    state = monitor.state
+    if spec.max_history_steps is None:
         return
-    for field_name in monitor.fields:
-        if len(monitor.fields[field_name]) > monitor.max_history_steps:
-            excess = len(monitor.fields[field_name]) - monitor.max_history_steps
-            monitor.fields[field_name] = monitor.fields[field_name][excess:]
-    if len(monitor.power_history) > monitor.max_history_steps:
-        excess = len(monitor.power_history) - monitor.max_history_steps
-        monitor.power_history = monitor.power_history[excess:]
-        monitor.power_timestamps = monitor.power_timestamps[excess:]
+    for field_name in state.fields:
+        if len(state.fields[field_name]) > spec.max_history_steps:
+            excess = len(state.fields[field_name]) - spec.max_history_steps
+            state.fields[field_name] = state.fields[field_name][excess:]
+    if len(state.power_history) > spec.max_history_steps:
+        excess = len(state.power_history) - spec.max_history_steps
+        state.power_history = state.power_history[excess:]
+        state.power_timestamps = state.power_timestamps[excess:]
 
 
 def field_statistics(monitor):
     """Get statistical information about recorded fields."""
-    if not monitor.fields["t"]:
+    spec = monitor.spec
+    state = monitor.state
+    if not state.fields["t"]:
         return {}
     stats = {
-        "total_records": len(monitor.fields["t"]),
+        "total_records": len(state.fields["t"]),
         "time_span": (
-            monitor.fields["t"][-1] - monitor.fields["t"][0]
-            if len(monitor.fields["t"]) > 1
+            state.fields["t"][-1] - state.fields["t"][0]
+            if len(state.fields["t"]) > 1
             else 0
         ),
-        "avg_power": np.mean(monitor.power_history) if monitor.power_history else 0,
-        "max_power": np.max(monitor.power_history) if monitor.power_history else 0,
-        "monitor_type": monitor.monitor_type,
-        "is_3d": monitor.is_3d,
+        "avg_power": np.mean(state.power_history) if state.power_history else 0,
+        "max_power": np.max(state.power_history) if state.power_history else 0,
+        "monitor_type": spec.monitor_type,
+        "is_3d": spec.is_3d,
     }
-    if monitor.is_3d:
-        stats["plane_normal"] = monitor.plane_normal
-        stats["plane_position"] = monitor.plane_position
-        stats["plane_size"] = monitor.size
+    if spec.is_3d:
+        stats["plane_normal"] = spec.plane_normal
+        stats["plane_position"] = spec.plane_position
+        stats["plane_size"] = spec.size
     else:
-        stats["line_start"] = monitor.start
-        stats["line_end"] = monitor.end
+        stats["line_start"] = spec.start
+        stats["line_end"] = spec.end
     return stats
 
 
 def field_at_time(monitor, field="Ez", time_value=None, time_index=None):
     """Get field data at a specific time."""
-    if not monitor.fields["t"] or field not in monitor.fields:
+    state = monitor.state
+    if not state.fields["t"] or field not in state.fields:
         return None
     if time_index is not None:
-        if 0 <= time_index < len(monitor.fields[field]):
-            return monitor.fields[field][time_index]
+        if 0 <= time_index < len(state.fields[field]):
+            return state.fields[field][time_index]
         return None
     if time_value is not None:
-        times = np.array(monitor.fields["t"])
+        times = np.array(state.fields["t"])
         time_index = np.argmin(np.abs(times - time_value))
-        return monitor.fields[field][time_index]
-    return monitor.fields[field][-1] if monitor.fields[field] else None
+        return state.fields[field][time_index]
+    return state.fields[field][-1] if state.fields[field] else None
 
 
 def power_statistics(monitor):
     """Get power statistics from recorded data."""
-    if not monitor.power_history:
+    power_history = monitor.state.power_history
+    if not power_history:
         return {}
-    power_array = np.array(monitor.power_history)
+    power_array = np.array(power_history)
     mean_power = np.mean(power_array)
     return {
         "mean_power": mean_power,
@@ -299,6 +313,7 @@ def power_statistics(monitor):
 
 def signed_flux_trace(monitor, normal_direction, field_pair=None):
     """Return signed directional flux trace from recorded field components."""
+    state = monitor.state
     direction = str(normal_direction).lower()
     if direction not in {"+x", "-x", "+y", "-y"}:
         raise ValueError(
@@ -318,17 +333,17 @@ def signed_flux_trace(monitor, normal_direction, field_pair=None):
         e_comp, h_comp = field_pair
         base_sign = 1.0
 
-    if e_comp not in monitor.fields or h_comp not in monitor.fields:
+    if e_comp not in state.fields or h_comp not in state.fields:
         raise ValueError(
             f"Requested components ({e_comp}, {h_comp}) are not recorded by this monitor."
         )
-    if not monitor.fields[e_comp] or not monitor.fields[h_comp]:
+    if not state.fields[e_comp] or not state.fields[h_comp]:
         raise ValueError(
             f"No recorded data for ({e_comp}, {h_comp}) on monitor '{monitor.name}'."
         )
 
-    e_arr = np.asarray(monitor.fields[e_comp], dtype=np.complex128)
-    h_arr = np.asarray(monitor.fields[h_comp], dtype=np.complex128)
+    e_arr = np.asarray(state.fields[e_comp], dtype=np.complex128)
+    h_arr = np.asarray(state.fields[h_comp], dtype=np.complex128)
     if e_arr.ndim == 1:
         e_arr = e_arr[:, None]
     if h_arr.ndim == 1:
