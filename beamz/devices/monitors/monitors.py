@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Callable, Optional
 
 import numpy as np
@@ -7,6 +8,12 @@ from beamz.devices.monitors import geom as geom_helpers
 from beamz.devices.monitors import live as live_helpers
 from beamz.devices.monitors import record as record_helpers
 from beamz.devices.monitors import store as store_helpers
+from beamz.devices.monitors.spec import MonitorSpec, build_monitor_spec
+from beamz.devices.monitors.state import MonitorRecorder
+
+
+_SPEC_FIELDS = frozenset(MonitorSpec.__dataclass_fields__.keys())
+_STATE_FIELDS = frozenset(MonitorRecorder.__dataclass_fields__.keys())
 
 
 class Monitor:
@@ -36,116 +43,58 @@ class Monitor:
         frequency_points=None,
         frequency_record_interval=1,
     ):
-        self.design = design
-        self.should_record_fields = record_fields
-        self.accumulate_power = accumulate_power
-        self.live_update = live_update
-        self.record_interval = record_interval
-        self.max_history_steps = max_history_steps
-        self.dft_enabled = bool(dft_enabled)
-        self.dft_record_every_step = bool(dft_record_every_step)
-        if dft_record_interval is None:
-            self.dft_record_interval = (
-                1 if self.dft_record_every_step else max(1, int(record_interval))
-            )
-        else:
-            self.dft_record_interval = max(1, int(dft_record_interval))
-        self.dft_t_start = float(dft_t_start) if dft_t_start is not None else 0.0
-        self.dft_t_end = None if dft_t_end is None else float(dft_t_end)
-        self.dft_window = str(dft_window).lower()
-        if self.dft_window in {"none", "rectangular"}:
-            self.dft_window = "rect"
-        if self.dft_window not in {"rect", "hann"}:
-            raise ValueError(
-                f"dft_window must be one of ['rect', 'hann'], got {dft_window!r}"
-            )
-        if dft_frequencies is None:
-            self.dft_frequencies = np.array([], dtype=float)
-        else:
-            self.dft_frequencies = np.atleast_1d(
-                np.asarray(dft_frequencies, dtype=float)
-            )
-        self.dft_components = (
-            tuple(str(c) for c in dft_components)
-            if dft_components is not None
-            else None
+        object.__setattr__(self, "design", design)
+        object.__setattr__(
+            self,
+            "spec",
+            build_monitor_spec(
+                design=design,
+                start=start,
+                end=end,
+                plane_normal=plane_normal,
+                plane_position=plane_position,
+                size=size,
+                record_fields=record_fields,
+                accumulate_power=accumulate_power,
+                live_update=live_update,
+                record_interval=record_interval,
+                max_history_steps=max_history_steps,
+                dft_frequencies=dft_frequencies,
+                dft_t_start=dft_t_start,
+                dft_t_end=dft_t_end,
+                dft_enabled=dft_enabled,
+                dft_components=dft_components,
+                dft_record_every_step=dft_record_every_step,
+                dft_record_interval=dft_record_interval,
+                dft_window=dft_window,
+                objective_function=objective_function,
+                name=name,
+                frequency_points=frequency_points,
+                frequency_record_interval=frequency_record_interval,
+            ),
         )
-        if frequency_points is None:
-            freq_arr = np.zeros((0,), dtype=np.float64)
-        else:
-            freq_arr = np.asarray(frequency_points, dtype=np.float64).ravel()
-            if freq_arr.ndim != 1:
-                raise ValueError(
-                    "frequency_points must be a 1D sequence of frequencies in Hz"
-                )
-            if np.any(freq_arr < 0.0):
-                raise ValueError(
-                    "frequency_points must be non-negative frequencies in Hz"
-                )
-        self.frequency_points = freq_arr
-        self.frequency_record_interval = max(1, int(frequency_record_interval))
-        self.accumulate_frequency = bool(freq_arr.size > 0)
-        self.frequency_flux_spectrum = np.zeros(freq_arr.shape, dtype=np.complex64)
-        self.objective_function = objective_function
-        self.objective_value: Optional[float] = None
-        self.name = name
+        object.__setattr__(self, "state", MonitorRecorder.create(self.spec))
 
-        # Determine if this is a 3D monitor based on input parameters
-        self.is_3d = self._determine_3d_mode(start, end, design)
+    def __getattr__(self, name):
+        spec = self.__dict__.get("spec")
+        if spec is not None and hasattr(spec, name):
+            return getattr(spec, name)
+        state = self.__dict__.get("state")
+        if state is not None and hasattr(state, name):
+            return getattr(state, name)
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
-        # Initialize field storage
-        if self.is_3d:
-            # 3D fields: Ex, Ey, Ez, Hx, Hy, Hz
-            self.fields = {
-                "Ex": [],
-                "Ey": [],
-                "Ez": [],
-                "Hx": [],
-                "Hy": [],
-                "Hz": [],
-                "t": [],
-            }
-        else:
-            # 2D fields: Ez, Hx, Hy and optional TE set Ex, Ey, Hz
-            self.fields = {
-                "Ex": [],
-                "Ey": [],
-                "Ez": [],
-                "Hx": [],
-                "Hy": [],
-                "Hz": [],
-                "t": [],
-            }
-
-        # Power and energy storage
-        self.power_accumulated = None
-        self.energy_history = []
-        self.power_history = []
-        self.power_timestamps = []
-        self.power_accumulation_count = 0
-        # Recording control
-        self.step_count = 0
-        self.last_record_step = -1
-        # Live visualization
-        self.live_fig = None
-        self.live_axes = None
-        self.live_plots = {}
-        self.update_interval = (
-            10  # Update every N records (faster updates for visibility)
-        )
-        # DFT accumulators: component -> complex[nf, npoints], plus scalar weight sum.
-        self._dft_accum = {}
-        self._dft_weight_sum = np.zeros(self.dft_frequencies.size, dtype=float)
-        self._dft_sample_count = 0
-        self._dft_phase = np.ones(self.dft_frequencies.size, dtype=np.complex128)
-        self._dft_last_t = None
-        self._dft_last_dt = None
-        self._dft_last_rot = None
-
-        if self.is_3d:
-            self._init_3d_monitor(start, end, plane_normal, plane_position, size)
-        else:
-            self._init_2d_monitor(start, end)
+    def __setattr__(self, name, value):
+        if name in {"design", "spec", "state"}:
+            object.__setattr__(self, name, value)
+            return
+        if name in _SPEC_FIELDS and "spec" in self.__dict__:
+            object.__setattr__(self, "spec", replace(self.spec, **{name: value}))
+            return
+        if name in _STATE_FIELDS and "state" in self.__dict__:
+            setattr(self.state, name, value)
+            return
+        object.__setattr__(self, name, value)
 
     def evaluate_objective(self) -> Optional[float]:
         """Evaluate the objective function associated with this monitor, if any."""
@@ -157,11 +106,56 @@ class Monitor:
 
     def _init_2d_monitor(self, start, end):
         """Initialize 2D line monitor."""
-        geom_helpers.init_2d_monitor(self, start, end)
+        self.spec = build_monitor_spec(
+            design=self.design,
+            start=start,
+            end=end,
+            record_fields=self.should_record_fields,
+            accumulate_power=self.accumulate_power,
+            live_update=self.live_update,
+            record_interval=self.record_interval,
+            max_history_steps=self.max_history_steps,
+            dft_frequencies=self.dft_frequencies,
+            dft_t_start=self.dft_t_start,
+            dft_t_end=self.dft_t_end,
+            dft_enabled=self.dft_enabled,
+            dft_components=self.dft_components,
+            dft_record_every_step=self.dft_record_every_step,
+            dft_record_interval=self.dft_record_interval,
+            dft_window=self.dft_window,
+            objective_function=self.objective_function,
+            name=self.name,
+            frequency_points=self.frequency_points,
+            frequency_record_interval=self.frequency_record_interval,
+        )
 
     def _init_3d_monitor(self, start, end, plane_normal, plane_position, size):
         """Initialize 3D plane monitor from two points or plane definition."""
-        geom_helpers.init_3d_monitor(self, start, end, plane_normal, plane_position, size)
+        self.spec = build_monitor_spec(
+            design=self.design,
+            start=start,
+            end=end,
+            plane_normal=plane_normal,
+            plane_position=plane_position,
+            size=size,
+            record_fields=self.should_record_fields,
+            accumulate_power=self.accumulate_power,
+            live_update=self.live_update,
+            record_interval=self.record_interval,
+            max_history_steps=self.max_history_steps,
+            dft_frequencies=self.dft_frequencies,
+            dft_t_start=self.dft_t_start,
+            dft_t_end=self.dft_t_end,
+            dft_enabled=self.dft_enabled,
+            dft_components=self.dft_components,
+            dft_record_every_step=self.dft_record_every_step,
+            dft_record_interval=self.dft_record_interval,
+            dft_window=self.dft_window,
+            objective_function=self.objective_function,
+            name=self.name,
+            frequency_points=self.frequency_points,
+            frequency_record_interval=self.frequency_record_interval,
+        )
 
     def _generate_plane_vertices(self):
         """Generate vertices for the monitor plane for 3D visualization."""
