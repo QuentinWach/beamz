@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import numpy as np
@@ -186,9 +186,19 @@ class Simulation:
             object.__setattr__(self, name, value)
             return
         if name in self._SPEC_FIELDS and "spec" in self.__dict__:
-            raise AttributeError(
-                f"{type(self).__name__!s}.{name} is derived from immutable SimulationSpec"
-            )
+            new_spec = replace(self.spec, **{name: value})
+            object.__setattr__(self, "spec", new_spec)
+            if name == "time":
+                self.runtime.dt = float(new_spec.time[1] - new_spec.time[0])
+                self.runtime.num_steps = len(new_spec.time)
+                self.runtime.t = float(new_spec.time[0])
+                self.runtime.current_step = 0
+            if name in {"design", "resolution", "plane_2d", "devices", "boundaries", "time"}:
+                self.runtime.compiled_program = None
+                self.runtime.compiled_program_signature = None
+                self.runtime.compiled_program_cache.clear()
+                self.runtime.compiled_monitor_state = None
+            return
         if name in self._RUNTIME_MAP and "runtime" in self.__dict__:
             setattr(self.runtime, self._RUNTIME_MAP[name], value)
             return

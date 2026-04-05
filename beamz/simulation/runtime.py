@@ -18,8 +18,10 @@ from beamz.simulation.compiled import (
 
 def compile_program(sim, num_steps=None):
     """Compile the packed-data simulation program."""
+    spec = sim.spec
+    state = sim.runtime
     if num_steps is None:
-        num_steps = sim.num_steps - sim.current_step
+        num_steps = state.num_steps - state.current_step
     num_steps = int(num_steps)
     if num_steps <= 0:
         raise ValueError("num_steps must be > 0")
@@ -49,54 +51,55 @@ def compile_program(sim, num_steps=None):
 
     signature = (
         num_steps,
-        sim.fields.permittivity.shape,
-        sim.is_3d,
-        sim.plane_2d,
+        state.fields.permittivity.shape,
+        spec.is_3d,
+        spec.plane_2d,
         loop_kind,
         e_shell_split,
         h_shell_split,
         source_single_slab_dense,
     )
-    cached = sim._compiled_program_cache.get(signature)
+    cached = state.compiled_program_cache.get(signature)
     if cached is not None:
-        sim._compiled_program = cached
-        sim._compiled_program_signature = signature
+        state.compiled_program = cached
+        state.compiled_program_signature = signature
         return cached
 
     run_cfg = SimpleNamespace(
-        fields=sim.fields,
-        resolution=sim.resolution,
-        dt=sim.dt,
+        fields=state.fields,
+        resolution=spec.resolution,
+        dt=state.dt,
         num_steps=num_steps,
-        plane_2d=sim.plane_2d,
-        is_3d=sim.is_3d,
-        total_steps=sim.num_steps,
-        t0=float(sim.time[0]),
+        plane_2d=spec.plane_2d,
+        is_3d=spec.is_3d,
+        total_steps=state.num_steps,
+        t0=float(spec.time[0]),
         precision="float32",
         loop_kind=loop_kind,
         source_single_slab_dense=source_single_slab_dense,
     )
     program = compile_simulation(
-        design=sim.design,
-        devices=sim.devices,
-        boundaries=sim.boundaries,
+        design=spec.design,
+        devices=spec.devices,
+        boundaries=spec.boundaries,
         run_cfg=run_cfg,
     )
-    sim._compiled_program_cache[signature] = program
-    sim._compiled_program = program
-    sim._compiled_program_signature = signature
+    state.compiled_program_cache[signature] = program
+    state.compiled_program = program
+    state.compiled_program_signature = signature
     return program
 
 
 def _make_chunk_monitor_state(sim, program):
+    state = sim.runtime
     if (
-        sim._compiled_monitor_state is not None
+        state.compiled_monitor_state is not None
         and program.monitor_specs
-        and int(sim._compiled_monitor_state.counts.shape[0]) == len(program.monitor_specs)
+        and int(state.compiled_monitor_state.counts.shape[0]) == len(program.monitor_specs)
     ):
-        return sim._compiled_monitor_state
+        return state.compiled_monitor_state
     if program.monitor_specs:
-        records_horizon = max(1, int(sim.num_steps - sim.current_step))
+        records_horizon = max(1, int(state.num_steps - state.current_step))
         max_records = max(1, monitor_state_size(program.monitor_specs, records_horizon))
         max_freq = monitor_frequency_size(program.monitor_specs)
         max_points = monitor_dft_point_size(program.monitor_specs)
@@ -134,8 +137,9 @@ def _make_chunk_monitor_state(sim, program):
 
 def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):
     """Run the simulation using the compiled scan engine."""
+    state = sim.runtime
     if num_steps is None:
-        num_steps = sim.num_steps - sim.current_step
+        num_steps = state.num_steps - state.current_step
     num_steps = int(num_steps)
     if num_steps <= 0:
         return None
@@ -148,8 +152,8 @@ def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, 
         raise ValueError("record_interval must be a positive integer")
 
     field_history = {name: [] for name in record_fields} if record_every else None
-    if sim.current_step == 0:
-        sim._compiled_monitor_state = None
+    if state.current_step == 0:
+        state.compiled_monitor_state = None
 
     chunk_size = record_every if record_every else num_steps
     steps_remaining = num_steps
@@ -164,43 +168,45 @@ def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, 
             print("● JIT compiling v0.3 packed FDTD program...", end=" ", flush=True)
 
         engine_state = EngineState(
-            ex=sim.fields.Ex,
-            ey=sim.fields.Ey,
-            ez=sim.fields.Ez,
-            hx=sim.fields.Hx,
-            hy=sim.fields.Hy,
-            hz=sim.fields.Hz,
-            t=jnp.asarray(sim.t, dtype=jnp.float32),
-            current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
+            ex=state.fields.Ex,
+            ey=state.fields.Ey,
+            ez=state.fields.Ez,
+            hx=state.fields.Hx,
+            hy=state.fields.Hy,
+            hz=state.fields.Hz,
+            t=jnp.asarray(state.t, dtype=jnp.float32),
+            current_step=jnp.asarray(state.current_step, dtype=jnp.int32),
         )
 
         if monitor_state is None:
             monitor_state = _make_chunk_monitor_state(sim, program)
-        sim._compiled_monitor_state = monitor_state
+        state.compiled_monitor_state = monitor_state
 
         engine_state, monitor_state, _ = program.run(
             engine_state=engine_state,
             monitor_state=monitor_state,
         )
         engine_state.ez.block_until_ready()
-        sim._compiled_monitor_state = monitor_state
+        state.compiled_monitor_state = monitor_state
 
         if progress and steps_done == 0:
             print("done!")
 
-        sim.fields.Ex = engine_state.ex
-        sim.fields.Ey = engine_state.ey
-        sim.fields.Ez = engine_state.ez
-        sim.fields.Hx = engine_state.hx
-        sim.fields.Hy = engine_state.hy
-        sim.fields.Hz = engine_state.hz
-        sim.t = to_scalar(engine_state.t, cast=float)
-        sim.current_step = to_scalar(engine_state.current_step, cast=int)
+        state.fields.Ex = engine_state.ex
+        state.fields.Ey = engine_state.ey
+        state.fields.Ez = engine_state.ez
+        state.fields.Hx = engine_state.hx
+        state.fields.Hy = engine_state.hy
+        state.fields.Hz = engine_state.hz
+        state.t = to_scalar(engine_state.t, cast=float)
+        state.current_step = to_scalar(engine_state.current_step, cast=int)
 
-        if field_history is not None and (sim.current_step % record_every == 0):
+        if field_history is not None and (state.current_step % record_every == 0):
             for name in record_fields:
-                if hasattr(sim.fields, name):
-                    field_history[name].append(to_host(getattr(sim.fields, name), copy=True))
+                if hasattr(state.fields, name):
+                    field_history[name].append(
+                        to_host(getattr(state.fields, name), copy=True)
+                    )
 
         steps_done += this_chunk
         steps_remaining -= this_chunk
@@ -222,7 +228,7 @@ def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, 
     result = {}
     if field_history is not None:
         result["fields"] = {key: stack_host(values) for key, values in field_history.items()}
-    monitors = [device for device in sim.devices if isinstance(device, Monitor)]
+    monitors = [device for device in sim.spec.devices if isinstance(device, Monitor)]
     if monitors:
         result["monitors"] = monitors
     return result if result else None
@@ -239,10 +245,11 @@ def run_compiled_until_decay(
     progress=True,
 ):
     """Run compiled chunks until monitor power decays after a minimum time."""
-    total_steps = int(sim.num_steps - sim.current_step)
+    state = sim.runtime
+    total_steps = int(state.num_steps - state.current_step)
     if total_steps <= 0:
         return 0
-    dt = float(sim.dt)
+    dt = float(state.dt)
     chunk_steps = (
         max(64, min(512, math.ceil(total_steps / 24.0)))
         if chunk_steps is None

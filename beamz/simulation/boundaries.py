@@ -1,25 +1,24 @@
+from dataclasses import dataclass
+
 import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0, MU_0, µm
 
 
+@dataclass(frozen=True, slots=True)
 class Boundary:
     """Abstract base class for all boundary conditions."""
+    edges: str | tuple[str, ...] = "all"
+    thickness: float = 1 * µm
 
-    def __init__(self, edges, thickness):
-        """
-        Args:
-            edges: list of edge names or 'all'
-                   2D: ['left', 'right', 'top', 'bottom']
-                   3D: ['left', 'right', 'top', 'bottom', 'front', 'back']
-            thickness: physical thickness of boundary region
-        """
-        if edges == "all":
-            self.edges = "all"
-        else:
-            self.edges = edges if isinstance(edges, list) else [edges]
-        self.thickness = thickness
+    def __post_init__(self):
+        if self.edges != "all":
+            edges = self.edges if isinstance(self.edges, (tuple, list)) else (self.edges,)
+            object.__setattr__(self, "edges", tuple(str(edge) for edge in edges))
+        object.__setattr__(self, "thickness", float(self.thickness))
+        if self.thickness <= 0:
+            raise ValueError("thickness must be positive")
 
     def _get_edges_for_dimensionality(self, is_3d):
         """Resolve 'all' edges based on dimensionality."""
@@ -32,26 +31,25 @@ class Boundary:
         return self.edges
 
 
+@dataclass(frozen=True, slots=True)
 class PML(Boundary):
     """Perfectly Matched Layer boundary condition using graded-sigma absorption."""
+    sigma_max: float | None = None
+    m: int = 3
 
-    def __init__(
-        self,
-        edges="all",
-        thickness=1 * µm,
-        sigma_max=None,
-        m=3,
-    ):
-        """
-        Args:
-            edges: edges to apply PML
-            thickness: PML thickness
-            sigma_max: maximum conductivity (auto-calculated if None)
-            m: conductivity grading order
-        """
-        super().__init__(edges, thickness)
-        self.sigma_max = sigma_max
-        self.m = m
+    def __post_init__(self):
+        Boundary.__post_init__(self)
+        if self.sigma_max is not None:
+            object.__setattr__(self, "sigma_max", float(self.sigma_max))
+        object.__setattr__(self, "m", int(self.m))
+        if self.m <= 0:
+            raise ValueError("m must be positive")
+
+    def _resolved_sigma_max(self, resolution, eps_avg=1.0):
+        if self.sigma_max is not None:
+            return self.sigma_max
+        eta = np.sqrt(MU_0 / (EPS_0 * eps_avg))
+        return 0.8 * (self.m + 1) / (eta * resolution)
 
     def create_pml_regions(self, fields, design, resolution, dt, plane_2d="xy"):
         """Create permanent PML region masks and graded-sigma conductivity profiles.
@@ -60,14 +58,12 @@ class PML(Boundary):
             - mask: boolean array indicating PML cells
             - sigma_x, sigma_y, sigma_z: conductivity profiles
         """
-        if self.sigma_max is None:
-            eta = np.sqrt(MU_0 / (EPS_0 * 1.0))
-            self.sigma_max = 0.8 * (self.m + 1) / (eta * resolution)
+        sigma_max = self._resolved_sigma_max(resolution)
 
         if fields.permittivity.ndim == 3:
-            return self._create_pml_profiles_3d(fields, design)
+            return self._create_pml_profiles_3d(fields, design, sigma_max)
         else:
-            return self._create_pml_profiles_2d(fields, design, plane_2d)
+            return self._create_pml_profiles_2d(fields, design, plane_2d, sigma_max)
 
     def get_conductivity(
         self, x, y, z=0, dx=1e-6, dt=1e-15, eps_avg=1.0, width=0, height=0, depth=0
@@ -102,7 +98,7 @@ class PML(Boundary):
                 sigma += s_max * (dist / self.thickness) ** self.m
         return sigma
 
-    def _compute_1d_profile(self, coords, length, low_active, high_active):
+    def _compute_1d_profile(self, coords, length, low_active, high_active, sigma_max):
         """Compute 1D graded-sigma profile along an axis.
 
         Args:
@@ -116,15 +112,15 @@ class PML(Boundary):
 
         if low_active:
             dist = jnp.clip(thickness - coords, 0.0, None)
-            sigma = sigma + self.sigma_max * (dist / thickness) ** self.m
+            sigma = sigma + sigma_max * (dist / thickness) ** self.m
 
         if high_active:
             dist = jnp.clip(coords - (length - thickness), 0.0, None)
-            sigma = sigma + self.sigma_max * (dist / thickness) ** self.m
+            sigma = sigma + sigma_max * (dist / thickness) ** self.m
 
         return sigma
 
-    def _create_pml_profiles_2d(self, fields, design, plane_2d):
+    def _create_pml_profiles_2d(self, fields, design, plane_2d, sigma_max):
         """Create graded-sigma PML profiles for 2D plane."""
         shape = fields.permittivity.shape
         dim1, dim2 = shape
@@ -147,10 +143,10 @@ class PML(Boundary):
         coords2 = jnp.linspace(0, len2, dim2)
 
         sigma1 = self._compute_1d_profile(
-            coords1, len1, "bottom" in edges, "top" in edges
+            coords1, len1, "bottom" in edges, "top" in edges, sigma_max
         )
         sigma2 = self._compute_1d_profile(
-            coords2, len2, "left" in edges, "right" in edges
+            coords2, len2, "left" in edges, "right" in edges, sigma_max
         )
 
         sigma_axis1 = jnp.broadcast_to(sigma1[:, None], shape)
@@ -167,7 +163,7 @@ class PML(Boundary):
         pml_mask = (sigma_axis1 > 0) | (sigma_axis2 > 0)
         return {"mask": pml_mask, **profiles}
 
-    def _create_pml_profiles_3d(self, fields, design):
+    def _create_pml_profiles_3d(self, fields, design, sigma_max):
         """Create graded-sigma PML profiles for 3D."""
         shape = fields.permittivity.shape  # (nz, ny, nx)
         nz, ny, nx = shape
@@ -180,13 +176,13 @@ class PML(Boundary):
         coords_z = jnp.linspace(0, depth, nz)
 
         sigma_x_1d = self._compute_1d_profile(
-            coords_x, width, "left" in edges, "right" in edges
+            coords_x, width, "left" in edges, "right" in edges, sigma_max
         )
         sigma_y_1d = self._compute_1d_profile(
-            coords_y, height, "bottom" in edges, "top" in edges
+            coords_y, height, "bottom" in edges, "top" in edges, sigma_max
         )
         sigma_z_1d = self._compute_1d_profile(
-            coords_z, depth, "front" in edges, "back" in edges
+            coords_z, depth, "front" in edges, "back" in edges, sigma_max
         )
 
         sigma_x = jnp.broadcast_to(sigma_x_1d[None, None, :], shape)
