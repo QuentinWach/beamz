@@ -3,6 +3,8 @@
 import numpy as np
 from matplotlib.patches import Rectangle as MatplotlibRectangle
 
+from beamz.devices.monitors.spec import MonitorSpec
+
 
 def determine_3d_mode(start, end, design):
     """Determine if a monitor should operate in 3D mode."""
@@ -170,10 +172,17 @@ def get_plane_center(monitor):
 
 def grid_points_2d(monitor, dx, dy):
     """Get grid points for a 2D line monitor."""
-    start_x_grid = int(round(monitor.start[0] / dx))
-    start_y_grid = int(round(monitor.start[1] / dy))
-    end_x_grid = int(round(monitor.end[0] / dx))
-    end_y_grid = int(round(monitor.end[1] / dy))
+    return grid_points_2d_for_spec(monitor.spec, dx, dy)
+
+
+def grid_points_2d_for_spec(spec, dx, dy):
+    """Get grid points for a 2D line monitor spec."""
+    if not isinstance(spec, MonitorSpec):
+        raise TypeError("grid_points_2d_for_spec expects a MonitorSpec")
+    start_x_grid = int(round(spec.start[0] / dx))
+    start_y_grid = int(round(spec.start[1] / dy))
+    end_x_grid = int(round(spec.end[0] / dx))
+    end_y_grid = int(round(spec.end[1] / dy))
 
     if abs(end_x_grid - start_x_grid) > abs(end_y_grid - start_y_grid):
         num_points = abs(end_x_grid - start_x_grid) + 1
@@ -189,37 +198,36 @@ def grid_points_2d(monitor, dx, dy):
 
 def grid_slice_3d(monitor, dx, dy, dz, field_shape):
     """Get grid slice for a 3D plane monitor."""
-    if monitor.design:
-        base_nx = max(1, int(round((getattr(monitor.design, "width", 0.0)) / dx)))
-        base_ny = max(1, int(round((getattr(monitor.design, "height", 0.0)) / dy)))
-        base_nz = max(
-            1, int(round((getattr(monitor.design, "depth", 0.0) or 0.0) / dz))
-        )
-        del base_nx, base_ny, base_nz
-    else:
-        base_nz, base_ny, base_nx = field_shape
-        del base_nx, base_ny, base_nz
+    return grid_slice_3d_for_spec(monitor.spec, dx, dy, dz, field_shape)
 
-    if monitor.plane_normal == "z":
-        z_idx = int(round(monitor.plane_position / dz))
-        x_start = int(round(monitor.start[0] / dx))
-        x_end = int(round((monitor.start[0] + monitor.size[0]) / dx))
-        y_start = int(round(monitor.start[1] / dy))
-        y_end = int(round((monitor.start[1] + monitor.size[1]) / dy))
+
+def grid_slice_3d_for_spec(spec, dx, dy, dz, field_shape):
+    """Get grid slice for a 3D plane monitor spec."""
+    if not isinstance(spec, MonitorSpec):
+        raise TypeError("grid_slice_3d_for_spec expects a MonitorSpec")
+    base_nz, base_ny, base_nx = field_shape
+    del base_nx, base_ny, base_nz
+
+    if spec.plane_normal == "z":
+        z_idx = int(round(spec.plane_position / dz))
+        x_start = int(round(spec.start[0] / dx))
+        x_end = int(round((spec.start[0] + spec.size[0]) / dx))
+        y_start = int(round(spec.start[1] / dy))
+        y_end = int(round((spec.start[1] + spec.size[1]) / dy))
         return z_idx, slice(y_start, y_end), slice(x_start, x_end)
-    if monitor.plane_normal == "y":
-        y_idx = int(round(monitor.plane_position / dy))
-        x_start = int(round(monitor.start[0] / dx))
-        x_end = int(round((monitor.start[0] + monitor.size[0]) / dx))
-        z_start = int(round(monitor.start[2] / dz))
-        z_end = int(round((monitor.start[2] + monitor.size[1]) / dz))
+    if spec.plane_normal == "y":
+        y_idx = int(round(spec.plane_position / dy))
+        x_start = int(round(spec.start[0] / dx))
+        x_end = int(round((spec.start[0] + spec.size[0]) / dx))
+        z_start = int(round(spec.start[2] / dz))
+        z_end = int(round((spec.start[2] + spec.size[1]) / dz))
         return slice(z_start, z_end), y_idx, slice(x_start, x_end)
 
-    x_idx = int(round(monitor.plane_position / dx))
-    y_start = int(round(monitor.start[1] / dy))
-    y_end = int(round((monitor.start[1] + monitor.size[0]) / dy))
-    z_start = int(round(monitor.start[2] / dz))
-    z_end = int(round((monitor.start[2] + monitor.size[1]) / dz))
+    x_idx = int(round(spec.plane_position / dx))
+    y_start = int(round(spec.start[1] / dy))
+    y_end = int(round((spec.start[1] + spec.size[0]) / dy))
+    z_start = int(round(spec.start[2] / dz))
+    z_end = int(round((spec.start[2] + spec.size[1]) / dz))
     return slice(z_start, z_end), slice(y_start, y_end), x_idx
 
 

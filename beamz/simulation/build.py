@@ -122,12 +122,14 @@ def compile_simulation(design, devices, boundaries, run_cfg, *, compiled_cls, co
         source_states=source_states,
     )
 
+    monitor_states = tuple(getattr(device, "state", None) for device in devices)
     monitor_specs, _ = compile_monitor_specs(
-        devices=devices,
+        devices=device_specs,
         fields=fields,
         resolution=resolution,
         num_steps=num_steps,
         dt=dt,
+        monitor_states=monitor_states,
     )
 
     monitor_devices = tuple(device for device in devices if isinstance(device, Monitor))

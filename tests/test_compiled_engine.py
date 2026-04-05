@@ -17,7 +17,7 @@ from beamz import (
     ramped_cosine,
     um,
 )
-from beamz.devices.monitors.compiler import CompiledMonitorSpec
+from beamz.devices.monitors.compiler import CompiledMonitorSpec, compile_monitor_specs
 from beamz.devices.sources.compiler import compile_source_specs
 from beamz.simulation.compiled import (
     CompiledRunConfig,
@@ -140,6 +140,42 @@ def test_source_compilation_accepts_simulation_specs_only(small_sim_params):
     assert source_specs[0].component == "Ez"
     assert source_specs[0].waveform.shape == (steps,)
     assert source_specs[0].coeff.ndim == 2
+
+
+def test_monitor_compilation_accepts_simulation_specs_only(small_sim_params):
+    wl, dx, _dt, domain, steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    monitor = Monitor(
+        start=(domain * 0.35, domain * 0.35),
+        end=(domain * 0.35, domain * 0.65),
+        record_interval=3,
+        frequency_points=[LIGHT_SPEED / wl],
+        frequency_record_interval=1,
+    )
+    sim = Simulation(
+        design=design,
+        devices=[source, monitor],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    monitor_specs, max_records = compile_monitor_specs(
+        devices=sim.spec.devices,
+        monitor_states=None,
+        fields=sim.fields,
+        resolution=sim.resolution,
+        num_steps=steps,
+        dt=sim.dt,
+    )
+
+    assert len(monitor_specs) == 1
+    assert monitor_specs[0].name == (monitor.spec.name or "monitor_0")
+    assert monitor_specs[0].freq_count == 1
+    assert max_records == int(np.ceil(steps / monitor.spec.record_interval))
 
 
 def test_compiled_monitor_accumulates_across_chunks(small_sim_params):

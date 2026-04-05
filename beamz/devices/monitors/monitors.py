@@ -9,7 +9,7 @@ from beamz.devices.monitors import live as live_helpers
 from beamz.devices.monitors import record as record_helpers
 from beamz.devices.monitors import store as store_helpers
 from beamz.devices.monitors.spec import MonitorSpec, build_monitor_spec
-from beamz.devices.monitors.state import MonitorRecorder
+from beamz.devices.monitors.state import MonitorRecorder, create_monitor_state
 
 
 _SPEC_FIELDS = frozenset(MonitorSpec.__dataclass_fields__.keys())
@@ -75,7 +75,7 @@ class Monitor:
                 frequency_record_interval=frequency_record_interval,
             ),
         )
-        object.__setattr__(self, "state", MonitorRecorder.create(self.spec))
+        object.__setattr__(self, "state", create_monitor_state(self.spec))
 
     def __getattr__(self, name):
         spec = self.__dict__.get("spec")
@@ -110,7 +110,7 @@ class Monitor:
         object.__setattr__(new, "update_interval", self.update_interval)
         object.__setattr__(new, "objective_function", self.objective_function)
         object.__setattr__(new, "spec", base_spec)
-        object.__setattr__(new, "state", MonitorRecorder.create(base_spec))
+        object.__setattr__(new, "state", create_monitor_state(base_spec))
         return new
 
     def to_dict(self):
@@ -134,7 +134,7 @@ class Monitor:
         object.__setattr__(new, "update_interval", 10)
         object.__setattr__(new, "objective_function", objective_function)
         object.__setattr__(new, "spec", spec)
-        object.__setattr__(new, "state", MonitorRecorder.create(spec))
+        object.__setattr__(new, "state", create_monitor_state(spec))
         return new
 
     def evaluate_objective(self) -> Optional[float]:

@@ -1,4 +1,4 @@
-"""Compile Monitor objects into static packed monitor specs."""
+"""Compile monitor specs into static packed monitor descriptors."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.arrays import to_host
-from beamz.devices.monitors.monitors import Monitor
+from beamz.devices.monitors.geom import grid_points_2d_for_spec, grid_slice_3d_for_spec
+from beamz.devices.monitors.spec import MonitorSpec, monitor_to_spec
 
 
 @dataclass(frozen=True)
@@ -238,14 +239,15 @@ def _clamp_3d_index(idx, limit: int):
 
 
 def _compile_monitor_3d_indices(
-    monitor: Monitor, resolution: float, shape_3d: dict[str, tuple[int, ...]]
+    spec: MonitorSpec, resolution: float, shape_3d: dict[str, tuple[int, ...]]
 ):
     idx_map: dict[str, tuple[Any, ...]] = {}
     dim0 = []
     dim1 = []
 
     for name, shape in shape_3d.items():
-        z_idx, y_idx, x_idx = monitor.get_grid_slice_3d(
+        z_idx, y_idx, x_idx = grid_slice_3d_for_spec(
+            spec,
             resolution,
             resolution,
             resolution,
@@ -274,8 +276,9 @@ def compile_monitor_specs(
     resolution: float,
     num_steps: int,
     dt: float,
+    monitor_states: tuple[object | None, ...] | list[object | None] | None = None,
 ) -> tuple[tuple[CompiledMonitorSpec, ...], int]:
-    """Compile monitor devices into packed monitor specs.
+    """Compile monitor specs into packed monitor descriptors.
 
     Returns
     -------
@@ -284,15 +287,28 @@ def compile_monitor_specs(
     max_records:
         Maximum number of records per monitor row in monitor-state buffers.
     """
-    monitors = [d for d in devices if isinstance(d, Monitor)]
+    devices = tuple(devices)
+    if monitor_states is None:
+        monitor_states = (None,) * len(devices)
+    else:
+        monitor_states = tuple(monitor_states)
+        if len(monitor_states) != len(devices):
+            raise ValueError("monitor_states must match devices length when provided")
+
+    monitors: list[MonitorSpec] = []
+    for device in devices:
+        try:
+            monitors.append(monitor_to_spec(device))
+        except TypeError:
+            continue
+
     if not monitors:
         return tuple(), 0
 
     specs: list[CompiledMonitorSpec] = []
     max_records = 0
 
-    for mon_idx, monitor in enumerate(monitors):
-        spec = monitor.spec
+    for mon_idx, spec in enumerate(monitors):
         interval = max(1, int(spec.record_interval))
         records = int(math.ceil(num_steps / interval))
         max_records = max(max_records, records)
@@ -343,7 +359,7 @@ def compile_monitor_specs(
             )
 
         if not spec.is_3d:
-            points = monitor.get_grid_points_2d(resolution, resolution)
+            points = grid_points_2d_for_spec(spec, resolution, resolution)
             if points:
                 x_raw = np.asarray([p[0] for p in points], dtype=np.int32)
                 y_raw = np.asarray([p[1] for p in points], dtype=np.int32)
@@ -410,7 +426,7 @@ def compile_monitor_specs(
                 "Hz": tuple(fields.Hz.shape),
             }
             idx_map, min_dim0, min_dim1 = _compile_monitor_3d_indices(
-                monitor,
+                spec,
                 resolution,
                 shape_3d,
             )

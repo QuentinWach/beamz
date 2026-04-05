@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from beamz.devices.monitors.spec import MonitorSpec
+
 
 @dataclass(slots=True)
 class MonitorRecorder:
@@ -27,32 +29,47 @@ class MonitorRecorder:
 
     @classmethod
     def create(cls, spec) -> "MonitorRecorder":
-        fields = {
-            "Ex": [],
-            "Ey": [],
-            "Ez": [],
-            "Hx": [],
-            "Hy": [],
-            "Hz": [],
-            "t": [],
-        }
-        nfreq = int(spec.dft_frequencies.size)
-        return cls(
-            fields=fields,
-            power_accumulated=None,
-            energy_history=[],
-            power_history=[],
-            power_timestamps=[],
-            power_accumulation_count=0,
-            step_count=0,
-            last_record_step=-1,
-            frequency_flux_spectrum=np.zeros(spec.frequency_points.shape, dtype=np.complex64),
-            objective_value=None,
-            _dft_accum={},
-            _dft_weight_sum=np.zeros(nfreq, dtype=float),
-            _dft_sample_count=0,
-            _dft_phase=np.ones(nfreq, dtype=np.complex128),
-            _dft_last_t=None,
-            _dft_last_dt=None,
-            _dft_last_rot=None,
-        )
+        return create_monitor_state(spec)
+
+
+def create_monitor_state(spec) -> MonitorRecorder:
+    if not isinstance(spec, MonitorSpec):
+        raise TypeError("create_monitor_state expects a MonitorSpec")
+    fields = {
+        "Ex": [],
+        "Ey": [],
+        "Ez": [],
+        "Hx": [],
+        "Hy": [],
+        "Hz": [],
+        "t": [],
+    }
+    nfreq = int(spec.dft_frequencies.size)
+    return MonitorRecorder(
+        fields=fields,
+        power_accumulated=None,
+        energy_history=[],
+        power_history=[],
+        power_timestamps=[],
+        power_accumulation_count=0,
+        step_count=0,
+        last_record_step=-1,
+        frequency_flux_spectrum=np.zeros(spec.frequency_points.shape, dtype=np.complex64),
+        objective_value=None,
+        _dft_accum={},
+        _dft_weight_sum=np.zeros(nfreq, dtype=float),
+        _dft_sample_count=0,
+        _dft_phase=np.ones(nfreq, dtype=np.complex128),
+        _dft_last_t=None,
+        _dft_last_dt=None,
+        _dft_last_rot=None,
+    )
+
+
+def monitor_state_for(spec, *, monitor=None, state=None):
+    if isinstance(state, MonitorRecorder):
+        return state
+    monitor_state = getattr(monitor, "state", None)
+    if isinstance(monitor_state, MonitorRecorder):
+        return monitor_state
+    return create_monitor_state(spec)

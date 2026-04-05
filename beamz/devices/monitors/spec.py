@@ -361,3 +361,12 @@ def build_monitor_spec(
         frequency_points=_as_optional_float_array(frequency_points),
         frequency_record_interval=frequency_record_interval,
     )
+
+
+def monitor_to_spec(monitor):
+    if isinstance(monitor, MonitorSpec):
+        return monitor
+    spec = getattr(monitor, "spec", None)
+    if isinstance(spec, MonitorSpec):
+        return spec
+    raise TypeError("monitor must be a MonitorSpec or spec-backed monitor facade")
