@@ -386,7 +386,7 @@ def rasterize_polygon(
         return False
     if not hasattr(structure, "vertices") or not structure.vertices:
         return False
-    if hasattr(structure, "radius"):
+    if getattr(structure, "radius", None) is not None:
         return False
     if float(getattr(structure, "depth", 0.0)) <= 0.0:
         return False

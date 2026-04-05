@@ -159,7 +159,8 @@ class Design:
         structure_is_3d = bool(getattr(structure, "is_3d", False))
         if hasattr(structure, "depth") and structure.depth != 0:
             structure_is_3d = True
-        if hasattr(structure, "position") and len(structure.position) > 2 and structure.position[2] != 0:
+        position = getattr(structure, "position", None)
+        if position is not None and len(position) > 2 and position[2] != 0:
             structure_is_3d = True
         if hasattr(structure, "vertices") and structure.vertices:
             for vertex in structure.vertices:

@@ -75,11 +75,8 @@ def determine_if_3d(design):
                 return True
             if hasattr(structure, "z") and structure.z and structure.z != 0:
                 return True
-            if (
-                hasattr(structure, "position")
-                and len(structure.position) > 2
-                and structure.position[2] != 0
-            ):
+            position = getattr(structure, "position", None)
+            if position is not None and len(position) > 2 and position[2] != 0:
                 return True
             if hasattr(structure, "vertices") and structure.vertices:
                 for vertex in structure.vertices:

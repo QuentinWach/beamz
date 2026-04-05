@@ -187,7 +187,9 @@ def _structure_geometry(structure: Any) -> tuple[str | None, dict[str, Any] | No
             "z0": z0,
         }
 
-    if hasattr(structure, "position") and hasattr(structure, "radius"):
+    if getattr(structure, "position", None) is not None and getattr(
+        structure, "radius", None
+    ) is not None:
         px, py, pz = _position3(
             getattr(structure, "position"), default_z=z0 + depth / 2.0
         )
@@ -197,9 +199,9 @@ def _structure_geometry(structure: Any) -> tuple[str | None, dict[str, Any] | No
         }
 
     if (
-        hasattr(structure, "position")
-        and hasattr(structure, "width")
-        and hasattr(structure, "height")
+        getattr(structure, "position", None) is not None
+        and getattr(structure, "width", None) is not None
+        and getattr(structure, "height", None) is not None
     ):
         px, py, pz = _position3(getattr(structure, "position"), default_z=z0)
         width = float(getattr(structure, "width"))
@@ -338,9 +340,9 @@ def _viewer_structure_shape(structure: Any) -> Any | None:
     if shape is not None:
         return shape
     if (
-        hasattr(structure, "position")
-        and hasattr(structure, "width")
-        and hasattr(structure, "height")
+        getattr(structure, "position", None) is not None
+        and getattr(structure, "width", None) is not None
+        and getattr(structure, "height", None) is not None
     ):
         px, py, _ = _position3(getattr(structure, "position"))
         width = float(getattr(structure, "width", 0.0) or 0.0)

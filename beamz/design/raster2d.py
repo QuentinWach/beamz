@@ -74,9 +74,9 @@ def rasterize(mesh):
                         sample_dy,
                         num_samples,
                     )
-                elif hasattr(structure, "radius") and not hasattr(
-                    structure, "inner_radius"
-                ):
+                elif getattr(structure, "radius", None) is not None and getattr(
+                    structure, "inner_radius", None
+                ) is None:
                     rasterize_circle(
                         mesh,
                         structure,
@@ -93,8 +93,9 @@ def rasterize(mesh):
                         sample_dy,
                         num_samples,
                     )
-                elif hasattr(structure, "inner_radius") and hasattr(
-                    structure, "outer_radius"
+                elif (
+                    getattr(structure, "inner_radius", None) is not None
+                    and getattr(structure, "outer_radius", None) is not None
                 ):
                     rasterize_ring(
                         mesh,
