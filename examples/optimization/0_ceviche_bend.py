@@ -2,6 +2,7 @@ import numpy as np
 from beamz import *
 from beamz.optimization.topology import TopologyManager, compute_overlap_gradient, create_optimization_mask
 from beamz.devices.sources.signals import plot_signal
+import matplotlib.pyplot as plt
 
 # --- 1. Simulation Setup ---
 W = H = 7*µm
