@@ -43,6 +43,7 @@ from beamz.optimization.topology import (
     create_optimization_mask,
 )
 from beamz.simulation.boundaries import PML, Boundary
+from beamz.simulation.boundary_specs import BoundarySpec, PMLSpec
 from beamz.simulation.compiled import (
     CompiledRunConfig,
     CompiledSimulation,
@@ -109,6 +110,8 @@ _exports = {
     # Boundaries
     "Boundary": Boundary,
     "PML": PML,
+    "BoundarySpec": BoundarySpec,
+    "PMLSpec": PMLSpec,
     # Optimization
     "TopologyManager": TopologyManager,
     "compute_overlap_gradient": compute_overlap_gradient,

@@ -15,7 +15,8 @@ from beamz.devices.sources.mode import (
 )
 from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
 from beamz.devices.sources.solve import solve_modes
-from beamz.simulation.boundaries import Boundary
+from beamz.simulation.boundaries import Boundary, boundary_from_spec
+from beamz.simulation.boundary_specs import boundary_to_spec
 from beamz.simulation.spec import SimulationSpec, build_simulation_spec
 from beamz.simulation.state import SimulationRuntime
 from beamz.simulation.modal import (
@@ -103,13 +104,17 @@ class Simulation:
         time: np.ndarray = None,
         plane_2d: str = "xy",
     ):
+        boundary_models = tuple(
+            _boundary_model_from_any(boundary)
+            for boundary in ([] if boundaries is None else boundaries)
+        )
         object.__setattr__(
             self,
             "spec",
             build_simulation_spec(
                 design=design,
                 devices=devices,
-                boundaries=boundaries,
+                boundaries=boundary_models,
                 resolution=resolution,
                 time=time,
                 plane_2d=plane_2d,
@@ -117,7 +122,7 @@ class Simulation:
         )
         object.__setattr__(self, "_design", design)
         object.__setattr__(self, "_devices", tuple([] if devices is None else devices))
-        object.__setattr__(self, "_boundaries", tuple([] if boundaries is None else boundaries))
+        object.__setattr__(self, "_boundaries", boundary_models)
         object.__setattr__(self, "runtime", SimulationRuntime())
 
     def __getattr__(self, name):
@@ -158,8 +163,9 @@ class Simulation:
             self.runtime.compiled_monitor_state = None
             return
         if name == "boundaries":
-            object.__setattr__(self, "_boundaries", tuple(value))
-            object.__setattr__(self, "spec", replace(self.spec, boundaries=value))
+            boundary_models = tuple(_boundary_model_from_any(boundary) for boundary in value)
+            object.__setattr__(self, "_boundaries", boundary_models)
+            object.__setattr__(self, "spec", replace(self.spec, boundaries=boundary_models))
             build.invalidate_runtime(self)
             self.runtime.compiled_program = None
             self.runtime.compiled_program_signature = None
@@ -188,11 +194,15 @@ class Simulation:
             raise TypeError("with_spec expects a SimulationSpec or spec field updates")
         if changes:
             base_spec = replace(base_spec, **changes)
+        boundary_models = tuple(
+            _boundary_model_from_any(boundary)
+            for boundary in changes.get("boundaries", self.boundaries)
+        )
         new = object.__new__(type(self))
         object.__setattr__(new, "spec", base_spec)
         object.__setattr__(new, "_design", changes.get("design", self.design))
         object.__setattr__(new, "_devices", tuple(changes.get("devices", self.devices)))
-        object.__setattr__(new, "_boundaries", tuple(changes.get("boundaries", self.boundaries)))
+        object.__setattr__(new, "_boundaries", boundary_models)
         object.__setattr__(new, "runtime", SimulationRuntime())
         return new
 
@@ -209,11 +219,12 @@ class Simulation:
             raise TypeError("from_spec expects a SimulationSpec")
         design = Design.from_dict(spec.design.to_dict())
         devices = tuple(_device_from_spec(device_spec, design=design) for device_spec in spec.devices)
+        boundaries = tuple(boundary_from_spec(boundary_spec) for boundary_spec in spec.boundaries)
         new = object.__new__(cls)
         object.__setattr__(new, "spec", spec)
         object.__setattr__(new, "_design", design)
         object.__setattr__(new, "_devices", devices)
-        object.__setattr__(new, "_boundaries", tuple(spec.boundaries))
+        object.__setattr__(new, "_boundaries", boundaries)
         object.__setattr__(new, "runtime", SimulationRuntime())
         return new
 
@@ -226,6 +237,10 @@ def _device_from_spec(spec, *, design):
     if isinstance(spec, ModeSourceSpec):
         return ModeSource.from_spec(spec)
     raise TypeError(f"unsupported device spec type: {type(spec).__name__}")
+
+
+def _boundary_model_from_any(boundary):
+    return boundary_from_spec(boundary_to_spec(boundary))
 
 
 def _run_fast(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):

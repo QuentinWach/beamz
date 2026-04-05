@@ -18,6 +18,7 @@ from beamz.devices.sources.gaussian import GaussianSource
 from beamz.devices.sources.mode import ModeSource
 from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
 from beamz.simulation.boundaries import Boundary, PML
+from beamz.simulation.boundary_specs import BoundarySpec, PMLSpec
 from beamz.simulation.spec import SimulationSpec
 
 
@@ -94,11 +95,15 @@ def test_mode_source_spec_rejects_invalid_center_shape():
 def test_boundary_rejects_invalid_edges():
     with pytest.raises(ValueError):
         Boundary(edges=("left", "invalid"), thickness=1.0)
+    with pytest.raises(ValueError):
+        BoundarySpec(edges=("left", "invalid"), thickness=1.0)
 
 
 def test_pml_rejects_nonpositive_sigma_max():
     with pytest.raises(ValueError):
         PML(thickness=1.0, sigma_max=0.0)
+    with pytest.raises(ValueError):
+        PMLSpec(thickness=1.0, sigma_max=0.0)
 
 
 def test_simulation_spec_validates_resolution_and_time():
@@ -202,7 +207,7 @@ def test_with_spec_returns_updated_facade_copy():
     assert sim2.runtime.initialized is False
     assert sim2.spec.design == sim2.design.spec
     assert sim2.spec.devices == tuple(device.spec for device in sim2.devices)
-    assert sim2.spec.boundaries == tuple(sim2.boundaries)
+    assert sim2.spec.boundaries == tuple(boundary.spec for boundary in sim2.boundaries)
 
 
 def test_callable_behavior_is_not_stored_in_specs():
@@ -235,7 +240,25 @@ def test_structure_and_simulation_specs_store_nested_specs():
     )
     assert sim.spec.design == design.spec
     assert sim.spec.devices == (monitor.spec, source.spec)
-    assert sim.spec.boundaries == (boundary,)
+    assert sim.spec.boundaries == (boundary.spec,)
+    assert isinstance(sim.spec.boundaries[0], PMLSpec)
+
+
+def test_simulation_accepts_boundary_specs_and_rebuilds_boundary_facades():
+    design = Design(width=2.0, height=2.0, material=Material())
+    boundary_spec = PMLSpec(thickness=1.0, sigma_max=2.0, m=4)
+    sim = Simulation(
+        design=design,
+        devices=[],
+        boundaries=[boundary_spec],
+        resolution=0.1,
+        time=np.array([0.0, 1.0, 2.0]),
+    )
+
+    assert sim.spec.boundaries == (boundary_spec,)
+    assert len(sim.boundaries) == 1
+    assert isinstance(sim.boundaries[0], PML)
+    assert sim.boundaries[0].spec == boundary_spec
 
 
 def test_spec_roundtrip_dicts_are_json_serializable():
@@ -290,6 +313,8 @@ def test_spec_roundtrip_dicts_are_json_serializable():
     pml = PML(thickness=1.0, sigma_max=2.0, m=4)
     pml_rt = PML.from_dict(json.loads(json.dumps(pml.to_dict())))
     assert pml_rt == pml
+    pml_spec_rt = PMLSpec.from_dict(json.loads(json.dumps(pml.spec.to_dict())))
+    assert pml_spec_rt == pml.spec
 
     sim = Simulation(
         design=design,
@@ -345,4 +370,5 @@ def test_simulation_facade_roundtrip_rebuilds_live_objects():
     assert restored.devices[0].to_dict() == monitor.to_dict()
     assert restored.devices[1].to_dict() == source.to_dict()
     assert restored.boundaries == sim.boundaries
+    assert restored.spec.boundaries == tuple(boundary.spec for boundary in restored.boundaries)
     assert restored.runtime.initialized is False

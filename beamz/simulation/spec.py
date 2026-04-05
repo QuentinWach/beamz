@@ -5,6 +5,12 @@ from math import isfinite
 
 import numpy as np
 
+from beamz.simulation.boundary_specs import (
+    boundary_spec_from_dict,
+    boundary_spec_to_dict,
+    boundary_to_spec,
+)
+
 
 def _freeze_time_array(time) -> np.ndarray:
     arr = np.asarray(time, dtype=float).copy()
@@ -40,7 +46,11 @@ class SimulationSpec:
             raise ValueError("design is required")
         object.__setattr__(self, "design", _as_spec(self.design))
         object.__setattr__(self, "devices", tuple(_as_spec(device) for device in self.devices))
-        object.__setattr__(self, "boundaries", tuple(_as_spec(boundary) for boundary in self.boundaries))
+        object.__setattr__(
+            self,
+            "boundaries",
+            tuple(boundary_to_spec(boundary) for boundary in self.boundaries),
+        )
         object.__setattr__(self, "resolution", float(self.resolution))
         if not isfinite(self.resolution) or self.resolution <= 0:
             raise ValueError("resolution must be a finite positive value")
@@ -56,10 +66,8 @@ class SimulationSpec:
             raise ValueError("boundaries may not contain None")
 
     def to_dict(self):
-        from beamz.design.spec import DesignSpec
         from beamz.devices.monitors.spec import MonitorSpec
         from beamz.devices.sources.spec import source_spec_to_dict
-        from beamz.simulation.boundaries import boundary_spec_to_dict
 
         devices = []
         for device in self.devices:
@@ -83,7 +91,6 @@ class SimulationSpec:
         from beamz.design.spec import DesignSpec
         from beamz.devices.monitors.spec import MonitorSpec
         from beamz.devices.sources.spec import source_spec_from_dict
-        from beamz.simulation.boundaries import boundary_spec_from_dict
 
         devices = []
         for item in data.get("devices", ()):

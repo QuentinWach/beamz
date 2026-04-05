@@ -4,6 +4,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0, MU_0, µm
+from beamz.simulation.boundary_specs import (
+    BoundarySpec,
+    PMLSpec,
+    boundary_spec_from_dict as _boundary_spec_from_dict,
+    boundary_spec_to_dict as _boundary_spec_to_dict,
+)
 
 _VALID_EDGES = frozenset({"left", "right", "top", "bottom", "front", "back"})
 
@@ -15,16 +21,13 @@ class Boundary:
     thickness: float = 1 * µm
 
     def __post_init__(self):
-        if self.edges != "all":
-            edges = self.edges if isinstance(self.edges, (tuple, list)) else (self.edges,)
-            normalized = tuple(str(edge).lower() for edge in edges)
-            invalid = sorted(set(normalized) - _VALID_EDGES)
-            if invalid:
-                raise ValueError(f"invalid boundary edges: {invalid}")
-            object.__setattr__(self, "edges", normalized)
-        object.__setattr__(self, "thickness", float(self.thickness))
-        if not np.isfinite(self.thickness) or self.thickness <= 0:
-            raise ValueError("thickness must be positive")
+        spec = BoundarySpec(edges=self.edges, thickness=self.thickness)
+        object.__setattr__(self, "edges", spec.edges)
+        object.__setattr__(self, "thickness", spec.thickness)
+
+    @property
+    def spec(self) -> BoundarySpec:
+        return BoundarySpec(edges=self.edges, thickness=self.thickness)
 
     def _get_edges_for_dimensionality(self, is_3d):
         """Resolve 'all' edges based on dimensionality."""
@@ -37,17 +40,22 @@ class Boundary:
         return self.edges
 
     def to_dict(self):
-        return {
-            "type": type(self).__name__,
-            "edges": self.edges if self.edges == "all" else list(self.edges),
-            "thickness": float(self.thickness),
-        }
+        data = self.spec.to_dict()
+        data["type"] = type(self).__name__
+        return data
 
     @classmethod
     def from_dict(cls, data):
+        spec = _boundary_spec_from_dict(data)
+        return cls.from_spec(spec)
+
+    @classmethod
+    def from_spec(cls, spec):
+        if not isinstance(spec, BoundarySpec) or isinstance(spec, PMLSpec):
+            raise TypeError("from_spec expects a BoundarySpec")
         return cls(
-            edges=data.get("edges", "all"),
-            thickness=data.get("thickness", 1 * µm),
+            edges=spec.edges,
+            thickness=spec.thickness,
         )
 
 
@@ -58,14 +66,25 @@ class PML(Boundary):
     m: int = 3
 
     def __post_init__(self):
-        Boundary.__post_init__(self)
-        if self.sigma_max is not None:
-            object.__setattr__(self, "sigma_max", float(self.sigma_max))
-            if not np.isfinite(self.sigma_max) or self.sigma_max <= 0:
-                raise ValueError("sigma_max must be a finite positive value when provided")
-        object.__setattr__(self, "m", int(self.m))
-        if self.m <= 0:
-            raise ValueError("m must be positive")
+        spec = PMLSpec(
+            edges=self.edges,
+            thickness=self.thickness,
+            sigma_max=self.sigma_max,
+            m=self.m,
+        )
+        object.__setattr__(self, "edges", spec.edges)
+        object.__setattr__(self, "thickness", spec.thickness)
+        object.__setattr__(self, "sigma_max", spec.sigma_max)
+        object.__setattr__(self, "m", spec.m)
+
+    @property
+    def spec(self) -> PMLSpec:
+        return PMLSpec(
+            edges=self.edges,
+            thickness=self.thickness,
+            sigma_max=self.sigma_max,
+            m=self.m,
+        )
 
     def _resolved_sigma_max(self, resolution, eps_avg=1.0):
         if self.sigma_max is not None:
@@ -74,20 +93,24 @@ class PML(Boundary):
         return 0.8 * (self.m + 1) / (eta * resolution)
 
     def to_dict(self):
-        data = Boundary.to_dict(self)
-        data.update(
-            sigma_max=self.sigma_max,
-            m=int(self.m),
-        )
+        data = self.spec.to_dict()
+        data["type"] = type(self).__name__
         return data
 
     @classmethod
     def from_dict(cls, data):
+        spec = _boundary_spec_from_dict(data)
+        return cls.from_spec(spec)
+
+    @classmethod
+    def from_spec(cls, spec):
+        if not isinstance(spec, PMLSpec):
+            raise TypeError("from_spec expects a PMLSpec")
         return cls(
-            edges=data.get("edges", "all"),
-            thickness=data.get("thickness", 1 * µm),
-            sigma_max=data.get("sigma_max"),
-            m=data.get("m", 3),
+            edges=spec.edges,
+            thickness=spec.thickness,
+            sigma_max=spec.sigma_max,
+            m=spec.m,
         )
 
     def create_pml_regions(self, fields, design, resolution, dt, plane_2d="xy"):
@@ -239,15 +262,16 @@ class PML(Boundary):
 
 
 def boundary_spec_to_dict(boundary):
-    if isinstance(boundary, (Boundary, PML)):
-        return boundary.to_dict()
-    raise TypeError(f"unsupported boundary spec type: {type(boundary).__name__}")
+    return _boundary_spec_to_dict(boundary)
 
 
 def boundary_spec_from_dict(data):
-    kind = data.get("type")
-    if kind == "Boundary":
-        return Boundary.from_dict(data)
-    if kind == "PML":
-        return PML.from_dict(data)
-    raise ValueError(f"unknown boundary spec type: {kind!r}")
+    return _boundary_spec_from_dict(data)
+
+
+def boundary_from_spec(spec):
+    if isinstance(spec, PMLSpec):
+        return PML.from_spec(spec)
+    if isinstance(spec, BoundarySpec):
+        return Boundary.from_spec(spec)
+    raise TypeError("spec must be a BoundarySpec or PMLSpec")
