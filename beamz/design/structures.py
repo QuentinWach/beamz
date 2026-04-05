@@ -129,6 +129,16 @@ def _transform_geometry(vertices, interiors, transform):
     )
 
 
+def _replace_from_bbox(structure, *, include_length=False):
+    min_x, min_y, min_z, max_x, max_y, max_z = _vertices_bbox(structure.vertices)
+    changes = {"position": (min_x, min_y, min_z)}
+    if include_length:
+        changes["length"] = max_x - min_x
+    else:
+        changes.update(width=max_x - min_x, height=max_y - min_y, depth=max_z - min_z)
+    return structure._replace_spec(**changes)
+
+
 @dataclass(frozen=True, slots=True)
 class StructureSpec:
     vertices: tuple[tuple[float, float, float], ...] = ()
@@ -346,7 +356,6 @@ class Polygon:
         self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
     ):
         from beamz.visual.design_viz import draw_polygon
-
         return draw_polygon(
             ax,
             self,
@@ -443,13 +452,7 @@ class Rectangle(Polygon):
 
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
-        min_x, min_y, min_z, max_x, max_y, max_z = _vertices_bbox(self.vertices)
-        return self._replace_spec(
-            position=(min_x, min_y, min_z),
-            width=max_x - min_x,
-            height=max_y - min_y,
-            depth=max_z - min_z,
-        )
+        return _replace_from_bbox(self)
 
     def scale(self, s_x, s_y=None, s_z=None):
         if s_y is None:
@@ -457,18 +460,11 @@ class Rectangle(Polygon):
         if s_z is None:
             s_z = 1.0 if s_y != s_x else s_x
         super().scale(s_x, s_y, s_z)
-        position = self.position
-        if position is not None:
-            position = (
-                position[0],
-                position[1],
-                position[2],
-            )
         return self._replace_spec(
             width=self.width * s_x,
             height=self.height * s_y,
             depth=self.depth * s_z,
-            position=position,
+            position=self.position,
         )
 
 
@@ -663,11 +659,7 @@ class Taper(Polygon):
 
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
-        min_x, min_y, min_z, max_x, _, _ = _vertices_bbox(self.vertices)
-        return self._replace_spec(
-            position=(min_x, min_y, min_z),
-            length=max_x - min_x,
-        )
+        return _replace_from_bbox(self, include_length=True)
 
 
 class Sphere(Polygon):

@@ -38,7 +38,6 @@ from beamz.devices.sources.profiles import (
     _select_3d_phase_ref,
     _select_core_confined_mode_index,
     _solve_numeric_k_axis,
-    _to_real_profile,
 )
 from beamz.devices.sources import setup as setup_helpers
 from beamz.devices.sources.spec import ModeSourceSpec, build_mode_source_spec
