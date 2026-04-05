@@ -585,66 +585,13 @@ def _build_3d_indices(axis, staggered, bounds, center_idx, offset_idx, grid_shap
     }
 
 
-def _build_3d_axis(
-    axis,
-    fields,
-    *,
-    dir_sign,
-    z_target,
-    center,
-    width,
-    height,
-    center_idx,
-    offset_idx,
-    grid_shape,
-    resolution,
-):
-    staggered = {
-        name: _apply_stagger_op(fields[name], op)
-        for name, op in _STAGGER_3D[axis].items()
-    }
-    bounds = _compute_3d_bounds(axis, center, width, height, resolution, grid_shape)
-    indices = _build_3d_indices(
-        axis, staggered, bounds, center_idx, offset_idx, grid_shape
-    )
-
-    staggered["Ex"], staggered["Ey"], staggered["Ez"] = (
-        _impedance_match_3d_tangential_pairs(
-            axis,
-            staggered["Ex"],
-            staggered["Ey"],
-            staggered["Ez"],
-            staggered["Hx"],
-            staggered["Hy"],
-            staggered["Hz"],
-            z_target,
-        )
-    )
-
-    meta = _AXIS_PROFILE_META[axis]
-    primary_axis, secondary_axis = meta["crop_axes"]
-    primary_start, primary_end = bounds[primary_axis]
-    secondary_start, secondary_end = bounds[secondary_axis]
-    profiles = _crop_and_window_all(
-        staggered,
-        primary_start,
-        primary_end,
-        secondary_start,
-        secondary_end,
-        dir_sign,
-        use_jax=meta["use_jax"],
-        alpha=0.2,
-    )
-    profiles = _normalize_3d_profiles_by_flux(
-        profiles, axis=axis, d_area=float(resolution * resolution)
-    )
-
-    extra = {
-        f"_{name}_start": start for name, (start, _) in bounds.items()
-    }
-    extra.update({f"_{name}_end": end for name, (_, end) in bounds.items()})
-    extra.update(meta["extra_components"])
-    return profiles, indices, extra
+def _target_3d_impedance(impedance_neff, omega, dt, d_axis):
+    eta0 = np.sqrt(MU_0 / EPS_0)
+    neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
+    if dt is None:
+        return eta0 / neff_imp_r
+    k_num_imp = _solve_numeric_k_axis(omega, dt, d_axis, neff_imp_r)
+    return _numeric_impedance_axis(omega, dt, d_axis, k_num_imp, neff_imp_r)
 
 
 def _build_3d_profiles(
@@ -669,30 +616,58 @@ def _build_3d_profiles(
 ):
     """Build staggered, windowed, impedance-corrected injection profiles for 3D."""
     dir_sign = 1.0 if direction.startswith("+") else -1.0
-    eta0 = np.sqrt(MU_0 / EPS_0)
-    neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
-    d_axis = resolution
-    if dt is not None:
-        k_num_imp = _solve_numeric_k_axis(omega, dt, d_axis, neff_imp_r)
-        z_target = _numeric_impedance_axis(omega, dt, d_axis, k_num_imp, neff_imp_r)
-    else:
-        z_target = eta0 / neff_imp_r
 
     if axis not in _STAGGER_3D:
         raise ValueError(f"Unsupported axis {axis!r} for 3D profile setup")
-    return _build_3d_axis(
-        axis,
-        {"Ex": Ex, "Ey": Ey, "Ez": Ez, "Hx": Hx, "Hy": Hy, "Hz": Hz},
-        dir_sign=dir_sign,
-        z_target=z_target,
-        center=center,
-        width=width,
-        height=height,
-        center_idx=center_idx,
-        offset_idx=offset_idx,
-        grid_shape=grid_shape,
-        resolution=resolution,
+
+    staggered = {
+        name: _apply_stagger_op(field, _STAGGER_3D[axis][name])
+        for name, field in {
+            "Ex": Ex,
+            "Ey": Ey,
+            "Ez": Ez,
+            "Hx": Hx,
+            "Hy": Hy,
+            "Hz": Hz,
+        }.items()
+    }
+    bounds = _compute_3d_bounds(axis, center, width, height, resolution, grid_shape)
+    indices = _build_3d_indices(
+        axis, staggered, bounds, center_idx, offset_idx, grid_shape
     )
+    z_target = _target_3d_impedance(impedance_neff, omega, dt, resolution)
+    staggered["Ex"], staggered["Ey"], staggered["Ez"] = _impedance_match_3d_tangential_pairs(
+        axis,
+        staggered["Ex"],
+        staggered["Ey"],
+        staggered["Ez"],
+        staggered["Hx"],
+        staggered["Hy"],
+        staggered["Hz"],
+        z_target,
+    )
+
+    meta = _AXIS_PROFILE_META[axis]
+    primary_axis, secondary_axis = meta["crop_axes"]
+    primary_start, primary_end = bounds[primary_axis]
+    secondary_start, secondary_end = bounds[secondary_axis]
+    profiles = _crop_and_window_all(
+        staggered,
+        primary_start,
+        primary_end,
+        secondary_start,
+        secondary_end,
+        dir_sign,
+        use_jax=meta["use_jax"],
+        alpha=0.2,
+    )
+    profiles = _normalize_3d_profiles_by_flux(
+        profiles, axis=axis, d_area=float(resolution * resolution)
+    )
+    extra = {f"_{name}_start": start for name, (start, _) in bounds.items()}
+    extra.update({f"_{name}_end": end for name, (_, end) in bounds.items()})
+    extra.update(meta["extra_components"])
+    return profiles, indices, extra
 
 
 def _crop_and_window_all(
