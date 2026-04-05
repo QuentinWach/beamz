@@ -437,4 +437,11 @@ def material_grids_from_spec(spec, resolution, *, design_model=None):
         raise TypeError("material_grids_from_spec expects a DesignSpec")
     if isinstance(design_model, Design) and getattr(design_model, "spec", None) == spec:
         return design_model.get_material_grids(resolution)
+    model_design = getattr(design_model, "design", None)
+    if getattr(model_design, "spec", None) == spec and hasattr(design_model, "get_material_grids"):
+        model_resolution = getattr(design_model, "resolution", None)
+        if model_resolution is None or np.isclose(float(model_resolution), float(resolution)):
+            return design_model.get_material_grids(resolution)
+        if hasattr(model_design, "get_material_grids"):
+            return model_design.get_material_grids(resolution)
     return Design.from_spec(spec).get_material_grids(resolution)

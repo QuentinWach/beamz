@@ -19,6 +19,7 @@ from beamz import (
 )
 from beamz.devices.monitors.compiler import CompiledMonitorSpec, compile_monitor_specs
 from beamz.devices.sources.compiler import compile_source_specs
+from beamz.design.spec import DesignSpec
 from beamz.simulation.compiled import (
     CompiledRunConfig,
     CompiledSimulation,
@@ -176,6 +177,29 @@ def test_monitor_compilation_accepts_simulation_specs_only(small_sim_params):
     assert monitor_specs[0].name == (monitor.spec.name or "monitor_0")
     assert monitor_specs[0].freq_count == 1
     assert max_records == int(np.ceil(steps / monitor.spec.record_interval))
+
+
+def test_grid_backed_simulation_reuses_live_material_grid(small_sim_params):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    grid = design.rasterize(dx)
+    grid.permittivity[:] = 2.5
+    grid.permittivity[0, 0] = 7.0
+
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    sim = Simulation(
+        design=grid,
+        devices=[source],
+        boundaries=[],
+        time=t,
+        resolution=dx,
+    )
+
+    assert isinstance(sim.spec.design, DesignSpec)
+    assert np.allclose(sim.fields.permittivity, grid.permittivity)
+    assert sim.fields.permittivity[0, 0] == pytest.approx(7.0)
 
 
 def test_compiled_monitor_accumulates_across_chunks(small_sim_params):

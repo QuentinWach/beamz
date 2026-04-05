@@ -33,13 +33,12 @@ def initialize_runtime(sim):
     spec = sim.spec
     runtime = sim.runtime
     design_model = getattr(sim, "_design", None)
-    design = design_model if getattr(design_model, "spec", None) == spec.design else None
     boundaries = tuple(boundary_from_spec(boundary_spec) for boundary_spec in spec.boundaries)
 
     permittivity, conductivity, permeability = material_grids_from_spec(
         spec.design,
         spec.resolution,
-        design_model=design,
+        design_model=design_model,
     )
     runtime.dt = float(spec.time[1] - spec.time[0])
     runtime.num_steps = len(spec.time)

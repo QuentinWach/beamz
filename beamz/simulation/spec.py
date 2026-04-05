@@ -31,6 +31,27 @@ def _as_spec(value):
     return spec if spec is not None else value
 
 
+def _design_as_spec(value):
+    from beamz.design.spec import DesignSpec
+
+    if isinstance(value, DesignSpec):
+        return value
+
+    spec = getattr(value, "spec", None)
+    if isinstance(spec, DesignSpec):
+        return spec
+
+    design = getattr(value, "design", None)
+    if isinstance(design, DesignSpec):
+        return design
+
+    design_spec = getattr(design, "spec", None)
+    if isinstance(design_spec, DesignSpec):
+        return design_spec
+
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class SimulationSpec:
     design: object
@@ -44,7 +65,7 @@ class SimulationSpec:
     def __post_init__(self):
         if self.design is None:
             raise ValueError("design is required")
-        object.__setattr__(self, "design", _as_spec(self.design))
+        object.__setattr__(self, "design", _design_as_spec(self.design))
         object.__setattr__(self, "devices", tuple(_as_spec(device) for device in self.devices))
         object.__setattr__(
             self,
