@@ -26,6 +26,19 @@ from beamz.simulation.compiled import (
 )
 from beamz.simulation.fields import Fields
 from beamz.simulation.ops import advance_e_field, advance_h_field
+from beamz.simulation.step import (
+    collect_source_terms as _collect_source_terms_impl,
+    inject_e_sources as _inject_e_sources_impl,
+    inject_h_sources as _inject_h_sources_impl,
+    inject_legacy_sources as _inject_legacy_sources_impl,
+    record_monitors as _record_monitors_impl,
+    run_step as _run_step_impl,
+)
+from beamz.simulation.view import (
+    run as _run_impl,
+    show as _show_impl,
+    to_scene as _to_scene_impl,
+)
 
 
 @dataclass(frozen=True)
@@ -137,138 +150,27 @@ class Simulation:
 
         Order: H-update → M-injection → E-update → J-injection → legacy sources
         """
-        if self.current_step >= self.num_steps:
-            return False
-
-        # Legacy devices (only have inject(), no inject_h/inject_e): inject before update
-        self._inject_legacy_sources()
-
-        # Collect source terms from legacy devices (if any)
-        source_j, source_m = self._collect_source_terms()
-
-        # 1. H update
-        self.fields.update_h(self.dt, source_m=source_m)
-
-        # 2. M injection (modifies H after update)
-        self._inject_h_sources()
-
-        # 3. E update (uses modified H)
-        self.fields.update_e(self.dt, source_j=source_j)
-
-        # 4. J injection (modifies E after update)
-        self._inject_e_sources()
-
-        # Record monitor data (if monitors are in devices)
-        self._record_monitors()
-
-        # Update coupled physics (thermal)
-        if self.thermal is not None and getattr(self.thermal, "enabled", True):
-            self.thermal.step(self)
-
-        # Update time and step counter
-        self.t += self.dt
-        self.current_step += 1
-        return True
+        return _run_step_impl(self)
 
     def _record_monitors(self):
         """Record data from Monitor devices during simulation."""
-        for device in self.devices:
-            if not isinstance(device, Monitor):
-                continue
-            should_record = device.should_record(self.current_step)
-            dft_every_step = bool(
-                getattr(device, "dft_enabled", False)
-                and getattr(device, "dft_record_every_step", True)
-            )
-            if should_record or dft_every_step:
-                if not self.is_3d:
-                    device.record_fields_2d(
-                        self.fields.Ez,
-                        self.fields.Hx,
-                        self.fields.Hy,
-                        self.t,
-                        self.resolution,
-                        self.resolution,
-                        self.current_step,
-                        Ex=self.fields.Ex,
-                        Ey=self.fields.Ey,
-                        Hz=self.fields.Hz,
-                    )
-                else:
-                    device.record_fields(
-                        self.fields.Ex,
-                        self.fields.Ey,
-                        self.fields.Ez,
-                        self.fields.Hx,
-                        self.fields.Hy,
-                        self.fields.Hz,
-                        self.t,
-                        self.resolution,
-                        self.resolution,
-                        self.resolution,
-                        self.current_step,
-                    )
+        _record_monitors_impl(self)
 
     def _inject_h_sources(self):
         """Inject magnetic currents (M) into H-fields after H update."""
-        for device in self.devices:
-            if hasattr(device, "inject_h"):
-                device.inject_h(
-                    self.fields,
-                    self.t,
-                    self.dt,
-                    self.current_step,
-                    self.resolution,
-                    self.design,
-                )
+        _inject_h_sources_impl(self)
 
     def _inject_e_sources(self):
         """Inject electric currents (J) into E-fields after E update."""
-        for device in self.devices:
-            if hasattr(device, "inject_e"):
-                device.inject_e(
-                    self.fields,
-                    self.t,
-                    self.dt,
-                    self.current_step,
-                    self.resolution,
-                    self.design,
-                )
+        _inject_e_sources_impl(self)
 
     def _inject_legacy_sources(self):
         """Inject from devices that only have inject() (no inject_h/inject_e)."""
-        for device in self.devices:
-            if hasattr(device, "inject") and not hasattr(device, "inject_h"):
-                device.inject(
-                    self.fields,
-                    self.t,
-                    self.dt,
-                    self.current_step,
-                    self.resolution,
-                    self.design,
-                )
+        _inject_legacy_sources_impl(self)
 
     def _collect_source_terms(self):
         """Collect electric and magnetic current sources from all devices."""
-        source_j = {}  # Electric currents for E-field update
-        source_m = {}  # Magnetic currents for H-field update
-
-        for device in self.devices:
-            if hasattr(device, "get_source_terms"):
-                j, m = device.get_source_terms(
-                    self.fields,
-                    self.t,
-                    self.dt,
-                    self.current_step,
-                    self.resolution,
-                    self.design,
-                )
-                for key, val in j.items():
-                    source_j.setdefault(key, []).append(val)
-                for key, val in m.items():
-                    source_m.setdefault(key, []).append(val)
-
-        return source_j, source_m
+        return _collect_source_terms_impl(self)
 
     def _create_jit_step(self):
         """Create a JIT-compiled FDTD step function for maximum performance.
@@ -2481,35 +2383,14 @@ class Simulation:
                 - 'monitors': list of Monitor objects with recorded data
                 - 'animation': JupyterAnimator object if running in Jupyter with animate_live
         """
-        # Default non-visual path uses the compiled engine in v0.3.
-        wants_live_viz = any(
-            kwargs.get(k) is not None
-            for k in ("animate_live", "save_video", "jupyter_live")
-        )
-        if not wants_live_viz:
-            save_fields = kwargs.get("save_fields")
-            field_subsample = int(kwargs.get("field_subsample", 1))
-            progress = bool(kwargs.get("progress", False))
-            record_interval = field_subsample if save_fields else None
-            return self.run_compiled(
-                num_steps=None,
-                record_interval=record_interval,
-                record_fields=save_fields,
-                progress=progress,
-            )
-
-        from beamz.visual.runner import run_with_visualization
-
-        return run_with_visualization(self, **kwargs)
+        return _run_impl(self, **kwargs)
 
     def to_scene(self):
         """Build a 3D scene representation of the simulation setup."""
-        from beamz.visual.scene import simulation_to_scene
-
-        return simulation_to_scene(self)
+        return _to_scene_impl(self)
 
     def show(self, *, mode="auto", open_browser=True, **kwargs):
         """Display the simulation setup in the interactive 3D scene viewer."""
-        from beamz.visual.scene import view3d
-
-        return view3d(self.to_scene(), mode=mode, open_browser=open_browser, **kwargs)
+        return _show_impl(
+            self, mode=mode, open_browser=open_browser, **kwargs
+        )
