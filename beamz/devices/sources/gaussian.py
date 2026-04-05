@@ -68,6 +68,22 @@ class GaussianSource:
         object.__setattr__(new, "state", GaussianSourceState())
         return new
 
+    def to_dict(self):
+        return self.spec.to_dict()
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls.from_spec(GaussianSourceSpec.from_dict(data))
+
+    @classmethod
+    def from_spec(cls, spec):
+        if not isinstance(spec, GaussianSourceSpec):
+            raise TypeError("from_spec expects a GaussianSourceSpec")
+        new = object.__new__(cls)
+        object.__setattr__(new, "spec", spec)
+        object.__setattr__(new, "state", GaussianSourceState())
+        return new
+
     def _get_signal_value(self, time, dt):
         """Interpolate signal value at arbitrary time (JAX-compatible)."""
         signal_arr = jnp.asarray(self.signal)

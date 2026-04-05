@@ -27,6 +27,7 @@ from beamz.design.merge import (
 from beamz.design.structures import (
     Polygon,
     Rectangle,
+    structure_from_spec,
 )
 
 
@@ -119,6 +120,22 @@ class Design:
         else:
             structures = tuple(self.structures)
         object.__setattr__(new, "_structures", structures)
+        return new
+
+    def to_dict(self):
+        return self.spec.to_dict()
+
+    @classmethod
+    def from_dict(cls, data):
+        spec = DesignSpec.from_dict(data)
+        new = object.__new__(cls)
+        object.__setattr__(new, "spec", spec)
+        object.__setattr__(new, "state", DesignState())
+        object.__setattr__(
+            new,
+            "_structures",
+            tuple(structure_from_spec(structure_spec) for structure_spec in spec.structures),
+        )
         return new
 
     def __iadd__(self, structure):

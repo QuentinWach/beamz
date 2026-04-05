@@ -5,10 +5,15 @@ import numpy as np
 
 from beamz.const import µm
 from beamz.design.core import Design
+from beamz.devices.monitors.monitors import Monitor
+from beamz.devices.monitors.spec import MonitorSpec
+from beamz.devices.sources.gaussian import GaussianSource
 from beamz.devices.sources.mode import (
+    ModeSource,
     _make_3d_mode_basis_profiles,
     _modal_overlap_3d_profiles,
 )
+from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
 from beamz.devices.sources.solve import solve_modes
 from beamz.simulation.boundaries import Boundary
 from beamz.simulation.spec import SimulationSpec, build_simulation_spec
@@ -190,6 +195,37 @@ class Simulation:
         object.__setattr__(new, "_boundaries", tuple(changes.get("boundaries", self.boundaries)))
         object.__setattr__(new, "runtime", SimulationRuntime())
         return new
+
+    def to_dict(self):
+        return self.spec.to_dict()
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls.from_spec(SimulationSpec.from_dict(data))
+
+    @classmethod
+    def from_spec(cls, spec):
+        if not isinstance(spec, SimulationSpec):
+            raise TypeError("from_spec expects a SimulationSpec")
+        design = Design.from_dict(spec.design.to_dict())
+        devices = tuple(_device_from_spec(device_spec, design=design) for device_spec in spec.devices)
+        new = object.__new__(cls)
+        object.__setattr__(new, "spec", spec)
+        object.__setattr__(new, "_design", design)
+        object.__setattr__(new, "_devices", devices)
+        object.__setattr__(new, "_boundaries", tuple(spec.boundaries))
+        object.__setattr__(new, "runtime", SimulationRuntime())
+        return new
+
+
+def _device_from_spec(spec, *, design):
+    if isinstance(spec, MonitorSpec):
+        return Monitor.from_spec(spec, design=design)
+    if isinstance(spec, GaussianSourceSpec):
+        return GaussianSource.from_spec(spec)
+    if isinstance(spec, ModeSourceSpec):
+        return ModeSource.from_spec(spec)
+    raise TypeError(f"unsupported device spec type: {type(spec).__name__}")
 
 
 def _run_fast(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):

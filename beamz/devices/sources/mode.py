@@ -168,6 +168,23 @@ class ModeSource:
         object.__setattr__(new, "state", ModeSourceState())
         return new
 
+    def to_dict(self):
+        return self.spec.to_dict()
+
+    @classmethod
+    def from_dict(cls, data, *, grid=None):
+        return cls.from_spec(ModeSourceSpec.from_dict(data), grid=grid)
+
+    @classmethod
+    def from_spec(cls, spec, *, grid=None):
+        if not isinstance(spec, ModeSourceSpec):
+            raise TypeError("from_spec expects a ModeSourceSpec")
+        new = object.__new__(cls)
+        object.__setattr__(new, "grid", grid)
+        object.__setattr__(new, "spec", spec)
+        object.__setattr__(new, "state", ModeSourceState())
+        return new
+
     def initialize(self, permittivity, resolution, dt=None):
         """Compute the mode and set up the source currents for all 6 components in 3D."""
         setup_helpers.initialize(self, permittivity, resolution, dt=dt)

@@ -113,6 +113,30 @@ class Monitor:
         object.__setattr__(new, "state", MonitorRecorder.create(base_spec))
         return new
 
+    def to_dict(self):
+        return self.spec.to_dict()
+
+    @classmethod
+    def from_dict(cls, data, *, design=None, objective_function=None):
+        return cls.from_spec(
+            MonitorSpec.from_dict(data),
+            design=design,
+            objective_function=objective_function,
+        )
+
+    @classmethod
+    def from_spec(cls, spec, *, design=None, objective_function=None):
+        if not isinstance(spec, MonitorSpec):
+            raise TypeError("from_spec expects a MonitorSpec")
+        new = object.__new__(cls)
+        object.__setattr__(new, "design", design)
+        object.__setattr__(new, "_live_state", live_helpers.create_state())
+        object.__setattr__(new, "update_interval", 10)
+        object.__setattr__(new, "objective_function", objective_function)
+        object.__setattr__(new, "spec", spec)
+        object.__setattr__(new, "state", MonitorRecorder.create(spec))
+        return new
+
     def evaluate_objective(self) -> Optional[float]:
         """Evaluate the objective function associated with this monitor, if any."""
         return store_helpers.evaluate_objective(self)

@@ -141,6 +141,22 @@ def _replace_from_bbox(structure, *, include_length=False):
     return structure._replace_spec(**changes)
 
 
+def _structure_kind(spec):
+    if spec.length is not None and spec.input_width is not None and spec.output_width is not None:
+        return "Taper"
+    if spec.inner_radius is not None and spec.outer_radius is not None and spec.angle is not None:
+        return "CircularBend"
+    if spec.inner_radius is not None and spec.outer_radius is not None:
+        return "Ring"
+    if spec.radius is not None and spec.depth and spec.depth > 0 and not spec.vertices:
+        return "Sphere"
+    if spec.radius is not None:
+        return "Circle"
+    if spec.width is not None and spec.height is not None and len(spec.vertices) == 4:
+        return "Rectangle"
+    return "Polygon"
+
+
 @dataclass(frozen=True, slots=True)
 class StructureSpec:
     vertices: tuple[tuple[float, float, float], ...] = ()
@@ -197,6 +213,7 @@ class StructureSpec:
 
         return {
             "type": "StructureSpec",
+            "shape_type": _structure_kind(self),
             "vertices": [list(vertex) for vertex in self.vertices],
             "interiors": [[list(vertex) for vertex in path] for path in self.interiors],
             "material": material_spec_to_dict(self.material),
@@ -245,6 +262,90 @@ class StructureSpec:
             length=data.get("length"),
             is_pml=data.get("is_pml", False),
         )
+
+
+def structure_from_spec(spec):
+    material = material_from_spec(spec.material)
+    kind = _structure_kind(spec)
+    if kind == "Rectangle":
+        return Rectangle(
+            position=spec.position or (0.0, 0.0, spec.z),
+            width=spec.width,
+            height=spec.height,
+            depth=spec.depth,
+            material=material,
+            color=spec.color,
+            is_pml=spec.is_pml,
+            optimize=spec.optimize,
+        )
+    if kind == "Circle":
+        return Circle(
+            position=spec.position or (0.0, 0.0, spec.z),
+            radius=spec.radius,
+            points=spec.points or 32,
+            material=material,
+            color=spec.color,
+            optimize=spec.optimize,
+            depth=spec.depth,
+            z=spec.z,
+        )
+    if kind == "Ring":
+        return Ring(
+            position=spec.position or (0.0, 0.0, spec.z),
+            inner_radius=spec.inner_radius,
+            outer_radius=spec.outer_radius,
+            material=material,
+            color=spec.color,
+            optimize=spec.optimize,
+            points=spec.points or 256,
+            depth=spec.depth,
+            z=spec.z,
+        )
+    if kind == "CircularBend":
+        return CircularBend(
+            position=spec.position or (0.0, 0.0, spec.z),
+            inner_radius=spec.inner_radius,
+            outer_radius=spec.outer_radius,
+            angle=spec.angle,
+            rotation=spec.rotation or 0.0,
+            material=material,
+            facecolor=spec.color,
+            optimize=spec.optimize,
+            points=spec.points or 64,
+            depth=spec.depth,
+            z=spec.z,
+        )
+    if kind == "Taper":
+        return Taper(
+            position=spec.position or (0.0, 0.0, spec.z),
+            input_width=spec.input_width,
+            output_width=spec.output_width,
+            length=spec.length,
+            material=material,
+            color=spec.color,
+            optimize=spec.optimize,
+            depth=spec.depth,
+            z=spec.z,
+        )
+    if kind == "Sphere":
+        return Sphere(
+            position=spec.position or (0.0, 0.0, 0.0),
+            radius=spec.radius,
+            material=material,
+            color=spec.color,
+            optimize=spec.optimize,
+        )
+    poly = Polygon(
+        vertices=spec.vertices,
+        material=material,
+        color=spec.color,
+        optimize=spec.optimize,
+        interiors=spec.interiors,
+        depth=spec.depth,
+        z=spec.z,
+    )
+    poly._replace_spec(position=spec.position)
+    return poly
 
 
 class Polygon:

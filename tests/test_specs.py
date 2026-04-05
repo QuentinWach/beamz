@@ -303,3 +303,46 @@ def test_spec_roundtrip_dicts_are_json_serializable():
     assert len(sim_rt.devices) == len(sim.spec.devices)
     assert sim_rt.boundaries == sim.spec.boundaries
     assert np.allclose(sim_rt.time, sim.spec.time)
+
+
+def test_design_facade_roundtrip_uses_serialized_spec_tree():
+    material = Material(permittivity=2.0)
+    design = Design(width=2.0, height=3.0, material=material)
+    design += Rectangle(position=(0.5, 0.5), width=0.25, height=0.5, material=material)
+
+    payload = json.loads(json.dumps(design.to_dict()))
+    restored = Design.from_dict(payload)
+
+    assert restored.spec == design.spec
+    assert restored.width == design.width
+    assert len(restored.structures) == len(design.structures)
+    assert restored.structures[0].spec == design.structures[0].spec
+    assert restored.structures[1].spec == design.structures[1].spec
+
+
+def test_simulation_facade_roundtrip_rebuilds_live_objects():
+    design = Design(width=2.0, height=2.0, material=Material())
+    signal = np.linspace(0.0, 1.0, 8)
+    monitor = Monitor(start=(0.0, 0.0), end=(1.0, 0.0), name="m0")
+    source = GaussianSource(position=(0.0, 0.0), width=1.0, signal=signal)
+    boundary = PML(thickness=1.0, sigma_max=2.0, m=4)
+    sim = Simulation(
+        design=design,
+        devices=[monitor, source],
+        boundaries=[boundary],
+        resolution=0.1,
+        time=np.array([0.0, 1.0, 2.0]),
+    )
+
+    payload = json.loads(json.dumps(sim.to_dict()))
+    restored = Simulation.from_dict(payload)
+
+    assert restored.to_dict() == sim.to_dict()
+    assert restored.design.spec == sim.design.spec
+    assert len(restored.devices) == 2
+    assert isinstance(restored.devices[0], Monitor)
+    assert isinstance(restored.devices[1], GaussianSource)
+    assert restored.devices[0].to_dict() == monitor.to_dict()
+    assert restored.devices[1].to_dict() == source.to_dict()
+    assert restored.boundaries == sim.boundaries
+    assert restored.runtime.initialized is False
