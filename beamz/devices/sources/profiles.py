@@ -173,15 +173,20 @@ def _dominant_3d_pair(axis, pol):
     return pair
 
 
-def _weighted_local_index(eps_profile_2d, components, eps=1e-30):
-    """Field-energy-weighted refractive index over a 2D cross-section."""
+def _select_3d_impedance_index(axis, pol, eps_profile_2d, Ex, Ey, Ez, Hx, Hy, Hz):
+    """Pick a local modal index for 3D impedance targeting."""
     eps_arr = np.asarray(eps_profile_2d)
     if eps_arr.size == 0:
         return 1.0
 
+    tangential = (
+        {"x": (Hy, Hz), "y": (Hx, Hz), "z": (Hx, Hy)}
+        if pol == "tm"
+        else {"x": (Ey, Ez), "y": (Ex, Ez), "z": (Ex, Ey)}
+    )[axis]
     w_sum = 0.0
     ew_sum = 0.0
-    for comp in components:
+    for comp in tangential:
         arr = np.asarray(comp)
         if arr.ndim != 2 or arr.size == 0:
             continue
@@ -189,32 +194,13 @@ def _weighted_local_index(eps_profile_2d, components, eps=1e-30):
         t = min(eps_arr.shape[1], arr.shape[1])
         if z <= 0 or t <= 0:
             continue
-        sl_eps = eps_arr[:z, :t]
-        sl_arr = arr[:z, :t]
-        w = np.abs(sl_arr) ** 2
+        w = np.abs(arr[:z, :t]) ** 2
         w_sum += float(np.sum(w))
-        ew_sum += float(np.sum(sl_eps * w))
+        ew_sum += float(np.sum(eps_arr[:z, :t] * w))
 
-    if w_sum <= eps:
-        return float(np.sqrt(max(float(np.mean(eps_arr)), eps)))
-    return float(np.sqrt(max(ew_sum / w_sum, eps)))
-
-
-def _select_3d_impedance_index(axis, pol, eps_profile_2d, Ex, Ey, Ez, Hx, Hy, Hz):
-    """Pick a local modal index for 3D impedance targeting."""
-    if pol == "tm":
-        tangential = {
-            "x": (Hy, Hz),
-            "y": (Hx, Hz),
-            "z": (Hx, Hy),
-        }[axis]
-    else:
-        tangential = {
-            "x": (Ey, Ez),
-            "y": (Ex, Ez),
-            "z": (Ex, Ey),
-        }[axis]
-    return _weighted_local_index(eps_profile_2d, tangential)
+    if w_sum <= 1e-30:
+        return float(np.sqrt(max(float(np.mean(eps_arr)), 1e-30)))
+    return float(np.sqrt(max(ew_sum / w_sum, 1e-30)))
 
 
 def _impedance_match_3d_tangential_pairs(
@@ -584,16 +570,6 @@ def _build_3d_indices(axis, staggered, bounds, center_idx, offset_idx, grid_shap
         ),
     }
 
-
-def _target_3d_impedance(impedance_neff, omega, dt, d_axis):
-    eta0 = np.sqrt(MU_0 / EPS_0)
-    neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
-    if dt is None:
-        return eta0 / neff_imp_r
-    k_num_imp = _solve_numeric_k_axis(omega, dt, d_axis, neff_imp_r)
-    return _numeric_impedance_axis(omega, dt, d_axis, k_num_imp, neff_imp_r)
-
-
 def _build_3d_profiles(
     Ex,
     Ey,
@@ -635,7 +611,14 @@ def _build_3d_profiles(
     indices = _build_3d_indices(
         axis, staggered, bounds, center_idx, offset_idx, grid_shape
     )
-    z_target = _target_3d_impedance(impedance_neff, omega, dt, resolution)
+    neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
+    if dt is None:
+        z_target = np.sqrt(MU_0 / EPS_0) / neff_imp_r
+    else:
+        k_num_imp = _solve_numeric_k_axis(omega, dt, resolution, neff_imp_r)
+        z_target = _numeric_impedance_axis(
+            omega, dt, resolution, k_num_imp, neff_imp_r
+        )
     staggered["Ex"], staggered["Ey"], staggered["Ez"] = _impedance_match_3d_tangential_pairs(
         axis,
         staggered["Ex"],
