@@ -3,7 +3,6 @@
 import numpy as np
 
 from beamz.visual.design_viz import draw_boundary
-from beamz.visual.helpers import get_si_scale_and_label
 from beamz.visual.overlays import (
     add_design_overlays,
     configure_axes,
@@ -76,6 +75,158 @@ def is_jupyter_environment():
         return False
     except (ImportError, NameError):
         return False
+
+
+def _format_frame_title(field_name, t, step, num_steps):
+    return f"{field_name} at t = {t:.2e} s (step {step}/{num_steps})"
+
+
+def _resolve_limits(axis_scale, vmax):
+    if axis_scale is not None:
+        return axis_scale
+    vmax = vmax if vmax > 0 else 1.0
+    return -vmax, vmax
+
+
+def _create_figure_axes(*, clean_visualization, extent=None, facecolor=None):
+    import matplotlib.pyplot as plt
+
+    if clean_visualization and extent:
+        data_width = extent[1] - extent[0]
+        data_height = extent[3] - extent[2]
+        aspect_ratio = data_width / data_height
+        fig_height = 8
+        fig_width = fig_height * aspect_ratio
+        fig = plt.figure(figsize=(fig_width, fig_height))
+        if facecolor is not None:
+            fig.patch.set_facecolor(facecolor)
+        ax = fig.add_axes([0, 0, 1, 1])
+        return fig, ax
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    if facecolor is not None:
+        fig.patch.set_facecolor(facecolor)
+    return fig, ax
+
+
+def _apply_static_overlays(
+    ax,
+    *,
+    design,
+    boundaries,
+    line_color,
+    line_opacity,
+    plane_2d,
+    clean_visualization,
+    wavelength,
+    show_structures=True,
+    show_sources=True,
+    show_monitors=True,
+    skip_background=False,
+):
+    if design is not None and show_structures:
+        add_design_overlays(
+            ax,
+            design,
+            line_color=line_color,
+            line_opacity=line_opacity,
+            sources=getattr(design, "sources", []) if show_sources else [],
+            show_monitors=show_monitors,
+            skip_background=skip_background,
+        )
+
+    if boundaries:
+        for boundary in boundaries:
+            draw_boundary(
+                ax,
+                boundary,
+                design,
+                edgecolor=line_color,
+                linestyle=":",
+                alpha=line_opacity,
+            )
+
+    if design is not None and not clean_visualization:
+        configure_axes(ax, design, plane_2d=plane_2d)
+    if clean_visualization and design is not None:
+        draw_scale_bar(ax, design, wavelength=wavelength, fontsize=14)
+
+
+def _create_frame_artists(
+    data,
+    *,
+    extent,
+    cmap,
+    vmin,
+    vmax,
+    interpolation,
+    clean_visualization,
+    title_text,
+    field_name,
+    units,
+    design,
+    boundaries,
+    line_color,
+    line_opacity,
+    plane_2d,
+    wavelength,
+    show_structures=True,
+    show_sources=True,
+    show_monitors=True,
+    skip_background=False,
+    facecolor=None,
+):
+    import matplotlib.pyplot as plt
+
+    fig, ax = _create_figure_axes(
+        clean_visualization=clean_visualization,
+        extent=extent,
+        facecolor=facecolor,
+    )
+    im = ax.imshow(
+        data,
+        origin="lower",
+        cmap=resolve_cmap(cmap),
+        vmin=vmin,
+        vmax=vmax,
+        extent=extent,
+        interpolation=interpolation,
+    )
+    if clean_visualization:
+        ax.set_axis_off()
+        ax.set_frame_on(False)
+        cbar = None
+        title = None
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+    else:
+        cbar = plt.colorbar(im, ax=ax, label=f"{field_name} ({units})")
+        title = ax.set_title(title_text) if title_text else None
+        plt.tight_layout()
+
+    _apply_static_overlays(
+        ax,
+        design=design,
+        boundaries=boundaries,
+        line_color=line_color,
+        line_opacity=line_opacity,
+        plane_2d=plane_2d,
+        clean_visualization=clean_visualization,
+        wavelength=wavelength,
+        show_structures=show_structures,
+        show_sources=show_sources,
+        show_monitors=show_monitors,
+        skip_background=skip_background,
+    )
+    return fig, ax, im, cbar, title
+
+
+def _update_frame_artists(im, cbar, title, data, *, vmin, vmax, title_text=None):
+    im.set_data(data)
+    im.set_clim(vmin, vmax)
+    if title is not None and title_text:
+        title.set_text(title_text)
+    if cbar is not None:
+        cbar.mappable.set_clim(vmin, vmax)
 
 
 def animate_manual_field(
@@ -186,75 +337,30 @@ def animate_manual_field(
         vmin, vmax = axis_scale
 
     if context.get("im") is None:
-        fig, ax = plt.subplots()
-        actual_cmap = resolve_cmap(cmap)
-
-        if extent is not None:
-            im = ax.imshow(
-                data,
-                origin="lower",
-                cmap=actual_cmap,
-                vmin=vmin,
-                vmax=vmax,
-                extent=extent,
-                interpolation=interpolation,
-            )
-        else:
-            im = ax.imshow(
-                data,
-                origin="lower",
-                cmap=actual_cmap,
-                vmin=vmin,
-                vmax=vmax,
-                interpolation=interpolation,
-            )
-
-        # Determine field name from title if possible, or generic
         field_name = "Field"
         if title and " at t =" in title:
             field_name = title.split(" at t =")[0]
-
-        if clean_visualization:
-            ax.set_axis_off()
-            cbar = None
-        else:
-            cbar = plt.colorbar(
-                im, ax=ax, orientation="vertical", label=f"{field_name} ({units})"
-            )
-            if title:
-                ax.set_title(title)
-
-        if design is not None and show_structures:
-            add_design_overlays(
-                ax,
-                design,
-                line_color=line_color,
-                line_opacity=line_opacity,
-                sources=getattr(design, "sources", []) if show_sources else [],
-                show_monitors=show_monitors,
-            )
-
-        if boundaries:
-            for boundary in boundaries:
-                draw_boundary(
-                    ax,
-                    boundary,
-                    design,
-                    edgecolor=line_color,
-                    linestyle=":",
-                    alpha=line_opacity,
-                )
-
-        if design is not None and not clean_visualization:
-            configure_axes(ax, design, plane_2d=plane_2d)
-
-        if clean_visualization and design is not None:
-            draw_scale_bar(ax, design, wavelength=wavelength)
-
-        if clean_visualization:
-            plt.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
-        else:
-            plt.tight_layout()
+        fig, ax, im, cbar, title_obj = _create_frame_artists(
+            data,
+            extent=extent,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            interpolation=interpolation,
+            clean_visualization=clean_visualization,
+            title_text=title,
+            field_name=field_name,
+            units=units,
+            design=design,
+            boundaries=boundaries,
+            line_color=line_color,
+            line_opacity=line_opacity,
+            plane_2d=plane_2d,
+            wavelength=wavelength,
+            show_structures=show_structures,
+            show_sources=show_sources,
+            show_monitors=show_monitors,
+        )
         plt.show(block=False)
         plt.pause(pause)
         context.update(
@@ -263,6 +369,7 @@ def animate_manual_field(
                 "ax": ax,
                 "im": im,
                 "cbar": cbar,
+                "title": title_obj,
                 "frame": 1,
                 "clean_visualization": clean_visualization,
                 "wavelength": wavelength,
@@ -273,14 +380,16 @@ def animate_manual_field(
 
     # Update existing plot
     clean_visualization = context.get("clean_visualization", False)
-    im = context["im"]
-    im.set_data(data)
-    im.set_clim(vmin, vmax)
-    if title and not clean_visualization:
-        context["ax"].set_title(title)
+    _update_frame_artists(
+        context["im"],
+        context.get("cbar"),
+        None if clean_visualization else context.get("title"),
+        data,
+        vmin=vmin,
+        vmax=vmax,
+        title_text=title,
+    )
     context["frame"] = context.get("frame", 0) + 1
-    if context.get("cbar") is not None:
-        context["cbar"].mappable.set_clim(vmin, vmax)
     fig = context["fig"]
     fig.canvas.draw_idle()
     fig.canvas.flush_events()
@@ -293,7 +402,7 @@ class JupyterAnimator:
 
     Provides two modes:
     1. Live mode: Updates cell output during simulation using clear_output + display
-    2. Replay mode: Returns an interactive animation widget after simulation
+    2. Replay mode: Returns an HTML animation or MP4 after simulation
 
     Usage:
         animator = JupyterAnimator(...)
@@ -301,7 +410,6 @@ class JupyterAnimator:
         animator.update(field_array, t, step, num_steps)
         # After simulation:
         animation = animator.get_animation()  # Returns playable HTML5 video
-        widget = animator.get_widget()        # Returns interactive slider
     """
 
     def __init__(
@@ -452,75 +560,42 @@ class JupyterAnimator:
         import matplotlib.pyplot as plt
         from IPython.display import clear_output, display
 
-        # Determine color scale
-        if self.axis_scale is not None:
-            vmin, vmax = self.axis_scale
-        else:
-            vmax = self._global_vmax if self._global_vmax > 0 else 1.0
-            vmin = -vmax
-
-        actual_cmap = resolve_cmap(self.cmap)
+        title_text = _format_frame_title(field_name, t, step, num_steps)
+        vmin, vmax = _resolve_limits(self.axis_scale, self._global_vmax)
 
         # First frame: create the figure and all elements
         if self._fig is None:
-            # Calculate figure size based on data aspect ratio for clean visualization
-            if self.clean_visualization and extent:
-                data_width = extent[1] - extent[0]
-                data_height = extent[3] - extent[2]
-                aspect_ratio = data_width / data_height
-                fig_height = 8
-                fig_width = fig_height * aspect_ratio
-                self._fig = plt.figure(figsize=(fig_width, fig_height))
-                self._fig.patch.set_facecolor("none")  # Transparent background
-                # Create axes that fills the entire figure
-                self._ax = self._fig.add_axes([0, 0, 1, 1])
-            else:
-                self._fig, self._ax = plt.subplots(figsize=(10, 8))
-
-            self._im = self._ax.imshow(
+            self._fig, self._ax, self._im, self._cbar, self._title = _create_frame_artists(
                 frame_data,
-                origin="lower",
-                cmap=actual_cmap,
+                extent=extent,
+                cmap=self.cmap,
                 vmin=vmin,
                 vmax=vmax,
-                extent=extent,
                 interpolation=self.interpolation,
+                clean_visualization=self.clean_visualization,
+                title_text=title_text,
+                field_name=field_name,
+                units=units,
+                design=design,
+                boundaries=boundaries,
+                line_color=self.line_color,
+                line_opacity=self.line_opacity,
+                plane_2d=plane_2d,
+                wavelength=self.wavelength,
+                skip_background=True,
+                facecolor="none",
             )
 
-            if self.clean_visualization:
-                self._ax.set_axis_off()
-                self._ax.set_frame_on(False)
-                self._title = None
-            else:
-                self._cbar = plt.colorbar(
-                    self._im, ax=self._ax, label=f"{field_name} ({units})"
-                )
-                self._title = self._ax.set_title(
-                    f"{field_name} at t = {t:.2e} s (step {step}/{num_steps})"
-                )
-                plt.tight_layout()
-
-            # Add structure overlays (static, only done once)
-            self._add_overlays(self._ax, design, boundaries)
-
-            # Add scale bar for clean visualization
-            if self.clean_visualization:
-                draw_scale_bar(
-                    self._ax, design, wavelength=self.wavelength, fontsize=14
-                )
-
         else:
-            # Subsequent frames: just update the data
-            self._im.set_data(frame_data)
-            self._im.set_clim(vmin, vmax)
-
-            if self._title is not None:
-                self._title.set_text(
-                    f"{field_name} at t = {t:.2e} s (step {step}/{num_steps})"
-                )
-
-            if self._cbar is not None:
-                self._cbar.mappable.set_clim(vmin, vmax)
+            _update_frame_artists(
+                self._im,
+                self._cbar,
+                self._title,
+                frame_data,
+                vmin=vmin,
+                vmax=vmax,
+                title_text=title_text,
+            )
 
         # Clear previous output and display updated figure
         clear_output(wait=True)
@@ -537,27 +612,6 @@ class JupyterAnimator:
             self._im = None
             self._cbar = None
             self._title = None
-
-    def _add_overlays(self, ax, design, boundaries):
-        """Add structure, source, monitor, and boundary overlays."""
-        add_design_overlays(
-            ax,
-            design,
-            line_color=self.line_color,
-            line_opacity=self.line_opacity,
-            skip_background=True,
-        )
-
-        if boundaries:
-            for boundary in boundaries:
-                draw_boundary(
-                    ax,
-                    boundary,
-                    design,
-                    edgecolor=self.line_color,
-                    linestyle=":",
-                    alpha=self.line_opacity,
-                )
 
     def _build_replay(self, fps, facecolor="none"):
         """Build a FuncAnimation from stored frames.
@@ -576,71 +630,45 @@ class JupyterAnimator:
             print("No frames stored. Enable store_frames=True.")
             return None, None
 
-        # Determine color scale from all frames
-        if self.axis_scale is not None:
-            vmin, vmax = self.axis_scale
-        else:
-            vmax = self._global_vmax if self._global_vmax > 0 else 1.0
-            vmin = -vmax
-
-        # Calculate figure size based on data aspect ratio for clean visualization
         extent = self.metadata.get("extent")
-        if self.clean_visualization and extent:
-            data_width = extent[1] - extent[0]
-            data_height = extent[3] - extent[2]
-            aspect_ratio = data_width / data_height
-            fig_height = 8
-            fig_width = fig_height * aspect_ratio
-            fig = plt.figure(figsize=(fig_width, fig_height))
-            fig.patch.set_facecolor(facecolor)
-            ax = fig.add_axes([0, 0, 1, 1])
-        else:
-            fig, ax = plt.subplots(figsize=(10, 8))
-
-        actual_cmap = resolve_cmap(self.cmap)
-
-        im = ax.imshow(
+        vmin, vmax = _resolve_limits(self.axis_scale, self._global_vmax)
+        fig, ax, im, _, title = _create_frame_artists(
             self.frames[0],
-            origin="lower",
-            cmap=actual_cmap,
+            extent=extent,
+            cmap=self.cmap,
             vmin=vmin,
             vmax=vmax,
-            extent=extent,
             interpolation=self.interpolation,
+            clean_visualization=self.clean_visualization,
+            title_text="",
+            field_name=self.metadata.get("field_name", "Field"),
+            units=self.metadata.get("units", ""),
+            design=self.metadata.get("design"),
+            boundaries=self.metadata.get("boundaries"),
+            line_color=self.line_color,
+            line_opacity=self.line_opacity,
+            plane_2d=self.metadata.get("plane_2d", "xy"),
+            wavelength=self.wavelength,
+            skip_background=True,
+            facecolor=facecolor,
         )
-
-        title = None
-        if self.clean_visualization:
-            ax.set_axis_off()
-            ax.set_frame_on(False)
-        else:
-            plt.colorbar(
-                im,
-                ax=ax,
-                label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})",
-            )
-            title = ax.set_title("")
-            plt.tight_layout()
-
-        self._add_overlays(
-            ax,
-            self.metadata.get("design"),
-            self.metadata.get("boundaries"),
-        )
-
-        if self.clean_visualization:
-            draw_scale_bar(
-                ax, self.metadata.get("design"), wavelength=self.wavelength, fontsize=14
-            )
 
         def update(frame_idx):
-            im.set_data(self.frames[frame_idx])
+            title_text = None
             if title is not None and self.times:
                 t, step, num_steps = self.times[frame_idx]
-                field_name = self.metadata.get("field_name", "Field")
-                title.set_text(
-                    f"{field_name} at t = {t:.2e} s (step {step}/{num_steps})"
+                title_text = _format_frame_title(
+                    self.metadata.get("field_name", "Field"), t, step, num_steps
                 )
+            _update_frame_artists(
+                im,
+                None,
+                title,
+                self.frames[frame_idx],
+                vmin=vmin,
+                vmax=vmax,
+                title_text=title_text,
+            )
             return [im] if title is None else [im, title]
 
         anim = FuncAnimation(
@@ -702,111 +730,6 @@ class JupyterAnimator:
         if path is None or Video is None:
             return None
         return Video(path, embed=True)
-
-    def get_widget(self):
-        """Create an interactive slider widget for frame-by-frame scrubbing.
-
-        Returns:
-            ipywidgets Output widget with interactive slider
-        """
-        import matplotlib.pyplot as plt
-        from IPython.display import clear_output, display
-
-        if not self.frames:
-            print("No frames stored. Enable store_frames=True.")
-            return None
-
-        # Determine color scale
-        if self.axis_scale is not None:
-            vmin, vmax = self.axis_scale
-        else:
-            vmax = self._global_vmax if self._global_vmax > 0 else 1.0
-            vmin = -vmax
-
-        actual_cmap = resolve_cmap(self.cmap)
-
-        try:
-            import ipywidgets as widgets
-        except ImportError:
-            print(
-                "ipywidgets not installed. Use get_animation() instead or install with: pip install ipywidgets"
-            )
-            return None
-
-        output = widgets.Output()
-
-        def show_frame(frame=0):
-            with output:
-                clear_output(wait=True)
-                fig, ax = plt.subplots(figsize=(10, 8))
-
-                im = ax.imshow(
-                    self.frames[frame],
-                    origin="lower",
-                    cmap=actual_cmap,
-                    vmin=vmin,
-                    vmax=vmax,
-                    extent=self.metadata.get("extent"),
-                    interpolation=self.interpolation,
-                )
-
-                if self.clean_visualization:
-                    # Hide axes and remove all padding for clean visualization
-                    ax.set_axis_off()
-                    plt.subplots_adjust(
-                        left=0, right=1, top=1, bottom=0, wspace=0, hspace=0
-                    )
-                else:
-                    plt.colorbar(
-                        im,
-                        ax=ax,
-                        label=f"{self.metadata.get('field_name', 'Field')} ({self.metadata.get('units', '')})",
-                    )
-                    if self.times:
-                        t, step, num_steps = self.times[frame]
-                        field_name = self.metadata.get("field_name", "Field")
-                        ax.set_title(
-                            f"{field_name} at t = {t:.2e} s (step {step}/{num_steps})"
-                        )
-                    plt.tight_layout()
-
-                self._add_overlays(
-                    ax,
-                    self.metadata.get("design"),
-                    self.metadata.get("boundaries"),
-                )
-
-                plt.show()
-
-        # Create slider
-        slider = widgets.IntSlider(
-            value=0,
-            min=0,
-            max=len(self.frames) - 1,
-            step=1,
-            description="Frame:",
-            continuous_update=False,
-        )
-
-        # Play button
-        play = widgets.Play(
-            value=0,
-            min=0,
-            max=len(self.frames) - 1,
-            step=1,
-            interval=100,
-            description="Play",
-        )
-
-        widgets.jslink((play, "value"), (slider, "value"))
-
-        # Connect slider to display function
-        widgets.interactive_output(show_frame, {"frame": slider})
-
-        # Show initial frame
-        show_frame(0)
-
-        return widgets.VBox([widgets.HBox([play, slider]), output])
 
 
 def save_animation_mp4(animator, *, filename="animation.mp4", fps=30, dpi=150):
