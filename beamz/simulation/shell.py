@@ -1,3 +1,4 @@
+import jax
 import numpy as np
 
 
@@ -14,12 +15,12 @@ def apply_lossy_shell(
     del compiled
     out = updated
     for starts, sizes in slabs:
-        old_s = compiled_jax_dynamic_slice(old, starts, sizes)
-        curl_s = compiled_jax_dynamic_slice(curl, starts, sizes)
-        decay_s = compiled_jax_dynamic_slice(decay, starts, sizes)
-        source_s = compiled_jax_dynamic_slice(source, starts, sizes)
+        old_s = jax.lax.dynamic_slice(old, starts, sizes)
+        curl_s = jax.lax.dynamic_slice(curl, starts, sizes)
+        decay_s = jax.lax.dynamic_slice(decay, starts, sizes)
+        source_s = jax.lax.dynamic_slice(source, starts, sizes)
         lossy_s = decay_s * old_s + source_s * curl_s
-        out = compiled_jax_dynamic_update_slice(out, lossy_s, starts)
+        out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
     return out
 
 
@@ -36,14 +37,14 @@ def apply_lossy_shell_from_lossless(
     del compiled
     out = updated_lossless
     for starts, sizes in slabs:
-        old_s = compiled_jax_dynamic_slice(old, starts, sizes)
-        lossless_s = compiled_jax_dynamic_slice(updated_lossless, starts, sizes)
-        decay_s = compiled_jax_dynamic_slice(decay, starts, sizes)
-        source_s = compiled_jax_dynamic_slice(source, starts, sizes)
-        source_ll_s = compiled_jax_dynamic_slice(source_lossless, starts, sizes)
+        old_s = jax.lax.dynamic_slice(old, starts, sizes)
+        lossless_s = jax.lax.dynamic_slice(updated_lossless, starts, sizes)
+        decay_s = jax.lax.dynamic_slice(decay, starts, sizes)
+        source_s = jax.lax.dynamic_slice(source, starts, sizes)
+        source_ll_s = jax.lax.dynamic_slice(source_lossless, starts, sizes)
         beta = source_s / source_ll_s
         lossy_s = (decay_s - beta) * old_s + beta * lossless_s
-        out = compiled_jax_dynamic_update_slice(out, lossy_s, starts)
+        out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
     return out
 
 
@@ -162,15 +163,3 @@ def lossy_fraction(
     full_mask = np.zeros(field_shape, dtype=bool)
     full_mask[region] = np.asarray(conductivity_region) > 0.0
     return float(full_mask.mean())
-
-
-def compiled_jax_dynamic_slice(arr, starts, sizes):
-    import jax
-
-    return jax.lax.dynamic_slice(arr, starts, sizes)
-
-
-def compiled_jax_dynamic_update_slice(arr, patch, starts):
-    import jax
-
-    return jax.lax.dynamic_update_slice(arr, patch, starts)

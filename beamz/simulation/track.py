@@ -340,6 +340,45 @@ def monitor_dft_point_size(specs) -> int:
     return int(max(int(getattr(spec, "dft_point_count", 0)) for spec in specs))
 
 
+def make_monitor_state(compiled, monitor_state_cls):
+    """Create an empty monitor state sized for the compiled program."""
+    if compiled.monitor_specs:
+        max_records = max(1, monitor_state_size(compiled.monitor_specs, compiled.config.num_steps))
+        max_freq = monitor_frequency_size(compiled.monitor_specs)
+        max_points = monitor_dft_point_size(compiled.monitor_specs)
+        return monitor_state_cls(
+            powers=jnp.zeros((len(compiled.monitor_specs), max_records), dtype=jnp.float32),
+            timestamps=jnp.zeros((len(compiled.monitor_specs), max_records), dtype=jnp.float32),
+            counts=jnp.zeros((len(compiled.monitor_specs),), dtype=jnp.int32),
+            freq_flux_re=jnp.zeros((len(compiled.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_flux_im=jnp.zeros((len(compiled.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_phase_re=jnp.ones((len(compiled.monitor_specs), max_freq), dtype=jnp.float32),
+            freq_phase_im=jnp.zeros((len(compiled.monitor_specs), max_freq), dtype=jnp.float32),
+            dft_vec_re=jnp.zeros(
+                (len(compiled.monitor_specs), 6, max_freq, max_points),
+                dtype=jnp.float32,
+            ),
+            dft_vec_im=jnp.zeros(
+                (len(compiled.monitor_specs), 6, max_freq, max_points),
+                dtype=jnp.float32,
+            ),
+            dft_weight_sum=jnp.zeros((len(compiled.monitor_specs), max_freq), dtype=jnp.float32),
+        )
+
+    return monitor_state_cls(
+        powers=jnp.zeros((0, 0), dtype=jnp.float32),
+        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
+        counts=jnp.zeros((0,), dtype=jnp.int32),
+        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
+    )
+
+
 def apply_monitor_state(compiled, monitor_state):
     """Push monitor-state buffers back to Monitor objects."""
     for spec in compiled.monitor_specs:
