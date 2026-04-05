@@ -28,18 +28,6 @@ class _GDSFactoryNamespace:
         return ("-" if str(direction).startswith("+") else "+") + str(direction)[1:]
 
     @staticmethod
-    def positive_axis_direction(direction: str) -> str:
-        return "+" + str(direction)[1:]
-
-    @staticmethod
-    def incoming_wave(direction: str) -> str:
-        return "plus" if str(direction).startswith("+") else "minus"
-
-    @staticmethod
-    def outgoing_wave(direction: str) -> str:
-        return "minus" if str(direction).startswith("+") else "plus"
-
-    @staticmethod
     def move_along(center: tuple[float, float], direction: str, distance: float):
         x, y = center
         return {
@@ -48,27 +36,6 @@ class _GDSFactoryNamespace:
             "+y": (x, y + distance),
             "-y": (x, y - distance),
         }[str(direction)]
-
-    def port_plane(
-        self,
-        port: dict,
-        *,
-        span: float,
-        z_span: float,
-        z_center: float,
-        offset: float = 0.0,
-    ):
-        cx, cy = self.move_along(port["center"], port["direction"], offset)
-        z0 = float(z_center) - 0.5 * float(z_span)
-        z1 = float(z_center) + 0.5 * float(z_span)
-        if str(port["direction"]).endswith("x"):
-            return (cx, cy - 0.5 * float(span), z0), (cx, cy + 0.5 * float(span), z1)
-        return (cx - 0.5 * float(span), cy, z0), (cx + 0.5 * float(span), cy, z1)
-
-    @staticmethod
-    def line_center(line):
-        a, b = line
-        return tuple(0.5 * (float(a[i]) + float(b[i])) for i in range(len(a)))
 
     def activate(self, gf=None):
         if gf is None:
