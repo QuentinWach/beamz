@@ -6,19 +6,13 @@ import numpy as np
 
 from beamz.const import µm
 from beamz.design.cache import (
-    _boundary_signature,
-    _build_grid_from_cached_arrays,
-    _design_cache_key,
+    _cache_path_for_grid,
     _env_bool,
     _grid_kind_for_request,
-    _grid_kind_for_type,
-    _material_signature,
     _normalize_aa_config,
-    _raster_cache_dir,
-    _raster_cache_path,
+    _raster_request_signature,
     _save_grid_to_cache,
-    _structure_signature,
-    _to_jsonable,
+    _try_load_cached_grid,
 )
 from beamz.design.materials import Material
 from beamz.design.spec import DesignSpec, build_design_spec
@@ -114,6 +108,44 @@ class Design:
         """Implement += operator for adding structures."""
         self.add(structure)
         return self
+
+    def _set_grid_state(self, grid, *, resolution, request_signature):
+        self.state.grid = grid
+        self.state.grid_resolution = resolution
+        self.state.grid_request_signature = request_signature
+
+    def _instantiate_grid(self, grid_type, resolution, request_signature, **kwargs):
+        from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
+
+        grid_cls = None
+        if isinstance(grid_type, str):
+            gt = grid_type.lower()
+            if gt in {"regular", "regulargrid", "2d"}:
+                grid_cls = RegularGrid
+            elif gt in {"regular3d", "3d"}:
+                grid_cls = RegularGrid3D
+            elif gt in {"auto", "auto-select", "autoselect"}:
+                grid = create_mesh(self, resolution, **kwargs)
+                self._set_grid_state(
+                    grid, resolution=resolution, request_signature=request_signature
+                )
+                return grid
+            else:
+                return None
+        elif isinstance(grid_type, type):
+            grid_cls = grid_type
+
+        if grid_cls is RegularGrid3D:
+            grid = grid_cls(
+                self,
+                resolution_xy=resolution,
+                resolution_z=kwargs.pop("resolution_z", None),
+                **kwargs,
+            )
+        else:
+            grid = grid_cls(self, resolution, **kwargs)
+        self._set_grid_state(grid, resolution=resolution, request_signature=request_signature)
+        return grid
 
     @staticmethod
     def _is_monitor(obj):
@@ -243,7 +275,6 @@ class Design:
         **kwargs,
     ):
         """Rasterize design into a mesh grid with in-memory and optional disk cache."""
-        from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
         from beamz.visual.helpers import display_status
 
         timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
@@ -255,12 +286,12 @@ class Design:
             requested_resolution_z_raw = resolution
         requested_resolution_z = float(requested_resolution_z_raw)
         aa_config = _normalize_aa_config(kwargs)
-        request_signature = {
-            "resolution_xy": float(resolution),
-            "resolution_z": requested_resolution_z,
-            "grid_kind": grid_kind,
-            "aa_config": aa_config,
-        }
+        request_signature = _raster_request_signature(
+            resolution_xy=resolution,
+            resolution_z=requested_resolution_z,
+            grid_kind=grid_kind,
+            aa_config=aa_config,
+        )
 
         # Return cached grid if request signature matches and no force recompute
         if not force_recompute and self.state.grid is not None:
@@ -270,29 +301,18 @@ class Design:
 
         cache_path = None
         if disk_cache_enabled and not force_recompute:
-            cache_key = _design_cache_key(
-                self,
+            t_load = time.perf_counter()
+            cached_grid, cache_path, _ = _try_load_cached_grid(
+                design_obj=self,
                 resolution=float(resolution),
-                grid_kind=grid_kind,
                 resolution_z=requested_resolution_z,
+                grid_kind=grid_kind,
                 aa_config=aa_config,
             )
-            cache_path = _raster_cache_path(cache_key)
-            if cache_path.exists():
-                t_load = time.perf_counter()
-                arrays = np.load(cache_path)
-                try:
-                    self.state.grid = _build_grid_from_cached_arrays(
-                        design_obj=self,
-                        resolution=float(resolution),
-                        resolution_z=requested_resolution_z,
-                        grid_kind=grid_kind,
-                        arrays=arrays,
-                    )
-                    self.state.grid_resolution = resolution
-                    self.state.grid_request_signature = request_signature
-                finally:
-                    arrays.close()
+            if cached_grid is not None:
+                self._set_grid_state(
+                    cached_grid, resolution=resolution, request_signature=request_signature
+                )
                 if timing_enabled:
                     display_status(
                         (
@@ -304,88 +324,22 @@ class Design:
                 return self.state.grid
 
         t_raster_start = time.perf_counter()
-        if isinstance(grid_type, str):
-            gt = grid_type.lower()
-            if gt in {"regular", "regulargrid", "2d"}:
-                grid_cls = RegularGrid
-            elif gt in {"regular3d", "3d"}:
-                grid_cls = RegularGrid3D
-            elif gt in {"auto", "auto-select", "autoselect"}:
-                self.state.grid = create_mesh(self, resolution, **kwargs)
-                self.state.grid_resolution = resolution
-                self.state.grid_request_signature = request_signature
-                t_raster_end = time.perf_counter()
-                if disk_cache_enabled:
-                    if cache_path is None:
-                        cache_key = _design_cache_key(
-                            self,
-                            resolution=float(resolution),
-                            grid_kind=(
-                                "3d"
-                                if (hasattr(self.state.grid, "is_3d") and self.state.grid.is_3d)
-                                else "2d"
-                            ),
-                            resolution_z=float(
-                                getattr(self.state.grid, "resolution_z", resolution)
-                            ),
-                            aa_config=aa_config,
-                        )
-                        cache_path = _raster_cache_path(cache_key)
-                    t_save = time.perf_counter()
-                    _save_grid_to_cache(self.state.grid, cache_path)
-                    if timing_enabled:
-                        display_status(
-                            (
-                                f"Raster cache saved: {cache_path.name} | "
-                                f"save={time.perf_counter() - t_save:.2f}s"
-                            ),
-                            "info",
-                        )
-                if timing_enabled:
-                    display_status(
-                        (
-                            f"Rasterize wall-time: {t_raster_end - t_raster_start:.2f}s | "
-                            f"total={time.perf_counter() - t_total_start:.2f}s"
-                        ),
-                        "info",
-                    )
-                return self.state.grid
-            else:
-                return None
-        elif isinstance(grid_type, type):
-            grid_cls = grid_type
-
-        # If we got here with grid_cls, use it
-        if grid_cls is RegularGrid3D:
-            resolution_xy, resolution_z = resolution, kwargs.pop("resolution_z", None)
-            self.state.grid = grid_cls(
-                self,
-                resolution_xy=resolution_xy,
-                resolution_z=resolution_z,
-                **kwargs,
-            )
-            self.state.grid_resolution = resolution
-        else:
-            self.state.grid = grid_cls(self, resolution, **kwargs)
-            self.state.grid_resolution = resolution
-        self.state.grid_request_signature = request_signature
+        grid = self._instantiate_grid(
+            grid_type, resolution, request_signature=request_signature, **kwargs
+        )
+        if grid is None:
+            return None
 
         t_raster_end = time.perf_counter()
 
         if disk_cache_enabled:
             if cache_path is None:
-                cache_key = _design_cache_key(
-                    self,
+                cache_path, _ = _cache_path_for_grid(
+                    design_obj=self,
+                    grid=self.state.grid,
                     resolution=float(resolution),
-                    grid_kind=(
-                        "3d"
-                        if (hasattr(self.state.grid, "is_3d") and self.state.grid.is_3d)
-                        else "2d"
-                    ),
-                    resolution_z=float(getattr(self.state.grid, "resolution_z", resolution)),
                     aa_config=aa_config,
                 )
-                cache_path = _raster_cache_path(cache_key)
             t_save = time.perf_counter()
             _save_grid_to_cache(self.state.grid, cache_path)
             if timing_enabled:

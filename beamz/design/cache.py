@@ -144,6 +144,15 @@ def _normalize_aa_config(kwargs):
     }
 
 
+def _raster_request_signature(*, resolution_xy, resolution_z, grid_kind, aa_config):
+    return {
+        "resolution_xy": float(resolution_xy),
+        "resolution_z": float(resolution_z),
+        "grid_kind": grid_kind,
+        "aa_config": aa_config,
+    }
+
+
 def _design_cache_key(design_obj, resolution, grid_kind, resolution_z, aa_config):
     raster_env = {
         "fast_3d": os.getenv("BEAMZ_RASTER_FAST_3D"),
@@ -227,3 +236,49 @@ def _build_grid_from_cached_arrays(
         setattr(grid, name, np.asarray(arrays[name]))
     grid.shape = grid.permittivity.shape
     return grid
+
+
+def _try_load_cached_grid(
+    *,
+    design_obj,
+    resolution,
+    resolution_z,
+    grid_kind,
+    aa_config,
+):
+    cache_key = _design_cache_key(
+        design_obj,
+        resolution=float(resolution),
+        grid_kind=grid_kind,
+        resolution_z=float(resolution_z),
+        aa_config=aa_config,
+    )
+    cache_path = _raster_cache_path(cache_key)
+    if not cache_path.exists():
+        return None, cache_path, None
+
+    arrays = np.load(cache_path)
+    try:
+        grid = _build_grid_from_cached_arrays(
+            design_obj=design_obj,
+            resolution=float(resolution),
+            resolution_z=float(resolution_z),
+            grid_kind=grid_kind,
+            arrays=arrays,
+        )
+    finally:
+        arrays.close()
+    return grid, cache_path, cache_key
+
+
+def _cache_path_for_grid(*, design_obj, grid, resolution, aa_config):
+    grid_kind = "3d" if (hasattr(grid, "is_3d") and grid.is_3d) else "2d"
+    resolution_z = float(getattr(grid, "resolution_z", resolution))
+    cache_key = _design_cache_key(
+        design_obj,
+        resolution=float(resolution),
+        grid_kind=grid_kind,
+        resolution_z=resolution_z,
+        aa_config=aa_config,
+    )
+    return _raster_cache_path(cache_key), cache_key
