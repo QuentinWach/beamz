@@ -1,5 +1,6 @@
 from typing import Optional
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -57,7 +58,11 @@ def load_data(monitor, filename):
 
 def _field_time_index(monitor, time_value=None, time_index=None):
     if time_index is not None:
-        return int(time_index)
+        idx = int(time_index)
+        count = len(monitor.fields.get("t", []))
+        if idx < 0:
+            idx += count
+        return idx
     if time_value is not None and monitor.fields["t"]:
         times = np.asarray(monitor.fields["t"], dtype=float)
         return int(np.argmin(np.abs(times - float(time_value))))
@@ -91,15 +96,23 @@ def field_snapshot(monitor, field="Ez", time_value=None, time_index=None):
     from beamz.visual.data import Slice2D, Trace1D
     from beamz.devices.monitors import record as record_helpers
 
+    idx = _field_time_index(monitor, time_value=time_value, time_index=time_index)
     data = record_helpers.field_at_time(
-        monitor, field=field, time_value=time_value, time_index=time_index
+        monitor,
+        field=field,
+        time_value=time_value,
+        time_index=(idx if idx >= 0 else None),
     )
     if data is None:
         raise ValueError(f"No recorded data for field '{field}'.")
 
-    idx = _field_time_index(monitor, time_value=time_value, time_index=time_index)
     times = np.asarray(monitor.fields.get("t", []), dtype=float)
-    title = field if times.size == 0 else f"{field} at t={times[idx]:.3e} s"
+    if times.size == 0:
+        title = field
+    else:
+        if idx < 0:
+            idx = times.size - 1
+        title = f"{field} at t={times[idx]:.3e} s"
 
     arr = np.asarray(data)
     if monitor.monitor_type == "line" or arr.ndim == 1:
@@ -170,26 +183,70 @@ def flux_trace(monitor, normal_direction, field_pair=None):
         title=f"Signed flux {normal_direction}",
     )
 
-
-def plot_fields(monitor, **kwargs):
-    """Delegate field plotting to the visualization layer."""
-    from beamz.visual.monitor_plots import plot_monitor_fields
-
-    return plot_monitor_fields(monitor, **kwargs)
-
-
-def plot_power(monitor, **kwargs):
-    """Delegate power plotting to the visualization layer."""
-    from beamz.visual.monitor_plots import plot_monitor_power
-
-    return plot_monitor_power(monitor, **kwargs)
-
-
 def animate_fields(monitor, **kwargs):
-    """Delegate field animation to the visualization layer."""
-    from beamz.visual.monitor_plots import animate_monitor_fields
+    """Create a field animation from recorded monitor data."""
+    field = kwargs.pop("field", "Ez")
+    figsize = kwargs.pop("figsize", (8, 6))
+    interval = kwargs.pop("interval", 100)
+    save_filename = kwargs.pop("save_filename", None)
+    if kwargs:
+        raise TypeError(f"Unexpected animate_fields kwargs: {sorted(kwargs.keys())}")
 
-    return animate_monitor_fields(monitor, **kwargs)
+    if not monitor.fields["t"] or field not in monitor.fields:
+        print(f"No data available for field '{field}'.")
+        return None
+
+    from matplotlib.animation import FuncAnimation
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if monitor.monitor_type == "line":
+        (line,) = ax.plot([], [], "b-", linewidth=2)
+        snapshots = [monitor.field_snapshot(field=field, time_index=i) for i in range(len(monitor.fields["t"]))]
+        all_data = np.concatenate([snap.values for snap in snapshots])
+        coords = snapshots[0].coords if snapshots else np.array([0.0])
+        ax.set_xlim(float(coords[0]), float(coords[-1]))
+        ax.set_ylim(float(np.min(all_data)), float(np.max(all_data)))
+        ax.set_xlabel(snapshots[0].coord_label)
+        ax.set_ylabel(snapshots[0].value_label)
+
+        def animate(frame):
+            snap = snapshots[frame]
+            line.set_data(snap.coords, snap.values)
+            ax.set_title(snap.title)
+            return (line,)
+
+    else:
+        snapshots = [monitor.field_snapshot(field=field, time_index=i) for i in range(len(monitor.fields["t"]))]
+        first = snapshots[0]
+        im = ax.imshow(first.values, cmap="RdBu", origin="lower", aspect="auto", extent=first.extent, animated=True)
+        plt.colorbar(im, ax=ax, label=first.value_label)
+        all_data = np.stack([snap.values for snap in snapshots])
+        im.set_clim(float(np.min(all_data)), float(np.max(all_data)))
+        ax.set_xlabel(first.x_label or first.plane[0])
+        ax.set_ylabel(first.y_label or first.plane[1])
+
+        def animate(frame):
+            snap = snapshots[frame]
+            im.set_array(snap.values)
+            ax.set_title(snap.title)
+            return [im]
+
+    anim = FuncAnimation(
+        fig,
+        animate,
+        frames=len(monitor.fields["t"]),
+        interval=interval,
+        blit=True,
+        repeat=True,
+    )
+
+    if save_filename:
+        anim.save(save_filename, writer="pillow", fps=1000 // interval)
+        print(f"Animation saved to {save_filename}")
+
+    fig.tight_layout()
+    return anim
 
 
 def describe(monitor):
