@@ -693,34 +693,15 @@ class JupyterAnimator:
         Returns:
             IPython.display.Video: Playable video widget
         """
-        import os
-
-        import matplotlib.pyplot as plt
-        from IPython.display import Video
-        from matplotlib.animation import FFMpegWriter
-
-        fig, anim = self._build_replay(fps, facecolor="black")
-        if fig is None:
-            return None
-
-        print(f"Rendering {len(self.frames)} frames to {filename}...")
         try:
-            writer = FFMpegWriter(fps=fps, metadata={"title": "BEAMZ Simulation"})
-            anim.save(
-                filename, writer=writer, dpi=dpi, savefig_kwargs={"facecolor": "black"}
-            )
-            plt.close(fig)
+            from IPython.display import Video
+        except ImportError:
+            Video = None
 
-            size_bytes = os.path.getsize(filename)
-            size_mb = size_bytes / (1024 * 1024)
-            print(f"Video saved: {filename} ({size_mb:.1f} MB)")
-
-            return Video(filename, embed=True)
-        except Exception as e:
-            plt.close(fig)
-            print(f"Error creating video: {e}")
-            print("Make sure ffmpeg is installed: conda install ffmpeg")
+        path = save_animation_mp4(self, filename=filename, fps=fps, dpi=dpi)
+        if path is None or Video is None:
             return None
+        return Video(path, embed=True)
 
     def get_widget(self):
         """Create an interactive slider widget for frame-by-frame scrubbing.
@@ -826,3 +807,30 @@ class JupyterAnimator:
         show_frame(0)
 
         return widgets.VBox([widgets.HBox([play, slider]), output])
+
+
+def save_animation_mp4(animator, *, filename="animation.mp4", fps=30, dpi=150):
+    """Render stored frames to an MP4 file and return the output path."""
+    import os
+
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FFMpegWriter
+
+    fig, anim = animator._build_replay(fps, facecolor="black")
+    if fig is None:
+        return None
+
+    print(f"Rendering {len(animator.frames)} frames to {filename}...")
+    try:
+        writer = FFMpegWriter(fps=fps, metadata={"title": "BEAMZ Simulation"})
+        anim.save(filename, writer=writer, dpi=dpi, savefig_kwargs={"facecolor": "black"})
+        size_bytes = os.path.getsize(filename)
+        size_mb = size_bytes / (1024 * 1024)
+        print(f"Video saved: {filename} ({size_mb:.1f} MB)")
+        return filename
+    except Exception as exc:
+        print(f"Error creating video: {exc}")
+        print("Make sure ffmpeg is installed: conda install ffmpeg")
+        return None
+    finally:
+        plt.close(fig)
