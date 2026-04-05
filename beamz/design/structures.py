@@ -114,20 +114,19 @@ def _bend_vertices(position, inner_radius, outer_radius, angle, rotation, points
     return outer + inner
 
 
-def _default_plot_style(shape, facecolor=None, alpha=None, linestyle=None):
-    return (
-        shape.color if facecolor is None else facecolor,
-        1 if alpha is None else alpha,
-        "-" if linestyle is None else linestyle,
-    )
-
-
 def _freeze_vertices(vertices):
     return tuple(tuple(float(c) for c in vertex) for vertex in vertices)
 
 
 def _freeze_interiors(interiors):
     return tuple(_freeze_vertices(path) for path in interiors if path)
+
+
+def _transform_geometry(vertices, interiors, transform):
+    return (
+        [transform(v) for v in vertices],
+        [[transform(v) for v in path] for path in interiors if path],
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,12 +293,11 @@ class Polygon:
 
     def shift(self, x, y, z=0):
         position = self.position
-        vertices = [(v[0] + x, v[1] + y, v[2] + z) for v in self.vertices]
-        interiors = [
-            [(v[0] + x, v[1] + y, v[2] + z) for v in path]
-            for path in self.interiors
-            if path
-        ]
+        vertices, interiors = _transform_geometry(
+            self.vertices,
+            self.interiors,
+            lambda v: (v[0] + x, v[1] + y, v[2] + z),
+        )
         changes = {"vertices": vertices, "interiors": interiors}
         if position is not None:
             changes["position"] = (position[0] + x, position[1] + y, position[2] + z)
@@ -315,26 +313,15 @@ class Polygon:
         if not self.vertices:
             return self
         x_center, y_center, z_center = _vertices_center(self.vertices)
-        vertices = [
-            (
+        vertices, interiors = _transform_geometry(
+            self.vertices,
+            self.interiors,
+            lambda v: (
                 x_center + (v[0] - x_center) * s_x,
                 y_center + (v[1] - y_center) * s_y,
                 z_center + (v[2] - z_center) * s_z,
-            )
-            for v in self.vertices
-        ]
-        interiors = [
-            [
-                (
-                    x_center + (v[0] - x_center) * s_x,
-                    y_center + (v[1] - y_center) * s_y,
-                    z_center + (v[2] - z_center) * s_z,
-                )
-                for v in path
-            ]
-            for path in self.interiors
-            if path
-        ]
+            ),
+        )
         return self._replace_spec(vertices=vertices, interiors=interiors)
 
     def rotate(self, angle, axis="z", point=None):
@@ -360,16 +347,13 @@ class Polygon:
     ):
         from beamz.visual.design_viz import draw_polygon
 
-        facecolor, alpha, linestyle = _default_plot_style(
-            self, facecolor, alpha, linestyle
-        )
         return draw_polygon(
             ax,
             self,
-            facecolor=facecolor,
+            facecolor=self.color if facecolor is None else facecolor,
             edgecolor=edgecolor,
-            alpha=alpha,
-            linestyle=linestyle,
+            alpha=1 if alpha is None else alpha,
+            linestyle="-" if linestyle is None else linestyle,
         )
 
     def copy(self):
@@ -456,12 +440,6 @@ class Rectangle(Polygon):
             depth=depth,
             is_pml=is_pml,
         )
-
-    def get_bounding_box(self):
-        if not self.vertices:
-            x, y, z = self.position
-            return (x, y, z, x + self.width, y + self.height, z + self.depth)
-        return super().get_bounding_box()
 
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
