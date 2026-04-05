@@ -55,6 +55,122 @@ def load_data(monitor, filename):
         )
 
 
+def _field_time_index(monitor, time_value=None, time_index=None):
+    if time_index is not None:
+        return int(time_index)
+    if time_value is not None and monitor.fields["t"]:
+        times = np.asarray(monitor.fields["t"], dtype=float)
+        return int(np.argmin(np.abs(times - float(time_value))))
+    return -1
+
+
+def _line_coords(monitor, count):
+    start = np.asarray(monitor.start, dtype=float)
+    end = np.asarray(monitor.end, dtype=float)
+    distance = float(np.linalg.norm(end - start))
+    if count <= 1:
+        return np.zeros((max(count, 1),), dtype=float)
+    return np.linspace(0.0, distance, int(count), dtype=float)
+
+
+def _plane_spec(monitor):
+    normal = str(monitor.plane_normal).lower()
+    start = np.asarray(monitor.start, dtype=float)
+    end = np.asarray(monitor.end, dtype=float)
+    if normal == "z":
+        return "xy", (start[0], end[0], start[1], end[1]), "x", "y"
+    if normal == "x":
+        return "yz", (start[1], end[1], start[2], end[2]), "y", "z"
+    if normal == "y":
+        return "xz", (start[0], end[0], start[2], end[2]), "x", "z"
+    return "xy", (start[0], end[0], start[1], end[1]), "x", "y"
+
+
+def field_snapshot(monitor, field="Ez", time_value=None, time_index=None):
+    """Return the latest or selected monitor field as plotting-ready data."""
+    from beamz.visual.data import Slice2D, Trace1D
+    from beamz.devices.monitors import record as record_helpers
+
+    data = record_helpers.field_at_time(
+        monitor, field=field, time_value=time_value, time_index=time_index
+    )
+    if data is None:
+        raise ValueError(f"No recorded data for field '{field}'.")
+
+    idx = _field_time_index(monitor, time_value=time_value, time_index=time_index)
+    times = np.asarray(monitor.fields.get("t", []), dtype=float)
+    title = field if times.size == 0 else f"{field} at t={times[idx]:.3e} s"
+
+    arr = np.asarray(data)
+    if monitor.monitor_type == "line" or arr.ndim == 1:
+        return Trace1D(
+            values=arr.reshape(-1),
+            coords=_line_coords(monitor, arr.size),
+            coord_label="position",
+            value_label=f"{field} amplitude",
+            title=title,
+        )
+
+    plane, extent, x_label, y_label = _plane_spec(monitor)
+    return Slice2D(
+        values=arr,
+        extent=extent,
+        value_label=f"{field} amplitude",
+        plane=plane,
+        title=title,
+        x_label=x_label,
+        y_label=y_label,
+    )
+
+
+def power_trace(monitor, *, db_scale=False):
+    """Return monitor power history as plotting-ready data."""
+    from beamz.visual.data import Trace1D
+
+    if not monitor.power_history:
+        raise ValueError("No power data recorded.")
+    values = np.asarray(monitor.power_history, dtype=float)
+    if db_scale:
+        values = 10.0 * np.log10(np.maximum(values, 1e-12))
+        value_label = "Power (dB)"
+    else:
+        value_label = "Power"
+    coords = (
+        np.asarray(monitor.power_timestamps, dtype=float)
+        if monitor.power_timestamps
+        else np.arange(values.size, dtype=float)
+    )
+    return Trace1D(
+        values=values,
+        coords=coords,
+        coord_label="time",
+        value_label=value_label,
+        title="Power vs time",
+    )
+
+
+def flux_trace(monitor, normal_direction, field_pair=None):
+    """Return signed directional flux history as plotting-ready data."""
+    from beamz.visual.data import Trace1D
+    from beamz.devices.monitors import record as record_helpers
+
+    values = record_helpers.signed_flux_trace(
+        monitor, normal_direction, field_pair=field_pair
+    )
+    coords = (
+        np.asarray(monitor.fields.get("t", []), dtype=float)
+        if monitor.fields.get("t")
+        else np.arange(len(values), dtype=float)
+    )
+    return Trace1D(
+        values=np.asarray(values, dtype=float),
+        coords=coords,
+        coord_label="time",
+        value_label=f"Flux ({normal_direction})",
+        title=f"Signed flux {normal_direction}",
+    )
+
+
 def plot_fields(monitor, **kwargs):
     """Delegate field plotting to the visualization layer."""
     from beamz.visual.monitor_plots import plot_monitor_fields

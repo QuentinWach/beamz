@@ -88,7 +88,9 @@ class Trace1D:
         return float(np.max(np.abs(self.coords))) if self.coords.size else 0.0
 
     def scaled_coords(self) -> tuple[np.ndarray, float, str]:
-        scale, unit = get_si_scale_and_label(max(self.max_coord, 1e-12))
+        scale, unit = _coord_scale_and_label(
+            self.coord_label, max(self.max_coord, 1e-18)
+        )
         return self.coords * scale, scale, unit
 
     def plot(self, *, ax=None, abs_value=False, **plot_kwargs):
@@ -105,3 +107,20 @@ class Trace1D:
         if self.title:
             ax.set_title(self.title)
         return ax
+
+
+def _coord_scale_and_label(coord_label: str, value: float) -> tuple[float, str]:
+    label = str(coord_label).strip().lower()
+    if label in {"time", "t"}:
+        if value < 1e-12:
+            return 1e15, "fs"
+        if value < 1e-9:
+            return 1e12, "ps"
+        if value < 1e-6:
+            return 1e9, "ns"
+        if value < 1e-3:
+            return 1e6, "µs"
+        if value < 1.0:
+            return 1e3, "ms"
+        return 1.0, "s"
+    return get_si_scale_and_label(value)

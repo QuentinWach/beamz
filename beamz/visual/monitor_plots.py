@@ -20,39 +20,12 @@ def plot_monitor_fields(monitor, field="Ez", figsize=(10, 6), time_index=-1):
     Returns:
         (fig, ax) tuple.
     """
-    if not monitor.fields["t"]:
-        print("No field data recorded.")
-        return None, None
-
-    if field not in monitor.fields:
-        print(
-            f"Field '{field}' not available. Available fields: {list(monitor.fields.keys())}"
-        )
-        return None, None
-
-    if not monitor.fields[field]:
-        print(f"No data for field '{field}'.")
-        return None, None
-
     fig, ax = plt.subplots(figsize=figsize)
-
+    snapshot = monitor.field_snapshot(field=field, time_index=time_index)
+    snapshot.plot(ax=ax, cmap="RdBu", colorbar=not monitor.monitor_type == "line")
     if monitor.monitor_type == "line":
-        field_data = monitor.fields[field][time_index]
-        x_pos = range(len(field_data))
-        ax.plot(x_pos, field_data, "b-", linewidth=2)
-        ax.set_xlabel("Position along monitor line")
-        ax.set_ylabel(f"{field} amplitude")
-        ax.set_title(f'{field} at t = {monitor.fields["t"][time_index]:.2e} s')
         ax.grid(True, alpha=0.3)
-    else:
-        field_data = monitor.fields[field][time_index]
-        im = ax.imshow(field_data, cmap="RdBu", origin="lower", aspect="auto")
-        plt.colorbar(im, ax=ax, label=f"{field} amplitude")
-        ax.set_xlabel("X index")
-        ax.set_ylabel("Y index")
-        ax.set_title(f'{field} at t = {monitor.fields["t"][time_index]:.2e} s')
-
-    plt.tight_layout()
+    fig.tight_layout()
     return fig, ax
 
 
@@ -68,31 +41,17 @@ def plot_monitor_power(monitor, figsize=(10, 6), log_scale=False, db_scale=False
     Returns:
         (fig, ax) tuple.
     """
-    if not monitor.power_history:
-        print("No power data recorded.")
-        return None, None
-
     fig, ax = plt.subplots(figsize=figsize)
-
-    time_steps = range(len(monitor.power_history))
-    power_data = np.array(monitor.power_history)
-
-    if db_scale:
-        power_data = 10 * np.log10(np.maximum(power_data, 1e-12))
-        ax.plot(time_steps, power_data, "r-", linewidth=2)
-        ax.set_ylabel("Power (dB)")
-    elif log_scale:
-        ax.semilogy(time_steps, power_data, "r-", linewidth=2)
-        ax.set_ylabel("Power (log scale)")
-    else:
-        ax.plot(time_steps, power_data, "r-", linewidth=2)
+    trace = monitor.power_trace(db_scale=db_scale)
+    if log_scale and not db_scale:
+        ax.semilogy(trace.coords, trace.values, "r-", linewidth=2)
+        ax.set_xlabel("time (s)")
         ax.set_ylabel("Power")
-
-    ax.set_xlabel("Time step")
-    ax.set_title("Power vs Time")
+        ax.set_title(trace.title)
+    else:
+        trace.plot(ax=ax, color="r", linewidth=2)
     ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
+    fig.tight_layout()
     return fig, ax
 
 

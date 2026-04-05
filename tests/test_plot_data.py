@@ -1,6 +1,7 @@
 import numpy as np
 
 from beamz import Circle, Design, Material
+from beamz.devices.monitors.monitors import Monitor
 from beamz.visual.data import Slice2D, Trace1D
 
 
@@ -53,3 +54,40 @@ def test_design_slice2d_returns_rasterized_permittivity(monkeypatch):
     assert sl.values.shape == (8, 8)
     assert sl.extent == (0.0, 2.0, 0.0, 2.0)
     assert np.max(sl.values) > 1.0
+
+
+def test_monitor_field_snapshot_returns_trace_or_slice():
+    line = Monitor(start=(0.0, 0.0), end=(2.0, 0.0), record_fields=True)
+    line.fields["Ez"] = [np.array([0.0, 1.0, 0.5])]
+    line.fields["t"] = [1e-15]
+    trace = line.field_snapshot("Ez")
+    assert isinstance(trace, Trace1D)
+    assert trace.coords.shape == (3,)
+
+    plane = Monitor(
+        start=(0.0, 0.0, 0.1),
+        end=(2.0, 1.0, 0.1),
+        record_fields=True,
+        name="plane",
+    )
+    plane.fields["Ez"] = [np.ones((4, 8))]
+    plane.fields["t"] = [2e-15]
+    sl = plane.field_snapshot("Ez")
+    assert isinstance(sl, Slice2D)
+    assert sl.extent == (0.0, 2.0, 0.0, 1.0)
+
+
+def test_monitor_power_trace_and_flux_trace_return_trace_data():
+    mon = Monitor(start=(0.0, 0.0), end=(1.0, 0.0), record_fields=True)
+    mon.power_history = [1.0, 2.0, 4.0]
+    mon.power_timestamps = [0.0, 1e-15, 2e-15]
+    power = mon.power_trace(db_scale=True)
+    assert isinstance(power, Trace1D)
+    assert power.value_label == "Power (dB)"
+
+    mon.fields["Ez"] = [np.array([1.0]), np.array([2.0])]
+    mon.fields["Hy"] = [np.array([0.5]), np.array([0.25])]
+    mon.fields["t"] = [0.0, 1e-15]
+    flux = mon.flux_trace("+x")
+    assert isinstance(flux, Trace1D)
+    assert flux.coords.shape == (2,)

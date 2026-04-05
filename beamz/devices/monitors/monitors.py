@@ -326,6 +326,12 @@ class Monitor:
             self, field=field, time_value=time_value, time_index=time_index
         )
 
+    def field_snapshot(self, field="Ez", time_value=None, time_index=None):
+        """Return a plotting-ready field snapshot as Trace1D or Slice2D."""
+        return store_helpers.field_snapshot(
+            self, field=field, time_value=time_value, time_index=time_index
+        )
+
     def get_power_statistics(self):
         """Get power statistics from recorded data.
 
@@ -333,6 +339,10 @@ class Monitor:
             Dictionary with power statistics
         """
         return record_helpers.power_statistics(self)
+
+    def power_trace(self, *, db_scale=False):
+        """Return monitor power history as a Trace1D."""
+        return store_helpers.power_trace(self, db_scale=db_scale)
 
     def get_signed_flux_trace(self, normal_direction, field_pair=None):
         """Return signed directional flux trace from recorded field components.
@@ -342,6 +352,12 @@ class Monitor:
           - default +y/-y uses (Ez, Hx) with Sy = +Re(Ez * conj(Hx))
         """
         return record_helpers.signed_flux_trace(
+            self, normal_direction, field_pair=field_pair
+        )
+
+    def flux_trace(self, normal_direction, field_pair=None):
+        """Return signed directional flux history as a Trace1D."""
+        return store_helpers.flux_trace(
             self, normal_direction, field_pair=field_pair
         )
 
