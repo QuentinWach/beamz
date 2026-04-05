@@ -9,7 +9,11 @@ except Exception:  # pragma: no cover - matplotlib is expected but keep fallback
     MplPath = None
 
 from beamz.design.cache import _env_bool
-from beamz.design.grids import MaterialGrids
+from beamz.design.grids import (
+    MaterialGrids,
+    get_bbox_indices_3d,
+    is_axis_aligned_rectangle,
+)
 from beamz.design.structures import Rectangle
 from beamz.visual.helpers import (
     create_rich_progress,
@@ -83,7 +87,7 @@ def rasterize(mesh):
             props = mesh._get_all_material_props(structure.material)
 
             try:
-                bbox = get_bbox_indices(
+                bbox = get_bbox_indices_3d(
                     structure,
                     grid_height=grid_height,
                     grid_width=grid_width,
@@ -101,7 +105,7 @@ def rasterize(mesh):
                 if (
                     prefer_fast
                     and isinstance(structure, Rectangle)
-                    and is_axis_aligned(structure)
+                    and is_axis_aligned_rectangle(structure)
                 ):
                     rasterize_rectangle(
                         structure=structure,
@@ -243,59 +247,6 @@ def process_pml(
                             conductivity[k, i, j] += pml_conductivity
 
             progress.update(task, advance=1)
-
-
-def is_axis_aligned(structure):
-    """Check if a rectangle is axis-aligned (not rotated)."""
-    return (
-        hasattr(structure, "vertices")
-        and structure.vertices
-        and structure.vertices[0][0] == structure.position[0]
-        and structure.vertices[0][1] == structure.position[1]
-    )
-
-
-def get_bbox_indices(
-    structure,
-    *,
-    grid_height,
-    grid_width,
-    grid_depth,
-    cell_size_xy,
-    cell_size_z,
-    margin_cells=1,
-):
-    """Get clipped 3D bbox index range for a structure."""
-    bbox = structure.get_bounding_box()
-    if bbox is None:
-        return None
-    if len(bbox) == 6:
-        min_x, min_y, min_z, max_x, max_y, max_z = bbox
-    elif len(bbox) == 4:
-        min_x, min_y, max_x, max_y = bbox
-        min_z = getattr(structure, "z", 0.0)
-        max_z = min_z + float(getattr(structure, "depth", 0.0))
-        if max_z <= min_z:
-            max_z = min_z + cell_size_z
-    else:
-        return None
-
-    margin = int(max(0, margin_cells))
-    min_i = max(0, int(min_y / cell_size_xy) - margin)
-    min_j = max(0, int(min_x / cell_size_xy) - margin)
-    min_k = max(0, int(min_z / cell_size_z) - margin) if grid_depth > 1 else 0
-    max_i = min(grid_height, int(np.ceil(max_y / cell_size_xy)) + margin)
-    max_j = min(grid_width, int(np.ceil(max_x / cell_size_xy)) + margin)
-    max_k = (
-        min(grid_depth, int(np.ceil(max_z / cell_size_z)) + margin)
-        if grid_depth > 1
-        else 1
-    )
-
-    if min_i >= max_i or min_j >= max_j or min_k >= max_k:
-        return None
-    return min_i, min_j, min_k, max_i, max_j, max_k
-
 
 def rasterize_rectangle(
     *,

@@ -2,7 +2,11 @@ import numpy as np
 from shapely.geometry import box as shapely_box
 from shapely.prepared import prep
 
-from beamz.design.grids import MaterialGrids
+from beamz.design.grids import (
+    MaterialGrids,
+    get_bbox_indices_2d,
+    is_axis_aligned_rectangle,
+)
 from beamz.design.structures import Rectangle
 from beamz.visual.helpers import create_rich_progress
 
@@ -50,15 +54,18 @@ def rasterize(mesh):
             )
 
             try:
-                bbox_indices = get_bbox_indices(
-                    structure, grid_height, grid_width, cell_size
+                bbox_indices = get_bbox_indices_2d(
+                    structure,
+                    grid_height=grid_height,
+                    grid_width=grid_width,
+                    cell_size=cell_size,
                 )
                 if bbox_indices is None:
                     progress.update(task, advance=1)
                     continue
                 min_i, min_j, max_i, max_j = bbox_indices
 
-                if isinstance(structure, Rectangle) and is_axis_aligned(structure):
+                if isinstance(structure, Rectangle) and is_axis_aligned_rectangle(structure):
                     rasterize_rectangle(
                         mesh,
                         structure,
@@ -140,38 +147,6 @@ def rasterize(mesh):
             progress.update(task, advance=1)
 
     grids.assign_to(mesh)
-
-
-def is_axis_aligned(structure):
-    """Check if a Rectangle is axis-aligned (not rotated)."""
-    return (
-        structure.vertices[0][0] == structure.position[0]
-        and structure.vertices[0][1] == structure.position[1]
-    )
-
-
-def get_bbox_indices(structure, grid_height, grid_width, cell_size):
-    """Get bounding box grid indices for a structure."""
-    bbox = structure.get_bounding_box()
-    if bbox is None:
-        return None
-
-    if len(bbox) == 6:
-        min_x, min_y, _, max_x, max_y, _ = bbox
-    elif len(bbox) == 4:
-        min_x, min_y, max_x, max_y = bbox
-    else:
-        raise ValueError(f"Invalid bounding box format: {bbox}")
-
-    min_i = max(0, int(min_y / cell_size) - 1)
-    min_j = max(0, int(min_x / cell_size) - 1)
-    max_i = min(grid_height, int(np.ceil(max_y / cell_size)) + 1)
-    max_j = min(grid_width, int(np.ceil(max_x / cell_size)) + 1)
-
-    if min_i >= grid_height or min_j >= grid_width or max_i <= 0 or max_j <= 0:
-        return None
-    return min_i, min_j, max_i, max_j
-
 
 def supersample_cell(
     mesh,
