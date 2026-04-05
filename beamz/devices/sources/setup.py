@@ -83,7 +83,6 @@ def _stagger_pair(h_field, e_field):
 
 _SETUP_2D_TM = {
     "x": {
-        "transverse_axis": 1,
         "h_component": "Hx",
         "ez_attr": "_ez_indices",
         "h_attr": "_h_indices",
@@ -94,7 +93,6 @@ _SETUP_2D_TM = {
         "e_mode_index": 2,
     },
     "y": {
-        "transverse_axis": 0,
         "h_component": "Hy",
         "ez_attr": "_ez_indices",
         "h_attr": "_h_indices",
@@ -108,7 +106,6 @@ _SETUP_2D_TM = {
 
 _SETUP_2D_TE = {
     "x": {
-        "transverse_axis": 1,
         "e_component": "Ey",
         "hz_attr": "_hz_indices",
         "e_attr": "_e_indices",
@@ -120,7 +117,6 @@ _SETUP_2D_TE = {
         "offset_limit_axis": 0,
     },
     "y": {
-        "transverse_axis": 0,
         "e_component": "Ex",
         "hz_attr": "_hz_indices",
         "e_attr": "_e_indices",
@@ -146,13 +142,23 @@ def _offset_plane_index(direction, offset_idx, limit):
     return min(limit - 2, offset_idx)
 
 
-def _slice_to_limit(start, end, limit):
-    return slice(start, min(end, limit))
-
-
-def _assign_profile_pair(source, attr_names, first, second):
-    setattr(source, attr_names[0], first)
-    setattr(source, attr_names[1], second)
+def _axis_slice_data(spec, permittivity, *, dx, dy, dz, nx, ny, nz, is_3d):
+    axis = spec.direction_axis
+    if axis == "x":
+        center_idx = _center_index(spec.center[0], dx, nx)
+        offset_idx = max(0, center_idx - 1) if spec.direction == "+x" else min(nx - 2, center_idx + 1)
+        return axis, center_idx, offset_idx, (
+            permittivity[:, :, center_idx] if is_3d else permittivity[:, center_idx]
+        )
+    if axis == "y":
+        center_idx = _center_index(spec.center[1], dy, ny)
+        offset_idx = max(0, center_idx - 1) if spec.direction == "+y" else min(ny - 2, center_idx + 1)
+        return axis, center_idx, offset_idx, (
+            permittivity[:, center_idx, :] if is_3d else permittivity[center_idx, :]
+        )
+    center_idx = _center_index(spec.center[2], dz, nz)
+    offset_idx = max(0, center_idx - 1) if spec.direction == "+z" else min(nz - 2, center_idx + 1)
+    return axis, center_idx, offset_idx, permittivity[center_idx, :, :]
 
 
 def _setup_2d_tm(
@@ -188,7 +194,8 @@ def _setup_2d_tm(
         cfg["flux_sign"],
         resolution,
     )
-    _assign_profile_pair(source, cfg["profile_attrs"], first, second)
+    setattr(source, cfg["profile_attrs"][0], first)
+    setattr(source, cfg["profile_attrs"][1], second)
 
 
 def _setup_2d_te(
@@ -202,7 +209,7 @@ def _setup_2d_te(
     plane_limit = nx if cfg["offset_limit_axis"] == 1 else ny
     hz_plane = _offset_plane_index(source.direction, offset_idx, plane_limit)
     line_limit = (ny - 1) if axis == "x" else (nx - 1)
-    transverse_slice = _slice_to_limit(start, end, line_limit)
+    transverse_slice = slice(start, min(end, line_limit))
 
     if axis == "x":
         hz_indices = (transverse_slice, hz_plane)
@@ -229,7 +236,8 @@ def _setup_2d_te(
         cfg["flux_sign"],
         resolution,
     )
-    _assign_profile_pair(source, cfg["profile_attrs"], first, second)
+    setattr(source, cfg["profile_attrs"][0], first)
+    setattr(source, cfg["profile_attrs"][1], second)
 
 
 def initialize(source, permittivity, resolution, dt=None):
@@ -264,43 +272,18 @@ def initialize(source, permittivity, resolution, dt=None):
     state.transverse_start = None
     state.transverse_end = None
 
-    if axis == "x":
-        center_idx = _center_index(spec.center[0], dx, nx)
-        if spec.direction == "+x":
-            offset_idx = max(0, center_idx - 1)
-        else:
-            offset_idx = min(nx - 2, center_idx + 1)
-
-        if is_3d:
-            eps_profile = permittivity[:, :, center_idx]
-            state.eps_profile_2d = eps_profile
-        else:
-            eps_profile = permittivity[:, center_idx]
-            state.eps_profile_2d = None
-
-    elif axis == "y":
-        center_idx = _center_index(spec.center[1], dy, ny)
-        if spec.direction == "+y":
-            offset_idx = max(0, center_idx - 1)
-        else:
-            offset_idx = min(ny - 2, center_idx + 1)
-
-        if is_3d:
-            eps_profile = permittivity[:, center_idx, :]
-            state.eps_profile_2d = eps_profile
-        else:
-            eps_profile = permittivity[center_idx, :]
-            state.eps_profile_2d = None
-
-    else:
-        center_idx = _center_index(spec.center[2], dz, nz)
-        if spec.direction == "+z":
-            offset_idx = max(0, center_idx - 1)
-        else:
-            offset_idx = min(nz - 2, center_idx + 1)
-
-        eps_profile = permittivity[center_idx, :, :]
-        state.eps_profile_2d = eps_profile
+    axis, center_idx, offset_idx, eps_profile = _axis_slice_data(
+        spec,
+        permittivity,
+        dx=dx,
+        dy=dy,
+        dz=dz,
+        nx=nx,
+        ny=ny,
+        nz=nz,
+        is_3d=is_3d,
+    )
+    state.eps_profile_2d = eps_profile if is_3d else None
 
     omega = 2 * math.pi * LIGHT_SPEED / spec.wavelength
     dL = dz if is_3d else (dy if axis == "x" else dx)
