@@ -1,3 +1,5 @@
+import warnings
+
 import jax.numpy as jnp
 import numpy as np
 
@@ -218,7 +220,11 @@ class ModeSource:
         import matplotlib.pyplot as plt
         from beamz.visual.data import Slice2D
 
-        plot_data = self.profile_data(field=field)
+        try:
+            plot_data = self.profile_data(field=field)
+        except ValueError as exc:
+            warnings.warn(str(exc), stacklevel=2)
+            return None
         if isinstance(plot_data, Slice2D):
             plot_data.plot(cmap="magma", abs_value=True, aspect="auto")
         else:
@@ -226,6 +232,7 @@ class ModeSource:
             ax.grid(True)
         plt.tight_layout()
         plt.show()
+        return plot_data
 
     def add_to_plot(
         self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"

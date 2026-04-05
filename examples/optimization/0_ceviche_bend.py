@@ -1,35 +1,7 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from beamz import *
 from beamz.optimization.topology import TopologyManager, compute_overlap_gradient, create_optimization_mask
-
-
-def save_signal_plot(signal, t, save_path):
-    t = np.asarray(t, dtype=float)
-    signal = np.asarray(signal, dtype=float)
-    t_max = float(t[-1]) if t.size else 0.0
-    if t_max < 1e-12:
-        scale, unit = 1e15, "fs"
-    elif t_max < 1e-9:
-        scale, unit = 1e12, "ps"
-    elif t_max < 1e-6:
-        scale, unit = 1e9, "ns"
-    elif t_max < 1e-3:
-        scale, unit = 1e6, "µs"
-    elif t_max < 1.0:
-        scale, unit = 1e3, "ms"
-    else:
-        scale, unit = 1.0, "s"
-
-    fig, ax = plt.subplots(figsize=(9, 4))
-    ax.plot(t * scale, signal, color="black")
-    ax.set_xlabel(f"Time ({unit})")
-    ax.set_ylabel("Amplitude")
-    ax.set_title("Source signal")
-    ax.set_xlim(float(t[0] * scale), float(t[-1] * scale))
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=150)
-    plt.close(fig)
+from beamz.devices.sources.signals import plot_signal
 
 # --- 1. Simulation Setup ---
 W = H = 7*µm
@@ -56,7 +28,7 @@ design += opt_region
 time = np.arange(0, 15*WL/LIGHT_SPEED, DT)
 signal = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=3.5*WL/LIGHT_SPEED, t_max=time[-1]/2)
 
-save_signal_plot(signal, time, save_path="signal.png")
+plot_signal(signal, time, save_path="signal.png")
 src_fwd = ModeSource(None, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+x")
 src_adj = ModeSource(None, center=(W/2, 1.0*µm), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+y")
 

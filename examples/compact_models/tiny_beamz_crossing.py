@@ -12,7 +12,6 @@ Workflow:
 
 from __future__ import annotations
 import time as pytime
-from dataclasses import dataclass
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,6 +26,7 @@ from beamz import (
     µm,
 )
 from beamz.design.io import gdsf
+from beamz.devices.sources.signals import gaussian_band_pulse
 
 # Fixed example hyperparameters. Edit these directly when using the example as a
 # starting point for another component or sweep.
@@ -50,15 +50,6 @@ SOURCE_OFFSET = 0.10 * µm
 DISTANCE_SOURCE_TO_MONITORS = 0.20 * µm
 OUTPUT_MONITOR_OFFSETS = {"o2": 0.70 * µm, "o3": 0.10 * µm, "o4": 0.70 * µm}
 RUN_AFTER_SOURCES_UOC = 90.0
-
-
-@dataclass(frozen=True)
-class GaussianBandPulse:
-    time: np.ndarray
-    signal: np.ndarray
-    source_end_time: float
-    tail_time: float
-
 
 def positive_axis_direction(direction: str) -> str:
     return "+" + str(direction)[1:]
@@ -101,47 +92,6 @@ def port_plane(
 def line_center(line):
     a, b = line
     return tuple(0.5 * (float(a[i]) + float(b[i])) for i in range(len(a)))
-
-
-def gaussian_band_pulse(
-    frequencies,
-    *,
-    carrier_frequency,
-    dt,
-    run_after_sources_uoc,
-    max_output_distance_um,
-    min_sigma_factor=0.20,
-    peak_sigma_multiple=4.0,
-    source_tail_sigma_multiple=6.0,
-    min_tail_cycles=96.0,
-    min_tail_distance_factor=6.0,
-    min_tail_uoc=90.0,
-):
-    freqs = np.asarray(frequencies, dtype=float)
-    df = max(float(np.ptp(freqs)), 1e-12)
-    fmin = max(float(np.min(freqs)), 1e-12)
-    sigma = float(min_sigma_factor) / max(df, 1e9)
-    peak_time = float(peak_sigma_multiple) * sigma
-    source_end_time = peak_time + float(source_tail_sigma_multiple) * sigma
-    min_tail_uoc_eff = max(
-        float(run_after_sources_uoc),
-        float(min_tail_uoc),
-        float(min_tail_distance_factor) * float(max_output_distance_um),
-    )
-    tail_time = max(
-        min_tail_uoc_eff * 1e-6 / LIGHT_SPEED, float(min_tail_cycles) / fmin
-    )
-    time = np.arange(0.0, source_end_time + tail_time, float(dt))
-    envelope = np.exp(-((time - peak_time) ** 2) / (2.0 * sigma**2))
-    carrier = np.cos(2.0 * np.pi * float(carrier_frequency) * time)
-    signal = np.asarray(envelope * carrier, dtype=np.float32)
-    return GaussianBandPulse(
-        time=time,
-        signal=signal,
-        source_end_time=source_end_time,
-        tail_time=tail_time,
-    )
-
 
 def plot_simulation_overview(
     out_path: Path,
