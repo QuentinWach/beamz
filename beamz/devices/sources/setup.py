@@ -81,6 +81,157 @@ def _stagger_pair(h_field, e_field):
     return 0.5 * (h_field[:-1] + h_field[1:]), 0.5 * (e_field[:-1] + e_field[1:])
 
 
+_SETUP_2D_TM = {
+    "x": {
+        "transverse_axis": 1,
+        "h_component": "Hx",
+        "ez_attr": "_ez_indices",
+        "h_attr": "_h_indices",
+        "profile_attrs": ("_jz_profile", "_my_profile"),
+        "field_signs": (1.0, 1.0),
+        "flux_sign": -1.0,
+        "h_mode_index": 1,
+        "e_mode_index": 2,
+    },
+    "y": {
+        "transverse_axis": 0,
+        "h_component": "Hy",
+        "ez_attr": "_ez_indices",
+        "h_attr": "_h_indices",
+        "profile_attrs": ("_jz_profile", "_my_profile"),
+        "field_signs": (1.0, -1.0),
+        "flux_sign": 1.0,
+        "h_mode_index": 1,
+        "e_mode_index": 2,
+    },
+}
+
+_SETUP_2D_TE = {
+    "x": {
+        "transverse_axis": 1,
+        "e_component": "Ey",
+        "hz_attr": "_hz_indices",
+        "e_attr": "_e_indices",
+        "profile_attrs": ("_jy_profile", "_mz_profile"),
+        "field_signs": (1.0, -1.0),
+        "flux_sign": 1.0,
+        "h_mode_index": 2,
+        "e_mode_index": 1,
+        "offset_limit_axis": 0,
+    },
+    "y": {
+        "transverse_axis": 0,
+        "e_component": "Ex",
+        "hz_attr": "_hz_indices",
+        "e_attr": "_e_indices",
+        "profile_attrs": ("_jx_profile", "_mz_profile"),
+        "field_signs": (-1.0, -1.0),
+        "flux_sign": -1.0,
+        "h_mode_index": 2,
+        "e_mode_index": 1,
+        "offset_limit_axis": 1,
+    },
+}
+
+
+def _transverse_span(source, axis, ny, nx, resolution):
+    if axis == "x":
+        return _transverse_bounds(source.center[1], source.width, resolution, ny)
+    return _transverse_bounds(source.center[0], source.width, resolution, nx)
+
+
+def _offset_plane_index(direction, offset_idx, limit):
+    if direction.startswith("+"):
+        return max(0, offset_idx - 1)
+    return min(limit - 2, offset_idx)
+
+
+def _slice_to_limit(start, end, limit):
+    return slice(start, min(end, limit))
+
+
+def _assign_profile_pair(source, attr_names, first, second):
+    setattr(source, attr_names[0], first)
+    setattr(source, attr_names[1], second)
+
+
+def _setup_2d_tm(
+    source, e_mode, h_mode, center_idx, offset_idx, axis, ny, nx, resolution, dir_sign, z_target
+):
+    cfg = _SETUP_2D_TM[axis]
+    start, end, transverse_slice = _transverse_span(source, axis, ny, nx, resolution)
+    source.state.transverse_start = start
+    source.state.transverse_end = end
+
+    if axis == "x":
+        ez_indices = (transverse_slice, center_idx)
+        h_indices = (transverse_slice, offset_idx)
+    else:
+        ez_indices = (center_idx, transverse_slice)
+        h_indices = (offset_idx, transverse_slice)
+
+    setattr(source, cfg["ez_attr"], ez_indices)
+    setattr(source, cfg["h_attr"], h_indices)
+    source._h_component = cfg["h_component"]
+
+    h_profile, e_profile = _align_impedance_pair(
+        h_mode[cfg["h_mode_index"]],
+        e_mode[cfg["e_mode_index"]],
+        z_target,
+    )
+    h_cropped, e_cropped = _crop_window_pair(h_profile, e_profile, start, end)
+    first, second = _finalize_2d_pair(
+        h_cropped,
+        e_cropped,
+        dir_sign * cfg["field_signs"][0],
+        dir_sign * cfg["field_signs"][1],
+        cfg["flux_sign"],
+        resolution,
+    )
+    _assign_profile_pair(source, cfg["profile_attrs"], first, second)
+
+
+def _setup_2d_te(
+    source, e_mode, h_mode, center_idx, offset_idx, axis, ny, nx, resolution, dir_sign, z_target
+):
+    cfg = _SETUP_2D_TE[axis]
+    start, end, _ = _transverse_span(source, axis, ny, nx, resolution)
+    source.state.transverse_start = start
+    source.state.transverse_end = end
+
+    plane_limit = nx if cfg["offset_limit_axis"] == 1 else ny
+    hz_plane = _offset_plane_index(source.direction, offset_idx, plane_limit)
+    line_limit = (ny - 1) if axis == "x" else (nx - 1)
+    transverse_slice = _slice_to_limit(start, end, line_limit)
+
+    if axis == "x":
+        hz_indices = (transverse_slice, hz_plane)
+        e_indices = (transverse_slice, offset_idx)
+    else:
+        hz_indices = (hz_plane, transverse_slice)
+        e_indices = (offset_idx, transverse_slice)
+
+    setattr(source, cfg["hz_attr"], hz_indices)
+    setattr(source, cfg["e_attr"], e_indices)
+    source._e_component = cfg["e_component"]
+
+    h_profile, e_profile = _stagger_pair(
+        np.squeeze(h_mode[cfg["h_mode_index"]]),
+        np.squeeze(e_mode[cfg["e_mode_index"]]),
+    )
+    h_profile, e_profile = _align_impedance_pair(h_profile, e_profile, z_target)
+    h_cropped, e_cropped = _crop_window_pair(h_profile, e_profile, start, end)
+    first, second = _finalize_2d_pair(
+        h_cropped,
+        e_cropped,
+        dir_sign * cfg["field_signs"][0],
+        dir_sign * cfg["field_signs"][1],
+        cfg["flux_sign"],
+        resolution,
+    )
+    _assign_profile_pair(source, cfg["profile_attrs"], first, second)
+
+
 def initialize(source, permittivity, resolution, dt=None):
     """Compute the mode and configure source profiles and indices."""
     spec = source.spec
@@ -342,142 +493,35 @@ def setup_2d(source, e_mode, h_mode, center_idx, offset_idx, axis, ny, nx, resol
     eta_0 = math.sqrt(MU_0 / EPS_0)
     z_target = eta_0 / max(float(np.real(source._neff)), 1e-6)
 
-    if axis == "x":
-        setup_2d_x(
+    if source.pol == "tm":
+        _setup_2d_tm(
             source,
             e_mode,
             h_mode,
             center_idx,
             offset_idx,
+            axis,
             ny,
             nx,
             resolution,
             dir_sign,
             z_target,
         )
-    else:
-        setup_2d_y(
-            source,
-            e_mode,
-            h_mode,
-            center_idx,
-            offset_idx,
-            ny,
-            nx,
-            resolution,
-            dir_sign,
-            z_target,
-        )
+        return
 
-
-def setup_2d_x(
-    source,
-    e_mode,
-    h_mode,
-    center_idx,
-    offset_idx,
-    ny,
-    nx,
-    resolution,
-    dir_sign,
-    z_target,
-):
-    """2D injection setup for x-propagation."""
-    y_start, y_end, y_slice = _transverse_bounds(source.center[1], source.width, resolution, ny)
-    source.state.transverse_start = y_start
-    source.state.transverse_end = y_end
-
-    if source.pol == "tm":
-        source._ez_indices = (y_slice, center_idx)
-        source._h_indices = (y_slice, offset_idx)
-        source._h_component = "Hx"
-        hy_profile, ez_profile = _align_impedance_pair(h_mode[1], e_mode[2], z_target)
-        hy_cropped, ez_cropped = _crop_window_pair(hy_profile, ez_profile, y_start, y_end)
-        source._jz_profile, source._my_profile = _finalize_2d_pair(
-            hy_cropped,
-            ez_cropped,
-            dir_sign,
-            dir_sign,
-            -1.0,
-            resolution,
-        )
-
-    else:
-        hz_col = (
-            max(0, offset_idx - 1)
-            if source.direction == "+x"
-            else min(nx - 2, offset_idx)
-        )
-
-        source._hz_indices = (slice(y_start, min(y_end, ny - 1)), hz_col)
-        source._e_indices = (slice(y_start, min(y_end, ny - 1)), offset_idx)
-        source._e_component = "Ey"
-        hz_profile, ey_profile = _stagger_pair(np.squeeze(h_mode[2]), np.squeeze(e_mode[1]))
-        hz_profile, ey_profile = _align_impedance_pair(hz_profile, ey_profile, z_target)
-        hz_cropped, ey_cropped = _crop_window_pair(hz_profile, ey_profile, y_start, y_end)
-        source._jy_profile, source._mz_profile = _finalize_2d_pair(
-            hz_cropped,
-            ey_cropped,
-            dir_sign,
-            -dir_sign,
-            1.0,
-            resolution,
-        )
-
-
-def setup_2d_y(
-    source,
-    e_mode,
-    h_mode,
-    center_idx,
-    offset_idx,
-    ny,
-    nx,
-    resolution,
-    dir_sign,
-    z_target,
-):
-    """2D injection setup for y-propagation."""
-    x_start, x_end, x_slice = _transverse_bounds(source.center[0], source.width, resolution, nx)
-    source.state.transverse_start = x_start
-    source.state.transverse_end = x_end
-
-    if source.pol == "tm":
-        source._ez_indices = (center_idx, x_slice)
-        source._h_indices = (offset_idx, x_slice)
-        source._h_component = "Hy"
-        hx_profile, ez_profile = _align_impedance_pair(h_mode[1], e_mode[2], z_target)
-        hx_cropped, ez_cropped = _crop_window_pair(hx_profile, ez_profile, x_start, x_end)
-        source._jz_profile, source._my_profile = _finalize_2d_pair(
-            hx_cropped,
-            ez_cropped,
-            dir_sign,
-            -dir_sign,
-            1.0,
-            resolution,
-        )
-
-    else:
-        hz_row = (
-            max(0, offset_idx - 1)
-            if source.direction == "+y"
-            else min(ny - 2, offset_idx)
-        )
-
-        source._hz_indices = (hz_row, slice(x_start, min(x_end, nx - 1)))
-        source._e_indices = (offset_idx, slice(x_start, min(x_end, nx - 1)))
-        source._e_component = "Ex"
-        hz_profile, ex_profile = _stagger_pair(np.squeeze(h_mode[2]), np.squeeze(e_mode[1]))
-        hz_profile, ex_profile = _align_impedance_pair(hz_profile, ex_profile, z_target)
-        hz_cropped, ex_cropped = _crop_window_pair(hz_profile, ex_profile, x_start, x_end)
-        source._jx_profile, source._mz_profile = _finalize_2d_pair(
-            hz_cropped,
-            ex_cropped,
-            -dir_sign,
-            -dir_sign,
-            -1.0,
-            resolution,
-        )
+    _setup_2d_te(
+        source,
+        e_mode,
+        h_mode,
+        center_idx,
+        offset_idx,
+        axis,
+        ny,
+        nx,
+        resolution,
+        dir_sign,
+        z_target,
+    )
 
 
 def make_1d_window(width_cells, alpha=0.3):
