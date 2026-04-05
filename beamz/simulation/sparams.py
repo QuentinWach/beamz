@@ -79,6 +79,17 @@ def _validate_port_monitors(port_map, monitor_by_name, *, require_dft=False):
                 )
 
 
+def _source_monitor(sim, port_map, source_port, monitor_by_name):
+    if source_port not in port_map:
+        raise ValueError(f"source_port '{source_port}' not found in ports.")
+    src_spec = port_map[source_port]
+    ref_name = src_spec.reference_monitor or src_spec.monitor_name
+    src_monitor = monitor_by_name.get(ref_name)
+    if src_monitor is None:
+        raise ValueError(f"Missing source/reference monitor '{ref_name}'.")
+    return src_spec, src_monitor
+
+
 def _wanted_components(sim, parts):
     if sim.is_3d:
         return tuple(
@@ -207,6 +218,68 @@ def _extract_reference_waves(
     return data
 
 
+def _extract_port_waves_with_loader(
+    sim,
+    port_map,
+    frequencies,
+    *,
+    loader,
+    require_dft,
+    projection_frequencies_for,
+    include_metadata,
+    return_power,
+):
+    monitor_by_name = sim._named_monitors()
+    _validate_port_monitors(port_map, monitor_by_name, require_dft=require_dft)
+
+    sample_cache = {}
+    projection_cache = {}
+    waves = {}
+
+    for spec in port_map.values():
+        main_monitor = monitor_by_name[spec.monitor_name]
+        projection_frequencies = projection_frequencies_for(spec)
+        a_plus, a_minus, cond_main, neff_main = _extract_monitor_coefficients(
+            sim,
+            spec,
+            main_monitor,
+            frequencies,
+            projection_frequencies=projection_frequencies,
+            projection_cache=projection_cache,
+            sample_cache=sample_cache,
+            loader=loader,
+            include_metadata=include_metadata,
+        )
+        port_waves = _build_port_wave_data(
+            a_plus,
+            a_minus,
+            return_power=return_power,
+            condition_number=cond_main,
+            mode_neff=neff_main,
+        )
+
+        if spec.reference_monitor:
+            ref_monitor = monitor_by_name[spec.reference_monitor]
+            port_waves.update(
+                _extract_reference_waves(
+                    sim,
+                    spec,
+                    ref_monitor,
+                    frequencies,
+                    projection_frequencies=projection_frequencies,
+                    projection_cache=projection_cache,
+                    sample_cache=sample_cache,
+                    loader=loader,
+                    include_metadata=include_metadata,
+                )
+            )
+            if return_power:
+                _add_reference_power(port_waves)
+
+        waves[spec.name] = port_waves
+    return waves
+
+
 def _build_port_wave_data(
     a_plus,
     a_minus,
@@ -267,6 +340,28 @@ def _incident_valid_mask(a_incident, min_incident_db):
     rel_floor = max_incident * (10.0 ** (float(min_incident_db) / 20.0))
     abs_floor = max(1e-18, rel_floor)
     return np.abs(a_incident) >= abs_floor
+
+
+def _resolve_broadband_frequencies(sim, port_map, source_port, frequencies, *, window):
+    monitor_by_name = sim._named_monitors()
+    if frequencies is not None:
+        return _normalize_frequencies(frequencies)
+
+    src_spec, src_monitor = _source_monitor(sim, port_map, source_port, monitor_by_name)
+    src_parts = sim._mode_components_for_port(src_spec)
+    freqs, _ = sim._sample_monitor_component_spectrum(
+        src_monitor, src_parts["e_component"], frequencies=None, window=window
+    )
+    return _normalize_frequencies(freqs)
+
+
+def _resolve_dft_frequencies(sim, port_map, source_port, frequencies):
+    monitor_by_name = sim._named_monitors()
+    if frequencies is not None:
+        return _normalize_frequencies(frequencies)
+
+    _, src_monitor = _source_monitor(sim, port_map, source_port, monitor_by_name)
+    return _normalize_frequencies(src_monitor.get_dft_frequencies())
 
 
 def _assemble_s_matrix(
@@ -386,58 +481,23 @@ def extract_port_waves(
     strategy = _resolve_mode_strategy(mode_strategy)
     single_freq = float(np.median(freqs))
 
-    monitor_by_name = sim._named_monitors()
-    _validate_port_monitors(port_map, monitor_by_name, require_dft=False)
-
-    sample_cache = {}
-    projection_cache = {}
-    waves = {}
-
     def loader(monitor, component):
         return sim._sample_monitor_component_spectrum(
             monitor, component, frequencies=freqs, window=window
         )
 
-    for spec in port_map.values():
-        main_monitor = monitor_by_name[spec.monitor_name]
-        projection_frequencies = (
+    return _extract_port_waves_with_loader(
+        sim,
+        port_map,
+        freqs,
+        loader=loader,
+        require_dft=False,
+        projection_frequencies_for=lambda _spec: (
             freqs if strategy == "per_frequency" else np.full(freqs.shape, single_freq)
-        )
-        a_plus, a_minus, _, _ = _extract_monitor_coefficients(
-            sim,
-            spec,
-            main_monitor,
-            freqs,
-            projection_frequencies=projection_frequencies,
-            projection_cache=projection_cache,
-            sample_cache=sample_cache,
-            loader=loader,
-            include_metadata=False,
-        )
-        port_waves = _build_port_wave_data(
-            a_plus, a_minus, return_power=return_power
-        )
-
-        if spec.reference_monitor:
-            ref_monitor = monitor_by_name[spec.reference_monitor]
-            port_waves.update(
-                _extract_reference_waves(
-                    sim,
-                    spec,
-                    ref_monitor,
-                    freqs,
-                    projection_frequencies=projection_frequencies,
-                    projection_cache=projection_cache,
-                    sample_cache=sample_cache,
-                    loader=loader,
-                    include_metadata=False,
-                )
-            )
-            if return_power:
-                _add_reference_power(port_waves)
-
-        waves[spec.name] = port_waves
-    return waves
+        ),
+        include_metadata=False,
+        return_power=return_power,
+    )
 
 
 def extract_port_waves_dft(
@@ -455,59 +515,21 @@ def extract_port_waves_dft(
 
     port_map = sim._normalize_portspecs(ports)
     freqs = _normalize_frequencies(frequencies)
-    monitor_by_name = sim._named_monitors()
-    _validate_port_monitors(port_map, monitor_by_name, require_dft=True)
-
-    sample_cache = {}
-    projection_cache = {}
-    waves = {}
-
     def loader(monitor, component):
         return sim._sample_monitor_component_dft(
             monitor, component, frequencies=freqs
         )
 
-    for spec in port_map.values():
-        main_monitor = monitor_by_name[spec.monitor_name]
-        a_plus, a_minus, cond_main, neff_main = _extract_monitor_coefficients(
-            sim,
-            spec,
-            main_monitor,
-            freqs,
-            projection_frequencies=freqs,
-            projection_cache=projection_cache,
-            sample_cache=sample_cache,
-            loader=loader,
-            include_metadata=True,
-        )
-        port_waves = _build_port_wave_data(
-            a_plus,
-            a_minus,
-            return_power=return_power,
-            condition_number=cond_main,
-            mode_neff=neff_main,
-        )
-
-        if spec.reference_monitor:
-            ref_monitor = monitor_by_name[spec.reference_monitor]
-            port_waves.update(
-                _extract_reference_waves(
-                    sim,
-                    spec,
-                    ref_monitor,
-                    freqs,
-                    projection_frequencies=freqs,
-                    projection_cache=projection_cache,
-                    sample_cache=sample_cache,
-                    loader=loader,
-                    include_metadata=True,
-                )
-            )
-            if return_power:
-                _add_reference_power(port_waves)
-
-        waves[spec.name] = port_waves
-    return waves
+    return _extract_port_waves_with_loader(
+        sim,
+        port_map,
+        freqs,
+        loader=loader,
+        require_dft=True,
+        projection_frequencies_for=lambda _spec: freqs,
+        include_metadata=True,
+        return_power=return_power,
+    )
 
 
 def get_s_matrix_modal_dft(
@@ -522,18 +544,7 @@ def get_s_matrix_modal_dft(
 ):
     """Broadband modal S extraction from in-simulation DFT monitor accumulators."""
     port_map = sim._normalize_portspecs(ports)
-    if source_port not in port_map:
-        raise ValueError(f"source_port '{source_port}' not found in ports.")
-
-    monitor_by_name = sim._named_monitors()
-    if frequencies is None:
-        src_spec = port_map[source_port]
-        ref_name = src_spec.reference_monitor or src_spec.monitor_name
-        src_monitor = monitor_by_name.get(ref_name)
-        if src_monitor is None:
-            raise ValueError(f"Missing source/reference monitor '{ref_name}'.")
-        frequencies = src_monitor.get_dft_frequencies()
-    freqs = _normalize_frequencies(frequencies)
+    freqs = _resolve_dft_frequencies(sim, port_map, source_port, frequencies)
 
     waves = sim.extract_port_waves_dft(
         ports=port_map.values(),
@@ -653,21 +664,9 @@ def get_s_matrix_modal(
 ):
     """Broadband modal S-matrix extraction from FFT-sampled monitor spectra."""
     port_map = sim._normalize_portspecs(ports)
-    if source_port not in port_map:
-        raise ValueError(f"source_port '{source_port}' not found in ports.")
-
-    monitor_by_name = sim._named_monitors()
-    if frequencies is None:
-        src_spec = port_map[source_port]
-        ref_name = src_spec.reference_monitor or src_spec.monitor_name
-        src_monitor = monitor_by_name.get(ref_name)
-        if src_monitor is None:
-            raise ValueError(f"Missing source/reference monitor '{ref_name}'.")
-        src_parts = sim._mode_components_for_port(src_spec)
-        frequencies, _ = sim._sample_monitor_component_spectrum(
-            src_monitor, src_parts["e_component"], frequencies=None, window="hann"
-        )
-    freqs = _normalize_frequencies(frequencies)
+    freqs = _resolve_broadband_frequencies(
+        sim, port_map, source_port, frequencies, window="hann"
+    )
 
     waves = sim.extract_port_waves(
         ports=port_map.values(),
