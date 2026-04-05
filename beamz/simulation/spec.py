@@ -55,6 +55,52 @@ class SimulationSpec:
         if any(boundary is None for boundary in self.boundaries):
             raise ValueError("boundaries may not contain None")
 
+    def to_dict(self):
+        from beamz.design.spec import DesignSpec
+        from beamz.devices.monitors.spec import MonitorSpec
+        from beamz.devices.sources.spec import source_spec_to_dict
+        from beamz.simulation.boundaries import boundary_spec_to_dict
+
+        devices = []
+        for device in self.devices:
+            if isinstance(device, MonitorSpec):
+                devices.append(device.to_dict())
+            else:
+                devices.append(source_spec_to_dict(device))
+        return {
+            "type": "SimulationSpec",
+            "design": self.design.to_dict(),
+            "devices": devices,
+            "boundaries": [boundary_spec_to_dict(boundary) for boundary in self.boundaries],
+            "resolution": float(self.resolution),
+            "time": np.asarray(self.time).tolist(),
+            "plane_2d": self.plane_2d,
+            "is_3d": bool(self.is_3d),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        from beamz.design.spec import DesignSpec
+        from beamz.devices.monitors.spec import MonitorSpec
+        from beamz.devices.sources.spec import source_spec_from_dict
+        from beamz.simulation.boundaries import boundary_spec_from_dict
+
+        devices = []
+        for item in data.get("devices", ()):
+            if item.get("type") == "MonitorSpec":
+                devices.append(MonitorSpec.from_dict(item))
+            else:
+                devices.append(source_spec_from_dict(item))
+        return cls(
+            design=DesignSpec.from_dict(data["design"]),
+            devices=tuple(devices),
+            boundaries=tuple(boundary_spec_from_dict(item) for item in data.get("boundaries", ())),
+            resolution=data["resolution"],
+            time=data["time"],
+            plane_2d=data.get("plane_2d", "xy"),
+            is_3d=data.get("is_3d", False),
+        )
+
 
 def build_simulation_spec(
     *,

@@ -43,6 +43,22 @@ class MaterialSpec:
     def get_sample(self):
         return self.permittivity, self.permeability, self.conductivity
 
+    def to_dict(self):
+        return {
+            "type": "MaterialSpec",
+            "permittivity": float(self.permittivity),
+            "permeability": float(self.permeability),
+            "conductivity": float(self.conductivity),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            permittivity=data["permittivity"],
+            permeability=data["permeability"],
+            conductivity=data["conductivity"],
+        )
+
 
 class Material:
     """Dispersionless homogeneous material."""
@@ -194,6 +210,32 @@ class CustomMaterialSpec:
             self.get_permittivity(x, y, z),
             self.get_permeability(x, y, z),
             self.get_conductivity(x, y, z),
+        )
+
+    def to_dict(self):
+        return {
+            "type": "CustomMaterialSpec",
+            "permittivity_grid": None if self.permittivity_grid is None else np.asarray(self.permittivity_grid).tolist(),
+            "permeability_grid": None if self.permeability_grid is None else np.asarray(self.permeability_grid).tolist(),
+            "conductivity_grid": None if self.conductivity_grid is None else np.asarray(self.conductivity_grid).tolist(),
+            "bounds": None if self.bounds is None else [list(pair) for pair in self.bounds],
+            "interpolation": self.interpolation,
+            "default_permittivity": float(self.default_permittivity),
+            "default_permeability": float(self.default_permeability),
+            "default_conductivity": float(self.default_conductivity),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            permittivity_grid=data.get("permittivity_grid"),
+            permeability_grid=data.get("permeability_grid"),
+            conductivity_grid=data.get("conductivity_grid"),
+            bounds=data.get("bounds"),
+            interpolation=data.get("interpolation", "linear"),
+            default_permittivity=data.get("default_permittivity", 1.0),
+            default_permeability=data.get("default_permeability", 1.0),
+            default_conductivity=data.get("default_conductivity", 0.0),
         )
 
 
@@ -435,6 +477,20 @@ def material_to_spec(material):
     if isinstance(spec, (MaterialSpec, CustomMaterialSpec)):
         return spec
     raise TypeError("material must be a material facade or material spec")
+
+
+def material_spec_to_dict(spec):
+    spec = material_to_spec(spec)
+    return spec.to_dict()
+
+
+def material_spec_from_dict(data):
+    kind = data.get("type")
+    if kind == "MaterialSpec":
+        return MaterialSpec.from_dict(data)
+    if kind == "CustomMaterialSpec":
+        return CustomMaterialSpec.from_dict(data)
+    raise ValueError(f"unknown material spec type: {kind!r}")
 
 
 def material_from_spec(spec):

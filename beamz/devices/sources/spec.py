@@ -55,6 +55,22 @@ class GaussianSourceSpec:
         if self.signal is None:
             raise ValueError("signal is required")
 
+    def to_dict(self):
+        return {
+            "type": "GaussianSourceSpec",
+            "position": list(self.position),
+            "width": float(self.width),
+            "signal": np.asarray(self.signal).tolist(),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            position=tuple(data["position"]),
+            width=data["width"],
+            signal=data["signal"],
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ModeSourceSpec:
@@ -91,6 +107,34 @@ class ModeSourceSpec:
         if self.direction_sign not in {-1.0, 1.0}:
             raise ValueError("direction_sign must be +/-1")
 
+    def to_dict(self):
+        return {
+            "type": "ModeSourceSpec",
+            "center": list(self.center),
+            "width": float(self.width),
+            "height": self.height,
+            "wavelength": float(self.wavelength),
+            "pol": self.pol,
+            "signal": np.asarray(self.signal).tolist(),
+            "direction": self.direction,
+            "direction_axis": self.direction_axis,
+            "direction_sign": float(self.direction_sign),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            center=tuple(data["center"]),
+            width=data["width"],
+            height=data.get("height"),
+            wavelength=data["wavelength"],
+            pol=data["pol"],
+            signal=data["signal"],
+            direction=data["direction"],
+            direction_axis=data["direction_axis"],
+            direction_sign=data["direction_sign"],
+        )
+
 
 def build_gaussian_source_spec(position, width, signal) -> GaussianSourceSpec:
     return GaussianSourceSpec(
@@ -123,3 +167,20 @@ def build_mode_source_spec(
         direction_axis=axis,
         direction_sign=sign,
     )
+
+
+def source_spec_to_dict(spec):
+    if isinstance(spec, GaussianSourceSpec):
+        return spec.to_dict()
+    if isinstance(spec, ModeSourceSpec):
+        return spec.to_dict()
+    raise TypeError(f"unsupported source spec type: {type(spec).__name__}")
+
+
+def source_spec_from_dict(data):
+    kind = data.get("type")
+    if kind == "GaussianSourceSpec":
+        return GaussianSourceSpec.from_dict(data)
+    if kind == "ModeSourceSpec":
+        return ModeSourceSpec.from_dict(data)
+    raise ValueError(f"unknown source spec type: {kind!r}")

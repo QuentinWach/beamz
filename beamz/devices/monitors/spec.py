@@ -244,6 +244,66 @@ class MonitorSpec:
     def accumulate_frequency(self) -> bool:
         return bool(self.frequency_points.size > 0)
 
+    def to_dict(self):
+        return {
+            "type": "MonitorSpec",
+            "start": list(self.start),
+            "end": None if self.end is None else list(self.end),
+            "is_3d": bool(self.is_3d),
+            "monitor_type": self.monitor_type,
+            "position": list(self.position),
+            "vertices": [list(vertex) for vertex in self.vertices],
+            "plane_normal": self.plane_normal,
+            "plane_position": float(self.plane_position),
+            "size": None if self.size is None else list(self.size),
+            "should_record_fields": bool(self.should_record_fields),
+            "accumulate_power": bool(self.accumulate_power),
+            "live_update": bool(self.live_update),
+            "record_interval": int(self.record_interval),
+            "max_history_steps": self.max_history_steps,
+            "dft_frequencies": np.asarray(self.dft_frequencies).tolist(),
+            "dft_t_start": float(self.dft_t_start),
+            "dft_t_end": self.dft_t_end,
+            "dft_enabled": bool(self.dft_enabled),
+            "dft_components": None if self.dft_components is None else list(self.dft_components),
+            "dft_record_every_step": bool(self.dft_record_every_step),
+            "dft_record_interval": int(self.dft_record_interval),
+            "dft_window": self.dft_window,
+            "name": self.name,
+            "frequency_points": np.asarray(self.frequency_points).tolist(),
+            "frequency_record_interval": int(self.frequency_record_interval),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            start=tuple(data["start"]),
+            end=None if data.get("end") is None else tuple(data["end"]),
+            is_3d=data["is_3d"],
+            monitor_type=data["monitor_type"],
+            position=tuple(data["position"]),
+            vertices=tuple(tuple(vertex) for vertex in data.get("vertices", ())),
+            plane_normal=data.get("plane_normal"),
+            plane_position=data.get("plane_position", 0.0),
+            size=None if data.get("size") is None else tuple(data["size"]),
+            should_record_fields=data.get("should_record_fields", True),
+            accumulate_power=data.get("accumulate_power", True),
+            live_update=data.get("live_update", False),
+            record_interval=data.get("record_interval", 1),
+            max_history_steps=data.get("max_history_steps"),
+            dft_frequencies=data.get("dft_frequencies"),
+            dft_t_start=data.get("dft_t_start", 0.0),
+            dft_t_end=data.get("dft_t_end"),
+            dft_enabled=data.get("dft_enabled", False),
+            dft_components=data.get("dft_components"),
+            dft_record_every_step=data.get("dft_record_every_step", True),
+            dft_record_interval=data.get("dft_record_interval", 1),
+            dft_window=data.get("dft_window", "rect"),
+            name=data.get("name"),
+            frequency_points=data.get("frequency_points"),
+            frequency_record_interval=data.get("frequency_record_interval", 1),
+        )
+
 
 def build_monitor_spec(
     *,

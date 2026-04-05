@@ -192,6 +192,60 @@ class StructureSpec:
         if self.points is not None:
             object.__setattr__(self, "points", int(self.points))
 
+    def to_dict(self):
+        from beamz.design.materials import material_spec_to_dict
+
+        return {
+            "type": "StructureSpec",
+            "vertices": [list(vertex) for vertex in self.vertices],
+            "interiors": [[list(vertex) for vertex in path] for path in self.interiors],
+            "material": material_spec_to_dict(self.material),
+            "color": self.color,
+            "optimize": bool(self.optimize),
+            "depth": float(self.depth),
+            "z": float(self.z),
+            "position": None if self.position is None else list(self.position),
+            "width": self.width,
+            "height": self.height,
+            "radius": self.radius,
+            "points": self.points,
+            "inner_radius": self.inner_radius,
+            "outer_radius": self.outer_radius,
+            "angle": self.angle,
+            "rotation": self.rotation,
+            "input_width": self.input_width,
+            "output_width": self.output_width,
+            "length": self.length,
+            "is_pml": bool(self.is_pml),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        from beamz.design.materials import material_spec_from_dict
+
+        return cls(
+            vertices=data.get("vertices", ()),
+            interiors=data.get("interiors", ()),
+            material=material_spec_from_dict(data["material"]),
+            color=data.get("color"),
+            optimize=data.get("optimize", False),
+            depth=data.get("depth", 0.0),
+            z=data.get("z", 0.0),
+            position=data.get("position"),
+            width=data.get("width"),
+            height=data.get("height"),
+            radius=data.get("radius"),
+            points=data.get("points"),
+            inner_radius=data.get("inner_radius"),
+            outer_radius=data.get("outer_radius"),
+            angle=data.get("angle"),
+            rotation=data.get("rotation"),
+            input_width=data.get("input_width"),
+            output_width=data.get("output_width"),
+            length=data.get("length"),
+            is_pml=data.get("is_pml", False),
+        )
+
 
 class Polygon:
     _SPEC_FIELDS = frozenset(StructureSpec.__dataclass_fields__.keys())

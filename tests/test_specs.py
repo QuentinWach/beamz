@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -11,6 +13,7 @@ from beamz.design.materials import (
 from beamz.design.spec import DesignSpec
 from beamz.design.structures import Rectangle, StructureSpec
 from beamz.devices.monitors.monitors import Monitor
+from beamz.devices.monitors.spec import MonitorSpec
 from beamz.devices.sources.gaussian import GaussianSource
 from beamz.devices.sources.mode import ModeSource
 from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
@@ -233,3 +236,70 @@ def test_structure_and_simulation_specs_store_nested_specs():
     assert sim.spec.design == design.spec
     assert sim.spec.devices == (monitor.spec, source.spec)
     assert sim.spec.boundaries == (boundary,)
+
+
+def test_spec_roundtrip_dicts_are_json_serializable():
+    mat = MaterialSpec(permittivity=2.0, permeability=1.5, conductivity=0.1)
+    mat_dict = mat.to_dict()
+    assert MaterialSpec.from_dict(json.loads(json.dumps(mat_dict))) == mat
+
+    cmat = CustomMaterialSpec(
+        permittivity_grid=[[1.0, 2.0], [3.0, 4.0]],
+        bounds=((0.0, 1.0), (0.0, 1.0)),
+    )
+    cmat_dict = cmat.to_dict()
+    cmat_rt = CustomMaterialSpec.from_dict(json.loads(json.dumps(cmat_dict)))
+    assert np.allclose(cmat_rt.permittivity_grid, cmat.permittivity_grid)
+
+    rect = Rectangle(position=(0.0, 0.0), width=1.0, height=2.0, material=Material())
+    structure_dict = rect.spec.to_dict()
+    structure_rt = StructureSpec.from_dict(json.loads(json.dumps(structure_dict)))
+    assert structure_rt == rect.spec
+
+    design = Design(width=2.0, height=3.0, material=Material())
+    design_dict = design.spec.to_dict()
+    design_rt = DesignSpec.from_dict(json.loads(json.dumps(design_dict)))
+    assert design_rt == design.spec
+
+    monitor = Monitor(start=(0.0, 0.0), end=(1.0, 0.0), dft_frequencies=[1.0, 2.0])
+    monitor_dict = monitor.spec.to_dict()
+    monitor_rt = MonitorSpec.from_dict(json.loads(json.dumps(monitor_dict)))
+    assert monitor_rt.start == monitor.spec.start
+    assert np.allclose(monitor_rt.dft_frequencies, monitor.spec.dft_frequencies)
+    assert np.allclose(monitor_rt.frequency_points, monitor.spec.frequency_points)
+
+    signal = np.linspace(0.0, 1.0, 8)
+    gaussian = GaussianSourceSpec(position=(0.0, 0.0), width=1.0, signal=signal)
+    gaussian_rt = GaussianSourceSpec.from_dict(json.loads(json.dumps(gaussian.to_dict())))
+    assert np.allclose(gaussian_rt.signal, gaussian.signal)
+
+    mode = ModeSourceSpec(
+        center=(0.0, 0.0),
+        width=1.0,
+        height=None,
+        wavelength=1.55,
+        pol="tm",
+        signal=signal,
+        direction="+x",
+        direction_axis="x",
+        direction_sign=1.0,
+    )
+    mode_rt = ModeSourceSpec.from_dict(json.loads(json.dumps(mode.to_dict())))
+    assert np.allclose(mode_rt.signal, mode.signal)
+
+    pml = PML(thickness=1.0, sigma_max=2.0, m=4)
+    pml_rt = PML.from_dict(json.loads(json.dumps(pml.to_dict())))
+    assert pml_rt == pml
+
+    sim = Simulation(
+        design=design,
+        devices=[monitor, GaussianSource(position=(0.0, 0.0), width=1.0, signal=signal)],
+        boundaries=[pml],
+        resolution=0.1,
+        time=np.array([0.0, 1.0, 2.0]),
+    )
+    sim_rt = SimulationSpec.from_dict(json.loads(json.dumps(sim.spec.to_dict())))
+    assert sim_rt.design == sim.spec.design
+    assert len(sim_rt.devices) == len(sim.spec.devices)
+    assert sim_rt.boundaries == sim.spec.boundaries
+    assert np.allclose(sim_rt.time, sim.spec.time)

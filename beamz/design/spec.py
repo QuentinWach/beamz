@@ -56,6 +56,28 @@ class DesignSpec:
         if self.is_3d and not has_3d_content:
             raise ValueError("Design is_3d requires positive depth or at least one 3D structure")
 
+    def to_dict(self):
+        return {
+            "type": "DesignSpec",
+            "width": float(self.width),
+            "height": float(self.height),
+            "depth": float(self.depth),
+            "structures": [structure.to_dict() for structure in self.structures],
+            "is_3d": bool(self.is_3d),
+            "time": float(self.time),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            width=data["width"],
+            height=data["height"],
+            depth=data["depth"],
+            structures=tuple(StructureSpec.from_dict(item) for item in data.get("structures", ())),
+            is_3d=data.get("is_3d", False),
+            time=data.get("time", 0.0),
+        )
+
 
 def build_design_spec(*, width, height, depth=0.0, structures=(), time=0.0) -> DesignSpec:
     depth = 0.0 if depth is None else float(depth)

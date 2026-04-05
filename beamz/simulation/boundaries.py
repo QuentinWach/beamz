@@ -36,6 +36,20 @@ class Boundary:
             )
         return self.edges
 
+    def to_dict(self):
+        return {
+            "type": type(self).__name__,
+            "edges": self.edges if self.edges == "all" else list(self.edges),
+            "thickness": float(self.thickness),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            edges=data.get("edges", "all"),
+            thickness=data.get("thickness", 1 * µm),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class PML(Boundary):
@@ -58,6 +72,23 @@ class PML(Boundary):
             return self.sigma_max
         eta = np.sqrt(MU_0 / (EPS_0 * eps_avg))
         return 0.8 * (self.m + 1) / (eta * resolution)
+
+    def to_dict(self):
+        data = Boundary.to_dict(self)
+        data.update(
+            sigma_max=self.sigma_max,
+            m=int(self.m),
+        )
+        return data
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(
+            edges=data.get("edges", "all"),
+            thickness=data.get("thickness", 1 * µm),
+            sigma_max=data.get("sigma_max"),
+            m=data.get("m", 3),
+        )
 
     def create_pml_regions(self, fields, design, resolution, dt, plane_2d="xy"):
         """Create permanent PML region masks and graded-sigma conductivity profiles.
@@ -205,3 +236,18 @@ class PML(Boundary):
 
         pml_mask = (sigma_x > 0) | (sigma_y > 0) | (sigma_z > 0)
         return {"mask": pml_mask, **profiles}
+
+
+def boundary_spec_to_dict(boundary):
+    if isinstance(boundary, (Boundary, PML)):
+        return boundary.to_dict()
+    raise TypeError(f"unsupported boundary spec type: {type(boundary).__name__}")
+
+
+def boundary_spec_from_dict(data):
+    kind = data.get("type")
+    if kind == "Boundary":
+        return Boundary.from_dict(data)
+    if kind == "PML":
+        return PML.from_dict(data)
+    raise ValueError(f"unknown boundary spec type: {kind!r}")
