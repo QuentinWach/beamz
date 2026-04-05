@@ -229,6 +229,24 @@ def _deprecated_get_s_matrix_lower(*args, **kwargs):
     )
 
 
+def _monitor_trace(sim, monitor, field_component="Ez", reduction="mean"):
+    from beamz.visual.data import Trace1D
+
+    values, coords = _get_monitor_trace_impl(
+        sim,
+        monitor,
+        field_component=field_component,
+        reduction=reduction,
+    )
+    return Trace1D(
+        values=values,
+        coords=coords,
+        coord_label="time",
+        value_label=f"{field_component} ({reduction})",
+        title=f"{getattr(monitor, 'name', 'monitor')}: {field_component}",
+    )
+
+
 Simulation.step = _run_step_impl
 Simulation._record_monitors = _record_monitors_impl
 Simulation._inject_h_sources = _inject_h_sources_impl
@@ -244,6 +262,7 @@ Simulation.run_compiled_until_decay = runtime.run_compiled_until_decay
 Simulation.run_fast = _run_fast
 Simulation.run_jit_scan = _run_jit_scan
 Simulation._get_monitor_trace = _get_monitor_trace_impl
+Simulation.monitor_trace = _monitor_trace
 Simulation._safe_ratio = staticmethod(_safe_ratio_impl)
 Simulation._select_wave_component = staticmethod(_select_wave_component_impl)
 Simulation._format_s_matrix_output = staticmethod(_format_s_matrix_output_impl)

@@ -38,15 +38,24 @@ class RegularGrid(BaseMeshGrid):
     def __rasterize__(self):
         raster2d.rasterize(self)
 
+    def slice2d(self, *, field="permittivity", title=None):
+        """Return the 2D grid field as plotting-ready Slice2D data."""
+        from beamz.visual.data import Slice2D
+
+        values = getattr(self, field, None)
+        if values is None:
+            raise ValueError(f"Unknown field: {field!r}")
+        return Slice2D(
+            values=values,
+            extent=(0.0, float(self.width), 0.0, float(self.height)),
+            value_label=field,
+            plane="xy",
+            title=title or f"{field} slice (xy)",
+        )
+
     def show(self, field="permittivity"):
         """Display the rasterized grid with properly scaled SI units."""
-        from beamz.visual.overlays import show_mesh_grid
-
-        grid = getattr(self, field, None)
-        if grid is not None:
-            show_mesh_grid(grid, self.design, field)
-        else:
-            print("Grid not rasterized yet.")
+        self.slice2d(field=field).plot()
 
 
 class RegularGrid3D(BaseMeshGrid):
@@ -117,6 +126,29 @@ class RegularGrid3D(BaseMeshGrid):
             "conductivity": self.conductivity[z_index, :, :],
         }
 
+    def slice2d(self, *, field="permittivity", z_index=None, z_position=None, title=None):
+        """Return a 2D material slice as plotting-ready Slice2D data."""
+        from beamz.visual.data import Slice2D
+
+        slice_data = self.get_2d_slice(z_index=z_index, z_position=z_position)
+        if field not in slice_data:
+            raise ValueError(f"Unknown field: {field!r}")
+
+        if z_index is None and z_position is not None:
+            z_index = int(float(z_position) / float(self.resolution_z))
+        if z_index is None:
+            z_index = self.shape[0] // 2
+        z_index = max(0, min(int(z_index), self.shape[0] - 1))
+        position = float(z_index) * float(self.resolution_z)
+        return Slice2D(
+            values=slice_data[field],
+            extent=(0.0, float(self.width), 0.0, float(self.height)),
+            value_label=field,
+            plane="xy",
+            position=position,
+            title=title or f"{field} slice (xy, z={position:.3e} m)",
+        )
+
     def show_3d(self, field="permittivity", slice_spacing=1, alpha=0.3):
         """Display a 3D visualization of the mesh."""
         from beamz.visual.overlays import show_mesh_3d
@@ -128,15 +160,7 @@ class RegularGrid3D(BaseMeshGrid):
 
     def show(self, field="permittivity", z_index=None, z_position=None):
         """Display a 2D slice of the 3D mesh."""
-        from beamz.visual.overlays import show_mesh_slice
-
-        slice_data = self.get_2d_slice(z_index, z_position)
-        grid = slice_data[field]
-        if grid is not None:
-            z_idx = z_index if z_index is not None else self.shape[0] // 2
-            show_mesh_slice(grid, self.design, field, z_idx, self.resolution_z)
-        else:
-            print("Grid not rasterized yet.")
+        self.slice2d(field=field, z_index=z_index, z_position=z_position).plot()
 
 
 def create_mesh(design, resolution, auto_select=True, force_3d=False, **kwargs):

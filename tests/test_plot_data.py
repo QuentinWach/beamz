@@ -2,6 +2,7 @@ import numpy as np
 
 from beamz import Circle, Design, Material
 from beamz.devices.monitors.monitors import Monitor
+from beamz.simulation.core import Simulation
 from beamz.visual.data import Slice2D, Trace1D
 
 
@@ -91,3 +92,34 @@ def test_monitor_power_trace_and_flux_trace_return_trace_data():
     flux = mon.flux_trace("+x")
     assert isinstance(flux, Trace1D)
     assert flux.coords.shape == (2,)
+
+
+def test_regular_grid_slice2d_returns_plot_data(monkeypatch):
+    monkeypatch.setenv("BEAMZ_RASTER_CACHE", "0")
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+
+    design = Design(width=2.0, height=2.0, material=Material(permittivity=1.0))
+    design += Circle(
+        position=(1.0, 1.0),
+        radius=0.5,
+        material=Material(permittivity=12.0),
+    )
+    grid = design.rasterize(resolution=0.25)
+
+    sl = grid.slice2d(field="permittivity")
+    assert isinstance(sl, Slice2D)
+    assert sl.extent == (0.0, 2.0, 0.0, 2.0)
+
+
+def test_simulation_monitor_trace_returns_trace_data():
+    mon = Monitor(start=(0.0, 0.0), end=(1.0, 0.0), record_fields=True, name="m")
+    mon.fields["Ez"] = [np.array([0.0, 2.0]), np.array([1.0, 3.0])]
+    mon.fields["t"] = [0.0, 1e-15]
+
+    sim = Simulation.__new__(Simulation)
+    sim.dt = 1e-15
+    sim.time = np.array([0.0, 1e-15])
+
+    trace = sim.monitor_trace(mon, field_component="Ez", reduction="mean")
+    assert isinstance(trace, Trace1D)
+    np.testing.assert_allclose(trace.values, np.array([1.0, 2.0]))

@@ -7,6 +7,7 @@ from beamz.visual.animation import (
     animate_manual_field,
     is_jupyter_environment,
 )
+from beamz.visual.data import Slice2D, Trace1D
 from beamz.visual.design_3d import show_design_3d
 from beamz.visual.design_viz import (
     draw_boundary,
@@ -35,6 +36,8 @@ __all__ = [
     "VideoRecorder",
     "JupyterAnimator",
     "is_jupyter_environment",
+    "Slice2D",
+    "Trace1D",
     "display_status",
     "create_rich_progress",
     "get_si_scale_and_label",
