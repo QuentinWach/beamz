@@ -119,114 +119,6 @@ class ModeSource:
         """Compute the mode and set up the source currents for all 6 components in 3D."""
         setup_helpers.initialize(self, permittivity, resolution, dt=dt)
 
-    def _setup_3d_injection(
-        self,
-        Ex,
-        Ey,
-        Ez,
-        Hx,
-        Hy,
-        Hz,
-        center_idx,
-        offset_idx,
-        axis,
-        nz,
-        ny,
-        nx,
-        resolution,
-        omega,
-        dt,
-    ):
-        """Set up full 6-component injection for 3D simulations."""
-        setup_helpers.setup_3d(
-            self,
-            Ex,
-            Ey,
-            Ez,
-            Hx,
-            Hy,
-            Hz,
-            center_idx,
-            offset_idx,
-            axis,
-            nz,
-            ny,
-            nx,
-            resolution,
-            omega=omega,
-            dt=dt,
-        )
-
-    def _setup_2d_injection(
-        self, E_mode, H_mode, center_idx, offset_idx, axis, ny, nx, resolution
-    ):
-        """2D injection setup using explicit global component mapping.
-
-        `solve_modes(..., return_fields=True)` returns fields ordered as:
-        E_mode = [Ex, Ey, Ez], H_mode = [Hx, Hy, Hz] in global components.
-        We pick the physically matching TE/TM pair for the chosen propagation axis.
-        """
-        setup_helpers.setup_2d(
-            self, E_mode, H_mode, center_idx, offset_idx, axis, ny, nx, resolution
-        )
-
-    def _setup_2d_x(
-        self,
-        E_mode,
-        H_mode,
-        center_idx,
-        offset_idx,
-        ny,
-        nx,
-        resolution,
-        dir_sign,
-        z_target,
-    ):
-        """2D injection setup for x-propagation."""
-        setup_helpers.setup_2d_x(
-            self,
-            E_mode,
-            H_mode,
-            center_idx,
-            offset_idx,
-            ny,
-            nx,
-            resolution,
-            dir_sign,
-            z_target,
-        )
-
-    def _setup_2d_y(
-        self,
-        E_mode,
-        H_mode,
-        center_idx,
-        offset_idx,
-        ny,
-        nx,
-        resolution,
-        dir_sign,
-        z_target,
-    ):
-        """2D injection setup for y-propagation."""
-        setup_helpers.setup_2d_y(
-            self,
-            E_mode,
-            H_mode,
-            center_idx,
-            offset_idx,
-            ny,
-            nx,
-            resolution,
-            dir_sign,
-            z_target,
-        )
-
-    @staticmethod
-    def _make_1d_window(width_cells, alpha=0.3):
-        """Create a 1D Tukey window for smooth edges."""
-        return setup_helpers.make_1d_window(width_cells, alpha=alpha)
-
     def _compute_dt_physical(self, axis, is_3d, dx, dy, dz=None, dt=None):
         """Compute physical time shift between E and H injection planes."""
         return setup_helpers.compute_dt_physical(
@@ -250,19 +142,6 @@ class ModeSource:
     def inject(self, fields, t, dt, current_step, resolution, design):
         """Inject source fields (calls inject_h + inject_e for backward compatibility)."""
         apply_helpers.inject(self, fields, t, dt, current_step, resolution, design)
-
-    # -- 3D injection (split) ------------------------------------------
-
-    def _get_3d_profiles_and_indices(self):
-        return apply_helpers.get_3d_profiles_and_indices(self)
-
-    def _inject_3d_h(self, fields, signal_h, dt, resolution):
-        """Inject H-field components for 3D Huygens source."""
-        apply_helpers.inject_3d_h(self, fields, signal_h, dt, resolution)
-
-    def _inject_3d_e(self, fields, signal_e, dt, resolution):
-        """Inject E-field components for 3D Huygens source."""
-        apply_helpers.inject_3d_e(self, fields, signal_e, dt, resolution)
 
     # -- 2D injection (split, with corrected signs) ---------------------
 

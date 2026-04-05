@@ -28,6 +28,59 @@ def _center_index(coord: float, step: float, limit: int) -> int:
     return max(0, min(limit - 1, int(round(coord / step - 0.5))))
 
 
+def _transverse_bounds(center: float, width: float, resolution: float, limit: int):
+    center_idx = int(round(center / resolution))
+    half_width_idx = int(round((width / 2) / resolution))
+    start = max(0, center_idx - half_width_idx)
+    end = min(limit, center_idx + half_width_idx)
+    return start, end, slice(start, end)
+
+
+def _align_impedance_pair(h_field, e_field, z_target):
+    h_profile = np.squeeze(h_field)
+    e_profile = np.squeeze(e_field)
+    idx_max = np.argmax(np.abs(h_profile))
+    phase_ref = np.angle(h_profile.flatten()[idx_max])
+    h_profile = h_profile * np.exp(-1j * phase_ref)
+    e_profile = e_profile * np.exp(-1j * phase_ref)
+    return h_profile, _impedance_match_e_profile(e_profile, h_profile, z_target)
+
+
+def _crop_window_pair(h_profile, e_profile, start: int, end: int):
+    stop = min(end, len(h_profile), len(e_profile))
+    width_cells = max(0, stop - start)
+    window = make_1d_window(width_cells)
+    h_cropped = h_profile[start:stop]
+    e_cropped = e_profile[start:stop]
+    if len(h_cropped) == len(window):
+        h_cropped = h_cropped * window
+        e_cropped = e_cropped * window
+    return h_cropped, e_cropped
+
+
+def _finalize_2d_pair(h_profile, e_profile, sign_h, sign_e, signed_flux_sign, resolution):
+    h_profile = sign_h * h_profile
+    e_profile = sign_e * e_profile
+    h_profile, e_profile = _normalize_2d_pair_by_power(
+        h_profile,
+        e_profile,
+        signed_flux_sign=signed_flux_sign,
+        dl=resolution,
+    )
+    h_profile = _to_real_profile(h_profile)
+    e_profile = _to_real_profile(e_profile)
+    return _normalize_2d_pair_by_power(
+        h_profile,
+        e_profile,
+        signed_flux_sign=signed_flux_sign,
+        dl=resolution,
+    )
+
+
+def _stagger_pair(h_field, e_field):
+    return 0.5 * (h_field[:-1] + h_field[1:]), 0.5 * (e_field[:-1] + e_field[1:])
+
+
 def initialize(source, permittivity, resolution, dt=None):
     """Compute the mode and configure source profiles and indices."""
     dx = dy = resolution
@@ -325,11 +378,9 @@ def setup_2d_x(
     z_target,
 ):
     """2D injection setup for x-propagation."""
-    center_y_idx = int(round(source.center[1] / resolution))
-    half_width_idx = int(round((source.width / 2) / resolution))
-    y_start = max(0, center_y_idx - half_width_idx)
-    y_end = min(ny, center_y_idx + half_width_idx)
-    y_slice = slice(y_start, y_end)
+    y_start, y_end, y_slice = _transverse_bounds(
+        source.center[1], source.width, resolution, ny
+    )
     source._y_start = y_start
     source._y_end = y_end
 
@@ -337,38 +388,16 @@ def setup_2d_x(
         source._ez_indices = (y_slice, center_idx)
         source._h_indices = (y_slice, offset_idx)
         source._h_component = "Hx"
-
-        hy_raw = np.squeeze(h_mode[1])
-        ez_raw = np.squeeze(e_mode[2])
-
-        idx_max = np.argmax(np.abs(hy_raw))
-        phase_ref = np.angle(hy_raw.flatten()[idx_max])
-        hy_profile = hy_raw * np.exp(-1j * phase_ref)
-        ez_profile = ez_raw * np.exp(-1j * phase_ref)
-        ez_profile = _impedance_match_e_profile(ez_profile, hy_profile, z_target)
-
-        width_cells = y_end - y_start
-        window = make_1d_window(width_cells)
-
-        hy_cropped = hy_profile[y_start:y_end]
-        ez_cropped = ez_profile[y_start:y_end]
-        if len(hy_cropped) == len(window):
-            hy_cropped = hy_cropped * window
-            ez_cropped = ez_cropped * window
-
-        jz_profile = dir_sign * hy_cropped
-        my_profile = dir_sign * ez_cropped
-        jz_profile, my_profile = _normalize_2d_pair_by_power(
-            jz_profile, my_profile, signed_flux_sign=-1.0, dl=resolution
+        hy_profile, ez_profile = _align_impedance_pair(h_mode[1], e_mode[2], z_target)
+        hy_cropped, ez_cropped = _crop_window_pair(hy_profile, ez_profile, y_start, y_end)
+        source._jz_profile, source._my_profile = _finalize_2d_pair(
+            hy_cropped,
+            ez_cropped,
+            dir_sign,
+            dir_sign,
+            -1.0,
+            resolution,
         )
-        jz_profile = _to_real_profile(jz_profile)
-        my_profile = _to_real_profile(my_profile)
-        jz_profile, my_profile = _normalize_2d_pair_by_power(
-            jz_profile, my_profile, signed_flux_sign=-1.0, dl=resolution
-        )
-
-        source._jz_profile = jz_profile
-        source._my_profile = my_profile
 
     else:
         hz_col = (
@@ -380,41 +409,17 @@ def setup_2d_x(
         source._hz_indices = (slice(y_start, min(y_end, ny - 1)), hz_col)
         source._e_indices = (slice(y_start, min(y_end, ny - 1)), offset_idx)
         source._e_component = "Ey"
-
-        hz_raw = np.squeeze(h_mode[2])
-        ey_raw = np.squeeze(e_mode[1])
-
-        hz_staggered = 0.5 * (hz_raw[:-1] + hz_raw[1:])
-        ey_staggered = 0.5 * (ey_raw[:-1] + ey_raw[1:])
-
-        idx_max = np.argmax(np.abs(hz_staggered))
-        phase_ref = np.angle(hz_staggered.flatten()[idx_max])
-        hz_profile = hz_staggered * np.exp(-1j * phase_ref)
-        ey_profile = ey_staggered * np.exp(-1j * phase_ref)
-        ey_profile = _impedance_match_e_profile(ey_profile, hz_profile, z_target)
-
-        width_cells = min(y_end, len(hz_profile)) - y_start
-        window = make_1d_window(width_cells)
-
-        hz_cropped = hz_profile[y_start : min(y_end, len(hz_profile))]
-        ey_cropped = ey_profile[y_start : min(y_end, len(ey_profile))]
-        if len(hz_cropped) == len(window):
-            hz_cropped = hz_cropped * window
-            ey_cropped = ey_cropped * window
-
-        jy_profile = dir_sign * hz_cropped
-        mz_profile = -dir_sign * ey_cropped
-        jy_profile, mz_profile = _normalize_2d_pair_by_power(
-            jy_profile, mz_profile, signed_flux_sign=1.0, dl=resolution
+        hz_profile, ey_profile = _stagger_pair(np.squeeze(h_mode[2]), np.squeeze(e_mode[1]))
+        hz_profile, ey_profile = _align_impedance_pair(hz_profile, ey_profile, z_target)
+        hz_cropped, ey_cropped = _crop_window_pair(hz_profile, ey_profile, y_start, y_end)
+        source._jy_profile, source._mz_profile = _finalize_2d_pair(
+            hz_cropped,
+            ey_cropped,
+            dir_sign,
+            -dir_sign,
+            1.0,
+            resolution,
         )
-        jy_profile = _to_real_profile(jy_profile)
-        mz_profile = _to_real_profile(mz_profile)
-        jy_profile, mz_profile = _normalize_2d_pair_by_power(
-            jy_profile, mz_profile, signed_flux_sign=1.0, dl=resolution
-        )
-
-        source._jy_profile = jy_profile
-        source._mz_profile = mz_profile
 
 
 def setup_2d_y(
@@ -430,11 +435,9 @@ def setup_2d_y(
     z_target,
 ):
     """2D injection setup for y-propagation."""
-    center_x_idx = int(round(source.center[0] / resolution))
-    half_width_idx = int(round((source.width / 2) / resolution))
-    x_start = max(0, center_x_idx - half_width_idx)
-    x_end = min(nx, center_x_idx + half_width_idx)
-    x_slice = slice(x_start, x_end)
+    x_start, x_end, x_slice = _transverse_bounds(
+        source.center[0], source.width, resolution, nx
+    )
     source._x_start = x_start
     source._x_end = x_end
 
@@ -442,38 +445,16 @@ def setup_2d_y(
         source._ez_indices = (center_idx, x_slice)
         source._h_indices = (offset_idx, x_slice)
         source._h_component = "Hy"
-
-        hx_raw = np.squeeze(h_mode[1])
-        ez_raw = np.squeeze(e_mode[2])
-
-        idx_max = np.argmax(np.abs(hx_raw))
-        phase_ref = np.angle(hx_raw.flatten()[idx_max])
-        hx_profile = hx_raw * np.exp(-1j * phase_ref)
-        ez_profile = ez_raw * np.exp(-1j * phase_ref)
-        ez_profile = _impedance_match_e_profile(ez_profile, hx_profile, z_target)
-
-        width_cells = x_end - x_start
-        window = make_1d_window(width_cells)
-
-        hx_cropped = hx_profile[x_start:x_end]
-        ez_cropped = ez_profile[x_start:x_end]
-        if len(hx_cropped) == len(window):
-            hx_cropped = hx_cropped * window
-            ez_cropped = ez_cropped * window
-
-        jz_profile = dir_sign * hx_cropped
-        my_profile = -dir_sign * ez_cropped
-        jz_profile, my_profile = _normalize_2d_pair_by_power(
-            jz_profile, my_profile, signed_flux_sign=1.0, dl=resolution
+        hx_profile, ez_profile = _align_impedance_pair(h_mode[1], e_mode[2], z_target)
+        hx_cropped, ez_cropped = _crop_window_pair(hx_profile, ez_profile, x_start, x_end)
+        source._jz_profile, source._my_profile = _finalize_2d_pair(
+            hx_cropped,
+            ez_cropped,
+            dir_sign,
+            -dir_sign,
+            1.0,
+            resolution,
         )
-        jz_profile = _to_real_profile(jz_profile)
-        my_profile = _to_real_profile(my_profile)
-        jz_profile, my_profile = _normalize_2d_pair_by_power(
-            jz_profile, my_profile, signed_flux_sign=1.0, dl=resolution
-        )
-
-        source._jz_profile = jz_profile
-        source._my_profile = my_profile
 
     else:
         hz_row = (
@@ -485,41 +466,17 @@ def setup_2d_y(
         source._hz_indices = (hz_row, slice(x_start, min(x_end, nx - 1)))
         source._e_indices = (offset_idx, slice(x_start, min(x_end, nx - 1)))
         source._e_component = "Ex"
-
-        hz_raw = np.squeeze(h_mode[2])
-        ex_raw = np.squeeze(e_mode[1])
-
-        hz_staggered = 0.5 * (hz_raw[:-1] + hz_raw[1:])
-        ex_staggered = 0.5 * (ex_raw[:-1] + ex_raw[1:])
-
-        idx_max = np.argmax(np.abs(hz_staggered))
-        phase_ref = np.angle(hz_staggered.flatten()[idx_max])
-        hz_profile = hz_staggered * np.exp(-1j * phase_ref)
-        ex_profile = ex_staggered * np.exp(-1j * phase_ref)
-        ex_profile = _impedance_match_e_profile(ex_profile, hz_profile, z_target)
-
-        width_cells = min(x_end, len(hz_profile)) - x_start
-        window = make_1d_window(width_cells)
-
-        hz_cropped = hz_profile[x_start : min(x_end, len(hz_profile))]
-        ex_cropped = ex_profile[x_start : min(x_end, len(ex_profile))]
-        if len(hz_cropped) == len(window):
-            hz_cropped = hz_cropped * window
-            ex_cropped = ex_cropped * window
-
-        jx_profile = -dir_sign * hz_cropped
-        mz_profile = -dir_sign * ex_cropped
-        jx_profile, mz_profile = _normalize_2d_pair_by_power(
-            jx_profile, mz_profile, signed_flux_sign=-1.0, dl=resolution
+        hz_profile, ex_profile = _stagger_pair(np.squeeze(h_mode[2]), np.squeeze(e_mode[1]))
+        hz_profile, ex_profile = _align_impedance_pair(hz_profile, ex_profile, z_target)
+        hz_cropped, ex_cropped = _crop_window_pair(hz_profile, ex_profile, x_start, x_end)
+        source._jx_profile, source._mz_profile = _finalize_2d_pair(
+            hz_cropped,
+            ex_cropped,
+            -dir_sign,
+            -dir_sign,
+            -1.0,
+            resolution,
         )
-        jx_profile = _to_real_profile(jx_profile)
-        mz_profile = _to_real_profile(mz_profile)
-        jx_profile, mz_profile = _normalize_2d_pair_by_power(
-            jx_profile, mz_profile, signed_flux_sign=-1.0, dl=resolution
-        )
-
-        source._jx_profile = jx_profile
-        source._mz_profile = mz_profile
 
 
 def make_1d_window(width_cells, alpha=0.3):
