@@ -27,13 +27,6 @@ def _normalize_frequencies(frequencies):
     return freqs
 
 
-def _normalize_frequency(frequency):
-    f = float(frequency)
-    if not np.isfinite(f) or f <= 0:
-        raise ValueError(f"frequency must be positive, got {frequency!r}")
-    return f
-
-
 def _resolve_mode_strategy(mode_strategy):
     strategy = str(mode_strategy).lower()
     if strategy not in {"per_frequency", "single", "single_frequency", "center"}:
@@ -47,12 +40,10 @@ def _resolve_mode_strategy(mode_strategy):
 def _resolve_output_ports(port_map, output_ports):
     if output_ports is None:
         return list(port_map.keys())
-
-    names = list(output_ports)
-    missing = [name for name in names if name not in port_map]
+    missing = [name for name in output_ports if name not in port_map]
     if missing:
         raise ValueError(f"output_ports contains unknown ports: {missing}")
-    return names
+    return list(output_ports)
 
 
 def _validate_port_monitors(port_map, monitor_by_name, *, require_dft=False):
@@ -77,17 +68,6 @@ def _validate_port_monitors(port_map, monitor_by_name, *, require_dft=False):
                 raise ValueError(
                     f"Reference monitor '{spec.reference_monitor}' must have dft_enabled=True."
                 )
-
-
-def _source_monitor(sim, port_map, source_port, monitor_by_name):
-    if source_port not in port_map:
-        raise ValueError(f"source_port '{source_port}' not found in ports.")
-    src_spec = port_map[source_port]
-    ref_name = src_spec.reference_monitor or src_spec.monitor_name
-    src_monitor = monitor_by_name.get(ref_name)
-    if src_monitor is None:
-        raise ValueError(f"Missing source/reference monitor '{ref_name}'.")
-    return src_spec, src_monitor
 
 
 def _wanted_components(sim, parts):
@@ -218,6 +198,35 @@ def _extract_reference_waves(
     return data
 
 
+def _extract_cw_monitor_coefficients(
+    sim,
+    spec,
+    monitor,
+    frequency,
+    *,
+    projection_cache,
+    steady_start_time,
+    avg_cycles,
+    window,
+):
+    parts = sim._mode_components_for_port(spec)
+    proj = sim._build_port_projection(spec, monitor, frequency, projection_cache)
+    coeff = proj["pinv"] @ np.concatenate(
+        [
+            sim._demodulate_monitor_component(
+                monitor,
+                component,
+                frequency=frequency,
+                t_start=steady_start_time,
+                avg_cycles=avg_cycles,
+                window=window,
+            )
+            for component in (parts["e_component"], parts["h_component"])
+        ]
+    )
+    return np.complex128(coeff[0]), np.complex128(coeff[1])
+
+
 def _extract_port_waves_with_loader(
     sim,
     port_map,
@@ -342,26 +351,19 @@ def _incident_valid_mask(a_incident, min_incident_db):
     return np.abs(a_incident) >= abs_floor
 
 
-def _resolve_broadband_frequencies(sim, port_map, source_port, frequencies, *, window):
+def _resolve_source_frequencies(sim, port_map, source_port, frequencies, *, resolver):
     monitor_by_name = sim._named_monitors()
     if frequencies is not None:
         return _normalize_frequencies(frequencies)
 
-    src_spec, src_monitor = _source_monitor(sim, port_map, source_port, monitor_by_name)
-    src_parts = sim._mode_components_for_port(src_spec)
-    freqs, _ = sim._sample_monitor_component_spectrum(
-        src_monitor, src_parts["e_component"], frequencies=None, window=window
-    )
-    return _normalize_frequencies(freqs)
-
-
-def _resolve_dft_frequencies(sim, port_map, source_port, frequencies):
-    monitor_by_name = sim._named_monitors()
-    if frequencies is not None:
-        return _normalize_frequencies(frequencies)
-
-    _, src_monitor = _source_monitor(sim, port_map, source_port, monitor_by_name)
-    return _normalize_frequencies(src_monitor.get_dft_frequencies())
+    if source_port not in port_map:
+        raise ValueError(f"source_port '{source_port}' not found in ports.")
+    src_spec = port_map[source_port]
+    ref_name = src_spec.reference_monitor or src_spec.monitor_name
+    src_monitor = monitor_by_name.get(ref_name)
+    if src_monitor is None:
+        raise ValueError(f"Missing source/reference monitor '{ref_name}'.")
+    return _normalize_frequencies(resolver(src_spec, src_monitor))
 
 
 def _assemble_s_matrix(
@@ -544,10 +546,16 @@ def get_s_matrix_modal_dft(
 ):
     """Broadband modal S extraction from in-simulation DFT monitor accumulators."""
     port_map = sim._normalize_portspecs(ports)
-    freqs = _resolve_dft_frequencies(sim, port_map, source_port, frequencies)
+    freqs = _resolve_source_frequencies(
+        sim,
+        port_map,
+        source_port,
+        frequencies,
+        resolver=lambda _spec, src_monitor: src_monitor.get_dft_frequencies(),
+    )
 
     waves = sim.extract_port_waves_dft(
-        ports=port_map.values(),
+        ports=ports,
         frequencies=freqs,
         min_incident_db=min_incident_db,
         return_power=True,
@@ -583,7 +591,7 @@ def extract_port_waves_cw(
     )
 
     port_map = sim._normalize_portspecs(ports)
-    f = _normalize_frequency(frequency)
+    f = _normalize_frequencies([frequency])[0]
     _resolve_mode_strategy(mode_strategy)
 
     monitor_by_name = sim._named_monitors()
@@ -592,57 +600,38 @@ def extract_port_waves_cw(
     projection_cache = {}
     waves = {}
     for spec in port_map.values():
-        parts = sim._mode_components_for_port(spec)
         main_monitor = monitor_by_name[spec.monitor_name]
-        proj = sim._build_port_projection(spec, main_monitor, f, projection_cache)
-        e_main = sim._demodulate_monitor_component(
+        a_plus, a_minus = _extract_cw_monitor_coefficients(
+            sim,
+            spec,
             main_monitor,
-            parts["e_component"],
-            frequency=f,
-            t_start=steady_start_time,
+            f,
+            projection_cache=projection_cache,
+            steady_start_time=steady_start_time,
             avg_cycles=avg_cycles,
             window=window,
         )
-        h_main = sim._demodulate_monitor_component(
-            main_monitor,
-            parts["h_component"],
-            frequency=f,
-            t_start=steady_start_time,
-            avg_cycles=avg_cycles,
-            window=window,
-        )
-        coeff = proj["pinv"] @ np.concatenate([e_main, h_main])
-        a_plus = np.complex128(coeff[0])
-        a_minus = np.complex128(coeff[1])
         port_waves = _build_port_wave_data(
             a_plus, a_minus, return_power=return_power
         )
 
         if spec.reference_monitor:
             ref_monitor = monitor_by_name[spec.reference_monitor]
-            ref_proj = sim._build_port_projection(spec, ref_monitor, f, projection_cache)
-            e_ref = sim._demodulate_monitor_component(
+            a_ref_plus, a_ref_minus = _extract_cw_monitor_coefficients(
+                sim,
+                spec,
                 ref_monitor,
-                parts["e_component"],
-                frequency=f,
-                t_start=steady_start_time,
+                f,
+                projection_cache=projection_cache,
+                steady_start_time=steady_start_time,
                 avg_cycles=avg_cycles,
                 window=window,
             )
-            h_ref = sim._demodulate_monitor_component(
-                ref_monitor,
-                parts["h_component"],
-                frequency=f,
-                t_start=steady_start_time,
-                avg_cycles=avg_cycles,
-                window=window,
-            )
-            ref_coeff = ref_proj["pinv"] @ np.concatenate([e_ref, h_ref])
             port_waves.update(
                 {
-                    "a_incident": np.complex128(ref_coeff[0]),
-                    "a_incident_plus": np.complex128(ref_coeff[0]),
-                    "a_incident_minus": np.complex128(ref_coeff[1]),
+                    "a_incident": a_ref_plus,
+                    "a_incident_plus": a_ref_plus,
+                    "a_incident_minus": a_ref_minus,
                 }
             )
             if return_power:
@@ -664,12 +653,21 @@ def get_s_matrix_modal(
 ):
     """Broadband modal S-matrix extraction from FFT-sampled monitor spectra."""
     port_map = sim._normalize_portspecs(ports)
-    freqs = _resolve_broadband_frequencies(
-        sim, port_map, source_port, frequencies, window="hann"
+    freqs = _resolve_source_frequencies(
+        sim,
+        port_map,
+        source_port,
+        frequencies,
+        resolver=lambda src_spec, src_monitor: sim._sample_monitor_component_spectrum(
+            src_monitor,
+            sim._mode_components_for_port(src_spec)["e_component"],
+            frequencies=None,
+            window="hann",
+        )[0],
     )
 
     waves = sim.extract_port_waves(
-        ports=port_map.values(),
+        ports=ports,
         frequencies=freqs,
         mode_strategy=mode_strategy,
         window="hann",
@@ -710,9 +708,9 @@ def get_s_matrix_modal_cw(
     if source_port not in port_map:
         raise ValueError(f"source_port '{source_port}' not found in ports.")
 
-    f = _normalize_frequency(frequency)
+    f = _normalize_frequencies([frequency])[0]
     waves = sim.extract_port_waves_cw(
-        ports=port_map.values(),
+        ports=ports,
         frequency=f,
         steady_start_time=steady_start_time,
         avg_cycles=avg_cycles,
