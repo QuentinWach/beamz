@@ -6,13 +6,11 @@ import numpy as np
 
 from beamz.const import µm
 from beamz.design.cache import (
-    _cache_path_for_grid,
     _env_bool,
-    _grid_kind_for_request,
+    _load_cached_raster_grid,
     _normalize_aa_config,
-    _raster_request_signature,
-    _save_grid_to_cache,
-    _try_load_cached_grid,
+    _prepare_raster_request,
+    _store_raster_grid,
 )
 from beamz.design.materials import Material
 from beamz.design.spec import DesignSpec, build_design_spec
@@ -29,7 +27,6 @@ from beamz.design.merge import (
 from beamz.design.structures import (
     Polygon,
     Rectangle,
-    Ring,
 )
 
 
@@ -292,50 +289,37 @@ class Design:
         from beamz.visual.helpers import display_status
 
         timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
-        disk_cache_enabled = _env_bool("BEAMZ_RASTER_CACHE", True)
         t_total_start = time.perf_counter()
-        grid_kind = _grid_kind_for_request(self, grid_type, kwargs)
-        requested_resolution_z_raw = kwargs.get("resolution_z", resolution)
-        if requested_resolution_z_raw is None:
-            requested_resolution_z_raw = resolution
-        requested_resolution_z = float(requested_resolution_z_raw)
-        aa_config = _normalize_aa_config(kwargs)
-        request_signature = _raster_request_signature(
-            resolution_xy=resolution,
-            resolution_z=requested_resolution_z,
+        grid_kind, requested_resolution_z, aa_config, request_signature = _prepare_raster_request(
+            self,
+            resolution=resolution,
+            grid_type=grid_type,
+            kwargs=kwargs,
+        )
+        t_load = time.perf_counter()
+        cached_grid, cache_path, used_disk_cache = _load_cached_raster_grid(
+            design_obj=self,
+            state=self.state,
+            resolution=resolution,
+            request_signature=request_signature,
+            requested_resolution_z=requested_resolution_z,
             grid_kind=grid_kind,
             aa_config=aa_config,
+            force_recompute=force_recompute,
         )
-
-        # Return cached grid if request signature matches and no force recompute
-        if not force_recompute and self.state.grid is not None:
-            cached_sig = getattr(self.state, "grid_request_signature", None)
-            if cached_sig is not None and cached_sig == request_signature:
-                return self.state.grid
-
-        cache_path = None
-        if disk_cache_enabled and not force_recompute:
-            t_load = time.perf_counter()
-            cached_grid, cache_path, _ = _try_load_cached_grid(
-                design_obj=self,
-                resolution=float(resolution),
-                resolution_z=requested_resolution_z,
-                grid_kind=grid_kind,
-                aa_config=aa_config,
+        if cached_grid is not None:
+            self._set_grid_state(
+                cached_grid, resolution=resolution, request_signature=request_signature
             )
-            if cached_grid is not None:
-                self._set_grid_state(
-                    cached_grid, resolution=resolution, request_signature=request_signature
+            if timing_enabled and used_disk_cache and cache_path is not None:
+                display_status(
+                    (
+                        f"Raster cache hit ({grid_kind}): {cache_path.name} | "
+                        f"load={time.perf_counter() - t_load:.2f}s"
+                    ),
+                    "success",
                 )
-                if timing_enabled:
-                    display_status(
-                        (
-                            f"Raster cache hit ({grid_kind}): {cache_path.name} | "
-                            f"load={time.perf_counter() - t_load:.2f}s"
-                        ),
-                        "success",
-                    )
-                return self.state.grid
+            return self.state.grid
 
         t_raster_start = time.perf_counter()
         grid = self._instantiate_grid(
@@ -346,16 +330,15 @@ class Design:
 
         t_raster_end = time.perf_counter()
 
-        if disk_cache_enabled:
-            if cache_path is None:
-                cache_path, _ = _cache_path_for_grid(
-                    design_obj=self,
-                    grid=self.state.grid,
-                    resolution=float(resolution),
-                    aa_config=aa_config,
-                )
-            t_save = time.perf_counter()
-            _save_grid_to_cache(self.state.grid, cache_path)
+        t_save = time.perf_counter()
+        cache_path = _store_raster_grid(
+            design_obj=self,
+            grid=self.state.grid,
+            resolution=resolution,
+            cache_path=cache_path,
+            aa_config=aa_config,
+        )
+        if cache_path is not None:
             if timing_enabled:
                 display_status(
                     (

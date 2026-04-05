@@ -282,3 +282,61 @@ def _cache_path_for_grid(*, design_obj, grid, resolution, aa_config):
         aa_config=aa_config,
     )
     return _raster_cache_path(cache_key), cache_key
+
+
+def _prepare_raster_request(design_obj, *, resolution, grid_type, kwargs):
+    grid_kind = _grid_kind_for_request(design_obj, grid_type, kwargs)
+    requested_resolution_z = kwargs.get("resolution_z", resolution)
+    if requested_resolution_z is None:
+        requested_resolution_z = resolution
+    aa_config = _normalize_aa_config(kwargs)
+    request_signature = _raster_request_signature(
+        resolution_xy=resolution,
+        resolution_z=float(requested_resolution_z),
+        grid_kind=grid_kind,
+        aa_config=aa_config,
+    )
+    return grid_kind, float(requested_resolution_z), aa_config, request_signature
+
+
+def _load_cached_raster_grid(
+    *,
+    design_obj,
+    state,
+    resolution,
+    request_signature,
+    requested_resolution_z,
+    grid_kind,
+    aa_config,
+    force_recompute,
+):
+    if not force_recompute and state.grid is not None:
+        cached_sig = getattr(state, "grid_request_signature", None)
+        if cached_sig is not None and cached_sig == request_signature:
+            return state.grid, None, False
+
+    if force_recompute or not _env_bool("BEAMZ_RASTER_CACHE", True):
+        return None, None, False
+
+    cached_grid, cache_path, _ = _try_load_cached_grid(
+        design_obj=design_obj,
+        resolution=float(resolution),
+        resolution_z=requested_resolution_z,
+        grid_kind=grid_kind,
+        aa_config=aa_config,
+    )
+    return cached_grid, cache_path, True
+
+
+def _store_raster_grid(*, design_obj, grid, resolution, cache_path, aa_config):
+    if not _env_bool("BEAMZ_RASTER_CACHE", True):
+        return None
+    if cache_path is None:
+        cache_path, _ = _cache_path_for_grid(
+            design_obj=design_obj,
+            grid=grid,
+            resolution=float(resolution),
+            aa_config=aa_config,
+        )
+    _save_grid_to_cache(grid, cache_path)
+    return cache_path

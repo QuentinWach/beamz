@@ -32,6 +32,39 @@ def _structure_vertices_and_holes(structure):
     return vertices, interiors
 
 
+def _component_bounds(core_polygons):
+    all_points = np.vstack([np.asarray(poly)[:, :2] for poly in core_polygons])
+    xmin, ymin = np.min(all_points, axis=0)
+    xmax, ymax = np.max(all_points, axis=0)
+    return float(xmin), float(ymin), float(xmax), float(ymax)
+
+
+def _shifted_port_data(component, *, xmin, ymin, pad_um):
+    ports = {}
+    for port in component.ports:
+        orientation = float(port.orientation) % 360.0
+        center_um = getattr(port, "dcenter", port.center)
+        width_um = getattr(port, "dwidth", port.width)
+        ports[port.name] = {
+            "center": (
+                float((center_um[0] - xmin + pad_um) * 1e-6),
+                float((center_um[1] - ymin + pad_um) * 1e-6),
+            ),
+            "width": float(width_um) * 1e-6,
+            "orientation": orientation,
+            "direction": _orientation_to_inward_direction(orientation),
+        }
+    return ports
+
+
+def _material_key(material):
+    return (
+        getattr(material, "permittivity", 1.0),
+        getattr(material, "permeability", 1.0),
+        getattr(material, "conductivity", 0.0),
+    )
+
+
 class _GDSFactoryNamespace:
     """Namespace for gdsfactory-to-BeamZ import helpers."""
 
@@ -284,9 +317,7 @@ class _GDSFactoryNamespace:
                 f"Component '{component.name}' has no polygons on {layer}."
             )
 
-        all_points = np.vstack([np.asarray(poly)[:, :2] for poly in core_polygons])
-        xmin, ymin = np.min(all_points, axis=0)
-        xmax, ymax = np.max(all_points, axis=0)
+        xmin, ymin, xmax, ymax = _component_bounds(core_polygons)
         pad_um = float(padding)
         width = float((xmax - xmin + 2.0 * pad_um) * 1e-6)
         height = float((ymax - ymin + 2.0 * pad_um) * 1e-6)
@@ -305,22 +336,7 @@ class _GDSFactoryNamespace:
             ]
             design += Polygon(vertices=vertices, material=Material(n_core**2), depth=0)
 
-        ports = {}
-        for port in component.ports:
-            orientation = float(port.orientation) % 360.0
-            center_um = getattr(port, "dcenter", port.center)
-            width_um = getattr(port, "dwidth", port.width)
-            ports[port.name] = {
-                "center": (
-                    float((center_um[0] - xmin + pad_um) * 1e-6),
-                    float((center_um[1] - ymin + pad_um) * 1e-6),
-                ),
-                "width": float(width_um) * 1e-6,
-                "orientation": orientation,
-                "direction": _orientation_to_inward_direction(orientation),
-            }
-
-        return design, ports
+        return design, _shifted_port_data(component, xmin=xmin, ymin=ymin, pad_um=pad_um)
 
 
 gdsf = _GDSFactoryNamespace()
@@ -338,12 +354,11 @@ def import_gds(gds_file: str, default_depth=1e-6):
 
     gds_lib = gdspy.GdsLibrary(infile=gds_file)
     design = Design()
-    cells = gds_lib.cells
     total_polygons_imported = 0
 
     candidates = [
         cell
-        for name, cell in cells.items()
+        for name, cell in gds_lib.cells.items()
         if not name.startswith("$$$") and "CONTEXT" not in name.upper()
     ]
     cells_to_import = [cell for cell in candidates if cell.references] or candidates
@@ -384,23 +399,19 @@ def export_gds(self, output_file):
     """
     lib = gdspy.GdsLibrary(unit=1e-6, precision=1e-9)
     cell = lib.new_cell("main")
-    self.unify_polygons()
+    design = self.copy()
+    design.unify_polygons()
     scale = 1e6
 
     material_groups = {}
-    for structure in self.structures:
+    for structure in design.structures:
         vertices, interiors = _structure_vertices_and_holes(structure)
         if getattr(structure, "is_pml", False) or not vertices:
             continue
         material = getattr(structure, "material", None)
         if material is None:
             continue
-        material_key = (
-            getattr(material, "permittivity", 1.0),
-            getattr(material, "permeability", 1.0),
-            getattr(material, "conductivity", 0.0),
-        )
-        material_groups.setdefault(material_key, []).append(structure)
+        material_groups.setdefault(_material_key(material), []).append(structure)
 
     for layer_num, (material_key, structures) in enumerate(material_groups.items()):
         for structure in structures:
@@ -436,5 +447,5 @@ def export_gds(self, output_file):
             f"Layer {layer_num}: εᵣ={material_key[0]:.1f}, μᵣ={material_key[1]:.1f}, σ={material_key[2]:.2e} S/m"
         )
     display_status(
-        f"Created design with size: {self.width:.2e} x {self.height:.2e} x {self.depth:.2e} m"
+        f"Created design with size: {design.width:.2e} x {design.height:.2e} x {design.depth:.2e} m"
     )
