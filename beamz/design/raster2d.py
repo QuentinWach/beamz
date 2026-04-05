@@ -4,8 +4,10 @@ from shapely.prepared import prep
 
 from beamz.design.grids import (
     MaterialGrids,
+    fill_background_material,
     get_bbox_indices_2d,
     is_axis_aligned_rectangle,
+    iter_raster_structures,
 )
 from beamz.design.structures import Rectangle
 from beamz.visual.helpers import create_rich_progress
@@ -24,11 +26,7 @@ def rasterize(mesh):
     num_samples = len(sample_dx)
 
     grids = MaterialGrids((grid_height, grid_width))
-
-    if len(mesh.design.structures) > 0:
-        background = mesh.design.structures[0]
-        if hasattr(background, "material") and background.material is not None:
-            grids.fill_all(mesh._get_all_material_props(background.material))
+    fill_background_material(grids, mesh.design, mesh._get_all_material_props)
 
     with create_rich_progress() as progress:
         task = progress.add_task(
@@ -36,15 +34,7 @@ def rasterize(mesh):
         )
         progress.update(task, advance=1)
 
-        for idx in range(1, len(mesh.design.structures)):
-            structure = mesh.design.structures[idx]
-
-            if hasattr(structure, "is_pml") and structure.is_pml:
-                progress.update(task, advance=1)
-                continue
-            if not hasattr(structure, "material") or structure.material is None:
-                progress.update(task, advance=1)
-                continue
+        for structure in iter_raster_structures(mesh.design):
 
             is_custom_material = hasattr(structure.material, "get_permittivity")
             props = (

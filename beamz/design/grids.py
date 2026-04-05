@@ -2,6 +2,27 @@ import numpy as np
 from shapely.geometry import Polygon as ShapelyPolygon
 
 
+def fill_background_material(grids, design, get_material_props):
+    """Initialize grids from the background structure material when present."""
+    if not design.structures:
+        return
+    background = design.structures[0]
+    material = getattr(background, "material", None)
+    if material is not None:
+        grids.fill_all(get_material_props(material))
+
+
+def iter_raster_structures(design):
+    """Yield rasterizable structures with a concrete material."""
+    for structure in design.structures[1:]:
+        if getattr(structure, "is_pml", False):
+            continue
+        material = getattr(structure, "material", None)
+        if material is None:
+            continue
+        yield structure
+
+
 def is_axis_aligned_rectangle(structure):
     """Check if a rectangle is axis-aligned (not rotated)."""
     return (
