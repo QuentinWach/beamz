@@ -7,19 +7,20 @@ from beamz.arrays import to_host
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices.sources.profiles import (
     _axis_index_from_component_indices,
+    _align_2d_impedance_pair,
     _build_3d_profiles,
     _component_axis_coord,
+    _crop_window_2d_pair,
     _dominant_3d_pair,
-    _impedance_match_e_profile,
+    _finalize_2d_launch_pair,
     _parse_direction,
     _remap_3d_solver_components,
     _select_3d_impedance_index,
     _select_3d_phase_ref,
     _select_core_confined_mode_index,
     _solve_numeric_k_axis,
-    _normalize_2d_pair_by_power,
     _numeric_phase_delay,
-    _to_real_profile,
+    _stagger_2d_pair,
 )
 from beamz.devices.sources.solve import solve_modes
 
@@ -34,51 +35,6 @@ def _transverse_bounds(center: float, width: float, resolution: float, limit: in
     start = max(0, center_idx - half_width_idx)
     end = min(limit, center_idx + half_width_idx)
     return start, end, slice(start, end)
-
-
-def _align_impedance_pair(h_field, e_field, z_target):
-    h_profile = np.squeeze(h_field)
-    e_profile = np.squeeze(e_field)
-    idx_max = np.argmax(np.abs(h_profile))
-    phase_ref = np.angle(h_profile.flatten()[idx_max])
-    h_profile = h_profile * np.exp(-1j * phase_ref)
-    e_profile = e_profile * np.exp(-1j * phase_ref)
-    return h_profile, _impedance_match_e_profile(e_profile, h_profile, z_target)
-
-
-def _crop_window_pair(h_profile, e_profile, start: int, end: int):
-    stop = min(end, len(h_profile), len(e_profile))
-    width_cells = max(0, stop - start)
-    window = make_1d_window(width_cells)
-    h_cropped = h_profile[start:stop]
-    e_cropped = e_profile[start:stop]
-    if len(h_cropped) == len(window):
-        h_cropped = h_cropped * window
-        e_cropped = e_cropped * window
-    return h_cropped, e_cropped
-
-
-def _finalize_2d_pair(h_profile, e_profile, sign_h, sign_e, signed_flux_sign, resolution):
-    h_profile = sign_h * h_profile
-    e_profile = sign_e * e_profile
-    h_profile, e_profile = _normalize_2d_pair_by_power(
-        h_profile,
-        e_profile,
-        signed_flux_sign=signed_flux_sign,
-        dl=resolution,
-    )
-    h_profile = _to_real_profile(h_profile)
-    e_profile = _to_real_profile(e_profile)
-    return _normalize_2d_pair_by_power(
-        h_profile,
-        e_profile,
-        signed_flux_sign=signed_flux_sign,
-        dl=resolution,
-    )
-
-
-def _stagger_pair(h_field, e_field):
-    return 0.5 * (h_field[:-1] + h_field[1:]), 0.5 * (e_field[:-1] + e_field[1:])
 
 
 _SETUP_2D_TM = {
@@ -180,19 +136,19 @@ def _setup_2d_tm(
     setattr(source, cfg["h_attr"], h_indices)
     source._h_component = cfg["h_component"]
 
-    h_profile, e_profile = _align_impedance_pair(
+    h_profile, e_profile = _align_2d_impedance_pair(
         h_mode[cfg["h_mode_index"]],
         e_mode[cfg["e_mode_index"]],
         z_target,
     )
-    h_cropped, e_cropped = _crop_window_pair(h_profile, e_profile, start, end)
-    first, second = _finalize_2d_pair(
+    h_cropped, e_cropped = _crop_window_2d_pair(h_profile, e_profile, start, end)
+    first, second = _finalize_2d_launch_pair(
         h_cropped,
         e_cropped,
-        dir_sign * cfg["field_signs"][0],
-        dir_sign * cfg["field_signs"][1],
-        cfg["flux_sign"],
-        resolution,
+        sign_h=dir_sign * cfg["field_signs"][0],
+        sign_e=dir_sign * cfg["field_signs"][1],
+        signed_flux_sign=cfg["flux_sign"],
+        resolution=resolution,
     )
     setattr(source, cfg["profile_attrs"][0], first)
     setattr(source, cfg["profile_attrs"][1], second)
@@ -222,19 +178,19 @@ def _setup_2d_te(
     setattr(source, cfg["e_attr"], e_indices)
     source._e_component = cfg["e_component"]
 
-    h_profile, e_profile = _stagger_pair(
+    h_profile, e_profile = _stagger_2d_pair(
         np.squeeze(h_mode[cfg["h_mode_index"]]),
         np.squeeze(e_mode[cfg["e_mode_index"]]),
     )
-    h_profile, e_profile = _align_impedance_pair(h_profile, e_profile, z_target)
-    h_cropped, e_cropped = _crop_window_pair(h_profile, e_profile, start, end)
-    first, second = _finalize_2d_pair(
+    h_profile, e_profile = _align_2d_impedance_pair(h_profile, e_profile, z_target)
+    h_cropped, e_cropped = _crop_window_2d_pair(h_profile, e_profile, start, end)
+    first, second = _finalize_2d_launch_pair(
         h_cropped,
         e_cropped,
-        dir_sign * cfg["field_signs"][0],
-        dir_sign * cfg["field_signs"][1],
-        cfg["flux_sign"],
-        resolution,
+        sign_h=dir_sign * cfg["field_signs"][0],
+        sign_e=dir_sign * cfg["field_signs"][1],
+        signed_flux_sign=cfg["flux_sign"],
+        resolution=resolution,
     )
     setattr(source, cfg["profile_attrs"][0], first)
     setattr(source, cfg["profile_attrs"][1], second)
@@ -505,17 +461,6 @@ def setup_2d(source, e_mode, h_mode, center_idx, offset_idx, axis, ny, nx, resol
         dir_sign,
         z_target,
     )
-
-
-def make_1d_window(width_cells, alpha=0.3):
-    """Create a 1D Tukey window for smooth edges."""
-    if width_cells > 2:
-        from scipy.signal.windows import tukey
-
-        return tukey(width_cells, alpha=alpha)
-    return np.ones(max(1, width_cells))
-
-
 def compute_dt_physical(source, axis, is_3d, dx, dy, dz=None, dt=None):
     """Compute physical time shift between E and H injection planes."""
     if source._neff is None:
