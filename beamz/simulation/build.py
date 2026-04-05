@@ -3,8 +3,70 @@ import os
 from beamz.devices.monitors.compiler import compile_monitor_specs
 from beamz.devices.monitors.monitors import Monitor
 from beamz.devices.sources.compiler import compile_source_specs
+from beamz.simulation.boundaries import PML
+from beamz.simulation.fields import Fields
 from beamz.simulation import ops, shell
 from beamz.simulation.material_models import CompiledMaterialSpec
+
+
+def _merge_pml_region_data(pml_data, new_data):
+    if not pml_data:
+        return dict(new_data)
+
+    merged = dict(pml_data)
+    if "mask" in new_data and "mask" in merged:
+        merged["mask"] = merged["mask"] | new_data["mask"]
+    elif "mask" in new_data:
+        merged["mask"] = new_data["mask"]
+
+    for key, value in new_data.items():
+        if key == "mask":
+            continue
+        merged[key] = merged[key] + value if key in merged else value
+    return merged
+
+
+def initialize_runtime(sim):
+    """Populate field storage and PML state from a simulation spec."""
+    spec = sim.spec
+    runtime = sim.runtime
+
+    permittivity, conductivity, permeability = spec.design.get_material_grids(
+        spec.resolution
+    )
+    runtime.dt = float(spec.time[1] - spec.time[0])
+    runtime.num_steps = len(spec.time)
+    runtime.t = float(spec.time[0])
+    runtime.current_step = 0
+
+    pml_boundaries = [boundary for boundary in spec.boundaries if isinstance(boundary, PML)]
+    runtime.fields = Fields(
+        permittivity,
+        conductivity,
+        permeability,
+        spec.resolution,
+        plane_2d=spec.plane_2d,
+        _init_materials=not pml_boundaries,
+    )
+
+    runtime.pml_data = None
+    if not pml_boundaries:
+        return
+
+    pml_data = {}
+    for pml in pml_boundaries:
+        pml_data = _merge_pml_region_data(
+            pml_data,
+            pml.create_pml_regions(
+                runtime.fields,
+                spec.design,
+                spec.resolution,
+                runtime.dt,
+                plane_2d=spec.plane_2d,
+            ),
+        )
+    runtime.pml_data = pml_data
+    runtime.fields.set_pml_conductivity(pml_data)
 
 
 def compile_simulation(design, devices, boundaries, run_cfg, *, compiled_cls, config_cls):

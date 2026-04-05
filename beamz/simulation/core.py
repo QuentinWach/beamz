@@ -10,8 +10,7 @@ from beamz.devices.sources.mode import (
     _modal_overlap_3d_profiles,
 )
 from beamz.devices.sources.solve import solve_modes
-from beamz.simulation.boundaries import PML, Boundary
-from beamz.simulation.fields import Fields
+from beamz.simulation.boundaries import Boundary
 from beamz.simulation.spec import SimulationSpec, build_simulation_spec
 from beamz.simulation.state import SimulationRuntime
 from beamz.simulation.modal import (
@@ -29,7 +28,7 @@ from beamz.simulation.ports import (
     safe_ratio as _safe_ratio_impl,
     select_wave_component as _select_wave_component_impl,
 )
-from beamz.simulation import jit, runtime
+from beamz.simulation import build, jit, runtime
 from beamz.simulation.spectral import (
     demodulate_monitor_component as _demodulate_monitor_component_impl,
     get_monitor_trace as _get_monitor_trace_impl,
@@ -112,65 +111,7 @@ class Simulation:
             ),
         )
         object.__setattr__(self, "runtime", SimulationRuntime())
-
-        # Get material grids from design (design owns the material grids, we reference them)
-        permittivity, conductivity, permeability = self.design.get_material_grids(
-            self.resolution
-        )
-
-        runtime = self.runtime
-        runtime.dt = float(self.time[1] - self.time[0])
-        runtime.num_steps = len(self.time)
-        runtime.t = float(self.time[0])
-        runtime.current_step = 0
-
-        # Check for PML boundaries before creating fields (to avoid double material init)
-        pml_boundaries = [b for b in self.boundaries if isinstance(b, PML)]
-
-        # Create field storage (fields owns the E/H field arrays, references material grids)
-        runtime.fields = Fields(
-            permittivity,
-            conductivity,
-            permeability,
-            self.resolution,
-            plane_2d=self.plane_2d,
-            _init_materials=not pml_boundaries,
-        )
-
-        # Initialize PML regions if present
-        if pml_boundaries:
-            # Create PML regions (do this once, not every timestep)
-            pml_data = {}
-            for pml in pml_boundaries:
-                new_data = pml.create_pml_regions(
-                    runtime.fields,
-                    self.design,
-                    self.resolution,
-                    self.dt,
-                    plane_2d=self.plane_2d,
-                )
-                if not pml_data:
-                    pml_data = dict(new_data)
-                    continue
-
-                if "mask" in new_data and "mask" in pml_data:
-                    pml_data["mask"] = pml_data["mask"] | new_data["mask"]
-                elif "mask" in new_data:
-                    pml_data["mask"] = new_data["mask"]
-
-                for key, value in new_data.items():
-                    if key == "mask":
-                        continue
-                    if key in pml_data:
-                        pml_data[key] = pml_data[key] + value
-                    else:
-                        pml_data[key] = value
-            runtime.pml_data = pml_data
-
-            # Set effective conductivity for PML
-            runtime.fields.set_pml_conductivity(pml_data)
-        else:
-            runtime.pml_data = None
+        build.initialize_runtime(self)
 
     def __getattr__(self, name):
         spec = self.__dict__.get("spec")
@@ -188,11 +129,8 @@ class Simulation:
         if name in self._SPEC_FIELDS and "spec" in self.__dict__:
             new_spec = replace(self.spec, **{name: value})
             object.__setattr__(self, "spec", new_spec)
-            if name == "time":
-                self.runtime.dt = float(new_spec.time[1] - new_spec.time[0])
-                self.runtime.num_steps = len(new_spec.time)
-                self.runtime.t = float(new_spec.time[0])
-                self.runtime.current_step = 0
+            if name in {"design", "resolution", "plane_2d", "boundaries", "time"}:
+                build.initialize_runtime(self)
             if name in {"design", "resolution", "plane_2d", "devices", "boundaries", "time"}:
                 self.runtime.compiled_program = None
                 self.runtime.compiled_program_signature = None
