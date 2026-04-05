@@ -130,10 +130,13 @@ def test_simulation_runtime_is_initialized_lazily():
         time=np.array([0.0, 1.0, 2.0]),
     )
 
+    assert sim.session.simulation is sim
+    assert sim.runtime is sim.session.runtime
     assert sim.runtime.initialized is False
     assert sim.runtime.fields is None
 
     assert sim.dt == 1.0
+    assert sim.session.dt == 1.0
     assert sim.runtime.initialized is True
     assert sim.runtime.fields is not None
 

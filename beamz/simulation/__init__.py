@@ -13,10 +13,12 @@ from beamz.simulation.compiled import (
     compile_simulation,
 )
 from beamz.simulation.core import PortSpec, Simulation
+from beamz.simulation.session import SimulationSession
 
 __all__ = [
     "RegularGrid",
     "Simulation",
+    "SimulationSession",
     "PortSpec",
     "BoundarySpec",
     "PMLSpec",

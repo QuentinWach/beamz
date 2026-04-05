@@ -17,8 +17,8 @@ from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
 from beamz.devices.sources.solve import solve_modes
 from beamz.simulation.boundaries import Boundary, boundary_from_spec
 from beamz.simulation.boundary_specs import boundary_to_spec
+from beamz.simulation.session import SimulationSession
 from beamz.simulation.spec import SimulationSpec, build_simulation_spec
-from beamz.simulation.state import SimulationRuntime
 from beamz.simulation.modal import (
     _build_port_projection as _build_port_projection_impl,
     modal_power_3d as _modal_power_3d_impl,
@@ -123,9 +123,15 @@ class Simulation:
         object.__setattr__(self, "_design", design)
         object.__setattr__(self, "_devices", tuple([] if devices is None else devices))
         object.__setattr__(self, "_boundaries", boundary_models)
-        object.__setattr__(self, "runtime", SimulationRuntime())
+        object.__setattr__(self, "_session", SimulationSession(self))
 
     def __getattr__(self, name):
+        if name == "session":
+            return self.__dict__.get("_session")
+        if name == "runtime":
+            session = self.__dict__.get("_session")
+            if session is not None:
+                return session.runtime
         if name == "design":
             return self.__dict__.get("_design")
         if name == "devices":
@@ -135,56 +141,44 @@ class Simulation:
         spec = self.__dict__.get("spec")
         if spec is not None and hasattr(spec, name):
             return getattr(spec, name)
-        runtime = self.__dict__.get("runtime")
-        if runtime is not None and name in self._RUNTIME_MAP:
-            build.ensure_runtime_initialized(self)
-            return getattr(runtime, self._RUNTIME_MAP[name])
+        session = self.__dict__.get("_session")
+        if session is not None and name in self._RUNTIME_MAP:
+            return getattr(session, self._RUNTIME_MAP[name])
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def __setattr__(self, name, value):
-        if name in {"spec", "runtime", "_design", "_devices", "_boundaries"}:
+        if name in {"spec", "_session", "_design", "_devices", "_boundaries"}:
             object.__setattr__(self, name, value)
+            return
+        if name == "runtime":
+            self.session.runtime = value
             return
         if name == "design":
             object.__setattr__(self, "_design", value)
             object.__setattr__(self, "spec", replace(self.spec, design=value))
-            build.invalidate_runtime(self)
-            self.runtime.compiled_program = None
-            self.runtime.compiled_program_signature = None
-            self.runtime.compiled_program_cache.clear()
-            self.runtime.compiled_monitor_state = None
+            self.session.reset(invalidate_runtime=True)
             return
         if name == "devices":
             object.__setattr__(self, "_devices", tuple(value))
             object.__setattr__(self, "spec", replace(self.spec, devices=value))
-            self.runtime.compiled_program = None
-            self.runtime.compiled_program_signature = None
-            self.runtime.compiled_program_cache.clear()
-            self.runtime.compiled_monitor_state = None
+            self.session.reset(invalidate_runtime=False)
             return
         if name == "boundaries":
             boundary_models = tuple(_boundary_model_from_any(boundary) for boundary in value)
             object.__setattr__(self, "_boundaries", boundary_models)
             object.__setattr__(self, "spec", replace(self.spec, boundaries=boundary_models))
-            build.invalidate_runtime(self)
-            self.runtime.compiled_program = None
-            self.runtime.compiled_program_signature = None
-            self.runtime.compiled_program_cache.clear()
-            self.runtime.compiled_monitor_state = None
+            self.session.reset(invalidate_runtime=True)
             return
         if name in self._SPEC_FIELDS and "spec" in self.__dict__:
             new_spec = replace(self.spec, **{name: value})
             object.__setattr__(self, "spec", new_spec)
-            if name in {"design", "resolution", "plane_2d", "boundaries", "time"}:
-                build.invalidate_runtime(self)
-            if name in {"design", "resolution", "plane_2d", "devices", "boundaries", "time"}:
-                self.runtime.compiled_program = None
-                self.runtime.compiled_program_signature = None
-                self.runtime.compiled_program_cache.clear()
-                self.runtime.compiled_monitor_state = None
+            self.session.reset(
+                invalidate_runtime=name
+                in {"design", "resolution", "plane_2d", "boundaries", "time"}
+            )
             return
-        if name in self._RUNTIME_MAP and "runtime" in self.__dict__:
-            setattr(self.runtime, self._RUNTIME_MAP[name], value)
+        if name in self._RUNTIME_MAP and "_session" in self.__dict__:
+            setattr(self.session, self._RUNTIME_MAP[name], value)
             return
         object.__setattr__(self, name, value)
 
@@ -203,7 +197,7 @@ class Simulation:
         object.__setattr__(new, "_design", changes.get("design", self.design))
         object.__setattr__(new, "_devices", tuple(changes.get("devices", self.devices)))
         object.__setattr__(new, "_boundaries", boundary_models)
-        object.__setattr__(new, "runtime", SimulationRuntime())
+        object.__setattr__(new, "_session", SimulationSession(new))
         return new
 
     def to_dict(self):
@@ -225,7 +219,7 @@ class Simulation:
         object.__setattr__(new, "_design", design)
         object.__setattr__(new, "_devices", devices)
         object.__setattr__(new, "_boundaries", boundaries)
-        object.__setattr__(new, "runtime", SimulationRuntime())
+        object.__setattr__(new, "_session", SimulationSession(new))
         return new
 
 
@@ -245,8 +239,7 @@ def _boundary_model_from_any(boundary):
 
 def _run_fast(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):
     """Backward-compatible alias to `run_compiled` in v0.3."""
-    return runtime.run_compiled(
-        sim,
+    return sim.run_compiled(
         num_steps=num_steps,
         record_interval=record_interval,
         record_fields=record_fields,
@@ -256,13 +249,19 @@ def _run_fast(sim, num_steps=None, record_interval=None, record_fields=None, pro
 
 def _run_jit_scan(sim, num_steps=None, progress=True):
     """Backward-compatible alias to `run_compiled` in v0.3."""
-    return runtime.run_compiled(
-        sim,
+    return sim.run_compiled(
         num_steps=num_steps,
         record_interval=None,
         record_fields=None,
         progress=progress,
     )
+
+
+def _delegate_to_session(method_name):
+    def _wrapper(sim, *args, **kwargs):
+        return getattr(sim.session, method_name)(*args, **kwargs)
+
+    return _wrapper
 
 
 def _normalize_portspecs(ports):
@@ -332,18 +331,34 @@ def _monitor_trace(sim, monitor, field_component="Ez", reduction="mean"):
     )
 
 
-Simulation.step = _run_step_impl
-Simulation._record_monitors = _record_monitors_impl
-Simulation._inject_h_sources = _inject_h_sources_impl
-Simulation._inject_e_sources = _inject_e_sources_impl
-Simulation._inject_legacy_sources = _inject_legacy_sources_impl
-Simulation._collect_source_terms = _collect_source_terms_impl
-Simulation._create_jit_step = jit.create_step
-Simulation._create_jit_step_h = jit.create_step_h
-Simulation._create_jit_step_e = jit.create_step_e
-Simulation.compile = runtime.compile_program
-Simulation.run_compiled = runtime.run_compiled
-Simulation.run_compiled_until_decay = runtime.run_compiled_until_decay
+SimulationSession.step = _run_step_impl
+SimulationSession._record_monitors = _record_monitors_impl
+SimulationSession._inject_h_sources = _inject_h_sources_impl
+SimulationSession._inject_e_sources = _inject_e_sources_impl
+SimulationSession._inject_legacy_sources = _inject_legacy_sources_impl
+SimulationSession._collect_source_terms = _collect_source_terms_impl
+SimulationSession._create_jit_step = jit.create_step
+SimulationSession._create_jit_step_h = jit.create_step_h
+SimulationSession._create_jit_step_e = jit.create_step_e
+SimulationSession.compile = runtime.compile_program
+SimulationSession.compile_program = runtime.compile_program
+SimulationSession.run_compiled = runtime.run_compiled
+SimulationSession.run_compiled_until_decay = runtime.run_compiled_until_decay
+SimulationSession.run_fast = _run_fast
+SimulationSession.run_jit_scan = _run_jit_scan
+
+Simulation.step = _delegate_to_session("step")
+Simulation._record_monitors = _delegate_to_session("_record_monitors")
+Simulation._inject_h_sources = _delegate_to_session("_inject_h_sources")
+Simulation._inject_e_sources = _delegate_to_session("_inject_e_sources")
+Simulation._inject_legacy_sources = _delegate_to_session("_inject_legacy_sources")
+Simulation._collect_source_terms = _delegate_to_session("_collect_source_terms")
+Simulation._create_jit_step = _delegate_to_session("_create_jit_step")
+Simulation._create_jit_step_h = _delegate_to_session("_create_jit_step_h")
+Simulation._create_jit_step_e = _delegate_to_session("_create_jit_step_e")
+Simulation.compile = _delegate_to_session("compile")
+Simulation.run_compiled = _delegate_to_session("run_compiled")
+Simulation.run_compiled_until_decay = _delegate_to_session("run_compiled_until_decay")
 Simulation.run_fast = _run_fast
 Simulation.run_jit_scan = _run_jit_scan
 Simulation._get_monitor_trace = _get_monitor_trace_impl
