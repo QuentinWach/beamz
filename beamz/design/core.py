@@ -1,5 +1,6 @@
 import os
 import time
+from dataclasses import replace
 
 import numpy as np
 
@@ -20,6 +21,8 @@ from beamz.design.cache import (
     _to_jsonable,
 )
 from beamz.design.materials import Material
+from beamz.design.spec import DesignSpec, build_design_spec
+from beamz.design.state import DesignState
 from beamz.design.merge import (
     _find_rings_to_preserve,
     _group_by_material,
@@ -37,6 +40,17 @@ from beamz.design.structures import (
 
 
 class Design:
+    _SPEC_FIELDS = frozenset(DesignSpec.__dataclass_fields__.keys())
+    _STATE_MAP = {
+        "sources": "sources",
+        "monitors": "monitors",
+        "boundaries": "boundaries",
+        "layers": "layers",
+        "_grid": "grid",
+        "_grid_resolution": "grid_resolution",
+        "_grid_request_signature": "grid_request_signature",
+    }
+
     def __init__(
         self,
         width: float = 4 * µm,
@@ -54,18 +68,64 @@ class Design:
             depth=depth,
             material=material,
         )
-        self.structures, self.sources, self.monitors = [background], [], []
-        self.width, self.height, self.depth, self.time = width, height, depth, 0
-        self.is_3d = depth is not None and depth > 0
-        self.layers: dict[int, list[Polygon]] = {}
+        object.__setattr__(
+            self,
+            "spec",
+            build_design_spec(
+                width=width,
+                height=height,
+                depth=depth if depth is not None else 0.0,
+                structures=(background,),
+                time=0.0,
+            ),
+        )
+        object.__setattr__(self, "state", DesignState())
 
     def __str__(self):
         return f"Design with {len(self.structures)} structures ({'3D' if self.is_3d else '2D'})"
+
+    def __getattr__(self, name):
+        spec = self.__dict__.get("spec")
+        if spec is not None and hasattr(spec, name):
+            return getattr(spec, name)
+        state = self.__dict__.get("state")
+        if state is not None and name in self._STATE_MAP:
+            return getattr(state, self._STATE_MAP[name])
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+
+    def __setattr__(self, name, value):
+        if name in {"spec", "state"}:
+            object.__setattr__(self, name, value)
+            return
+        if name in self._SPEC_FIELDS and "spec" in self.__dict__:
+            new_spec = replace(self.spec, **{name: value})
+            object.__setattr__(self, "spec", new_spec)
+            if name in {"width", "height", "depth", "structures", "is_3d", "time"}:
+                self.state.grid = None
+                self.state.grid_resolution = None
+                self.state.grid_request_signature = None
+            return
+        if name in self._STATE_MAP and "state" in self.__dict__:
+            setattr(self.state, self._STATE_MAP[name], value)
+            return
+        object.__setattr__(self, name, value)
 
     def __iadd__(self, structure):
         """Implement += operator for adding structures."""
         self.add(structure)
         return self
+
+    @staticmethod
+    def _is_monitor(obj):
+        module = type(obj).__module__
+        return module.startswith("beamz.devices.monitors") or hasattr(obj, "power_history")
+
+    @staticmethod
+    def _is_source(obj):
+        module = type(obj).__module__
+        return module.startswith("beamz.devices.sources") or (
+            hasattr(obj, "inject") and hasattr(obj, "signal")
+        )
 
     def unify_polygons(self):
         """Merge overlapping polygons with the same material properties into unified shapes."""
@@ -76,42 +136,38 @@ class Design:
         new_structures, structures_to_remove = _merge_groups(
             material_groups, rings_to_preserve, structures_to_remove
         )
-        self.structures = _rebuild_structure_list(
-            self.structures, structures_to_remove, new_structures, material_groups
+        self.structures = tuple(
+            _rebuild_structure_list(
+                list(self.structures), structures_to_remove, new_structures, material_groups
+            )
         )
         return True
 
     def add(self, structure: type[Polygon]):
         """Add structure to the design and update 3D flag if needed."""
-        from beamz.devices.monitors import Monitor
-        from beamz.devices.sources import GaussianSource, ModeSource
-
         # Set back-reference to design if the structure supports it
         if hasattr(structure, "design"):
             structure.design = self
 
-        if isinstance(structure, Monitor):
+        if self._is_monitor(structure):
             self.monitors.append(structure)
-        elif isinstance(structure, (ModeSource, GaussianSource)):
+        elif self._is_source(structure):
             self.sources.append(structure)
         else:
-            self.structures.append(structure)
+            self.structures = tuple(list(self.structures) + [structure])
 
-        if hasattr(structure, "is_3d") and structure.is_3d:
-            self.is_3d = True
+        structure_is_3d = bool(getattr(structure, "is_3d", False))
         if hasattr(structure, "depth") and structure.depth != 0:
-            self.is_3d = True
-        if (
-            hasattr(structure, "position")
-            and len(structure.position) > 2
-            and structure.position[2] != 0
-        ):
-            self.is_3d = True
+            structure_is_3d = True
+        if hasattr(structure, "position") and len(structure.position) > 2 and structure.position[2] != 0:
+            structure_is_3d = True
         if hasattr(structure, "vertices") and structure.vertices:
             for vertex in structure.vertices:
                 if len(vertex) > 2 and vertex[2] != 0:
-                    self.is_3d = True
+                    structure_is_3d = True
                     break
+        if structure_is_3d and not self.is_3d:
+            self.is_3d = True
 
     def get_material_value(self, x: float, y: float, z: float = 0.0):
         """Return material properties at coordinate (x,y,z) prioritizing topmost structure."""
@@ -140,7 +196,7 @@ class Design:
         from beamz.visual.data import Slice2D
 
         if resolution is None:
-            resolution = getattr(self, "_grid_resolution", None)
+            resolution = getattr(self.state, "grid_resolution", None)
         if resolution is None:
             raise ValueError(
                 "resolution is required for Design.slice2d(...) unless the design "
@@ -206,10 +262,10 @@ class Design:
         }
 
         # Return cached grid if request signature matches and no force recompute
-        if not force_recompute and hasattr(self, "_grid"):
-            cached_sig = getattr(self, "_grid_request_signature", None)
+        if not force_recompute and self.state.grid is not None:
+            cached_sig = getattr(self.state, "grid_request_signature", None)
             if cached_sig is not None and cached_sig == request_signature:
-                return self._grid
+                return self.state.grid
 
         cache_path = None
         if disk_cache_enabled and not force_recompute:
@@ -225,15 +281,15 @@ class Design:
                 t_load = time.perf_counter()
                 arrays = np.load(cache_path)
                 try:
-                    self._grid = _build_grid_from_cached_arrays(
+                    self.state.grid = _build_grid_from_cached_arrays(
                         design_obj=self,
                         resolution=float(resolution),
                         resolution_z=requested_resolution_z,
                         grid_kind=grid_kind,
                         arrays=arrays,
                     )
-                    self._grid_resolution = resolution
-                    self._grid_request_signature = request_signature
+                    self.state.grid_resolution = resolution
+                    self.state.grid_request_signature = request_signature
                 finally:
                     arrays.close()
                 if timing_enabled:
@@ -244,7 +300,7 @@ class Design:
                         ),
                         "success",
                     )
-                return self._grid
+                return self.state.grid
 
         t_raster_start = time.perf_counter()
         if isinstance(grid_type, str):
@@ -254,9 +310,9 @@ class Design:
             elif gt in {"regular3d", "3d"}:
                 grid_cls = RegularGrid3D
             elif gt in {"auto", "auto-select", "autoselect"}:
-                self._grid = create_mesh(self, resolution, **kwargs)
-                self._grid_resolution = resolution
-                self._grid_request_signature = request_signature
+                self.state.grid = create_mesh(self, resolution, **kwargs)
+                self.state.grid_resolution = resolution
+                self.state.grid_request_signature = request_signature
                 t_raster_end = time.perf_counter()
                 if disk_cache_enabled:
                     if cache_path is None:
@@ -265,17 +321,17 @@ class Design:
                             resolution=float(resolution),
                             grid_kind=(
                                 "3d"
-                                if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
+                                if (hasattr(self.state.grid, "is_3d") and self.state.grid.is_3d)
                                 else "2d"
                             ),
                             resolution_z=float(
-                                getattr(self._grid, "resolution_z", resolution)
+                                getattr(self.state.grid, "resolution_z", resolution)
                             ),
                             aa_config=aa_config,
                         )
                         cache_path = _raster_cache_path(cache_key)
                     t_save = time.perf_counter()
-                    _save_grid_to_cache(self._grid, cache_path)
+                    _save_grid_to_cache(self.state.grid, cache_path)
                     if timing_enabled:
                         display_status(
                             (
@@ -292,7 +348,7 @@ class Design:
                         ),
                         "info",
                     )
-                return self._grid
+                return self.state.grid
             else:
                 return None
         elif isinstance(grid_type, type):
@@ -301,17 +357,17 @@ class Design:
         # If we got here with grid_cls, use it
         if grid_cls is RegularGrid3D:
             resolution_xy, resolution_z = resolution, kwargs.pop("resolution_z", None)
-            self._grid = grid_cls(
+            self.state.grid = grid_cls(
                 self,
                 resolution_xy=resolution_xy,
                 resolution_z=resolution_z,
                 **kwargs,
             )
-            self._grid_resolution = resolution
+            self.state.grid_resolution = resolution
         else:
-            self._grid = grid_cls(self, resolution, **kwargs)
-            self._grid_resolution = resolution
-        self._grid_request_signature = request_signature
+            self.state.grid = grid_cls(self, resolution, **kwargs)
+            self.state.grid_resolution = resolution
+        self.state.grid_request_signature = request_signature
 
         t_raster_end = time.perf_counter()
 
@@ -322,15 +378,15 @@ class Design:
                     resolution=float(resolution),
                     grid_kind=(
                         "3d"
-                        if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
+                        if (hasattr(self.state.grid, "is_3d") and self.state.grid.is_3d)
                         else "2d"
                     ),
-                    resolution_z=float(getattr(self._grid, "resolution_z", resolution)),
+                    resolution_z=float(getattr(self.state.grid, "resolution_z", resolution)),
                     aa_config=aa_config,
                 )
                 cache_path = _raster_cache_path(cache_key)
             t_save = time.perf_counter()
-            _save_grid_to_cache(self._grid, cache_path)
+            _save_grid_to_cache(self.state.grid, cache_path)
             if timing_enabled:
                 display_status(
                     (
@@ -349,20 +405,19 @@ class Design:
                 "info",
             )
 
-        return self._grid
+        return self.state.grid
 
     def get_material_grids(self, resolution):
         """Get cached rasterized material property arrays at specified resolution as references."""
         if (
-            not hasattr(self, "_grid")
-            or not hasattr(self, "_grid_resolution")
-            or self._grid_resolution != resolution
+            self.state.grid is None
+            or self.state.grid_resolution != resolution
         ):
             self.rasterize(resolution, grid_type="auto")
         return (
-            self._grid.permittivity,
-            self._grid.conductivity,
-            self._grid.permeability,
+            self.state.grid.permittivity,
+            self.state.grid.conductivity,
+            self.state.grid.permeability,
         )
 
     def copy(self):
@@ -378,7 +433,10 @@ class Design:
             depth=self.depth,
             material=background_material,
         )
-        new_design.structures, new_design.sources, new_design.monitors = [], [], []
+        new_design.structures = ()
+        new_design.sources = []
+        new_design.monitors = []
+        new_design.boundaries = list(self.boundaries)
 
         # Copy structures
         for structure in self.structures:
@@ -392,9 +450,9 @@ class Design:
                     copied_structure.material = copied_structure.material.copy()
                 if hasattr(copied_structure, "design"):
                     copied_structure.design = new_design
-                new_design.structures.append(copied_structure)
+                new_design.structures = tuple(list(new_design.structures) + [copied_structure])
             else:
-                new_design.structures.append(structure)
+                new_design.structures = tuple(list(new_design.structures) + [structure])
 
         # Copy sources
         for source in self.sources:

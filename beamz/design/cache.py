@@ -87,10 +87,17 @@ def _boundary_signature(boundary):
     if boundary is None:
         return None
     raw = {}
-    for key, val in getattr(boundary, "__dict__", {}).items():
-        if key.startswith("_"):
-            continue
-        raw[key] = _to_jsonable(val)
+    fields = getattr(type(boundary), "__dataclass_fields__", None)
+    if fields:
+        for key in fields:
+            if key.startswith("_"):
+                continue
+            raw[key] = _to_jsonable(getattr(boundary, key))
+    else:
+        for key, val in getattr(boundary, "__dict__", {}).items():
+            if key.startswith("_"):
+                continue
+            raw[key] = _to_jsonable(val)
     return {"type": type(boundary).__name__, "attrs": raw}
 
 

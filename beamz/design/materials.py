@@ -1,21 +1,135 @@
-# Medium: Dispersionless medium.
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialSpec:
+    permittivity: float = 1.0
+    permeability: float = 1.0
+    conductivity: float = 0.0
+
+    def __post_init__(self):
+        object.__setattr__(self, "permittivity", float(self.permittivity))
+        object.__setattr__(self, "permeability", float(self.permeability))
+        object.__setattr__(self, "conductivity", float(self.conductivity))
+
+
 class Material:
-    def __init__(
-        self,
-        permittivity=1.0,
-        permeability=1.0,
-        conductivity=0.0,
-    ):
-        self.permittivity = permittivity
-        self.permeability = permeability
-        self.conductivity = conductivity
+    """Dispersionless homogeneous material."""
+
+    def __init__(self, permittivity=1.0, permeability=1.0, conductivity=0.0):
+        object.__setattr__(
+            self,
+            "spec",
+            MaterialSpec(
+                permittivity=permittivity,
+                permeability=permeability,
+                conductivity=conductivity,
+            ),
+        )
+
+    def __getattr__(self, name):
+        spec = self.__dict__.get("spec")
+        if spec is not None and hasattr(spec, name):
+            return getattr(spec, name)
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+
+    def __setattr__(self, name, value):
+        if name == "spec":
+            object.__setattr__(self, name, value)
+            return
+        raise AttributeError(f"{type(self).__name__!s} is immutable")
 
     def get_sample(self):
         return self.permittivity, self.permeability, self.conductivity
 
+    def copy(self):
+        return Material(
+            permittivity=self.permittivity,
+            permeability=self.permeability,
+            conductivity=self.conductivity,
+        )
 
-# CustomMaterial: Function-based material for inverse design
+
+@dataclass(frozen=True, slots=True)
+class CustomMaterialSpec:
+    permittivity_func: object = None
+    permeability_func: object = None
+    conductivity_func: object = None
+    permittivity_grid: object = None
+    permeability_grid: object = None
+    conductivity_grid: object = None
+    bounds: tuple | None = None
+    interpolation: str = "linear"
+    default_permittivity: float = 1.0
+    default_permeability: float = 1.0
+    default_conductivity: float = 0.0
+
+    def __post_init__(self):
+        object.__setattr__(self, "bounds", _normalize_bounds(self.bounds))
+        object.__setattr__(self, "interpolation", str(self.interpolation))
+        object.__setattr__(
+            self,
+            "permittivity_grid",
+            _freeze_grid(self.permittivity_grid),
+        )
+        object.__setattr__(
+            self,
+            "permeability_grid",
+            _freeze_grid(self.permeability_grid),
+        )
+        object.__setattr__(
+            self,
+            "conductivity_grid",
+            _freeze_grid(self.conductivity_grid),
+        )
+        object.__setattr__(self, "default_permittivity", float(self.default_permittivity))
+        object.__setattr__(self, "default_permeability", float(self.default_permeability))
+        object.__setattr__(self, "default_conductivity", float(self.default_conductivity))
+
+
+@dataclass(slots=True)
+class CustomMaterialState:
+    permittivity_interpolator: object = None
+    permeability_interpolator: object = None
+    conductivity_interpolator: object = None
+
+
+def _normalize_bounds(bounds):
+    if bounds is None:
+        return None
+    if len(bounds) != 2:
+        raise ValueError(f"bounds must be ((x_min, x_max), (y_min, y_max)), got {bounds}")
+    x0, x1 = bounds[0]
+    y0, y1 = bounds[1]
+    if x0 >= x1:
+        raise ValueError(f"Invalid x bounds: x_min={x0} >= x_max={x1}")
+    if y0 >= y1:
+        raise ValueError(f"Invalid y bounds: y_min={y0} >= y_max={y1}")
+    return ((float(x0), float(x1)), (float(y0), float(y1)))
+
+
+def _freeze_grid(grid):
+    if grid is None:
+        return None
+    arr = np.asarray(grid).copy()
+    arr.setflags(write=False)
+    return arr
+
+
 class CustomMaterial:
+    """Spatially varying material with immutable config and mutable interpolator cache."""
+
+    _SPEC_FIELDS = frozenset(CustomMaterialSpec.__dataclass_fields__.keys())
+    _STATE_MAP = {
+        "_permittivity_interpolator": "permittivity_interpolator",
+        "_permeability_interpolator": "permeability_interpolator",
+        "_conductivity_interpolator": "conductivity_interpolator",
+    }
+
     def __init__(
         self,
         permittivity_func=None,
@@ -27,199 +141,118 @@ class CustomMaterial:
         bounds=None,
         interpolation="linear",
     ):
-        """
-        Custom material with spatially-varying properties for inverse design.
+        object.__setattr__(
+            self,
+            "spec",
+            CustomMaterialSpec(
+                permittivity_func=permittivity_func,
+                permeability_func=permeability_func,
+                conductivity_func=conductivity_func,
+                permittivity_grid=permittivity_grid,
+                permeability_grid=permeability_grid,
+                conductivity_grid=conductivity_grid,
+                bounds=bounds,
+                interpolation=interpolation,
+            ),
+        )
+        object.__setattr__(self, "state", CustomMaterialState())
+        self._rebuild_interpolators()
 
-        Args:
-            permittivity_func: Function that takes (x, y) or (x, y, z) and returns permittivity
-            permeability_func: Function that takes (x, y) or (x, y, z) and returns permeability
-            conductivity_func: Function that takes (x, y) or (x, y, z) and returns conductivity
-            permittivity_grid: 2D numpy array of permittivity values for grid-based interpolation
-            permeability_grid: 2D numpy array of permeability values for grid-based interpolation
-            conductivity_grid: 2D numpy array of conductivity values for grid-based interpolation
-            bounds: Tuple ((x_min, x_max), (y_min, y_max)) defining the spatial bounds for grid interpolation
-            interpolation: 'linear', 'cubic', or 'nearest' for grid interpolation
+    def __getattr__(self, name):
+        spec = self.__dict__.get("spec")
+        if spec is not None and hasattr(spec, name):
+            return getattr(spec, name)
+        state = self.__dict__.get("state")
+        if state is not None and name in self._STATE_MAP:
+            return getattr(state, self._STATE_MAP[name])
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
-        Examples:
-            # Function-based material
-            def perm_func(x, y):
-                return 2.0 + 0.5 * np.sin(x) * np.cos(y)
-            material = CustomMaterial(permittivity_func=perm_func)
-
-            # Grid-based material for inverse design
-            perm_grid = np.ones((50, 50)) * 2.0
-            perm_grid[20:30, 20:30] = 4.0  # High index region
-            material = CustomMaterial(
-                permittivity_grid=perm_grid,
-                bounds=((0, 10e-6), (0, 10e-6))  # 10 micron x 10 micron
-            )
-        """
-        import numpy as np
-
-        # Store function-based definitions
-        self.permittivity_func = permittivity_func
-        self.permeability_func = permeability_func
-        self.conductivity_func = conductivity_func
-
-        # Store grid-based definitions
-        self.permittivity_grid = permittivity_grid
-        self.permeability_grid = permeability_grid
-        self.conductivity_grid = conductivity_grid
-
-        # Validate bounds if grid is provided
-        if bounds is not None:
-            if len(bounds) != 2:
-                raise ValueError(
-                    f"bounds must be ((x_min, x_max), (y_min, y_max)), got {bounds}"
-                )
-            if bounds[0][0] >= bounds[0][1]:
-                raise ValueError(
-                    f"Invalid x bounds: x_min={bounds[0][0]} >= x_max={bounds[0][1]}"
-                )
-            if bounds[1][0] >= bounds[1][1]:
-                raise ValueError(
-                    f"Invalid y bounds: y_min={bounds[1][0]} >= y_max={bounds[1][1]}"
-                )
-
-        # Spatial bounds for grid interpolation
-        self.bounds = bounds
-        self.interpolation = interpolation
-
-        # Default values
-        self.default_permittivity = 1.0
-        self.default_permeability = 1.0
-        self.default_conductivity = 0.0
-
-        # Create interpolation functions for grids
-        if permittivity_grid is not None and bounds is not None:
-            self._create_grid_interpolator("permittivity")
-        if permeability_grid is not None and bounds is not None:
-            self._create_grid_interpolator("permeability")
-        if conductivity_grid is not None and bounds is not None:
-            self._create_grid_interpolator("conductivity")
+    def __setattr__(self, name, value):
+        if name in {"spec", "state"}:
+            object.__setattr__(self, name, value)
+            return
+        if name in self._STATE_MAP and "state" in self.__dict__:
+            setattr(self.state, self._STATE_MAP[name], value)
+            return
+        raise AttributeError(
+            f"{type(self).__name__!s} configuration is immutable; use update_grid(...)"
+        )
 
     @property
     def permittivity(self):
-        """Return representative permittivity for display purposes."""
         if self.permittivity_grid is not None:
-            import numpy as np
-
             return f"grid({np.min(self.permittivity_grid):.3f}-{np.max(self.permittivity_grid):.3f})"
-        elif self.permittivity_func is not None:
+        if self.permittivity_func is not None:
             return "function"
-        else:
-            return self.default_permittivity
+        return self.default_permittivity
 
     @property
     def permeability(self):
-        """Return representative permeability for display purposes."""
         if self.permeability_grid is not None:
-            import numpy as np
-
             return f"grid({np.min(self.permeability_grid):.3f}-{np.max(self.permeability_grid):.3f})"
-        elif self.permeability_func is not None:
+        if self.permeability_func is not None:
             return "function"
-        else:
-            return self.default_permeability
+        return self.default_permeability
 
     @property
     def conductivity(self):
-        """Return representative conductivity for display purposes."""
         if self.conductivity_grid is not None:
-            import numpy as np
-
             return f"grid({np.min(self.conductivity_grid):.3f}-{np.max(self.conductivity_grid):.3f})"
-        elif self.conductivity_func is not None:
+        if self.conductivity_func is not None:
             return "function"
-        else:
-            return self.default_conductivity
+        return self.default_conductivity
 
     def _create_grid_interpolator(self, property_name):
-        """Create scipy interpolator for grid-based material property."""
         try:
-            import numpy as np
             from scipy.interpolate import RegularGridInterpolator
 
-            grid = getattr(self, f"{property_name}_grid")
-            if grid is None:
-                return
+            grid = getattr(self.spec, f"{property_name}_grid")
+            if grid is None or self.bounds is None:
+                return None
 
-            # Create coordinate arrays
             x_coords = np.linspace(self.bounds[0][0], self.bounds[0][1], grid.shape[1])
             y_coords = np.linspace(self.bounds[1][0], self.bounds[1][1], grid.shape[0])
-
-            # Create interpolator
-            interpolator = RegularGridInterpolator(
+            return RegularGridInterpolator(
                 (y_coords, x_coords),
                 grid,
                 method=self.interpolation,
                 bounds_error=False,
-                fill_value=getattr(self, f"default_{property_name}"),
+                fill_value=getattr(self.spec, f"default_{property_name}"),
             )
-
-            # Store interpolator
-            setattr(self, f"_{property_name}_interpolator", interpolator)
-
         except ImportError:
             print("Warning: scipy not available, using nearest neighbor interpolation")
-            setattr(self, f"_{property_name}_interpolator", None)
+            return None
+
+    def _rebuild_interpolators(self):
+        self.state.permittivity_interpolator = self._create_grid_interpolator("permittivity")
+        self.state.permeability_interpolator = self._create_grid_interpolator("permeability")
+        self.state.conductivity_interpolator = self._create_grid_interpolator("conductivity")
 
     def get_permittivity(self, x, y, z=None):
-        """Get permittivity at spatial coordinates (x, y, z)."""
         if self.permittivity_func is not None:
-            if z is not None:
-                return self.permittivity_func(x, y, z)
-            else:
-                return self.permittivity_func(x, y)
-        elif (
-            hasattr(self, "_permittivity_interpolator")
-            and self._permittivity_interpolator is not None
-        ):
-            import numpy as np
-
+            return self.permittivity_func(x, y, z) if z is not None else self.permittivity_func(x, y)
+        if self.state.permittivity_interpolator is not None:
             points = np.column_stack([np.atleast_1d(y), np.atleast_1d(x)])
-            return self._permittivity_interpolator(points)
-        else:
-            return self.default_permittivity
+            return self.state.permittivity_interpolator(points)
+        return self.default_permittivity
 
     def get_permeability(self, x, y, z=None):
-        """Get permeability at spatial coordinates (x, y, z)."""
         if self.permeability_func is not None:
-            if z is not None:
-                return self.permeability_func(x, y, z)
-            else:
-                return self.permeability_func(x, y)
-        elif (
-            hasattr(self, "_permeability_interpolator")
-            and self._permeability_interpolator is not None
-        ):
-            import numpy as np
-
+            return self.permeability_func(x, y, z) if z is not None else self.permeability_func(x, y)
+        if self.state.permeability_interpolator is not None:
             points = np.column_stack([np.atleast_1d(y), np.atleast_1d(x)])
-            return self._permeability_interpolator(points)
-        else:
-            return self.default_permeability
+            return self.state.permeability_interpolator(points)
+        return self.default_permeability
 
     def get_conductivity(self, x, y, z=None):
-        """Get conductivity at spatial coordinates (x, y, z)."""
         if self.conductivity_func is not None:
-            if z is not None:
-                return self.conductivity_func(x, y, z)
-            else:
-                return self.conductivity_func(x, y)
-        elif (
-            hasattr(self, "_conductivity_interpolator")
-            and self._conductivity_interpolator is not None
-        ):
-            import numpy as np
-
+            return self.conductivity_func(x, y, z) if z is not None else self.conductivity_func(x, y)
+        if self.state.conductivity_interpolator is not None:
             points = np.column_stack([np.atleast_1d(y), np.atleast_1d(x)])
-            return self._conductivity_interpolator(points)
-        else:
-            return self.default_conductivity
+            return self.state.conductivity_interpolator(points)
+        return self.default_conductivity
 
     def get_sample(self, x=0, y=0, z=None):
-        """Get material properties at spatial coordinates for backward compatibility."""
         return (
             self.get_permittivity(x, y, z),
             self.get_permeability(x, y, z),
@@ -227,61 +260,48 @@ class CustomMaterial:
         )
 
     def update_grid(self, property_name, new_grid):
-        """Update material property grid (for optimization)."""
-        if property_name == "permittivity":
-            self.permittivity_grid = new_grid
-            self._create_grid_interpolator("permittivity")
-        elif property_name == "permeability":
-            self.permeability_grid = new_grid
-            self._create_grid_interpolator("permeability")
-        elif property_name == "conductivity":
-            self.conductivity_grid = new_grid
-            self._create_grid_interpolator("conductivity")
-        else:
+        if property_name not in {"permittivity", "permeability", "conductivity"}:
             raise ValueError(f"Unknown property: {property_name}")
+        spec = self.spec
+        object.__setattr__(
+            self,
+            "spec",
+            CustomMaterialSpec(
+                permittivity_func=spec.permittivity_func,
+                permeability_func=spec.permeability_func,
+                conductivity_func=spec.conductivity_func,
+                permittivity_grid=(
+                    new_grid if property_name == "permittivity" else spec.permittivity_grid
+                ),
+                permeability_grid=(
+                    new_grid if property_name == "permeability" else spec.permeability_grid
+                ),
+                conductivity_grid=(
+                    new_grid if property_name == "conductivity" else spec.conductivity_grid
+                ),
+                bounds=spec.bounds,
+                interpolation=spec.interpolation,
+                default_permittivity=spec.default_permittivity,
+                default_permeability=spec.default_permeability,
+                default_conductivity=spec.default_conductivity,
+            ),
+        )
+        self._rebuild_interpolators()
 
     def copy(self):
-        """Create a deep copy of the CustomMaterial."""
-        import numpy as np
-
-        # Deep copy grids if they exist
-        perm_grid = (
-            self.permittivity_grid.copy()
-            if self.permittivity_grid is not None
-            else None
-        )
-        permeability_grid = (
-            self.permeability_grid.copy()
-            if self.permeability_grid is not None
-            else None
-        )
-        cond_grid = (
-            self.conductivity_grid.copy()
-            if self.conductivity_grid is not None
-            else None
-        )
-
-        # Create new CustomMaterial with copied data
         return CustomMaterial(
-            permittivity_func=self.permittivity_func,  # Functions can be shared
+            permittivity_func=self.permittivity_func,
             permeability_func=self.permeability_func,
             conductivity_func=self.conductivity_func,
-            permittivity_grid=perm_grid,  # Deep copied grids
-            permeability_grid=permeability_grid,
-            conductivity_grid=cond_grid,
-            bounds=self.bounds,  # Bounds can be shared (tuples are immutable)
+            permittivity_grid=(
+                None if self.permittivity_grid is None else np.asarray(self.permittivity_grid).copy()
+            ),
+            permeability_grid=(
+                None if self.permeability_grid is None else np.asarray(self.permeability_grid).copy()
+            ),
+            conductivity_grid=(
+                None if self.conductivity_grid is None else np.asarray(self.conductivity_grid).copy()
+            ),
+            bounds=self.bounds,
             interpolation=self.interpolation,
         )
-
-
-# ================================
-
-# PoleResidue: A dispersive medium described by the pole-residue pair model.
-
-# Lorentz: A dispersive medium described by the Lorentz model.
-
-# Sellmeier: A dispersive medium described by the Sellmeier model.
-
-# Drude: A dispersive medium described by the Drude model.
-
-# Debye: A dispersive medium described by the Debye model.
