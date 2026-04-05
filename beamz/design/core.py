@@ -33,9 +33,6 @@ from beamz.design.structures import (
 class Design:
     _SPEC_FIELDS = frozenset(DesignSpec.__dataclass_fields__.keys())
     _STATE_MAP = {
-        "sources": "sources",
-        "monitors": "monitors",
-        "boundaries": "boundaries",
         "layers": "layers",
         "_grid": "grid",
         "_grid_resolution": "grid_resolution",
@@ -148,18 +145,6 @@ class Design:
         return grid
 
     @staticmethod
-    def _is_monitor(obj):
-        module = type(obj).__module__
-        return module.startswith("beamz.devices.monitors") or hasattr(obj, "power_history")
-
-    @staticmethod
-    def _is_source(obj):
-        module = type(obj).__module__
-        return module.startswith("beamz.devices.sources") or (
-            hasattr(obj, "inject") and hasattr(obj, "signal")
-        )
-
-    @staticmethod
     def _structure_is_3d(structure):
         if bool(getattr(structure, "is_3d", False)) or getattr(structure, "depth", 0) != 0:
             return True
@@ -167,20 +152,6 @@ class Design:
         if position is not None and len(position) > 2 and position[2] != 0:
             return True
         return any(len(vertex) > 2 and vertex[2] != 0 for vertex in getattr(structure, "vertices", ()))
-
-    @staticmethod
-    def _copy_design_item(item, new_design, *, copy_material=False):
-        copied = item.copy() if hasattr(item, "copy") else item
-        if (
-            copy_material
-            and hasattr(copied, "material")
-            and copied.material
-            and hasattr(copied.material, "copy")
-        ):
-            copied.material = copied.material.copy()
-        if hasattr(copied, "design"):
-            copied.design = new_design
-        return copied
 
     def unify_polygons(self):
         """Merge overlapping polygons with the same material properties into unified shapes."""
@@ -198,20 +169,25 @@ class Design:
         )
         return True
 
-    def add(self, structure: type[Polygon]):
-        """Add structure to the design and update 3D flag if needed."""
+    def add_structure(self, structure: Polygon):
+        """Add a geometric structure to the design."""
         if hasattr(structure, "design"):
             structure.design = self
 
-        if self._is_monitor(structure):
-            self.monitors.append(structure)
-        elif self._is_source(structure):
-            self.sources.append(structure)
-        else:
-            self.structures = (*self.structures, structure)
+        if not hasattr(structure, "material") and not hasattr(structure, "vertices"):
+            raise TypeError(
+                "Design only accepts geometric structures. "
+                "Add sources, monitors, and boundaries to Simulation(devices=..., boundaries=...)."
+            )
+
+        self.structures = (*self.structures, structure)
 
         if self._structure_is_3d(structure) and not self.is_3d:
             self.is_3d = True
+
+    def add(self, structure: Polygon):
+        """Backward-compatible alias for adding geometric structures only."""
+        self.add_structure(structure)
 
     def get_material_value(self, x: float, y: float, z: float = 0.0):
         """Return material properties at coordinate (x,y,z) prioritizing topmost structure."""
@@ -386,16 +362,18 @@ class Design:
             material=background_material,
         )
         new_design.structures = tuple(
-            self._copy_design_item(structure, new_design, copy_material=True)
+            structure.copy() if hasattr(structure, "copy") else structure
             for structure in self.structures
         )
-        new_design.sources = [
-            self._copy_design_item(source, new_design) for source in self.sources
-        ]
-        new_design.monitors = [
-            self._copy_design_item(monitor, new_design) for monitor in self.monitors
-        ]
-        new_design.boundaries = list(self.boundaries)
+        for structure in new_design.structures:
+            if (
+                hasattr(structure, "material")
+                and structure.material
+                and hasattr(structure.material, "copy")
+            ):
+                structure.material = structure.material.copy()
+            if hasattr(structure, "design"):
+                structure.design = new_design
 
         new_design.is_3d, new_design.depth, new_design.time = (
             self.is_3d,

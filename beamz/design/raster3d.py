@@ -44,9 +44,6 @@ def rasterize(mesh):
         else [0]
     )
 
-    c = 3e8
-    dt_estimate = 0.5 * mesh.resolution / (c * np.sqrt(2))
-
     grids = MaterialGrids((grid_depth, grid_height, grid_width))
     setup_end = time.perf_counter()
     fill_background_material(grids, mesh.design, mesh._get_all_material_props)
@@ -154,73 +151,18 @@ def rasterize(mesh):
             progress.update(task, advance=1)
     struct_end = time.perf_counter()
 
-    pml_start = time.perf_counter()
-    process_pml(
-        mesh,
-        grids.permittivity,
-        grids.permeability,
-        grids.conductivity,
-        x_centers,
-        y_centers,
-        z_centers,
-        dt_estimate,
-    )
-    pml_end = time.perf_counter()
-
     grids.assign_to(mesh)
     total_end = time.perf_counter()
-
     if timing_enabled:
         display_status(
             (
                 "3D raster timing: "
                 f"setup={setup_end - total_start:.2f}s, "
                 f"structures={struct_end - struct_start:.2f}s, "
-                f"pml={pml_end - pml_start:.2f}s, "
                 f"total={total_end - total_start:.2f}s"
             ),
             "info",
         )
-
-
-def process_pml(
-    mesh,
-    permittivity,
-    permeability,
-    conductivity,
-    x_centers,
-    y_centers,
-    z_centers,
-    dt_estimate,
-):
-    """Process 3D PML boundaries and add conductivity to the grid."""
-    if not hasattr(mesh.design, "boundaries") or not mesh.design.boundaries:
-        return
-
-    with create_rich_progress() as progress:
-        task = progress.add_task(
-            "Processing 3D PML boundaries...", total=len(mesh.design.boundaries)
-        )
-
-        for boundary in mesh.design.boundaries:
-            for k, z in enumerate(z_centers):
-                for i, y in enumerate(y_centers):
-                    for j, x in enumerate(x_centers):
-                        pml_conductivity = boundary.get_conductivity(
-                            x,
-                            y,
-                            z,
-                            dx=mesh.resolution_xy,
-                            dt=dt_estimate,
-                            eps_avg=permittivity[k, i, j],
-                            width=mesh.design.width,
-                            height=mesh.design.height,
-                            depth=mesh.design.depth,
-                        )
-                        if pml_conductivity > 0:
-                            conductivity[k, i, j] += pml_conductivity
-
-            progress.update(task, advance=1)
 
 def rasterize_rectangle(
     *,

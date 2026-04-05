@@ -55,10 +55,7 @@ class _Bounds:
 
 
 def looks_like_beamz_design(value: Any) -> bool:
-    return all(
-        hasattr(value, name)
-        for name in ("structures", "sources", "monitors", "width", "height")
-    )
+    return all(hasattr(value, name) for name in ("structures", "width", "height"))
 
 
 def looks_like_beamz_simulation(value: Any) -> bool:
@@ -637,8 +634,8 @@ def _simulation_sources(simulation: Any) -> list[Any]:
 def _combined_simulation_items(
     simulation: Any, *, attr_name: str, predicate: Callable[[Any], bool]
 ) -> list[Any]:
-    items = list(getattr(getattr(simulation, "design", None), attr_name, []))
-    seen = {id(item) for item in items}
+    items: list[Any] = []
+    seen: set[int] = set()
     for device in getattr(simulation, "devices", []):
         if not predicate(device) or id(device) in seen:
             continue

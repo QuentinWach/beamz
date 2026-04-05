@@ -28,6 +28,7 @@ def add_design_overlays(
     line_color="gray",
     line_opacity=0.5,
     sources=None,
+    monitors=None,
     show_monitors=True,
     skip_background=False,
 ):
@@ -35,10 +36,11 @@ def add_design_overlays(
 
     Args:
         ax: Matplotlib axes.
-        design: Design object whose structures/sources/monitors to overlay.
+        design: Design object whose structures to overlay.
         line_color: Edge colour for structures and monitors.
         line_opacity: Alpha for structure and monitor outlines.
-        sources: If given, overlay these; otherwise use ``design.sources``.
+        sources: Optional source list to overlay.
+        monitors: Optional monitor list to overlay.
         show_monitors: Whether to draw monitors.
         skip_background: If True, skip the first structure that spans the full design.
     """
@@ -82,14 +84,12 @@ def add_design_overlays(
                 alpha=line_opacity,
             )
 
-    for source in (
-        sources if sources is not None else getattr(design, "sources", []) or []
-    ):
+    for source in ([] if sources is None else sources):
         if hasattr(source, "add_to_plot"):
             source.add_to_plot(ax)
 
     if show_monitors:
-        for monitor in getattr(design, "monitors", []) or []:
+        for monitor in ([] if monitors is None else monitors):
             if hasattr(monitor, "add_to_plot"):
                 monitor.add_to_plot(ax, edgecolor=line_color, alpha=line_opacity)
 
