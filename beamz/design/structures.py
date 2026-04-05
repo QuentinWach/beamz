@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from beamz.design.materials import material_from_spec, material_to_spec
+
 
 def _rotate_vertices(vertices, angle_rad, axis, center):
     """Rotate a list of 3D vertices around center by angle_rad on the given axis."""
@@ -165,6 +167,7 @@ class StructureSpec:
     def __post_init__(self):
         object.__setattr__(self, "vertices", _freeze_vertices(self.vertices))
         object.__setattr__(self, "interiors", _freeze_interiors(self.interiors))
+        object.__setattr__(self, "material", material_to_spec(self.material))
         object.__setattr__(self, "optimize", bool(self.optimize))
         object.__setattr__(self, "depth", float(self.depth))
         object.__setattr__(self, "z", float(self.z))
@@ -221,8 +224,11 @@ class Polygon:
                 z=z if z is not None else 0,
             ),
         )
+        object.__setattr__(self, "_material", material if material is not None else material_from_spec(self.spec.material))
 
     def __getattr__(self, name):
+        if name == "material":
+            return self.__dict__.get("_material")
         spec = self.__dict__.get("spec")
         if spec is not None and hasattr(spec, name):
             return getattr(spec, name)
@@ -232,6 +238,13 @@ class Polygon:
         if name == "spec":
             object.__setattr__(self, name, value)
             return
+        if name == "_material":
+            object.__setattr__(self, name, value)
+            return
+        if name == "material":
+            object.__setattr__(self, "_material", value)
+            object.__setattr__(self, "spec", replace(self.spec, material=material_to_spec(value)))
+            return
         if name in self._SPEC_FIELDS and "spec" in self.__dict__:
             if name == "vertices":
                 value = _freeze_vertices(value)
@@ -239,6 +252,9 @@ class Polygon:
                 value = _freeze_interiors(value)
             elif name == "position" and value is not None:
                 value = tuple(float(v) for v in value)
+            elif name == "material":
+                object.__setattr__(self, "_material", value)
+                value = material_to_spec(value)
             object.__setattr__(self, "spec", replace(self.spec, **{name: value}))
             return
         object.__setattr__(self, name, value)
@@ -250,6 +266,9 @@ class Polygon:
             changes["interiors"] = _freeze_interiors(changes["interiors"])
         if "position" in changes and changes["position"] is not None:
             changes["position"] = tuple(float(v) for v in changes["position"])
+        if "material" in changes:
+            object.__setattr__(self, "_material", changes["material"])
+            changes["material"] = material_to_spec(changes["material"])
         object.__setattr__(self, "spec", replace(self.spec, **changes))
         return self
 
@@ -261,6 +280,7 @@ class Polygon:
             base_spec = replace(base_spec, **changes)
         new = copy.copy(self)
         object.__setattr__(new, "spec", base_spec)
+        object.__setattr__(new, "_material", material_from_spec(base_spec.material))
         return new
 
     def _process_vertices(self, vertices, z=0, ensure_ccw=True):

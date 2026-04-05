@@ -40,6 +40,9 @@ class MaterialSpec:
             self, "conductivity", _require_finite_nonnegative("conductivity", self.conductivity)
         )
 
+    def get_sample(self):
+        return self.permittivity, self.permeability, self.conductivity
+
 
 class Material:
     """Dispersionless homogeneous material."""
@@ -142,6 +145,56 @@ class CustomMaterialSpec:
             for grid in (self.permittivity_grid, self.permeability_grid, self.conductivity_grid)
         ):
             raise ValueError("bounds are required when using grid-backed custom materials")
+
+    def _interp_grid(self, grid, default, x, y):
+        if grid is None:
+            return default
+        if self.bounds is None:
+            return default
+        x0, x1 = self.bounds[0]
+        y0, y1 = self.bounds[1]
+        x_arr = np.asarray(x, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+        tx = np.clip((x_arr - x0) / (x1 - x0), 0.0, 1.0)
+        ty = np.clip((y_arr - y0) / (y1 - y0), 0.0, 1.0)
+        gx = tx * (grid.shape[1] - 1)
+        gy = ty * (grid.shape[0] - 1)
+        if self.interpolation == "nearest":
+            ix = np.rint(gx).astype(int)
+            iy = np.rint(gy).astype(int)
+            return grid[iy, ix]
+        x0i = np.floor(gx).astype(int)
+        y0i = np.floor(gy).astype(int)
+        x1i = np.clip(x0i + 1, 0, grid.shape[1] - 1)
+        y1i = np.clip(y0i + 1, 0, grid.shape[0] - 1)
+        fx = gx - x0i
+        fy = gy - y0i
+        v00 = grid[y0i, x0i]
+        v10 = grid[y0i, x1i]
+        v01 = grid[y1i, x0i]
+        v11 = grid[y1i, x1i]
+        return (1.0 - fy) * ((1.0 - fx) * v00 + fx * v10) + fy * (
+            (1.0 - fx) * v01 + fx * v11
+        )
+
+    def get_permittivity(self, x, y, z=None):
+        del z
+        return self._interp_grid(self.permittivity_grid, self.default_permittivity, x, y)
+
+    def get_permeability(self, x, y, z=None):
+        del z
+        return self._interp_grid(self.permeability_grid, self.default_permeability, x, y)
+
+    def get_conductivity(self, x, y, z=None):
+        del z
+        return self._interp_grid(self.conductivity_grid, self.default_conductivity, x, y)
+
+    def get_sample(self, x=0, y=0, z=None):
+        return (
+            self.get_permittivity(x, y, z),
+            self.get_permeability(x, y, z),
+            self.get_conductivity(x, y, z),
+        )
 
 
 @dataclass(slots=True)
@@ -371,3 +424,33 @@ class CustomMaterial:
 
     def copy(self):
         return self.with_spec()
+
+
+def material_to_spec(material):
+    if material is None:
+        return None
+    if isinstance(material, (MaterialSpec, CustomMaterialSpec)):
+        return material
+    spec = getattr(material, "spec", None)
+    if isinstance(spec, (MaterialSpec, CustomMaterialSpec)):
+        return spec
+    raise TypeError("material must be a material facade or material spec")
+
+
+def material_from_spec(spec):
+    if spec is None:
+        return None
+    if isinstance(spec, MaterialSpec):
+        obj = object.__new__(Material)
+        object.__setattr__(obj, "spec", spec)
+        return obj
+    if isinstance(spec, CustomMaterialSpec):
+        obj = object.__new__(CustomMaterial)
+        object.__setattr__(obj, "spec", spec)
+        object.__setattr__(obj, "state", CustomMaterialState())
+        object.__setattr__(obj, "_permittivity_func", None)
+        object.__setattr__(obj, "_permeability_func", None)
+        object.__setattr__(obj, "_conductivity_func", None)
+        obj._rebuild_interpolators()
+        return obj
+    raise TypeError("spec must be a material spec")

@@ -30,8 +30,10 @@ def initialize_runtime(sim):
     """Populate field storage and PML state from a simulation spec."""
     spec = sim.spec
     runtime = sim.runtime
+    design = sim.design
+    boundaries = sim.boundaries
 
-    permittivity, conductivity, permeability = spec.design.get_material_grids(
+    permittivity, conductivity, permeability = design.get_material_grids(
         spec.resolution
     )
     runtime.dt = float(spec.time[1] - spec.time[0])
@@ -39,7 +41,7 @@ def initialize_runtime(sim):
     runtime.t = float(spec.time[0])
     runtime.current_step = 0
 
-    pml_boundaries = [boundary for boundary in spec.boundaries if isinstance(boundary, PML)]
+    pml_boundaries = [boundary for boundary in boundaries if isinstance(boundary, PML)]
     runtime.fields = Fields(
         permittivity,
         conductivity,
@@ -60,7 +62,7 @@ def initialize_runtime(sim):
             pml_data,
             pml.create_pml_regions(
                 runtime.fields,
-                spec.design,
+                design,
                 spec.resolution,
                 runtime.dt,
                 plane_2d=spec.plane_2d,

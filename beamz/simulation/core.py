@@ -110,9 +110,18 @@ class Simulation:
                 plane_2d=plane_2d,
             ),
         )
+        object.__setattr__(self, "_design", design)
+        object.__setattr__(self, "_devices", tuple([] if devices is None else devices))
+        object.__setattr__(self, "_boundaries", tuple([] if boundaries is None else boundaries))
         object.__setattr__(self, "runtime", SimulationRuntime())
 
     def __getattr__(self, name):
+        if name == "design":
+            return self.__dict__.get("_design")
+        if name == "devices":
+            return self.__dict__.get("_devices", ())
+        if name == "boundaries":
+            return self.__dict__.get("_boundaries", ())
         spec = self.__dict__.get("spec")
         if spec is not None and hasattr(spec, name):
             return getattr(spec, name)
@@ -123,8 +132,34 @@ class Simulation:
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def __setattr__(self, name, value):
-        if name in {"spec", "runtime"}:
+        if name in {"spec", "runtime", "_design", "_devices", "_boundaries"}:
             object.__setattr__(self, name, value)
+            return
+        if name == "design":
+            object.__setattr__(self, "_design", value)
+            object.__setattr__(self, "spec", replace(self.spec, design=value))
+            build.invalidate_runtime(self)
+            self.runtime.compiled_program = None
+            self.runtime.compiled_program_signature = None
+            self.runtime.compiled_program_cache.clear()
+            self.runtime.compiled_monitor_state = None
+            return
+        if name == "devices":
+            object.__setattr__(self, "_devices", tuple(value))
+            object.__setattr__(self, "spec", replace(self.spec, devices=value))
+            self.runtime.compiled_program = None
+            self.runtime.compiled_program_signature = None
+            self.runtime.compiled_program_cache.clear()
+            self.runtime.compiled_monitor_state = None
+            return
+        if name == "boundaries":
+            object.__setattr__(self, "_boundaries", tuple(value))
+            object.__setattr__(self, "spec", replace(self.spec, boundaries=value))
+            build.invalidate_runtime(self)
+            self.runtime.compiled_program = None
+            self.runtime.compiled_program_signature = None
+            self.runtime.compiled_program_cache.clear()
+            self.runtime.compiled_monitor_state = None
             return
         if name in self._SPEC_FIELDS and "spec" in self.__dict__:
             new_spec = replace(self.spec, **{name: value})
@@ -150,6 +185,9 @@ class Simulation:
             base_spec = replace(base_spec, **changes)
         new = object.__new__(type(self))
         object.__setattr__(new, "spec", base_spec)
+        object.__setattr__(new, "_design", changes.get("design", self.design))
+        object.__setattr__(new, "_devices", tuple(changes.get("devices", self.devices)))
+        object.__setattr__(new, "_boundaries", tuple(changes.get("boundaries", self.boundaries)))
         object.__setattr__(new, "runtime", SimulationRuntime())
         return new
 

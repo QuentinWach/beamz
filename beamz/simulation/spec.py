@@ -20,6 +20,11 @@ def _freeze_time_array(time) -> np.ndarray:
     return arr
 
 
+def _as_spec(value):
+    spec = getattr(value, "spec", None)
+    return spec if spec is not None else value
+
+
 @dataclass(frozen=True, slots=True)
 class SimulationSpec:
     design: object
@@ -33,8 +38,9 @@ class SimulationSpec:
     def __post_init__(self):
         if self.design is None:
             raise ValueError("design is required")
-        object.__setattr__(self, "devices", tuple(self.devices))
-        object.__setattr__(self, "boundaries", tuple(self.boundaries))
+        object.__setattr__(self, "design", _as_spec(self.design))
+        object.__setattr__(self, "devices", tuple(_as_spec(device) for device in self.devices))
+        object.__setattr__(self, "boundaries", tuple(_as_spec(boundary) for boundary in self.boundaries))
         object.__setattr__(self, "resolution", float(self.resolution))
         if not isfinite(self.resolution) or self.resolution <= 0:
             raise ValueError("resolution must be a finite positive value")

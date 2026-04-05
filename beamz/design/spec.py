@@ -3,13 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 
+from beamz.design.structures import StructureSpec
+
 
 def _validate_structure(structure):
     if structure is None:
         raise ValueError("structures may not contain None")
-    if not (hasattr(structure, "spec") or hasattr(structure, "vertices")):
-        raise TypeError("structures must be geometry objects or spec-backed structure facades")
-    return structure
+    if isinstance(structure, StructureSpec):
+        return structure
+    spec = getattr(structure, "spec", None)
+    if isinstance(spec, StructureSpec):
+        return spec
+    raise TypeError("structures must be StructureSpec values or spec-backed structure facades")
 
 
 def _structure_is_3d(structure):

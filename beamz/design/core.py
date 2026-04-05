@@ -68,11 +68,14 @@ class Design:
             ),
         )
         object.__setattr__(self, "state", DesignState())
+        object.__setattr__(self, "_structures", (background,))
 
     def __str__(self):
         return f"Design with {len(self.structures)} structures ({'3D' if self.is_3d else '2D'})"
 
     def __getattr__(self, name):
+        if name == "structures":
+            return self.__dict__.get("_structures", ())
         spec = self.__dict__.get("spec")
         if spec is not None and hasattr(spec, name):
             return getattr(spec, name)
@@ -82,8 +85,14 @@ class Design:
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def __setattr__(self, name, value):
-        if name in {"spec", "state"}:
+        if name in {"spec", "state", "_structures"}:
             object.__setattr__(self, name, value)
+            return
+        if name == "structures":
+            structures = tuple(value)
+            object.__setattr__(self, "_structures", structures)
+            object.__setattr__(self, "spec", replace(self.spec, structures=structures))
+            self._clear_grid_state()
             return
         if name in self._SPEC_FIELDS and "spec" in self.__dict__:
             new_spec = replace(self.spec, **{name: value})
@@ -105,6 +114,11 @@ class Design:
         new = object.__new__(type(self))
         object.__setattr__(new, "spec", base_spec)
         object.__setattr__(new, "state", DesignState())
+        if "structures" in changes:
+            structures = tuple(changes["structures"])
+        else:
+            structures = tuple(self.structures)
+        object.__setattr__(new, "_structures", structures)
         return new
 
     def __iadd__(self, structure):

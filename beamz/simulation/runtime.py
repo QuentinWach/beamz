@@ -81,9 +81,9 @@ def compile_program(sim, num_steps=None):
         source_single_slab_dense=source_single_slab_dense,
     )
     program = compile_simulation(
-        design=spec.design,
-        devices=spec.devices,
-        boundaries=spec.boundaries,
+        design=sim.design,
+        devices=sim.devices,
+        boundaries=sim.boundaries,
         run_cfg=run_cfg,
     )
     state.compiled_program_cache[signature] = program
@@ -231,7 +231,7 @@ def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, 
     result = {}
     if field_history is not None:
         result["fields"] = {key: stack_host(values) for key, values in field_history.items()}
-    monitors = [device for device in sim.spec.devices if isinstance(device, Monitor)]
+    monitors = [device for device in sim.devices if isinstance(device, Monitor)]
     if monitors:
         result["monitors"] = monitors
     return result if result else None
