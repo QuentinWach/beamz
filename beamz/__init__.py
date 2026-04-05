@@ -34,7 +34,7 @@ from beamz.design.structures import (
 )
 from beamz.devices.monitors import Monitor
 from beamz.devices.sources import GaussianSource, ModeSource
-from beamz.devices.sources.mode import solve_modes
+from beamz.devices.sources.solve import solve_modes
 from beamz.devices.sources.signals import ramped_cosine
 from beamz.optimization.autodiff import transform_density
 from beamz.optimization.topology import (

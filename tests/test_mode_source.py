@@ -26,7 +26,17 @@ from beamz import (
     ramped_cosine,
     um,
 )
-from beamz.devices.sources import mode as mode_module
+from beamz.devices.sources.profiles_basis import (
+    _modal_power_2d,
+    _modal_power_3d_from_profiles,
+    _normalize_2d_pair_by_power,
+    _normalize_3d_profiles_by_flux,
+)
+from beamz.devices.sources.profiles_common import (
+    _numeric_phase_delay,
+    _select_core_confined_mode_index,
+    _solve_numeric_k_axis,
+)
 from beamz.devices.sources.solve import solve_modes
 from tests.utils import TEST_WAVELENGTH, compute_field_energy
 
@@ -155,7 +165,7 @@ class TestModeSourceDiscreteHelpers:
         neff = 1.8
         dt = 0.4 * d_axis / LIGHT_SPEED
 
-        k_num = mode_module._solve_numeric_k_axis(omega, dt, d_axis, neff)
+        k_num = _solve_numeric_k_axis(omega, dt, d_axis, neff)
         S = LIGHT_SPEED * dt / (neff * d_axis)
         lhs = np.sin(0.5 * omega * dt)
         rhs = S * np.sin(0.5 * k_num * d_axis)
@@ -170,10 +180,10 @@ class TestModeSourceDiscreteHelpers:
         d_axis = wavelength / 10.0
         neff = 2.0
         dt = 0.45 * d_axis / LIGHT_SPEED
-        k_num = mode_module._solve_numeric_k_axis(omega, dt, d_axis, neff)
+        k_num = _solve_numeric_k_axis(omega, dt, d_axis, neff)
 
-        dt_small = mode_module._numeric_phase_delay(omega, k_num, 0.5 * d_axis)
-        dt_large = mode_module._numeric_phase_delay(omega, k_num, 1.5 * d_axis)
+        dt_small = _numeric_phase_delay(omega, k_num, 0.5 * d_axis)
+        dt_large = _numeric_phase_delay(omega, k_num, 1.5 * d_axis)
 
         assert dt_small > 0.0
         assert dt_large > dt_small
@@ -189,10 +199,10 @@ class TestModeSourceDiscreteHelpers:
         e = rng.normal(size=41) + 1j * rng.normal(size=41)
         dl = 0.12
 
-        h_n, e_n = mode_module._normalize_2d_pair_by_power(
+        h_n, e_n = _normalize_2d_pair_by_power(
             h, e, signed_flux_sign=-1.0, dl=dl
         )
-        p = mode_module._modal_power_2d(e_n, h_n, signed_flux_sign=-1.0, dl=dl)
+        p = _modal_power_2d(e_n, h_n, signed_flux_sign=-1.0, dl=dl)
         assert np.isfinite(p)
         assert np.isclose(abs(p), 1.0, rtol=1e-10, atol=1e-10)
 
@@ -207,10 +217,10 @@ class TestModeSourceDiscreteHelpers:
             "Hz": rng.normal(size=(12, 9)) + 1j * rng.normal(size=(12, 9)),
         }
         d_area = 0.03
-        out = mode_module._normalize_3d_profiles_by_flux(
+        out = _normalize_3d_profiles_by_flux(
             dict(profiles), axis="x", d_area=d_area
         )
-        p = mode_module._modal_power_3d_from_profiles(out, axis="x", d_area=d_area)
+        p = _modal_power_3d_from_profiles(out, axis="x", d_area=d_area)
         assert np.isfinite(p)
         assert np.isclose(abs(p), 1.0, rtol=1e-10, atol=1e-10)
 
@@ -229,7 +239,7 @@ class TestModeSourceDiscreteHelpers:
         e_center[2, :, 0] = centered
         e_edge[2, :, 0] = edge_lobed
 
-        idx = mode_module._select_core_confined_mode_index(
+        idx = _select_core_confined_mode_index(
             eps_profile=eps,
             e_fields=np.stack([e_center, e_edge], axis=0),
             neff_values=np.asarray([1.90, 1.95], dtype=np.complex128),
