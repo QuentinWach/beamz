@@ -172,21 +172,22 @@ def _match_shape(profile: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarr
 
 
 def _mode_3d_profiles_and_indices(src: ModeSource):
+    state = src.state
     profiles = {
-        "Ex": getattr(src, "_Ex_profile", None),
-        "Ey": getattr(src, "_Ey_profile", None),
-        "Ez": getattr(src, "_Ez_profile", None),
-        "Hx": getattr(src, "_Hx_profile", None),
-        "Hy": getattr(src, "_Hy_profile", None),
-        "Hz": getattr(src, "_Hz_profile", None),
+        "Ex": state.Ex_profile,
+        "Ey": state.Ey_profile,
+        "Ez": state.Ez_profile,
+        "Hx": state.Hx_profile,
+        "Hy": state.Hy_profile,
+        "Hz": state.Hz_profile,
     }
     indices = {
-        "Ex": getattr(src, "_Ex_indices", None),
-        "Ey": getattr(src, "_Ey_indices", None),
-        "Ez": getattr(src, "_Ez_indices", None),
-        "Hx": getattr(src, "_Hx_indices", None),
-        "Hy": getattr(src, "_Hy_indices", None),
-        "Hz": getattr(src, "_Hz_indices", None),
+        "Ex": state.Ex_indices,
+        "Ey": state.Ey_indices,
+        "Ez": state.Ez_indices,
+        "Hx": state.Hx_indices,
+        "Hy": state.Hy_indices,
+        "Hz": state.Hz_indices,
     }
     return profiles, indices
 
@@ -245,13 +246,14 @@ def _compile_gaussian_source(
     total_steps: int | None = None,
 ) -> tuple[CompiledSourceSpec, ...]:
     # Initialize spatial profile once.
+    state = device.state
     is_3d = len(device.position) >= 3 if hasattr(device.position, "__len__") else False
-    if device._spatial_profile_ez is None:
+    if state.spatial_profile_ez is None:
         device._init_spatial_profile(fields.Ez.shape, resolution, is_3d)
 
-    idx = device._grid_indices
+    idx = state.grid_indices
     eps_region = to_host(fields.permittivity[idx])
-    profile = to_host(device._spatial_profile_ez)
+    profile = to_host(state.spatial_profile_ez)
 
     coeff = -profile * dt / (EPS_0 * eps_region)
     waveform = _sample_waveform(
@@ -284,13 +286,14 @@ def _compile_mode_source(
     resolution: float,
     total_steps: int | None = None,
 ) -> tuple[CompiledSourceSpec, ...]:
+    state = device.state
     if (
-        (not getattr(device, "_initialized", False))
-        or (getattr(device, "_grid_shape", None) != fields.permittivity.shape)
-        or (getattr(device, "_resolution", None) is None)
+        (not state.initialized)
+        or (state.grid_shape != fields.permittivity.shape)
+        or (state.resolution is None)
         or (
             not math.isclose(
-                float(getattr(device, "_resolution", 0.0)),
+                float(state.resolution),
                 float(resolution),
                 rel_tol=1e-5,
                 abs_tol=1e-8,
@@ -298,8 +301,9 @@ def _compile_mode_source(
         )
     ):
         device.initialize(fields.permittivity, resolution, dt=dt)
+        state = device.state
 
-    is_3d = bool(getattr(device, "_is_3d", False))
+    is_3d = bool(state.is_3d)
 
     h_waveform = _sample_waveform(
         device._get_signal_value,
@@ -310,7 +314,7 @@ def _compile_mode_source(
         total_steps=total_steps,
     )
 
-    dt_physical = float(getattr(device, "_dt_physical", 0.0))
+    dt_physical = float(state.dt_physical)
     # E injection is applied after the E update within each Yee step; use the
     # same half-step base time as H plus physical plane delay to keep the 3D
     # Huygens pair phase-consistent with the 2D implementation.
@@ -361,16 +365,18 @@ def _compile_mode_source_2d(
     h_waveform: jnp.ndarray,
     e_waveform: jnp.ndarray,
 ) -> tuple[CompiledSourceSpec, ...]:
+    state = src.state
+    pol = src.spec.pol
     specs: list[CompiledSourceSpec] = []
 
-    if src.pol == "tm":
-        if src._h_indices is not None and src._my_profile is not None:
-            comp = src._h_component
-            idx = src._h_indices
+    if pol == "tm":
+        if state.h_indices is not None and state.my_profile is not None:
+            comp = state.h_component
+            idx = state.h_indices
             target = to_host(getattr(fields, comp)[idx])
             mu = to_host(fields.permeability[idx])
             coeff = _build_coeff(
-                profile=-to_host(src._my_profile),
+                profile=-to_host(state.my_profile),
                 target=target,
                 dt=dt,
                 scale_denom=MU_0 * mu * resolution,
@@ -386,12 +392,12 @@ def _compile_mode_source_2d(
                 )
             )
 
-        if src._ez_indices is not None and src._jz_profile is not None:
-            idx = src._ez_indices
+        if state.ez_indices is not None and state.jz_profile is not None:
+            idx = state.ez_indices
             target = to_host(fields.Ez[idx])
             eps = to_host(fields.permittivity[idx])
             coeff = _build_coeff(
-                profile=to_host(src._jz_profile),
+                profile=to_host(state.jz_profile),
                 target=target,
                 dt=dt,
                 scale_denom=EPS_0 * eps * resolution,
@@ -407,12 +413,12 @@ def _compile_mode_source_2d(
                 )
             )
     else:
-        if src._hz_indices is not None and src._mz_profile is not None:
-            idx = src._hz_indices
+        if state.hz_indices is not None and state.mz_profile is not None:
+            idx = state.hz_indices
             target = to_host(fields.Hz[idx])
             mu = to_host(fields.permeability[idx])
             coeff = _build_coeff(
-                profile=to_host(src._mz_profile),
+                profile=to_host(state.mz_profile),
                 target=target,
                 dt=dt,
                 scale_denom=MU_0 * mu * resolution,
@@ -428,11 +434,11 @@ def _compile_mode_source_2d(
                 )
             )
 
-        if src._e_indices is not None:
-            comp = src._e_component
-            prof = src._jx_profile if comp == "Ex" else src._jy_profile
+        if state.e_indices is not None:
+            comp = state.e_component
+            prof = state.jx_profile if comp == "Ex" else state.jy_profile
             if prof is not None:
-                idx = src._e_indices
+                idx = state.e_indices
                 target = to_host(getattr(fields, comp)[idx])
                 eps = to_host(fields.permittivity[idx])
                 coeff = _build_coeff(
@@ -465,8 +471,10 @@ def _compile_mode_source_3d(
 ) -> tuple[CompiledSourceSpec, ...]:
     specs: list[CompiledSourceSpec] = []
     profiles, indices = _mode_3d_profiles_and_indices(src)
+    state = src.state
+    pol = src.spec.pol
 
-    e_terms, h_terms = _get_3d_huygens_terms(src._axis, src.pol)
+    e_terms, h_terms = _get_3d_huygens_terms(state.axis, pol)
 
     for h_comp, e_source, sign in h_terms:
         idx = indices[h_comp]

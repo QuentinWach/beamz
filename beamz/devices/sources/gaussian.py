@@ -2,6 +2,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0
+from beamz.devices.sources.spec import GaussianSourceSpec, build_gaussian_source_spec
+from beamz.devices.sources.state import GaussianSourceState
+
+
+_GAUSSIAN_SPEC_FIELDS = frozenset(GaussianSourceSpec.__dataclass_fields__.keys())
+_GAUSSIAN_STATE_MAP = {
+    "_spatial_profile_ez": "spatial_profile_ez",
+    "_grid_indices": "grid_indices",
+}
 
 
 class GaussianSource:
@@ -21,15 +30,30 @@ class GaussianSource:
             width: Standard deviation of Gaussian profile
             signal: Time-dependent signal function s(t) or array
         """
-        self.position = position
-        self.width = width
-        # Convert signal to JAX array if it's a numpy array
-        if isinstance(signal, np.ndarray):
-            self.signal = jnp.asarray(signal)
-        else:
-            self.signal = signal
-        self._spatial_profile_ez = None
-        self._grid_indices = None
+        object.__setattr__(
+            self,
+            "spec",
+            build_gaussian_source_spec(position=position, width=width, signal=signal),
+        )
+        object.__setattr__(self, "state", GaussianSourceState())
+
+    def __getattr__(self, name):
+        spec = self.__dict__.get("spec")
+        if spec is not None and hasattr(spec, name):
+            return getattr(spec, name)
+        state = self.__dict__.get("state")
+        if state is not None and name in _GAUSSIAN_STATE_MAP:
+            return getattr(state, _GAUSSIAN_STATE_MAP[name])
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+
+    def __setattr__(self, name, value):
+        if name in {"spec", "state"}:
+            object.__setattr__(self, name, value)
+            return
+        if name in _GAUSSIAN_STATE_MAP and "state" in self.__dict__:
+            setattr(self.state, _GAUSSIAN_STATE_MAP[name], value)
+            return
+        object.__setattr__(self, name, value)
 
     def _get_signal_value(self, time, dt):
         """Interpolate signal value at arbitrary time (JAX-compatible)."""

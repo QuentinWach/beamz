@@ -1,4 +1,5 @@
 import warnings
+from dataclasses import replace
 
 import jax.numpy as jnp
 import numpy as np
@@ -40,6 +41,8 @@ from beamz.devices.sources.profiles import (
     _to_real_profile,
 )
 from beamz.devices.sources import setup as setup_helpers
+from beamz.devices.sources.spec import ModeSourceSpec, build_mode_source_spec
+from beamz.devices.sources.state import ModeSourceState
 from beamz.devices.sources.solve import solve_modes
 from beamz.devices.sources.windows import (
     _compute_transverse_bounds,
@@ -57,6 +60,50 @@ from beamz.devices.sources.windows import (
 # ---------------------------------------------------------------------------
 
 
+_MODE_SPEC_FIELDS = frozenset(ModeSourceSpec.__dataclass_fields__.keys())
+_MODE_SPEC_MAP = {
+    "_direction_axis": "direction_axis",
+    "_direction_sign": "direction_sign",
+}
+_MODE_STATE_MAP = {
+    "_Ex_profile": "Ex_profile",
+    "_Ey_profile": "Ey_profile",
+    "_Ez_profile": "Ez_profile",
+    "_Hx_profile": "Hx_profile",
+    "_Hy_profile": "Hy_profile",
+    "_Hz_profile": "Hz_profile",
+    "_Ex_indices": "Ex_indices",
+    "_Ey_indices": "Ey_indices",
+    "_Ez_indices": "Ez_indices",
+    "_Hx_indices": "Hx_indices",
+    "_Hy_indices": "Hy_indices",
+    "_Hz_indices": "Hz_indices",
+    "_jz_profile": "jz_profile",
+    "_my_profile": "my_profile",
+    "_mz_profile": "mz_profile",
+    "_jy_profile": "jy_profile",
+    "_jx_profile": "jx_profile",
+    "_ez_indices": "ez_indices",
+    "_h_indices": "h_indices",
+    "_hz_indices": "hz_indices",
+    "_e_indices": "e_indices",
+    "_h_component": "h_component",
+    "_e_component": "e_component",
+    "_neff": "neff",
+    "_impedance_neff": "impedance_neff",
+    "_dt_physical": "dt_physical",
+    "_launch_dt": "launch_dt",
+    "_initialized": "initialized",
+    "_resolution": "resolution",
+    "_is_3d": "is_3d",
+    "_grid_shape": "grid_shape",
+    "_eps_profile_2d": "eps_profile_2d",
+    "_axis": "axis",
+    "_transverse_start": "transverse_start",
+    "_transverse_end": "transverse_end",
+}
+
+
 class ModeSource:
     """Huygens mode source on Yee grid supporting ±x/±y in 2D and ±x/±y/±z in 3D.
 
@@ -67,55 +114,48 @@ class ModeSource:
     def __init__(
         self, grid, center, width, wavelength, pol, signal, direction="+x", height=None
     ):
-        self.grid = grid
-        self.center = (
-            center if isinstance(center, (tuple, list)) else (center, grid.height / 2)
+        object.__setattr__(self, "grid", grid)
+        object.__setattr__(
+            self,
+            "spec",
+            build_mode_source_spec(
+                grid=grid,
+                center=center,
+                width=width,
+                wavelength=wavelength,
+                pol=pol,
+                signal=signal,
+                direction=direction,
+                height=height,
+            ),
         )
-        self.width = width
-        self.height = height
-        self.wavelength = wavelength
-        self.pol = str(pol).lower()
-        if self.pol not in {"te", "tm"}:
-            raise ValueError(f"pol must be 'te' or 'tm', got {pol!r}")
-        self.signal = signal
-        self.direction, self._direction_axis, self._direction_sign = _parse_direction(
-            direction
-        )
+        object.__setattr__(self, "state", ModeSourceState())
 
-        # Storage for all 6 field component profiles (for 3D injection)
-        self._Ex_profile = None
-        self._Ey_profile = None
-        self._Ez_profile = None
-        self._Hx_profile = None
-        self._Hy_profile = None
-        self._Hz_profile = None
+    def __getattr__(self, name):
+        spec = self.__dict__.get("spec")
+        if spec is not None:
+            mapped = _MODE_SPEC_MAP.get(name, name)
+            if hasattr(spec, mapped):
+                return getattr(spec, mapped)
+        state = self.__dict__.get("state")
+        if state is not None and name in _MODE_STATE_MAP:
+            return getattr(state, _MODE_STATE_MAP[name])
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
-        # Indices for each component's injection position
-        self._Ex_indices = None
-        self._Ey_indices = None
-        self._Ez_indices = None
-        self._Hx_indices = None
-        self._Hy_indices = None
-        self._Hz_indices = None
-
-        # Legacy attributes for compatibility and 2D
-        self._jz_profile = None
-        self._my_profile = None
-        self._mz_profile = None
-        self._jy_profile = None
-        self._jx_profile = None
-        self._ez_indices = None
-        self._h_indices = None
-        self._hz_indices = None
-        self._e_indices = None
-
-        self._h_component = None
-        self._e_component = None
-        self._neff = None
-        self._impedance_neff = None
-        self._dt_physical = 0.0
-        self._launch_dt = None
-        self._initialized = False
+    def __setattr__(self, name, value):
+        if name in {"grid", "spec", "state"}:
+            object.__setattr__(self, name, value)
+            return
+        if name in _MODE_SPEC_MAP and "spec" in self.__dict__:
+            object.__setattr__(self, "spec", replace(self.spec, **{_MODE_SPEC_MAP[name]: value}))
+            return
+        if name in _MODE_SPEC_FIELDS and "spec" in self.__dict__:
+            object.__setattr__(self, "spec", replace(self.spec, **{name: value}))
+            return
+        if name in _MODE_STATE_MAP and "state" in self.__dict__:
+            setattr(self.state, _MODE_STATE_MAP[name], value)
+            return
+        object.__setattr__(self, name, value)
 
     def initialize(self, permittivity, resolution, dt=None):
         """Compute the mode and set up the source currents for all 6 components in 3D."""

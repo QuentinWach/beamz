@@ -83,76 +83,79 @@ def _stagger_pair(h_field, e_field):
 
 def initialize(source, permittivity, resolution, dt=None):
     """Compute the mode and configure source profiles and indices."""
+    spec = source.spec
+    state = source.state
     dx = dy = resolution
     is_3d = permittivity.ndim == 3
-    source._resolution = resolution
-    source._is_3d = is_3d
+    state.resolution = resolution
+    state.is_3d = is_3d
 
     if is_3d:
         nz, ny, nx = permittivity.shape
         dz = resolution
-        source._grid_shape = (nz, ny, nx)
-        if source.height is None:
-            source.height = source.width
+        state.grid_shape = (nz, ny, nx)
+        height = spec.width if spec.height is None else spec.height
     else:
         ny, nx = permittivity.shape
         nz = 1
         dz = resolution
-        source._grid_shape = (ny, nx)
-        source.height = None
+        state.grid_shape = (ny, nx)
+        height = None
 
-    axis = source._direction_axis
+    axis = spec.direction_axis
     if (not is_3d) and axis == "z":
         raise ValueError(
             "direction '+z'/'-z' requires a 3D permittivity grid; received 2D data"
         )
-    source._axis = axis
-    source._dt_physical = 0.0
-    source._launch_dt = dt
+    state.axis = axis
+    state.dt_physical = 0.0
+    state.launch_dt = dt
+    state.transverse_start = None
+    state.transverse_end = None
 
     if axis == "x":
-        center_idx = _center_index(source.center[0], dx, nx)
-        if source.direction == "+x":
+        center_idx = _center_index(spec.center[0], dx, nx)
+        if spec.direction == "+x":
             offset_idx = max(0, center_idx - 1)
         else:
             offset_idx = min(nx - 2, center_idx + 1)
 
         if is_3d:
             eps_profile = permittivity[:, :, center_idx]
-            source._eps_profile_2d = eps_profile
+            state.eps_profile_2d = eps_profile
         else:
             eps_profile = permittivity[:, center_idx]
-            source._eps_profile_2d = None
+            state.eps_profile_2d = None
 
     elif axis == "y":
-        center_idx = _center_index(source.center[1], dy, ny)
-        if source.direction == "+y":
+        center_idx = _center_index(spec.center[1], dy, ny)
+        if spec.direction == "+y":
             offset_idx = max(0, center_idx - 1)
         else:
             offset_idx = min(ny - 2, center_idx + 1)
 
         if is_3d:
             eps_profile = permittivity[:, center_idx, :]
-            source._eps_profile_2d = eps_profile
+            state.eps_profile_2d = eps_profile
         else:
             eps_profile = permittivity[center_idx, :]
-            source._eps_profile_2d = None
+            state.eps_profile_2d = None
 
     else:
-        center_idx = _center_index(source.center[2], dz, nz)
-        if source.direction == "+z":
+        center_idx = _center_index(spec.center[2], dz, nz)
+        if spec.direction == "+z":
             offset_idx = max(0, center_idx - 1)
         else:
             offset_idx = min(nz - 2, center_idx + 1)
 
         eps_profile = permittivity[center_idx, :, :]
-        source._eps_profile_2d = eps_profile
+        state.eps_profile_2d = eps_profile
 
-    omega = 2 * math.pi * LIGHT_SPEED / source.wavelength
+    omega = 2 * math.pi * LIGHT_SPEED / spec.wavelength
     dL = dz if is_3d else (dy if axis == "x" else dx)
-    solver_direction = source.direction
+    solver_direction = spec.direction
     if is_3d and axis in {"x", "y"}:
-        solver_direction = ("-" if source.direction.startswith("+") else "+") + axis
+        solver_direction = ("-" if spec.direction.startswith("+") else "+") + axis
 
     eps_profile_arr = to_host(eps_profile)
     n_local_max = math.sqrt(max(float(np.real(eps_profile_arr).max()), 1e-12))
@@ -166,7 +169,7 @@ def initialize(source, permittivity, resolution, dt=None):
             dL=dL,
             m=mode_candidates,
             direction=solver_direction,
-            filter_pol=source.pol,
+            filter_pol=spec.pol,
             target_neff=target_neff,
             return_fields=True,
         )
@@ -177,13 +180,13 @@ def initialize(source, permittivity, resolution, dt=None):
             dL=dL,
             m=1,
             direction=solver_direction,
-            filter_pol=source.pol,
+            filter_pol=spec.pol,
             target_neff=target_neff,
             return_fields=True,
         )
 
     mode_idx = _select_core_confined_mode_index(eps_profile, e_fields, neff_val)
-    source._neff = neff_val[mode_idx]
+    state.neff = neff_val[mode_idx]
     e_mode = e_fields[mode_idx]
     h_mode = h_fields[mode_idx]
 
@@ -201,9 +204,9 @@ def initialize(source, permittivity, resolution, dt=None):
 
     if is_3d:
         ref_field = _select_3d_phase_ref(
-            axis, source.pol, ex_raw, ey_raw, ez_raw, hx_raw, hy_raw, hz_raw
+            axis, spec.pol, ex_raw, ey_raw, ez_raw, hx_raw, hy_raw, hz_raw
         )
-    elif source.pol == "tm":
+    elif spec.pol == "tm":
         ex_max = jnp.max(jnp.abs(ex_raw))
         ey_max = jnp.max(jnp.abs(ey_raw))
         ez_max = jnp.max(jnp.abs(ez_raw))
@@ -227,10 +230,10 @@ def initialize(source, permittivity, resolution, dt=None):
     hz_aligned = hz_raw * jnp.exp(-1j * phase_ref)
 
     if is_3d:
-        source._impedance_neff = _select_3d_impedance_index(
+        state.impedance_neff = _select_3d_impedance_index(
             axis,
-            source.pol,
-            source._eps_profile_2d,
+            spec.pol,
+            state.eps_profile_2d,
             ex_aligned,
             ey_aligned,
             ez_aligned,
@@ -253,17 +256,18 @@ def initialize(source, permittivity, resolution, dt=None):
             ny,
             nx,
             resolution,
+            height=height,
             omega=omega,
             dt=dt,
         )
     else:
-        source._impedance_neff = None
+        state.impedance_neff = None
         setup_2d(
             source, e_mode, h_mode, center_idx, offset_idx, axis, ny, nx, resolution
         )
 
     compute_dt_physical(source, axis, is_3d, dx, dy, dz, dt=dt)
-    source._initialized = True
+    state.initialized = True
 
 
 def setup_3d(
@@ -281,6 +285,7 @@ def setup_3d(
     ny,
     nx,
     resolution,
+    height,
     omega,
     dt,
 ):
@@ -296,15 +301,15 @@ def setup_3d(
         direction=source.direction,
         center=source.center,
         width=source.width,
-        height=source.height,
+        height=height,
         center_idx=center_idx,
         offset_idx=offset_idx,
         grid_shape=(nz, ny, nx),
         resolution=resolution,
         impedance_neff=(
-            source._impedance_neff
-            if source._impedance_neff is not None
-            else source._neff
+            source.state.impedance_neff
+            if source.state.impedance_neff is not None
+            else source.state.neff
         ),
         omega=omega,
         dt=dt,
@@ -378,11 +383,9 @@ def setup_2d_x(
     z_target,
 ):
     """2D injection setup for x-propagation."""
-    y_start, y_end, y_slice = _transverse_bounds(
-        source.center[1], source.width, resolution, ny
-    )
-    source._y_start = y_start
-    source._y_end = y_end
+    y_start, y_end, y_slice = _transverse_bounds(source.center[1], source.width, resolution, ny)
+    source.state.transverse_start = y_start
+    source.state.transverse_end = y_end
 
     if source.pol == "tm":
         source._ez_indices = (y_slice, center_idx)
@@ -435,11 +438,9 @@ def setup_2d_y(
     z_target,
 ):
     """2D injection setup for y-propagation."""
-    x_start, x_end, x_slice = _transverse_bounds(
-        source.center[0], source.width, resolution, nx
-    )
-    source._x_start = x_start
-    source._x_end = x_end
+    x_start, x_end, x_slice = _transverse_bounds(source.center[0], source.width, resolution, nx)
+    source.state.transverse_start = x_start
+    source.state.transverse_end = x_end
 
     if source.pol == "tm":
         source._ez_indices = (center_idx, x_slice)
