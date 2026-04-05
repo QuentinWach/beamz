@@ -62,13 +62,10 @@ GRAY_LOW = 0.10
 GRAY_HIGH = 0.90
 TARGET_GRAY_FRAC = 0.06
 TARGET_BINARITY = 0.94
-FINAL_BINARY_PATIENCE = 12
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
 INITIAL_ASYM_NOISE = 1e-3
-ENABLE_EARLY_STOP = True
-EARLY_STOP_PATIENCE = 20
 POLISH_STEPS = 60
 MAIN_STEPS = max(STEPS - POLISH_STEPS, 1)
 POLISH_START = MAIN_STEPS + 1
@@ -435,7 +432,7 @@ def maybe_update_best_binary(density):
     binary_density = (np.asarray(density, dtype=float) >= 0.5).astype(float)
     binary_score, binary_modal = score_density(grid, binary_density)
     binary_ok = max(m["power_sum"] for m in binary_modal.values()) <= POWER_SUM_TOL
-    return binary_density, binary_score, binary_modal, binary_ok
+    return binary_density, binary_score, binary_ok
 design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
 for x, y in ((0.0, Y_IN), (X_INV1, Y_TOP), (X_INV1, Y_BOT)):
     design += Rectangle(
@@ -494,16 +491,12 @@ best_projected_score = -np.inf
 best_projected_density = None
 best_binary_score = -np.inf
 best_binary_density = None
-best_binary_step = 0
-best_binary_binarity = -np.inf
+best_binary_binarity = 0.0
 best_binary_gray_frac = 1.0
 
 
-def optimization_step(step_tag, beta, blur_radius, binarity_weight, *, stage_name):
+def run_iteration(beta, blur_radius, binarity_weight):
     global ema, best_projected_score, best_projected_density
-    global best_binary_score, best_binary_density, best_binary_step
-    global best_binary_binarity, best_binary_gray_frac
-
     opt.filter_radius = blur_radius
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
     density = opt.get_physical_density(beta)
@@ -603,28 +596,6 @@ def optimization_step(step_tag, beta, blur_radius, binarity_weight, *, stage_nam
         best_projected_score = route_obj
         best_projected_density = density.copy()
 
-    binary_density, binary_score, binary_modal, binary_ok = maybe_update_best_binary(density)
-    if binary_ok:
-        improved_binary = (
-            (binary_score > best_binary_score + 1e-9)
-            or (
-                abs(binary_score - best_binary_score) <= 1e-9
-                and (
-                    binarity > best_binary_binarity + 1e-9
-                    or (
-                        abs(binarity - best_binary_binarity) <= 1e-9
-                        and gray_frac < best_binary_gray_frac - 1e-9
-                    )
-                )
-            )
-        )
-        if improved_binary:
-            best_binary_score = binary_score
-            best_binary_density = binary_density.copy()
-            best_binary_step = len(hist["objective"]) + 1
-            best_binary_binarity = binarity
-            best_binary_gray_frac = gray_frac
-
     dmax = opt.apply_gradient(-grad_total, beta)
     hist["route"].append(route_obj)
     hist["objective"].append(objective)
@@ -636,23 +607,28 @@ def optimization_step(step_tag, beta, blur_radius, binarity_weight, *, stage_nam
     return {
         "density": density,
         "objective": objective,
-        "route_obj": route_obj,
         "target_mean": target_mean,
         "power_sum_mean": power_sum_mean,
         "binarity": binarity,
         "gray_frac": gray_frac,
-        "binary_score": binary_score,
-        "binary_ok": binary_ok,
-        "binary_modal": binary_modal,
         "dmax": dmax,
         "report": report,
-        "stage_name": stage_name,
-        "step_tag": step_tag,
     }
 
 
+def update_best_binary(density, *, binarity, gray_frac):
+    global best_binary_score, best_binary_density, best_binary_binarity, best_binary_gray_frac
+
+    binary_density, binary_score, binary_ok = maybe_update_best_binary(density)
+    if binary_ok and binary_score > best_binary_score:
+        best_binary_score = binary_score
+        best_binary_density = binary_density.copy()
+        best_binary_binarity = binarity
+        best_binary_gray_frac = gray_frac
+    return binary_score, binary_ok
+
+
 last_result = None
-stalled_binary_updates = 0
 
 for step in range(1, STEPS + 1):
     beta, blur_radius, binarity_weight, is_polish = step_settings(step)
@@ -662,13 +638,7 @@ for step in range(1, STEPS + 1):
         opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
         opt._opt_state = None
 
-    last_result = optimization_step(
-        f"{step:03d}",
-        beta,
-        blur_radius,
-        binarity_weight,
-        stage_name="polish" if is_polish else "main",
-    )
+    last_result = run_iteration(beta, blur_radius, binarity_weight)
 
     if step == 1 or step % PRINT_EVERY == 0 or step == STEPS:
         print(
@@ -676,9 +646,15 @@ for step in range(1, STEPS + 1):
             f"meanT={100.0 * last_result['target_mean']:.1f}% "
             f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
             f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
-            f"{last_result['stage_name']} beta={beta:.1f} dmax={last_result['dmax']:.3e} | "
+            f"{'polish' if is_polish else 'main'} beta={beta:.1f} dmax={last_result['dmax']:.3e} | "
             + " | ".join(last_result["report"])
         )
+
+    update_best_binary(
+        last_result["density"],
+        binarity=last_result["binarity"],
+        gray_frac=last_result["gray_frac"],
+    )
 
     should_debug = step == 1 or step % DEBUG_EVERY == 0 or step == STEPS or is_polish
     if SAVE_DEBUG and should_debug:
@@ -698,27 +674,13 @@ for step in range(1, STEPS + 1):
         save_progress(f"{PREFIX}_progress_{step:03d}.png", hist)
         save_progress(f"{PREFIX}_progress_latest.png", hist)
 
-    if last_result["binary_ok"] and abs(last_result["binary_score"] - best_binary_score) <= 1e-9:
-        stalled_binary_updates = 0
-    else:
-        stalled_binary_updates += 1
-
-    if (
-        ENABLE_EARLY_STOP
-        and is_polish
-        and best_binary_density is not None
-        and stalled_binary_updates >= EARLY_STOP_PATIENCE
-        and last_result["binary_score"] < best_binary_score - 0.03
-    ):
-        print(
-            f"Stopping polish at step {step:03d}; binary score stalled for {stalled_binary_updates} steps."
-        )
-        break
-
 need_binary_polish = (
-    best_binary_density is None
-    or best_binary_gray_frac > TARGET_GRAY_FRAC
-    or best_binary_binarity < TARGET_BINARITY
+    last_result is not None
+    and (
+        best_binary_density is None
+        or last_result["gray_frac"] > TARGET_GRAY_FRAC
+        or last_result["binarity"] < TARGET_BINARITY
+    )
 )
 
 if need_binary_polish:
@@ -726,20 +688,18 @@ if need_binary_polish:
 
     print(
         "Entering final binary polish: "
-        f"best_gray={100.0 * best_binary_gray_frac:.1f}% "
-        f"best_bin={best_binary_binarity:.3f}"
+        f"gray={100.0 * last_result['gray_frac']:.1f}% "
+        f"bin={last_result['binarity']:.3f}"
     )
     opt.optax_optimizer = optax.adam(learning_rate=FINAL_BINARY_LR)
     opt._opt_state = None
-    stalled_binary_updates = 0
 
     for polish_step in range(1, FINAL_BINARY_POLISH_STEPS + 1):
-        last_result = optimization_step(
-            f"bp{polish_step:03d}",
-            FINAL_BINARY_BETA,
-            FINAL_BINARY_BLUR,
-            FINAL_BINARY_WEIGHT,
-            stage_name="binary",
+        last_result = run_iteration(FINAL_BINARY_BETA, FINAL_BINARY_BLUR, FINAL_BINARY_WEIGHT)
+        update_best_binary(
+            last_result["density"],
+            binarity=last_result["binarity"],
+            gray_frac=last_result["gray_frac"],
         )
 
         if polish_step == 1 or polish_step % PRINT_EVERY == 0 or polish_step == FINAL_BINARY_POLISH_STEPS:
@@ -777,23 +737,6 @@ if need_binary_polish:
             save_flux(f"{PREFIX}_flux_long_bp{polish_step:03d}.png", fluxes[WL_LONG])
             save_progress(f"{PREFIX}_progress_bp{polish_step:03d}.png", hist)
             save_progress(f"{PREFIX}_progress_latest.png", hist)
-
-        if last_result["binary_ok"] and abs(last_result["binary_score"] - best_binary_score) <= 1e-9:
-            stalled_binary_updates = 0
-        else:
-            stalled_binary_updates += 1
-
-        if best_binary_density is not None and (
-            best_binary_gray_frac <= TARGET_GRAY_FRAC
-            and best_binary_binarity >= TARGET_BINARITY
-            and stalled_binary_updates >= FINAL_BINARY_PATIENCE
-        ):
-            print(
-                "Binary polish converged: "
-                f"gray={100.0 * best_binary_gray_frac:.1f}% "
-                f"bin={best_binary_binarity:.3f}"
-            )
-            break
 
 save_progress(f"{PREFIX}_progress_final.png", hist)
 
