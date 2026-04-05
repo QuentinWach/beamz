@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 
 import numpy as np
@@ -67,6 +67,16 @@ class Material:
             return
         raise AttributeError(f"{type(self).__name__!s} is immutable")
 
+    def with_spec(self, spec=None, /, **changes):
+        base_spec = self.spec if spec is None else spec
+        if not isinstance(base_spec, MaterialSpec):
+            raise TypeError("with_spec expects a MaterialSpec or spec field updates")
+        if changes:
+            base_spec = replace(base_spec, **changes)
+        new = object.__new__(type(self))
+        object.__setattr__(new, "spec", base_spec)
+        return new
+
     def get_sample(self):
         return self.permittivity, self.permeability, self.conductivity
 
@@ -80,9 +90,6 @@ class Material:
 
 @dataclass(frozen=True, slots=True)
 class CustomMaterialSpec:
-    permittivity_func: object = None
-    permeability_func: object = None
-    conductivity_func: object = None
     permittivity_grid: object = None
     permeability_grid: object = None
     conductivity_grid: object = None
@@ -130,10 +137,6 @@ class CustomMaterialSpec:
             "default_conductivity",
             _require_finite_nonnegative("default_conductivity", self.default_conductivity),
         )
-        for name in ("permittivity_func", "permeability_func", "conductivity_func"):
-            func = getattr(self, name)
-            if func is not None and not callable(func):
-                raise TypeError(f"{name} must be callable when provided")
         if self.bounds is None and any(
             grid is not None
             for grid in (self.permittivity_grid, self.permeability_grid, self.conductivity_grid)
@@ -195,13 +198,16 @@ class CustomMaterial:
         bounds=None,
         interpolation="linear",
     ):
+        if permittivity_func is not None and not callable(permittivity_func):
+            raise TypeError("permittivity_func must be callable when provided")
+        if permeability_func is not None and not callable(permeability_func):
+            raise TypeError("permeability_func must be callable when provided")
+        if conductivity_func is not None and not callable(conductivity_func):
+            raise TypeError("conductivity_func must be callable when provided")
         object.__setattr__(
             self,
             "spec",
             CustomMaterialSpec(
-                permittivity_func=permittivity_func,
-                permeability_func=permeability_func,
-                conductivity_func=conductivity_func,
                 permittivity_grid=permittivity_grid,
                 permeability_grid=permeability_grid,
                 conductivity_grid=conductivity_grid,
@@ -210,19 +216,28 @@ class CustomMaterial:
             ),
         )
         object.__setattr__(self, "state", CustomMaterialState())
+        object.__setattr__(self, "_permittivity_func", permittivity_func)
+        object.__setattr__(self, "_permeability_func", permeability_func)
+        object.__setattr__(self, "_conductivity_func", conductivity_func)
         self._rebuild_interpolators()
 
     def __getattr__(self, name):
         spec = self.__dict__.get("spec")
         if spec is not None and hasattr(spec, name):
             return getattr(spec, name)
+        if name == "permittivity_func":
+            return self.__dict__.get("_permittivity_func")
+        if name == "permeability_func":
+            return self.__dict__.get("_permeability_func")
+        if name == "conductivity_func":
+            return self.__dict__.get("_conductivity_func")
         state = self.__dict__.get("state")
         if state is not None and name in self._STATE_MAP:
             return getattr(state, self._STATE_MAP[name])
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def __setattr__(self, name, value):
-        if name in {"spec", "state"}:
+        if name in {"spec", "state", "_permittivity_func", "_permeability_func", "_conductivity_func"}:
             object.__setattr__(self, name, value)
             return
         if name in self._STATE_MAP and "state" in self.__dict__:
@@ -236,7 +251,7 @@ class CustomMaterial:
     def permittivity(self):
         if self.permittivity_grid is not None:
             return f"grid({np.min(self.permittivity_grid):.3f}-{np.max(self.permittivity_grid):.3f})"
-        if self.permittivity_func is not None:
+        if self._permittivity_func is not None:
             return "function"
         return self.default_permittivity
 
@@ -244,7 +259,7 @@ class CustomMaterial:
     def permeability(self):
         if self.permeability_grid is not None:
             return f"grid({np.min(self.permeability_grid):.3f}-{np.max(self.permeability_grid):.3f})"
-        if self.permeability_func is not None:
+        if self._permeability_func is not None:
             return "function"
         return self.default_permeability
 
@@ -252,7 +267,7 @@ class CustomMaterial:
     def conductivity(self):
         if self.conductivity_grid is not None:
             return f"grid({np.min(self.conductivity_grid):.3f}-{np.max(self.conductivity_grid):.3f})"
-        if self.conductivity_func is not None:
+        if self._conductivity_func is not None:
             return "function"
         return self.default_conductivity
 
@@ -283,24 +298,24 @@ class CustomMaterial:
         self.state.conductivity_interpolator = self._create_grid_interpolator("conductivity")
 
     def get_permittivity(self, x, y, z=None):
-        if self.permittivity_func is not None:
-            return self.permittivity_func(x, y, z) if z is not None else self.permittivity_func(x, y)
+        if self._permittivity_func is not None:
+            return self._permittivity_func(x, y, z) if z is not None else self._permittivity_func(x, y)
         if self.state.permittivity_interpolator is not None:
             points = np.column_stack([np.atleast_1d(y), np.atleast_1d(x)])
             return self.state.permittivity_interpolator(points)
         return self.default_permittivity
 
     def get_permeability(self, x, y, z=None):
-        if self.permeability_func is not None:
-            return self.permeability_func(x, y, z) if z is not None else self.permeability_func(x, y)
+        if self._permeability_func is not None:
+            return self._permeability_func(x, y, z) if z is not None else self._permeability_func(x, y)
         if self.state.permeability_interpolator is not None:
             points = np.column_stack([np.atleast_1d(y), np.atleast_1d(x)])
             return self.state.permeability_interpolator(points)
         return self.default_permeability
 
     def get_conductivity(self, x, y, z=None):
-        if self.conductivity_func is not None:
-            return self.conductivity_func(x, y, z) if z is not None else self.conductivity_func(x, y)
+        if self._conductivity_func is not None:
+            return self._conductivity_func(x, y, z) if z is not None else self._conductivity_func(x, y)
         if self.state.conductivity_interpolator is not None:
             points = np.column_stack([np.atleast_1d(y), np.atleast_1d(x)])
             return self.state.conductivity_interpolator(points)
@@ -321,9 +336,6 @@ class CustomMaterial:
             self,
             "spec",
             CustomMaterialSpec(
-                permittivity_func=spec.permittivity_func,
-                permeability_func=spec.permeability_func,
-                conductivity_func=spec.conductivity_func,
                 permittivity_grid=(
                     new_grid if property_name == "permittivity" else spec.permittivity_grid
                 ),
@@ -342,20 +354,20 @@ class CustomMaterial:
         )
         self._rebuild_interpolators()
 
+    def with_spec(self, spec=None, /, **changes):
+        base_spec = self.spec if spec is None else spec
+        if not isinstance(base_spec, CustomMaterialSpec):
+            raise TypeError("with_spec expects a CustomMaterialSpec or spec field updates")
+        if changes:
+            base_spec = replace(base_spec, **changes)
+        new = object.__new__(type(self))
+        object.__setattr__(new, "spec", base_spec)
+        object.__setattr__(new, "state", CustomMaterialState())
+        object.__setattr__(new, "_permittivity_func", self._permittivity_func)
+        object.__setattr__(new, "_permeability_func", self._permeability_func)
+        object.__setattr__(new, "_conductivity_func", self._conductivity_func)
+        new._rebuild_interpolators()
+        return new
+
     def copy(self):
-        return CustomMaterial(
-            permittivity_func=self.permittivity_func,
-            permeability_func=self.permeability_func,
-            conductivity_func=self.conductivity_func,
-            permittivity_grid=(
-                None if self.permittivity_grid is None else np.asarray(self.permittivity_grid).copy()
-            ),
-            permeability_grid=(
-                None if self.permeability_grid is None else np.asarray(self.permeability_grid).copy()
-            ),
-            conductivity_grid=(
-                None if self.conductivity_grid is None else np.asarray(self.conductivity_grid).copy()
-            ),
-            bounds=self.bounds,
-            interpolation=self.interpolation,
-        )
+        return self.with_spec()

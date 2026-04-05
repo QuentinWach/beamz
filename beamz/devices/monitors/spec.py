@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 import numpy as np
 
@@ -212,7 +211,6 @@ class MonitorSpec:
     dft_record_every_step: bool
     dft_record_interval: int
     dft_window: str
-    objective_function: Optional[Callable[["Monitor"], float]]
     name: str | None
     frequency_points: np.ndarray
     frequency_record_interval: int
@@ -268,7 +266,6 @@ def build_monitor_spec(
     dft_record_every_step=True,
     dft_record_interval=None,
     dft_window="rect",
-    objective_function=None,
     name=None,
     frequency_points=None,
     frequency_record_interval=1,
@@ -300,7 +297,6 @@ def build_monitor_spec(
             )
         ),
         dft_window=dft_window,
-        objective_function=objective_function,
         name=name,
         frequency_points=_as_optional_float_array(frequency_points),
         frequency_record_interval=frequency_record_interval,

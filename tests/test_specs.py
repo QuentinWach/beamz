@@ -2,9 +2,12 @@ import numpy as np
 import pytest
 
 from beamz import Design, Material, Simulation
-from beamz.design.materials import CustomMaterialSpec, MaterialSpec
+from beamz.design.materials import CustomMaterial, CustomMaterialSpec, MaterialSpec
 from beamz.design.spec import DesignSpec
 from beamz.design.structures import Rectangle
+from beamz.devices.monitors.monitors import Monitor
+from beamz.devices.sources.gaussian import GaussianSource
+from beamz.devices.sources.mode import ModeSource
 from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
 from beamz.simulation.boundaries import Boundary, PML
 from beamz.simulation.spec import SimulationSpec
@@ -46,30 +49,35 @@ def test_gaussian_source_spec_requires_signal():
         GaussianSourceSpec(position=(0.0, 0.0), width=1.0, signal=None)
 
 
-def test_mode_source_spec_rejects_invalid_z_configuration():
-    signal = np.ones(8)
-    with pytest.raises(ValueError):
+def test_source_specs_reject_callable_signals():
+    with pytest.raises(TypeError):
+        GaussianSourceSpec(position=(0.0, 0.0), width=1.0, signal=lambda t: t)
+    with pytest.raises(TypeError):
         ModeSourceSpec(
             center=(0.0, 0.0),
             width=1.0,
             height=None,
             wavelength=1.55,
             pol="tm",
-            signal=signal,
-            direction="+z",
-            direction_axis="z",
+            signal=lambda t: t,
+            direction="+x",
+            direction_axis="x",
             direction_sign=1.0,
         )
+
+
+def test_mode_source_spec_rejects_invalid_center_shape():
+    signal = np.ones(8)
     with pytest.raises(ValueError):
         ModeSourceSpec(
-            center=(0.0, 0.0, 0.0),
+            center=(0.0,),
             width=1.0,
             height=None,
             wavelength=1.55,
             pol="tm",
             signal=signal,
-            direction="+z",
-            direction_axis="z",
+            direction="+x",
+            direction_axis="x",
             direction_sign=1.0,
         )
 
@@ -128,3 +136,67 @@ def test_simulation_runtime_is_initialized_lazily():
             plane_2d="xy",
             is_3d=False,
         )
+
+
+def test_with_spec_returns_updated_facade_copy():
+    material = Material(permittivity=1.0)
+    material2 = material.with_spec(permittivity=2.0)
+    assert material.permittivity == 1.0
+    assert material2.permittivity == 2.0
+
+    design = Design(width=1.0, height=2.0, material=Material(permittivity=1.0))
+    design2 = design.with_spec(width=3.0)
+    assert design.width == 1.0
+    assert design2.width == 3.0
+
+    rect = Rectangle(position=(0.0, 0.0), width=1.0, height=2.0)
+    rect2 = rect.with_spec(width=4.0)
+    assert rect.width == 1.0
+    assert rect2.width == 4.0
+
+    signal = np.ones(8)
+    monitor = Monitor(start=(0.0, 0.0), end=(1.0, 0.0), name="m0")
+    monitor2 = monitor.with_spec(name="m1")
+    assert monitor.name == "m0"
+    assert monitor2.name == "m1"
+    assert monitor2.state.fields["Ez"] == []
+
+    source = GaussianSource(position=(0.0, 0.0), width=1.0, signal=signal)
+    source2 = source.with_spec(width=2.0)
+    assert source.width == 1.0
+    assert source2.width == 2.0
+
+    mode = ModeSource(
+        None,
+        center=(0.0, 0.0),
+        width=1.0,
+        wavelength=1.55,
+        pol="tm",
+        signal=signal,
+        direction="+x",
+    )
+    mode2 = mode.with_spec(width=2.0)
+    assert mode.width == 1.0
+    assert mode2.width == 2.0
+
+    sim = Simulation(
+        design=design,
+        devices=[],
+        boundaries=[],
+        resolution=0.1,
+        time=np.array([0.0, 1.0, 2.0]),
+    )
+    sim2 = sim.with_spec(resolution=0.2)
+    assert sim.resolution == 0.1
+    assert sim2.resolution == 0.2
+    assert sim2.runtime.initialized is False
+
+
+def test_callable_behavior_is_not_stored_in_specs():
+    monitor = Monitor(start=(0.0, 0.0), end=(1.0, 0.0), objective_function=lambda m: 1.0)
+    assert not hasattr(monitor.spec, "objective_function")
+    assert callable(monitor.objective_function)
+
+    material = CustomMaterial(permittivity_func=lambda x, y: 2.0)
+    assert not hasattr(material.spec, "permittivity_func")
+    assert callable(material.permittivity_func)

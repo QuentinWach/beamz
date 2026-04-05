@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import jax.numpy as jnp
 import numpy as np
 
@@ -28,7 +30,7 @@ class GaussianSource:
         Args:
             position: (x, y) for 2D or (x, y, z) for 3D - center of Gaussian
             width: Standard deviation of Gaussian profile
-            signal: Time-dependent signal function s(t) or array
+            signal: Time-dependent 1D sampled signal array
         """
         object.__setattr__(
             self,
@@ -55,41 +57,36 @@ class GaussianSource:
             return
         object.__setattr__(self, name, value)
 
+    def with_spec(self, spec=None, /, **changes):
+        base_spec = self.spec if spec is None else spec
+        if not isinstance(base_spec, GaussianSourceSpec):
+            raise TypeError("with_spec expects a GaussianSourceSpec or spec field updates")
+        if changes:
+            base_spec = replace(base_spec, **changes)
+        new = object.__new__(type(self))
+        object.__setattr__(new, "spec", base_spec)
+        object.__setattr__(new, "state", GaussianSourceState())
+        return new
+
     def _get_signal_value(self, time, dt):
         """Interpolate signal value at arbitrary time (JAX-compatible)."""
-        # Handle JAX/numpy array signal
-        if isinstance(self.signal, (jnp.ndarray, np.ndarray)):
-            signal_arr = jnp.asarray(self.signal)
-            idx_float = time / dt
-            idx_low = jnp.floor(idx_float).astype(jnp.int32)
-            idx_high = idx_low + 1
-            frac = idx_float - jnp.floor(idx_float)
+        signal_arr = jnp.asarray(self.signal)
+        idx_float = time / dt
+        idx_low = jnp.floor(idx_float).astype(jnp.int32)
+        idx_high = idx_low + 1
+        frac = idx_float - jnp.floor(idx_float)
 
-            signal_len = signal_arr.shape[0]
-            # Clamp indices to valid range
-            idx_low_safe = jnp.clip(idx_low, 0, signal_len - 1)
-            idx_high_safe = jnp.clip(idx_high, 0, signal_len - 1)
-
-            # Interpolate
-            interp_val = (1.0 - frac) * signal_arr[idx_low_safe] + frac * signal_arr[
-                idx_high_safe
-            ]
-
-            # Return 0 if out of range (except at last valid index)
-            in_range = (idx_low >= 0) & (idx_low < signal_len - 1)
-            at_end = idx_low == signal_len - 1
-            return jnp.where(
-                in_range, interp_val, jnp.where(at_end, signal_arr[idx_low_safe], 0.0)
-            )
-        # Handle list signal (convert to JAX)
-        elif isinstance(self.signal, list):
-            self.signal = jnp.asarray(self.signal)
-            return self._get_signal_value(time, dt)
-        # Handle callable signal
-        elif callable(self.signal):
-            return self.signal(time)
-        else:
-            return 0.0
+        signal_len = signal_arr.shape[0]
+        idx_low_safe = jnp.clip(idx_low, 0, signal_len - 1)
+        idx_high_safe = jnp.clip(idx_high, 0, signal_len - 1)
+        interp_val = (1.0 - frac) * signal_arr[idx_low_safe] + frac * signal_arr[
+            idx_high_safe
+        ]
+        in_range = (idx_low >= 0) & (idx_low < signal_len - 1)
+        at_end = idx_low == signal_len - 1
+        return jnp.where(
+            in_range, interp_val, jnp.where(at_end, signal_arr[idx_low_safe], 0.0)
+        )
 
     def inject(self, fields, t, dt, current_step, resolution, design):
         """Inject source fields directly into the simulation grid before the FDTD update step."""

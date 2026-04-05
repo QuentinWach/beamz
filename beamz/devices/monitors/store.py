@@ -5,12 +5,12 @@ import numpy as np
 
 def evaluate_objective(monitor) -> Optional[float]:
     """Evaluate the monitor objective function, if any."""
-    spec = monitor.spec
+    objective_function = getattr(monitor, "objective_function", None)
     state = monitor.state
-    if spec.objective_function is None:
+    if objective_function is None:
         return None
     try:
-        value = spec.objective_function(monitor)
+        value = objective_function(monitor)
     except Exception as exc:
         print(f"Warning: monitor objective evaluation failed: {exc}")
         return None
@@ -225,7 +225,6 @@ def copy_monitor(monitor):
         dft_record_every_step=spec.dft_record_every_step,
         dft_record_interval=spec.dft_record_interval,
         dft_window=spec.dft_window,
-        objective_function=spec.objective_function,
         name=spec.name,
         frequency_points=spec.frequency_points.copy(),
         frequency_record_interval=spec.frequency_record_interval,
@@ -239,4 +238,6 @@ def copy_monitor(monitor):
             kwargs["size"] = spec.size
     else:
         kwargs["end"] = spec.end
-    return monitor.__class__(**kwargs)
+    new_monitor = monitor.__class__(**kwargs)
+    new_monitor.objective_function = monitor.objective_function
+    return new_monitor

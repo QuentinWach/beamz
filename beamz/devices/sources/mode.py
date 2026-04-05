@@ -156,6 +156,18 @@ class ModeSource:
             return
         object.__setattr__(self, name, value)
 
+    def with_spec(self, spec=None, /, **changes):
+        base_spec = self.spec if spec is None else spec
+        if not isinstance(base_spec, ModeSourceSpec):
+            raise TypeError("with_spec expects a ModeSourceSpec or spec field updates")
+        if changes:
+            base_spec = replace(base_spec, **changes)
+        new = object.__new__(type(self))
+        object.__setattr__(new, "grid", self.grid)
+        object.__setattr__(new, "spec", base_spec)
+        object.__setattr__(new, "state", ModeSourceState())
+        return new
+
     def initialize(self, permittivity, resolution, dt=None):
         """Compute the mode and set up the source currents for all 6 components in 3D."""
         setup_helpers.initialize(self, permittivity, resolution, dt=dt)

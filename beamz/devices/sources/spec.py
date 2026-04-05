@@ -20,9 +20,9 @@ def _freeze_arraylike(signal):
             raise ValueError("signal arrays must contain only finite values")
         arr.setflags(write=False)
         return arr
-    if signal is not None and not callable(signal):
-        raise TypeError("signal must be a callable or a 1D array-like")
-    return signal
+    if signal is not None:
+        raise TypeError("signal must be a 1D array-like")
+    return None
 
 
 def _normalize_center(center, grid=None):
@@ -88,11 +88,6 @@ class ModeSourceSpec:
             raise ValueError("wavelength must be positive")
         if self.signal is None:
             raise ValueError("signal is required")
-        if self.direction_axis == "z":
-            if len(self.center) != 3:
-                raise ValueError("z-directed mode sources require a 3D center")
-            if self.height is None:
-                raise ValueError("z-directed mode sources require an explicit height")
         if self.direction_sign not in {-1.0, 1.0}:
             raise ValueError("direction_sign must be +/-1")
 

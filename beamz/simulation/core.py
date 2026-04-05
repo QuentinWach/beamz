@@ -142,6 +142,17 @@ class Simulation:
             return
         object.__setattr__(self, name, value)
 
+    def with_spec(self, spec=None, /, **changes):
+        base_spec = self.spec if spec is None else spec
+        if not isinstance(base_spec, SimulationSpec):
+            raise TypeError("with_spec expects a SimulationSpec or spec field updates")
+        if changes:
+            base_spec = replace(base_spec, **changes)
+        new = object.__new__(type(self))
+        object.__setattr__(new, "spec", base_spec)
+        object.__setattr__(new, "runtime", SimulationRuntime())
+        return new
+
 
 def _run_fast(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):
     """Backward-compatible alias to `run_compiled` in v0.3."""

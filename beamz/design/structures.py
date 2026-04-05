@@ -253,6 +253,16 @@ class Polygon:
         object.__setattr__(self, "spec", replace(self.spec, **changes))
         return self
 
+    def with_spec(self, spec=None, /, **changes):
+        base_spec = self.spec if spec is None else spec
+        if not isinstance(base_spec, StructureSpec):
+            raise TypeError("with_spec expects a StructureSpec or spec field updates")
+        if changes:
+            base_spec = replace(base_spec, **changes)
+        new = copy.copy(self)
+        object.__setattr__(new, "spec", base_spec)
+        return new
+
     def _process_vertices(self, vertices, z=0, ensure_ccw=True):
         if not vertices:
             return []

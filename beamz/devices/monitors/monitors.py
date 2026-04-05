@@ -46,6 +46,7 @@ class Monitor:
         object.__setattr__(self, "design", design)
         object.__setattr__(self, "_live_state", live_helpers.create_state())
         object.__setattr__(self, "update_interval", 10)
+        object.__setattr__(self, "objective_function", objective_function)
         object.__setattr__(
             self,
             "spec",
@@ -69,7 +70,6 @@ class Monitor:
                 dft_record_every_step=dft_record_every_step,
                 dft_record_interval=dft_record_interval,
                 dft_window=dft_window,
-                objective_function=objective_function,
                 name=name,
                 frequency_points=frequency_points,
                 frequency_record_interval=frequency_record_interval,
@@ -87,7 +87,7 @@ class Monitor:
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def __setattr__(self, name, value):
-        if name in {"design", "spec", "state", "_live_state", "update_interval"}:
+        if name in {"design", "spec", "state", "_live_state", "update_interval", "objective_function"}:
             object.__setattr__(self, name, value)
             return
         if name in _SPEC_FIELDS and "spec" in self.__dict__:
@@ -97,6 +97,21 @@ class Monitor:
             setattr(self.state, name, value)
             return
         object.__setattr__(self, name, value)
+
+    def with_spec(self, spec=None, /, **changes):
+        base_spec = self.spec if spec is None else spec
+        if not isinstance(base_spec, MonitorSpec):
+            raise TypeError("with_spec expects a MonitorSpec or spec field updates")
+        if changes:
+            base_spec = replace(base_spec, **changes)
+        new = object.__new__(type(self))
+        object.__setattr__(new, "design", self.design)
+        object.__setattr__(new, "_live_state", live_helpers.create_state())
+        object.__setattr__(new, "update_interval", self.update_interval)
+        object.__setattr__(new, "objective_function", self.objective_function)
+        object.__setattr__(new, "spec", base_spec)
+        object.__setattr__(new, "state", MonitorRecorder.create(base_spec))
+        return new
 
     def evaluate_objective(self) -> Optional[float]:
         """Evaluate the objective function associated with this monitor, if any."""
@@ -125,7 +140,6 @@ class Monitor:
             dft_record_every_step=self.dft_record_every_step,
             dft_record_interval=self.dft_record_interval,
             dft_window=self.dft_window,
-            objective_function=self.objective_function,
             name=self.name,
             frequency_points=self.frequency_points,
             frequency_record_interval=self.frequency_record_interval,
@@ -153,7 +167,6 @@ class Monitor:
             dft_record_every_step=self.dft_record_every_step,
             dft_record_interval=self.dft_record_interval,
             dft_window=self.dft_window,
-            objective_function=self.objective_function,
             name=self.name,
             frequency_points=self.frequency_points,
             frequency_record_interval=self.frequency_record_interval,

@@ -96,6 +96,17 @@ class Design:
             return
         object.__setattr__(self, name, value)
 
+    def with_spec(self, spec=None, /, **changes):
+        base_spec = self.spec if spec is None else spec
+        if not isinstance(base_spec, DesignSpec):
+            raise TypeError("with_spec expects a DesignSpec or spec field updates")
+        if changes:
+            base_spec = replace(base_spec, **changes)
+        new = object.__new__(type(self))
+        object.__setattr__(new, "spec", base_spec)
+        object.__setattr__(new, "state", DesignState())
+        return new
+
     def __iadd__(self, structure):
         """Implement += operator for adding structures."""
         self.add(structure)
