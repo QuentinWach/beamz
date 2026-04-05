@@ -51,11 +51,8 @@ class RegularGrid(BaseMeshGrid):
             value_label=field,
             plane="xy",
             title=title or f"{field} slice (xy)",
+            style={"cmap": "viridis", "origin": "lower", "aspect": "equal"},
         )
-
-    def show(self, field="permittivity"):
-        """Display the rasterized grid with properly scaled SI units."""
-        self.slice2d(field=field).plot()
 
 
 class RegularGrid3D(BaseMeshGrid):
@@ -147,6 +144,7 @@ class RegularGrid3D(BaseMeshGrid):
             plane="xy",
             position=position,
             title=title or f"{field} slice (xy, z={position:.3e} m)",
+            style={"cmap": "viridis", "origin": "lower", "aspect": "equal"},
         )
 
     def show_3d(self, field="permittivity", slice_spacing=1, alpha=0.3):
@@ -157,10 +155,6 @@ class RegularGrid3D(BaseMeshGrid):
         if grid is None:
             raise ValueError(f"Unknown field: {field}")
         show_mesh_3d(grid, self.design, field, slice_spacing, alpha)
-
-    def show(self, field="permittivity", z_index=None, z_position=None):
-        """Display a 2D slice of the 3D mesh."""
-        self.slice2d(field=field, z_index=z_index, z_position=z_position).plot()
 
 
 def create_mesh(design, resolution, auto_select=True, force_3d=False, **kwargs):

@@ -205,6 +205,7 @@ class ModeSource:
                 title=title,
                 x_label=x_label,
                 y_label=y_label,
+                style={"cmap": "magma", "origin": "lower", "aspect": "auto"},
             )
 
         return Trace1D(
@@ -213,6 +214,7 @@ class ModeSource:
             coord_label="index",
             value_label="Amplitude",
             title=title,
+            style={"color": "black", "linewidth": 2},
         )
 
     def show(self, field=None):

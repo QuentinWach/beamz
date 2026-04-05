@@ -1,6 +1,21 @@
 from beamz import *
+import matplotlib.pyplot as plt
 import numpy as np
 from beamz import calc_optimal_fdtd_params
+
+
+def show_slice(slice_data):
+    extent, _, unit = slice_data.scaled_extent()
+    style = dict(slice_data.style)
+    cmap = style.pop("cmap", "viridis")
+    fig, ax = plt.subplots(figsize=(7, 5))
+    im = ax.imshow(slice_data.values, extent=extent, cmap=cmap, **style)
+    ax.set_xlabel(slice_data.x_label or f"{slice_data.plane[0]} ({unit})")
+    ax.set_ylabel(slice_data.y_label or f"{slice_data.plane[1]} ({unit})")
+    ax.set_title(slice_data.title or slice_data.value_label)
+    fig.colorbar(im, ax=ax, label=slice_data.value_label)
+    fig.tight_layout()
+    plt.show()
 
 WL = 1.55*µm
 TIME = 90*WL/LIGHT_SPEED
@@ -12,11 +27,11 @@ DX, DT = calc_optimal_fdtd_params(WL, max(N_CORE, N_CLAD), safety_factor=0.999, 
 design = Design(width=18*µm, height=7*µm, material=Material(N_CLAD**2))
 design += Rectangle(position=(0,3.5*µm-WG_WIDTH/2), width=18*µm, height=WG_WIDTH, material=Material(N_CORE**2))
 #design += Rectangle(position=(9*µm-WG_WIDTH/2,0), width=WG_WIDTH, height=7*µm, material=Material(N_CORE**2))
-design.show()
+show_slice(design.slice2d(resolution=DX))
 
 # Rasterize the design
 grid = design.rasterize(resolution=DX)
-#grid.show(field="permittivity")
+#show_slice(grid.slice2d(field="permittivity"))
 
 # Create the signal & source
 time_steps = np.arange(0, TIME, DT)

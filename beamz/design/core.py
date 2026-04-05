@@ -175,6 +175,7 @@ class Design:
             plane=plane,
             position=position,
             title=default_title,
+            style={"cmap": "viridis", "origin": "lower", "aspect": "equal"},
         )
 
     def rasterize(
@@ -423,9 +424,3 @@ class Design:
         new_design.layers = self.layers.copy() if hasattr(self, "layers") else {}
 
         return new_design
-
-    def show(self, **kwargs):
-        """Display the design using the visualization module."""
-        from beamz.visual.design_viz import show_design
-
-        show_design(self, **kwargs)

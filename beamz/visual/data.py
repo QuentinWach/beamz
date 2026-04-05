@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -19,10 +19,12 @@ class Slice2D:
     title: str | None = None
     x_label: str | None = None
     y_label: str | None = None
+    style: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, "values", np.asarray(self.values))
         object.__setattr__(self, "extent", tuple(float(v) for v in self.extent))
+        object.__setattr__(self, "style", dict(self.style))
 
     @property
     def max_extent(self) -> float:
@@ -78,10 +80,12 @@ class Trace1D:
     coord_label: str
     value_label: str
     title: str | None = None
+    style: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, "values", np.asarray(self.values))
         object.__setattr__(self, "coords", np.asarray(self.coords, dtype=float))
+        object.__setattr__(self, "style", dict(self.style))
 
     @property
     def max_coord(self) -> float:

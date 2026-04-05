@@ -1,6 +1,5 @@
 from typing import Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -122,6 +121,7 @@ def field_snapshot(monitor, field="Ez", time_value=None, time_index=None):
             coord_label="position",
             value_label=f"{field} amplitude",
             title=title,
+            style={"color": "tab:blue", "linewidth": 2},
         )
 
     plane, extent, x_label, y_label = _plane_spec(monitor)
@@ -133,6 +133,7 @@ def field_snapshot(monitor, field="Ez", time_value=None, time_index=None):
         title=title,
         x_label=x_label,
         y_label=y_label,
+        style={"cmap": "RdBu", "origin": "lower", "aspect": "auto"},
     )
 
 
@@ -159,6 +160,7 @@ def power_trace(monitor, *, db_scale=False):
         coord_label="time",
         value_label=value_label,
         title="Power vs time",
+        style={"color": "tab:red", "linewidth": 2},
     )
 
 
@@ -181,72 +183,8 @@ def flux_trace(monitor, normal_direction, field_pair=None):
         coord_label="time",
         value_label=f"Flux ({normal_direction})",
         title=f"Signed flux {normal_direction}",
+        style={"color": "tab:purple", "linewidth": 2},
     )
-
-def animate_fields(monitor, **kwargs):
-    """Create a field animation from recorded monitor data."""
-    field = kwargs.pop("field", "Ez")
-    figsize = kwargs.pop("figsize", (8, 6))
-    interval = kwargs.pop("interval", 100)
-    save_filename = kwargs.pop("save_filename", None)
-    if kwargs:
-        raise TypeError(f"Unexpected animate_fields kwargs: {sorted(kwargs.keys())}")
-
-    if not monitor.fields["t"] or field not in monitor.fields:
-        print(f"No data available for field '{field}'.")
-        return None
-
-    from matplotlib.animation import FuncAnimation
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    if monitor.monitor_type == "line":
-        (line,) = ax.plot([], [], "b-", linewidth=2)
-        snapshots = [monitor.field_snapshot(field=field, time_index=i) for i in range(len(monitor.fields["t"]))]
-        all_data = np.concatenate([snap.values for snap in snapshots])
-        coords = snapshots[0].coords if snapshots else np.array([0.0])
-        ax.set_xlim(float(coords[0]), float(coords[-1]))
-        ax.set_ylim(float(np.min(all_data)), float(np.max(all_data)))
-        ax.set_xlabel(snapshots[0].coord_label)
-        ax.set_ylabel(snapshots[0].value_label)
-
-        def animate(frame):
-            snap = snapshots[frame]
-            line.set_data(snap.coords, snap.values)
-            ax.set_title(snap.title)
-            return (line,)
-
-    else:
-        snapshots = [monitor.field_snapshot(field=field, time_index=i) for i in range(len(monitor.fields["t"]))]
-        first = snapshots[0]
-        im = ax.imshow(first.values, cmap="RdBu", origin="lower", aspect="auto", extent=first.extent, animated=True)
-        plt.colorbar(im, ax=ax, label=first.value_label)
-        all_data = np.stack([snap.values for snap in snapshots])
-        im.set_clim(float(np.min(all_data)), float(np.max(all_data)))
-        ax.set_xlabel(first.x_label or first.plane[0])
-        ax.set_ylabel(first.y_label or first.plane[1])
-
-        def animate(frame):
-            snap = snapshots[frame]
-            im.set_array(snap.values)
-            ax.set_title(snap.title)
-            return [im]
-
-    anim = FuncAnimation(
-        fig,
-        animate,
-        frames=len(monitor.fields["t"]),
-        interval=interval,
-        blit=True,
-        repeat=True,
-    )
-
-    if save_filename:
-        anim.save(save_filename, writer="pillow", fps=1000 // interval)
-        print(f"Animation saved to {save_filename}")
-
-    fig.tight_layout()
-    return anim
 
 
 def describe(monitor):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 # Ensure local workspace package import when running from examples/.
@@ -24,6 +25,20 @@ from beamz import (
 
 # 2D MMI example.
 # For the benchmark-oriented 3D version with artifact export, use examples/1_mmi_3d.py.
+
+
+def show_slice(slice_data):
+    extent, _, unit = slice_data.scaled_extent()
+    style = dict(slice_data.style)
+    cmap = style.pop("cmap", "viridis")
+    fig, ax = plt.subplots(figsize=(7, 5))
+    im = ax.imshow(slice_data.values, extent=extent, cmap=cmap, **style)
+    ax.set_xlabel(slice_data.x_label or f"{slice_data.plane[0]} ({unit})")
+    ax.set_ylabel(slice_data.y_label or f"{slice_data.plane[1]} ({unit})")
+    ax.set_title(slice_data.title or slice_data.value_label)
+    fig.colorbar(im, ax=ax, label=slice_data.value_label)
+    fig.tight_layout()
+    plt.show()
 
 # Parameters
 X, Y = 20 * µm, 10 * µm
@@ -76,11 +91,11 @@ design += Rectangle(
     height=WG_W,
     material=Material(N_CORE**2),
 )
-design.show()
+show_slice(design.slice2d(resolution=DX))
 
 # Rasterize the design
 grid = design.rasterize(resolution=DX)
-grid.show(field="permittivity")
+show_slice(grid.slice2d(field="permittivity"))
 
 # Define the source
 time_steps = np.arange(0, TIME, DT)

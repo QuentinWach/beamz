@@ -250,10 +250,6 @@ class Monitor:
         """Manage memory by limiting stored history."""
         record_helpers.manage_memory(self)
 
-    def start_live_visualization(self, field_component="Ez"):
-        """Start live field visualization."""
-        live_helpers.start_visualization(self, field_component=field_component)
-
     def _setup_live_plot_2d(self, field_component):
         """Setup live plotting for 2D monitor."""
         live_helpers.setup_plot_2d(self, field_component)
@@ -298,49 +294,6 @@ class Monitor:
     def to_polygon(self):
         """Convert monitor to a polygon for 3D visualization."""
         return geom_helpers.to_polygon(self)
-
-    def plot_fields(self, **kwargs):
-        """Plot field data from the monitor using snapshot data."""
-        import matplotlib.pyplot as plt
-
-        figsize = kwargs.pop("figsize", (10, 6))
-        snapshot = self.field_snapshot(
-            field=kwargs.pop("field", "Ez"),
-            time_value=kwargs.pop("time_value", None),
-            time_index=kwargs.pop("time_index", -1),
-        )
-        fig, ax = plt.subplots(figsize=figsize)
-        if hasattr(snapshot, "extent"):
-            snapshot.plot(ax=ax, cmap=kwargs.pop("cmap", "RdBu"), **kwargs)
-        else:
-            snapshot.plot(ax=ax, **kwargs)
-            ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-        return fig, ax
-
-    def plot_power(self, **kwargs):
-        """Plot monitor power history using trace data."""
-        import matplotlib.pyplot as plt
-
-        figsize = kwargs.pop("figsize", (10, 6))
-        log_scale = kwargs.pop("log_scale", False)
-        db_scale = kwargs.pop("db_scale", False)
-        trace = self.power_trace(db_scale=db_scale)
-        fig, ax = plt.subplots(figsize=figsize)
-        if log_scale and not db_scale:
-            ax.semilogy(trace.coords, trace.values, "r-", linewidth=2)
-            ax.set_xlabel("time (s)")
-            ax.set_ylabel("Power")
-            ax.set_title(trace.title)
-        else:
-            trace.plot(ax=ax, color="r", linewidth=2, **kwargs)
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-        return fig, ax
-
-    def animate_fields(self, **kwargs):
-        """Create an animation of recorded monitor field evolution."""
-        return store_helpers.animate_fields(self, **kwargs)
 
     def get_field_at_time(self, field="Ez", time_value=None, time_index=None):
         """Get field data at a specific time.
