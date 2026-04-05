@@ -391,6 +391,262 @@ def _select_core_confined_mode_index(eps_profile, e_fields, neff_values):
     return int(best_idx)
 
 
+_STAGGER_3D = {
+    "x": {
+        "Ex": None,
+        "Ey": ("half", 1),
+        "Ez": ("half", 0),
+        "Hx": ("both", None),
+        "Hy": ("half", 0),
+        "Hz": ("half", 1),
+    },
+    "y": {
+        "Ex": ("half", 1),
+        "Ey": None,
+        "Ez": ("half", 0),
+        "Hx": ("half", 0),
+        "Hy": ("both", None),
+        "Hz": ("half", 1),
+    },
+    "z": {
+        "Ex": ("half", 1),
+        "Ey": ("half", 0),
+        "Ez": None,
+        "Hx": ("half", 0),
+        "Hy": ("half", 1),
+        "Hz": ("both", None),
+    },
+}
+
+
+_AXIS_PROFILE_META = {
+    "x": {
+        "crop_axes": ("z", "y"),
+        "use_jax": True,
+        "extra_components": {"_h_component": "Hy", "_e_component": "Ey"},
+    },
+    "y": {
+        "crop_axes": ("z", "x"),
+        "use_jax": False,
+        "extra_components": {"_h_component": "Hx", "_e_component": "Ex"},
+    },
+    "z": {
+        "crop_axes": ("y", "x"),
+        "use_jax": True,
+        "extra_components": {"_h_component": "Hx", "_e_component": "Ex"},
+    },
+}
+
+
+def _apply_stagger_op(field, op):
+    if op is None:
+        return field
+    kind, axis = op
+    if kind == "both":
+        return _stagger_both(field)
+    if kind == "half":
+        return _stagger_half(field, axis=axis)
+    raise ValueError(f"Unsupported stagger op {op!r}")
+
+
+def _compute_3d_bounds(axis, center, width, height, resolution, grid_shape):
+    nz, ny, nx = grid_shape
+    z_center = center[2] if len(center) > 2 else (nz // 2) * resolution
+    bounds = {}
+    if axis == "x":
+        bounds["y"] = _compute_transverse_bounds(center[1], width, resolution, ny)
+        bounds["z"] = _compute_transverse_bounds(z_center, height, resolution, nz)
+    elif axis == "y":
+        bounds["x"] = _compute_transverse_bounds(center[0], width, resolution, nx)
+        bounds["z"] = _compute_transverse_bounds(z_center, height, resolution, nz)
+    elif axis == "z":
+        bounds["x"] = _compute_transverse_bounds(center[0], width, resolution, nx)
+        bounds["y"] = _compute_transverse_bounds(center[1], height, resolution, ny)
+    else:
+        raise ValueError(f"Unsupported axis {axis!r} for 3D profile setup")
+    return bounds
+
+
+def _slice_limit(field, start, end, dim, grid_limit):
+    return slice(start, min(end, field.shape[dim], grid_limit))
+
+
+def _build_3d_indices(axis, staggered, bounds, center_idx, offset_idx, grid_shape):
+    nz, ny, nx = grid_shape
+    if axis == "x":
+        z_start, z_end = bounds["z"]
+        y_start, y_end = bounds["y"]
+        return {
+            "Ex": (
+                _slice_limit(staggered["Ex"], z_start, z_end, 0, nz),
+                _slice_limit(staggered["Ex"], y_start, y_end, 1, ny),
+                offset_idx,
+            ),
+            "Ey": (
+                _slice_limit(staggered["Ey"], z_start, z_end, 0, nz),
+                _slice_limit(staggered["Ey"], y_start, y_end, 1, ny - 1),
+                center_idx,
+            ),
+            "Ez": (
+                _slice_limit(staggered["Ez"], z_start, z_end, 0, nz - 1),
+                _slice_limit(staggered["Ez"], y_start, y_end, 1, ny),
+                center_idx,
+            ),
+            "Hx": (
+                _slice_limit(staggered["Hx"], z_start, z_end, 0, nz - 1),
+                _slice_limit(staggered["Hx"], y_start, y_end, 1, ny - 1),
+                center_idx,
+            ),
+            "Hy": (
+                _slice_limit(staggered["Hy"], z_start, z_end, 0, nz - 1),
+                _slice_limit(staggered["Hy"], y_start, y_end, 1, ny),
+                offset_idx,
+            ),
+            "Hz": (
+                _slice_limit(staggered["Hz"], z_start, z_end, 0, nz),
+                _slice_limit(staggered["Hz"], y_start, y_end, 1, ny - 1),
+                offset_idx,
+            ),
+        }
+
+    if axis == "y":
+        z_start, z_end = bounds["z"]
+        x_start, x_end = bounds["x"]
+        return {
+            "Ex": (
+                _slice_limit(staggered["Ex"], z_start, z_end, 0, nz),
+                center_idx,
+                _slice_limit(staggered["Ex"], x_start, x_end, 1, nx - 1),
+            ),
+            "Ey": (
+                _slice_limit(staggered["Ey"], z_start, z_end, 0, nz),
+                offset_idx,
+                _slice_limit(staggered["Ey"], x_start, x_end, 1, nx),
+            ),
+            "Ez": (
+                _slice_limit(staggered["Ez"], z_start, z_end, 0, nz - 1),
+                center_idx,
+                _slice_limit(staggered["Ez"], x_start, x_end, 1, nx),
+            ),
+            "Hx": (
+                _slice_limit(staggered["Hx"], z_start, z_end, 0, nz - 1),
+                offset_idx,
+                _slice_limit(staggered["Hx"], x_start, x_end, 1, nx),
+            ),
+            "Hy": (
+                _slice_limit(staggered["Hy"], z_start, z_end, 0, nz - 1),
+                center_idx,
+                _slice_limit(staggered["Hy"], x_start, x_end, 1, nx - 1),
+            ),
+            "Hz": (
+                _slice_limit(staggered["Hz"], z_start, z_end, 0, nz),
+                offset_idx,
+                _slice_limit(staggered["Hz"], x_start, x_end, 1, nx - 1),
+            ),
+        }
+
+    y_start, y_end = bounds["y"]
+    x_start, x_end = bounds["x"]
+    e_z_idx = int(np.clip(center_idx, 0, nz - 1))
+    h_z_idx = int(np.clip(offset_idx, 0, max(nz - 2, 0)))
+    ez_z_idx = int(np.clip(center_idx, 0, max(nz - 2, 0)))
+    hz_z_idx = int(np.clip(offset_idx, 0, nz - 1))
+    return {
+        "Ex": (
+            e_z_idx,
+            _slice_limit(staggered["Ex"], y_start, y_end, 0, ny),
+            _slice_limit(staggered["Ex"], x_start, x_end, 1, nx - 1),
+        ),
+        "Ey": (
+            e_z_idx,
+            _slice_limit(staggered["Ey"], y_start, y_end, 0, ny - 1),
+            _slice_limit(staggered["Ey"], x_start, x_end, 1, nx),
+        ),
+        "Ez": (
+            ez_z_idx,
+            _slice_limit(staggered["Ez"], y_start, y_end, 0, ny),
+            _slice_limit(staggered["Ez"], x_start, x_end, 1, nx),
+        ),
+        "Hx": (
+            h_z_idx,
+            _slice_limit(staggered["Hx"], y_start, y_end, 0, ny - 1),
+            _slice_limit(staggered["Hx"], x_start, x_end, 1, nx),
+        ),
+        "Hy": (
+            h_z_idx,
+            _slice_limit(staggered["Hy"], y_start, y_end, 0, ny),
+            _slice_limit(staggered["Hy"], x_start, x_end, 1, nx - 1),
+        ),
+        "Hz": (
+            hz_z_idx,
+            _slice_limit(staggered["Hz"], y_start, y_end, 0, ny - 1),
+            _slice_limit(staggered["Hz"], x_start, x_end, 1, nx - 1),
+        ),
+    }
+
+
+def _build_3d_axis(
+    axis,
+    fields,
+    *,
+    dir_sign,
+    z_target,
+    center,
+    width,
+    height,
+    center_idx,
+    offset_idx,
+    grid_shape,
+    resolution,
+):
+    staggered = {
+        name: _apply_stagger_op(fields[name], op)
+        for name, op in _STAGGER_3D[axis].items()
+    }
+    bounds = _compute_3d_bounds(axis, center, width, height, resolution, grid_shape)
+    indices = _build_3d_indices(
+        axis, staggered, bounds, center_idx, offset_idx, grid_shape
+    )
+
+    staggered["Ex"], staggered["Ey"], staggered["Ez"] = (
+        _impedance_match_3d_tangential_pairs(
+            axis,
+            staggered["Ex"],
+            staggered["Ey"],
+            staggered["Ez"],
+            staggered["Hx"],
+            staggered["Hy"],
+            staggered["Hz"],
+            z_target,
+        )
+    )
+
+    meta = _AXIS_PROFILE_META[axis]
+    primary_axis, secondary_axis = meta["crop_axes"]
+    primary_start, primary_end = bounds[primary_axis]
+    secondary_start, secondary_end = bounds[secondary_axis]
+    profiles = _crop_and_window_all(
+        staggered,
+        primary_start,
+        primary_end,
+        secondary_start,
+        secondary_end,
+        dir_sign,
+        use_jax=meta["use_jax"],
+        alpha=0.2,
+    )
+    profiles = _normalize_3d_profiles_by_flux(
+        profiles, axis=axis, d_area=float(resolution * resolution)
+    )
+
+    extra = {
+        f"_{name}_start": start for name, (start, _) in bounds.items()
+    }
+    extra.update({f"_{name}_end": end for name, (_, end) in bounds.items()})
+    extra.update(meta["extra_components"])
+    return profiles, indices, extra
+
+
 def _build_3d_profiles(
     Ex,
     Ey,
@@ -412,7 +668,6 @@ def _build_3d_profiles(
     dt,
 ):
     """Build staggered, windowed, impedance-corrected injection profiles for 3D."""
-    nz, ny, nx = grid_shape
     dir_sign = 1.0 if direction.startswith("+") else -1.0
     eta0 = np.sqrt(MU_0 / EPS_0)
     neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
@@ -423,329 +678,21 @@ def _build_3d_profiles(
     else:
         z_target = eta0 / neff_imp_r
 
-    if axis == "x":
-        return _build_3d_x(
-            Ex,
-            Ey,
-            Ez,
-            Hx,
-            Hy,
-            Hz,
-            dir_sign,
-            z_target,
-            center,
-            width,
-            height,
-            center_idx,
-            offset_idx,
-            nz,
-            ny,
-            nx,
-            resolution,
-        )
-    if axis == "y":
-        return _build_3d_y(
-            Ex,
-            Ey,
-            Ez,
-            Hx,
-            Hy,
-            Hz,
-            dir_sign,
-            z_target,
-            center,
-            width,
-            height,
-            center_idx,
-            offset_idx,
-            nz,
-            ny,
-            nx,
-            resolution,
-        )
-    if axis == "z":
-        return _build_3d_z(
-            Ex,
-            Ey,
-            Ez,
-            Hx,
-            Hy,
-            Hz,
-            dir_sign,
-            z_target,
-            center,
-            width,
-            height,
-            center_idx,
-            offset_idx,
-            nz,
-            ny,
-            nx,
-            resolution,
-        )
-    raise ValueError(f"Unsupported axis {axis!r} for 3D profile setup")
-
-
-def _build_3d_x(
-    Ex,
-    Ey,
-    Ez,
-    Hx,
-    Hy,
-    Hz,
-    dir_sign,
-    z_target,
-    center,
-    width,
-    height,
-    center_idx,
-    offset_idx,
-    nz,
-    ny,
-    nx,
-    resolution,
-):
-    ey_s = _stagger_half(Ey, axis=1)
-    ez_s = _stagger_half(Ez, axis=0)
-    ex_s = Ex
-    hx_s = _stagger_both(Hx)
-    hy_s = _stagger_half(Hy, axis=0)
-    hz_s = _stagger_half(Hz, axis=1)
-
-    y_start, y_end = _compute_transverse_bounds(center[1], width, resolution, ny)
-    z_center = center[2] if len(center) > 2 else (nz // 2) * resolution
-    z_start, z_end = _compute_transverse_bounds(z_center, height, resolution, nz)
-
-    indices = {
-        "Ex": (
-            slice(z_start, min(z_end, ex_s.shape[0], nz)),
-            slice(y_start, min(y_end, ex_s.shape[1], ny)),
-            offset_idx,
-        ),
-        "Ey": (
-            slice(z_start, min(z_end, ey_s.shape[0], nz)),
-            slice(y_start, min(y_end, ey_s.shape[1], ny - 1)),
-            center_idx,
-        ),
-        "Ez": (
-            slice(z_start, min(z_end, ez_s.shape[0], nz - 1)),
-            slice(y_start, min(y_end, ez_s.shape[1], ny)),
-            center_idx,
-        ),
-        "Hx": (
-            slice(z_start, min(z_end, hx_s.shape[0], nz - 1)),
-            slice(y_start, min(y_end, hx_s.shape[1], ny - 1)),
-            center_idx,
-        ),
-        "Hy": (
-            slice(z_start, min(z_end, hy_s.shape[0], nz - 1)),
-            slice(y_start, min(y_end, hy_s.shape[1], ny)),
-            offset_idx,
-        ),
-        "Hz": (
-            slice(z_start, min(z_end, hz_s.shape[0], nz)),
-            slice(y_start, min(y_end, hz_s.shape[1], ny - 1)),
-            offset_idx,
-        ),
-    }
-
-    ex_s, ey_s, ez_s = _impedance_match_3d_tangential_pairs(
-        "x", ex_s, ey_s, ez_s, hx_s, hy_s, hz_s, z_target
+    if axis not in _STAGGER_3D:
+        raise ValueError(f"Unsupported axis {axis!r} for 3D profile setup")
+    return _build_3d_axis(
+        axis,
+        {"Ex": Ex, "Ey": Ey, "Ez": Ez, "Hx": Hx, "Hy": Hy, "Hz": Hz},
+        dir_sign=dir_sign,
+        z_target=z_target,
+        center=center,
+        width=width,
+        height=height,
+        center_idx=center_idx,
+        offset_idx=offset_idx,
+        grid_shape=grid_shape,
+        resolution=resolution,
     )
-
-    staggered = {"Ex": ex_s, "Ey": ey_s, "Ez": ez_s, "Hx": hx_s, "Hy": hy_s, "Hz": hz_s}
-    profiles = _crop_and_window_all(
-        staggered, z_start, z_end, y_start, y_end, dir_sign, use_jax=True, alpha=0.2
-    )
-    profiles = _normalize_3d_profiles_by_flux(
-        profiles, axis="x", d_area=float(resolution * resolution)
-    )
-
-    extra = {
-        "_y_start": y_start,
-        "_y_end": y_end,
-        "_z_start": z_start,
-        "_z_end": z_end,
-        "_h_component": "Hy",
-        "_e_component": "Ey",
-    }
-    return profiles, indices, extra
-
-
-def _build_3d_y(
-    Ex,
-    Ey,
-    Ez,
-    Hx,
-    Hy,
-    Hz,
-    dir_sign,
-    z_target,
-    center,
-    width,
-    height,
-    center_idx,
-    offset_idx,
-    nz,
-    ny,
-    nx,
-    resolution,
-):
-    ex_s = _stagger_half(Ex, axis=1)
-    ey_s = Ey
-    ez_s = _stagger_half(Ez, axis=0)
-    hx_s = _stagger_half(Hx, axis=0)
-    hy_s = _stagger_both(Hy)
-    hz_s = _stagger_half(Hz, axis=1)
-
-    x_start, x_end = _compute_transverse_bounds(center[0], width, resolution, nx)
-    z_center = center[2] if len(center) > 2 else (nz // 2) * resolution
-    z_start, z_end = _compute_transverse_bounds(z_center, height, resolution, nz)
-
-    indices = {
-        "Ex": (
-            slice(z_start, min(z_end, ex_s.shape[0], nz)),
-            center_idx,
-            slice(x_start, min(x_end, ex_s.shape[1], nx - 1)),
-        ),
-        "Ey": (
-            slice(z_start, min(z_end, ey_s.shape[0], nz)),
-            offset_idx,
-            slice(x_start, min(x_end, ey_s.shape[1], nx)),
-        ),
-        "Ez": (
-            slice(z_start, min(z_end, ez_s.shape[0], nz - 1)),
-            center_idx,
-            slice(x_start, min(x_end, ez_s.shape[1], nx)),
-        ),
-        "Hx": (
-            slice(z_start, min(z_end, hx_s.shape[0], nz - 1)),
-            offset_idx,
-            slice(x_start, min(x_end, hx_s.shape[1], nx)),
-        ),
-        "Hy": (
-            slice(z_start, min(z_end, hy_s.shape[0], nz - 1)),
-            center_idx,
-            slice(x_start, min(x_end, hy_s.shape[1], nx - 1)),
-        ),
-        "Hz": (
-            slice(z_start, min(z_end, hz_s.shape[0], nz)),
-            offset_idx,
-            slice(x_start, min(x_end, hz_s.shape[1], nx - 1)),
-        ),
-    }
-
-    ex_s, ey_s, ez_s = _impedance_match_3d_tangential_pairs(
-        "y", ex_s, ey_s, ez_s, hx_s, hy_s, hz_s, z_target
-    )
-
-    staggered = {"Ex": ex_s, "Ey": ey_s, "Ez": ez_s, "Hx": hx_s, "Hy": hy_s, "Hz": hz_s}
-    profiles = _crop_and_window_all(
-        staggered, z_start, z_end, x_start, x_end, dir_sign, use_jax=False, alpha=0.2
-    )
-    profiles = _normalize_3d_profiles_by_flux(
-        profiles, axis="y", d_area=float(resolution * resolution)
-    )
-
-    extra = {
-        "_x_start": x_start,
-        "_x_end": x_end,
-        "_z_start": z_start,
-        "_z_end": z_end,
-        "_h_component": "Hx",
-        "_e_component": "Ex",
-    }
-    return profiles, indices, extra
-
-
-def _build_3d_z(
-    Ex,
-    Ey,
-    Ez,
-    Hx,
-    Hy,
-    Hz,
-    dir_sign,
-    z_target,
-    center,
-    width,
-    height,
-    center_idx,
-    offset_idx,
-    nz,
-    ny,
-    nx,
-    resolution,
-):
-    ex_s = _stagger_half(Ex, axis=1)
-    ey_s = _stagger_half(Ey, axis=0)
-    ez_s = Ez
-    hx_s = _stagger_half(Hx, axis=0)
-    hy_s = _stagger_half(Hy, axis=1)
-    hz_s = _stagger_both(Hz)
-
-    x_start, x_end = _compute_transverse_bounds(center[0], width, resolution, nx)
-    y_start, y_end = _compute_transverse_bounds(center[1], height, resolution, ny)
-
-    e_z_idx = int(np.clip(center_idx, 0, nz - 1))
-    h_z_idx = int(np.clip(offset_idx, 0, max(nz - 2, 0)))
-    ez_z_idx = int(np.clip(center_idx, 0, max(nz - 2, 0)))
-    hz_z_idx = int(np.clip(offset_idx, 0, nz - 1))
-
-    indices = {
-        "Ex": (
-            e_z_idx,
-            slice(y_start, min(y_end, ex_s.shape[0], ny)),
-            slice(x_start, min(x_end, ex_s.shape[1], nx - 1)),
-        ),
-        "Ey": (
-            e_z_idx,
-            slice(y_start, min(y_end, ey_s.shape[0], ny - 1)),
-            slice(x_start, min(x_end, ey_s.shape[1], nx)),
-        ),
-        "Ez": (
-            ez_z_idx,
-            slice(y_start, min(y_end, ez_s.shape[0], ny)),
-            slice(x_start, min(x_end, ez_s.shape[1], nx)),
-        ),
-        "Hx": (
-            h_z_idx,
-            slice(y_start, min(y_end, hx_s.shape[0], ny - 1)),
-            slice(x_start, min(x_end, hx_s.shape[1], nx)),
-        ),
-        "Hy": (
-            h_z_idx,
-            slice(y_start, min(y_end, hy_s.shape[0], ny)),
-            slice(x_start, min(x_end, hy_s.shape[1], nx - 1)),
-        ),
-        "Hz": (
-            hz_z_idx,
-            slice(y_start, min(y_end, hz_s.shape[0], ny - 1)),
-            slice(x_start, min(x_end, hz_s.shape[1], nx - 1)),
-        ),
-    }
-
-    ex_s, ey_s, ez_s = _impedance_match_3d_tangential_pairs(
-        "z", ex_s, ey_s, ez_s, hx_s, hy_s, hz_s, z_target
-    )
-
-    staggered = {"Ex": ex_s, "Ey": ey_s, "Ez": ez_s, "Hx": hx_s, "Hy": hy_s, "Hz": hz_s}
-    profiles = _crop_and_window_all(
-        staggered, y_start, y_end, x_start, x_end, dir_sign, use_jax=True, alpha=0.2
-    )
-    profiles = _normalize_3d_profiles_by_flux(
-        profiles, axis="z", d_area=float(resolution * resolution)
-    )
-
-    extra = {
-        "_x_start": x_start,
-        "_x_end": x_end,
-        "_y_start": y_start,
-        "_y_end": y_end,
-        "_h_component": "Hx",
-        "_e_component": "Ex",
-    }
-    return profiles, indices, extra
 
 
 def _crop_and_window_all(
