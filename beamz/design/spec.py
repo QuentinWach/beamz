@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 
-from beamz.design.structures import StructureSpec
+from beamz.design.structure_specs import StructureSpec
 
 
 def _validate_structure(structure):

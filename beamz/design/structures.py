@@ -3,132 +3,26 @@ from __future__ import annotations
 import colorsys
 import copy
 import random
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 import numpy as np
 
+from beamz.design.geometry_ops import (
+    bend_vertices as _bend_vertices,
+    circle_vertices as _circle_vertices,
+    freeze_interiors as _freeze_interiors,
+    freeze_vertices as _freeze_vertices,
+    normalize_position as _normalize_position,
+    require_nonnegative as _require_nonnegative,
+    require_positive as _require_positive,
+    ring_vertices as _ring_vertices,
+    rotate_vertices as _rotate_vertices,
+    transform_geometry as _transform_geometry,
+    vertices_bbox as _vertices_bbox,
+    vertices_center as _vertices_center,
+)
 from beamz.design.materials import material_from_spec, material_to_spec
-
-
-def _rotate_vertices(vertices, angle_rad, axis, center):
-    """Rotate a list of 3D vertices around center by angle_rad on the given axis."""
-    cx, cy, cz = center
-    cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-    if axis == "z":
-        return [
-            (
-                cx + (v[0] - cx) * cos_a - (v[1] - cy) * sin_a,
-                cy + (v[0] - cx) * sin_a + (v[1] - cy) * cos_a,
-                v[2],
-            )
-            for v in vertices
-        ]
-    if axis == "x":
-        return [
-            (
-                v[0],
-                cy + (v[1] - cy) * cos_a - (v[2] - cz) * sin_a,
-                cz + (v[1] - cy) * sin_a + (v[2] - cz) * cos_a,
-            )
-            for v in vertices
-        ]
-    if axis == "y":
-        return [
-            (
-                cx + (v[0] - cx) * cos_a + (v[2] - cz) * sin_a,
-                v[1],
-                cz - (v[0] - cx) * sin_a + (v[2] - cz) * cos_a,
-            )
-            for v in vertices
-        ]
-    raise ValueError(f"Invalid rotation axis '{axis}'. Must be 'x', 'y', or 'z'.")
-
-
-def _normalize_position(position, z=None):
-    """Ensure position is a 3-tuple, optionally overriding z."""
-    if len(position) == 2:
-        position = (position[0], position[1], 0.0)
-    elif len(position) != 3:
-        raise ValueError("Position must be (x,y) or (x,y,z)")
-    if z is not None:
-        position = (position[0], position[1], z)
-    return tuple(float(v) for v in position)
-
-
-def _require_positive(name, value):
-    if value <= 0:
-        raise ValueError(f"{name} must be positive, got {value}")
-
-
-def _require_nonnegative(name, value):
-    if value < 0:
-        raise ValueError(f"{name} must be non-negative, got {value}")
-
-
-def _vertices_center(vertices):
-    return tuple(sum(v[i] for v in vertices) / len(vertices) for i in range(3))
-
-
-def _vertices_bbox(vertices):
-    x_vals = [v[0] for v in vertices]
-    y_vals = [v[1] for v in vertices]
-    z_vals = [v[2] for v in vertices]
-    return (
-        min(x_vals),
-        min(y_vals),
-        min(z_vals),
-        max(x_vals),
-        max(y_vals),
-        max(z_vals),
-    )
-
-
-def _circle_vertices(position, radius, points, *, theta=None, reverse=False):
-    theta = (
-        np.linspace(0, 2 * np.pi, points, endpoint=False)
-        if theta is None
-        else np.asarray(theta, dtype=float)
-    )
-    angles = reversed(theta) if reverse else theta
-    return [
-        (
-            position[0] + radius * np.cos(t),
-            position[1] + radius * np.sin(t),
-            position[2],
-        )
-        for t in angles
-    ]
-
-
-def _ring_vertices(position, inner_radius, outer_radius, points):
-    theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
-    outer = _circle_vertices(position, outer_radius, points, theta=theta)
-    inner = _circle_vertices(position, inner_radius, points, theta=theta, reverse=True)
-    return outer, inner
-
-
-def _bend_vertices(position, inner_radius, outer_radius, angle, rotation, points):
-    theta = np.linspace(0, np.radians(angle), points)
-    rotation_rad = np.radians(rotation)
-    angles = theta + rotation_rad
-    outer = _circle_vertices(position, outer_radius, points, theta=angles)
-    inner = _circle_vertices(position, inner_radius, points, theta=angles, reverse=True)
-    return outer + inner
-
-
-def _freeze_vertices(vertices):
-    return tuple(tuple(float(c) for c in vertex) for vertex in vertices)
-
-
-def _freeze_interiors(interiors):
-    return tuple(_freeze_vertices(path) for path in interiors if path)
-
-
-def _transform_geometry(vertices, interiors, transform):
-    return (
-        [transform(v) for v in vertices],
-        [[transform(v) for v in path] for path in interiors if path],
-    )
+from beamz.design.structure_specs import StructureSpec, structure_kind as _structure_kind
 
 
 def _replace_from_bbox(structure, *, include_length=False):
@@ -139,129 +33,6 @@ def _replace_from_bbox(structure, *, include_length=False):
     else:
         changes.update(width=max_x - min_x, height=max_y - min_y, depth=max_z - min_z)
     return structure._replace_spec(**changes)
-
-
-def _structure_kind(spec):
-    if spec.length is not None and spec.input_width is not None and spec.output_width is not None:
-        return "Taper"
-    if spec.inner_radius is not None and spec.outer_radius is not None and spec.angle is not None:
-        return "CircularBend"
-    if spec.inner_radius is not None and spec.outer_radius is not None:
-        return "Ring"
-    if spec.radius is not None and spec.depth and spec.depth > 0 and not spec.vertices:
-        return "Sphere"
-    if spec.radius is not None:
-        return "Circle"
-    if spec.width is not None and spec.height is not None and len(spec.vertices) == 4:
-        return "Rectangle"
-    return "Polygon"
-
-
-@dataclass(frozen=True, slots=True)
-class StructureSpec:
-    vertices: tuple[tuple[float, float, float], ...] = ()
-    interiors: tuple[tuple[tuple[float, float, float], ...], ...] = ()
-    material: object = None
-    color: str | None = None
-    optimize: bool = False
-    depth: float = 0.0
-    z: float = 0.0
-    position: tuple[float, float, float] | None = None
-    width: float | None = None
-    height: float | None = None
-    radius: float | None = None
-    points: int | None = None
-    inner_radius: float | None = None
-    outer_radius: float | None = None
-    angle: float | None = None
-    rotation: float | None = None
-    input_width: float | None = None
-    output_width: float | None = None
-    length: float | None = None
-    is_pml: bool = False
-
-    def __post_init__(self):
-        object.__setattr__(self, "vertices", _freeze_vertices(self.vertices))
-        object.__setattr__(self, "interiors", _freeze_interiors(self.interiors))
-        object.__setattr__(self, "material", material_to_spec(self.material))
-        object.__setattr__(self, "optimize", bool(self.optimize))
-        object.__setattr__(self, "depth", float(self.depth))
-        object.__setattr__(self, "z", float(self.z))
-        object.__setattr__(self, "is_pml", bool(self.is_pml))
-        if self.position is not None:
-            object.__setattr__(self, "position", tuple(float(v) for v in self.position))
-        for name in (
-            "width",
-            "height",
-            "radius",
-            "inner_radius",
-            "outer_radius",
-            "angle",
-            "rotation",
-            "input_width",
-            "output_width",
-            "length",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                object.__setattr__(self, name, float(value))
-        if self.points is not None:
-            object.__setattr__(self, "points", int(self.points))
-
-    def to_dict(self):
-        from beamz.design.materials import material_spec_to_dict
-
-        return {
-            "type": "StructureSpec",
-            "shape_type": _structure_kind(self),
-            "vertices": [list(vertex) for vertex in self.vertices],
-            "interiors": [[list(vertex) for vertex in path] for path in self.interiors],
-            "material": material_spec_to_dict(self.material),
-            "color": self.color,
-            "optimize": bool(self.optimize),
-            "depth": float(self.depth),
-            "z": float(self.z),
-            "position": None if self.position is None else list(self.position),
-            "width": self.width,
-            "height": self.height,
-            "radius": self.radius,
-            "points": self.points,
-            "inner_radius": self.inner_radius,
-            "outer_radius": self.outer_radius,
-            "angle": self.angle,
-            "rotation": self.rotation,
-            "input_width": self.input_width,
-            "output_width": self.output_width,
-            "length": self.length,
-            "is_pml": bool(self.is_pml),
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        from beamz.design.materials import material_spec_from_dict
-
-        return cls(
-            vertices=data.get("vertices", ()),
-            interiors=data.get("interiors", ()),
-            material=material_spec_from_dict(data["material"]),
-            color=data.get("color"),
-            optimize=data.get("optimize", False),
-            depth=data.get("depth", 0.0),
-            z=data.get("z", 0.0),
-            position=data.get("position"),
-            width=data.get("width"),
-            height=data.get("height"),
-            radius=data.get("radius"),
-            points=data.get("points"),
-            inner_radius=data.get("inner_radius"),
-            outer_radius=data.get("outer_radius"),
-            angle=data.get("angle"),
-            rotation=data.get("rotation"),
-            input_width=data.get("input_width"),
-            output_width=data.get("output_width"),
-            length=data.get("length"),
-            is_pml=data.get("is_pml", False),
-        )
 
 
 def structure_from_spec(spec):

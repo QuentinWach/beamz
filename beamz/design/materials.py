@@ -476,6 +476,15 @@ def material_to_spec(material):
     spec = getattr(material, "spec", None)
     if isinstance(spec, (MaterialSpec, CustomMaterialSpec)):
         return spec
+    if all(
+        hasattr(material, attr)
+        for attr in ("permittivity", "permeability", "conductivity")
+    ):
+        return MaterialSpec(
+            permittivity=getattr(material, "permittivity"),
+            permeability=getattr(material, "permeability"),
+            conductivity=getattr(material, "conductivity"),
+        )
     raise TypeError("material must be a material facade or material spec")
 
 

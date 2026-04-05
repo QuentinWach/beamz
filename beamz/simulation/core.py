@@ -150,6 +150,9 @@ class Simulation:
         if name in {"spec", "_session", "_design", "_devices", "_boundaries"}:
             object.__setattr__(self, name, value)
             return
+        if "spec" not in self.__dict__ and "_session" not in self.__dict__:
+            object.__setattr__(self, name, value)
+            return
         if name == "runtime":
             self.session.runtime = value
             return
