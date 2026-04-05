@@ -9,6 +9,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
+from beamz.arrays import to_host
 from beamz.devices.monitors.monitors import Monitor
 
 
@@ -32,7 +33,7 @@ class CompiledMonitorSpec:
     dft_enabled: bool = False
     dft_record_interval: int = 1
     dft_t_start: float = 0.0
-    dft_t_end: float = np.inf
+    dft_t_end: float = math.inf
     dft_window_code: int = 0  # 0=rect, 1=hann
     dft_point_count: int = 0
     dft_component_mask: jnp.ndarray | None = None
@@ -174,18 +175,16 @@ def compile_batched_monitor_data(
         ):
             cnt = int(spec.freq_count)
             freq_mask[i, :cnt] = 1.0
-            freq_hz[i, :cnt] = np.asarray(spec.freq_hz, dtype=np.float32)[:cnt]
-            freq_rot_re[i, :cnt] = np.asarray(spec.freq_rot_re, dtype=np.float32)[:cnt]
-            freq_rot_im[i, :cnt] = np.asarray(spec.freq_rot_im, dtype=np.float32)[:cnt]
+            freq_hz[i, :cnt] = to_host(spec.freq_hz, dtype=np.float32)[:cnt]
+            freq_rot_re[i, :cnt] = to_host(spec.freq_rot_re, dtype=np.float32)[:cnt]
+            freq_rot_im[i, :cnt] = to_host(spec.freq_rot_im, dtype=np.float32)[:cnt]
         dft_enabled[i] = bool(spec.dft_enabled and spec.freq_count > 0)
         dft_record_intervals[i] = int(max(1, spec.dft_record_interval))
         dft_t_start[i] = float(spec.dft_t_start)
         dft_t_end[i] = float(spec.dft_t_end)
         dft_window_code[i] = int(spec.dft_window_code)
         if spec.dft_component_mask is not None:
-            dft_component_mask[i, :] = np.asarray(
-                spec.dft_component_mask, dtype=np.float32
-            )[:6]
+            dft_component_mask[i, :] = to_host(spec.dft_component_mask, dtype=np.float32)[:6]
 
     return BatchedMonitorData(
         n_monitors=n,

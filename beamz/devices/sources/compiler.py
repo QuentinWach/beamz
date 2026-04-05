@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
 
+from beamz.arrays import to_host
 from beamz.const import EPS_0, MU_0
 from beamz.devices.sources.gaussian import GaussianSource
 from beamz.devices.sources.mode import ModeSource, _get_3d_huygens_terms
@@ -110,9 +112,9 @@ def _as_slab_spec(
                 continue
             break
         else:
-            coeff_np = np.asarray(coeff, dtype=np.float32)
+            coeff_np = to_host(coeff, dtype=np.float32)
             slab_sizes = tuple(sizes)
-            expected = int(np.prod(slab_sizes))
+            expected = int(math.prod(slab_sizes))
             if coeff_np.size == expected:
                 coeff_np = coeff_np.reshape(slab_sizes)
                 return CompiledSourceSpec(
@@ -153,7 +155,7 @@ def _sample_waveform(
 
 
 def _match_shape(profile: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarray:
-    profile = np.asarray(profile)
+    profile = to_host(profile)
     if profile.shape == target_shape:
         return profile
     if profile.ndim != len(target_shape):
@@ -248,8 +250,8 @@ def _compile_gaussian_source(
         device._init_spatial_profile(fields.Ez.shape, resolution, is_3d)
 
     idx = device._grid_indices
-    eps_region = np.asarray(fields.permittivity[idx])
-    profile = np.asarray(device._spatial_profile_ez)
+    eps_region = to_host(fields.permittivity[idx])
+    profile = to_host(device._spatial_profile_ez)
 
     coeff = -profile * dt / (EPS_0 * eps_region)
     waveform = _sample_waveform(
@@ -286,7 +288,14 @@ def _compile_mode_source(
         (not getattr(device, "_initialized", False))
         or (getattr(device, "_grid_shape", None) != fields.permittivity.shape)
         or (getattr(device, "_resolution", None) is None)
-        or (not np.isclose(getattr(device, "_resolution", 0.0), resolution))
+        or (
+            not math.isclose(
+                float(getattr(device, "_resolution", 0.0)),
+                float(resolution),
+                rel_tol=1e-5,
+                abs_tol=1e-8,
+            )
+        )
     ):
         device.initialize(fields.permittivity, resolution, dt=dt)
 
@@ -339,7 +348,7 @@ def _build_coeff(
     dt: float,
     scale_denom: np.ndarray,
 ) -> jnp.ndarray:
-    profile = _match_shape(np.asarray(profile), target.shape)
+    profile = _match_shape(profile, target.shape)
     coeff = profile * dt / scale_denom
     return jnp.asarray(coeff, dtype=jnp.float32)
 
@@ -358,10 +367,10 @@ def _compile_mode_source_2d(
         if src._h_indices is not None and src._my_profile is not None:
             comp = src._h_component
             idx = src._h_indices
-            target = np.asarray(getattr(fields, comp)[idx])
-            mu = np.asarray(fields.permeability[idx])
+            target = to_host(getattr(fields, comp)[idx])
+            mu = to_host(fields.permeability[idx])
             coeff = _build_coeff(
-                profile=-np.asarray(src._my_profile),
+                profile=-to_host(src._my_profile),
                 target=target,
                 dt=dt,
                 scale_denom=MU_0 * mu * resolution,
@@ -379,10 +388,10 @@ def _compile_mode_source_2d(
 
         if src._ez_indices is not None and src._jz_profile is not None:
             idx = src._ez_indices
-            target = np.asarray(fields.Ez[idx])
-            eps = np.asarray(fields.permittivity[idx])
+            target = to_host(fields.Ez[idx])
+            eps = to_host(fields.permittivity[idx])
             coeff = _build_coeff(
-                profile=np.asarray(src._jz_profile),
+                profile=to_host(src._jz_profile),
                 target=target,
                 dt=dt,
                 scale_denom=EPS_0 * eps * resolution,
@@ -400,10 +409,10 @@ def _compile_mode_source_2d(
     else:
         if src._hz_indices is not None and src._mz_profile is not None:
             idx = src._hz_indices
-            target = np.asarray(fields.Hz[idx])
-            mu = np.asarray(fields.permeability[idx])
+            target = to_host(fields.Hz[idx])
+            mu = to_host(fields.permeability[idx])
             coeff = _build_coeff(
-                profile=np.asarray(src._mz_profile),
+                profile=to_host(src._mz_profile),
                 target=target,
                 dt=dt,
                 scale_denom=MU_0 * mu * resolution,
@@ -424,10 +433,10 @@ def _compile_mode_source_2d(
             prof = src._jx_profile if comp == "Ex" else src._jy_profile
             if prof is not None:
                 idx = src._e_indices
-                target = np.asarray(getattr(fields, comp)[idx])
-                eps = np.asarray(fields.permittivity[idx])
+                target = to_host(getattr(fields, comp)[idx])
+                eps = to_host(fields.permittivity[idx])
                 coeff = _build_coeff(
-                    profile=-np.asarray(prof),
+                    profile=-to_host(prof),
                     target=target,
                     dt=dt,
                     scale_denom=EPS_0 * eps * resolution,
@@ -464,10 +473,10 @@ def _compile_mode_source_3d(
         prof = profiles[e_source]
         if idx is None or prof is None:
             continue
-        target = np.asarray(getattr(fields, h_comp)[idx])
-        mu = np.asarray(fields.permeability[idx])
+        target = to_host(getattr(fields, h_comp)[idx])
+        mu = to_host(fields.permeability[idx])
         coeff = _build_coeff(
-            profile=sign * np.asarray(prof),
+            profile=sign * to_host(prof),
             target=target,
             dt=dt,
             scale_denom=MU_0 * mu * resolution,
@@ -488,10 +497,10 @@ def _compile_mode_source_3d(
         prof = profiles[h_source]
         if idx is None or prof is None:
             continue
-        target = np.asarray(getattr(fields, e_comp)[idx])
-        eps = np.asarray(fields.permittivity[idx])
+        target = to_host(getattr(fields, e_comp)[idx])
+        eps = to_host(fields.permittivity[idx])
         coeff = _build_coeff(
-            profile=sign * np.asarray(prof),
+            profile=sign * to_host(prof),
             target=target,
             dt=dt,
             scale_denom=EPS_0 * eps * resolution,
