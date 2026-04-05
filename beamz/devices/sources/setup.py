@@ -127,6 +127,12 @@ _MODE_STATE_MAP = {
     "_axis": "axis",
     "_transverse_start": "transverse_start",
     "_transverse_end": "transverse_end",
+    "_x_start": "x_start",
+    "_x_end": "x_end",
+    "_y_start": "y_start",
+    "_y_end": "y_end",
+    "_z_start": "z_start",
+    "_z_end": "z_end",
 }
 
 

@@ -48,6 +48,12 @@ class ModeSourceState:
     axis: object = None
     transverse_start: int | None = None
     transverse_end: int | None = None
+    x_start: int | None = None
+    x_end: int | None = None
+    y_start: int | None = None
+    y_end: int | None = None
+    z_start: int | None = None
+    z_end: int | None = None
 
 
 def create_source_state(spec):

@@ -8,8 +8,8 @@ from beamz.design.core import Design
 from beamz.devices.monitors.monitors import Monitor
 from beamz.devices.monitors.spec import MonitorSpec
 from beamz.devices.sources.gaussian import GaussianSource
-from beamz.devices.sources.mode import (
-    ModeSource,
+from beamz.devices.sources.mode import ModeSource
+from beamz.devices.sources.profiles_basis import (
     _make_3d_mode_basis_profiles,
     _modal_overlap_3d_profiles,
 )

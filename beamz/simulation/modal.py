@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from beamz.devices.sources.mode import (
+from beamz.devices.sources.profiles_basis import (
     _make_3d_mode_basis_profiles,
     _modal_overlap_3d_profiles,
 )
