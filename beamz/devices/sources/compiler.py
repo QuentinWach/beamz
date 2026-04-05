@@ -11,8 +11,22 @@ import numpy as np
 
 from beamz.arrays import to_host
 from beamz.const import EPS_0, MU_0
-from beamz.devices.sources.gaussian import GaussianSource
-from beamz.devices.sources.mode import ModeSource, _get_3d_huygens_terms
+from beamz.devices.sources.inject import _get_3d_huygens_terms
+from beamz.devices.sources.setup import (
+    initialize_gaussian_state,
+    initialize_mode_state,
+    sample_signal,
+)
+from beamz.devices.sources.spec import (
+    GaussianSourceSpec,
+    ModeSourceSpec,
+    source_to_spec,
+)
+from beamz.devices.sources.state import (
+    GaussianSourceState,
+    ModeSourceState,
+    source_state_for,
+)
 
 
 @dataclass(frozen=True)
@@ -138,7 +152,7 @@ def _as_slab_spec(
 
 
 def _sample_waveform(
-    get_signal_value,
+    spec,
     t0: float,
     dt: float,
     num_steps: int,
@@ -150,7 +164,7 @@ def _sample_waveform(
     vals = np.zeros((n,), dtype=np.float32)
     for i in range(n):
         t = start + i * dt
-        vals[i] = float(get_signal_value(offset_fn(t, dt), dt))
+        vals[i] = float(sample_signal(spec, offset_fn(t, dt), dt))
     return jnp.asarray(vals)
 
 
@@ -171,8 +185,7 @@ def _match_shape(profile: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarr
     return out
 
 
-def _mode_3d_profiles_and_indices(src: ModeSource):
-    state = src.state
+def _mode_3d_profiles_and_indices(state: ModeSourceState):
     profiles = {
         "Ex": state.Ex_profile,
         "Ey": state.Ey_profile,
@@ -200,18 +213,33 @@ def compile_source_specs(
     num_steps: int,
     t0: float,
     total_steps: int | None = None,
+    source_states: tuple[object | None, ...] | list[object | None] | None = None,
 ) -> tuple[CompiledSourceSpec, ...]:
     """Compile source devices into packed source specs.
 
-    v0.3 first-class support: GaussianSource and ModeSource.
+    v0.3 first-class support: GaussianSourceSpec and ModeSourceSpec.
     """
     specs: list[CompiledSourceSpec] = []
 
-    for device in devices:
-        if isinstance(device, GaussianSource):
+    devices = tuple(devices)
+    if source_states is None:
+        source_states = (None,) * len(devices)
+    else:
+        source_states = tuple(source_states)
+        if len(source_states) != len(devices):
+            raise ValueError("source_states must match devices length when provided")
+
+    for device, state_override in zip(devices, source_states):
+        try:
+            spec = source_to_spec(device)
+        except TypeError:
+            continue
+        state = source_state_for(spec, source=device, state=state_override)
+        if isinstance(spec, GaussianSourceSpec):
             specs.extend(
                 _compile_gaussian_source(
-                    device=device,
+                    spec=spec,
+                    state=state,
                     fields=fields,
                     dt=dt,
                     num_steps=num_steps,
@@ -220,10 +248,11 @@ def compile_source_specs(
                     total_steps=total_steps,
                 )
             )
-        elif isinstance(device, ModeSource):
+        elif isinstance(spec, ModeSourceSpec):
             specs.extend(
                 _compile_mode_source(
-                    device=device,
+                    spec=spec,
+                    state=state,
                     fields=fields,
                     dt=dt,
                     num_steps=num_steps,
@@ -237,7 +266,8 @@ def compile_source_specs(
 
 
 def _compile_gaussian_source(
-    device: GaussianSource,
+    spec: GaussianSourceSpec,
+    state: GaussianSourceState,
     fields,
     dt: float,
     num_steps: int,
@@ -246,10 +276,8 @@ def _compile_gaussian_source(
     total_steps: int | None = None,
 ) -> tuple[CompiledSourceSpec, ...]:
     # Initialize spatial profile once.
-    state = device.state
-    is_3d = len(device.position) >= 3 if hasattr(device.position, "__len__") else False
     if state.spatial_profile_ez is None:
-        device._init_spatial_profile(fields.Ez.shape, resolution, is_3d)
+        initialize_gaussian_state(spec, state, fields.Ez.shape, resolution)
 
     idx = state.grid_indices
     eps_region = to_host(fields.permittivity[idx])
@@ -257,7 +285,7 @@ def _compile_gaussian_source(
 
     coeff = -profile * dt / (EPS_0 * eps_region)
     waveform = _sample_waveform(
-        device._get_signal_value,
+        spec,
         t0=t0,
         dt=dt,
         num_steps=num_steps,
@@ -278,7 +306,8 @@ def _compile_gaussian_source(
 
 
 def _compile_mode_source(
-    device: ModeSource,
+    spec: ModeSourceSpec,
+    state: ModeSourceState,
     fields,
     dt: float,
     num_steps: int,
@@ -286,7 +315,6 @@ def _compile_mode_source(
     resolution: float,
     total_steps: int | None = None,
 ) -> tuple[CompiledSourceSpec, ...]:
-    state = device.state
     if (
         (not state.initialized)
         or (state.grid_shape != fields.permittivity.shape)
@@ -300,13 +328,12 @@ def _compile_mode_source(
             )
         )
     ):
-        device.initialize(fields.permittivity, resolution, dt=dt)
-        state = device.state
+        initialize_mode_state(spec, state, fields.permittivity, resolution, dt=dt)
 
     is_3d = bool(state.is_3d)
 
     h_waveform = _sample_waveform(
-        device._get_signal_value,
+        spec,
         t0=t0,
         dt=dt,
         num_steps=num_steps,
@@ -319,7 +346,7 @@ def _compile_mode_source(
     # same half-step base time as H plus physical plane delay to keep the 3D
     # Huygens pair phase-consistent with the 2D implementation.
     e_waveform = _sample_waveform(
-        device._get_signal_value,
+        spec,
         t0=t0,
         dt=dt,
         num_steps=num_steps,
@@ -329,7 +356,8 @@ def _compile_mode_source(
 
     if is_3d:
         return _compile_mode_source_3d(
-            device,
+            spec,
+            state,
             fields,
             dt,
             resolution,
@@ -337,7 +365,8 @@ def _compile_mode_source(
             e_waveform,
         )
     return _compile_mode_source_2d(
-        device,
+        spec,
+        state,
         fields,
         dt,
         resolution,
@@ -358,15 +387,15 @@ def _build_coeff(
 
 
 def _compile_mode_source_2d(
-    src: ModeSource,
+    spec: ModeSourceSpec,
+    state: ModeSourceState,
     fields,
     dt: float,
     resolution: float,
     h_waveform: jnp.ndarray,
     e_waveform: jnp.ndarray,
 ) -> tuple[CompiledSourceSpec, ...]:
-    state = src.state
-    pol = src.spec.pol
+    pol = spec.pol
     specs: list[CompiledSourceSpec] = []
 
     if pol == "tm":
@@ -462,7 +491,8 @@ def _compile_mode_source_2d(
 
 
 def _compile_mode_source_3d(
-    src: ModeSource,
+    spec: ModeSourceSpec,
+    state: ModeSourceState,
     fields,
     dt: float,
     resolution: float,
@@ -470,9 +500,8 @@ def _compile_mode_source_3d(
     e_waveform: jnp.ndarray,
 ) -> tuple[CompiledSourceSpec, ...]:
     specs: list[CompiledSourceSpec] = []
-    profiles, indices = _mode_3d_profiles_and_indices(src)
-    state = src.state
-    pol = src.spec.pol
+    profiles, indices = _mode_3d_profiles_and_indices(state)
+    pol = spec.pol
 
     e_terms, h_terms = _get_3d_huygens_terms(state.axis, pol)
 

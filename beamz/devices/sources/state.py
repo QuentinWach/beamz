@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
+
 
 @dataclass(slots=True)
 class GaussianSourceState:
@@ -46,3 +48,21 @@ class ModeSourceState:
     axis: object = None
     transverse_start: int | None = None
     transverse_end: int | None = None
+
+
+def create_source_state(spec):
+    if isinstance(spec, GaussianSourceSpec):
+        return GaussianSourceState()
+    if isinstance(spec, ModeSourceSpec):
+        return ModeSourceState()
+    raise TypeError(f"unsupported source spec type: {type(spec).__name__}")
+
+
+def source_state_for(spec, *, source=None, state=None):
+    expected_type = type(create_source_state(spec))
+    if isinstance(state, expected_type):
+        return state
+    source_state = getattr(source, "state", None)
+    if isinstance(source_state, expected_type):
+        return source_state
+    return create_source_state(spec)

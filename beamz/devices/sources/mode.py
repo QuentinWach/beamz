@@ -187,7 +187,13 @@ class ModeSource:
 
     def initialize(self, permittivity, resolution, dt=None):
         """Compute the mode and set up the source currents for all 6 components in 3D."""
-        setup_helpers.initialize(self, permittivity, resolution, dt=dt)
+        setup_helpers.initialize_mode_state(
+            self.spec,
+            self.state,
+            permittivity,
+            resolution,
+            dt=dt,
+        )
 
     def _compute_dt_physical(self, axis, is_3d, dx, dy, dz=None, dt=None):
         """Compute physical time shift between E and H injection planes."""
@@ -197,7 +203,7 @@ class ModeSource:
 
     def _get_signal_value(self, time, dt):
         """Interpolate signal value at arbitrary time."""
-        return apply_helpers.get_signal_value(self, time, dt)
+        return setup_helpers.sample_signal(self.spec, time, dt)
 
     def inject_h(self, fields, t, dt, current_step, resolution, design):
         """Inject magnetic current (M) into H-fields after the H update."""

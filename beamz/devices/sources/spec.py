@@ -184,3 +184,12 @@ def source_spec_from_dict(data):
     if kind == "ModeSourceSpec":
         return ModeSourceSpec.from_dict(data)
     raise ValueError(f"unknown source spec type: {kind!r}")
+
+
+def source_to_spec(source):
+    if isinstance(source, (GaussianSourceSpec, ModeSourceSpec)):
+        return source
+    spec = getattr(source, "spec", None)
+    if isinstance(spec, (GaussianSourceSpec, ModeSourceSpec)):
+        return spec
+    raise TypeError("source must be a source spec or spec-backed source facade")

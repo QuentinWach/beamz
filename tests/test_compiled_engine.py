@@ -18,6 +18,7 @@ from beamz import (
     um,
 )
 from beamz.devices.monitors.compiler import CompiledMonitorSpec
+from beamz.devices.sources.compiler import compile_source_specs
 from beamz.simulation.compiled import (
     CompiledRunConfig,
     CompiledSimulation,
@@ -109,6 +110,36 @@ def test_compiled_monitor_power_is_populated(small_sim_params):
     assert len(monitor.power_history) > 0
     assert len(monitor.power_timestamps) == len(monitor.power_history)
     assert np.isfinite(np.asarray(monitor.power_history)).all()
+
+
+def test_source_compilation_accepts_simulation_specs_only(small_sim_params):
+    wl, dx, _dt, domain, steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    sim = Simulation(
+        design=design,
+        devices=[source],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    source_specs = compile_source_specs(
+        devices=sim.spec.devices,
+        source_states=None,
+        fields=sim.fields,
+        dt=sim.dt,
+        resolution=sim.resolution,
+        num_steps=steps,
+        t0=float(sim.time[0]),
+    )
+
+    assert len(source_specs) == 1
+    assert source_specs[0].component == "Ez"
+    assert source_specs[0].waveform.shape == (steps,)
+    assert source_specs[0].coeff.ndim == 2
 
 
 def test_compiled_monitor_accumulates_across_chunks(small_sim_params):

@@ -22,6 +22,8 @@ from beamz.devices.sources.profiles import (
     _numeric_phase_delay,
     _stagger_2d_pair,
 )
+from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
+from beamz.devices.sources.state import GaussianSourceState, ModeSourceState
 from beamz.devices.sources.solve import solve_modes
 
 
@@ -84,6 +86,145 @@ _SETUP_2D_TE = {
         "offset_limit_axis": 1,
     },
 }
+
+_MODE_SPEC_MAP = {
+    "_direction_axis": "direction_axis",
+    "_direction_sign": "direction_sign",
+}
+_MODE_STATE_MAP = {
+    "_Ex_profile": "Ex_profile",
+    "_Ey_profile": "Ey_profile",
+    "_Ez_profile": "Ez_profile",
+    "_Hx_profile": "Hx_profile",
+    "_Hy_profile": "Hy_profile",
+    "_Hz_profile": "Hz_profile",
+    "_Ex_indices": "Ex_indices",
+    "_Ey_indices": "Ey_indices",
+    "_Ez_indices": "Ez_indices",
+    "_Hx_indices": "Hx_indices",
+    "_Hy_indices": "Hy_indices",
+    "_Hz_indices": "Hz_indices",
+    "_jz_profile": "jz_profile",
+    "_my_profile": "my_profile",
+    "_mz_profile": "mz_profile",
+    "_jy_profile": "jy_profile",
+    "_jx_profile": "jx_profile",
+    "_ez_indices": "ez_indices",
+    "_h_indices": "h_indices",
+    "_hz_indices": "hz_indices",
+    "_e_indices": "e_indices",
+    "_h_component": "h_component",
+    "_e_component": "e_component",
+    "_neff": "neff",
+    "_impedance_neff": "impedance_neff",
+    "_dt_physical": "dt_physical",
+    "_launch_dt": "launch_dt",
+    "_initialized": "initialized",
+    "_resolution": "resolution",
+    "_is_3d": "is_3d",
+    "_grid_shape": "grid_shape",
+    "_eps_profile_2d": "eps_profile_2d",
+    "_axis": "axis",
+    "_transverse_start": "transverse_start",
+    "_transverse_end": "transverse_end",
+}
+
+
+class _ModeSourceAdapter:
+    def __init__(self, spec, state):
+        object.__setattr__(self, "spec", spec)
+        object.__setattr__(self, "state", state)
+
+    def __getattr__(self, name):
+        if name in {"spec", "state"}:
+            return object.__getattribute__(self, name)
+        mapped = _MODE_SPEC_MAP.get(name, name)
+        spec = object.__getattribute__(self, "spec")
+        if hasattr(spec, mapped):
+            return getattr(spec, mapped)
+        state = object.__getattribute__(self, "state")
+        if name in _MODE_STATE_MAP:
+            return getattr(state, _MODE_STATE_MAP[name])
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        if name in {"spec", "state"}:
+            object.__setattr__(self, name, value)
+            return
+        if name in _MODE_STATE_MAP:
+            setattr(self.state, _MODE_STATE_MAP[name], value)
+            return
+        raise AttributeError(name)
+
+
+def sample_signal(spec, time, dt):
+    signal = spec.signal
+    idx_float = float(time / dt)
+    idx_low = int(np.floor(idx_float))
+    idx_high = idx_low + 1
+    frac = idx_float - idx_low
+
+    if 0 <= idx_low < len(signal) - 1:
+        return (1.0 - frac) * signal[idx_low] + frac * signal[idx_high]
+    if idx_low == len(signal) - 1:
+        return signal[idx_low]
+    return 0.0
+
+
+def initialize_gaussian_state(spec, state, ez_shape, resolution):
+    if not isinstance(spec, GaussianSourceSpec):
+        raise TypeError("initialize_gaussian_state expects a GaussianSourceSpec")
+    if not isinstance(state, GaussianSourceState):
+        raise TypeError("initialize_gaussian_state expects a GaussianSourceState")
+
+    is_3d = len(spec.position) >= 3 if hasattr(spec.position, "__len__") else False
+    sigma_grid = spec.width / resolution
+    radius_grid = int(np.ceil(4 * sigma_grid))
+
+    if is_3d:
+        x0, y0, z0 = spec.position
+        nz, ny, nx = ez_shape
+        cx, cy, cz = (int(round(c / resolution)) for c in (x0, y0, z0))
+
+        x_start, x_end = max(0, cx - radius_grid), min(nx, cx + radius_grid + 1)
+        y_start, y_end = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
+        z_start, z_end = max(0, cz - radius_grid), min(nz, cz + radius_grid + 1)
+
+        state.grid_indices = (
+            slice(z_start, z_end),
+            slice(y_start, y_end),
+            slice(x_start, x_end),
+        )
+
+        x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
+        y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
+        z_coords = (jnp.arange(z_start, z_end) + 0.5) * resolution
+        Z, Y, X = jnp.meshgrid(z_coords, y_coords, x_coords, indexing="ij")
+        dist_sq = (X - x0) ** 2 + (Y - y0) ** 2 + (Z - z0) ** 2
+    else:
+        x0, y0 = spec.position
+        ny, nx = ez_shape
+        cx, cy = int(round(x0 / resolution)), int(round(y0 / resolution))
+
+        x_start, x_end = max(0, cx - radius_grid), min(nx, cx + radius_grid + 1)
+        y_start, y_end = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
+
+        state.grid_indices = (slice(y_start, y_end), slice(x_start, x_end))
+
+        x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
+        y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
+        X, Y = jnp.meshgrid(x_coords, y_coords, indexing="xy")
+        dist_sq = (X - x0) ** 2 + (Y - y0) ** 2
+
+    state.spatial_profile_ez = jnp.exp(-dist_sq / (2 * spec.width**2))
+
+
+def initialize_mode_state(spec, state, permittivity, resolution, dt=None):
+    if not isinstance(spec, ModeSourceSpec):
+        raise TypeError("initialize_mode_state expects a ModeSourceSpec")
+    if not isinstance(state, ModeSourceState):
+        raise TypeError("initialize_mode_state expects a ModeSourceState")
+    return initialize(_ModeSourceAdapter(spec, state), permittivity, resolution, dt=dt)
 
 
 def _transverse_span(source, axis, ny, nx, resolution):

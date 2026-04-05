@@ -1,9 +1,9 @@
 from dataclasses import replace
 
 import jax.numpy as jnp
-import numpy as np
 
 from beamz.const import EPS_0
+from beamz.devices.sources import setup as setup_helpers
 from beamz.devices.sources.spec import GaussianSourceSpec, build_gaussian_source_spec
 from beamz.devices.sources.state import GaussianSourceState
 
@@ -120,45 +120,8 @@ class GaussianSource:
 
     def _init_spatial_profile(self, ez_shape, resolution, is_3d):
         """Compute the spatial Gaussian profile and grid indices (called once)."""
-        sigma_grid = self.width / resolution
-        radius_grid = int(np.ceil(4 * sigma_grid))
-
-        if is_3d:
-            x0, y0, z0 = self.position
-            nz, ny, nx = ez_shape
-            cx, cy, cz = (int(round(c / resolution)) for c in (x0, y0, z0))
-
-            x_start, x_end = max(0, cx - radius_grid), min(nx, cx + radius_grid + 1)
-            y_start, y_end = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
-            z_start, z_end = max(0, cz - radius_grid), min(nz, cz + radius_grid + 1)
-
-            self._grid_indices = (
-                slice(z_start, z_end),
-                slice(y_start, y_end),
-                slice(x_start, x_end),
-            )
-
-            x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
-            y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
-            z_coords = (jnp.arange(z_start, z_end) + 0.5) * resolution
-            Z, Y, X = jnp.meshgrid(z_coords, y_coords, x_coords, indexing="ij")
-            dist_sq = (X - x0) ** 2 + (Y - y0) ** 2 + (Z - z0) ** 2
-        else:
-            x0, y0 = self.position
-            ny, nx = ez_shape
-            cx, cy = int(round(x0 / resolution)), int(round(y0 / resolution))
-
-            x_start, x_end = max(0, cx - radius_grid), min(nx, cx + radius_grid + 1)
-            y_start, y_end = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
-
-            self._grid_indices = (slice(y_start, y_end), slice(x_start, x_end))
-
-            x_coords = (jnp.arange(x_start, x_end) + 0.5) * resolution
-            y_coords = (jnp.arange(y_start, y_end) + 0.5) * resolution
-            X, Y = jnp.meshgrid(x_coords, y_coords, indexing="xy")
-            dist_sq = (X - x0) ** 2 + (Y - y0) ** 2
-
-        self._spatial_profile_ez = jnp.exp(-dist_sq / (2 * self.width**2))
+        del is_3d
+        setup_helpers.initialize_gaussian_state(self.spec, self.state, ez_shape, resolution)
 
     def add_to_plot(
         self, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"

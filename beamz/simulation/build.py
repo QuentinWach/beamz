@@ -108,15 +108,18 @@ def compile_simulation(design, devices, boundaries, run_cfg, *, compiled_cls, co
     num_steps = int(run_cfg.num_steps)
     total_steps = int(getattr(run_cfg, "total_steps", num_steps))
     t0 = float(getattr(run_cfg, "t0", 0.0))
+    device_specs = tuple(getattr(device, "spec", device) for device in devices)
+    source_states = tuple(getattr(device, "state", None) for device in devices)
 
     source_specs = compile_source_specs(
-        devices=devices,
+        devices=device_specs,
         fields=fields,
         dt=dt,
         resolution=resolution,
         num_steps=num_steps,
         t0=t0,
         total_steps=total_steps,
+        source_states=source_states,
     )
 
     monitor_specs, _ = compile_monitor_specs(
