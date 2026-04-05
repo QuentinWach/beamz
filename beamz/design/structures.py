@@ -50,6 +50,83 @@ def _normalize_position(position, z=None):
     return position
 
 
+def _require_positive(name, value):
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+
+
+def _require_nonnegative(name, value):
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative, got {value}")
+
+
+def _vertices_center(vertices):
+    return tuple(sum(v[i] for v in vertices) / len(vertices) for i in range(3))
+
+
+def _vertices_bbox(vertices):
+    x_vals = [v[0] for v in vertices]
+    y_vals = [v[1] for v in vertices]
+    z_vals = [v[2] for v in vertices]
+    return (
+        min(x_vals),
+        min(y_vals),
+        min(z_vals),
+        max(x_vals),
+        max(y_vals),
+        max(z_vals),
+    )
+
+
+def _circle_vertices(position, radius, points, *, theta=None, reverse=False):
+    theta = (
+        np.linspace(0, 2 * np.pi, points, endpoint=False)
+        if theta is None
+        else np.asarray(theta, dtype=float)
+    )
+    angles = reversed(theta) if reverse else theta
+    return [
+        (
+            position[0] + radius * np.cos(t),
+            position[1] + radius * np.sin(t),
+            position[2],
+        )
+        for t in angles
+    ]
+
+
+def _ring_vertices(position, inner_radius, outer_radius, points):
+    theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
+    outer = _circle_vertices(position, outer_radius, points, theta=theta)
+    inner = _circle_vertices(position, inner_radius, points, theta=theta, reverse=True)
+    return outer, inner
+
+
+def _bend_vertices(position, inner_radius, outer_radius, angle, rotation, points):
+    theta = np.linspace(0, np.radians(angle), points)
+    rotation_rad = np.radians(rotation)
+    angles = theta + rotation_rad
+    outer = _circle_vertices(position, outer_radius, points, theta=angles)
+    inner = _circle_vertices(position, inner_radius, points, theta=angles, reverse=True)
+    return outer + inner
+
+
+def _update_box_metrics(shape):
+    min_x, min_y, min_z, max_x, max_y, max_z = _vertices_bbox(shape.vertices)
+    shape.position = (min_x, min_y, min_z)
+    shape.width = max_x - min_x
+    shape.height = max_y - min_y
+    shape.depth = max_z - min_z
+
+
+def _default_plot_style(shape, facecolor=None, alpha=None, linestyle=None):
+    return (
+        shape.color if facecolor is None else facecolor,
+        1 if alpha is None else alpha,
+        "-" if linestyle is None else linestyle,
+    )
+
+
 class Polygon:
     def __init__(
         self,
@@ -144,9 +221,7 @@ class Polygon:
         if s_z is None:
             s_z = 1.0 if s_y != s_x else s_x
         if self.vertices:
-            x_center = sum(v[0] for v in self.vertices) / len(self.vertices)
-            y_center = sum(v[1] for v in self.vertices) / len(self.vertices)
-            z_center = sum(v[2] for v in self.vertices) / len(self.vertices)
+            x_center, y_center, z_center = _vertices_center(self.vertices)
             self.vertices = [
                 (
                     x_center + (v[0] - x_center) * s_x,
@@ -174,14 +249,11 @@ class Polygon:
     def rotate(self, angle, axis="z", point=None):
         if self.vertices:
             angle_rad = np.radians(angle)
-            if point is None:
-                center = (
-                    sum(v[0] for v in self.vertices) / len(self.vertices),
-                    sum(v[1] for v in self.vertices) / len(self.vertices),
-                    sum(v[2] for v in self.vertices) / len(self.vertices),
-                )
-            else:
-                center = (point[0], point[1], point[2] if len(point) > 2 else 0)
+            center = (
+                _vertices_center(self.vertices)
+                if point is None
+                else (point[0], point[1], point[2] if len(point) > 2 else 0)
+            )
 
             self.vertices = _rotate_vertices(self.vertices, angle_rad, axis, center)
             self.interiors = [
@@ -222,12 +294,7 @@ class Polygon:
     def get_bounding_box(self):
         if not self.vertices or len(self.vertices) == 0:
             return (0, 0, 0, 0, 0, 0)
-        x_coords = [v[0] for v in self.vertices]
-        y_coords = [v[1] for v in self.vertices]
-        z_coords = [v[2] for v in self.vertices]
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-        min_z, max_z = min(z_coords), max(z_coords)
+        min_x, min_y, min_z, max_x, max_y, max_z = _vertices_bbox(self.vertices)
 
         # Expand Z-range by depth if present
         max_z = max(max_z, min_z + getattr(self, "depth", 0))
@@ -288,13 +355,9 @@ class Rectangle(Polygon):
         optimize=False,
         z=None,
     ):
-        # Validate dimensions
-        if width <= 0:
-            raise ValueError(f"width must be positive, got {width}")
-        if height <= 0:
-            raise ValueError(f"height must be positive, got {height}")
-        if depth < 0:
-            raise ValueError(f"depth must be non-negative, got {depth}")
+        _require_positive("width", width)
+        _require_positive("height", height)
+        _require_nonnegative("depth", depth)
 
         position = _normalize_position(position, z)
         x, y, z_pos = position
@@ -326,16 +389,7 @@ class Rectangle(Polygon):
 
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
-        min_x = min(v[0] for v in self.vertices)
-        min_y = min(v[1] for v in self.vertices)
-        min_z = min(v[2] for v in self.vertices)
-        max_x = max(v[0] for v in self.vertices)
-        max_y = max(v[1] for v in self.vertices)
-        max_z = max(v[2] for v in self.vertices)
-        self.position = (min_x, min_y, min_z)
-        self.width = max_x - min_x
-        self.height = max_y - min_y
-        self.depth = max_z - min_z
+        _update_box_metrics(self)
         return self
 
     def scale(self, s_x, s_y=None, s_z=None):
@@ -376,49 +430,26 @@ class Circle(Polygon):
         depth=0,
         z=0,
     ):
-        # Validate dimensions
-        if radius <= 0:
-            raise ValueError(f"radius must be positive, got {radius}")
-        if depth < 0:
-            raise ValueError(f"depth must be non-negative, got {depth}")
+        _require_positive("radius", radius)
+        _require_nonnegative("depth", depth)
 
-        position = _normalize_position(position)
-        theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
-        vertices = [
-            (
-                position[0] + radius * np.cos(t),
-                position[1] + radius * np.sin(t),
-                position[2],
-            )
-            for t in theta
-        ]
+        position = _normalize_position(position, z)
+        vertices = _circle_vertices(position, radius, points)
         super().__init__(
             vertices=vertices,
             material=material,
             color=color,
             optimize=optimize,
             depth=depth,
-            z=z,
+            z=position[2],
         )
         self.position = position
         self.radius = radius
         self.points = points
 
     def scale(self, s_x, s_y=None, s_z=None):
-        if s_y is None:
-            s_y = s_x
-        if s_z is None:
-            s_z = 1.0
         self.radius *= s_x
-        theta = np.linspace(0, 2 * np.pi, self.points, endpoint=False)
-        self.vertices = [
-            (
-                self.position[0] + self.radius * np.cos(t),
-                self.position[1] + self.radius * np.sin(t),
-                self.position[2],
-            )
-            for t in theta
-        ]
+        self.vertices = _circle_vertices(self.position, self.radius, self.points)
         return self
 
     def copy(self):
@@ -447,34 +478,17 @@ class Ring(Polygon):
         depth=0,
         z=None,
     ):
-        # Validate dimensions
-        if inner_radius <= 0:
-            raise ValueError(f"inner_radius must be positive, got {inner_radius}")
+        _require_positive("inner_radius", inner_radius)
         if outer_radius <= inner_radius:
             raise ValueError(
                 f"outer_radius ({outer_radius}) must be greater than inner_radius ({inner_radius})"
             )
-        if depth < 0:
-            raise ValueError(f"depth must be non-negative, got {depth}")
+        _require_nonnegative("depth", depth)
 
         position = _normalize_position(position, z)
-        theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
-        outer_ext_vertices = [
-            (
-                position[0] + outer_radius * np.cos(t),
-                position[1] + outer_radius * np.sin(t),
-                position[2],
-            )
-            for t in theta
-        ]
-        inner_int_vertices_cw = [
-            (
-                position[0] + inner_radius * np.cos(t),
-                position[1] + inner_radius * np.sin(t),
-                position[2],
-            )
-            for t in reversed(theta)
-        ]
+        outer_ext_vertices, inner_int_vertices_cw = _ring_vertices(
+            position, inner_radius, outer_radius, points
+        )
         super().__init__(
             vertices=outer_ext_vertices,
             interiors=[inner_int_vertices_cw] if inner_int_vertices_cw else [],
@@ -490,29 +504,11 @@ class Ring(Polygon):
         self.outer_radius = outer_radius
 
     def scale(self, s_x, s_y=None, s_z=None):
-        if s_y is None:
-            s_y = s_x
-        if s_z is None:
-            s_z = 1.0
         self.inner_radius *= s_x
         self.outer_radius *= s_x
-        theta = np.linspace(0, 2 * np.pi, self.points, endpoint=False)
-        outer_vertices = [
-            (
-                self.position[0] + self.outer_radius * np.cos(t),
-                self.position[1] + self.outer_radius * np.sin(t),
-                self.position[2],
-            )
-            for t in theta
-        ]
-        inner_vertices = [
-            (
-                self.position[0] + self.inner_radius * np.cos(t),
-                self.position[1] + self.inner_radius * np.sin(t),
-                self.position[2],
-            )
-            for t in reversed(theta)
-        ]
+        outer_vertices, inner_vertices = _ring_vertices(
+            self.position, self.inner_radius, self.outer_radius, self.points
+        )
         self.vertices = outer_vertices
         self.interiors = [inner_vertices]
         return self
@@ -520,12 +516,9 @@ class Ring(Polygon):
     def add_to_plot(
         self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
     ):
-        if facecolor is None:
-            facecolor = self.color
-        if alpha is None:
-            alpha = 1
-        if linestyle is None:
-            linestyle = "-"
+        facecolor, alpha, linestyle = _default_plot_style(
+            self, facecolor, alpha, linestyle
+        )
         return super().add_to_plot(
             ax,
             facecolor=facecolor,
@@ -563,27 +556,17 @@ class CircularBend(Polygon):
         depth=0,
         z=0,
     ):
-        position = _normalize_position(position)
+        _require_positive("inner_radius", inner_radius)
+        if outer_radius <= inner_radius:
+            raise ValueError(
+                f"outer_radius ({outer_radius}) must be greater than inner_radius ({inner_radius})"
+            )
+        _require_positive("angle", angle)
+        _require_nonnegative("depth", depth)
+
+        position = _normalize_position(position, z)
         self.points = points
-        theta = np.linspace(0, np.radians(angle), points)
-        rotation_rad = np.radians(rotation)
-        outer_vertices = [
-            (
-                position[0] + outer_radius * np.cos(t + rotation_rad),
-                position[1] + outer_radius * np.sin(t + rotation_rad),
-                position[2],
-            )
-            for t in theta
-        ]
-        inner_vertices = [
-            (
-                position[0] + inner_radius * np.cos(t + rotation_rad),
-                position[1] + inner_radius * np.sin(t + rotation_rad),
-                position[2],
-            )
-            for t in reversed(theta)
-        ]
-        vertices = outer_vertices + inner_vertices
+        vertices = _bend_vertices(position, inner_radius, outer_radius, angle, rotation, points)
         super().__init__(
             vertices=vertices,
             material=material,
@@ -605,43 +588,24 @@ class CircularBend(Polygon):
         return self
 
     def scale(self, s_x, s_y=None, s_z=None):
-        if s_y is None:
-            s_y = s_x
-        if s_z is None:
-            s_z = 1.0
         self.inner_radius *= s_x
         self.outer_radius *= s_x
-        theta = np.linspace(0, np.radians(self.angle), self.points)
-        rotation_rad = np.radians(self.rotation)
-        outer_vertices = [
-            (
-                self.position[0] + self.outer_radius * np.cos(t + rotation_rad),
-                self.position[1] + self.outer_radius * np.sin(t + rotation_rad),
-                self.position[2],
-            )
-            for t in theta
-        ]
-        inner_vertices = [
-            (
-                self.position[0] + self.inner_radius * np.cos(t + rotation_rad),
-                self.position[1] + self.inner_radius * np.sin(t + rotation_rad),
-                self.position[2],
-            )
-            for t in reversed(theta)
-        ]
-        self.vertices = outer_vertices + inner_vertices
+        self.vertices = _bend_vertices(
+            self.position,
+            self.inner_radius,
+            self.outer_radius,
+            self.angle,
+            self.rotation,
+            self.points,
+        )
         return self
 
     def add_to_plot(
         self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
     ):
-        if facecolor is None:
-            facecolor = self.color
-        if alpha is None:
-            alpha = 1
-        if linestyle is None:
-            linestyle = "-"
-        # Use parent polygon drawing
+        facecolor, alpha, linestyle = _default_plot_style(
+            self, facecolor, alpha, linestyle
+        )
         return super().add_to_plot(
             ax,
             facecolor=facecolor,
@@ -679,7 +643,12 @@ class Taper(Polygon):
         depth=0,
         z=0,
     ):
-        position = _normalize_position(position)
+        _require_positive("input_width", input_width)
+        _require_positive("output_width", output_width)
+        _require_positive("length", length)
+        _require_nonnegative("depth", depth)
+
+        position = _normalize_position(position, z)
         x, y, z = position
         vertices = [
             (x, y - input_width / 2, z),
@@ -703,12 +672,7 @@ class Taper(Polygon):
 
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
-        min_x = min(v[0] for v in self.vertices)
-        min_y = min(v[1] for v in self.vertices)
-        min_z = min(v[2] for v in self.vertices)
-        max_x = max(v[0] for v in self.vertices)
-        max_y = max(v[1] for v in self.vertices)
-        max_z = max(v[2] for v in self.vertices)
+        min_x, min_y, min_z, max_x, _, _ = _vertices_bbox(self.vertices)
         self.position = (min_x, min_y, min_z)
         self.length = max_x - min_x
         return self
@@ -734,12 +698,9 @@ class Sphere(Polygon):
         self, position=(0, 0, 0), radius=1, material=None, color=None, optimize=False
     ):
         """Create a 3D sphere at position (x,y,z) with specified radius."""
-        # Validate dimensions
-        if radius <= 0:
-            raise ValueError(f"radius must be positive, got {radius}")
+        _require_positive("radius", radius)
 
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
+        position = _normalize_position(position)
         super().__init__(
             vertices=[],
             material=material,
