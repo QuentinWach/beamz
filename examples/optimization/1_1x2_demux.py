@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 
 from beamz import *
 from beamz.optimization.topology import (
@@ -52,6 +53,16 @@ POWER_SUM_TOL = 1.02
 BINARITY_START = 0.01
 BINARITY_END = 0.18
 POLISH_BINARITY = 0.30
+FINAL_BINARY_POLISH_STEPS = 40
+FINAL_BINARY_LR = 0.00005
+FINAL_BINARY_BETA = 96.0
+FINAL_BINARY_BLUR = 0.08 * UM
+FINAL_BINARY_WEIGHT = 0.90
+GRAY_LOW = 0.10
+GRAY_HIGH = 0.90
+TARGET_GRAY_FRAC = 0.06
+TARGET_BINARITY = 0.94
+FINAL_BINARY_PATIENCE = 12
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
@@ -73,6 +84,15 @@ X_MON_REF = X_INV0 - 0.70 * UM
 X_MON_IN = X_INV0 - 0.35 * UM
 X_MON_OUT = W - PML_T - 0.35 * UM
 MON_SPAN = 2.6 * WG_W
+
+SHORT_FLUX_CMAP = LinearSegmentedColormap.from_list(
+    "beamz_short_flux",
+    ["#000000", "#03111f", "#0f4aa8", "#3ca6ff", "#d9f3ff"],
+)
+LONG_FLUX_CMAP = LinearSegmentedColormap.from_list(
+    "beamz_long_flux",
+    ["#000000", "#22060b", "#8f112b", "#ff5a36", "#ffe3cf"],
+)
 
 
 def build_waveform(wavelength):
@@ -273,6 +293,8 @@ def save_progress(path, hist):
     axes[2].plot(steps, hist["fom"][WL_SHORT], "b-", lw=2.0, label="FoM 1.30 um")
     axes[2].plot(steps, hist["fom"][WL_LONG], "r-", lw=2.0, label="FoM 1.55 um")
     axes[2].plot(steps, 100.0 * np.array(hist["power_sum"]), color="tab:purple", lw=1.2, label="Guided power sum")
+    axes[2].plot(steps, 100.0 * np.array(hist["gray_frac"]), color="0.65", lw=1.3, label="Gray frac")
+    axes[2].plot(steps, 100.0 * np.array(hist["binarity"]), color="tab:green", lw=1.5, label="Binarity")
     axes[2].legend(loc="best")
     axes[2].grid(alpha=0.3)
     axes[2].set_xlabel("Optimization step")
@@ -308,7 +330,7 @@ def save_overlay(path, short_flux, long_flux, design_mask):
 
     ax.imshow(
         short_display,
-        cmap="Blues",
+        cmap=SHORT_FLUX_CMAP,
         origin="lower",
         extent=extent,
         interpolation="bicubic",
@@ -316,7 +338,7 @@ def save_overlay(path, short_flux, long_flux, design_mask):
     )
     ax.imshow(
         long_display,
-        cmap="Reds",
+        cmap=LONG_FLUX_CMAP,
         origin="lower",
         extent=extent,
         interpolation="bicubic",
@@ -345,7 +367,7 @@ def save_overlay(path, short_flux, long_flux, design_mask):
         0.02,
         0.98,
         f"{WL_SHORT / UM:.2f} um",
-        color="#4da3ff",
+        color="#6cc6ff",
         fontsize=10,
         ha="left",
         va="top",
@@ -355,7 +377,7 @@ def save_overlay(path, short_flux, long_flux, design_mask):
         0.98,
         0.98,
         f"{WL_LONG / UM:.2f} um",
-        color="#ff5c5c",
+        color="#ff8d73",
         fontsize=10,
         ha="right",
         va="top",
@@ -398,6 +420,22 @@ def flux_artifacts(grid, density):
         fluxes[wl] = flux_map(fields, waves[wl]["time"], waves[wl]["gate_start"])
     design_mask = (grid.permittivity > 0.5 * (EPS_CLAD + EPS_CORE)).astype(float)
     return modal, fluxes, design_mask
+
+
+def density_metrics(density):
+    rho = np.asarray(density[mask], dtype=float)
+    if rho.size == 0:
+        return 1.0, 0.0
+    binarity = float(np.mean((2.0 * rho - 1.0) ** 2))
+    gray_frac = float(np.mean((rho > GRAY_LOW) & (rho < GRAY_HIGH)))
+    return binarity, gray_frac
+
+
+def maybe_update_best_binary(density):
+    binary_density = (np.asarray(density, dtype=float) >= 0.5).astype(float)
+    binary_score, binary_modal = score_density(grid, binary_density)
+    binary_ok = max(m["power_sum"] for m in binary_modal.values()) <= POWER_SUM_TOL
+    return binary_density, binary_score, binary_modal, binary_ok
 design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
 for x, y in ((0.0, Y_IN), (X_INV1, Y_TOP), (X_INV1, Y_BOT)):
     design += Rectangle(
@@ -446,6 +484,8 @@ hist = {
     "ema": [],
     "route": [],
     "power_sum": [],
+    "binarity": [],
+    "gray_frac": [],
     "tx": {WL_SHORT: {"target": [], "leak": []}, WL_LONG: {"target": [], "leak": []}},
     "fom": {WL_SHORT: [], WL_LONG: []},
 }
@@ -455,14 +495,15 @@ best_projected_density = None
 best_binary_score = -np.inf
 best_binary_density = None
 best_binary_step = 0
+best_binary_binarity = -np.inf
+best_binary_gray_frac = 1.0
 
-for step in range(1, STEPS + 1):
-    beta, blur_radius, binarity_weight, is_polish = step_settings(step)
-    if step == POLISH_START:
-        import optax
 
-        opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
-        opt._opt_state = None
+def optimization_step(step_tag, beta, blur_radius, binarity_weight, *, stage_name):
+    global ema, best_projected_score, best_projected_density
+    global best_binary_score, best_binary_density, best_binary_step
+    global best_binary_binarity, best_binary_gray_frac
+
     opt.filter_radius = blur_radius
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
     density = opt.get_physical_density(beta)
@@ -504,10 +545,18 @@ for step in range(1, STEPS + 1):
         wl = cache["wl"]
         wave = cache["wave"]
         grad_top = np.array(
-            compute_overlap_gradient(cache["ez_hist"], run_adjoint(grid, wl, "top", wave), forward_start=wave["gate_index"])
+            compute_overlap_gradient(
+                cache["ez_hist"],
+                run_adjoint(grid, wl, "top", wave),
+                forward_start=wave["gate_index"],
+            )
         )
         grad_bot = np.array(
-            compute_overlap_gradient(cache["ez_hist"], run_adjoint(grid, wl, "bottom", wave), forward_start=wave["gate_index"])
+            compute_overlap_gradient(
+                cache["ez_hist"],
+                run_adjoint(grid, wl, "bottom", wave),
+                forward_start=wave["gate_index"],
+            )
         )
         if cache["target"] == "top":
             coeff_top, coeff_bot = (1.0 + LOSS_WEIGHT) / cache["norm"], (LOSS_WEIGHT - 1.0) / cache["norm"]
@@ -522,7 +571,11 @@ for step in range(1, STEPS + 1):
         )
         grad = coeff_top * grad_top + coeff_bot * grad_bot
         route_terms.append(fom)
-        grad_terms.append(grad / max(float(np.sqrt(np.mean(grad[mask] ** 2))), 1e-30) if NORMALIZE_PER_WL_GRAD else grad)
+        grad_terms.append(
+            grad / max(float(np.sqrt(np.mean(grad[mask] ** 2))), 1e-30)
+            if NORMALIZE_PER_WL_GRAD
+            else grad
+        )
         hist["fom"][wl].append(100.0 * fom)
         report.append(
             f"{wl / UM:.3f}um: T={100.0 * cache['target_tx']:5.1f}% "
@@ -531,8 +584,8 @@ for step in range(1, STEPS + 1):
         )
 
     grad_total = sum(grad_terms) / len(grad_terms)
+    binarity, gray_frac = density_metrics(density)
     rho = density[mask]
-    binarity = float(np.mean((2.0 * rho - 1.0) ** 2)) if rho.size > 0 else 0.0
     if rho.size > 0:
         grad_total[mask] += binarity_weight * (
             4.0 * (2.0 * rho - 1.0) / (max(opt.eps_max - opt.eps_min, 1e-30) * float(rho.size))
@@ -549,73 +602,222 @@ for step in range(1, STEPS + 1):
     if max_power_sum <= POWER_SUM_TOL and route_obj > best_projected_score:
         best_projected_score = route_obj
         best_projected_density = density.copy()
+
+    binary_density, binary_score, binary_modal, binary_ok = maybe_update_best_binary(density)
+    if binary_ok:
+        improved_binary = (
+            (binary_score > best_binary_score + 1e-9)
+            or (
+                abs(binary_score - best_binary_score) <= 1e-9
+                and (
+                    binarity > best_binary_binarity + 1e-9
+                    or (
+                        abs(binarity - best_binary_binarity) <= 1e-9
+                        and gray_frac < best_binary_gray_frac - 1e-9
+                    )
+                )
+            )
+        )
+        if improved_binary:
+            best_binary_score = binary_score
+            best_binary_density = binary_density.copy()
+            best_binary_step = len(hist["objective"]) + 1
+            best_binary_binarity = binarity
+            best_binary_gray_frac = gray_frac
+
     dmax = opt.apply_gradient(-grad_total, beta)
     hist["route"].append(route_obj)
     hist["objective"].append(objective)
+    hist["binarity"].append(binarity)
+    hist["gray_frac"].append(gray_frac)
     ema = objective if ema is None else EMA_ALPHA * objective + (1.0 - EMA_ALPHA) * ema
     hist["ema"].append(ema)
 
+    return {
+        "density": density,
+        "objective": objective,
+        "route_obj": route_obj,
+        "target_mean": target_mean,
+        "power_sum_mean": power_sum_mean,
+        "binarity": binarity,
+        "gray_frac": gray_frac,
+        "binary_score": binary_score,
+        "binary_ok": binary_ok,
+        "binary_modal": binary_modal,
+        "dmax": dmax,
+        "report": report,
+        "stage_name": stage_name,
+        "step_tag": step_tag,
+    }
+
+
+last_result = None
+stalled_binary_updates = 0
+
+for step in range(1, STEPS + 1):
+    beta, blur_radius, binarity_weight, is_polish = step_settings(step)
+    if step == POLISH_START:
+        import optax
+
+        opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
+        opt._opt_state = None
+
+    last_result = optimization_step(
+        f"{step:03d}",
+        beta,
+        blur_radius,
+        binarity_weight,
+        stage_name="polish" if is_polish else "main",
+    )
+
     if step == 1 or step % PRINT_EVERY == 0 or step == STEPS:
         print(
-            f"[{step:03d}/{STEPS}] Obj={objective:.4f} meanT={100.0 * target_mean:.1f}% "
-            f"Psum={100.0 * power_sum_mean:.1f}% bin={binarity:.2f} "
-            f"{'polish' if is_polish else 'main'} beta={beta:.1f} dmax={dmax:.3e} | "
-            + " | ".join(report)
+            f"[{step:03d}/{STEPS}] Obj={last_result['objective']:.4f} "
+            f"meanT={100.0 * last_result['target_mean']:.1f}% "
+            f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
+            f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
+            f"{last_result['stage_name']} beta={beta:.1f} dmax={last_result['dmax']:.3e} | "
+            + " | ".join(last_result["report"])
         )
 
     should_debug = step == 1 or step % DEBUG_EVERY == 0 or step == STEPS or is_polish
     if SAVE_DEBUG and should_debug:
-        binary_density = (density >= 0.5).astype(float)
-        binary_score, binary_modal = score_density(grid, binary_density)
-        if max(m["power_sum"] for m in binary_modal.values()) <= POWER_SUM_TOL and binary_score > best_binary_score:
-            best_binary_score = binary_score
-            best_binary_density = binary_density.copy()
-            best_binary_step = step
-        set_design(grid, base_eps, mask, density, opt)
+        set_design(grid, base_eps, mask, last_result["density"], opt)
         plt.imsave(f"{PREFIX}_topo_{step:03d}.png", grid.permittivity.T, cmap="gray", origin="lower")
         plt.imsave(
             f"{PREFIX}_density_{step:03d}.png",
-            density.T,
+            last_result["density"].T,
             cmap="gray",
             vmin=0.0,
             vmax=1.0,
             origin="lower",
         )
-        _, fluxes, _ = flux_artifacts(grid, density)
+        _, fluxes, _ = flux_artifacts(grid, last_result["density"])
         save_flux(f"{PREFIX}_flux_short_{step:03d}.png", fluxes[WL_SHORT])
         save_flux(f"{PREFIX}_flux_long_{step:03d}.png", fluxes[WL_LONG])
         save_progress(f"{PREFIX}_progress_{step:03d}.png", hist)
         save_progress(f"{PREFIX}_progress_latest.png", hist)
-        if (
-            ENABLE_EARLY_STOP
-            and is_polish
-            and best_binary_step > 0
-            and step - best_binary_step >= EARLY_STOP_PATIENCE
-            and binary_score < best_binary_score - 0.03
+
+    if last_result["binary_ok"] and abs(last_result["binary_score"] - best_binary_score) <= 1e-9:
+        stalled_binary_updates = 0
+    else:
+        stalled_binary_updates += 1
+
+    if (
+        ENABLE_EARLY_STOP
+        and is_polish
+        and best_binary_density is not None
+        and stalled_binary_updates >= EARLY_STOP_PATIENCE
+        and last_result["binary_score"] < best_binary_score - 0.03
+    ):
+        print(
+            f"Stopping polish at step {step:03d}; binary score stalled for {stalled_binary_updates} steps."
+        )
+        break
+
+need_binary_polish = (
+    best_binary_density is None
+    or best_binary_gray_frac > TARGET_GRAY_FRAC
+    or best_binary_binarity < TARGET_BINARITY
+)
+
+if need_binary_polish:
+    import optax
+
+    print(
+        "Entering final binary polish: "
+        f"best_gray={100.0 * best_binary_gray_frac:.1f}% "
+        f"best_bin={best_binary_binarity:.3f}"
+    )
+    opt.optax_optimizer = optax.adam(learning_rate=FINAL_BINARY_LR)
+    opt._opt_state = None
+    stalled_binary_updates = 0
+
+    for polish_step in range(1, FINAL_BINARY_POLISH_STEPS + 1):
+        last_result = optimization_step(
+            f"bp{polish_step:03d}",
+            FINAL_BINARY_BETA,
+            FINAL_BINARY_BLUR,
+            FINAL_BINARY_WEIGHT,
+            stage_name="binary",
+        )
+
+        if polish_step == 1 or polish_step % PRINT_EVERY == 0 or polish_step == FINAL_BINARY_POLISH_STEPS:
+            print(
+                f"[bp{polish_step:03d}/{FINAL_BINARY_POLISH_STEPS}] Obj={last_result['objective']:.4f} "
+                f"meanT={100.0 * last_result['target_mean']:.1f}% "
+                f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
+                f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
+                f"beta={FINAL_BINARY_BETA:.1f} dmax={last_result['dmax']:.3e}"
+            )
+
+        should_debug = SAVE_DEBUG and (
+            polish_step == 1
+            or polish_step % DEBUG_EVERY == 0
+            or polish_step == FINAL_BINARY_POLISH_STEPS
+        )
+        if should_debug:
+            set_design(grid, base_eps, mask, last_result["density"], opt)
+            plt.imsave(
+                f"{PREFIX}_topo_bp{polish_step:03d}.png",
+                grid.permittivity.T,
+                cmap="gray",
+                origin="lower",
+            )
+            plt.imsave(
+                f"{PREFIX}_density_bp{polish_step:03d}.png",
+                last_result["density"].T,
+                cmap="gray",
+                vmin=0.0,
+                vmax=1.0,
+                origin="lower",
+            )
+            _, fluxes, _ = flux_artifacts(grid, last_result["density"])
+            save_flux(f"{PREFIX}_flux_short_bp{polish_step:03d}.png", fluxes[WL_SHORT])
+            save_flux(f"{PREFIX}_flux_long_bp{polish_step:03d}.png", fluxes[WL_LONG])
+            save_progress(f"{PREFIX}_progress_bp{polish_step:03d}.png", hist)
+            save_progress(f"{PREFIX}_progress_latest.png", hist)
+
+        if last_result["binary_ok"] and abs(last_result["binary_score"] - best_binary_score) <= 1e-9:
+            stalled_binary_updates = 0
+        else:
+            stalled_binary_updates += 1
+
+        if best_binary_density is not None and (
+            best_binary_gray_frac <= TARGET_GRAY_FRAC
+            and best_binary_binarity >= TARGET_BINARITY
+            and stalled_binary_updates >= FINAL_BINARY_PATIENCE
         ):
-            print(f"Stopping polish at step {step:03d}; best binary checkpoint was step {best_binary_step:03d}.")
+            print(
+                "Binary polish converged: "
+                f"gray={100.0 * best_binary_gray_frac:.1f}% "
+                f"bin={best_binary_binarity:.3f}"
+            )
             break
 
 save_progress(f"{PREFIX}_progress_final.png", hist)
 
-if best_projected_density is None:
-    best_projected_density = density.copy()
+if best_projected_density is None and last_result is not None:
+    best_projected_density = last_result["density"].copy()
 if best_binary_density is None:
     best_binary_density = (best_projected_density >= 0.5).astype(float)
+    best_binary_binarity, best_binary_gray_frac = density_metrics(best_binary_density)
+    fallback_score, fallback_modal = score_density(grid, best_binary_density)
+    if max(m["power_sum"] for m in fallback_modal.values()) <= POWER_SUM_TOL:
+        best_binary_score = fallback_score
 
-for label, density, path in (
-    ("projected", best_projected_density, f"{PREFIX}_final_projected_flux_overlay.png"),
-    ("binary", best_binary_density, f"{PREFIX}_final_binary_flux_overlay.png"),
-):
-    modal, fluxes, design_mask = flux_artifacts(grid, density)
-    save_overlay(
-        path,
-        fluxes[WL_SHORT],
-        fluxes[WL_LONG],
-        design_mask,
-    )
-    print(
-        f"{label}: "
-        f"short target={100.0 * modal[WL_SHORT]['tx_top']:.2f}% leak={100.0 * modal[WL_SHORT]['tx_bot']:.2f}% | "
-        f"long target={100.0 * modal[WL_LONG]['tx_bot']:.2f}% leak={100.0 * modal[WL_LONG]['tx_top']:.2f}%"
-    )
+final_modal, final_fluxes, final_design_mask = flux_artifacts(grid, best_binary_density)
+save_flux(f"{PREFIX}_final_binary_flux_short.png", final_fluxes[WL_SHORT])
+save_flux(f"{PREFIX}_final_binary_flux_long.png", final_fluxes[WL_LONG])
+save_overlay(
+    f"{PREFIX}_final_binary_flux_overlay.png",
+    final_fluxes[WL_SHORT],
+    final_fluxes[WL_LONG],
+    final_design_mask,
+)
+print(
+    "final binary: "
+    f"gray={100.0 * best_binary_gray_frac:.1f}% bin={best_binary_binarity:.3f} | "
+    f"short target={100.0 * final_modal[WL_SHORT]['tx_top']:.2f}% leak={100.0 * final_modal[WL_SHORT]['tx_bot']:.2f}% | "
+    f"long target={100.0 * final_modal[WL_LONG]['tx_bot']:.2f}% leak={100.0 * final_modal[WL_LONG]['tx_top']:.2f}%"
+)
