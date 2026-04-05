@@ -1,9 +1,10 @@
+import math
 import os
 from types import SimpleNamespace
 
 import jax.numpy as jnp
-import numpy as np
 
+from beamz.arrays import stack_host, to_host, to_scalar
 from beamz.devices.monitors.monitors import Monitor
 from beamz.simulation.compiled import (
     EngineState,
@@ -91,8 +92,7 @@ def _make_chunk_monitor_state(sim, program):
     if (
         sim._compiled_monitor_state is not None
         and program.monitor_specs
-        and int(np.asarray(sim._compiled_monitor_state.counts.shape[0]))
-        == len(program.monitor_specs)
+        and int(sim._compiled_monitor_state.counts.shape[0]) == len(program.monitor_specs)
     ):
         return sim._compiled_monitor_state
     if program.monitor_specs:
@@ -194,13 +194,13 @@ def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, 
         sim.fields.Hx = engine_state.hx
         sim.fields.Hy = engine_state.hy
         sim.fields.Hz = engine_state.hz
-        sim.t = float(np.asarray(engine_state.t))
-        sim.current_step = int(np.asarray(engine_state.current_step))
+        sim.t = to_scalar(engine_state.t, cast=float)
+        sim.current_step = to_scalar(engine_state.current_step, cast=int)
 
         if field_history is not None and (sim.current_step % record_every == 0):
             for name in record_fields:
                 if hasattr(sim.fields, name):
-                    field_history[name].append(np.array(getattr(sim.fields, name)))
+                    field_history[name].append(to_host(getattr(sim.fields, name), copy=True))
 
         steps_done += this_chunk
         steps_remaining -= this_chunk
@@ -221,10 +221,7 @@ def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, 
 
     result = {}
     if field_history is not None:
-        result["fields"] = {
-            key: np.stack(values) if len(values) > 0 else np.zeros((0,))
-            for key, values in field_history.items()
-        }
+        result["fields"] = {key: stack_host(values) for key, values in field_history.items()}
     monitors = [device for device in sim.devices if isinstance(device, Monitor)]
     if monitors:
         result["monitors"] = monitors
@@ -247,12 +244,12 @@ def run_compiled_until_decay(
         return 0
     dt = float(sim.dt)
     chunk_steps = (
-        max(64, min(512, int(np.ceil(total_steps / 24.0))))
+        max(64, min(512, math.ceil(total_steps / 24.0)))
         if chunk_steps is None
         else max(1, int(chunk_steps))
     )
     lookback_records = max(2, int(lookback_records))
-    min_steps = int(np.ceil(max(0.0, float(min_time_s)) / max(dt, 1e-30)))
+    min_steps = math.ceil(max(0.0, float(min_time_s)) / max(dt, 1e-30))
     steps_done = 0
     peak = 0.0
 
@@ -262,14 +259,14 @@ def run_compiled_until_decay(
         steps_done += this_chunk
 
         histories = [
-            np.abs(np.asarray(mon.power_history, dtype=np.float64))
+            abs(to_host(mon.power_history, dtype=float))
             for mon in monitors
             if len(mon.power_history)
         ]
-        tail = np.inf
+        tail = math.inf
         if histories:
-            peak = max(peak, max(float(np.max(hist)) for hist in histories))
-            tail = max(float(np.max(hist[-lookback_records:])) for hist in histories)
+            peak = max(peak, max(float(hist.max()) for hist in histories))
+            tail = max(float(hist[-lookback_records:].max()) for hist in histories)
 
         if progress:
             pct = 100.0 * steps_done / max(total_steps, 1)
@@ -282,7 +279,7 @@ def run_compiled_until_decay(
         if (
             steps_done >= min_steps
             and peak > 0.0
-            and np.isfinite(tail)
+            and math.isfinite(tail)
             and tail <= float(decay_ratio) * peak
         ):
             break

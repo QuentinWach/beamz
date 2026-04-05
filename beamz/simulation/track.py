@@ -1,6 +1,10 @@
+import math
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+
+from beamz.arrays import to_host, to_scalar
 
 
 def monitor_power_2d(compiled, spec, ez, hx, hy):
@@ -133,7 +137,7 @@ def update_monitors(
                 & (t_phys >= bm.dft_t_start[idx])
                 & (t_phys <= bm.dft_t_end[idx])
             )
-            two_pi = jnp.asarray(2.0 * np.pi, dtype=jnp.float32)
+            two_pi = jnp.asarray(2.0 * jnp.pi, dtype=jnp.float32)
             span = jnp.maximum(bm.dft_t_end[idx] - bm.dft_t_start[idx], 1e-30)
             tau = jnp.clip((t_phys - bm.dft_t_start[idx]) / span, 0.0, 1.0)
             w_hann = 0.5 * (1.0 - jnp.cos(two_pi * tau))
@@ -249,7 +253,7 @@ def update_monitors(
                 & (t_phys >= mon.dft_t_start)
                 & (t_phys <= mon.dft_t_end)
             )
-            two_pi = jnp.asarray(2.0 * np.pi, dtype=jnp.float32)
+            two_pi = jnp.asarray(2.0 * jnp.pi, dtype=jnp.float32)
             span = jnp.maximum(
                 mon.dft_t_end - mon.dft_t_start,
                 jnp.asarray(1e-30, dtype=jnp.float32),
@@ -323,9 +327,7 @@ def update_monitors(
 def monitor_state_size(specs, num_steps: int) -> int:
     if not specs:
         return 0
-    return int(
-        max(int(np.ceil(num_steps / max(1, int(spec.record_interval)))) for spec in specs)
-    )
+    return int(max(math.ceil(num_steps / max(1, int(spec.record_interval))) for spec in specs))
 
 
 def monitor_frequency_size(specs) -> int:
@@ -383,19 +385,19 @@ def apply_monitor_state(compiled, monitor_state):
     """Push monitor-state buffers back to Monitor objects."""
     for spec in compiled.monitor_specs:
         dev = compiled.monitor_devices[spec.monitor_index]
-        count = int(np.asarray(monitor_state.counts[spec.monitor_index]))
-        powers = np.asarray(monitor_state.powers[spec.monitor_index, :count], dtype=float)
-        ts = np.asarray(monitor_state.timestamps[spec.monitor_index, :count], dtype=float)
+        count = to_scalar(monitor_state.counts[spec.monitor_index], cast=int)
+        powers = to_host(monitor_state.powers[spec.monitor_index, :count], dtype=float)
+        ts = to_host(monitor_state.timestamps[spec.monitor_index, :count], dtype=float)
 
         dev.power_history = list(powers.tolist())
         dev.power_timestamps = list(ts.tolist())
         dev.power_accumulation_count = count
         if spec.freq_count > 0:
-            re = np.asarray(
+            re = to_host(
                 monitor_state.freq_flux_re[spec.monitor_index, : spec.freq_count],
                 dtype=np.float32,
             )
-            im = np.asarray(
+            im = to_host(
                 monitor_state.freq_flux_im[spec.monitor_index, : spec.freq_count],
                 dtype=np.float32,
             )
@@ -406,11 +408,11 @@ def apply_monitor_state(compiled, monitor_state):
         if spec.dft_enabled and spec.freq_count > 0 and spec.dft_point_count > 0:
             comp_names = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
             comp_mask = (
-                np.asarray(spec.dft_component_mask, dtype=np.float32)
+                to_host(spec.dft_component_mask, dtype=np.float32)
                 if spec.dft_component_mask is not None
                 else np.ones((6,), dtype=np.float32)
             )
-            weight_sum = np.asarray(
+            weight_sum = to_host(
                 monitor_state.dft_weight_sum[spec.monitor_index, : spec.freq_count],
                 dtype=np.float64,
             )
@@ -419,7 +421,7 @@ def apply_monitor_state(compiled, monitor_state):
             for comp_idx, comp_name in enumerate(comp_names):
                 if comp_mask[comp_idx] <= 0.0:
                     continue
-                re = np.asarray(
+                re = to_host(
                     monitor_state.dft_vec_re[
                         spec.monitor_index,
                         comp_idx,
@@ -428,7 +430,7 @@ def apply_monitor_state(compiled, monitor_state):
                     ],
                     dtype=np.float64,
                 )
-                im = np.asarray(
+                im = to_host(
                     monitor_state.dft_vec_im[
                         spec.monitor_index,
                         comp_idx,
