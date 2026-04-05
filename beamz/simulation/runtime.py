@@ -6,6 +6,7 @@ import jax.numpy as jnp
 
 from beamz.arrays import stack_host, to_host, to_scalar
 from beamz.devices.monitors.monitors import Monitor
+from beamz.simulation import build
 from beamz.simulation.compiled import (
     EngineState,
     MonitorState,
@@ -18,6 +19,7 @@ from beamz.simulation.compiled import (
 
 def compile_program(sim, num_steps=None):
     """Compile the packed-data simulation program."""
+    build.ensure_runtime_initialized(sim)
     spec = sim.spec
     state = sim.runtime
     if num_steps is None:
@@ -137,6 +139,7 @@ def _make_chunk_monitor_state(sim, program):
 
 def run_compiled(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):
     """Run the simulation using the compiled scan engine."""
+    build.ensure_runtime_initialized(sim)
     state = sim.runtime
     if num_steps is None:
         num_steps = state.num_steps - state.current_step
@@ -245,6 +248,7 @@ def run_compiled_until_decay(
     progress=True,
 ):
     """Run compiled chunks until monitor power decays after a minimum time."""
+    build.ensure_runtime_initialized(sim)
     state = sim.runtime
     total_steps = int(state.num_steps - state.current_step)
     if total_steps <= 0:

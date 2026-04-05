@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class SimulationRuntime:
+    initialized: bool = False
     fields: object = None
     dt: float = 0.0
     num_steps: int = 0

@@ -51,6 +51,7 @@ def initialize_runtime(sim):
 
     runtime.pml_data = None
     if not pml_boundaries:
+        runtime.initialized = True
         return
 
     pml_data = {}
@@ -67,6 +68,23 @@ def initialize_runtime(sim):
         )
     runtime.pml_data = pml_data
     runtime.fields.set_pml_conductivity(pml_data)
+    runtime.initialized = True
+
+
+def ensure_runtime_initialized(sim):
+    if not sim.runtime.initialized:
+        initialize_runtime(sim)
+
+
+def invalidate_runtime(sim):
+    runtime = sim.runtime
+    runtime.initialized = False
+    runtime.fields = None
+    runtime.dt = 0.0
+    runtime.num_steps = 0
+    runtime.t = 0.0
+    runtime.current_step = 0
+    runtime.pml_data = None
 
 
 def compile_simulation(design, devices, boundaries, run_cfg, *, compiled_cls, config_cls):

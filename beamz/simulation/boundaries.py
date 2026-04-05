@@ -5,6 +5,8 @@ import numpy as np
 
 from beamz.const import EPS_0, MU_0, µm
 
+_VALID_EDGES = frozenset({"left", "right", "top", "bottom", "front", "back"})
+
 
 @dataclass(frozen=True, slots=True)
 class Boundary:
@@ -15,9 +17,13 @@ class Boundary:
     def __post_init__(self):
         if self.edges != "all":
             edges = self.edges if isinstance(self.edges, (tuple, list)) else (self.edges,)
-            object.__setattr__(self, "edges", tuple(str(edge) for edge in edges))
+            normalized = tuple(str(edge).lower() for edge in edges)
+            invalid = sorted(set(normalized) - _VALID_EDGES)
+            if invalid:
+                raise ValueError(f"invalid boundary edges: {invalid}")
+            object.__setattr__(self, "edges", normalized)
         object.__setattr__(self, "thickness", float(self.thickness))
-        if self.thickness <= 0:
+        if not np.isfinite(self.thickness) or self.thickness <= 0:
             raise ValueError("thickness must be positive")
 
     def _get_edges_for_dimensionality(self, is_3d):
@@ -41,6 +47,8 @@ class PML(Boundary):
         Boundary.__post_init__(self)
         if self.sigma_max is not None:
             object.__setattr__(self, "sigma_max", float(self.sigma_max))
+            if not np.isfinite(self.sigma_max) or self.sigma_max <= 0:
+                raise ValueError("sigma_max must be a finite positive value when provided")
         object.__setattr__(self, "m", int(self.m))
         if self.m <= 0:
             raise ValueError("m must be positive")

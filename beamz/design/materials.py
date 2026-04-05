@@ -1,8 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 import numpy as np
+
+
+_VALID_INTERPOLATIONS = {"linear", "nearest"}
+
+
+def _require_finite_positive(name, value):
+    value = float(value)
+    if (not isfinite(value)) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive value, got {value!r}")
+    return value
+
+
+def _require_finite_nonnegative(name, value):
+    value = float(value)
+    if (not isfinite(value)) or value < 0:
+        raise ValueError(f"{name} must be a finite non-negative value, got {value!r}")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,9 +30,15 @@ class MaterialSpec:
     conductivity: float = 0.0
 
     def __post_init__(self):
-        object.__setattr__(self, "permittivity", float(self.permittivity))
-        object.__setattr__(self, "permeability", float(self.permeability))
-        object.__setattr__(self, "conductivity", float(self.conductivity))
+        object.__setattr__(
+            self, "permittivity", _require_finite_positive("permittivity", self.permittivity)
+        )
+        object.__setattr__(
+            self, "permeability", _require_finite_positive("permeability", self.permeability)
+        )
+        object.__setattr__(
+            self, "conductivity", _require_finite_nonnegative("conductivity", self.conductivity)
+        )
 
 
 class Material:
@@ -70,7 +94,12 @@ class CustomMaterialSpec:
 
     def __post_init__(self):
         object.__setattr__(self, "bounds", _normalize_bounds(self.bounds))
-        object.__setattr__(self, "interpolation", str(self.interpolation))
+        interpolation = str(self.interpolation).lower()
+        if interpolation not in _VALID_INTERPOLATIONS:
+            raise ValueError(
+                f"interpolation must be one of {sorted(_VALID_INTERPOLATIONS)}, got {self.interpolation!r}"
+            )
+        object.__setattr__(self, "interpolation", interpolation)
         object.__setattr__(
             self,
             "permittivity_grid",
@@ -86,9 +115,30 @@ class CustomMaterialSpec:
             "conductivity_grid",
             _freeze_grid(self.conductivity_grid),
         )
-        object.__setattr__(self, "default_permittivity", float(self.default_permittivity))
-        object.__setattr__(self, "default_permeability", float(self.default_permeability))
-        object.__setattr__(self, "default_conductivity", float(self.default_conductivity))
+        object.__setattr__(
+            self,
+            "default_permittivity",
+            _require_finite_positive("default_permittivity", self.default_permittivity),
+        )
+        object.__setattr__(
+            self,
+            "default_permeability",
+            _require_finite_positive("default_permeability", self.default_permeability),
+        )
+        object.__setattr__(
+            self,
+            "default_conductivity",
+            _require_finite_nonnegative("default_conductivity", self.default_conductivity),
+        )
+        for name in ("permittivity_func", "permeability_func", "conductivity_func"):
+            func = getattr(self, name)
+            if func is not None and not callable(func):
+                raise TypeError(f"{name} must be callable when provided")
+        if self.bounds is None and any(
+            grid is not None
+            for grid in (self.permittivity_grid, self.permeability_grid, self.conductivity_grid)
+        ):
+            raise ValueError("bounds are required when using grid-backed custom materials")
 
 
 @dataclass(slots=True)
@@ -116,6 +166,10 @@ def _freeze_grid(grid):
     if grid is None:
         return None
     arr = np.asarray(grid).copy()
+    if arr.ndim != 2:
+        raise ValueError("material grids must be 2D arrays")
+    if arr.size == 0 or not np.all(np.isfinite(arr)):
+        raise ValueError("material grids must be non-empty and finite")
     arr.setflags(write=False)
     return arr
 

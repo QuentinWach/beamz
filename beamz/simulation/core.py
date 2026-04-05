@@ -111,7 +111,6 @@ class Simulation:
             ),
         )
         object.__setattr__(self, "runtime", SimulationRuntime())
-        build.initialize_runtime(self)
 
     def __getattr__(self, name):
         spec = self.__dict__.get("spec")
@@ -119,6 +118,7 @@ class Simulation:
             return getattr(spec, name)
         runtime = self.__dict__.get("runtime")
         if runtime is not None and name in self._RUNTIME_MAP:
+            build.ensure_runtime_initialized(self)
             return getattr(runtime, self._RUNTIME_MAP[name])
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
@@ -130,7 +130,7 @@ class Simulation:
             new_spec = replace(self.spec, **{name: value})
             object.__setattr__(self, "spec", new_spec)
             if name in {"design", "resolution", "plane_2d", "boundaries", "time"}:
-                build.initialize_runtime(self)
+                build.invalidate_runtime(self)
             if name in {"design", "resolution", "plane_2d", "devices", "boundaries", "time"}:
                 self.runtime.compiled_program = None
                 self.runtime.compiled_program_signature = None

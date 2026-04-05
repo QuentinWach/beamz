@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 import numpy as np
 
@@ -11,6 +12,10 @@ def _freeze_time_array(time) -> np.ndarray:
         raise ValueError("time must be a 1D array")
     if arr.size < 2:
         raise ValueError("FDTD requires a time array with at least two entries")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("time must contain only finite values")
+    if not np.all(np.diff(arr) > 0):
+        raise ValueError("time must be strictly increasing")
     arr.setflags(write=False)
     return arr
 
@@ -26,15 +31,23 @@ class SimulationSpec:
     is_3d: bool
 
     def __post_init__(self):
+        if self.design is None:
+            raise ValueError("design is required")
         object.__setattr__(self, "devices", tuple(self.devices))
         object.__setattr__(self, "boundaries", tuple(self.boundaries))
         object.__setattr__(self, "resolution", float(self.resolution))
+        if not isfinite(self.resolution) or self.resolution <= 0:
+            raise ValueError("resolution must be a finite positive value")
         object.__setattr__(self, "time", _freeze_time_array(self.time))
         plane = str(self.plane_2d).lower()
         if plane not in {"xy", "yz", "xz"}:
             plane = "xy"
         object.__setattr__(self, "plane_2d", plane)
         object.__setattr__(self, "is_3d", bool(self.is_3d))
+        if any(device is None for device in self.devices):
+            raise ValueError("devices may not contain None")
+        if any(boundary is None for boundary in self.boundaries):
+            raise ValueError("boundaries may not contain None")
 
 
 def build_simulation_spec(
