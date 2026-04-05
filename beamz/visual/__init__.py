@@ -14,6 +14,7 @@ from beamz.visual.design_viz import (
     show_design,
     show_design_2d,
 )
+from beamz.visual.example_plots import plot_simulation_overview, plot_sparameters_db
 from beamz.visual.helpers import (
     calc_optimal_fdtd_params,
     check_fdtd_stability,
@@ -40,6 +41,8 @@ __all__ = [
     "get_si_scale_and_label",
     "check_fdtd_stability",
     "calc_optimal_fdtd_params",
+    "plot_simulation_overview",
+    "plot_sparameters_db",
     "plot_signal",
     "show_mode_profile",
     "beamz_to_scene",

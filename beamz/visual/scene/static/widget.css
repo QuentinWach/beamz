@@ -1,8 +1,8 @@
 .zview-root {
   --zview-font-ui: ui-monospace, "SFMono-Regular", monospace;
   --zview-bg-radial: rgba(59, 130, 246, 0.08);
-  --zview-bg-start: #f8fafc;
-  --zview-bg-end: #e2e8f0;
+  --zview-bg-start: #ffffff;
+  --zview-bg-end: #ffffff;
   --zview-border: rgba(15, 23, 42, 0.12);
   --zview-button-bg: rgba(255, 255, 255, 0.86);
   --zview-button-border: rgba(15, 23, 42, 0.12);
@@ -46,8 +46,8 @@
 
 .zview-root[data-theme="light"] {
   --zview-bg-radial: rgba(59, 130, 246, 0.08);
-  --zview-bg-start: #f8fafc;
-  --zview-bg-end: #e2e8f0;
+  --zview-bg-start: #ffffff;
+  --zview-bg-end: #ffffff;
   --zview-border: rgba(15, 23, 42, 0.12);
   --zview-button-bg: rgba(255, 255, 255, 0.86);
   --zview-button-border: rgba(15, 23, 42, 0.12);

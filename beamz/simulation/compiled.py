@@ -380,6 +380,7 @@ class CompiledSimulation:
         hx: jnp.ndarray,
         hy: jnp.ndarray,
     ) -> jnp.ndarray:
+        power_scale = jnp.asarray(spec.power_scale, dtype=jnp.float32)
         ez_vals = ez[spec.y_ez, spec.x_ez] * spec.valid_ez
         hx_vals = hx[spec.y_hx, spec.x_hx] * spec.valid_hx
         hy_vals = hy[spec.y_hy, spec.x_hy] * spec.valid_hy
@@ -387,7 +388,7 @@ class CompiledSimulation:
         sx = -ez_vals * hy_vals
         sy = ez_vals * hx_vals
         mag = jnp.sqrt(sx * sx + sy * sy)
-        return jnp.sum(mag) * spec.power_scale
+        return jnp.asarray(jnp.sum(mag), dtype=jnp.float32) * power_scale
 
     def _monitor_power_3d(
         self,
@@ -399,6 +400,7 @@ class CompiledSimulation:
         hy: jnp.ndarray,
         hz: jnp.ndarray,
     ) -> jnp.ndarray:
+        power_scale = jnp.asarray(spec.power_scale, dtype=jnp.float32)
         exs = ex[spec.ex_idx][: spec.min_dim0, : spec.min_dim1]
         eys = ey[spec.ey_idx][: spec.min_dim0, : spec.min_dim1]
         ezs = ez[spec.ez_idx][: spec.min_dim0, : spec.min_dim1]
@@ -410,7 +412,7 @@ class CompiledSimulation:
         sy = ezs * hxs - exs * hzs
         sz = exs * hys - eys * hxs
         mag = jnp.sqrt(sx * sx + sy * sy + sz * sz)
-        return jnp.sum(mag) * spec.power_scale
+        return jnp.asarray(jnp.sum(mag), dtype=jnp.float32) * power_scale
 
     def _update_monitors(
         self,
@@ -495,6 +497,8 @@ class CompiledSimulation:
                 row_f_im = f_im[mi]
                 row_ph_re = ph_re[mi]
                 row_ph_im = ph_im[mi]
+                cur_ph_re = row_ph_re
+                cur_ph_im = row_ph_im
                 delta_re = flux_sample * dt_scalar * row_ph_re * mask_f
                 delta_im = flux_sample * dt_scalar * row_ph_im * mask_f
                 row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
@@ -525,12 +529,8 @@ class CompiledSimulation:
                     jnp.asarray(1.0, dtype=jnp.float32),
                 )
                 w = jnp.where(do_dft, w, jnp.asarray(0.0, dtype=jnp.float32))
-
-                f_hz = bm.freq_hz[i]
-                mask_f = bm.freq_mask[i]
-                phi = -two_pi * f_hz * t_phys
-                ph_vec_re = jnp.cos(phi) * mask_f
-                ph_vec_im = jnp.sin(phi) * mask_f
+                ph_vec_re = cur_ph_re * mask_f
+                ph_vec_im = cur_ph_im * mask_f
 
                 vecs = jnp.stack((exs, eys, ezs, hxs, hys, hzs), axis=0)
                 comp_mask = bm.dft_component_mask[i][:, None, None]
@@ -615,6 +615,8 @@ class CompiledSimulation:
                 row_f_im = freq_flux_im[mi, : mon.freq_count]
                 row_ph_re = freq_phase_re[mi, : mon.freq_count]
                 row_ph_im = freq_phase_im[mi, : mon.freq_count]
+                cur_ph_re = row_ph_re
+                cur_ph_im = row_ph_im
                 delta_re = power_sample * dt_scalar * row_ph_re
                 delta_im = power_sample * dt_scalar * row_ph_im
                 row_f_re = row_f_re + jnp.where(do_freq, delta_re, 0.0)
@@ -628,21 +630,40 @@ class CompiledSimulation:
                 freq_phase_re = freq_phase_re.at[mi, : mon.freq_count].set(row_ph_re)
                 freq_phase_im = freq_phase_im.at[mi, : mon.freq_count].set(row_ph_im)
             if mon.dft_enabled and mon.freq_count > 0 and mon.dft_point_count > 0:
+                mi = mon.monitor_index
+                if mon.accumulate_frequency and mon.freq_count > 0:
+                    dft_ph_re = cur_ph_re
+                    dft_ph_im = cur_ph_im
+                else:
+                    dft_ph_re = freq_phase_re[mi, : mon.freq_count]
+                    dft_ph_im = freq_phase_im[mi, : mon.freq_count]
                 do_dft = (
                     ((abs_step % mon.dft_record_interval) == 0)
                     & (t_phys >= mon.dft_t_start)
                     & (t_phys <= mon.dft_t_end)
                 )
                 two_pi = jnp.asarray(2.0 * np.pi, dtype=jnp.float32)
-                span = jnp.maximum(mon.dft_t_end - mon.dft_t_start, 1e-30)
-                tau = jnp.clip((t_phys - mon.dft_t_start) / span, 0.0, 1.0)
-                w_hann = 0.5 * (1.0 - jnp.cos(two_pi * tau))
-                w = jnp.where(
-                    mon.dft_window_code == 1,
-                    w_hann,
-                    jnp.asarray(1.0, dtype=jnp.float32),
+                span = jnp.maximum(
+                    mon.dft_t_end - mon.dft_t_start,
+                    jnp.asarray(1e-30, dtype=jnp.float32),
                 )
-                w = jnp.where(do_dft, w, jnp.asarray(0.0, dtype=jnp.float32))
+                tau = jnp.asarray(
+                    jnp.clip((t_phys - mon.dft_t_start) / span, 0.0, 1.0),
+                    dtype=jnp.float32,
+                )
+                w_hann = 0.5 * (1.0 - jnp.cos(two_pi * tau))
+                w = jnp.asarray(
+                    jnp.where(
+                        mon.dft_window_code == 1,
+                        w_hann,
+                        jnp.asarray(1.0, dtype=jnp.float32),
+                    ),
+                    dtype=jnp.float32,
+                )
+                w = jnp.asarray(
+                    jnp.where(do_dft, w, jnp.asarray(0.0, dtype=jnp.float32)),
+                    dtype=jnp.float32,
+                )
 
                 if mon.is_3d:
                     ex_vals = ex[mon.ex_idx][: mon.min_dim0, : mon.min_dim1].reshape(-1)
@@ -661,20 +682,24 @@ class CompiledSimulation:
                 vecs = jnp.stack(
                     (ex_vals, ey_vals, ez_vals, hx_vals, hy_vals, hz_vals), axis=0
                 )
-                phase = -two_pi * mon.freq_hz * t_phys
-                ph_re = jnp.cos(phase)
-                ph_im = jnp.sin(phase)
                 comp_mask = mon.dft_component_mask[:, None, None]
-                delta_re = w * comp_mask * jnp.einsum("f,cp->cfp", ph_re, vecs)
-                delta_im = w * comp_mask * jnp.einsum("f,cp->cfp", ph_im, vecs)
-                mi = mon.monitor_index
+                delta_re = jnp.asarray(
+                    w * comp_mask * jnp.einsum("f,cp->cfp", dft_ph_re, vecs),
+                    dtype=jnp.float32,
+                )
+                delta_im = jnp.asarray(
+                    w * comp_mask * jnp.einsum("f,cp->cfp", dft_ph_im, vecs),
+                    dtype=jnp.float32,
+                )
                 dft_vec_re = dft_vec_re.at[
                     mi, :, : mon.freq_count, : mon.dft_point_count
                 ].add(delta_re[:, : mon.freq_count, : mon.dft_point_count])
                 dft_vec_im = dft_vec_im.at[
                     mi, :, : mon.freq_count, : mon.dft_point_count
                 ].add(delta_im[:, : mon.freq_count, : mon.dft_point_count])
-                dft_weight_sum = dft_weight_sum.at[mi, : mon.freq_count].add(w)
+                dft_weight_sum = dft_weight_sum.at[mi, : mon.freq_count].add(
+                    jnp.asarray(w, dtype=jnp.float32)
+                )
 
         return MonitorState(
             powers=powers,

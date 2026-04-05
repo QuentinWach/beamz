@@ -158,7 +158,13 @@ def test_get_S_matrix_modal_column_keys_and_shapes(monkeypatch):
     result = sim.get_S_matrix_modal(
         source_port="o1",
         ports=[
-            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(
+                name="o1",
+                monitor_name="o1",
+                reference_monitor="o1_ref",
+                direction="+x",
+                polarization="tm",
+            ),
             PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
         ],
         output_ports=["o1", "o2"],
@@ -294,7 +300,13 @@ def test_get_S_matrix_modal_cw_shapes_and_keys(monkeypatch):
     result = sim.get_S_matrix_modal_cw(
         source_port="o1",
         ports=[
-            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(
+                name="o1",
+                monitor_name="o1",
+                reference_monitor="o1_ref",
+                direction="+x",
+                polarization="tm",
+            ),
             PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
         ],
         output_ports=["o1", "o2"],
@@ -321,6 +333,48 @@ def test_monitor_dft_accum_recovers_known_sinusoid():
         start=(0.0, 0.0),
         end=(0.0, 0.0),
         name="m_dft",
+        record_fields=False,
+        dft_enabled=True,
+        dft_frequencies=np.array([freq], dtype=float),
+        dft_t_start=float(t[0]),
+        dft_t_end=float(t[-1]),
+        dft_components=("Ez",),
+        dft_window="rect",
+    )
+    for i, ti in enumerate(t):
+        sample = amp * np.cos(2 * np.pi * freq * ti + phase)
+        mon.record_fields_2d(
+            Ez=np.array([[sample]], dtype=float),
+            Hx=np.zeros((1, 1), dtype=float),
+            Hy=np.zeros((1, 1), dtype=float),
+            t=float(ti),
+            dx=1.0,
+            dy=1.0,
+            step=i,
+        )
+
+    recovered = mon.get_dft_component("Ez")
+    assert recovered.shape == (1, 1)
+    z = recovered[0, 0]
+    assert np.isclose(np.abs(z), amp, rtol=0.03)
+    phase_err = np.angle(z / (amp * np.exp(1j * phase)))
+    assert abs(phase_err) < 0.08
+
+
+def test_monitor_dft_accum_preserves_absolute_phase_for_delayed_start():
+    n = 2048
+    dt = 1e-15
+    k_bin = 19
+    freq = k_bin / (n * dt)
+    amp = 0.42
+    phase = -0.27
+    t0 = 137.0 * dt
+    t = t0 + np.arange(n, dtype=float) * dt
+
+    mon = Monitor(
+        start=(0.0, 0.0),
+        end=(0.0, 0.0),
+        name="m_dft_offset",
         record_fields=False,
         dft_enabled=True,
         dft_frequencies=np.array([freq], dtype=float),
@@ -480,7 +534,51 @@ def test_project_modal_coefficients_3d_is_linear_in_field_amplitude():
     np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-10, atol=1e-10)
 
 
-def test_build_port_projection_3d_sets_coeff_correction(monkeypatch):
+def test_project_modal_coefficients_3d_uses_overlap_space_when_ill_conditioned(
+    monkeypatch,
+):
+    import beamz.simulation.core as core_mod
+
+    mode_components = {
+        "Ex": np.zeros((1,), dtype=np.complex128),
+        "Ey": np.array([1.0 + 0.0j], dtype=np.complex128),
+        "Ez": np.array([0.25 + 0.1j], dtype=np.complex128),
+        "Hx": np.zeros((1,), dtype=np.complex128),
+        "Hy": np.array([0.4 - 0.1j], dtype=np.complex128),
+        "Hz": np.array([0.3 + 0.05j], dtype=np.complex128),
+    }
+    mode_components_bwd = {
+        name: (-arr if name.startswith("H") else arr)
+        for name, arr in mode_components.items()
+    }
+    overlap = np.array([[1.0, 1.0 - 1e-12], [1.0 - 1e-12, 1.0]], dtype=np.complex128)
+
+    def fake_overlap(field, mode, axis, d_area):
+        del field, axis, d_area
+        if mode is mode_components:
+            return overlap[0, 0]
+        if mode is mode_components_bwd:
+            return overlap[1, 0]
+        raise AssertionError("unexpected mode basis")
+
+    monkeypatch.setattr(core_mod, "_modal_overlap_3d_profiles", fake_overlap)
+
+    projection = {
+        "components": ("Ey", "Ez", "Hy", "Hz"),
+        "axis": "x",
+        "d_area": 1.0,
+        "mode_components": mode_components,
+        "mode_components_bwd": mode_components_bwd,
+        "overlap_matrix": overlap,
+        "pinv": np.zeros((2, 0), dtype=np.complex128),
+    }
+
+    a_p, a_m = Simulation._project_modal_coefficients_3d(mode_components, projection)
+    np.testing.assert_allclose(a_p, 1.0 + 0.0j, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(a_m, 0.0 + 0.0j, rtol=1e-4, atol=1e-4)
+
+
+def test_build_port_projection_3d_builds_power_orthogonal_basis(monkeypatch):
     import beamz.simulation.core as core_mod
 
     sim = Simulation.__new__(Simulation)
@@ -531,22 +629,6 @@ def test_build_port_projection_3d_sets_coeff_correction(monkeypatch):
 
     monkeypatch.setattr(core_mod, "solve_modes", fake_solve_modes)
 
-    bias = np.array([[2.0 + 0.0j, 0.25 + 0.0j], [0.5 + 0.0j, 1.5 + 0.0j]])
-
-    def fake_project(field_components, projection, apply_calibration=True):
-        del apply_calibration
-        hy = np.asarray(field_components["Hy"], dtype=np.complex128)
-        hy_mode = np.asarray(projection["mode_components"]["Hy"], dtype=np.complex128)
-        if np.allclose(hy, hy_mode):
-            return np.complex128(bias[0, 0]), np.complex128(bias[1, 0])
-        if np.allclose(hy, -hy_mode):
-            return np.complex128(bias[0, 1]), np.complex128(bias[1, 1])
-        return np.complex128(0.0 + 0.0j), np.complex128(0.0 + 0.0j)
-
-    monkeypatch.setattr(
-        Simulation, "_project_modal_coefficients_3d", staticmethod(fake_project)
-    )
-
     class DummyMonitor:
         name = "m3d"
 
@@ -573,11 +655,27 @@ def test_build_port_projection_3d_sets_coeff_correction(monkeypatch):
         frequency=1.0,
         cache={},
     )
+    overlap = np.asarray(projection["overlap_matrix"], dtype=np.complex128)
+    assert overlap.shape == (2, 2)
+    assert np.isfinite(overlap).all()
+
+    a_fwd = Simulation._project_modal_coefficients_3d(
+        projection["mode_components"], projection
+    )
+    a_bwd = Simulation._project_modal_coefficients_3d(
+        projection["mode_components_bwd"], projection
+    )
     np.testing.assert_allclose(
-        projection["coeff_correction"],
-        np.linalg.inv(bias),
-        rtol=1e-12,
-        atol=1e-12,
+        np.asarray(a_fwd, dtype=np.complex128),
+        np.asarray([1.0 + 0.0j, 0.0 + 0.0j], dtype=np.complex128),
+        rtol=1e-9,
+        atol=1e-9,
+    )
+    np.testing.assert_allclose(
+        np.asarray(a_bwd, dtype=np.complex128),
+        np.asarray([0.0 + 0.0j, 1.0 + 0.0j], dtype=np.complex128),
+        rtol=1e-9,
+        atol=1e-9,
     )
 
 
@@ -693,7 +791,13 @@ def test_get_S_matrix_modal_dft_keys_shapes_and_valid_mask(monkeypatch):
     result = sim.get_S_matrix_modal_dft(
         source_port="o1",
         ports=[
-            PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+            PortSpec(
+                name="o1",
+                monitor_name="o1",
+                reference_monitor="o1_ref",
+                direction="+x",
+                polarization="tm",
+            ),
             PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
         ],
         output_ports=["o1", "o2"],
@@ -712,3 +816,139 @@ def test_get_S_matrix_modal_dft_keys_shapes_and_valid_mask(monkeypatch):
     assert np.array_equal(diag["valid_mask"], np.array([True, False, True]))
     assert s_matrix[("o2", "o1")][1] == 0.0j
     assert np.isnan(diag["power_sum"][1])
+
+
+def test_get_S_matrix_modal_dft_respects_wave_selectors(monkeypatch):
+    sim = Simulation.__new__(Simulation)
+    sim.devices = []
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    freqs = np.array([1.0, 2.0], dtype=float)
+    waves = {
+        "src": {
+            "a_plus": np.array([2.0, 2.0], dtype=np.complex128),
+            "a_minus": np.array([0.4, 0.4], dtype=np.complex128),
+            "a_incident_plus": np.array([1.5, 1.5], dtype=np.complex128),
+            "a_incident_minus": np.array([0.2, 0.2], dtype=np.complex128),
+            "condition_number": np.array([2.0, 2.0], dtype=float),
+        },
+        "out": {
+            "a_plus": np.array([0.9, 0.8], dtype=np.complex128),
+            "a_minus": np.array([0.1, 0.1], dtype=np.complex128),
+            "condition_number": np.array([3.0, 3.0], dtype=float),
+        },
+    }
+
+    def fake_extract(
+        self, ports, frequencies, min_incident_db=-40.0, return_power=True
+    ):
+        del ports, min_incident_db, return_power
+        assert np.allclose(frequencies, freqs)
+        return waves
+
+    monkeypatch.setattr(Simulation, "extract_port_waves_dft", fake_extract)
+    result = sim.get_S_matrix_modal_dft(
+        source_port="src",
+        ports=[
+            PortSpec(
+                name="src",
+                monitor_name="src_m",
+                direction="+x",
+                polarization="tm",
+                reference_monitor="src_ref",
+                incident_wave="plus",
+            ),
+            PortSpec(
+                name="out",
+                monitor_name="out_m",
+                direction="+x",
+                polarization="tm",
+                scattered_wave="plus",
+            ),
+        ],
+        output_ports=["out"],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-80.0,
+    )
+    np.testing.assert_allclose(
+        result["s_matrix"][("out", "src")],
+        np.array([0.6, 0.5333333333333333], dtype=np.complex128),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_get_S_matrix_modal_dft_auto_incident_selector_prefers_dominant(monkeypatch):
+    sim = Simulation.__new__(Simulation)
+    sim.devices = []
+    sim.is_3d = False
+    sim.plane_2d = "xy"
+    freqs = np.array([1.0, 2.0], dtype=float)
+    waves = {
+        "src": {
+            "a_plus": np.array([0.2, 1.0], dtype=np.complex128),
+            "a_minus": np.array([2.0, 0.2], dtype=np.complex128),
+            "condition_number": np.array([2.0, 2.0], dtype=float),
+        },
+        "out": {
+            "a_plus": np.array([0.4, 0.4], dtype=np.complex128),
+            "a_minus": np.array([0.5, 0.5], dtype=np.complex128),
+            "condition_number": np.array([3.0, 3.0], dtype=float),
+        },
+    }
+
+    def fake_extract(
+        self, ports, frequencies, min_incident_db=-40.0, return_power=True
+    ):
+        del ports, min_incident_db, return_power
+        assert np.allclose(frequencies, freqs)
+        return waves
+
+    monkeypatch.setattr(Simulation, "extract_port_waves_dft", fake_extract)
+    result = sim.get_S_matrix_modal_dft(
+        source_port="src",
+        ports=[
+            PortSpec(
+                name="src",
+                monitor_name="src_m",
+                direction="+x",
+                polarization="tm",
+                incident_wave="auto",
+            ),
+            PortSpec(
+                name="out",
+                monitor_name="out_m",
+                direction="+x",
+                polarization="tm",
+                scattered_wave="minus",
+            ),
+        ],
+        output_ports=["out"],
+        frequencies=freqs,
+        as_sax=False,
+        return_diagnostics=True,
+        min_incident_db=-80.0,
+    )
+    np.testing.assert_allclose(
+        result["s_matrix"][("out", "src")],
+        np.array([0.25, 0.5], dtype=np.complex128),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_normalize_portspecs_rejects_invalid_wave_selector():
+    with pytest.raises(ValueError, match="incident_wave"):
+        Simulation._normalize_portspecs(
+            [
+                {
+                    "name": "o1",
+                    "monitor_name": "m1",
+                    "direction": "+x",
+                    "polarization": "tm",
+                    "incident_wave": "invalid",
+                }
+            ]
+        )

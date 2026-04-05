@@ -6,7 +6,6 @@ from pathlib import Path
 
 from ._scene import SceneSpec
 
-
 _STATIC_DIR = Path(__file__).parent / "static"
 _INLINE_HTML_TEMPLATE = """<!doctype html>
 <html lang="en">

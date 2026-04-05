@@ -19,7 +19,9 @@ def test_scene_round_trip_preserves_structure():
                 material=MaterialSpec(color="#123456", opacity=0.2, wireframe=True),
             )
         ],
-        clip_planes=[ClipPlaneSpec(normal=(0.0, 0.0, 1.0), constant=0.0, enabled=False)],
+        clip_planes=[
+            ClipPlaneSpec(normal=(0.0, 0.0, 1.0), constant=0.0, enabled=False)
+        ],
         camera=CameraSpec(position=(3.0, 2.0, 1.0), target=(0.0, 0.0, 0.0)),
     )
 

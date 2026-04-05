@@ -3,7 +3,7 @@ import logging
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.const import EPS_0, LIGHT_SPEED, MU_0, µm
+from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices.sources.solve import solve_modes
 
 logger = logging.getLogger(__name__)
@@ -206,7 +206,8 @@ def _solve_numeric_k_axis(omega, dt, d_axis, neff, eps=1e-30):
 def _numeric_phase_delay(omega, k_num, delta_s, eps=1e-30):
     """Convert numerical phase advance into a time delay."""
     omega_r = max(abs(float(omega)), eps)
-    return float(max(0.0, float(k_num) * float(delta_s)) / omega_r)
+    # Keep the sign: launch direction depends on the signed E/H plane offset.
+    return float((float(k_num) * float(delta_s)) / omega_r)
 
 
 def _numeric_impedance_axis(omega, dt, d_axis, k_num, neff, mu_r=1.0, eps=1e-30):
@@ -379,8 +380,10 @@ def _remap_3d_solver_components(Ex, Ey, Ez, Hx, Hy, Hz, axis):
     if axis == "x":
         return Ex, Ey, Ez, Hx, Hy, Hz
     if axis == "y":
-        # Match the rotated-basis correction already used by 2D y-propagation.
-        return Ey, Ex, Ez, Hy, Hx, Hz
+        # Use the same right-handed x'->+y, y'->-x, z'->+z basis as the
+        # monitor-side modal extraction. Without the sign flip, y-directed 3D
+        # launches carry a persistent opposite-going modal component.
+        return -Ey, Ex, Ez, -Hy, Hx, Hz
     if axis == "z":
         # Cyclic remap from x-basis -> z-basis.
         return Ey, Ez, Ex, Hy, Hz, Hx
@@ -966,6 +969,18 @@ def _modal_power_3d_from_profiles(profiles, axis, d_area):
     hx = np.asarray(hx, dtype=np.complex128)
     hy = np.asarray(hy, dtype=np.complex128)
     hz = np.asarray(hz, dtype=np.complex128)
+    if ex.ndim == 1:
+        ex = ex[:, None]
+    if ey.ndim == 1:
+        ey = ey[:, None]
+    if ez.ndim == 1:
+        ez = ez[:, None]
+    if hx.ndim == 1:
+        hx = hx[:, None]
+    if hy.ndim == 1:
+        hy = hy[:, None]
+    if hz.ndim == 1:
+        hz = hz[:, None]
     ny = min(
         ex.shape[0], ey.shape[0], ez.shape[0], hx.shape[0], hy.shape[0], hz.shape[0]
     )
@@ -1002,6 +1017,74 @@ def _normalize_3d_profiles_by_flux(profiles, axis, d_area=1.0, eps=1e-18):
     for key, value in profiles.items():
         profiles[key] = np.asarray(value) * scale
     return profiles
+
+
+def _backward_3d_mode_from_forward(profiles):
+    """Return the backward-going counterpart of a forward 3D modal field set."""
+    out = {}
+    for key, value in profiles.items():
+        arr = np.asarray(value, dtype=np.complex128)
+        out[key] = -arr if key.startswith("H") else arr.copy()
+    return out
+
+
+def _make_3d_mode_basis_profiles(profiles, axis, d_area=1.0):
+    """Build unit-flux forward/backward 3D basis fields from one solved mode."""
+    forward = {
+        key: np.asarray(value, dtype=np.complex128) for key, value in profiles.items()
+    }
+    forward = _normalize_3d_profiles_by_flux(forward, axis=axis, d_area=d_area)
+    backward = _backward_3d_mode_from_forward(forward)
+    return forward, backward
+
+
+def _modal_overlap_3d_profiles(field_profiles, mode_profiles, axis, d_area):
+    """Symmetric power overlap between a field sample and a 3D modal basis field."""
+    comp_map = {
+        "x": ("Ey", "Ez", "Hz", "Hy"),
+        "y": ("Ez", "Ex", "Hx", "Hz"),
+        "z": ("Ex", "Ey", "Hy", "Hx"),
+    }
+    try:
+        e1, e2, h1, h2 = comp_map[str(axis)]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported axis {axis!r}") from exc
+
+    arrays = {}
+    n_common = None
+    for name in (e1, e2, h1, h2):
+        f_arr = np.asarray(field_profiles[name], dtype=np.complex128).reshape(-1)
+        m_arr = np.asarray(mode_profiles[name], dtype=np.complex128).reshape(-1)
+        n_local = int(min(f_arr.size, m_arr.size))
+        if n_local <= 0:
+            return np.complex128(0.0 + 0.0j)
+        n_common = n_local if n_common is None else min(n_common, n_local)
+        arrays[name] = (f_arr, m_arr)
+
+    n_common = int(max(0, n_common or 0))
+    if n_common <= 0:
+        return np.complex128(0.0 + 0.0j)
+
+    ef1 = arrays[e1][0][:n_common]
+    ef2 = arrays[e2][0][:n_common]
+    hf1 = arrays[h1][0][:n_common]
+    hf2 = arrays[h2][0][:n_common]
+    em1 = arrays[e1][1][:n_common]
+    em2 = arrays[e2][1][:n_common]
+    hm1 = arrays[h1][1][:n_common]
+    hm2 = arrays[h2][1][:n_common]
+
+    overlap = (
+        0.25
+        * np.sum(
+            ef1 * np.conjugate(hm1)
+            - ef2 * np.conjugate(hm2)
+            + np.conjugate(em1) * hf1
+            - np.conjugate(em2) * hf2
+        )
+        * float(d_area)
+    )
+    return np.complex128(overlap)
 
 
 def _project_3d_profiles_to_real(profiles):
@@ -1252,7 +1335,7 @@ class ModeSource:
             if self.direction == "+x":
                 offset_idx = max(0, center_idx - 1)
             else:
-                offset_idx = min(nx - 2, center_idx)
+                offset_idx = min(nx - 2, center_idx + 1)
 
             if is_3d:
                 eps_profile = permittivity[:, :, center_idx]
@@ -1266,7 +1349,7 @@ class ModeSource:
             if self.direction == "+y":
                 offset_idx = max(0, center_idx - 1)
             else:
-                offset_idx = min(ny - 2, center_idx)
+                offset_idx = min(ny - 2, center_idx + 1)
 
             if is_3d:
                 eps_profile = permittivity[:, center_idx, :]
@@ -1280,7 +1363,7 @@ class ModeSource:
             if self.direction == "+z":
                 offset_idx = max(0, center_idx - 1)
             else:
-                offset_idx = min(nz - 2, center_idx)
+                offset_idx = min(nz - 2, center_idx + 1)
 
             eps_profile = permittivity[center_idx, :, :]
             self._eps_profile_2d = eps_profile
@@ -1778,7 +1861,7 @@ class ModeSource:
                 coord_e = (idx_e + 0.5) * dy
                 coord_h = (idx_h + 1.0) * dy
 
-        delta_s = abs(coord_e - coord_h)
+        delta_s = float(coord_e - coord_h)
         if is_3d and dt is not None:
             omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
             d_axis = {"x": dx, "y": dy, "z": dz}[axis]

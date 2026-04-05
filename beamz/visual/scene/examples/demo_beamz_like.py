@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
@@ -18,7 +18,12 @@ class Material:
 
 class Structure:
     def __init__(self) -> None:
-        self.vertices = [(0.0, 1.2, 0.22), (8.0, 1.2, 0.22), (8.0, 1.8, 0.22), (0.0, 1.8, 0.22)]
+        self.vertices = [
+            (0.0, 1.2, 0.22),
+            (8.0, 1.2, 0.22),
+            (8.0, 1.8, 0.22),
+            (0.0, 1.8, 0.22),
+        ]
         self.interiors = []
         self.depth = 0.22
         self.z = 0.22

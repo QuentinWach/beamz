@@ -18,6 +18,8 @@ from beamz import (
     Design,
     Material,
     ModeSource,
+    Monitor,
+    PortSpec,
     Rectangle,
     Simulation,
     calc_optimal_fdtd_params,
@@ -447,6 +449,7 @@ class TestModeSourceProfile:
         else:
             # 2D profile - check it has some structure
             assert np.max(np.abs(profile)) > 0, "Profile should have non-zero values"
+
 
 @pytest.mark.simulation
 class TestModeSourcePropagation:
@@ -1266,6 +1269,308 @@ class TestModeSourceDirectionality3D:
             f"far_forward_flux_mean={far_forward_flux_mean:.3e}, "
             f"far_backward_flux_mean={far_backward_flux_mean:.3e}, "
             f"far_offset_cells={far_offset_cells}, steady_start={steady_start}"
+        )
+
+    def test_raw_same_monitor_reflection_stays_low_in_3d_straight_guide(self):
+        """Straight guides should not show large raw source-port reflection."""
+        wavelength = TEST_WAVELENGTH
+        n_core = 2.0
+        n_clad = 1.0
+        guide_width = 0.6 * wavelength
+        span = guide_width * 2.5
+        long_span = 6.0 * wavelength
+        transverse_span = 2.4 * wavelength
+
+        design = Design(
+            width=long_span,
+            height=transverse_span,
+            depth=transverse_span,
+            material=Material(permittivity=n_clad**2),
+        )
+        design += Rectangle(
+            position=(
+                0.0,
+                transverse_span / 2 - guide_width / 2,
+                transverse_span / 2 - guide_width / 2,
+            ),
+            width=long_span,
+            height=guide_width,
+            depth=guide_width,
+            material=Material(permittivity=n_core**2),
+        )
+
+        dx, dt = calc_optimal_fdtd_params(
+            wavelength,
+            n_core,
+            dims=3,
+            safety_factor=0.9,
+            points_per_wavelength=8,
+            width=design.width,
+            height=design.height,
+            depth=design.depth,
+        )
+        freq = LIGHT_SPEED / wavelength
+        t_total = 8.0 / freq
+        time = np.arange(0.0, t_total, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=freq,
+            ramp_duration=1.0 / freq,
+            t_max=t_total,
+        )
+
+        center = (design.width / 2, design.height / 2, design.depth / 2)
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=(1.2 * wavelength, center[1], center[2]),
+            width=span,
+            height=span,
+            wavelength=wavelength,
+            pol="te",
+            signal=signal,
+            direction="+x",
+        )
+        monitor = Monitor(
+            start=(1.8 * wavelength, center[1] - span / 2, center[2] - span / 2),
+            end=(1.8 * wavelength, center[1] + span / 2, center[2] + span / 2),
+            name="o1",
+            record_fields=False,
+            dft_enabled=True,
+            dft_frequencies=np.array([freq]),
+            dft_components=("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"),
+            dft_window="none",
+            dft_record_every_step=True,
+        )
+
+        sim = Simulation(
+            design=design,
+            devices=[source, monitor],
+            boundaries=[PML(thickness=0.8 * wavelength)],
+            time=time,
+            resolution=dx,
+        )
+        sim.run_compiled(progress=False)
+
+        waves = sim.extract_port_waves_dft(
+            ports=[
+                PortSpec(
+                    name="o1",
+                    monitor_name="o1",
+                    direction="+x",
+                    polarization="te",
+                    incident_wave="auto",
+                    scattered_wave="auto",
+                )
+            ],
+            frequencies=np.array([freq]),
+        )
+        a_plus = complex(waves["o1"]["a_plus"][0])
+        a_minus = complex(waves["o1"]["a_minus"][0])
+        major = max(abs(a_plus), abs(a_minus))
+        minor = min(abs(a_plus), abs(a_minus))
+        reflection_db = 20.0 * np.log10(max(minor / max(major, 1e-18), 1e-12))
+        dominance_db = 20.0 * np.log10(
+            max(abs(a_plus), 1e-18) / max(abs(a_minus), 1e-18)
+        )
+
+        assert dominance_db >= 6.0, (
+            "Expected the +x source-port decomposition to identify the + branch as "
+            f"incident, got dominance={dominance_db:.2f} dB "
+            f"(a_plus={a_plus}, a_minus={a_minus})."
+        )
+
+        assert reflection_db <= -20.0, (
+            "Expected low raw source-port reflection in a straight guide, "
+            f"got {reflection_db:.2f} dB "
+            f"(a_plus={a_plus}, a_minus={a_minus})."
+        )
+
+    def test_y_monitor_wave_labels_match_x_monitor_convention_3d(self):
+        """y-normal 3D monitors should not invert the dominant transmitted branch."""
+        wavelength = TEST_WAVELENGTH
+        freq = LIGHT_SPEED / wavelength
+        n_core = 2.0
+        n_clad = 1.0
+        guide_width = 0.6 * wavelength
+        span = guide_width * 2.5
+        long_span = 6.0 * wavelength
+        transverse_span = 2.4 * wavelength
+
+        def run_axis(axis, direction, monitor_pos):
+            if axis == "x":
+                design = Design(
+                    width=long_span,
+                    height=transverse_span,
+                    depth=transverse_span,
+                    material=Material(permittivity=n_clad**2),
+                )
+                design += Rectangle(
+                    position=(
+                        0.0,
+                        transverse_span / 2 - guide_width / 2,
+                        transverse_span / 2 - guide_width / 2,
+                    ),
+                    width=long_span,
+                    height=guide_width,
+                    depth=guide_width,
+                    material=Material(permittivity=n_core**2),
+                )
+                source_center = (
+                    (
+                        1.2 * wavelength
+                        if direction == "+x"
+                        else long_span - 1.2 * wavelength
+                    ),
+                    transverse_span / 2,
+                    transverse_span / 2,
+                )
+                start = (
+                    monitor_pos,
+                    transverse_span / 2 - span / 2,
+                    transverse_span / 2 - span / 2,
+                )
+                end = (
+                    monitor_pos,
+                    transverse_span / 2 + span / 2,
+                    transverse_span / 2 + span / 2,
+                )
+            else:
+                design = Design(
+                    width=transverse_span,
+                    height=long_span,
+                    depth=transverse_span,
+                    material=Material(permittivity=n_clad**2),
+                )
+                design += Rectangle(
+                    position=(
+                        transverse_span / 2 - guide_width / 2,
+                        0.0,
+                        transverse_span / 2 - guide_width / 2,
+                    ),
+                    width=guide_width,
+                    height=long_span,
+                    depth=guide_width,
+                    material=Material(permittivity=n_core**2),
+                )
+                source_center = (
+                    transverse_span / 2,
+                    (
+                        1.2 * wavelength
+                        if direction == "+y"
+                        else long_span - 1.2 * wavelength
+                    ),
+                    transverse_span / 2,
+                )
+                start = (
+                    transverse_span / 2 - span / 2,
+                    monitor_pos,
+                    transverse_span / 2 - span / 2,
+                )
+                end = (
+                    transverse_span / 2 + span / 2,
+                    monitor_pos,
+                    transverse_span / 2 + span / 2,
+                )
+
+            dx, dt = calc_optimal_fdtd_params(
+                wavelength,
+                n_core,
+                dims=3,
+                safety_factor=0.9,
+                points_per_wavelength=8,
+                width=design.width,
+                height=design.height,
+                depth=design.depth,
+            )
+            t_total = 10.0 / freq
+            time = np.arange(0.0, t_total, dt)
+            signal = ramped_cosine(
+                time,
+                amplitude=1.0,
+                frequency=freq,
+                ramp_duration=1.0 / freq,
+                t_max=t_total,
+            )
+
+            grid = design.rasterize(resolution=dx)
+            source = ModeSource(
+                grid=grid,
+                center=source_center,
+                width=span,
+                height=span,
+                wavelength=wavelength,
+                pol="te",
+                signal=signal,
+                direction=direction,
+            )
+            monitor = Monitor(
+                start=start,
+                end=end,
+                name="m",
+                record_fields=False,
+                dft_enabled=True,
+                dft_frequencies=np.array([freq]),
+                dft_components=("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"),
+                dft_window="none",
+                dft_record_every_step=True,
+            )
+            sim = Simulation(
+                design=design,
+                devices=[source, monitor],
+                boundaries=[PML(thickness=0.8 * wavelength)],
+                time=time,
+                resolution=dx,
+            )
+            sim.run_compiled(progress=False)
+
+            physical_port_direction = {
+                "+x": "-x",
+                "-x": "+x",
+                "+y": "-y",
+                "-y": "+y",
+            }[direction]
+            waves = sim.extract_port_waves_dft(
+                ports=[
+                    PortSpec(
+                        name="p",
+                        monitor_name="m",
+                        direction="+" + axis,
+                        polarization="te",
+                        incident_wave=(
+                            "plus"
+                            if physical_port_direction.startswith("+")
+                            else "minus"
+                        ),
+                        scattered_wave=(
+                            "minus"
+                            if physical_port_direction.startswith("+")
+                            else "plus"
+                        ),
+                    )
+                ],
+                frequencies=np.array([freq]),
+            )["p"]
+            a_plus = complex(waves["a_plus"][0])
+            a_minus = complex(waves["a_minus"][0])
+            if physical_port_direction.startswith("+"):
+                selected = a_minus
+                opposite = a_plus
+            else:
+                selected = a_plus
+                opposite = a_minus
+            return 20.0 * np.log10(
+                max(abs(selected), 1e-18) / max(abs(opposite), 1e-18)
+            )
+
+        x_dominance = run_axis("x", "+x", long_span - 1.2 * wavelength)
+        y_dominance = run_axis("y", "+y", long_span - 1.2 * wavelength)
+
+        assert x_dominance > 0.0
+        assert y_dominance > 2.0, (
+            "Expected y-normal 3D mode launch/extraction to keep the transmitted branch clearly dominant, "
+            f"got {y_dominance:.2f} dB."
         )
 
 

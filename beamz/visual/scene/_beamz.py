@@ -10,13 +10,14 @@ from shapely.ops import unary_union
 from beamz.const import BLUE, GREEN, ORANGE, PURPLE, RED
 from beamz.design.core import (
     _find_rings_to_preserve,
-    _material_key as _design_material_key,
+)
+from beamz.design.core import _material_key as _design_material_key
+from beamz.design.core import (
     _shapely_to_polygons,
     _to_shapely,
 )
 
 from ._scene import CameraSpec, ClipPlaneSpec, MaterialSpec, Object3D, SceneSpec
-
 
 _STRUCTURE_PALETTE = (BLUE, RED, GREEN, ORANGE, PURPLE)
 _MIN_SIZE = 1e-12
@@ -220,9 +221,9 @@ def _structure_label(structure: Any, *, index: int) -> str:
 def _material_spec(structure: Any, color: str) -> MaterialSpec:
     return MaterialSpec(
         color=color,
-        opacity=0.0
-        if _is_air_like_material(getattr(structure, "material", None))
-        else 1.0,
+        opacity=(
+            0.0 if _is_air_like_material(getattr(structure, "material", None)) else 1.0
+        ),
         wireframe=bool(getattr(structure, "is_pml", False)),
     )
 
@@ -354,15 +355,21 @@ def _structure_material_key(structure: Any) -> tuple[Any, ...]:
     material = getattr(structure, "material", None)
     return (
         type(material).__name__ if material is not None else None,
-        round(float(getattr(material, "permittivity", 1.0)), 9)
-        if material is not None
-        else None,
-        round(float(getattr(material, "permeability", 1.0)), 9)
-        if material is not None
-        else None,
-        round(float(getattr(material, "conductivity", 0.0)), 9)
-        if material is not None
-        else None,
+        (
+            round(float(getattr(material, "permittivity", 1.0)), 9)
+            if material is not None
+            else None
+        ),
+        (
+            round(float(getattr(material, "permeability", 1.0)), 9)
+            if material is not None
+            else None
+        ),
+        (
+            round(float(getattr(material, "conductivity", 0.0)), 9)
+            if material is not None
+            else None
+        ),
         bool(getattr(structure, "is_pml", False)),
     )
 
@@ -592,7 +599,7 @@ def _build_scene(
     return SceneSpec(
         title=title,
         units="m",
-        background="#f8fafc",
+        background="#ffffff",
         camera=CameraSpec(
             position=(
                 center[0] + diagonal * 0.9,

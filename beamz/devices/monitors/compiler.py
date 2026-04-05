@@ -313,8 +313,19 @@ def compile_monitor_specs(
             raise ValueError("Monitor frequency_points must be finite values in Hz")
         if dft_enabled and dft_freqs.size > 0:
             freq_points = dft_freqs
-            freq_interval = (
-                1 if bool(getattr(monitor, "dft_record_every_step", True)) else interval
+            freq_interval = max(
+                1,
+                int(
+                    getattr(
+                        monitor,
+                        "dft_record_interval",
+                        (
+                            1
+                            if bool(getattr(monitor, "dft_record_every_step", True))
+                            else interval
+                        ),
+                    )
+                ),
             )
         else:
             freq_points = flux_freqs
@@ -377,11 +388,7 @@ def compile_monitor_specs(
                     freq_rot_re=jnp.asarray(freq_rot_re),
                     freq_rot_im=jnp.asarray(freq_rot_im),
                     dft_enabled=bool(dft_enabled and dft_freqs.size > 0),
-                    dft_record_interval=(
-                        1
-                        if bool(getattr(monitor, "dft_record_every_step", True))
-                        else interval
-                    ),
+                    dft_record_interval=freq_interval,
                     dft_t_start=float(getattr(monitor, "dft_t_start", 0.0)),
                     dft_t_end=float(dft_t_end_val),
                     dft_window_code=dft_window_code,
@@ -440,11 +447,7 @@ def compile_monitor_specs(
                     freq_rot_re=jnp.asarray(freq_rot_re),
                     freq_rot_im=jnp.asarray(freq_rot_im),
                     dft_enabled=bool(dft_enabled and dft_freqs.size > 0),
-                    dft_record_interval=(
-                        1
-                        if bool(getattr(monitor, "dft_record_every_step", True))
-                        else interval
-                    ),
+                    dft_record_interval=freq_interval,
                     dft_t_start=float(getattr(monitor, "dft_t_start", 0.0)),
                     dft_t_end=float(dft_t_end_val),
                     dft_window_code=dft_window_code,

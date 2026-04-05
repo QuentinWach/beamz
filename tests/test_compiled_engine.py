@@ -17,7 +17,13 @@ from beamz import (
     ramped_cosine,
     um,
 )
-from beamz.simulation.compiled import EngineState, MonitorState
+from beamz.devices.monitors.compiler import CompiledMonitorSpec
+from beamz.simulation.compiled import (
+    CompiledRunConfig,
+    CompiledSimulation,
+    EngineState,
+    MonitorState,
+)
 
 
 @pytest.fixture
@@ -349,6 +355,94 @@ def test_compiled_dft_component_monitor_populated(small_sim_params):
     assert np.isfinite(hy_dft).all()
     assert np.max(np.abs(ez_dft)) > 0.0
     assert np.max(np.abs(hy_dft)) > 0.0
+
+
+def test_compiled_static_monitor_dft_uses_current_sample_phase():
+    program = CompiledSimulation.__new__(CompiledSimulation)
+    program.config = CompiledRunConfig(
+        resolution=1.0,
+        dt=1.0,
+        num_steps=1,
+        plane_2d="xy",
+        is_3d=False,
+    )
+    program.monitor_specs = (
+        CompiledMonitorSpec(
+            name="m",
+            monitor_index=0,
+            is_3d=False,
+            record_interval=1,
+            accumulate_power=False,
+            power_scale=1.0,
+            accumulate_frequency=True,
+            freq_record_interval=1,
+            freq_count=1,
+            freq_hz=jnp.asarray([1.0], dtype=jnp.float32),
+            freq_rot_re=jnp.asarray([0.0], dtype=jnp.float32),
+            freq_rot_im=jnp.asarray([-1.0], dtype=jnp.float32),
+            dft_enabled=True,
+            dft_record_interval=1,
+            dft_t_start=0.0,
+            dft_t_end=1.0,
+            dft_window_code=0,
+            dft_point_count=1,
+            dft_component_mask=jnp.asarray([0, 0, 1, 0, 0, 0], dtype=jnp.float32),
+            x_ex=jnp.asarray([0], dtype=jnp.int32),
+            y_ex=jnp.asarray([0], dtype=jnp.int32),
+            valid_ex=jnp.asarray([0.0], dtype=jnp.float32),
+            x_ey=jnp.asarray([0], dtype=jnp.int32),
+            y_ey=jnp.asarray([0], dtype=jnp.int32),
+            valid_ey=jnp.asarray([0.0], dtype=jnp.float32),
+            x_ez=jnp.asarray([0], dtype=jnp.int32),
+            y_ez=jnp.asarray([0], dtype=jnp.int32),
+            valid_ez=jnp.asarray([1.0], dtype=jnp.float32),
+            x_hx=jnp.asarray([0], dtype=jnp.int32),
+            y_hx=jnp.asarray([0], dtype=jnp.int32),
+            valid_hx=jnp.asarray([0.0], dtype=jnp.float32),
+            x_hy=jnp.asarray([0], dtype=jnp.int32),
+            y_hy=jnp.asarray([0], dtype=jnp.int32),
+            valid_hy=jnp.asarray([0.0], dtype=jnp.float32),
+            x_hz=jnp.asarray([0], dtype=jnp.int32),
+            y_hz=jnp.asarray([0], dtype=jnp.int32),
+            valid_hz=jnp.asarray([0.0], dtype=jnp.float32),
+        ),
+    )
+
+    monitor_state = MonitorState(
+        powers=jnp.zeros((1, 1), dtype=jnp.float32),
+        timestamps=jnp.zeros((1, 1), dtype=jnp.float32),
+        counts=jnp.zeros((1,), dtype=jnp.int32),
+        freq_flux_re=jnp.zeros((1, 1), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((1, 1), dtype=jnp.float32),
+        freq_phase_re=jnp.ones((1, 1), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((1, 1), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((1, 6, 1, 1), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((1, 6, 1, 1), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((1, 1), dtype=jnp.float32),
+    )
+
+    updated = program._update_monitors(
+        monitor_state,
+        abs_step=jnp.asarray(0, dtype=jnp.int32),
+        t_phys=jnp.asarray(0.0, dtype=jnp.float32),
+        dt_scalar=jnp.asarray(1.0, dtype=jnp.float32),
+        ex=jnp.zeros((1, 1), dtype=jnp.float32),
+        ey=jnp.zeros((1, 1), dtype=jnp.float32),
+        ez=jnp.asarray([[2.0]], dtype=jnp.float32),
+        hx=jnp.zeros((1, 1), dtype=jnp.float32),
+        hy=jnp.zeros((1, 1), dtype=jnp.float32),
+        hz=jnp.zeros((1, 1), dtype=jnp.float32),
+        monitors_2d=program.monitor_specs,
+    )
+
+    np.testing.assert_allclose(
+        updated.dft_vec_re[0, 2, 0, 0], 2.0, rtol=1e-7, atol=1e-7
+    )
+    np.testing.assert_allclose(
+        updated.dft_vec_im[0, 2, 0, 0], 0.0, rtol=1e-7, atol=1e-7
+    )
+    np.testing.assert_allclose(updated.freq_phase_re[0, 0], 0.0, rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(updated.freq_phase_im[0, 0], -1.0, rtol=1e-7, atol=1e-7)
 
 
 def test_compiled_program_compiles_once(small_sim_params):

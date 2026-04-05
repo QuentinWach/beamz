@@ -10,6 +10,10 @@ import numpy as np
 from beamz.const import µm
 from beamz.design.core import Design
 from beamz.devices.monitors.monitors import Monitor
+from beamz.devices.sources.mode import (
+    _make_3d_mode_basis_profiles,
+    _modal_overlap_3d_profiles,
+)
 from beamz.devices.sources.solve import solve_modes
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.compiled import (
@@ -32,6 +36,8 @@ class PortSpec:
     polarization: Literal["tm", "te"]
     mode_index: int = 0
     reference_monitor: str | None = None
+    incident_wave: Literal["plus", "minus", "auto"] = "plus"
+    scattered_wave: Literal["plus", "minus", "auto"] = "minus"
 
 
 class Simulation:
@@ -683,6 +689,68 @@ class Simulation:
             result["monitors"] = monitors
         return result if result else None
 
+    def run_compiled_until_decay(
+        self,
+        monitors,
+        *,
+        min_time_s=0.0,
+        chunk_steps=None,
+        lookback_records=12,
+        decay_ratio=1e-3,
+        progress=True,
+    ):
+        """Run compiled chunks until monitor power decays after a minimum time."""
+        total_steps = int(self.num_steps - self.current_step)
+        if total_steps <= 0:
+            return 0
+        dt = float(self.dt)
+        chunk_steps = (
+            max(64, min(512, int(np.ceil(total_steps / 24.0))))
+            if chunk_steps is None
+            else max(1, int(chunk_steps))
+        )
+        lookback_records = max(2, int(lookback_records))
+        min_steps = int(np.ceil(max(0.0, float(min_time_s)) / max(dt, 1e-30)))
+        steps_done = 0
+        peak = 0.0
+
+        while steps_done < total_steps:
+            this_chunk = min(chunk_steps, total_steps - steps_done)
+            self.run_compiled(num_steps=this_chunk, progress=False)
+            steps_done += this_chunk
+
+            histories = [
+                np.abs(np.asarray(mon.power_history, dtype=np.float64))
+                for mon in monitors
+                if len(mon.power_history)
+            ]
+            tail = np.inf
+            if histories:
+                peak = max(peak, max(float(np.max(hist)) for hist in histories))
+                tail = max(
+                    float(np.max(hist[-lookback_records:])) for hist in histories
+                )
+
+            if progress:
+                pct = 100.0 * steps_done / max(total_steps, 1)
+                print(
+                    f"\r● Progress: {pct:.0f}% ({steps_done}/{total_steps} steps)",
+                    end="",
+                    flush=True,
+                )
+
+            if (
+                steps_done >= min_steps
+                and peak > 0.0
+                and np.isfinite(tail)
+                and tail <= float(decay_ratio) * peak
+            ):
+                break
+
+        if progress:
+            print()
+        return steps_done
+
     def run_fast(
         self, num_steps=None, record_interval=None, record_fields=None, progress=True
     ):
@@ -752,6 +820,42 @@ class Simulation:
         return out
 
     @staticmethod
+    def _select_wave_component(
+        wave_data,
+        selector="minus",
+        *,
+        use_reference=False,
+    ):
+        sel = str(selector).lower()
+        if sel not in {"plus", "minus", "auto"}:
+            raise ValueError(
+                f"Unsupported wave selector '{selector}'. "
+                "Use one of {'plus', 'minus', 'auto'}."
+            )
+
+        if use_reference:
+            plus = np.asarray(
+                wave_data.get(
+                    "a_incident_plus",
+                    wave_data.get("a_incident", wave_data.get("a_plus")),
+                ),
+                dtype=np.complex128,
+            )
+            minus = np.asarray(
+                wave_data.get("a_incident_minus", wave_data.get("a_minus")),
+                dtype=np.complex128,
+            )
+        else:
+            plus = np.asarray(wave_data.get("a_plus"), dtype=np.complex128)
+            minus = np.asarray(wave_data.get("a_minus"), dtype=np.complex128)
+
+        if sel == "plus":
+            return plus
+        if sel == "minus":
+            return minus
+        return np.where(np.abs(plus) >= np.abs(minus), plus, minus)
+
+    @staticmethod
     def _format_s_matrix_output(s_matrix, as_sax):
         """Return S-parameter mapping without requiring optional external packages."""
         if as_sax:
@@ -781,12 +885,24 @@ class Simulation:
                     polarization=item["polarization"],
                     mode_index=int(item.get("mode_index", 0)),
                     reference_monitor=item.get("reference_monitor"),
+                    incident_wave=str(item.get("incident_wave", "plus")).lower(),
+                    scattered_wave=str(item.get("scattered_wave", "minus")).lower(),
                 )
             if spec.direction not in {"+x", "-x", "+y", "-y", "+z", "-z"}:
                 raise ValueError(f"Unsupported port direction '{spec.direction}'.")
             pol = str(spec.polarization).lower()
             if pol not in {"tm", "te"}:
                 raise ValueError(f"Unsupported polarization '{spec.polarization}'.")
+            inc_wave = str(spec.incident_wave).lower()
+            scat_wave = str(spec.scattered_wave).lower()
+            if inc_wave not in {"plus", "minus", "auto"}:
+                raise ValueError(
+                    f"Unsupported incident_wave '{spec.incident_wave}' for port '{spec.name}'."
+                )
+            if scat_wave not in {"plus", "minus", "auto"}:
+                raise ValueError(
+                    f"Unsupported scattered_wave '{spec.scattered_wave}' for port '{spec.name}'."
+                )
             normalized[spec.name] = PortSpec(
                 name=spec.name,
                 monitor_name=spec.monitor_name,
@@ -794,6 +910,8 @@ class Simulation:
                 polarization=pol,
                 mode_index=int(spec.mode_index),
                 reference_monitor=spec.reference_monitor,
+                incident_wave=inc_wave,
+                scattered_wave=scat_wave,
             )
         return normalized
 
@@ -860,10 +978,8 @@ class Simulation:
             spec_bins = np.fft.rfft(values, axis=0)
 
         if frequencies is None:
-            out = spec_bins
-            if str(component).startswith("H"):
-                phase = np.exp(1j * 2.0 * np.pi * freq_bins * (0.5 * dt))
-                out = out * phase[:, None]
+            phase = self._monitor_projection_phase(component, freq_bins, dt)
+            out = spec_bins * phase[:, None]
             return freq_bins, out
 
         requested = np.atleast_1d(np.asarray(frequencies, dtype=float))
@@ -876,9 +992,8 @@ class Simulation:
                 requested, freq_bins, np.imag(spec_bins[:, col]), left=0.0, right=0.0
             )
             sampled[:, col] = real_part + 1j * imag_part
-        if str(component).startswith("H"):
-            phase = np.exp(1j * 2.0 * np.pi * requested * (0.5 * dt))
-            sampled = sampled * phase[:, None]
+        phase = self._monitor_projection_phase(component, requested, dt)
+        sampled = sampled * phase[:, None]
         return requested, sampled
 
     @staticmethod
@@ -926,6 +1041,17 @@ class Simulation:
             out[:, col] = re + 1j * im
         return out
 
+    @staticmethod
+    def _monitor_projection_phase(component, frequencies, dt):
+        """Phase-align sampled monitor spectra to the modal projection convention."""
+        freq_arr = np.atleast_1d(np.asarray(frequencies, dtype=float))
+        comp = str(component)
+        if comp.startswith("E"):
+            return np.exp(-1j * 2.0 * np.pi * freq_arr * float(dt))
+        if comp.startswith("H"):
+            return np.exp(1j * 2.0 * np.pi * freq_arr * (0.5 * float(dt)))
+        return np.ones_like(freq_arr, dtype=np.complex128)
+
     def _sample_monitor_component_dft(self, monitor, component, frequencies):
         if not hasattr(monitor, "get_dft_component"):
             raise ValueError(
@@ -942,9 +1068,8 @@ class Simulation:
         values_src = self._resample_complex_matrix(freq_src, values_src, freq_src)
         freq_dst = np.atleast_1d(np.asarray(frequencies, dtype=float))
         sampled = self._resample_complex_matrix(freq_src, values_src, freq_dst)
-        if str(component).startswith("H"):
-            phase = np.exp(1j * 2.0 * np.pi * freq_dst * (0.5 * float(self.dt)))
-            sampled = sampled * phase[:, None]
+        phase = self._monitor_projection_phase(component, freq_dst, self.dt)
+        sampled = sampled * phase[:, None]
         return freq_dst, sampled
 
     def _demodulate_monitor_component(
@@ -1025,8 +1150,8 @@ class Simulation:
         carrier = np.exp(-1j * 2.0 * np.pi * f0 * t_sel)[:, None]
         denom = max(float(np.sum(w)), 1e-18)
         demod = (2.0 / denom) * np.sum((w[:, None] * v_sel) * carrier, axis=0)
-        if str(component).startswith("H"):
-            demod = demod * np.exp(1j * 2.0 * np.pi * f0 * (0.5 * float(self.dt)))
+        phase = self._monitor_projection_phase(component, np.asarray([f0]), self.dt)[0]
+        demod = demod * phase
         return np.asarray(demod, dtype=np.complex128)
 
     @staticmethod
@@ -1069,7 +1194,10 @@ class Simulation:
         if axis == "x":
             return ex, ey, ez, hx, hy, hz
         if axis == "y":
-            return ey, ex, ez, hy, hx, hz
+            # Use the right-handed basis x'->+y, y'->-x, z'->+z.
+            # Without the sign flip on the transverse x-like component, +y
+            # ports end up with their forward/backward modal labels reversed.
+            return -ey, ex, ez, -hy, hx, hz
         if axis == "z":
             return ey, ez, ex, hy, hz, hx
         raise ValueError(f"Unsupported axis {axis!r} for 3D mode remap.")
@@ -1146,13 +1274,11 @@ class Simulation:
             monitor, parts["axis"], mode_pad_cells
         )
         solver_direction = spec.direction
-        if self.is_3d and parts["axis"] in {"x", "y"}:
-            # Keep monitor-side mode orientation consistent with ModeSource's
-            # 3D axis convention, otherwise forward/backward coefficients become
-            # poorly separated (a_plus ~= a_minus).
-            solver_direction = ("-" if spec.direction.startswith("+") else "+") + parts[
-                "axis"
-            ]
+        if self.is_3d:
+            # Anchor 3D monitor-side mode decomposition to a fixed positive-axis
+            # basis. Forward/backward branch selection is handled explicitly from
+            # the port convention, matching the Meep reference workflow.
+            solver_direction = "+" + parts["axis"]
         omega = 2.0 * np.pi * float(frequency)
         eps_profile_arr = np.asarray(eps_profile)
         n_local_max = float(
@@ -1353,25 +1479,50 @@ class Simulation:
                 comp_samples[name] = comp_samples[name] * phase_rot
 
         if self.is_3d:
-            mode_components = {
+            raw_mode_components = {
                 name: np.asarray(comp_samples[name], dtype=np.complex128).reshape(-1)
                 for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
                 if name in comp_samples
             }
-            p_mode = self._modal_power_3d(mode_components, parts["axis"], float(dl))
-            norm = np.sqrt(max(abs(float(p_mode)), 1e-30))
-            mode_components = {
-                name: arr / norm for name, arr in mode_components.items()
-            }
-            comp_samples = mode_components
-            fwd_vec = np.concatenate([comp_samples[c] for c in proj_components])
-            bwd_vec = np.concatenate(
-                [
-                    (-comp_samples[c] if c.startswith("H") else comp_samples[c])
-                    for c in proj_components
-                ]
+            mode_components, mode_components_bwd = _make_3d_mode_basis_profiles(
+                raw_mode_components,
+                axis=parts["axis"],
+                d_area=float(dl),
             )
+            comp_samples = mode_components
+            fwd_vec = np.concatenate([mode_components[c] for c in proj_components])
+            bwd_vec = np.concatenate([mode_components_bwd[c] for c in proj_components])
             mode_matrix = np.column_stack([fwd_vec, bwd_vec])
+            overlap_matrix = np.asarray(
+                [
+                    [
+                        _modal_overlap_3d_profiles(
+                            mode_components, mode_components, parts["axis"], float(dl)
+                        ),
+                        _modal_overlap_3d_profiles(
+                            mode_components_bwd,
+                            mode_components,
+                            parts["axis"],
+                            float(dl),
+                        ),
+                    ],
+                    [
+                        _modal_overlap_3d_profiles(
+                            mode_components,
+                            mode_components_bwd,
+                            parts["axis"],
+                            float(dl),
+                        ),
+                        _modal_overlap_3d_profiles(
+                            mode_components_bwd,
+                            mode_components_bwd,
+                            parts["axis"],
+                            float(dl),
+                        ),
+                    ],
+                ],
+                dtype=np.complex128,
+            )
         else:
             if e_fwd_full.ndim > 1:
                 e_fwd_full = e_fwd_full[:, 0]
@@ -1398,7 +1549,9 @@ class Simulation:
             "h_component": parts["h_component"],
             "components": tuple(proj_components),
             "mode_matrix": mode_matrix,
-            "condition_number": float(np.linalg.cond(mode_matrix)),
+            "condition_number": float(
+                np.linalg.cond(overlap_matrix if self.is_3d else mode_matrix)
+            ),
             "pinv": np.linalg.pinv(mode_matrix),
             "mode_neff": float(np.real(np.asarray(neff_vals[mode]))),
         }
@@ -1408,42 +1561,17 @@ class Simulation:
                 for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
                 if name in comp_samples
             }
+            projection["mode_components_bwd"] = {
+                name: np.asarray(mode_components_bwd[name], dtype=np.complex128)
+                for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+                if name in mode_components_bwd
+            }
+            projection["overlap_matrix"] = np.asarray(
+                overlap_matrix, dtype=np.complex128
+            )
             projection["axis"] = parts["axis"]
             projection["d_area"] = float(dl)
             projection["power_norm"] = 1.0
-            # Calibrate extraction so the discretized forward/backward basis
-            # maps back to ideal coefficients (1, 0) and (0, 1).
-            mode_fwd = {
-                k: np.asarray(v, dtype=np.complex128)
-                for k, v in projection["mode_components"].items()
-            }
-            mode_bwd = {
-                k: (
-                    -np.asarray(v, dtype=np.complex128)
-                    if k.startswith("H")
-                    else np.asarray(v, dtype=np.complex128)
-                )
-                for k, v in mode_fwd.items()
-            }
-            c_fwd = self._project_modal_coefficients_3d(
-                mode_fwd, projection, apply_calibration=False
-            )
-            c_bwd = self._project_modal_coefficients_3d(
-                mode_bwd, projection, apply_calibration=False
-            )
-            calib = np.asarray(
-                [[c_fwd[0], c_bwd[0]], [c_fwd[1], c_bwd[1]]], dtype=np.complex128
-            )
-            corr = np.eye(2, dtype=np.complex128)
-            try:
-                cond = float(np.linalg.cond(calib))
-                if np.all(np.isfinite(calib)) and np.isfinite(cond) and cond < 1e8:
-                    inv = np.linalg.inv(calib)
-                    if np.all(np.isfinite(inv)):
-                        corr = np.asarray(inv, dtype=np.complex128)
-            except np.linalg.LinAlgError:
-                pass
-            projection["coeff_correction"] = corr
         cache[key] = projection
         return projection
 
@@ -1494,80 +1622,51 @@ class Simulation:
     def _project_modal_coefficients_3d(
         field_components, projection, apply_calibration=True
     ):
+        del apply_calibration
         mode_components = projection.get("mode_components", None)
+        mode_components_bwd = projection.get("mode_components_bwd", None)
+        overlap_matrix = projection.get("overlap_matrix", None)
         axis = str(projection.get("axis", "")).lower()
         d_area = float(projection.get("d_area", 1.0))
-        if isinstance(mode_components, dict) and axis in {"x", "y", "z"}:
-            if axis == "x":
-                e1, e2, h1, h2 = "Ey", "Ez", "Hz", "Hy"
-            elif axis == "y":
-                e1, e2, h1, h2 = "Ez", "Ex", "Hx", "Hz"
+        if (
+            isinstance(mode_components, dict)
+            and isinstance(mode_components_bwd, dict)
+            and overlap_matrix is not None
+            and axis in {"x", "y", "z"}
+        ):
+            rhs = np.asarray(
+                [
+                    _modal_overlap_3d_profiles(
+                        field_components,
+                        mode_components,
+                        axis,
+                        d_area,
+                    ),
+                    _modal_overlap_3d_profiles(
+                        field_components,
+                        mode_components_bwd,
+                        axis,
+                        d_area,
+                    ),
+                ],
+                dtype=np.complex128,
+            )
+            overlap = np.asarray(overlap_matrix, dtype=np.complex128)
+            cond = float(np.linalg.cond(overlap))
+            if (
+                not np.all(np.isfinite(overlap))
+                or not np.all(np.isfinite(rhs))
+                or not np.isfinite(cond)
+            ):
+                raise ValueError("Invalid 3D modal overlap system.")
+            if cond < 1e8:
+                coeff = np.linalg.solve(overlap, rhs)
             else:
-                e1, e2, h1, h2 = "Ex", "Ey", "Hy", "Hx"
-            needed = (e1, e2, h1, h2)
-
-            try:
-                arrays = {}
-                n_common = None
-                for name in needed:
-                    f_arr = np.asarray(
-                        field_components[name], dtype=np.complex128
-                    ).reshape(-1)
-                    m_arr = np.asarray(
-                        mode_components[name], dtype=np.complex128
-                    ).reshape(-1)
-                    n_local = int(min(f_arr.size, m_arr.size))
-                    if n_local <= 0:
-                        raise ValueError("empty component")
-                    n_common = n_local if n_common is None else min(n_common, n_local)
-                    arrays[name] = (f_arr, m_arr)
-                n_common = int(max(0, n_common or 0))
-                if n_common > 0:
-                    ef1 = arrays[e1][0][:n_common]
-                    ef2 = arrays[e2][0][:n_common]
-                    hf1 = arrays[h1][0][:n_common]
-                    hf2 = arrays[h2][0][:n_common]
-                    em1 = arrays[e1][1][:n_common]
-                    em2 = arrays[e2][1][:n_common]
-                    hm1 = arrays[h1][1][:n_common]
-                    hm2 = arrays[h2][1][:n_common]
-
-                    s1 = (
-                        0.5
-                        * np.sum(ef1 * np.conjugate(hm1) - ef2 * np.conjugate(hm2))
-                        * d_area
-                    )
-                    s2 = (
-                        0.5
-                        * np.sum(np.conjugate(em1) * hf1 - np.conjugate(em2) * hf2)
-                        * d_area
-                    )
-                    q1 = (
-                        0.5
-                        * np.sum(em1 * np.conjugate(hm1) - em2 * np.conjugate(hm2))
-                        * d_area
-                    )
-                    q2 = (
-                        0.5
-                        * np.sum(np.conjugate(em1) * hm1 - np.conjugate(em2) * hm2)
-                        * d_area
-                    )
-
-                    if np.abs(q1) > 1e-30 and np.abs(q2) > 1e-30:
-                        x = s1 / q1
-                        y = s2 / q2
-                        a_plus = np.complex128(0.5 * (x + y))
-                        a_minus = np.complex128(0.5 * (x - y))
-                        if apply_calibration:
-                            corr = projection.get("coeff_correction", None)
-                            if corr is not None:
-                                vec = np.asarray([a_plus, a_minus], dtype=np.complex128)
-                                vec = np.asarray(corr, dtype=np.complex128) @ vec
-                                a_plus, a_minus = vec[0], vec[1]
-                        return np.complex128(a_plus), np.complex128(a_minus)
-            except Exception:
-                # Fall back to pseudo-inverse extraction if overlap inputs are incomplete.
-                pass
+                # Stay in modal-overlap space even when the biorthogonal system
+                # is poorly conditioned. This is the closest analogue to
+                # Meep-style eigenmode coefficient extraction we have.
+                coeff = np.linalg.pinv(overlap) @ rhs
+            return np.complex128(coeff[0]), np.complex128(coeff[1])
 
         components = tuple(projection.get("components", ()))
         if len(components) == 0:
@@ -1599,12 +1698,6 @@ class Simulation:
         coeff = pinv @ field_vec
         a_plus = coeff[0]
         a_minus = coeff[1]
-        if apply_calibration:
-            corr = projection.get("coeff_correction", None)
-            if corr is not None:
-                vec = np.asarray([a_plus, a_minus], dtype=np.complex128)
-                vec = np.asarray(corr, dtype=np.complex128) @ vec
-                a_plus, a_minus = vec[0], vec[1]
         return np.complex128(a_plus), np.complex128(a_minus)
 
     def extract_port_waves(
@@ -1714,7 +1807,8 @@ class Simulation:
                             )
                         )
 
-                a_incident = np.zeros(freqs.size, dtype=np.complex128)
+                a_incident_plus = np.zeros(freqs.size, dtype=np.complex128)
+                a_incident_minus = np.zeros(freqs.size, dtype=np.complex128)
                 last_valid_ref_proj = None
                 for idx, f in enumerate(freqs):
                     f_mode = float(f if strategy == "per_frequency" else single_freq)
@@ -1739,10 +1833,14 @@ class Simulation:
                         ]
                     )
                     coeff = proj["pinv"] @ field_vec
-                    a_incident[idx] = coeff[0]
-                port_waves["a_incident"] = a_incident
+                    a_incident_plus[idx], a_incident_minus[idx] = coeff[0], coeff[1]
+                port_waves["a_incident"] = a_incident_plus
+                port_waves["a_incident_plus"] = a_incident_plus
+                port_waves["a_incident_minus"] = a_incident_minus
                 if return_power:
-                    port_waves["P_incident"] = np.abs(a_incident) ** 2
+                    port_waves["P_incident"] = np.abs(a_incident_plus) ** 2
+                    port_waves["P_incident_plus"] = np.abs(a_incident_plus) ** 2
+                    port_waves["P_incident_minus"] = np.abs(a_incident_minus) ** 2
 
             waves[spec.name] = port_waves
         return waves
@@ -1869,7 +1967,8 @@ class Simulation:
                         _, dft_cache[key] = self._sample_monitor_component_dft(
                             ref_monitor, comp, frequencies=freqs
                         )
-                a_incident = np.zeros(freqs.size, dtype=np.complex128)
+                a_incident_plus = np.zeros(freqs.size, dtype=np.complex128)
+                a_incident_minus = np.zeros(freqs.size, dtype=np.complex128)
                 cond_ref = np.zeros(freqs.size, dtype=float)
                 neff_ref = np.full(freqs.size, np.nan, dtype=float)
                 last_valid_ref_proj = None
@@ -1899,7 +1998,7 @@ class Simulation:
                         coeff = self._project_modal_coefficients_3d(
                             field_components, proj
                         )
-                        a_incident[idx] = coeff[0]
+                        a_incident_plus[idx], a_incident_minus[idx] = coeff[0], coeff[1]
                     else:
                         field_vec = np.concatenate(
                             [
@@ -1908,14 +2007,18 @@ class Simulation:
                             ]
                         )
                         coeff = proj["pinv"] @ field_vec
-                        a_incident[idx] = coeff[0]
+                        a_incident_plus[idx], a_incident_minus[idx] = coeff[0], coeff[1]
                     cond_ref[idx] = float(proj.get("condition_number", np.nan))
                     neff_ref[idx] = float(proj.get("mode_neff", np.nan))
-                port_waves["a_incident"] = a_incident
+                port_waves["a_incident"] = a_incident_plus
+                port_waves["a_incident_plus"] = a_incident_plus
+                port_waves["a_incident_minus"] = a_incident_minus
                 port_waves["reference_condition_number"] = cond_ref
                 port_waves["reference_mode_neff"] = neff_ref
                 if return_power:
-                    port_waves["P_incident"] = np.abs(a_incident) ** 2
+                    port_waves["P_incident"] = np.abs(a_incident_plus) ** 2
+                    port_waves["P_incident_plus"] = np.abs(a_incident_plus) ** 2
+                    port_waves["P_incident_minus"] = np.abs(a_incident_minus) ** 2
 
             waves[spec.name] = port_waves
         return waves
@@ -1960,10 +2063,13 @@ class Simulation:
         if missing:
             raise ValueError(f"output_ports contains unknown ports: {missing}")
 
-        a_incident = np.asarray(
-            waves[source_port].get("a_incident", waves[source_port]["a_plus"]),
-            dtype=np.complex128,
+        source_spec = port_map[source_port]
+        a_incident = self._select_wave_component(
+            waves[source_port],
+            selector=source_spec.incident_wave,
+            use_reference=bool(source_spec.reference_monitor),
         )
+        a_incident = np.asarray(a_incident, dtype=np.complex128)
         max_incident = float(np.max(np.abs(a_incident))) if a_incident.size else 0.0
         rel_floor = max_incident * (10.0 ** (float(min_incident_db) / 20.0))
         abs_floor = max(1e-18, rel_floor)
@@ -1971,7 +2077,13 @@ class Simulation:
 
         s_matrix = {}
         for out_port in output_ports:
-            b_out = np.asarray(waves[out_port]["a_minus"], dtype=np.complex128)
+            out_spec = port_map[out_port]
+            b_out = self._select_wave_component(
+                waves[out_port],
+                selector=out_spec.scattered_wave,
+                use_reference=False,
+            )
+            b_out = np.asarray(b_out, dtype=np.complex128)
             ratio = self._safe_ratio(b_out, a_incident)
             ratio = np.where(valid_mask, ratio, 0.0 + 0.0j)
             s_matrix[(out_port, source_port)] = ratio
@@ -1985,7 +2097,17 @@ class Simulation:
         p_in = np.abs(a_incident) ** 2
         p_guided_out = np.zeros_like(p_in, dtype=float)
         for out_port in output_ports:
-            p_guided_out += np.abs(waves[out_port]["a_minus"]) ** 2
+            out_spec = port_map[out_port]
+            p_guided_out += (
+                np.abs(
+                    self._select_wave_component(
+                        waves[out_port],
+                        selector=out_spec.scattered_wave,
+                        use_reference=False,
+                    )
+                )
+                ** 2
+            )
         power_sum = p_guided_out / np.maximum(p_in, 1e-18)
         loss_est = 1.0 - power_sum
         power_sum = np.where(valid_mask, power_sum, np.nan)
@@ -2115,10 +2237,17 @@ class Simulation:
                     window=window,
                 )
                 ref_coeff = ref_proj["pinv"] @ np.concatenate([e_ref, h_ref])
-                a_incident = np.complex128(ref_coeff[0])
-                port_waves["a_incident"] = a_incident
+                a_incident_plus = np.complex128(ref_coeff[0])
+                a_incident_minus = np.complex128(ref_coeff[1])
+                port_waves["a_incident"] = a_incident_plus
+                port_waves["a_incident_plus"] = a_incident_plus
+                port_waves["a_incident_minus"] = a_incident_minus
                 if return_power:
-                    port_waves["P_incident"] = float(np.abs(a_incident) ** 2)
+                    port_waves["P_incident"] = float(np.abs(a_incident_plus) ** 2)
+                    port_waves["P_incident_plus"] = float(np.abs(a_incident_plus) ** 2)
+                    port_waves["P_incident_minus"] = float(
+                        np.abs(a_incident_minus) ** 2
+                    )
 
             waves[spec.name] = port_waves
         return waves
@@ -2172,10 +2301,20 @@ class Simulation:
         if missing:
             raise ValueError(f"output_ports contains unknown ports: {missing}")
 
-        a_incident = waves[source_port].get("a_incident", waves[source_port]["a_plus"])
+        source_spec = port_map[source_port]
+        a_incident = self._select_wave_component(
+            waves[source_port],
+            selector=source_spec.incident_wave,
+            use_reference=bool(source_spec.reference_monitor),
+        )
         s_matrix = {}
         for out_port in output_ports:
-            b_out = waves[out_port]["a_minus"]
+            out_spec = port_map[out_port]
+            b_out = self._select_wave_component(
+                waves[out_port],
+                selector=out_spec.scattered_wave,
+                use_reference=False,
+            )
             s_matrix[(out_port, source_port)] = self._safe_ratio(b_out, a_incident)
 
         self.s_matrix_frequencies = np.asarray(frequencies, dtype=float)
@@ -2187,7 +2326,17 @@ class Simulation:
         p_in = np.abs(a_incident) ** 2
         p_guided_out = np.zeros_like(p_in, dtype=float)
         for out_port in output_ports:
-            p_guided_out += np.abs(waves[out_port]["a_minus"]) ** 2
+            out_spec = port_map[out_port]
+            p_guided_out += (
+                np.abs(
+                    self._select_wave_component(
+                        waves[out_port],
+                        selector=out_spec.scattered_wave,
+                        use_reference=False,
+                    )
+                )
+                ** 2
+            )
         power_sum = p_guided_out / np.maximum(p_in, 1e-18)
         diagnostics = {
             "frequencies": np.asarray(frequencies, dtype=float),
@@ -2243,11 +2392,23 @@ class Simulation:
         if missing:
             raise ValueError(f"output_ports contains unknown ports: {missing}")
 
-        a_incident = waves[source_port].get("a_incident", waves[source_port]["a_plus"])
+        source_spec = port_map[source_port]
+        a_incident = self._select_wave_component(
+            waves[source_port],
+            selector=source_spec.incident_wave,
+            use_reference=bool(source_spec.reference_monitor),
+        )
         s_matrix = {}
         for out_port in output_ports:
-            b_out = waves[out_port]["a_minus"]
-            ratio = self._safe_ratio(np.asarray([b_out]), np.asarray([a_incident]))[0]
+            out_spec = port_map[out_port]
+            b_out = self._select_wave_component(
+                waves[out_port],
+                selector=out_spec.scattered_wave,
+                use_reference=False,
+            )
+            b_vec = np.atleast_1d(np.asarray(b_out, dtype=np.complex128))
+            a_vec = np.atleast_1d(np.asarray(a_incident, dtype=np.complex128))
+            ratio = self._safe_ratio(b_vec, a_vec)[0]
             s_matrix[(out_port, source_port)] = np.complex128(ratio)
 
         self.s_matrix_frequencies = np.asarray([float(frequency)], dtype=float)
@@ -2256,9 +2417,23 @@ class Simulation:
         if not return_diagnostics:
             return s_output
 
-        p_in = float(np.abs(a_incident) ** 2)
+        p_in = float(
+            np.abs(np.atleast_1d(np.asarray(a_incident, dtype=np.complex128))[0]) ** 2
+        )
         p_guided_out = float(
-            np.sum([np.abs(waves[out]["a_minus"]) ** 2 for out in output_ports])
+            np.sum(
+                [
+                    np.abs(
+                        self._select_wave_component(
+                            waves[out],
+                            selector=port_map[out].scattered_wave,
+                            use_reference=False,
+                        )
+                    )
+                    ** 2
+                    for out in output_ports
+                ]
+            )
         )
         power_sum = p_guided_out / max(p_in, 1e-18)
         diagnostics = {

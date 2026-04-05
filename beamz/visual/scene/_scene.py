@@ -4,7 +4,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
-
 ObjectKind = Literal["arrow", "box", "line", "plane", "poly_extrusion", "sphere"]
 ProjectionKind = Literal["perspective", "orthographic"]
 
@@ -86,7 +85,7 @@ class SceneSpec:
     objects: list[Object3D]
     schema_version: str = "0.1.0"
     units: str = "m"
-    background: str = "#f8fafc"
+    background: str = "#ffffff"
     camera: CameraSpec = field(default_factory=CameraSpec)
     clip_planes: list[ClipPlaneSpec] = field(default_factory=list)
     title: str | None = None
@@ -147,7 +146,7 @@ def scene_from_dict(data: dict[str, Any]) -> SceneSpec:
     return SceneSpec(
         schema_version=data.get("schema_version", "0.1.0"),
         units=data.get("units", "m"),
-        background=data.get("background", "#f8fafc"),
+        background=data.get("background", "#ffffff"),
         camera=camera,
         clip_planes=clip_planes,
         objects=objects,
