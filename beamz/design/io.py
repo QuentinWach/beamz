@@ -20,6 +20,18 @@ def _orientation_to_inward_direction(orientation_deg: float) -> str:
     return direction_map[orientation]
 
 
+def _structure_vertices_and_holes(structure):
+    vertices = getattr(structure, "vertices", None)
+    interiors = getattr(structure, "interiors", ())
+    if not vertices and hasattr(structure, "to_polygon"):
+        polygon = structure.to_polygon()
+        vertices = getattr(polygon, "vertices", None)
+        interiors = getattr(polygon, "interiors", ())
+    if not vertices:
+        return None, ()
+    return vertices, interiors
+
+
 class _GDSFactoryNamespace:
     """Namespace for gdsfactory-to-BeamZ import helpers."""
 
@@ -98,7 +110,6 @@ class _GDSFactoryNamespace:
         core_z0: float,
         core_thickness: float,
         core_permittivity: float,
-        extension: float,
         port_overlap: float = 0.0,
     ):
         from beamz.design.materials import Material
@@ -205,7 +216,6 @@ class _GDSFactoryNamespace:
                 core_z0=core_z0,
                 core_thickness=float(core_thickness),
                 core_permittivity=float(n_core) ** 2,
-                extension=float(extension),
                 port_overlap=float(port_overlap),
             )
         if unify:
@@ -352,7 +362,7 @@ def import_gds(gds_file: str, default_depth=1e-6):
                 ]
                 beamz_polygon = Polygon(vertices=vertices_2d, depth=default_depth)
                 design.layers[layer_num].append(beamz_polygon)
-                design.structures.append(beamz_polygon)
+                design += beamz_polygon
                 total_polygons_imported += 1
 
     if default_depth > 0:
@@ -372,17 +382,6 @@ def export_gds(self, output_file):
 
     For 3D designs, structures with the same material that touch (in 3D) will be placed in the same layer.
     """
-    from beamz.design.structures import (
-        Circle,
-        CircularBend,
-        Polygon,
-        Rectangle,
-        Ring,
-        Taper,
-    )
-    from beamz.devices.monitors import Monitor
-    from beamz.devices.sources import GaussianSource, ModeSource
-
     lib = gdspy.GdsLibrary(unit=1e-6, precision=1e-9)
     cell = lib.new_cell("main")
     self.unify_polygons()
@@ -390,9 +389,8 @@ def export_gds(self, output_file):
 
     material_groups = {}
     for structure in self.structures:
-        if hasattr(structure, "is_pml") and structure.is_pml:
-            continue
-        if isinstance(structure, (ModeSource, GaussianSource, Monitor)):
+        vertices, interiors = _structure_vertices_and_holes(structure)
+        if getattr(structure, "is_pml", False) or not vertices:
             continue
         material = getattr(structure, "material", None)
         if material is None:
@@ -406,33 +404,17 @@ def export_gds(self, output_file):
 
     for layer_num, (material_key, structures) in enumerate(material_groups.items()):
         for structure in structures:
-            if isinstance(structure, Polygon):
-                vertices = structure.vertices
-                interiors = (
-                    structure.interiors if hasattr(structure, "interiors") else []
-                )
-            elif isinstance(structure, Rectangle):
-                x, y = structure.position[0:2]
-                w, h = structure.width, structure.height
-                vertices = [(x, y, 0), (x + w, y, 0), (x + w, y + h, 0), (x, y + h, 0)]
-                interiors = []
-            elif isinstance(structure, (Circle, Ring, CircularBend, Taper)):
-                if hasattr(structure, "to_polygon"):
-                    poly = structure.to_polygon()
-                    vertices = poly.vertices
-                    interiors = getattr(poly, "interiors", [])
-                else:
-                    continue
-            else:
+            vertices, interiors = _structure_vertices_and_holes(structure)
+            if not vertices:
                 continue
 
             vertices_2d = [(x * scale, y * scale) for x, y, _ in vertices]
             if not vertices_2d:
                 continue
-            interior_2d = []
-            if interiors:
-                for interior in interiors:
-                    interior_2d.append([(x * scale, y * scale) for x, y, _ in interior])
+            interior_2d = [
+                [(x * scale, y * scale) for x, y, _ in interior]
+                for interior in interiors
+            ]
             try:
                 if interior_2d:
                     gdspy_poly = gdspy.Polygon(
