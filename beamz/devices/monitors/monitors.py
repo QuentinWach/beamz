@@ -44,6 +44,8 @@ class Monitor:
         frequency_record_interval=1,
     ):
         object.__setattr__(self, "design", design)
+        object.__setattr__(self, "_live_state", live_helpers.create_state())
+        object.__setattr__(self, "update_interval", 10)
         object.__setattr__(
             self,
             "spec",
@@ -85,7 +87,7 @@ class Monitor:
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def __setattr__(self, name, value):
-        if name in {"design", "spec", "state"}:
+        if name in {"design", "spec", "state", "_live_state", "update_interval"}:
             object.__setattr__(self, name, value)
             return
         if name in _SPEC_FIELDS and "spec" in self.__dict__:

@@ -168,8 +168,9 @@ def _record_video_frame(sim, video_animator, cfg):
     field_display = getattr(sim.fields, record_field)
     if "E" in record_field:
         field_display = field_display * 1e-6
-    sources = [device for device in sim.devices if hasattr(device, "signal")]
-    monitors = [device for device in sim.devices if hasattr(device, "power_history")]
+    devices = getattr(sim, "devices", ())
+    sources = [device for device in devices if hasattr(device, "signal")]
+    monitors = [device for device in devices if hasattr(device, "power_history")]
     video_animator.update(
         field_display,
         t=sim.t,
@@ -213,8 +214,9 @@ def _update_live_display(
     if "E" in cfg.animate_live:
         field_display = field_display * 1e-6
     units = "V/µm" if "E" in cfg.animate_live else "A/m"
-    sources = [device for device in sim.devices if hasattr(device, "signal")]
-    monitors = [device for device in sim.devices if hasattr(device, "power_history")]
+    devices = getattr(sim, "devices", ())
+    sources = [device for device in devices if hasattr(device, "signal")]
+    monitors = [device for device in devices if hasattr(device, "power_history")]
 
     if use_jupyter and jupyter_animator:
         jupyter_animator.update(

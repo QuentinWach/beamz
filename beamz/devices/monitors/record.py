@@ -2,6 +2,8 @@
 
 import numpy as np
 
+from beamz.devices.monitors import live as live_helpers
+
 
 def should_record(monitor, step):
     """Check if this step should be recorded based on interval."""
@@ -91,7 +93,7 @@ def record_fields_2d(
     if (
         do_record
         and spec.live_update
-        and (len(state.fields["t"]) % state.update_interval == 0)
+        and live_helpers.should_refresh(monitor)
     ):
         monitor._update_live_plot_2d()
 
@@ -185,7 +187,7 @@ def record_fields_3d(monitor, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy, dz, step=0):
     if (
         do_record
         and spec.live_update
-        and (len(state.fields["t"]) % state.update_interval == 0)
+        and live_helpers.should_refresh(monitor)
     ):
         monitor._update_live_plot_3d()
 

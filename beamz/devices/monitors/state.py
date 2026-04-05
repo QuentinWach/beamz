@@ -15,10 +15,6 @@ class MonitorRecorder:
     power_accumulation_count: int
     step_count: int
     last_record_step: int
-    live_fig: object | None
-    live_axes: object | None
-    live_plots: dict
-    update_interval: int
     frequency_flux_spectrum: np.ndarray
     objective_value: float | None
     _dft_accum: dict = field(default_factory=dict)
@@ -50,10 +46,6 @@ class MonitorRecorder:
             power_accumulation_count=0,
             step_count=0,
             last_record_step=-1,
-            live_fig=None,
-            live_axes=None,
-            live_plots={},
-            update_interval=10,
             frequency_flux_spectrum=np.zeros(spec.frequency_points.shape, dtype=np.complex64),
             objective_value=None,
             _dft_accum={},
