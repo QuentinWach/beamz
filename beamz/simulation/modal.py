@@ -93,6 +93,163 @@ def build_port_projection(sim, spec, monitor, frequency, cache, mode_pad_cells=6
     )
 
 
+def wanted_components(sim, parts):
+    if sim.is_3d:
+        return tuple(
+            parts.get(
+                "projection_components_3d",
+                (parts["e_component"], parts["h_component"]),
+            )
+        )
+    return (parts["e_component"], parts["h_component"])
+
+
+def load_component_cache(cache, monitor, component, loader):
+    key = (monitor.name, component)
+    if key not in cache:
+        _, cache[key] = loader(monitor, component)
+    return cache[key]
+
+
+def resolve_projection(sim, spec, monitor, frequency, projection_cache, last_valid):
+    proj = sim._build_port_projection(spec, monitor, float(frequency), projection_cache)
+    proj_neff = float(proj.get("mode_neff", np.nan))
+    if (not np.isfinite(proj_neff)) or (proj_neff <= 1e-6):
+        if last_valid is not None:
+            return last_valid, last_valid
+        return proj, last_valid
+    return proj, proj
+
+
+def modal_coefficients_from_samples(sim, proj, samples):
+    proj_components = tuple(
+        proj.get("components", (proj["e_component"], proj["h_component"]))
+    )
+    if sim.is_3d:
+        field_components = {
+            comp: np.asarray(samples[comp], dtype=np.complex128)
+            for comp in proj_components
+        }
+        coeff = sim._project_modal_coefficients_3d(field_components, proj)
+    else:
+        field_vec = np.concatenate(
+            [np.asarray(samples[comp], dtype=np.complex128) for comp in proj_components]
+        )
+        coeff = proj["pinv"] @ field_vec
+    return np.asarray(coeff, dtype=np.complex128)
+
+
+def extract_monitor_coefficients(
+    sim,
+    spec,
+    monitor,
+    frequencies,
+    *,
+    projection_frequencies,
+    projection_cache,
+    sample_cache,
+    loader,
+    include_metadata=False,
+):
+    parts = sim._mode_components_for_port(spec)
+    for component in wanted_components(sim, parts):
+        load_component_cache(sample_cache, monitor, component, loader)
+
+    a_plus = np.zeros(frequencies.size, dtype=np.complex128)
+    a_minus = np.zeros(frequencies.size, dtype=np.complex128)
+    condition_number = None
+    mode_neff = None
+    if include_metadata:
+        condition_number = np.zeros(frequencies.size, dtype=float)
+        mode_neff = np.full(frequencies.size, np.nan, dtype=float)
+
+    last_valid_proj = None
+    for idx, f_mode in enumerate(projection_frequencies):
+        proj, last_valid_proj = resolve_projection(
+            sim, spec, monitor, f_mode, projection_cache, last_valid_proj
+        )
+        proj_components = tuple(
+            proj.get("components", (proj["e_component"], proj["h_component"]))
+        )
+        coeff = modal_coefficients_from_samples(
+            sim,
+            proj,
+            {
+                comp: sample_cache[(monitor.name, comp)][idx]
+                for comp in proj_components
+            },
+        )
+        a_plus[idx], a_minus[idx] = coeff[0], coeff[1]
+        if include_metadata:
+            condition_number[idx] = float(proj.get("condition_number", np.nan))
+            mode_neff[idx] = float(proj.get("mode_neff", np.nan))
+
+    return a_plus, a_minus, condition_number, mode_neff
+
+
+def extract_reference_waves(
+    sim,
+    spec,
+    monitor,
+    frequencies,
+    *,
+    projection_frequencies,
+    projection_cache,
+    sample_cache,
+    loader,
+    include_metadata=False,
+):
+    a_plus, a_minus, condition_number, mode_neff = extract_monitor_coefficients(
+        sim,
+        spec,
+        monitor,
+        frequencies,
+        projection_frequencies=projection_frequencies,
+        projection_cache=projection_cache,
+        sample_cache=sample_cache,
+        loader=loader,
+        include_metadata=include_metadata,
+    )
+    data = {
+        "a_incident": a_plus,
+        "a_incident_plus": a_plus,
+        "a_incident_minus": a_minus,
+    }
+    if include_metadata:
+        data["reference_condition_number"] = condition_number
+        data["reference_mode_neff"] = mode_neff
+    return data
+
+
+def extract_cw_monitor_coefficients(
+    sim,
+    spec,
+    monitor,
+    frequency,
+    *,
+    projection_cache,
+    steady_start_time,
+    avg_cycles,
+    window,
+):
+    parts = sim._mode_components_for_port(spec)
+    proj = sim._build_port_projection(spec, monitor, frequency, projection_cache)
+    coeff = proj["pinv"] @ np.concatenate(
+        [
+            sim._demodulate_monitor_component(
+                monitor,
+                component,
+                frequency=frequency,
+                t_start=steady_start_time,
+                avg_cycles=avg_cycles,
+                window=window,
+            )
+            for component in (parts["e_component"], parts["h_component"])
+        ]
+    )
+    return np.complex128(coeff[0]), np.complex128(coeff[1])
+
+
 def _build_port_projection(
     sim,
     spec,
