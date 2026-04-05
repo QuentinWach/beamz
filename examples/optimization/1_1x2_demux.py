@@ -282,18 +282,89 @@ def save_progress(path, hist):
     plt.close(fig)
 
 def save_overlay(path, short_flux, long_flux, design_mask):
-    r = np.clip(short_flux / max(float(np.percentile(short_flux, 99.0)), 1.0), 0.0, 1.0).T ** 0.72
-    b = np.clip(long_flux / max(float(np.percentile(long_flux, 99.0)), 1.0), 0.0, 1.0).T ** 0.72
-    mask = design_mask.T > 0.5
-    base = np.zeros(mask.shape + (3,), dtype=float)
-    base[mask] = 0.16
-    rgb = np.maximum(base, np.stack([r, np.zeros_like(r), b], axis=-1))
-    eroded = np.zeros_like(mask, dtype=bool)
-    eroded[1:-1, 1:-1] = (
-        mask[1:-1, 1:-1] & mask[:-2, 1:-1] & mask[2:, 1:-1] & mask[1:-1, :-2] & mask[1:-1, 2:]
+    def _normalize_flux(flux):
+        flux = np.asarray(flux, dtype=float)
+        if flux.size == 0:
+            return flux
+        scale = float(np.percentile(flux, 99.5))
+        scale = max(scale, 1e-30)
+        norm = np.clip(flux / scale, 0.0, 1.0)
+        return norm ** 0.55
+
+    short_display = _normalize_flux(short_flux).T
+    long_display = _normalize_flux(long_flux).T
+    mask_display = np.asarray(design_mask, dtype=float).T
+
+    ny_plot, nx_plot = mask_display.shape
+    x = (np.arange(nx_plot) + 0.5) * DX / UM
+    y = (np.arange(ny_plot) + 0.5) * DX / UM
+    extent = [0.0, nx_plot * DX / UM, 0.0, ny_plot * DX / UM]
+
+    fig, ax = plt.subplots(figsize=(6.2, 6.2), facecolor="black")
+    ax.set_facecolor("black")
+
+    short_alpha = np.clip(short_display, 0.0, 1.0) ** 0.85
+    long_alpha = np.clip(long_display, 0.0, 1.0) ** 0.85
+
+    ax.imshow(
+        short_display,
+        cmap="Blues",
+        origin="lower",
+        extent=extent,
+        interpolation="bicubic",
+        alpha=short_alpha,
     )
-    rgb[mask & (~eroded)] = 1.0
-    plt.imsave(path, rgb, origin="lower")
+    ax.imshow(
+        long_display,
+        cmap="Reds",
+        origin="lower",
+        extent=extent,
+        interpolation="bicubic",
+        alpha=long_alpha,
+    )
+
+    ax.contour(
+        x,
+        y,
+        mask_display,
+        levels=[0.5],
+        colors="white",
+        linewidths=1.3,
+        antialiased=True,
+    )
+
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    ax.text(
+        0.02,
+        0.98,
+        f"{WL_SHORT / UM:.2f} um",
+        color="#4da3ff",
+        fontsize=10,
+        ha="left",
+        va="top",
+        transform=ax.transAxes,
+    )
+    ax.text(
+        0.98,
+        0.98,
+        f"{WL_LONG / UM:.2f} um",
+        color="#ff5c5c",
+        fontsize=10,
+        ha="right",
+        va="top",
+        transform=ax.transAxes,
+    )
+
+    plt.tight_layout(pad=0.0)
+    fig.savefig(path, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
 
 def set_design(grid, base_eps, mask, density, opt):
     grid.permittivity[:] = base_eps
