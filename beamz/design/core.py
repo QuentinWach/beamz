@@ -126,8 +126,9 @@ class Design:
         return self.spec.to_dict()
 
     @classmethod
-    def from_dict(cls, data):
-        spec = DesignSpec.from_dict(data)
+    def from_spec(cls, spec):
+        if not isinstance(spec, DesignSpec):
+            raise TypeError("from_spec expects a DesignSpec")
         new = object.__new__(cls)
         object.__setattr__(new, "spec", spec)
         object.__setattr__(new, "state", DesignState())
@@ -137,6 +138,10 @@ class Design:
             tuple(structure_from_spec(structure_spec) for structure_spec in spec.structures),
         )
         return new
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls.from_spec(DesignSpec.from_dict(data))
 
     def __iadd__(self, structure):
         """Implement += operator for adding structures."""
@@ -425,3 +430,11 @@ class Design:
         new_design.layers = self.layers.copy() if hasattr(self, "layers") else {}
 
         return new_design
+
+
+def material_grids_from_spec(spec, resolution, *, design_model=None):
+    if not isinstance(spec, DesignSpec):
+        raise TypeError("material_grids_from_spec expects a DesignSpec")
+    if isinstance(design_model, Design) and getattr(design_model, "spec", None) == spec:
+        return design_model.get_material_grids(resolution)
+    return Design.from_spec(spec).get_material_grids(resolution)

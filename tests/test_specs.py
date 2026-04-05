@@ -152,6 +152,27 @@ def test_simulation_runtime_is_initialized_lazily():
         )
 
 
+def test_simulation_runtime_initializes_from_spec_graph():
+    design = Design(width=1.0, height=1.0, material=Material(permittivity=1.0))
+    sim = Simulation(
+        design=design,
+        devices=[],
+        boundaries=[PML(thickness=0.1, sigma_max=2.0, m=3)],
+        resolution=0.1,
+        time=np.array([0.0, 1.0, 2.0]),
+    )
+
+    object.__setattr__(sim, "_design", None)
+    object.__setattr__(sim, "_boundaries", ())
+
+    assert sim.runtime.initialized is False
+    assert sim.dt == 1.0
+    assert sim.runtime.initialized is True
+    assert sim.runtime.fields is not None
+    assert sim.pml_data is not None
+    assert "mask" in sim.pml_data
+
+
 def test_with_spec_returns_updated_facade_copy():
     material = Material(permittivity=1.0)
     material2 = material.with_spec(permittivity=2.0)

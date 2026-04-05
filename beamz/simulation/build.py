@@ -1,9 +1,11 @@
 import os
 
+from beamz.design.core import material_grids_from_spec
 from beamz.devices.monitors.compiler import compile_monitor_specs
 from beamz.devices.monitors.monitors import Monitor
 from beamz.devices.sources.compiler import compile_source_specs
-from beamz.simulation.boundaries import PML
+from beamz.simulation.boundaries import PML, boundary_from_spec
+from beamz.simulation.boundary_specs import PMLSpec
 from beamz.simulation.fields import Fields
 from beamz.simulation import ops, shell
 from beamz.simulation.material_models import CompiledMaterialSpec
@@ -30,18 +32,25 @@ def initialize_runtime(sim):
     """Populate field storage and PML state from a simulation spec."""
     spec = sim.spec
     runtime = sim.runtime
-    design = sim.design
-    boundaries = sim.boundaries
+    design_model = getattr(sim, "_design", None)
+    design = design_model if getattr(design_model, "spec", None) == spec.design else None
+    boundaries = tuple(boundary_from_spec(boundary_spec) for boundary_spec in spec.boundaries)
 
-    permittivity, conductivity, permeability = design.get_material_grids(
-        spec.resolution
+    permittivity, conductivity, permeability = material_grids_from_spec(
+        spec.design,
+        spec.resolution,
+        design_model=design,
     )
     runtime.dt = float(spec.time[1] - spec.time[0])
     runtime.num_steps = len(spec.time)
     runtime.t = float(spec.time[0])
     runtime.current_step = 0
 
-    pml_boundaries = [boundary for boundary in boundaries if isinstance(boundary, PML)]
+    pml_boundaries = [
+        boundary
+        for boundary, boundary_spec in zip(boundaries, spec.boundaries)
+        if isinstance(boundary_spec, PMLSpec) and isinstance(boundary, PML)
+    ]
     runtime.fields = Fields(
         permittivity,
         conductivity,
@@ -62,7 +71,7 @@ def initialize_runtime(sim):
             pml_data,
             pml.create_pml_regions(
                 runtime.fields,
-                design,
+                spec.design,
                 spec.resolution,
                 runtime.dt,
                 plane_2d=spec.plane_2d,
