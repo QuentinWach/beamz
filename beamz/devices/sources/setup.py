@@ -1,0 +1,574 @@
+import jax.numpy as jnp
+import numpy as np
+
+from beamz.const import EPS_0, LIGHT_SPEED, MU_0
+from beamz.devices.sources.profiles import (
+    _axis_index_from_component_indices,
+    _build_3d_profiles,
+    _component_axis_coord,
+    _dominant_3d_pair,
+    _impedance_match_e_profile,
+    _parse_direction,
+    _remap_3d_solver_components,
+    _select_3d_impedance_index,
+    _select_3d_phase_ref,
+    _select_core_confined_mode_index,
+    _solve_numeric_k_axis,
+    _normalize_2d_pair_by_power,
+    _numeric_phase_delay,
+    _to_real_profile,
+)
+from beamz.devices.sources.solve import solve_modes
+
+
+def initialize(source, permittivity, resolution, dt=None):
+    """Compute the mode and configure source profiles and indices."""
+    dx = dy = resolution
+    is_3d = permittivity.ndim == 3
+    source._resolution = resolution
+    source._is_3d = is_3d
+
+    if is_3d:
+        nz, ny, nx = permittivity.shape
+        dz = resolution
+        source._grid_shape = (nz, ny, nx)
+        if source.height is None:
+            source.height = source.width
+    else:
+        ny, nx = permittivity.shape
+        nz = 1
+        dz = resolution
+        source._grid_shape = (ny, nx)
+        source.height = None
+
+    axis = source._direction_axis
+    if (not is_3d) and axis == "z":
+        raise ValueError(
+            "direction '+z'/'-z' requires a 3D permittivity grid; received 2D data"
+        )
+    source._axis = axis
+    source._dt_physical = 0.0
+    source._launch_dt = dt
+
+    if axis == "x":
+        center_idx = int(np.clip(np.round(source.center[0] / dx - 0.5), 0, nx - 1))
+        if source.direction == "+x":
+            offset_idx = max(0, center_idx - 1)
+        else:
+            offset_idx = min(nx - 2, center_idx + 1)
+
+        if is_3d:
+            eps_profile = permittivity[:, :, center_idx]
+            source._eps_profile_2d = eps_profile
+        else:
+            eps_profile = permittivity[:, center_idx]
+            source._eps_profile_2d = None
+
+    elif axis == "y":
+        center_idx = int(np.clip(np.round(source.center[1] / dy - 0.5), 0, ny - 1))
+        if source.direction == "+y":
+            offset_idx = max(0, center_idx - 1)
+        else:
+            offset_idx = min(ny - 2, center_idx + 1)
+
+        if is_3d:
+            eps_profile = permittivity[:, center_idx, :]
+            source._eps_profile_2d = eps_profile
+        else:
+            eps_profile = permittivity[center_idx, :]
+            source._eps_profile_2d = None
+
+    else:
+        center_idx = int(np.clip(np.round(source.center[2] / dz - 0.5), 0, nz - 1))
+        if source.direction == "+z":
+            offset_idx = max(0, center_idx - 1)
+        else:
+            offset_idx = min(nz - 2, center_idx + 1)
+
+        eps_profile = permittivity[center_idx, :, :]
+        source._eps_profile_2d = eps_profile
+
+    omega = 2 * np.pi * LIGHT_SPEED / source.wavelength
+    dL = dz if is_3d else (dy if axis == "x" else dx)
+    solver_direction = source.direction
+    if is_3d and axis in {"x", "y"}:
+        solver_direction = ("-" if source.direction.startswith("+") else "+") + axis
+
+    eps_profile_arr = np.asarray(eps_profile)
+    n_local_max = float(
+        np.sqrt(max(float(np.max(np.real(eps_profile_arr))), 1e-12))
+    )
+    target_neff = 0.98 * n_local_max
+
+    mode_candidates = 3
+    try:
+        neff_val, e_fields, h_fields, _ = solve_modes(
+            eps=eps_profile,
+            omega=omega,
+            dL=dL,
+            m=mode_candidates,
+            direction=solver_direction,
+            filter_pol=source.pol,
+            target_neff=target_neff,
+            return_fields=True,
+        )
+    except ValueError:
+        neff_val, e_fields, h_fields, _ = solve_modes(
+            eps=eps_profile,
+            omega=omega,
+            dL=dL,
+            m=1,
+            direction=solver_direction,
+            filter_pol=source.pol,
+            target_neff=target_neff,
+            return_fields=True,
+        )
+
+    mode_idx = _select_core_confined_mode_index(eps_profile, e_fields, neff_val)
+    source._neff = neff_val[mode_idx]
+    e_mode = e_fields[mode_idx]
+    h_mode = h_fields[mode_idx]
+
+    ex_raw = jnp.asarray(jnp.squeeze(e_mode[0]))
+    ey_raw = jnp.asarray(jnp.squeeze(e_mode[1]))
+    ez_raw = jnp.asarray(jnp.squeeze(e_mode[2]))
+    hx_raw = jnp.asarray(jnp.squeeze(h_mode[0]))
+    hy_raw = jnp.asarray(jnp.squeeze(h_mode[1]))
+    hz_raw = jnp.asarray(jnp.squeeze(h_mode[2]))
+
+    if is_3d:
+        ex_raw, ey_raw, ez_raw, hx_raw, hy_raw, hz_raw = _remap_3d_solver_components(
+            ex_raw, ey_raw, ez_raw, hx_raw, hy_raw, hz_raw, axis
+        )
+
+    if is_3d:
+        ref_field = _select_3d_phase_ref(
+            axis, source.pol, ex_raw, ey_raw, ez_raw, hx_raw, hy_raw, hz_raw
+        )
+    elif source.pol == "tm":
+        ex_max = jnp.max(jnp.abs(ex_raw))
+        ey_max = jnp.max(jnp.abs(ey_raw))
+        ez_max = jnp.max(jnp.abs(ez_raw))
+        ref_field = jnp.where(
+            ex_max > ey_max,
+            jnp.where(ex_max > ez_max, ex_raw, ez_raw),
+            jnp.where(ey_max > ez_max, ey_raw, ez_raw),
+        )
+    else:
+        ref_field = ey_raw if axis == "x" else ex_raw
+        ref_field = jnp.where(jnp.max(jnp.abs(ref_field)) < 1e-9, ez_raw, ref_field)
+
+    idx_max = jnp.argmax(jnp.abs(ref_field))
+    phase_ref = jnp.angle(ref_field.flatten()[idx_max])
+
+    ex_aligned = ex_raw * jnp.exp(-1j * phase_ref)
+    ey_aligned = ey_raw * jnp.exp(-1j * phase_ref)
+    ez_aligned = ez_raw * jnp.exp(-1j * phase_ref)
+    hx_aligned = hx_raw * jnp.exp(-1j * phase_ref)
+    hy_aligned = hy_raw * jnp.exp(-1j * phase_ref)
+    hz_aligned = hz_raw * jnp.exp(-1j * phase_ref)
+
+    if is_3d:
+        source._impedance_neff = _select_3d_impedance_index(
+            axis,
+            source.pol,
+            source._eps_profile_2d,
+            ex_aligned,
+            ey_aligned,
+            ez_aligned,
+            hx_aligned,
+            hy_aligned,
+            hz_aligned,
+        )
+        setup_3d(
+            source,
+            ex_aligned,
+            ey_aligned,
+            ez_aligned,
+            hx_aligned,
+            hy_aligned,
+            hz_aligned,
+            center_idx,
+            offset_idx,
+            axis,
+            nz,
+            ny,
+            nx,
+            resolution,
+            omega=omega,
+            dt=dt,
+        )
+    else:
+        source._impedance_neff = None
+        setup_2d(
+            source, e_mode, h_mode, center_idx, offset_idx, axis, ny, nx, resolution
+        )
+
+    compute_dt_physical(source, axis, is_3d, dx, dy, dz, dt=dt)
+    source._initialized = True
+
+
+def setup_3d(
+    source,
+    ex,
+    ey,
+    ez,
+    hx,
+    hy,
+    hz,
+    center_idx,
+    offset_idx,
+    axis,
+    nz,
+    ny,
+    nx,
+    resolution,
+    omega,
+    dt,
+):
+    """Set up full 6-component injection for 3D simulations."""
+    profiles, indices, extra = _build_3d_profiles(
+        ex,
+        ey,
+        ez,
+        hx,
+        hy,
+        hz,
+        axis=axis,
+        direction=source.direction,
+        center=source.center,
+        width=source.width,
+        height=source.height,
+        center_idx=center_idx,
+        offset_idx=offset_idx,
+        grid_shape=(nz, ny, nx),
+        resolution=resolution,
+        impedance_neff=(
+            source._impedance_neff
+            if source._impedance_neff is not None
+            else source._neff
+        ),
+        omega=omega,
+        dt=dt,
+    )
+
+    source._Ex_profile = profiles.get("Ex")
+    source._Ey_profile = profiles.get("Ey")
+    source._Ez_profile = profiles.get("Ez")
+    source._Hx_profile = profiles.get("Hx")
+    source._Hy_profile = profiles.get("Hy")
+    source._Hz_profile = profiles.get("Hz")
+
+    source._Ex_indices = indices.get("Ex")
+    source._Ey_indices = indices.get("Ey")
+    source._Ez_indices = indices.get("Ez")
+    source._Hx_indices = indices.get("Hx")
+    source._Hy_indices = indices.get("Hy")
+    source._Hz_indices = indices.get("Hz")
+
+    for key, val in extra.items():
+        setattr(source, key, val)
+
+    source._jz_profile = source._Hz_profile
+    source._my_profile = source._Ez_profile
+
+
+def setup_2d(source, e_mode, h_mode, center_idx, offset_idx, axis, ny, nx, resolution):
+    """2D injection setup using explicit global component mapping."""
+    dir_sign = 1.0 if source.direction.startswith("+") else -1.0
+    eta_0 = np.sqrt(MU_0 / EPS_0)
+    z_target = eta_0 / max(np.real(source._neff), 1e-6)
+
+    if axis == "x":
+        setup_2d_x(
+            source,
+            e_mode,
+            h_mode,
+            center_idx,
+            offset_idx,
+            ny,
+            nx,
+            resolution,
+            dir_sign,
+            z_target,
+        )
+    else:
+        setup_2d_y(
+            source,
+            e_mode,
+            h_mode,
+            center_idx,
+            offset_idx,
+            ny,
+            nx,
+            resolution,
+            dir_sign,
+            z_target,
+        )
+
+
+def setup_2d_x(
+    source,
+    e_mode,
+    h_mode,
+    center_idx,
+    offset_idx,
+    ny,
+    nx,
+    resolution,
+    dir_sign,
+    z_target,
+):
+    """2D injection setup for x-propagation."""
+    center_y_idx = int(round(source.center[1] / resolution))
+    half_width_idx = int(round((source.width / 2) / resolution))
+    y_start = max(0, center_y_idx - half_width_idx)
+    y_end = min(ny, center_y_idx + half_width_idx)
+    y_slice = slice(y_start, y_end)
+    source._y_start = y_start
+    source._y_end = y_end
+
+    if source.pol == "tm":
+        source._ez_indices = (y_slice, center_idx)
+        source._h_indices = (y_slice, offset_idx)
+        source._h_component = "Hx"
+
+        hy_raw = np.squeeze(h_mode[1])
+        ez_raw = np.squeeze(e_mode[2])
+
+        idx_max = np.argmax(np.abs(hy_raw))
+        phase_ref = np.angle(hy_raw.flatten()[idx_max])
+        hy_profile = hy_raw * np.exp(-1j * phase_ref)
+        ez_profile = ez_raw * np.exp(-1j * phase_ref)
+        ez_profile = _impedance_match_e_profile(ez_profile, hy_profile, z_target)
+
+        width_cells = y_end - y_start
+        window = make_1d_window(width_cells)
+
+        hy_cropped = hy_profile[y_start:y_end]
+        ez_cropped = ez_profile[y_start:y_end]
+        if len(hy_cropped) == len(window):
+            hy_cropped = hy_cropped * window
+            ez_cropped = ez_cropped * window
+
+        jz_profile = dir_sign * hy_cropped
+        my_profile = dir_sign * ez_cropped
+        jz_profile, my_profile = _normalize_2d_pair_by_power(
+            jz_profile, my_profile, signed_flux_sign=-1.0, dl=resolution
+        )
+        jz_profile = _to_real_profile(jz_profile)
+        my_profile = _to_real_profile(my_profile)
+        jz_profile, my_profile = _normalize_2d_pair_by_power(
+            jz_profile, my_profile, signed_flux_sign=-1.0, dl=resolution
+        )
+
+        source._jz_profile = jz_profile
+        source._my_profile = my_profile
+
+    else:
+        hz_col = (
+            max(0, offset_idx - 1)
+            if source.direction == "+x"
+            else min(nx - 2, offset_idx)
+        )
+
+        source._hz_indices = (slice(y_start, min(y_end, ny - 1)), hz_col)
+        source._e_indices = (slice(y_start, min(y_end, ny - 1)), offset_idx)
+        source._e_component = "Ey"
+
+        hz_raw = np.squeeze(h_mode[2])
+        ey_raw = np.squeeze(e_mode[1])
+
+        hz_staggered = 0.5 * (hz_raw[:-1] + hz_raw[1:])
+        ey_staggered = 0.5 * (ey_raw[:-1] + ey_raw[1:])
+
+        idx_max = np.argmax(np.abs(hz_staggered))
+        phase_ref = np.angle(hz_staggered.flatten()[idx_max])
+        hz_profile = hz_staggered * np.exp(-1j * phase_ref)
+        ey_profile = ey_staggered * np.exp(-1j * phase_ref)
+        ey_profile = _impedance_match_e_profile(ey_profile, hz_profile, z_target)
+
+        width_cells = min(y_end, len(hz_profile)) - y_start
+        window = make_1d_window(width_cells)
+
+        hz_cropped = hz_profile[y_start : min(y_end, len(hz_profile))]
+        ey_cropped = ey_profile[y_start : min(y_end, len(ey_profile))]
+        if len(hz_cropped) == len(window):
+            hz_cropped = hz_cropped * window
+            ey_cropped = ey_cropped * window
+
+        jy_profile = dir_sign * hz_cropped
+        mz_profile = -dir_sign * ey_cropped
+        jy_profile, mz_profile = _normalize_2d_pair_by_power(
+            jy_profile, mz_profile, signed_flux_sign=1.0, dl=resolution
+        )
+        jy_profile = _to_real_profile(jy_profile)
+        mz_profile = _to_real_profile(mz_profile)
+        jy_profile, mz_profile = _normalize_2d_pair_by_power(
+            jy_profile, mz_profile, signed_flux_sign=1.0, dl=resolution
+        )
+
+        source._jy_profile = jy_profile
+        source._mz_profile = mz_profile
+
+
+def setup_2d_y(
+    source,
+    e_mode,
+    h_mode,
+    center_idx,
+    offset_idx,
+    ny,
+    nx,
+    resolution,
+    dir_sign,
+    z_target,
+):
+    """2D injection setup for y-propagation."""
+    center_x_idx = int(round(source.center[0] / resolution))
+    half_width_idx = int(round((source.width / 2) / resolution))
+    x_start = max(0, center_x_idx - half_width_idx)
+    x_end = min(nx, center_x_idx + half_width_idx)
+    x_slice = slice(x_start, x_end)
+    source._x_start = x_start
+    source._x_end = x_end
+
+    if source.pol == "tm":
+        source._ez_indices = (center_idx, x_slice)
+        source._h_indices = (offset_idx, x_slice)
+        source._h_component = "Hy"
+
+        hx_raw = np.squeeze(h_mode[1])
+        ez_raw = np.squeeze(e_mode[2])
+
+        idx_max = np.argmax(np.abs(hx_raw))
+        phase_ref = np.angle(hx_raw.flatten()[idx_max])
+        hx_profile = hx_raw * np.exp(-1j * phase_ref)
+        ez_profile = ez_raw * np.exp(-1j * phase_ref)
+        ez_profile = _impedance_match_e_profile(ez_profile, hx_profile, z_target)
+
+        width_cells = x_end - x_start
+        window = make_1d_window(width_cells)
+
+        hx_cropped = hx_profile[x_start:x_end]
+        ez_cropped = ez_profile[x_start:x_end]
+        if len(hx_cropped) == len(window):
+            hx_cropped = hx_cropped * window
+            ez_cropped = ez_cropped * window
+
+        jz_profile = dir_sign * hx_cropped
+        my_profile = -dir_sign * ez_cropped
+        jz_profile, my_profile = _normalize_2d_pair_by_power(
+            jz_profile, my_profile, signed_flux_sign=1.0, dl=resolution
+        )
+        jz_profile = _to_real_profile(jz_profile)
+        my_profile = _to_real_profile(my_profile)
+        jz_profile, my_profile = _normalize_2d_pair_by_power(
+            jz_profile, my_profile, signed_flux_sign=1.0, dl=resolution
+        )
+
+        source._jz_profile = jz_profile
+        source._my_profile = my_profile
+
+    else:
+        hz_row = (
+            max(0, offset_idx - 1)
+            if source.direction == "+y"
+            else min(ny - 2, offset_idx)
+        )
+
+        source._hz_indices = (hz_row, slice(x_start, min(x_end, nx - 1)))
+        source._e_indices = (offset_idx, slice(x_start, min(x_end, nx - 1)))
+        source._e_component = "Ex"
+
+        hz_raw = np.squeeze(h_mode[2])
+        ex_raw = np.squeeze(e_mode[1])
+
+        hz_staggered = 0.5 * (hz_raw[:-1] + hz_raw[1:])
+        ex_staggered = 0.5 * (ex_raw[:-1] + ex_raw[1:])
+
+        idx_max = np.argmax(np.abs(hz_staggered))
+        phase_ref = np.angle(hz_staggered.flatten()[idx_max])
+        hz_profile = hz_staggered * np.exp(-1j * phase_ref)
+        ex_profile = ex_staggered * np.exp(-1j * phase_ref)
+        ex_profile = _impedance_match_e_profile(ex_profile, hz_profile, z_target)
+
+        width_cells = min(x_end, len(hz_profile)) - x_start
+        window = make_1d_window(width_cells)
+
+        hz_cropped = hz_profile[x_start : min(x_end, len(hz_profile))]
+        ex_cropped = ex_profile[x_start : min(x_end, len(ex_profile))]
+        if len(hz_cropped) == len(window):
+            hz_cropped = hz_cropped * window
+            ex_cropped = ex_cropped * window
+
+        jx_profile = -dir_sign * hz_cropped
+        mz_profile = -dir_sign * ex_cropped
+        jx_profile, mz_profile = _normalize_2d_pair_by_power(
+            jx_profile, mz_profile, signed_flux_sign=-1.0, dl=resolution
+        )
+        jx_profile = _to_real_profile(jx_profile)
+        mz_profile = _to_real_profile(mz_profile)
+        jx_profile, mz_profile = _normalize_2d_pair_by_power(
+            jx_profile, mz_profile, signed_flux_sign=-1.0, dl=resolution
+        )
+
+        source._jx_profile = jx_profile
+        source._mz_profile = mz_profile
+
+
+def make_1d_window(width_cells, alpha=0.3):
+    """Create a 1D Tukey window for smooth edges."""
+    if width_cells > 2:
+        from scipy.signal.windows import tukey
+
+        return tukey(width_cells, alpha=alpha)
+    return np.ones(max(1, width_cells))
+
+
+def compute_dt_physical(source, axis, is_3d, dx, dy, dz=None, dt=None):
+    """Compute physical time shift between E and H injection planes."""
+    if source._neff is None:
+        return
+    if dz is None:
+        dz = dx
+
+    coord_e = 0.0
+    coord_h = 0.0
+
+    if is_3d:
+        e_comp, h_comp = _dominant_3d_pair(axis, source.pol)
+        e_indices = getattr(source, f"_{e_comp}_indices", None)
+        h_indices = getattr(source, f"_{h_comp}_indices", None)
+        e_axis_idx = _axis_index_from_component_indices(e_indices, axis)
+        h_axis_idx = _axis_index_from_component_indices(h_indices, axis)
+        coord_e = _component_axis_coord(e_comp, e_axis_idx, axis, dx, dy, dz)
+        coord_h = _component_axis_coord(h_comp, h_axis_idx, axis, dx, dy, dz)
+    else:
+        if axis == "x":
+            if source.pol == "tm":
+                idx_e = source._ez_indices[1] if source._ez_indices else 0
+                idx_h = source._h_indices[1] if source._h_indices else 0
+            else:
+                idx_e = source._e_indices[1] if source._e_indices else 0
+                idx_h = source._hz_indices[1] if source._hz_indices else 0
+            coord_e = (idx_e + 0.5) * dx
+            coord_h = (idx_h + 1.0) * dx
+        else:
+            if source.pol == "tm":
+                idx_e = source._ez_indices[0] if source._ez_indices else 0
+                idx_h = source._h_indices[0] if source._h_indices else 0
+            else:
+                idx_e = source._e_indices[0] if source._e_indices else 0
+                idx_h = source._hz_indices[0] if source._hz_indices else 0
+            coord_e = (idx_e + 0.5) * dy
+            coord_h = (idx_h + 1.0) * dy
+
+    delta_s = float(coord_e - coord_h)
+    if is_3d and dt is not None:
+        omega = 2 * np.pi * LIGHT_SPEED / source.wavelength
+        d_axis = {"x": dx, "y": dy, "z": dz}[axis]
+        k_num = _solve_numeric_k_axis(omega, dt, d_axis, source._neff)
+        source._dt_physical = _numeric_phase_delay(omega, k_num, delta_s)
+    else:
+        source._dt_physical = delta_s * float(np.real(source._neff)) / LIGHT_SPEED
