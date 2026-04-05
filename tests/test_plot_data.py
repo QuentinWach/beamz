@@ -4,6 +4,8 @@ from beamz import Circle, Design, Material
 from beamz.devices.monitors.monitors import Monitor
 from beamz.devices.sources.mode import ModeSource
 from beamz.simulation.core import Simulation
+from beamz.visual.animation import animate_manual_field
+from beamz.visual.runner import VizConfig, _update_live_display
 from beamz.visual.data import Slice2D, Trace1D
 
 
@@ -143,3 +145,63 @@ def test_mode_source_profile_data_returns_plot_data():
     trace = src.profile_data("Hz")
     assert isinstance(trace, Trace1D)
     np.testing.assert_allclose(trace.values, np.array([0.0, 1.0, 0.5]))
+
+
+def test_animate_manual_field_marks_closed_figure():
+    import matplotlib.pyplot as plt
+
+    ctx = animate_manual_field(
+        np.ones((4, 4)),
+        pause=0.0,
+        title="Ez at t = 1.00e-15 s",
+    )
+    plt.close(ctx["fig"])
+
+    ctx = animate_manual_field(
+        np.zeros((4, 4)),
+        context=ctx,
+        pause=0.0,
+        title="Ez at t = 2.00e-15 s",
+    )
+
+    assert ctx["closed"] is True
+
+
+def test_runner_disables_live_updates_after_window_close(monkeypatch):
+    sim = Simulation.__new__(Simulation)
+    sim.is_3d = False
+    sim.fields = type(
+        "Fields",
+        (),
+        {
+            "Ez": np.ones((4, 4)),
+            "available_components": lambda self: ["Ez"],
+        },
+    )()
+    sim.design = type("Design", (), {"width": 2.0, "height": 1.0})()
+    sim.boundaries = []
+    sim.plane_2d = "xy"
+    sim.t = 1e-15
+    sim.current_step = 1
+    sim.num_steps = 10
+
+    cfg = VizConfig(animate_live="Ez")
+
+    def fake_animate_manual_field(*args, **kwargs):
+        return {"closed": True}
+
+    monkeypatch.setattr(
+        "beamz.visual.animation.animate_manual_field", fake_animate_manual_field
+    )
+
+    ctx = _update_live_display(
+        sim,
+        cfg,
+        active_monitor=None,
+        use_jupyter=False,
+        jupyter_animator=None,
+        viz_context=None,
+    )
+
+    assert ctx["closed"] is True
+    assert cfg.animate_live is None

@@ -81,6 +81,13 @@ def _format_frame_title(field_name, t, step, num_steps):
     return f"{field_name} at t = {t:.2e} s (step {step}/{num_steps})"
 
 
+def _figure_is_open(fig):
+    import matplotlib.pyplot as plt
+
+    number = getattr(fig, "number", None)
+    return number is not None and plt.fignum_exists(number)
+
+
 def _resolve_limits(axis_scale, vmax):
     if axis_scale is not None:
         return axis_scale
@@ -229,6 +236,22 @@ def _update_frame_artists(im, cbar, title, data, *, vmin, vmax, title_text=None)
         cbar.mappable.set_clim(vmin, vmax)
 
 
+def _refresh_live_canvas(fig, pause=0.0, *, force_draw=False):
+    canvas = fig.canvas
+    if force_draw:
+        canvas.draw()
+    else:
+        canvas.draw_idle()
+    canvas.flush_events()
+    if pause and pause > 0:
+        try:
+            canvas.start_event_loop(float(pause))
+        except Exception:
+            import matplotlib.pyplot as plt
+
+            plt.pause(pause)
+
+
 def animate_manual_field(
     field_array,
     context=None,
@@ -291,6 +314,11 @@ def animate_manual_field(
 
     if context is None:
         context = {}
+    elif context.get("closed"):
+        return context
+    elif context.get("fig") is not None and not _figure_is_open(context["fig"]):
+        context["closed"] = True
+        return context
 
     if axis_scale is None:
         frame = context.get("frame", 0)
@@ -361,8 +389,12 @@ def animate_manual_field(
             show_sources=show_sources,
             show_monitors=show_monitors,
         )
+        context["closed"] = False
+        fig.canvas.mpl_connect(
+            "close_event", lambda event: context.__setitem__("closed", True)
+        )
         plt.show(block=False)
-        plt.pause(pause)
+        _refresh_live_canvas(fig, pause=pause, force_draw=True)
         context.update(
             {
                 "fig": fig,
@@ -380,6 +412,9 @@ def animate_manual_field(
 
     # Update existing plot
     clean_visualization = context.get("clean_visualization", False)
+    if not _figure_is_open(context["fig"]):
+        context["closed"] = True
+        return context
     _update_frame_artists(
         context["im"],
         context.get("cbar"),
@@ -391,9 +426,7 @@ def animate_manual_field(
     )
     context["frame"] = context.get("frame", 0) + 1
     fig = context["fig"]
-    fig.canvas.draw_idle()
-    fig.canvas.flush_events()
-    plt.pause(pause)
+    _refresh_live_canvas(fig, pause=pause)
     return context
 
 

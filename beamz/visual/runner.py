@@ -79,11 +79,6 @@ def run_with_visualization(sim, **kwargs):
             )
         if jupyter_animator:
             jupyter_animator.finalize()
-        if not use_jupyter and viz_context and viz_context.get("fig"):
-            import matplotlib.pyplot as plt
-
-            plt.show(block=False)
-            print("Simulation complete. Close the plot window to continue.")
 
     return _collect_results(sim, field_history, cfg, jupyter_animator)
 
@@ -238,7 +233,7 @@ def _update_live_display(
             units=units,
             design=sim.design,
             boundaries=sim.boundaries,
-            pause=0.001,
+            pause=0.0,
             axis_scale=cfg.axis_scale,
             cmap=cfg.cmap,
             clean_visualization=cfg.clean_visualization,
@@ -248,6 +243,8 @@ def _update_live_display(
             plane_2d=sim.plane_2d,
             interpolation=cfg.interpolation,
         )
+        if viz_context and viz_context.get("closed"):
+            cfg.animate_live = None
     return viz_context
 
 
