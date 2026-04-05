@@ -83,7 +83,7 @@ def rasterize(mesh):
             props = mesh._get_all_material_props(structure.material)
 
             try:
-                bbox = mesh._get_bbox_indices_3d(
+                bbox = get_bbox_indices(
                     structure,
                     grid_height=grid_height,
                     grid_width=grid_width,
@@ -101,9 +101,9 @@ def rasterize(mesh):
                 if (
                     prefer_fast
                     and isinstance(structure, Rectangle)
-                    and mesh._is_axis_aligned(structure)
+                    and is_axis_aligned(structure)
                 ):
-                    mesh._rasterize_rectangle_3d_fast(
+                    rasterize_rectangle(
                         structure=structure,
                         grids=grids,
                         props=props,
@@ -117,7 +117,8 @@ def rasterize(mesh):
                     fast_done = True
 
                 if not fast_done and prefer_fast:
-                    poly_done = mesh._rasterize_polygon_3d_fast(
+                    poly_done = rasterize_polygon(
+                        mesh,
                         structure=structure,
                         grids=grids,
                         props=props,
@@ -137,7 +138,8 @@ def rasterize(mesh):
                         fast_done = True
 
                 if not fast_done:
-                    mesh._rasterize_structure_3d_fallback(
+                    rasterize_fallback(
+                        mesh,
                         structure=structure,
                         grids=grids,
                         props=props,
@@ -165,7 +167,8 @@ def rasterize(mesh):
     struct_end = time.perf_counter()
 
     pml_start = time.perf_counter()
-    mesh._process_3d_pml(
+    process_pml(
+        mesh,
         grids.permittivity,
         grids.permeability,
         grids.conductivity,

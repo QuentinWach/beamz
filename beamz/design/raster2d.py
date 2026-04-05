@@ -50,7 +50,7 @@ def rasterize(mesh):
             )
 
             try:
-                bbox_indices = mesh._get_bbox_indices(
+                bbox_indices = get_bbox_indices(
                     structure, grid_height, grid_width, cell_size
                 )
                 if bbox_indices is None:
@@ -58,8 +58,9 @@ def rasterize(mesh):
                     continue
                 min_i, min_j, max_i, max_j = bbox_indices
 
-                if isinstance(structure, Rectangle) and mesh._is_axis_aligned(structure):
-                    mesh._rasterize_rectangle(
+                if isinstance(structure, Rectangle) and is_axis_aligned(structure):
+                    rasterize_rectangle(
+                        mesh,
                         structure,
                         grids,
                         props,
@@ -76,7 +77,8 @@ def rasterize(mesh):
                 elif hasattr(structure, "radius") and not hasattr(
                     structure, "inner_radius"
                 ):
-                    mesh._rasterize_circle(
+                    rasterize_circle(
+                        mesh,
                         structure,
                         grids,
                         props,
@@ -94,7 +96,8 @@ def rasterize(mesh):
                 elif hasattr(structure, "inner_radius") and hasattr(
                     structure, "outer_radius"
                 ):
-                    mesh._rasterize_ring(
+                    rasterize_ring(
+                        mesh,
                         structure,
                         grids,
                         props,
@@ -110,7 +113,8 @@ def rasterize(mesh):
                         num_samples,
                     )
                 else:
-                    mesh._rasterize_polygon(
+                    rasterize_polygon(
+                        mesh,
                         structure,
                         grids,
                         props,
@@ -309,7 +313,8 @@ def rasterize_circle(
     for idx in range(len(boundary_i)):
         i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
         cx, cy = x_centers[j], y_centers[i]
-        samples_inside = mesh._supersample_cell(
+        samples_inside = supersample_cell(
+            mesh,
             cx,
             cy,
             sample_dx,
@@ -370,7 +375,8 @@ def rasterize_ring(
     for idx in range(len(boundary_i)):
         i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
         cx, cy = x_centers[j], y_centers[i]
-        samples_inside = mesh._supersample_cell(
+        samples_inside = supersample_cell(
+            mesh,
             cx,
             cy,
             sample_dx,
@@ -434,9 +440,7 @@ def rasterize_polygon(
                     continue
                 cell_props = props
                 if is_custom_material:
-                    cell_props = mesh._get_all_material_props(
-                        structure.material, cx, cy
-                    )
+                    cell_props = mesh._get_all_material_props(structure.material, cx, cy)
                 grids.blend_at((i, j), cell_props, float(blend_factor))
         return
 
@@ -482,7 +486,8 @@ def rasterize_polygon(
             for idx in range(len(boundary_i)):
                 i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
                 cx, cy = x_centers[j], y_centers[i]
-                samples_inside = mesh._supersample_cell(
+                samples_inside = supersample_cell(
+                    mesh,
                     cx,
                     cy,
                     sample_dx,
@@ -500,7 +505,8 @@ def rasterize_polygon(
     for i in range(min_i, max_i):
         for j in range(min_j, max_j):
             cx, cy = x_centers[j], y_centers[i]
-            samples_inside = mesh._supersample_cell(
+            samples_inside = supersample_cell(
+                mesh,
                 cx,
                 cy,
                 sample_dx,
