@@ -12,6 +12,8 @@ from beamz.devices.sources.mode import (
 from beamz.devices.sources.solve import solve_modes
 from beamz.simulation.boundaries import PML, Boundary
 from beamz.simulation.fields import Fields
+from beamz.simulation.spec import SimulationSpec, build_simulation_spec
+from beamz.simulation.state import SimulationRuntime
 from beamz.simulation.modal import (
     _build_port_projection as _build_port_projection_impl,
     modal_power_3d as _modal_power_3d_impl,
@@ -74,6 +76,20 @@ class PortSpec:
 class Simulation:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
 
+    _SPEC_FIELDS = frozenset(SimulationSpec.__dataclass_fields__.keys())
+    _RUNTIME_MAP = {
+        "fields": "fields",
+        "dt": "dt",
+        "num_steps": "num_steps",
+        "t": "t",
+        "current_step": "current_step",
+        "pml_data": "pml_data",
+        "_compiled_program": "compiled_program",
+        "_compiled_program_signature": "compiled_program_signature",
+        "_compiled_program_cache": "compiled_program_cache",
+        "_compiled_monitor_state": "compiled_monitor_state",
+    }
+
     def __init__(
         self,
         design: Design = None,
@@ -83,33 +99,40 @@ class Simulation:
         time: np.ndarray = None,
         plane_2d: str = "xy",
     ):
-        self.design = design
-        devices = devices or []
-        boundaries = boundaries or []
-        self.resolution = resolution
-        self.is_3d = design.is_3d and design.depth > 0
-        self.plane_2d = plane_2d.lower()
-        if self.plane_2d not in ["xy", "yz", "xz"]:
-            self.plane_2d = "xy"
+        object.__setattr__(
+            self,
+            "spec",
+            build_simulation_spec(
+                design=design,
+                devices=devices,
+                boundaries=boundaries,
+                resolution=resolution,
+                time=time,
+                plane_2d=plane_2d,
+            ),
+        )
+        object.__setattr__(self, "runtime", SimulationRuntime())
 
         # Get material grids from design (design owns the material grids, we reference them)
-        permittivity, conductivity, permeability = design.get_material_grids(resolution)
+        permittivity, conductivity, permeability = self.design.get_material_grids(
+            self.resolution
+        )
 
-        # Initialize time stepping first
-        if time is None or len(time) < 2:
-            raise ValueError("FDTD requires a time array with at least two entries")
-        self.time, self.dt, self.num_steps = time, float(time[1] - time[0]), len(time)
-        self.t, self.current_step = float(time[0]), 0
+        runtime = self.runtime
+        runtime.dt = float(self.time[1] - self.time[0])
+        runtime.num_steps = len(self.time)
+        runtime.t = float(self.time[0])
+        runtime.current_step = 0
 
         # Check for PML boundaries before creating fields (to avoid double material init)
-        pml_boundaries = [b for b in boundaries if isinstance(b, PML)]
+        pml_boundaries = [b for b in self.boundaries if isinstance(b, PML)]
 
         # Create field storage (fields owns the E/H field arrays, references material grids)
-        self.fields = Fields(
+        runtime.fields = Fields(
             permittivity,
             conductivity,
             permeability,
-            resolution,
+            self.resolution,
             plane_2d=self.plane_2d,
             _init_materials=not pml_boundaries,
         )
@@ -120,7 +143,11 @@ class Simulation:
             pml_data = {}
             for pml in pml_boundaries:
                 new_data = pml.create_pml_regions(
-                    self.fields, design, resolution, self.dt, plane_2d=self.plane_2d
+                    runtime.fields,
+                    self.design,
+                    self.resolution,
+                    self.dt,
+                    plane_2d=self.plane_2d,
                 )
                 if not pml_data:
                     pml_data = dict(new_data)
@@ -138,24 +165,34 @@ class Simulation:
                         pml_data[key] = pml_data[key] + value
                     else:
                         pml_data[key] = value
-            self.pml_data = pml_data
+            runtime.pml_data = pml_data
 
             # Set effective conductivity for PML
-            self.fields.set_pml_conductivity(pml_data)
+            runtime.fields.set_pml_conductivity(pml_data)
         else:
-            self.pml_data = None
+            runtime.pml_data = None
 
-        # Store device references (no duplication)
-        self.devices = devices
+    def __getattr__(self, name):
+        spec = self.__dict__.get("spec")
+        if spec is not None and hasattr(spec, name):
+            return getattr(spec, name)
+        runtime = self.__dict__.get("runtime")
+        if runtime is not None and name in self._RUNTIME_MAP:
+            return getattr(runtime, self._RUNTIME_MAP[name])
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
-        # Store boundary references (no duplication)
-        self.boundaries = boundaries
-
-        # Compiled program cache for v0.3 packed-source/monitor execution.
-        self._compiled_program = None
-        self._compiled_program_signature = None
-        self._compiled_program_cache = {}
-        self._compiled_monitor_state = None
+    def __setattr__(self, name, value):
+        if name in {"spec", "runtime"}:
+            object.__setattr__(self, name, value)
+            return
+        if name in self._SPEC_FIELDS and "spec" in self.__dict__:
+            raise AttributeError(
+                f"{type(self).__name__!s}.{name} is derived from immutable SimulationSpec"
+            )
+        if name in self._RUNTIME_MAP and "runtime" in self.__dict__:
+            setattr(self.runtime, self._RUNTIME_MAP[name], value)
+            return
+        object.__setattr__(self, name, value)
 
 
 def _run_fast(sim, num_steps=None, record_interval=None, record_fields=None, progress=True):
