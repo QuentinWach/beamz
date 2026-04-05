@@ -21,17 +21,16 @@ monitor = Monitor(
     live_update=False, 
     record_interval=1
 )
-design += monitor
-#design.show()
+# Devices belong to the simulation, not the design.
 
 time_steps = np.arange(0, TIME, DT)
 signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp_duration=3*WL/LIGHT_SPEED, t_max=TIME/2)
 source = GaussianSource(position=(2.5*µm, 3*µm, 1.2*µm), width=WL/6, signal=signal)
 
-# Add PML boundaries to simulation (not design)
+# Add source, monitor, and PML boundaries to the simulation.
 sim = Simulation(design=design, devices=[source, monitor], boundaries=[PML(edges='all', thickness=1.0*WL)], time=time_steps, resolution=DX)
 
 sim.show()
 
-# The simulation will now automatically detect the monitor and use it for live animation
+# The live animation uses the monitor passed into the simulation.
 #sim.run(animate_live="Hy", animation_interval=2, clean_visualization=False)
