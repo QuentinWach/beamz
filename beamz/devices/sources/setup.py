@@ -5,14 +5,17 @@ import numpy as np
 
 from beamz.arrays import to_host
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
-from beamz.devices.sources.profiles import (
-    _axis_index_from_component_indices,
+from beamz.devices.sources.profiles_2d import (
     _align_2d_impedance_pair,
-    _build_3d_profiles,
-    _component_axis_coord,
     _crop_window_2d_pair,
-    _dominant_3d_pair,
     _finalize_2d_launch_pair,
+    _stagger_2d_pair,
+)
+from beamz.devices.sources.profiles_3d import _build_3d_profiles
+from beamz.devices.sources.profiles_common import (
+    _axis_index_from_component_indices,
+    _component_axis_coord,
+    _dominant_3d_pair,
     _parse_direction,
     _remap_3d_solver_components,
     _select_3d_impedance_index,
@@ -20,7 +23,6 @@ from beamz.devices.sources.profiles import (
     _select_core_confined_mode_index,
     _solve_numeric_k_axis,
     _numeric_phase_delay,
-    _stagger_2d_pair,
 )
 from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
 from beamz.devices.sources.state import GaussianSourceState, ModeSourceState

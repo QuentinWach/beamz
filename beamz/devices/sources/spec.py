@@ -6,7 +6,7 @@ from math import isfinite
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.devices.sources.profiles import _parse_direction
+from beamz.devices.sources.profiles_common import _parse_direction
 
 
 def _freeze_arraylike(signal):

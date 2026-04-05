@@ -2,7 +2,7 @@ from dataclasses import replace
 
 from beamz.devices.sources import apply as apply_helpers
 from beamz.devices.sources import mode_visual
-from beamz.devices.sources.profiles import (
+from beamz.devices.sources.profiles_common import (
     _axis_index_from_component_indices,
     _component_axis_coord,
     _dominant_3d_pair,
