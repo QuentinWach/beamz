@@ -1,6 +1,9 @@
+import math
+
 import jax.numpy as jnp
 import numpy as np
 
+from beamz.arrays import to_host
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices.sources.profiles import (
     _axis_index_from_component_indices,
@@ -19,6 +22,10 @@ from beamz.devices.sources.profiles import (
     _to_real_profile,
 )
 from beamz.devices.sources.solve import solve_modes
+
+
+def _center_index(coord: float, step: float, limit: int) -> int:
+    return max(0, min(limit - 1, int(round(coord / step - 0.5))))
 
 
 def initialize(source, permittivity, resolution, dt=None):
@@ -51,7 +58,7 @@ def initialize(source, permittivity, resolution, dt=None):
     source._launch_dt = dt
 
     if axis == "x":
-        center_idx = int(np.clip(np.round(source.center[0] / dx - 0.5), 0, nx - 1))
+        center_idx = _center_index(source.center[0], dx, nx)
         if source.direction == "+x":
             offset_idx = max(0, center_idx - 1)
         else:
@@ -65,7 +72,7 @@ def initialize(source, permittivity, resolution, dt=None):
             source._eps_profile_2d = None
 
     elif axis == "y":
-        center_idx = int(np.clip(np.round(source.center[1] / dy - 0.5), 0, ny - 1))
+        center_idx = _center_index(source.center[1], dy, ny)
         if source.direction == "+y":
             offset_idx = max(0, center_idx - 1)
         else:
@@ -79,7 +86,7 @@ def initialize(source, permittivity, resolution, dt=None):
             source._eps_profile_2d = None
 
     else:
-        center_idx = int(np.clip(np.round(source.center[2] / dz - 0.5), 0, nz - 1))
+        center_idx = _center_index(source.center[2], dz, nz)
         if source.direction == "+z":
             offset_idx = max(0, center_idx - 1)
         else:
@@ -88,16 +95,14 @@ def initialize(source, permittivity, resolution, dt=None):
         eps_profile = permittivity[center_idx, :, :]
         source._eps_profile_2d = eps_profile
 
-    omega = 2 * np.pi * LIGHT_SPEED / source.wavelength
+    omega = 2 * math.pi * LIGHT_SPEED / source.wavelength
     dL = dz if is_3d else (dy if axis == "x" else dx)
     solver_direction = source.direction
     if is_3d and axis in {"x", "y"}:
         solver_direction = ("-" if source.direction.startswith("+") else "+") + axis
 
-    eps_profile_arr = np.asarray(eps_profile)
-    n_local_max = float(
-        np.sqrt(max(float(np.max(np.real(eps_profile_arr))), 1e-12))
-    )
+    eps_profile_arr = to_host(eps_profile)
+    n_local_max = math.sqrt(max(float(np.real(eps_profile_arr).max()), 1e-12))
     target_neff = 0.98 * n_local_max
 
     mode_candidates = 3
@@ -276,8 +281,8 @@ def setup_3d(
 def setup_2d(source, e_mode, h_mode, center_idx, offset_idx, axis, ny, nx, resolution):
     """2D injection setup using explicit global component mapping."""
     dir_sign = 1.0 if source.direction.startswith("+") else -1.0
-    eta_0 = np.sqrt(MU_0 / EPS_0)
-    z_target = eta_0 / max(np.real(source._neff), 1e-6)
+    eta_0 = math.sqrt(MU_0 / EPS_0)
+    z_target = eta_0 / max(float(np.real(source._neff)), 1e-6)
 
     if axis == "x":
         setup_2d_x(
@@ -566,7 +571,7 @@ def compute_dt_physical(source, axis, is_3d, dx, dy, dz=None, dt=None):
 
     delta_s = float(coord_e - coord_h)
     if is_3d and dt is not None:
-        omega = 2 * np.pi * LIGHT_SPEED / source.wavelength
+        omega = 2 * math.pi * LIGHT_SPEED / source.wavelength
         d_axis = {"x": dx, "y": dy, "z": dz}[axis]
         k_num = _solve_numeric_k_axis(omega, dt, d_axis, source._neff)
         source._dt_physical = _numeric_phase_delay(omega, k_num, delta_s)

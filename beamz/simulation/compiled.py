@@ -16,7 +16,6 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from beamz.devices.monitors.compiler import (
     BatchedMonitorData,
@@ -376,7 +375,7 @@ def monitor_dft_point_size(specs: tuple[CompiledMonitorSpec, ...]) -> int:
     return track.monitor_dft_point_size(specs)
 
 
-def _edge_full_thickness(mask: np.ndarray, axis: int) -> tuple[int, int]:
+def _edge_full_thickness(mask, axis: int) -> tuple[int, int]:
     return shell.edge_full_thickness(mask, axis)
 
 
