@@ -1,10 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
-from shapely.geometry import LineString, Polygon as ShapelyPolygon, box as shapely_box
-from shapely.ops import polygonize, unary_union
 
 from beamz import *
+from beamz.optimization.polygonize import density_to_polygons
 from beamz.optimization.topology import (
     TopologyManager,
     compute_overlap_gradient,
@@ -459,116 +458,25 @@ def add_fixed_waveguides(design):
         )
 
 
-def bilinear_sample(values, x, y):
-    arr = np.asarray(values, dtype=float)
-    ny, nx = arr.shape
-    col = np.clip(float(x) / DX - 0.5, 0.0, max(nx - 1, 0))
-    row = np.clip(float(y) / DX - 0.5, 0.0, max(ny - 1, 0))
-    j0 = int(np.floor(col))
-    i0 = int(np.floor(row))
-    j1 = min(j0 + 1, nx - 1)
-    i1 = min(i0 + 1, ny - 1)
-    tx = col - j0
-    ty = row - i0
-    v00 = arr[i0, j0]
-    v01 = arr[i0, j1]
-    v10 = arr[i1, j0]
-    v11 = arr[i1, j1]
-    return (
-        (1.0 - tx) * (1.0 - ty) * v00
-        + tx * (1.0 - ty) * v01
-        + (1.0 - tx) * ty * v10
-        + tx * ty * v11
-    )
-
-
-def iter_shapely_polygons(geom):
-    if geom.is_empty:
-        return
-    if geom.geom_type == "Polygon":
-        yield geom
-        return
-    if hasattr(geom, "geoms"):
-        for part in geom.geoms:
-            yield from iter_shapely_polygons(part)
-
-
-def touches_box_boundary(poly, box_geom, tol=1e-12):
-    min_x, min_y, max_x, max_y = box_geom.bounds
-    pmin_x, pmin_y, pmax_x, pmax_y = poly.bounds
-    return (
-        abs(pmin_x - min_x) <= tol
-        or abs(pmax_x - max_x) <= tol
-        or abs(pmin_y - min_y) <= tol
-        or abs(pmax_y - max_y) <= tol
-    )
-
-
-def density_to_polygons(density, *, level=0.5):
-    density = np.asarray(density, dtype=float)
-    ny, nx = density.shape
-    x_centers = (np.arange(nx) + 0.5) * DX
-    y_centers = (np.arange(ny) + 0.5) * DX
-    opt_box = shapely_box(X_INV0, Y_INV0, X_INV1, Y_INV0 + INV_H)
-    min_area = MIN_FINAL_FEATURE_AREA_CELLS * DX * DX
-
-    fig, ax = plt.subplots()
-    contour = ax.contour(x_centers, y_centers, density, levels=[level])
-    plt.close(fig)
-
-    lines = [LineString(seg) for seg in contour.allsegs[0] if len(seg) >= 2]
-    box_coords = list(opt_box.exterior.coords)
-    lines.extend(
-        LineString([box_coords[i], box_coords[i + 1]])
-        for i in range(len(box_coords) - 1)
-    )
-    if not lines:
-        return []
-
-    solid_faces = []
-    void_faces = []
-    for face in polygonize(unary_union(lines)):
-        clipped = face.intersection(opt_box).buffer(0)
-        if clipped.is_empty:
-            continue
-        for poly in iter_shapely_polygons(clipped):
-            rep = poly.representative_point()
-            if poly.area < min_area:
-                continue
-            if bilinear_sample(density, rep.x, rep.y) >= level:
-                solid_faces.append(poly)
-            elif not touches_box_boundary(poly, opt_box):
-                void_faces.append(poly)
-
-    if not solid_faces:
-        return []
-
-    merged = unary_union(solid_faces).buffer(0)
-    if void_faces:
-        merged = merged.difference(unary_union(void_faces)).buffer(0)
-    polygons = []
-    for poly in iter_shapely_polygons(merged):
-        if poly.area < min_area:
-            continue
-        holes = []
-        for ring in poly.interiors:
-            hole = ShapelyPolygon(ring)
-            if hole.area >= min_area:
-                holes.append(list(ring.coords[:-1]))
-        polygons.append(
-            Polygon(
-                vertices=list(poly.exterior.coords[:-1]),
-                interiors=holes,
-                material=Material(permittivity=EPS_CORE),
-            )
-        )
-    return polygons
-
-
 def build_final_design_from_density(density):
+    density = np.asarray(density, dtype=float)
+    i0 = max(0, int(np.floor(Y_INV0 / DX)))
+    i1 = min(density.shape[0], int(np.ceil((Y_INV0 + INV_H) / DX)))
+    j0 = max(0, int(np.floor(X_INV0 / DX)))
+    j1 = min(density.shape[1], int(np.ceil(X_INV1 / DX)))
+    density_window = density[i0:i1, j0:j1]
+
     final_design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
     add_fixed_waveguides(final_design)
-    for poly in density_to_polygons(density):
+    for poly in density_to_polygons(
+        density_window,
+        material=Material(permittivity=EPS_CORE),
+        level=0.5,
+        x0=X_INV0,
+        y0=Y_INV0,
+        dx=DX,
+        min_area=MIN_FINAL_FEATURE_AREA_CELLS * DX * DX,
+    ):
         final_design += poly
     final_design.unify_polygons()
     return final_design
