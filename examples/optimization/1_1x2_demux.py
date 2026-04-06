@@ -55,11 +55,16 @@ POWER_SUM_TOL = 1.02
 BINARITY_START = 0.01
 BINARITY_END = 0.18
 POLISH_BINARITY = 0.30
-FINAL_BINARY_POLISH_STEPS = 150
+FINAL_BINARY_POLISH_STEPS = 70
 FINAL_BINARY_LR = 0.00005
 FINAL_BINARY_BETA = 192.0
 FINAL_BINARY_BLUR = 0.08 * UM
 FINAL_BINARY_WEIGHT = 0.90
+FINAL_BINARY_SNAP_STEPS = 50
+FINAL_BINARY_SNAP_LR = 0.00003
+FINAL_BINARY_SNAP_BETA = 256.0
+FINAL_BINARY_SNAP_BLUR = 0.06 * UM
+FINAL_BINARY_SNAP_WEIGHT = 1.00
 GRAY_LOW = 0.10
 GRAY_HIGH = 0.90
 TARGET_GRAY_FRAC = 0.06
@@ -880,6 +885,62 @@ if need_binary_polish:
             save_flux(f"{PREFIX}_flux_short_bp{polish_step:03d}.png", fluxes[WL_SHORT])
             save_flux(f"{PREFIX}_flux_long_bp{polish_step:03d}.png", fluxes[WL_LONG])
             save_progress(f"{PREFIX}_progress_bp{polish_step:03d}.png", hist)
+            save_progress(f"{PREFIX}_progress_latest.png", hist)
+
+    print(
+        "Entering final binary snap: "
+        f"gray={100.0 * last_result['gray_frac']:.1f}% "
+        f"bin={last_result['binarity']:.3f}"
+    )
+    opt.optax_optimizer = optax.adam(learning_rate=FINAL_BINARY_SNAP_LR)
+    opt._opt_state = None
+
+    for snap_step in range(1, FINAL_BINARY_SNAP_STEPS + 1):
+        last_result = run_iteration(
+            FINAL_BINARY_SNAP_BETA,
+            FINAL_BINARY_SNAP_BLUR,
+            FINAL_BINARY_SNAP_WEIGHT,
+        )
+        update_best_binary(
+            last_result["density"],
+            binarity=last_result["binarity"],
+            gray_frac=last_result["gray_frac"],
+        )
+
+        if snap_step == 1 or snap_step % PRINT_EVERY == 0 or snap_step == FINAL_BINARY_SNAP_STEPS:
+            print(
+                f"[bs{snap_step:03d}/{FINAL_BINARY_SNAP_STEPS}] Obj={last_result['objective']:.4f} "
+                f"meanT={100.0 * last_result['target_mean']:.1f}% "
+                f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
+                f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
+                f"beta={FINAL_BINARY_SNAP_BETA:.1f} dmax={last_result['dmax']:.3e}"
+            )
+
+        should_debug = SAVE_DEBUG and (
+            snap_step == 1
+            or snap_step % DEBUG_EVERY == 0
+            or snap_step == FINAL_BINARY_SNAP_STEPS
+        )
+        if should_debug:
+            set_design(grid, base_eps, mask, last_result["density"], opt)
+            plt.imsave(
+                f"{PREFIX}_topo_bs{snap_step:03d}.png",
+                grid.permittivity.T,
+                cmap="gray",
+                origin="lower",
+            )
+            plt.imsave(
+                f"{PREFIX}_density_bs{snap_step:03d}.png",
+                last_result["density"].T,
+                cmap="gray",
+                vmin=0.0,
+                vmax=1.0,
+                origin="lower",
+            )
+            _, fluxes, _ = flux_artifacts(grid, last_result["density"])
+            save_flux(f"{PREFIX}_flux_short_bs{snap_step:03d}.png", fluxes[WL_SHORT])
+            save_flux(f"{PREFIX}_flux_long_bs{snap_step:03d}.png", fluxes[WL_LONG])
+            save_progress(f"{PREFIX}_progress_bs{snap_step:03d}.png", hist)
             save_progress(f"{PREFIX}_progress_latest.png", hist)
 
 save_progress(f"{PREFIX}_progress_final.png", hist)
