@@ -84,11 +84,11 @@ MON_SPAN = 2.6 * WG_W
 
 SHORT_FLUX_CMAP = LinearSegmentedColormap.from_list(
     "beamz_short_flux",
-    ["#000000", "#03111f", "#0f4aa8", "#3ca6ff", "#d9f3ff"],
+    ["#000000", "#0000ff"],
 )
 LONG_FLUX_CMAP = LinearSegmentedColormap.from_list(
     "beamz_long_flux",
-    ["#000000", "#22060b", "#8f112b", "#ff5a36", "#ffe3cf"],
+    ["#000000", "#ff0000"],
 )
 
 
