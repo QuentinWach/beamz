@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
+from shapely.geometry import LineString, Polygon as ShapelyPolygon, box as shapely_box
+from shapely.ops import polygonize, unary_union
 
 from beamz import *
 from beamz.optimization.topology import (
@@ -90,6 +92,9 @@ LONG_FLUX_CMAP = LinearSegmentedColormap.from_list(
     "beamz_long_flux",
     ["#000000", "#ff0000"],
 )
+FINAL_AA_MODE = "stratified_jitter"
+FINAL_AA_SAMPLES = 128
+MIN_FINAL_FEATURE_AREA_CELLS = 0.5
 
 
 def build_waveform(wavelength):
@@ -419,6 +424,113 @@ def save_outline(path, design_mask):
     fig.savefig(path, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
+
+def add_fixed_waveguides(design):
+    for x, y in ((0.0, Y_IN), (X_INV1, Y_TOP), (X_INV1, Y_BOT)):
+        design += Rectangle(
+            position=(x, y - 0.5 * WG_W),
+            width=(X_INV0 if x == 0.0 else W - X_INV1),
+            height=WG_W,
+            material=Material(permittivity=EPS_CORE),
+        )
+
+
+def bilinear_sample(values, x, y):
+    arr = np.asarray(values, dtype=float)
+    ny, nx = arr.shape
+    col = np.clip(float(x) / DX - 0.5, 0.0, max(nx - 1, 0))
+    row = np.clip(float(y) / DX - 0.5, 0.0, max(ny - 1, 0))
+    j0 = int(np.floor(col))
+    i0 = int(np.floor(row))
+    j1 = min(j0 + 1, nx - 1)
+    i1 = min(i0 + 1, ny - 1)
+    tx = col - j0
+    ty = row - i0
+    v00 = arr[i0, j0]
+    v01 = arr[i0, j1]
+    v10 = arr[i1, j0]
+    v11 = arr[i1, j1]
+    return (
+        (1.0 - tx) * (1.0 - ty) * v00
+        + tx * (1.0 - ty) * v01
+        + (1.0 - tx) * ty * v10
+        + tx * ty * v11
+    )
+
+
+def iter_shapely_polygons(geom):
+    if geom.is_empty:
+        return
+    if geom.geom_type == "Polygon":
+        yield geom
+        return
+    if hasattr(geom, "geoms"):
+        for part in geom.geoms:
+            yield from iter_shapely_polygons(part)
+
+
+def density_to_polygons(density, *, level=0.5):
+    density = np.asarray(density, dtype=float)
+    ny, nx = density.shape
+    x_centers = (np.arange(nx) + 0.5) * DX
+    y_centers = (np.arange(ny) + 0.5) * DX
+    opt_box = shapely_box(X_INV0, Y_INV0, X_INV1, Y_INV0 + INV_H)
+    min_area = MIN_FINAL_FEATURE_AREA_CELLS * DX * DX
+
+    fig, ax = plt.subplots()
+    contour = ax.contour(x_centers, y_centers, density, levels=[level])
+    plt.close(fig)
+
+    lines = [LineString(seg) for seg in contour.allsegs[0] if len(seg) >= 2]
+    box_coords = list(opt_box.exterior.coords)
+    lines.extend(
+        LineString([box_coords[i], box_coords[i + 1]])
+        for i in range(len(box_coords) - 1)
+    )
+    if not lines:
+        return []
+
+    regions = []
+    for face in polygonize(unary_union(lines)):
+        clipped = face.intersection(opt_box).buffer(0)
+        if clipped.is_empty:
+            continue
+        for poly in iter_shapely_polygons(clipped):
+            rep = poly.representative_point()
+            if poly.area >= min_area and bilinear_sample(density, rep.x, rep.y) >= level:
+                regions.append(poly)
+
+    if not regions:
+        return []
+
+    merged = unary_union(regions).buffer(0)
+    polygons = []
+    for poly in iter_shapely_polygons(merged):
+        if poly.area < min_area:
+            continue
+        holes = []
+        for ring in poly.interiors:
+            hole = ShapelyPolygon(ring)
+            if hole.area >= min_area:
+                holes.append(list(ring.coords[:-1]))
+        polygons.append(
+            Polygon(
+                vertices=list(poly.exterior.coords[:-1]),
+                interiors=holes,
+                material=Material(permittivity=EPS_CORE),
+            )
+        )
+    return polygons
+
+
+def build_final_design_from_density(density):
+    final_design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
+    add_fixed_waveguides(final_design)
+    for poly in density_to_polygons(density):
+        final_design += poly
+    final_design.unify_polygons()
+    return final_design
+
 def set_design(grid, base_eps, mask, density, opt):
     grid.permittivity[:] = base_eps
     grid.permittivity[mask] = opt.eps_min + density[mask] * (opt.eps_max - opt.eps_min)
@@ -445,6 +557,10 @@ def score_density(grid, density):
 
 def flux_artifacts(grid, density):
     set_design(grid, base_eps, mask, density, opt)
+    return flux_artifacts_from_grid(grid)
+
+
+def flux_artifacts_from_grid(grid):
     fluxes, modal = {}, {}
     for wl in (WL_SHORT, WL_LONG):
         modal[wl], fields = run_forward(grid, wl, waves[wl], fields=("Ez", "Hx", "Hy"))
@@ -468,13 +584,7 @@ def maybe_update_best_binary(density):
     binary_ok = max(m["power_sum"] for m in binary_modal.values()) <= POWER_SUM_TOL
     return binary_density, binary_score, binary_ok
 design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
-for x, y in ((0.0, Y_IN), (X_INV1, Y_TOP), (X_INV1, Y_BOT)):
-    design += Rectangle(
-        position=(x, y - 0.5 * WG_W),
-        width=(X_INV0 if x == 0.0 else W - X_INV1),
-        height=WG_W,
-        material=Material(permittivity=EPS_CORE),
-    )
+add_fixed_waveguides(design)
 opt_region = Rectangle(
     position=(X_INV0, Y_INV0),
     width=INV_W,
@@ -781,9 +891,21 @@ elif best_projected_density is not None:
 else:
     raise RuntimeError("No final density available.")
 
-final_binary_density = (np.asarray(final_source_density, dtype=float) >= 0.5).astype(float)
-final_binarity, final_gray_frac = density_metrics(final_binary_density)
-final_modal, final_fluxes, final_design_mask = flux_artifacts(grid, final_binary_density)
+final_geometry_design = build_final_design_from_density(final_source_density)
+final_grid = final_geometry_design.rasterize(
+    DX,
+    aa_mode=FINAL_AA_MODE,
+    aa_samples=FINAL_AA_SAMPLES,
+    force_recompute=True,
+)
+final_binary_density = np.clip(
+    (np.asarray(final_grid.permittivity, dtype=float) - EPS_CLAD)
+    / max(EPS_CORE - EPS_CLAD, 1e-30),
+    0.0,
+    1.0,
+)
+final_binarity, final_gray_frac = density_metrics((np.asarray(final_source_density) >= 0.5).astype(float))
+final_modal, final_fluxes, final_design_mask = flux_artifacts_from_grid(final_grid)
 
 save_binary_density(f"{PREFIX}_final_binary_density.png", final_binary_density)
 save_outline(f"{PREFIX}_final_binary_outline.png", final_design_mask)
