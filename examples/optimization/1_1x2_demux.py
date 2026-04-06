@@ -385,6 +385,40 @@ def save_overlay(path, short_flux, long_flux, design_mask):
     fig.savefig(path, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
+
+def save_binary_density(path, density):
+    plt.imsave(path, np.asarray(density, dtype=float).T, cmap="gray", vmin=0.0, vmax=1.0, origin="lower")
+
+
+def save_outline(path, design_mask):
+    mask_display = np.asarray(design_mask, dtype=float).T
+    ny_plot, nx_plot = mask_display.shape
+    x = (np.arange(nx_plot) + 0.5) * DX / UM
+    y = (np.arange(ny_plot) + 0.5) * DX / UM
+    extent = [0.0, nx_plot * DX / UM, 0.0, ny_plot * DX / UM]
+
+    fig, ax = plt.subplots(figsize=(6.2, 6.2), facecolor="black")
+    ax.set_facecolor("black")
+    ax.contour(
+        x,
+        y,
+        mask_display,
+        levels=[0.5],
+        colors="white",
+        linewidths=1.3,
+        antialiased=True,
+    )
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    plt.tight_layout(pad=0.0)
+    fig.savefig(path, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
 def set_design(grid, base_eps, mask, density, opt):
     grid.permittivity[:] = base_eps
     grid.permittivity[mask] = opt.eps_min + density[mask] * (opt.eps_max - opt.eps_min)
@@ -740,27 +774,25 @@ if need_binary_polish:
 
 save_progress(f"{PREFIX}_progress_final.png", hist)
 
-if best_projected_density is None and last_result is not None:
-    best_projected_density = last_result["density"].copy()
-if best_binary_density is None:
-    best_binary_density = (best_projected_density >= 0.5).astype(float)
-    best_binary_binarity, best_binary_gray_frac = density_metrics(best_binary_density)
-    fallback_score, fallback_modal = score_density(grid, best_binary_density)
-    if max(m["power_sum"] for m in fallback_modal.values()) <= POWER_SUM_TOL:
-        best_binary_score = fallback_score
+if last_result is not None:
+    final_source_density = last_result["density"].copy()
+elif best_projected_density is not None:
+    final_source_density = best_projected_density.copy()
+else:
+    raise RuntimeError("No final density available.")
 
-final_modal, final_fluxes, final_design_mask = flux_artifacts(grid, best_binary_density)
+final_binary_density = (np.asarray(final_source_density, dtype=float) >= 0.5).astype(float)
+final_binarity, final_gray_frac = density_metrics(final_binary_density)
+final_modal, final_fluxes, final_design_mask = flux_artifacts(grid, final_binary_density)
+
+save_binary_density(f"{PREFIX}_final_binary_density.png", final_binary_density)
+save_outline(f"{PREFIX}_final_binary_outline.png", final_design_mask)
 save_flux(f"{PREFIX}_final_binary_flux_short.png", final_fluxes[WL_SHORT])
 save_flux(f"{PREFIX}_final_binary_flux_long.png", final_fluxes[WL_LONG])
-save_overlay(
-    f"{PREFIX}_final_binary_flux_overlay.png",
-    final_fluxes[WL_SHORT],
-    final_fluxes[WL_LONG],
-    final_design_mask,
-)
+
 print(
-    "final binary: "
-    f"gray={100.0 * best_binary_gray_frac:.1f}% bin={best_binary_binarity:.3f} | "
+    "final last-step binary: "
+    f"gray={100.0 * final_gray_frac:.1f}% bin={final_binarity:.3f} | "
     f"short target={100.0 * final_modal[WL_SHORT]['tx_top']:.2f}% leak={100.0 * final_modal[WL_SHORT]['tx_bot']:.2f}% | "
     f"long target={100.0 * final_modal[WL_LONG]['tx_bot']:.2f}% leak={100.0 * final_modal[WL_LONG]['tx_top']:.2f}%"
 )
