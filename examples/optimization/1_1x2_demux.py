@@ -41,31 +41,27 @@ FIELD_SUBSAMPLE = 1
 EMA_ALPHA = 0.20
 
 LEARNING_RATE = 0.0010
-POLISH_LR = 0.0001
-BETA_START = 12.0
-BETA_END = 40.0
-POLISH_BETA = 64.0
+BETA_START = 6.0
+BETA_END = 12.0
 BLUR_START = 0.18 * UM
-BLUR_END = 0.14 * UM
-POLISH_BLUR = 0.12 * UM
+BLUR_END = 0.12 * UM
 LOSS_WEIGHT = 0.50
 POWER_BOUND_WEIGHT = 4.0
 POWER_SUM_TOL = 1.02
 BINARITY_START = 0.01
-BINARITY_END = 0.18
-POLISH_BINARITY = 0.30
+BINARITY_END = 0.12
 FINAL_BINARY_POLISH_STEPS = 70
 FINAL_BINARY_LR = 0.00005
-FINAL_BINARY_BETA = 192.0
+FINAL_BINARY_BETA = 16.0
 FINAL_BINARY_BLUR = 0.08 * UM
-FINAL_BINARY_WEIGHT = 0.90
-FINAL_BINARY_GRAY_WEIGHT = 0.35
+FINAL_BINARY_WEIGHT = 0.55
+FINAL_BINARY_GRAY_WEIGHT = 1.50
 FINAL_BINARY_SNAP_STEPS = 80
 FINAL_BINARY_SNAP_LR = 0.00003
-FINAL_BINARY_SNAP_BETA = 320.0
+FINAL_BINARY_SNAP_BETA = 18.0
 FINAL_BINARY_SNAP_BLUR = 0.06 * UM
-FINAL_BINARY_SNAP_WEIGHT = 1.00
-FINAL_BINARY_SNAP_GRAY_WEIGHT = 0.75
+FINAL_BINARY_SNAP_WEIGHT = 0.80
+FINAL_BINARY_SNAP_GRAY_WEIGHT = 3.00
 GRAY_LOW = 0.10
 GRAY_HIGH = 0.90
 TARGET_GRAY_FRAC = 0.06
@@ -74,9 +70,6 @@ GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
 INITIAL_ASYM_NOISE = 1e-3
-POLISH_STEPS = 60
-MAIN_STEPS = max(STEPS - POLISH_STEPS, 1)
-POLISH_START = MAIN_STEPS + 1
 
 Y_IN = 0.5 * H
 Y_TOP = Y_IN + 0.5 * (WG_W + OUT_GAP)
@@ -132,17 +125,11 @@ def smoothstep01(x):
 
 
 def step_settings(step):
-    if step <= MAIN_STEPS:
-        frac = 0.0 if MAIN_STEPS <= 1 else (step - 1) / (MAIN_STEPS - 1)
-        beta = BETA_START + (BETA_END - BETA_START) * smoothstep01(frac)
-        blur = BLUR_START + (BLUR_END - BLUR_START) * smoothstep01(frac)
-        w_bin = BINARITY_START + (BINARITY_END - BINARITY_START) * smoothstep01(frac)
-        return beta, blur, w_bin, False
-    frac = 1.0 if POLISH_STEPS <= 1 else (step - POLISH_START) / (POLISH_STEPS - 1)
-    beta = BETA_END + (POLISH_BETA - BETA_END) * smoothstep01(frac)
-    blur = BLUR_END + (POLISH_BLUR - BLUR_END) * smoothstep01(frac)
-    w_bin = BINARITY_END + (POLISH_BINARITY - BINARITY_END) * smoothstep01(frac)
-    return beta, blur, w_bin, True
+    frac = 0.0 if STEPS <= 1 else (step - 1) / (STEPS - 1)
+    beta = BETA_START + (BETA_END - BETA_START) * smoothstep01(frac)
+    blur = BLUR_START + (BLUR_END - BLUR_START) * smoothstep01(frac)
+    w_bin = BINARITY_START + (BINARITY_END - BINARITY_START) * smoothstep01(frac)
+    return beta, blur, w_bin
 
 
 def modal_specs():
@@ -731,13 +718,7 @@ def update_best_binary(density, *, binarity, gray_frac):
 last_result = None
 
 for step in range(1, STEPS + 1):
-    beta, blur_radius, binarity_weight, is_polish = step_settings(step)
-    if step == POLISH_START:
-        import optax
-
-        opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
-        opt._opt_state = None
-
+    beta, blur_radius, binarity_weight = step_settings(step)
     last_result = run_iteration(beta, blur_radius, binarity_weight)
 
     if step == 1 or step % PRINT_EVERY == 0 or step == STEPS:
@@ -746,7 +727,7 @@ for step in range(1, STEPS + 1):
             f"meanT={100.0 * last_result['target_mean']:.1f}% "
             f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
             f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
-            f"{'polish' if is_polish else 'main'} beta={beta:.1f} dmax={last_result['dmax']:.3e} | "
+            f"main beta={beta:.1f} dmax={last_result['dmax']:.3e} | "
             + " | ".join(last_result["report"])
         )
 
@@ -756,7 +737,7 @@ for step in range(1, STEPS + 1):
         gray_frac=last_result["gray_frac"],
     )
 
-    should_debug = step == 1 or step % DEBUG_EVERY == 0 or step == STEPS or is_polish
+    should_debug = step == 1 or step % DEBUG_EVERY == 0 or step == STEPS
     if SAVE_DEBUG and should_debug:
         set_design(grid, base_eps, mask, last_result["density"], opt)
         plt.imsave(f"{PREFIX}_topo_{step:03d}.png", grid.permittivity.T, cmap="gray", origin="lower")
