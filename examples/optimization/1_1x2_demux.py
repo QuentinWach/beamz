@@ -400,26 +400,43 @@ def save_binary_density(path, density):
     plt.imsave(path, np.asarray(density, dtype=float).T, cmap="gray", vmin=0.0, vmax=1.0, origin="lower")
 
 
-def save_outline(path, design_mask):
-    mask_display = np.asarray(design_mask, dtype=float).T
-    ny_plot, nx_plot = mask_display.shape
-    x = (np.arange(nx_plot) + 0.5) * DX / UM
-    y = (np.arange(ny_plot) + 0.5) * DX / UM
-    extent = [0.0, nx_plot * DX / UM, 0.0, ny_plot * DX / UM]
-
+def save_outline(path, design):
     fig, ax = plt.subplots(figsize=(6.2, 6.2), facecolor="black")
     ax.set_facecolor("black")
-    ax.contour(
-        x,
-        y,
-        mask_display,
-        levels=[0.5],
-        colors="white",
-        linewidths=1.3,
-        antialiased=True,
-    )
-    ax.set_xlim(extent[0], extent[1])
-    ax.set_ylim(extent[2], extent[3])
+
+    for structure in getattr(design, "structures", ())[1:]:
+        vertices = getattr(structure, "vertices", None)
+        if not vertices:
+            continue
+        xy = np.asarray([(float(x), float(y)) for x, y, *_ in vertices], dtype=float) / UM
+        if xy.shape[0] >= 2:
+            closed = np.vstack([xy, xy[0]])
+            ax.plot(
+                closed[:, 0],
+                closed[:, 1],
+                color="white",
+                linewidth=1.3,
+                solid_joinstyle="round",
+                solid_capstyle="round",
+                antialiased=True,
+            )
+
+        for interior in getattr(structure, "interiors", ()) or ():
+            hole = np.asarray([(float(x), float(y)) for x, y, *_ in interior], dtype=float) / UM
+            if hole.shape[0] >= 2:
+                closed_hole = np.vstack([hole, hole[0]])
+                ax.plot(
+                    closed_hole[:, 0],
+                    closed_hole[:, 1],
+                    color="white",
+                    linewidth=1.3,
+                    solid_joinstyle="round",
+                    solid_capstyle="round",
+                    antialiased=True,
+                )
+
+    ax.set_xlim(0.0, W / UM)
+    ax.set_ylim(0.0, H / UM)
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
@@ -969,7 +986,7 @@ final_binarity, final_gray_frac = density_metrics((np.asarray(final_source_densi
 final_modal, final_fluxes, final_design_mask = flux_artifacts_from_grid(final_grid)
 
 save_binary_density(f"{PREFIX}_final_binary_density.png", final_binary_density)
-save_outline(f"{PREFIX}_final_binary_outline.png", final_design_mask)
+save_outline(f"{PREFIX}_final_binary_outline.png", final_geometry_design)
 save_flux(f"{PREFIX}_final_binary_flux_short.png", final_fluxes[WL_SHORT])
 save_flux(f"{PREFIX}_final_binary_flux_long.png", final_fluxes[WL_LONG])
 
