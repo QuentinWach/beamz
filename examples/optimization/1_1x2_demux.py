@@ -60,11 +60,13 @@ FINAL_BINARY_LR = 0.00005
 FINAL_BINARY_BETA = 192.0
 FINAL_BINARY_BLUR = 0.08 * UM
 FINAL_BINARY_WEIGHT = 0.90
+FINAL_BINARY_GRAY_WEIGHT = 0.35
 FINAL_BINARY_SNAP_STEPS = 50
 FINAL_BINARY_SNAP_LR = 0.00003
 FINAL_BINARY_SNAP_BETA = 256.0
 FINAL_BINARY_SNAP_BLUR = 0.06 * UM
 FINAL_BINARY_SNAP_WEIGHT = 1.00
+FINAL_BINARY_SNAP_GRAY_WEIGHT = 0.60
 GRAY_LOW = 0.10
 GRAY_HIGH = 0.90
 TARGET_GRAY_FRAC = 0.06
@@ -661,7 +663,7 @@ best_binary_binarity = 0.0
 best_binary_gray_frac = 1.0
 
 
-def run_iteration(beta, blur_radius, binarity_weight):
+def run_iteration(beta, blur_radius, binarity_weight, gray_penalty_weight=0.0):
     global ema, best_projected_score, best_projected_density
     opt.filter_radius = blur_radius
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
@@ -745,9 +747,14 @@ def run_iteration(beta, blur_radius, binarity_weight):
     grad_total = sum(grad_terms) / len(grad_terms)
     binarity, gray_frac = density_metrics(density)
     rho = density[mask]
+    gray_penalty = 0.0
     if rho.size > 0:
         grad_total[mask] += binarity_weight * (
             4.0 * (2.0 * rho - 1.0) / (max(opt.eps_max - opt.eps_min, 1e-30) * float(rho.size))
+        )
+        gray_penalty = float(np.mean(4.0 * rho * (1.0 - rho)))
+        grad_total[mask] += gray_penalty_weight * (
+            (8.0 * rho - 4.0) / (max(opt.eps_max - opt.eps_min, 1e-30) * float(rho.size))
         )
     if np.any(mask):
         clip = np.percentile(np.abs(grad_total[mask]), GRAD_CLIP_PCT)
@@ -756,7 +763,7 @@ def run_iteration(beta, blur_radius, binarity_weight):
         grad_total[mask] = np.clip(grad_total[mask], -GRAD_HARD_CAP, GRAD_HARD_CAP)
 
     route_obj = float(np.mean(route_terms))
-    objective = route_obj + binarity_weight * binarity
+    objective = route_obj + binarity_weight * binarity - gray_penalty_weight * gray_penalty
     max_power_sum = max(cache["power_sum"] for cache in caches)
     if max_power_sum <= POWER_SUM_TOL and route_obj > best_projected_score:
         best_projected_score = route_obj
@@ -777,6 +784,7 @@ def run_iteration(beta, blur_radius, binarity_weight):
         "power_sum_mean": power_sum_mean,
         "binarity": binarity,
         "gray_frac": gray_frac,
+        "gray_penalty": gray_penalty,
         "dmax": dmax,
         "report": report,
     }
@@ -861,7 +869,12 @@ if need_binary_polish:
     opt._opt_state = None
 
     for polish_step in range(1, FINAL_BINARY_POLISH_STEPS + 1):
-        last_result = run_iteration(FINAL_BINARY_BETA, FINAL_BINARY_BLUR, FINAL_BINARY_WEIGHT)
+        last_result = run_iteration(
+            FINAL_BINARY_BETA,
+            FINAL_BINARY_BLUR,
+            FINAL_BINARY_WEIGHT,
+            gray_penalty_weight=FINAL_BINARY_GRAY_WEIGHT,
+        )
         update_best_binary(
             last_result["density"],
             binarity=last_result["binarity"],
@@ -874,6 +887,7 @@ if need_binary_polish:
                 f"meanT={100.0 * last_result['target_mean']:.1f}% "
                 f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
                 f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
+                f"gpen={last_result['gray_penalty']:.3f} "
                 f"beta={FINAL_BINARY_BETA:.1f} dmax={last_result['dmax']:.3e}"
             )
 
@@ -917,6 +931,7 @@ if need_binary_polish:
             FINAL_BINARY_SNAP_BETA,
             FINAL_BINARY_SNAP_BLUR,
             FINAL_BINARY_SNAP_WEIGHT,
+            gray_penalty_weight=FINAL_BINARY_SNAP_GRAY_WEIGHT,
         )
         update_best_binary(
             last_result["density"],
@@ -930,6 +945,7 @@ if need_binary_polish:
                 f"meanT={100.0 * last_result['target_mean']:.1f}% "
                 f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
                 f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
+                f"gpen={last_result['gray_penalty']:.3f} "
                 f"beta={FINAL_BINARY_SNAP_BETA:.1f} dmax={last_result['dmax']:.3e}"
             )
 
