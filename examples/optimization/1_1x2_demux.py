@@ -493,6 +493,17 @@ def iter_shapely_polygons(geom):
             yield from iter_shapely_polygons(part)
 
 
+def touches_box_boundary(poly, box_geom, tol=1e-12):
+    min_x, min_y, max_x, max_y = box_geom.bounds
+    pmin_x, pmin_y, pmax_x, pmax_y = poly.bounds
+    return (
+        abs(pmin_x - min_x) <= tol
+        or abs(pmax_x - max_x) <= tol
+        or abs(pmin_y - min_y) <= tol
+        or abs(pmax_y - max_y) <= tol
+    )
+
+
 def density_to_polygons(density, *, level=0.5):
     density = np.asarray(density, dtype=float)
     ny, nx = density.shape
@@ -514,20 +525,27 @@ def density_to_polygons(density, *, level=0.5):
     if not lines:
         return []
 
-    regions = []
+    solid_faces = []
+    void_faces = []
     for face in polygonize(unary_union(lines)):
         clipped = face.intersection(opt_box).buffer(0)
         if clipped.is_empty:
             continue
         for poly in iter_shapely_polygons(clipped):
             rep = poly.representative_point()
-            if poly.area >= min_area and bilinear_sample(density, rep.x, rep.y) >= level:
-                regions.append(poly)
+            if poly.area < min_area:
+                continue
+            if bilinear_sample(density, rep.x, rep.y) >= level:
+                solid_faces.append(poly)
+            elif not touches_box_boundary(poly, opt_box):
+                void_faces.append(poly)
 
-    if not regions:
+    if not solid_faces:
         return []
 
-    merged = unary_union(regions).buffer(0)
+    merged = unary_union(solid_faces).buffer(0)
+    if void_faces:
+        merged = merged.difference(unary_union(void_faces)).buffer(0)
     polygons = []
     for poly in iter_shapely_polygons(merged):
         if poly.area < min_area:
