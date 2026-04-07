@@ -111,3 +111,33 @@ def test_density_to_polygons_rerasterizes_with_preserved_voids():
     assert grid.permittivity[12, 12] == pytest.approx(EPS_CORE)
     assert grid.permittivity[24, 24] == pytest.approx(EPS_CLAD)
     assert grid.permittivity[30, 30] == pytest.approx(EPS_CORE)
+
+
+def test_cropped_density_requires_true_cell_edge_origin():
+    dx = 0.5
+    density = np.zeros((16, 20), dtype=float)
+    density[5:11, 6:15] = 1.0
+
+    full_geometry = density_to_shapely_geometry(
+        density,
+        level=0.5,
+        x0=0.0,
+        y0=0.0,
+        dx=dx,
+        min_area=0.25,
+    )
+
+    i0, i1 = 4, 12
+    j0, j1 = 5, 16
+    cropped = density[i0:i1, j0:j1]
+    cropped_geometry = density_to_shapely_geometry(
+        cropped,
+        level=0.5,
+        x0=j0 * dx,
+        y0=i0 * dx,
+        dx=dx,
+        min_area=0.25,
+    )
+
+    symmetric_diff = full_geometry.symmetric_difference(cropped_geometry)
+    assert symmetric_diff.area == pytest.approx(0.0, abs=1e-9)

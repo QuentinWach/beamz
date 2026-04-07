@@ -398,7 +398,14 @@ def save_overlay(path, short_flux, long_flux, design_mask):
 
 
 def save_binary_density(path, density):
-    plt.imsave(path, np.asarray(density, dtype=float).T, cmap="gray", vmin=0.0, vmax=1.0, origin="lower")
+    plt.imsave(
+        path,
+        np.asarray(density, dtype=float),
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        origin="lower",
+    )
 
 
 def save_outline(path, design):
@@ -472,8 +479,12 @@ def build_final_design_from_density(density):
         density_window,
         material=Material(permittivity=EPS_CORE),
         level=0.5,
-        x0=X_INV0,
-        y0=Y_INV0,
+        # Use the actual cropped cell-edge origin, not the nominal design-box edge.
+        # X_INV0 / Y_INV0 are not generally integer multiples of DX, so using them
+        # shifts the contour by up to one cell and can leave visible gaps where the
+        # polygonized region meets the fixed waveguides.
+        x0=j0 * DX,
+        y0=i0 * DX,
         dx=DX,
         min_area=MIN_FINAL_FEATURE_AREA_CELLS * DX * DX,
     ):

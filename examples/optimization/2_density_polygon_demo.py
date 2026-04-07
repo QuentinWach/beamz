@@ -89,8 +89,8 @@ def build_final_design_from_density(density):
         density,
         material=Material(permittivity=EPS_CORE),
         level=0.5,
-        x0=X_BOX0,
-        y0=Y_BOX0,
+        x0=0.0,
+        y0=0.0,
         dx=DX,
         min_area=MIN_FEATURE_AREA_CELLS * DX * DX,
     ):
@@ -105,8 +105,8 @@ def main():
     contour_geometry = density_to_shapely_geometry(
         density,
         level=0.5,
-        x0=X_BOX0,
-        y0=Y_BOX0,
+        x0=0.0,
+        y0=0.0,
         dx=DX,
         min_area=MIN_FEATURE_AREA_CELLS * DX * DX,
     )
@@ -129,7 +129,7 @@ def main():
     level = [0.5]
     fig, axes = plt.subplots(1, 3, figsize=(13, 4.6), constrained_layout=True)
 
-    axes[0].imshow(density.T, cmap="gray", vmin=0.0, vmax=1.0, origin="lower", extent=extent)
+    axes[0].imshow(density, cmap="gray", vmin=0.0, vmax=1.0, origin="lower", extent=extent)
     axes[0].contour(
         ((np.arange(density.shape[1]) + 0.5) * DX) / um,
         ((np.arange(density.shape[0]) + 0.5) * DX) / um,
@@ -140,10 +140,10 @@ def main():
     )
     axes[0].set_title("Smooth Density + 0.5 Contour")
 
-    axes[1].imshow(naive_binary.T, cmap="gray", vmin=0.0, vmax=1.0, origin="lower", extent=extent)
+    axes[1].imshow(naive_binary, cmap="gray", vmin=0.0, vmax=1.0, origin="lower", extent=extent)
     axes[1].set_title("Naive Pixel Threshold")
 
-    axes[2].imshow(rerasterized.T, cmap="gray", vmin=0.0, vmax=1.0, origin="lower", extent=extent)
+    axes[2].imshow(rerasterized, cmap="gray", vmin=0.0, vmax=1.0, origin="lower", extent=extent)
     for poly in getattr(contour_geometry, "geoms", [contour_geometry]):
         if poly.is_empty or poly.geom_type != "Polygon":
             continue
