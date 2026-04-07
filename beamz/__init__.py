@@ -19,14 +19,7 @@ from beamz.const import (
 
 # Import design-related classes and functions
 from beamz.design.core import Design
-from beamz.design.materials import (
-    CustomMaterial,
-    CustomMaterialSpec,
-    Material,
-    MaterialSpec,
-)
-from beamz.design.spec import DesignSpec
-from beamz.design.structure_specs import StructureSpec
+from beamz.design.materials import CustomMaterial, Material
 
 # Import simulation-related classes and functions
 from beamz.design.meshing import RegularGrid
@@ -40,12 +33,8 @@ from beamz.design.structures import (
     Taper,
 )
 from beamz.devices.monitors import Monitor
-from beamz.devices.monitors.spec import MonitorSpec
-from beamz.devices.monitors.state import MonitorRecorder
 from beamz.devices.sources import GaussianSource, ModeSource
-from beamz.devices.sources.spec import GaussianSourceSpec, ModeSourceSpec
-from beamz.devices.sources.state import GaussianSourceState, ModeSourceState
-from beamz.devices.sources.solve import solve_modes
+from beamz.devices.sources.mode import solve_modes
 from beamz.devices.sources.signals import ramped_cosine
 from beamz.optimization.autodiff import transform_density
 from beamz.optimization.topology import (
@@ -54,7 +43,6 @@ from beamz.optimization.topology import (
     create_optimization_mask,
 )
 from beamz.simulation.boundaries import PML, Boundary
-from beamz.simulation.boundary_specs import BoundarySpec, PMLSpec
 from beamz.simulation.compiled import (
     CompiledRunConfig,
     CompiledSimulation,
@@ -64,8 +52,6 @@ from beamz.simulation.compiled import (
     compile_simulation,
 )
 from beamz.simulation.core import PortSpec, Simulation
-from beamz.simulation.session import SimulationSession
-from beamz.simulation.spec import SimulationSpec
 
 # Import UI helpers
 from beamz.visual.helpers import (
@@ -75,6 +61,7 @@ from beamz.visual.helpers import (
     dxdt,
     get_si_scale_and_label,
 )
+from beamz.visual.source_plots import plot_signal
 
 # Prepare a dictionary of all our exports
 _exports = {
@@ -91,13 +78,9 @@ _exports = {
     # Materials
     "Material": Material,
     "CustomMaterial": CustomMaterial,
-    "MaterialSpec": MaterialSpec,
-    "CustomMaterialSpec": CustomMaterialSpec,
     # Structures
     "design": design,
     "Design": Design,
-    "DesignSpec": DesignSpec,
-    "StructureSpec": StructureSpec,
     "Rectangle": Rectangle,
     "Circle": Circle,
     "Ring": Ring,
@@ -108,23 +91,16 @@ _exports = {
     # Sources
     "ModeSource": ModeSource,
     "GaussianSource": GaussianSource,
-    "ModeSourceSpec": ModeSourceSpec,
-    "GaussianSourceSpec": GaussianSourceSpec,
-    "ModeSourceState": ModeSourceState,
-    "GaussianSourceState": GaussianSourceState,
     # Monitors
     "Monitor": Monitor,
-    "MonitorSpec": MonitorSpec,
-    "MonitorRecorder": MonitorRecorder,
     # Signals
     "ramped_cosine": ramped_cosine,
+    "plot_signal": plot_signal,
     # Mode calculations
     "solve_modes": solve_modes,
     # Simulation
     "RegularGrid": RegularGrid,
     "Simulation": Simulation,
-    "SimulationSpec": SimulationSpec,
-    "SimulationSession": SimulationSession,
     "PortSpec": PortSpec,
     "CompiledRunConfig": CompiledRunConfig,
     "CompiledSimulation": CompiledSimulation,
@@ -135,8 +111,6 @@ _exports = {
     # Boundaries
     "Boundary": Boundary,
     "PML": PML,
-    "BoundarySpec": BoundarySpec,
-    "PMLSpec": PMLSpec,
     # Optimization
     "TopologyManager": TopologyManager,
     "compute_overlap_gradient": compute_overlap_gradient,

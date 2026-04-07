@@ -47,7 +47,7 @@ def run_with_visualization(sim, **kwargs):
     """
     cfg = VizConfig(**kwargs)
 
-    active_monitor, use_jupyter, jupyter_animator, video_animator, viz_context = (
+    active_monitor, use_jupyter, jupyter_animator, video_recorder, viz_context = (
         _setup_visualization(sim, cfg)
     )
 
@@ -60,25 +60,23 @@ def run_with_visualization(sim, **kwargs):
             if sim.current_step % cfg.animation_interval != 0:
                 continue
 
-            if video_animator:
-                _record_video_frame(sim, video_animator, cfg)
+            if video_recorder:
+                _record_video_frame(sim, video_recorder, cfg)
 
             if cfg.animate_live:
                 viz_context = _update_live_display(
                     sim, cfg, active_monitor, use_jupyter, jupyter_animator, viz_context
                 )
     finally:
-        if video_animator:
-            from beamz.visual.animation import save_animation_mp4
-
-            save_animation_mp4(
-                video_animator,
-                filename=cfg.save_video,
-                fps=cfg.video_fps,
-                dpi=cfg.video_dpi,
-            )
+        if video_recorder:
+            video_recorder.save()
         if jupyter_animator:
             jupyter_animator.finalize()
+        if not use_jupyter and viz_context and viz_context.get("fig"):
+            import matplotlib.pyplot as plt
+
+            plt.show(block=False)
+            print("Simulation complete. Close the plot window to continue.")
 
     return _collect_results(sim, field_history, cfg, jupyter_animator)
 
@@ -126,8 +124,10 @@ def _setup_visualization(sim, cfg):
             store_frames=cfg.store_animation,
         )
 
-    video_animator = None
+    video_recorder = None
     if cfg.save_video:
+        from beamz.visual.video import VideoRecorder
+
         record_field = cfg.video_field or cfg.animate_live or "Ez"
         available = sim.fields.available_components()
         if record_field not in available:
@@ -136,7 +136,10 @@ def _setup_visualization(sim, cfg):
             )
             record_field = available[0] if available else None
         if record_field:
-            video_animator = JupyterAnimator(
+            video_recorder = VideoRecorder(
+                filename=cfg.save_video,
+                fps=cfg.video_fps,
+                dpi=cfg.video_dpi,
                 cmap=cfg.cmap,
                 axis_scale=cfg.axis_scale,
                 clean_visualization=cfg.clean_visualization,
@@ -144,11 +147,9 @@ def _setup_visualization(sim, cfg):
                 line_color=cfg.line_color,
                 line_opacity=cfg.line_opacity,
                 interpolation=cfg.interpolation,
-                live_display=False,
-                store_frames=True,
             )
 
-    return active_monitor, use_jupyter, jupyter_animator, video_animator, None
+    return active_monitor, use_jupyter, jupyter_animator, video_recorder, None
 
 
 def _store_fields(sim, field_history, cfg):
@@ -160,7 +161,7 @@ def _store_fields(sim, field_history, cfg):
             field_history[field_name].append(getattr(sim.fields, field_name).copy())
 
 
-def _record_video_frame(sim, video_animator, cfg):
+def _record_video_frame(sim, video_recorder, cfg):
     """Record a single video frame."""
     record_field = cfg.video_field or cfg.animate_live or "Ez"
     if not hasattr(sim.fields, record_field):
@@ -168,10 +169,7 @@ def _record_video_frame(sim, video_animator, cfg):
     field_display = getattr(sim.fields, record_field)
     if "E" in record_field:
         field_display = field_display * 1e-6
-    devices = getattr(sim, "devices", ())
-    sources = [device for device in devices if hasattr(device, "signal")]
-    monitors = [device for device in devices if hasattr(device, "power_history")]
-    video_animator.update(
+    video_recorder.add_frame(
         field_display,
         t=sim.t,
         step=sim.current_step,
@@ -181,8 +179,6 @@ def _record_video_frame(sim, video_animator, cfg):
         extent=(0, sim.design.width, 0, sim.design.height),
         design=sim.design,
         boundaries=sim.boundaries,
-        sources=sources,
-        monitors=monitors,
         plane_2d=sim.plane_2d,
     )
 
@@ -214,9 +210,6 @@ def _update_live_display(
     if "E" in cfg.animate_live:
         field_display = field_display * 1e-6
     units = "V/µm" if "E" in cfg.animate_live else "A/m"
-    devices = getattr(sim, "devices", ())
-    sources = [device for device in devices if hasattr(device, "signal")]
-    monitors = [device for device in devices if hasattr(device, "power_history")]
 
     if use_jupyter and jupyter_animator:
         jupyter_animator.update(
@@ -229,8 +222,6 @@ def _update_live_display(
             extent=extent,
             design=sim.design,
             boundaries=sim.boundaries,
-            sources=sources,
-            monitors=monitors,
             plane_2d=sim.plane_2d,
         )
     else:
@@ -243,9 +234,7 @@ def _update_live_display(
             units=units,
             design=sim.design,
             boundaries=sim.boundaries,
-            sources=sources,
-            monitors=monitors,
-            pause=0.0,
+            pause=0.001,
             axis_scale=cfg.axis_scale,
             cmap=cfg.cmap,
             clean_visualization=cfg.clean_visualization,
@@ -255,8 +244,6 @@ def _update_live_display(
             plane_2d=sim.plane_2d,
             interpolation=cfg.interpolation,
         )
-        if viz_context and viz_context.get("closed"):
-            cfg.animate_live = None
     return viz_context
 
 

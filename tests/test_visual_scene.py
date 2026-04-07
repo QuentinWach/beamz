@@ -100,8 +100,12 @@ class FakeMonitorX:
 
 
 def _make_design():
+    source = FakeModeSource()
+    monitor = FakeMonitor()
     return SimpleNamespace(
         structures=[FakeStructure()],
+        sources=[source],
+        monitors=[monitor],
         width=2.0,
         height=1.0,
         depth=0.22,
@@ -110,11 +114,15 @@ def _make_design():
 
 
 def _make_design_with_repeated_material():
+    source = FakeModeSource()
+    monitor = FakeMonitor()
     return SimpleNamespace(
         structures=[
             FakeStructureTwin(x_offset=0.0, color="#2563eb"),
             FakeStructureTwin(x_offset=2.5, color="#f97316"),
         ],
+        sources=[source],
+        monitors=[monitor],
         width=5.0,
         height=1.0,
         depth=0.22,
@@ -123,11 +131,15 @@ def _make_design_with_repeated_material():
 
 
 def _make_design_with_overlapping_material():
+    source = FakeModeSource()
+    monitor = FakeMonitor()
     return SimpleNamespace(
         structures=[
             FakeStructureTwin(x_offset=0.0, color="#2563eb"),
             FakeStructureTwin(x_offset=1.0, color="#f97316"),
         ],
+        sources=[source],
+        monitors=[monitor],
         width=4.0,
         height=1.0,
         depth=0.22,
@@ -136,6 +148,8 @@ def _make_design_with_overlapping_material():
 
 
 def _make_design_with_two_materials_and_air():
+    source = FakeModeSource()
+    monitor = FakeMonitor()
     air = FakeAirStructure(x_offset=4.5)
     return SimpleNamespace(
         structures=[
@@ -143,6 +157,8 @@ def _make_design_with_two_materials_and_air():
             FakeStructureTwin(x_offset=2.5),
             air,
         ],
+        sources=[source],
+        monitors=[monitor],
         width=7.0,
         height=1.0,
         depth=0.22,
@@ -152,12 +168,10 @@ def _make_design_with_two_materials_and_air():
 
 def _make_simulation():
     design = _make_design()
-    source = FakeModeSource()
-    monitor = FakeMonitor()
     extra_source = FakeGaussianSource()
     sim = Simulation.__new__(Simulation)
     sim.design = design
-    sim.devices = [source, monitor, extra_source]
+    sim.devices = [design.sources[0], design.monitors[0], extra_source]
     sim.boundaries = [PML(edges=["left", "right"], thickness=0.15)]
     sim.resolution = 2.5e-8
     sim.is_3d = True
@@ -232,10 +246,10 @@ def test_simulation_to_scene_includes_devices_boundaries_and_metadata():
 
 def test_simulation_to_scene_preserves_monitor_extents_for_x_normal_planes():
     design = _make_design()
-    monitor = FakeMonitorX()
+    design.monitors = [FakeMonitorX()]
     sim = Simulation.__new__(Simulation)
     sim.design = design
-    sim.devices = [monitor]
+    sim.devices = [design.monitors[0]]
     sim.boundaries = []
     sim.resolution = 2.5e-8
     sim.is_3d = True
@@ -263,6 +277,7 @@ def test_simulation_to_scene_preserves_monitor_center_for_legacy_plane_monitors(
         size=(0.8, 0.4),
         name="legacy_flux",
     )
+    design.monitors = [legacy_monitor]
     sim = Simulation.__new__(Simulation)
     sim.design = design
     sim.devices = [legacy_monitor]
@@ -304,11 +319,10 @@ def test_simulation_show_delegates_to_view3d(monkeypatch):
 
 def test_mode_source_visualization_does_not_emit_direction_arrow():
     design = _make_design()
-    source = FakeModeSource()
-    source.wavelength = 99.0
+    design.sources[0].wavelength = 99.0
     sim = Simulation.__new__(Simulation)
     sim.design = design
-    sim.devices = [source]
+    sim.devices = [design.sources[0]]
     sim.boundaries = []
     sim.resolution = 2.5e-8
     sim.is_3d = True

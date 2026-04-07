@@ -28,7 +28,6 @@ def add_design_overlays(
     line_color="gray",
     line_opacity=0.5,
     sources=None,
-    monitors=None,
     show_monitors=True,
     skip_background=False,
 ):
@@ -36,11 +35,10 @@ def add_design_overlays(
 
     Args:
         ax: Matplotlib axes.
-        design: Design object whose structures to overlay.
+        design: Design object whose structures/sources/monitors to overlay.
         line_color: Edge colour for structures and monitors.
         line_opacity: Alpha for structure and monitor outlines.
-        sources: Optional source list to overlay.
-        monitors: Optional monitor list to overlay.
+        sources: If given, overlay these; otherwise use ``design.sources``.
         show_monitors: Whether to draw monitors.
         skip_background: If True, skip the first structure that spans the full design.
     """
@@ -84,12 +82,14 @@ def add_design_overlays(
                 alpha=line_opacity,
             )
 
-    for source in ([] if sources is None else sources):
+    for source in (
+        sources if sources is not None else getattr(design, "sources", []) or []
+    ):
         if hasattr(source, "add_to_plot"):
             source.add_to_plot(ax)
 
     if show_monitors:
-        for monitor in ([] if monitors is None else monitors):
+        for monitor in getattr(design, "monitors", []) or []:
             if hasattr(monitor, "add_to_plot"):
                 monitor.add_to_plot(ax, edgecolor=line_color, alpha=line_opacity)
 
@@ -185,6 +185,80 @@ def configure_axes(ax, design, plane_2d="xy"):
     ax.set_ylabel(f"{ylabel} ({unit})")
     ax.xaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
     ax.yaxis.set_major_formatter(lambda x, pos: f"{x*scale:.1f}")
+
+
+def show_mesh_grid(grid, design, field="permittivity"):
+    """Display a 2D rasterized mesh grid with properly scaled SI units.
+
+    Args:
+        grid: 2D numpy array of field values.
+        design: Design object (used for width/height and SI scaling).
+        field: Name of the field (used for colorbar label and title).
+    """
+    import matplotlib.pyplot as plt
+
+    scale, unit = get_si_scale_and_label(max(design.width, design.height))
+    grid_height, grid_width = grid.shape
+    aspect_ratio = grid_width / grid_height
+    base_size = 2.5
+    if aspect_ratio > 1:
+        figsize = (base_size * aspect_ratio, base_size)
+    else:
+        figsize = (base_size, base_size / aspect_ratio)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(
+        grid,
+        origin="lower",
+        cmap="Grays",
+        extent=(0, design.width, 0, design.height),
+    )
+    fig.colorbar(ax.images[0], ax=ax, label=field)
+    ax.set_title("Rasterized Design Grid")
+    configure_axes(ax, design)
+    fig.tight_layout()
+    plt.show()
+
+
+def show_mesh_slice(grid, design, field="permittivity", z_index=None, z_res=None):
+    """Display a 2D slice from a 3D mesh grid with SI-scaled units.
+
+    Args:
+        grid: 2D numpy array of the slice.
+        design: Design object.
+        field: Name of the field.
+        z_index: Z-layer index (for title label).
+        z_res: Z resolution in metres (for title label).
+    """
+    import matplotlib.pyplot as plt
+
+    scale, unit = get_si_scale_and_label(max(design.width, design.height))
+    grid_height, grid_width = grid.shape
+    aspect_ratio = grid_width / grid_height
+    base_size = 2.5
+    if aspect_ratio > 1:
+        figsize = (base_size * aspect_ratio, base_size)
+    else:
+        figsize = (base_size, base_size / aspect_ratio)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(
+        grid,
+        origin="lower",
+        cmap="Grays",
+        extent=(0, design.width, 0, design.height),
+    )
+    fig.colorbar(ax.images[0], ax=ax, label=field)
+
+    if z_index is not None and z_res is not None:
+        z_pos = z_index * z_res
+        ax.set_title(f"3D {field.capitalize()} at z = {z_pos*scale:.2f} {unit}")
+    else:
+        ax.set_title(f"3D {field.capitalize()} Slice")
+
+    configure_axes(ax, design)
+    fig.tight_layout()
+    plt.show()
 
 
 def show_mesh_3d(grid_3d, design, field="permittivity", slice_spacing=1, alpha=0.3):

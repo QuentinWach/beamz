@@ -44,6 +44,11 @@ def by_name(name: str) -> Material:
         permittivity=src.permittivity,
         permeability=src.permeability,
         conductivity=src.conductivity,
+        k=src.k,
+        rho=src.rho,
+        cp=src.cp,
+        dn_dT=src.dn_dT,
+        T0=src.T0,
     )
 
 

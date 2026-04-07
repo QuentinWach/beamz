@@ -75,8 +75,11 @@ def determine_if_3d(design):
                 return True
             if hasattr(structure, "z") and structure.z and structure.z != 0:
                 return True
-            position = getattr(structure, "position", None)
-            if position is not None and len(position) > 2 and position[2] != 0:
+            if (
+                hasattr(structure, "position")
+                and len(structure.position) > 2
+                and structure.position[2] != 0
+            ):
                 return True
             if hasattr(structure, "vertices") and structure.vertices:
                 for vertex in structure.vertices:
@@ -85,22 +88,17 @@ def determine_if_3d(design):
     return False
 
 
-def show_design(design, unify_structures=True, *, sources=None, monitors=None):
+def show_design(design, unify_structures=True):
     """Display the design visually using 2D matplotlib or 3D plotly."""
     if determine_if_3d(design):
         from beamz.visual.design_3d import show_design_3d
 
         show_design_3d(design, unify_structures)
     else:
-        show_design_2d(
-            design,
-            unify_structures,
-            sources=sources,
-            monitors=monitors,
-        )
+        show_design_2d(design, unify_structures)
 
 
-def show_design_2d(design, unify_structures=True, *, sources=None, monitors=None):
+def show_design_2d(design, unify_structures=True):
     """Display the design using 2D matplotlib visualization."""
     import matplotlib.pyplot as plt
 
@@ -117,11 +115,12 @@ def show_design_2d(design, unify_structures=True, *, sources=None, monitors=None
         tmp_design = design.copy()
         tmp_design.unify_polygons()
         structures_to_plot = tmp_design.structures
+        sources_to_plot = tmp_design.sources
+        monitors_to_plot = tmp_design.monitors
     else:
         structures_to_plot = design.structures
-
-    sources_to_plot = [] if sources is None else list(sources)
-    monitors_to_plot = [] if monitors is None else list(monitors)
+        sources_to_plot = design.sources
+        monitors_to_plot = design.monitors
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_aspect("equal")

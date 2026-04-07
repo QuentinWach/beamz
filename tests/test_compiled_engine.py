@@ -17,9 +17,7 @@ from beamz import (
     ramped_cosine,
     um,
 )
-from beamz.devices.monitors.compiler import CompiledMonitorSpec, compile_monitor_specs
-from beamz.devices.sources.compiler import compile_source_specs
-from beamz.design.spec import DesignSpec
+from beamz.devices.monitors.compiler import CompiledMonitorSpec
 from beamz.simulation.compiled import (
     CompiledRunConfig,
     CompiledSimulation,
@@ -111,95 +109,6 @@ def test_compiled_monitor_power_is_populated(small_sim_params):
     assert len(monitor.power_history) > 0
     assert len(monitor.power_timestamps) == len(monitor.power_history)
     assert np.isfinite(np.asarray(monitor.power_history)).all()
-
-
-def test_source_compilation_accepts_simulation_specs_only(small_sim_params):
-    wl, dx, _dt, domain, steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-    source = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    sim = Simulation(
-        design=design,
-        devices=[source],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-
-    source_specs = compile_source_specs(
-        devices=sim.spec.devices,
-        source_states=None,
-        fields=sim.fields,
-        dt=sim.dt,
-        resolution=sim.resolution,
-        num_steps=steps,
-        t0=float(sim.time[0]),
-    )
-
-    assert len(source_specs) == 1
-    assert source_specs[0].component == "Ez"
-    assert source_specs[0].waveform.shape == (steps,)
-    assert source_specs[0].coeff.ndim == 2
-
-
-def test_monitor_compilation_accepts_simulation_specs_only(small_sim_params):
-    wl, dx, _dt, domain, steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-    source = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    monitor = Monitor(
-        start=(domain * 0.35, domain * 0.35),
-        end=(domain * 0.35, domain * 0.65),
-        record_interval=3,
-        frequency_points=[LIGHT_SPEED / wl],
-        frequency_record_interval=1,
-    )
-    sim = Simulation(
-        design=design,
-        devices=[source, monitor],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-
-    monitor_specs, max_records = compile_monitor_specs(
-        devices=sim.spec.devices,
-        monitor_states=None,
-        fields=sim.fields,
-        resolution=sim.resolution,
-        num_steps=steps,
-        dt=sim.dt,
-    )
-
-    assert len(monitor_specs) == 1
-    assert monitor_specs[0].name == (monitor.spec.name or "monitor_0")
-    assert monitor_specs[0].freq_count == 1
-    assert max_records == int(np.ceil(steps / monitor.spec.record_interval))
-
-
-def test_grid_backed_simulation_reuses_live_material_grid(small_sim_params):
-    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-    grid = design.rasterize(dx)
-    grid.permittivity[:] = 2.5
-    grid.permittivity[0, 0] = 7.0
-
-    source = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    sim = Simulation(
-        design=grid,
-        devices=[source],
-        boundaries=[],
-        time=t,
-        resolution=dx,
-    )
-
-    assert isinstance(sim.spec.design, DesignSpec)
-    assert np.allclose(sim.fields.permittivity, grid.permittivity)
-    assert sim.fields.permittivity[0, 0] == pytest.approx(7.0)
 
 
 def test_compiled_monitor_accumulates_across_chunks(small_sim_params):

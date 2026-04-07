@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 from beamz.const import LIGHT_SPEED
@@ -67,7 +66,15 @@ def gaussian_band_pulse(
     min_tail_uoc=90.0,
     max_tail_uoc=180.0,
 ):
-    """Create a broadband Gaussian pulse and a matching simulation timeline."""
+    """Create a Meep-style Gaussian pulse and matching simulation timeline.
+
+    This captures the common broadband FDTD setup pattern:
+    - choose the pulse width from the requested frequency span
+    - delay the pulse peak by a fixed multiple of sigma
+    - extend the time array with both a minimum path-based settling window and
+      a larger hard cap for adaptive stop conditions
+    """
+
     freqs = np.asarray(frequencies, dtype=float)
     df = max(float(np.ptp(freqs)), 1e-12)
     fmin = max(float(np.min(freqs)), 1e-12)
@@ -104,39 +111,5 @@ def gaussian_band_pulse(
     )
 
 
-def plot_signal(signals, t, save_path=None):
-    """Plot one or more time-domain source signals."""
-    t_seconds = np.asarray(t, dtype=float)
-    if t_seconds.size == 0:
-        raise ValueError("t must contain at least one sample")
-
-    if t_seconds[-1] < 1e-12:
-        t_scaled, unit = t_seconds * 1e15, "fs"
-    elif t_seconds[-1] < 1e-9:
-        t_scaled, unit = t_seconds * 1e12, "ps"
-    elif t_seconds[-1] < 1e-6:
-        t_scaled, unit = t_seconds * 1e9, "ns"
-    elif t_seconds[-1] < 1e-3:
-        t_scaled, unit = t_seconds * 1e6, "µs"
-    elif t_seconds[-1] < 1:
-        t_scaled, unit = t_seconds * 1e3, "ms"
-    else:
-        t_scaled, unit = t_seconds, "s"
-
-    fig, ax = plt.subplots(figsize=(9, 4))
-    if isinstance(signals, list):
-        for idx, signal in enumerate(signals):
-            ax.plot(t_scaled, np.asarray(signal), label=f"Signal {idx}")
-        ax.legend()
-    else:
-        ax.plot(t_scaled, np.asarray(signals), color="black")
-    ax.set_xlim(float(t_scaled[0]), float(t_scaled[-1]))
-    ax.set_xlabel(f"Time ({unit})")
-    ax.set_ylabel("Amplitude")
-    ax.set_title("Signal")
-    fig.tight_layout()
-    if save_path is not None:
-        fig.savefig(save_path, dpi=150)
-        plt.close(fig)
-        return None
-    return fig, ax
+# Backward-compatible re-export (canonical location: beamz.visual.source_plots)
+from beamz.visual.source_plots import plot_signal  # noqa: E402, F401

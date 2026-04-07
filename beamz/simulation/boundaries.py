@@ -1,33 +1,25 @@
-from dataclasses import dataclass
-
 import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0, MU_0, µm
-from beamz.simulation.boundary_specs import (
-    BoundarySpec,
-    PMLSpec,
-    boundary_spec_from_dict as _boundary_spec_from_dict,
-    boundary_spec_to_dict as _boundary_spec_to_dict,
-)
-
-_VALID_EDGES = frozenset({"left", "right", "top", "bottom", "front", "back"})
 
 
-@dataclass(frozen=True, slots=True)
 class Boundary:
     """Abstract base class for all boundary conditions."""
-    edges: str | tuple[str, ...] = "all"
-    thickness: float = 1 * µm
 
-    def __post_init__(self):
-        spec = BoundarySpec(edges=self.edges, thickness=self.thickness)
-        object.__setattr__(self, "edges", spec.edges)
-        object.__setattr__(self, "thickness", spec.thickness)
-
-    @property
-    def spec(self) -> BoundarySpec:
-        return BoundarySpec(edges=self.edges, thickness=self.thickness)
+    def __init__(self, edges, thickness):
+        """
+        Args:
+            edges: list of edge names or 'all'
+                   2D: ['left', 'right', 'top', 'bottom']
+                   3D: ['left', 'right', 'top', 'bottom', 'front', 'back']
+            thickness: physical thickness of boundary region
+        """
+        if edges == "all":
+            self.edges = "all"
+        else:
+            self.edges = edges if isinstance(edges, list) else [edges]
+        self.thickness = thickness
 
     def _get_edges_for_dimensionality(self, is_3d):
         """Resolve 'all' edges based on dimensionality."""
@@ -39,79 +31,27 @@ class Boundary:
             )
         return self.edges
 
-    def to_dict(self):
-        data = self.spec.to_dict()
-        data["type"] = type(self).__name__
-        return data
 
-    @classmethod
-    def from_dict(cls, data):
-        spec = _boundary_spec_from_dict(data)
-        return cls.from_spec(spec)
-
-    @classmethod
-    def from_spec(cls, spec):
-        if not isinstance(spec, BoundarySpec) or isinstance(spec, PMLSpec):
-            raise TypeError("from_spec expects a BoundarySpec")
-        return cls(
-            edges=spec.edges,
-            thickness=spec.thickness,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class PML(Boundary):
     """Perfectly Matched Layer boundary condition using graded-sigma absorption."""
-    sigma_max: float | None = None
-    m: int = 3
 
-    def __post_init__(self):
-        spec = PMLSpec(
-            edges=self.edges,
-            thickness=self.thickness,
-            sigma_max=self.sigma_max,
-            m=self.m,
-        )
-        object.__setattr__(self, "edges", spec.edges)
-        object.__setattr__(self, "thickness", spec.thickness)
-        object.__setattr__(self, "sigma_max", spec.sigma_max)
-        object.__setattr__(self, "m", spec.m)
-
-    @property
-    def spec(self) -> PMLSpec:
-        return PMLSpec(
-            edges=self.edges,
-            thickness=self.thickness,
-            sigma_max=self.sigma_max,
-            m=self.m,
-        )
-
-    def _resolved_sigma_max(self, resolution, eps_avg=1.0):
-        if self.sigma_max is not None:
-            return self.sigma_max
-        eta = np.sqrt(MU_0 / (EPS_0 * eps_avg))
-        return 0.8 * (self.m + 1) / (eta * resolution)
-
-    def to_dict(self):
-        data = self.spec.to_dict()
-        data["type"] = type(self).__name__
-        return data
-
-    @classmethod
-    def from_dict(cls, data):
-        spec = _boundary_spec_from_dict(data)
-        return cls.from_spec(spec)
-
-    @classmethod
-    def from_spec(cls, spec):
-        if not isinstance(spec, PMLSpec):
-            raise TypeError("from_spec expects a PMLSpec")
-        return cls(
-            edges=spec.edges,
-            thickness=spec.thickness,
-            sigma_max=spec.sigma_max,
-            m=spec.m,
-        )
+    def __init__(
+        self,
+        edges="all",
+        thickness=1 * µm,
+        sigma_max=None,
+        m=3,
+    ):
+        """
+        Args:
+            edges: edges to apply PML
+            thickness: PML thickness
+            sigma_max: maximum conductivity (auto-calculated if None)
+            m: conductivity grading order
+        """
+        super().__init__(edges, thickness)
+        self.sigma_max = sigma_max
+        self.m = m
 
     def create_pml_regions(self, fields, design, resolution, dt, plane_2d="xy"):
         """Create permanent PML region masks and graded-sigma conductivity profiles.
@@ -120,12 +60,14 @@ class PML(Boundary):
             - mask: boolean array indicating PML cells
             - sigma_x, sigma_y, sigma_z: conductivity profiles
         """
-        sigma_max = self._resolved_sigma_max(resolution)
+        if self.sigma_max is None:
+            eta = np.sqrt(MU_0 / (EPS_0 * 1.0))
+            self.sigma_max = 0.8 * (self.m + 1) / (eta * resolution)
 
         if fields.permittivity.ndim == 3:
-            return self._create_pml_profiles_3d(fields, design, sigma_max)
+            return self._create_pml_profiles_3d(fields, design)
         else:
-            return self._create_pml_profiles_2d(fields, design, plane_2d, sigma_max)
+            return self._create_pml_profiles_2d(fields, design, plane_2d)
 
     def get_conductivity(
         self, x, y, z=0, dx=1e-6, dt=1e-15, eps_avg=1.0, width=0, height=0, depth=0
@@ -160,7 +102,7 @@ class PML(Boundary):
                 sigma += s_max * (dist / self.thickness) ** self.m
         return sigma
 
-    def _compute_1d_profile(self, coords, length, low_active, high_active, sigma_max):
+    def _compute_1d_profile(self, coords, length, low_active, high_active):
         """Compute 1D graded-sigma profile along an axis.
 
         Args:
@@ -174,15 +116,15 @@ class PML(Boundary):
 
         if low_active:
             dist = jnp.clip(thickness - coords, 0.0, None)
-            sigma = sigma + sigma_max * (dist / thickness) ** self.m
+            sigma = sigma + self.sigma_max * (dist / thickness) ** self.m
 
         if high_active:
             dist = jnp.clip(coords - (length - thickness), 0.0, None)
-            sigma = sigma + sigma_max * (dist / thickness) ** self.m
+            sigma = sigma + self.sigma_max * (dist / thickness) ** self.m
 
         return sigma
 
-    def _create_pml_profiles_2d(self, fields, design, plane_2d, sigma_max):
+    def _create_pml_profiles_2d(self, fields, design, plane_2d):
         """Create graded-sigma PML profiles for 2D plane."""
         shape = fields.permittivity.shape
         dim1, dim2 = shape
@@ -205,10 +147,10 @@ class PML(Boundary):
         coords2 = jnp.linspace(0, len2, dim2)
 
         sigma1 = self._compute_1d_profile(
-            coords1, len1, "bottom" in edges, "top" in edges, sigma_max
+            coords1, len1, "bottom" in edges, "top" in edges
         )
         sigma2 = self._compute_1d_profile(
-            coords2, len2, "left" in edges, "right" in edges, sigma_max
+            coords2, len2, "left" in edges, "right" in edges
         )
 
         sigma_axis1 = jnp.broadcast_to(sigma1[:, None], shape)
@@ -225,7 +167,7 @@ class PML(Boundary):
         pml_mask = (sigma_axis1 > 0) | (sigma_axis2 > 0)
         return {"mask": pml_mask, **profiles}
 
-    def _create_pml_profiles_3d(self, fields, design, sigma_max):
+    def _create_pml_profiles_3d(self, fields, design):
         """Create graded-sigma PML profiles for 3D."""
         shape = fields.permittivity.shape  # (nz, ny, nx)
         nz, ny, nx = shape
@@ -238,13 +180,13 @@ class PML(Boundary):
         coords_z = jnp.linspace(0, depth, nz)
 
         sigma_x_1d = self._compute_1d_profile(
-            coords_x, width, "left" in edges, "right" in edges, sigma_max
+            coords_x, width, "left" in edges, "right" in edges
         )
         sigma_y_1d = self._compute_1d_profile(
-            coords_y, height, "bottom" in edges, "top" in edges, sigma_max
+            coords_y, height, "bottom" in edges, "top" in edges
         )
         sigma_z_1d = self._compute_1d_profile(
-            coords_z, depth, "front" in edges, "back" in edges, sigma_max
+            coords_z, depth, "front" in edges, "back" in edges
         )
 
         sigma_x = jnp.broadcast_to(sigma_x_1d[None, None, :], shape)
@@ -259,19 +201,3 @@ class PML(Boundary):
 
         pml_mask = (sigma_x > 0) | (sigma_y > 0) | (sigma_z > 0)
         return {"mask": pml_mask, **profiles}
-
-
-def boundary_spec_to_dict(boundary):
-    return _boundary_spec_to_dict(boundary)
-
-
-def boundary_spec_from_dict(data):
-    return _boundary_spec_from_dict(data)
-
-
-def boundary_from_spec(spec):
-    if isinstance(spec, PMLSpec):
-        return PML.from_spec(spec)
-    if isinstance(spec, BoundarySpec):
-        return Boundary.from_spec(spec)
-    raise TypeError("spec must be a BoundarySpec or PMLSpec")

@@ -55,7 +55,10 @@ class _Bounds:
 
 
 def looks_like_beamz_design(value: Any) -> bool:
-    return all(hasattr(value, name) for name in ("structures", "width", "height"))
+    return all(
+        hasattr(value, name)
+        for name in ("structures", "sources", "monitors", "width", "height")
+    )
 
 
 def looks_like_beamz_simulation(value: Any) -> bool:
@@ -184,9 +187,7 @@ def _structure_geometry(structure: Any) -> tuple[str | None, dict[str, Any] | No
             "z0": z0,
         }
 
-    if getattr(structure, "position", None) is not None and getattr(
-        structure, "radius", None
-    ) is not None:
+    if hasattr(structure, "position") and hasattr(structure, "radius"):
         px, py, pz = _position3(
             getattr(structure, "position"), default_z=z0 + depth / 2.0
         )
@@ -196,9 +197,9 @@ def _structure_geometry(structure: Any) -> tuple[str | None, dict[str, Any] | No
         }
 
     if (
-        getattr(structure, "position", None) is not None
-        and getattr(structure, "width", None) is not None
-        and getattr(structure, "height", None) is not None
+        hasattr(structure, "position")
+        and hasattr(structure, "width")
+        and hasattr(structure, "height")
     ):
         px, py, pz = _position3(getattr(structure, "position"), default_z=z0)
         width = float(getattr(structure, "width"))
@@ -337,9 +338,9 @@ def _viewer_structure_shape(structure: Any) -> Any | None:
     if shape is not None:
         return shape
     if (
-        getattr(structure, "position", None) is not None
-        and getattr(structure, "width", None) is not None
-        and getattr(structure, "height", None) is not None
+        hasattr(structure, "position")
+        and hasattr(structure, "width")
+        and hasattr(structure, "height")
     ):
         px, py, _ = _position3(getattr(structure, "position"))
         width = float(getattr(structure, "width", 0.0) or 0.0)
@@ -634,8 +635,8 @@ def _simulation_sources(simulation: Any) -> list[Any]:
 def _combined_simulation_items(
     simulation: Any, *, attr_name: str, predicate: Callable[[Any], bool]
 ) -> list[Any]:
-    items: list[Any] = []
-    seen: set[int] = set()
+    items = list(getattr(getattr(simulation, "design", None), attr_name, []))
+    seen = {id(item) for item in items}
     for device in getattr(simulation, "devices", []):
         if not predicate(device) or id(device) in seen:
             continue

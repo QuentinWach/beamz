@@ -1,127 +1,56 @@
-from __future__ import annotations
-
 import colorsys
-import copy
 import random
-from dataclasses import replace
 
 import numpy as np
 
-from beamz.design.geometry_ops import (
-    bend_vertices as _bend_vertices,
-    circle_vertices as _circle_vertices,
-    freeze_interiors as _freeze_interiors,
-    freeze_vertices as _freeze_vertices,
-    normalize_position as _normalize_position,
-    require_nonnegative as _require_nonnegative,
-    require_positive as _require_positive,
-    ring_vertices as _ring_vertices,
-    rotate_vertices as _rotate_vertices,
-    transform_geometry as _transform_geometry,
-    vertices_bbox as _vertices_bbox,
-    vertices_center as _vertices_center,
-)
-from beamz.design.materials import material_from_spec, material_to_spec
-from beamz.design.structure_specs import StructureSpec, structure_kind as _structure_kind
 
-
-def _replace_from_bbox(structure, *, include_length=False):
-    min_x, min_y, min_z, max_x, max_y, max_z = _vertices_bbox(structure.vertices)
-    changes = {"position": (min_x, min_y, min_z)}
-    if include_length:
-        changes["length"] = max_x - min_x
+def _rotate_vertices(vertices, angle_rad, axis, center):
+    """Rotate a list of 3D vertices around center by angle_rad on the given axis."""
+    cx, cy, cz = center
+    cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
+    if axis == "z":
+        return [
+            (
+                cx + (v[0] - cx) * cos_a - (v[1] - cy) * sin_a,
+                cy + (v[0] - cx) * sin_a + (v[1] - cy) * cos_a,
+                v[2],
+            )
+            for v in vertices
+        ]
+    elif axis == "x":
+        return [
+            (
+                v[0],
+                cy + (v[1] - cy) * cos_a - (v[2] - cz) * sin_a,
+                cz + (v[1] - cy) * sin_a + (v[2] - cz) * cos_a,
+            )
+            for v in vertices
+        ]
+    elif axis == "y":
+        return [
+            (
+                cx + (v[0] - cx) * cos_a + (v[2] - cz) * sin_a,
+                v[1],
+                cz - (v[0] - cx) * sin_a + (v[2] - cz) * cos_a,
+            )
+            for v in vertices
+        ]
     else:
-        changes.update(width=max_x - min_x, height=max_y - min_y, depth=max_z - min_z)
-    return structure._replace_spec(**changes)
+        raise ValueError(f"Invalid rotation axis '{axis}'. Must be 'x', 'y', or 'z'.")
 
 
-def structure_from_spec(spec):
-    material = material_from_spec(spec.material)
-    kind = _structure_kind(spec)
-    if kind == "Rectangle":
-        return Rectangle(
-            position=spec.position or (0.0, 0.0, spec.z),
-            width=spec.width,
-            height=spec.height,
-            depth=spec.depth,
-            material=material,
-            color=spec.color,
-            is_pml=spec.is_pml,
-            optimize=spec.optimize,
-        )
-    if kind == "Circle":
-        return Circle(
-            position=spec.position or (0.0, 0.0, spec.z),
-            radius=spec.radius,
-            points=spec.points or 32,
-            material=material,
-            color=spec.color,
-            optimize=spec.optimize,
-            depth=spec.depth,
-            z=spec.z,
-        )
-    if kind == "Ring":
-        return Ring(
-            position=spec.position or (0.0, 0.0, spec.z),
-            inner_radius=spec.inner_radius,
-            outer_radius=spec.outer_radius,
-            material=material,
-            color=spec.color,
-            optimize=spec.optimize,
-            points=spec.points or 256,
-            depth=spec.depth,
-            z=spec.z,
-        )
-    if kind == "CircularBend":
-        return CircularBend(
-            position=spec.position or (0.0, 0.0, spec.z),
-            inner_radius=spec.inner_radius,
-            outer_radius=spec.outer_radius,
-            angle=spec.angle,
-            rotation=spec.rotation or 0.0,
-            material=material,
-            facecolor=spec.color,
-            optimize=spec.optimize,
-            points=spec.points or 64,
-            depth=spec.depth,
-            z=spec.z,
-        )
-    if kind == "Taper":
-        return Taper(
-            position=spec.position or (0.0, 0.0, spec.z),
-            input_width=spec.input_width,
-            output_width=spec.output_width,
-            length=spec.length,
-            material=material,
-            color=spec.color,
-            optimize=spec.optimize,
-            depth=spec.depth,
-            z=spec.z,
-        )
-    if kind == "Sphere":
-        return Sphere(
-            position=spec.position or (0.0, 0.0, 0.0),
-            radius=spec.radius,
-            material=material,
-            color=spec.color,
-            optimize=spec.optimize,
-        )
-    poly = Polygon(
-        vertices=spec.vertices,
-        material=material,
-        color=spec.color,
-        optimize=spec.optimize,
-        interiors=spec.interiors,
-        depth=spec.depth,
-        z=spec.z,
-    )
-    poly._replace_spec(position=spec.position)
-    return poly
+def _normalize_position(position, z=None):
+    """Ensure position is a 3-tuple, optionally overriding z."""
+    if len(position) == 2:
+        position = (position[0], position[1], 0.0)
+    elif len(position) != 3:
+        raise ValueError("Position must be (x,y) or (x,y,z)")
+    if z is not None:
+        position = (position[0], position[1], z)
+    return position
 
 
 class Polygon:
-    _SPEC_FIELDS = frozenset(StructureSpec.__dataclass_fields__.keys())
-
     def __init__(
         self,
         vertices=None,
@@ -132,82 +61,18 @@ class Polygon:
         depth=0,
         z=0,
     ):
-        processed_vertices = self._process_vertices(vertices if vertices is not None else [], z)
-        processed_interiors = [
+        self.vertices = self._process_vertices(
+            vertices if vertices is not None else [], z
+        )
+        self.interiors = [
             self._process_vertices(interior, z, ensure_ccw=False)
             for interior in (interiors if interiors is not None else [])
         ]
-        object.__setattr__(
-            self,
-            "spec",
-            StructureSpec(
-                vertices=processed_vertices,
-                interiors=processed_interiors,
-                material=material,
-                color=color if color is not None else self.get_random_color_consistent(),
-                optimize=optimize,
-                depth=depth if depth is not None else 0,
-                z=z if z is not None else 0,
-            ),
-        )
-        object.__setattr__(self, "_material", material if material is not None else material_from_spec(self.spec.material))
-
-    def __getattr__(self, name):
-        if name == "material":
-            return self.__dict__.get("_material")
-        spec = self.__dict__.get("spec")
-        if spec is not None and hasattr(spec, name):
-            return getattr(spec, name)
-        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
-
-    def __setattr__(self, name, value):
-        if name == "spec":
-            object.__setattr__(self, name, value)
-            return
-        if name == "_material":
-            object.__setattr__(self, name, value)
-            return
-        if name == "material":
-            object.__setattr__(self, "_material", value)
-            object.__setattr__(self, "spec", replace(self.spec, material=material_to_spec(value)))
-            return
-        if name in self._SPEC_FIELDS and "spec" in self.__dict__:
-            if name == "vertices":
-                value = _freeze_vertices(value)
-            elif name == "interiors":
-                value = _freeze_interiors(value)
-            elif name == "position" and value is not None:
-                value = tuple(float(v) for v in value)
-            elif name == "material":
-                object.__setattr__(self, "_material", value)
-                value = material_to_spec(value)
-            object.__setattr__(self, "spec", replace(self.spec, **{name: value}))
-            return
-        object.__setattr__(self, name, value)
-
-    def _replace_spec(self, **changes):
-        if "vertices" in changes:
-            changes["vertices"] = _freeze_vertices(changes["vertices"])
-        if "interiors" in changes:
-            changes["interiors"] = _freeze_interiors(changes["interiors"])
-        if "position" in changes and changes["position"] is not None:
-            changes["position"] = tuple(float(v) for v in changes["position"])
-        if "material" in changes:
-            object.__setattr__(self, "_material", changes["material"])
-            changes["material"] = material_to_spec(changes["material"])
-        object.__setattr__(self, "spec", replace(self.spec, **changes))
-        return self
-
-    def with_spec(self, spec=None, /, **changes):
-        base_spec = self.spec if spec is None else spec
-        if not isinstance(base_spec, StructureSpec):
-            raise TypeError("with_spec expects a StructureSpec or spec field updates")
-        if changes:
-            base_spec = replace(base_spec, **changes)
-        new = copy.copy(self)
-        object.__setattr__(new, "spec", base_spec)
-        object.__setattr__(new, "_material", material_from_spec(base_spec.material))
-        return new
+        self.material = material
+        self.optimize = optimize
+        self.color = color if color is not None else self.get_random_color_consistent()
+        self.depth = depth if depth is not None else 0
+        self.z = z if z is not None else 0
 
     def _process_vertices(self, vertices, z=0, ensure_ccw=True):
         if not vertices:
@@ -242,7 +107,7 @@ class Polygon:
             if len(v) == 2:
                 result.append((v[0], v[1], 0.0))
             elif len(v) == 3:
-                result.append(tuple(v))
+                result.append(v)
             else:
                 raise ValueError(f"Vertex must have 2 or 3 coordinates, got {len(v)}")
         return result
@@ -258,77 +123,115 @@ class Polygon:
         return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
 
     def shift(self, x, y, z=0):
-        position = self.position
-        vertices, interiors = _transform_geometry(
-            self.vertices,
-            self.interiors,
-            lambda v: (v[0] + x, v[1] + y, v[2] + z),
-        )
-        changes = {"vertices": vertices, "interiors": interiors}
-        if position is not None:
-            changes["position"] = (position[0] + x, position[1] + y, position[2] + z)
-        if self.z is not None:
-            changes["z"] = self.z + z
-        return self._replace_spec(**changes)
+        if hasattr(self, "position") and self.position is not None:
+            self.position = (
+                self.position[0] + x,
+                self.position[1] + y,
+                self.position[2] + z,
+            )
+        if self.vertices:
+            self.vertices = [(v[0] + x, v[1] + y, v[2] + z) for v in self.vertices]
+        self.interiors = [
+            [(v[0] + x, v[1] + y, v[2] + z) for v in path]
+            for path in self.interiors
+            if path
+        ]
+        return self
 
     def scale(self, s_x, s_y=None, s_z=None):
         if s_y is None:
             s_y = s_x
         if s_z is None:
             s_z = 1.0 if s_y != s_x else s_x
-        if not self.vertices:
-            return self
-        x_center, y_center, z_center = _vertices_center(self.vertices)
-        vertices, interiors = _transform_geometry(
-            self.vertices,
-            self.interiors,
-            lambda v: (
-                x_center + (v[0] - x_center) * s_x,
-                y_center + (v[1] - y_center) * s_y,
-                z_center + (v[2] - z_center) * s_z,
-            ),
-        )
-        return self._replace_spec(vertices=vertices, interiors=interiors)
+        if self.vertices:
+            x_center = sum(v[0] for v in self.vertices) / len(self.vertices)
+            y_center = sum(v[1] for v in self.vertices) / len(self.vertices)
+            z_center = sum(v[2] for v in self.vertices) / len(self.vertices)
+            self.vertices = [
+                (
+                    x_center + (v[0] - x_center) * s_x,
+                    y_center + (v[1] - y_center) * s_y,
+                    z_center + (v[2] - z_center) * s_z,
+                )
+                for v in self.vertices
+            ]
+            new_interiors_paths = []
+            for interior_path in self.interiors:
+                if interior_path:
+                    new_interiors_paths.append(
+                        [
+                            (
+                                x_center + (v[0] - x_center) * s_x,
+                                y_center + (v[1] - y_center) * s_y,
+                                z_center + (v[2] - z_center) * s_z,
+                            )
+                            for v in interior_path
+                        ]
+                    )
+            self.interiors = new_interiors_paths
+        return self
 
     def rotate(self, angle, axis="z", point=None):
-        if not self.vertices:
-            return self
-        angle_rad = np.radians(angle)
-        center = (
-            _vertices_center(self.vertices)
-            if point is None
-            else (point[0], point[1], point[2] if len(point) > 2 else 0)
-        )
-        return self._replace_spec(
-            vertices=_rotate_vertices(self.vertices, angle_rad, axis, center),
-            interiors=[
+        if self.vertices:
+            angle_rad = np.radians(angle)
+            if point is None:
+                center = (
+                    sum(v[0] for v in self.vertices) / len(self.vertices),
+                    sum(v[1] for v in self.vertices) / len(self.vertices),
+                    sum(v[2] for v in self.vertices) / len(self.vertices),
+                )
+            else:
+                center = (point[0], point[1], point[2] if len(point) > 2 else 0)
+
+            self.vertices = _rotate_vertices(self.vertices, angle_rad, axis, center)
+            self.interiors = [
                 _rotate_vertices(path, angle_rad, axis, center)
                 for path in self.interiors
                 if path
-            ],
-        )
+            ]
+        return self
 
     def add_to_plot(
         self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
     ):
         from beamz.visual.design_viz import draw_polygon
+
         return draw_polygon(
             ax,
             self,
-            facecolor=self.color if facecolor is None else facecolor,
+            facecolor=facecolor,
             edgecolor=edgecolor,
-            alpha=1 if alpha is None else alpha,
-            linestyle="-" if linestyle is None else linestyle,
+            alpha=alpha,
+            linestyle=linestyle,
         )
 
     def copy(self):
-        return copy.copy(self)
+        copied_interiors = (
+            [list(path) for path in self.interiors if path] if self.interiors else []
+        )
+        return Polygon(
+            vertices=list(self.vertices) if self.vertices else [],
+            interiors=copied_interiors,
+            material=self.material,
+            color=self.color,
+            optimize=self.optimize,
+            depth=self.depth,
+            z=self.z,
+        )
 
     def get_bounding_box(self):
-        if not self.vertices:
+        if not self.vertices or len(self.vertices) == 0:
             return (0, 0, 0, 0, 0, 0)
-        min_x, min_y, min_z, max_x, max_y, max_z = _vertices_bbox(self.vertices)
+        x_coords = [v[0] for v in self.vertices]
+        y_coords = [v[1] for v in self.vertices]
+        z_coords = [v[2] for v in self.vertices]
+        min_x, max_x = min(x_coords), max(x_coords)
+        min_y, max_y = min(y_coords), max(y_coords)
+        min_z, max_z = min(z_coords), max(z_coords)
+
+        # Expand Z-range by depth if present
         max_z = max(max_z, min_z + getattr(self, "depth", 0))
+
         return (min_x, min_y, min_z, max_x, max_y, max_z)
 
     def _point_in_polygon_single_path(self, x, y, path_vertices):
@@ -353,15 +256,21 @@ class Polygon:
         return inside
 
     def point_in_polygon(self, x, y, z=None):
+        # 3D containment check if z is provided
         if z is not None and hasattr(self, "depth") and self.depth > 0:
             if not (self.z <= z <= self.z + self.depth):
                 return False
-        if not self.vertices:
+
+        exterior_path = self.vertices
+        interior_paths = self.interiors
+        if not exterior_path:
             return False
-        if not self._point_in_polygon_single_path(x, y, self.vertices):
+        if not self._point_in_polygon_single_path(x, y, exterior_path):
             return False
-        for interior in self.interiors:
-            if interior and self._point_in_polygon_single_path(x, y, interior):
+        for interior_path_pts in interior_paths:
+            if interior_path_pts and self._point_in_polygon_single_path(
+                x, y, interior_path_pts
+            ):
                 return False
         return True
 
@@ -379,9 +288,14 @@ class Rectangle(Polygon):
         optimize=False,
         z=None,
     ):
-        _require_positive("width", width)
-        _require_positive("height", height)
-        _require_nonnegative("depth", depth)
+        # Validate dimensions
+        if width <= 0:
+            raise ValueError(f"width must be positive, got {width}")
+        if height <= 0:
+            raise ValueError(f"height must be positive, got {height}")
+        if depth < 0:
+            raise ValueError(f"depth must be non-negative, got {depth}")
+
         position = _normalize_position(position, z)
         x, y, z_pos = position
         vertices = [
@@ -398,17 +312,31 @@ class Rectangle(Polygon):
             depth=depth,
             z=z_pos,
         )
-        self._replace_spec(
-            position=position,
-            width=width,
-            height=height,
-            depth=depth,
-            is_pml=is_pml,
-        )
+        self.position = position
+        self.width = width
+        self.height = height
+        self.depth = depth
+        self.is_pml = is_pml
+
+    def get_bounding_box(self):
+        if not hasattr(self, "vertices") or len(self.vertices) == 0:
+            x, y, z = self.position
+            return (x, y, z, x + self.width, y + self.height, z + self.depth)
+        return super().get_bounding_box()
 
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
-        return _replace_from_bbox(self)
+        min_x = min(v[0] for v in self.vertices)
+        min_y = min(v[1] for v in self.vertices)
+        min_z = min(v[2] for v in self.vertices)
+        max_x = max(v[0] for v in self.vertices)
+        max_y = max(v[1] for v in self.vertices)
+        max_z = max(v[2] for v in self.vertices)
+        self.position = (min_x, min_y, min_z)
+        self.width = max_x - min_x
+        self.height = max_y - min_y
+        self.depth = max_z - min_z
+        return self
 
     def scale(self, s_x, s_y=None, s_z=None):
         if s_y is None:
@@ -416,12 +344,24 @@ class Rectangle(Polygon):
         if s_z is None:
             s_z = 1.0 if s_y != s_x else s_x
         super().scale(s_x, s_y, s_z)
-        return self._replace_spec(
-            width=self.width * s_x,
-            height=self.height * s_y,
-            depth=self.depth * s_z,
-            position=self.position,
+        self.width *= s_x
+        self.height *= s_y
+        self.depth *= s_z
+        return self
+
+    def copy(self):
+        new_rect = Rectangle(
+            self.position,
+            self.width,
+            self.height,
+            self.depth,
+            self.material,
+            self.color,
+            self.is_pml,
+            self.optimize,
         )
+        new_rect.vertices = [(x, y, z) for x, y, z in self.vertices]
+        return new_rect
 
 
 class Circle(Polygon):
@@ -436,25 +376,61 @@ class Circle(Polygon):
         depth=0,
         z=0,
     ):
-        _require_positive("radius", radius)
-        _require_nonnegative("depth", depth)
-        position = _normalize_position(position, z)
-        vertices = _circle_vertices(position, radius, points)
+        # Validate dimensions
+        if radius <= 0:
+            raise ValueError(f"radius must be positive, got {radius}")
+        if depth < 0:
+            raise ValueError(f"depth must be non-negative, got {depth}")
+
+        position = _normalize_position(position)
+        theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
+        vertices = [
+            (
+                position[0] + radius * np.cos(t),
+                position[1] + radius * np.sin(t),
+                position[2],
+            )
+            for t in theta
+        ]
         super().__init__(
             vertices=vertices,
             material=material,
             color=color,
             optimize=optimize,
             depth=depth,
-            z=position[2],
+            z=z,
         )
-        self._replace_spec(position=position, radius=radius, points=points)
+        self.position = position
+        self.radius = radius
+        self.points = points
 
     def scale(self, s_x, s_y=None, s_z=None):
-        radius = self.radius * s_x
-        return self._replace_spec(
-            radius=radius,
-            vertices=_circle_vertices(self.position, radius, self.points),
+        if s_y is None:
+            s_y = s_x
+        if s_z is None:
+            s_z = 1.0
+        self.radius *= s_x
+        theta = np.linspace(0, 2 * np.pi, self.points, endpoint=False)
+        self.vertices = [
+            (
+                self.position[0] + self.radius * np.cos(t),
+                self.position[1] + self.radius * np.sin(t),
+                self.position[2],
+            )
+            for t in theta
+        ]
+        return self
+
+    def copy(self):
+        return Circle(
+            position=self.position,
+            radius=self.radius,
+            points=self.points,
+            material=self.material,
+            color=self.color,
+            optimize=self.optimize,
+            depth=self.depth,
+            z=self.z,
         )
 
 
@@ -471,41 +447,104 @@ class Ring(Polygon):
         depth=0,
         z=None,
     ):
-        _require_positive("inner_radius", inner_radius)
+        # Validate dimensions
+        if inner_radius <= 0:
+            raise ValueError(f"inner_radius must be positive, got {inner_radius}")
         if outer_radius <= inner_radius:
             raise ValueError(
                 f"outer_radius ({outer_radius}) must be greater than inner_radius ({inner_radius})"
             )
-        _require_nonnegative("depth", depth)
+        if depth < 0:
+            raise ValueError(f"depth must be non-negative, got {depth}")
+
         position = _normalize_position(position, z)
-        outer_vertices, inner_vertices = _ring_vertices(position, inner_radius, outer_radius, points)
+        theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
+        outer_ext_vertices = [
+            (
+                position[0] + outer_radius * np.cos(t),
+                position[1] + outer_radius * np.sin(t),
+                position[2],
+            )
+            for t in theta
+        ]
+        inner_int_vertices_cw = [
+            (
+                position[0] + inner_radius * np.cos(t),
+                position[1] + inner_radius * np.sin(t),
+                position[2],
+            )
+            for t in reversed(theta)
+        ]
         super().__init__(
-            vertices=outer_vertices,
-            interiors=[inner_vertices] if inner_vertices else [],
+            vertices=outer_ext_vertices,
+            interiors=[inner_int_vertices_cw] if inner_int_vertices_cw else [],
             material=material,
             color=color,
             optimize=optimize,
             depth=depth,
             z=position[2],
         )
-        self._replace_spec(
-            position=position,
-            points=points,
-            inner_radius=inner_radius,
-            outer_radius=outer_radius,
-        )
+        self.points = points
+        self.position = position
+        self.inner_radius = inner_radius
+        self.outer_radius = outer_radius
 
     def scale(self, s_x, s_y=None, s_z=None):
-        inner_radius = self.inner_radius * s_x
-        outer_radius = self.outer_radius * s_x
-        outer_vertices, inner_vertices = _ring_vertices(
-            self.position, inner_radius, outer_radius, self.points
+        if s_y is None:
+            s_y = s_x
+        if s_z is None:
+            s_z = 1.0
+        self.inner_radius *= s_x
+        self.outer_radius *= s_x
+        theta = np.linspace(0, 2 * np.pi, self.points, endpoint=False)
+        outer_vertices = [
+            (
+                self.position[0] + self.outer_radius * np.cos(t),
+                self.position[1] + self.outer_radius * np.sin(t),
+                self.position[2],
+            )
+            for t in theta
+        ]
+        inner_vertices = [
+            (
+                self.position[0] + self.inner_radius * np.cos(t),
+                self.position[1] + self.inner_radius * np.sin(t),
+                self.position[2],
+            )
+            for t in reversed(theta)
+        ]
+        self.vertices = outer_vertices
+        self.interiors = [inner_vertices]
+        return self
+
+    def add_to_plot(
+        self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
+    ):
+        if facecolor is None:
+            facecolor = self.color
+        if alpha is None:
+            alpha = 1
+        if linestyle is None:
+            linestyle = "-"
+        return super().add_to_plot(
+            ax,
+            facecolor=facecolor,
+            edgecolor=edgecolor,
+            alpha=alpha,
+            linestyle=linestyle,
         )
-        return self._replace_spec(
-            inner_radius=inner_radius,
-            outer_radius=outer_radius,
-            vertices=outer_vertices,
-            interiors=[inner_vertices],
+
+    def copy(self):
+        return Ring(
+            position=self.position,
+            inner_radius=self.inner_radius,
+            outer_radius=self.outer_radius,
+            material=self.material,
+            color=self.color,
+            optimize=self.optimize,
+            points=self.points,
+            depth=self.depth,
+            z=self.z,
         )
 
 
@@ -524,15 +563,27 @@ class CircularBend(Polygon):
         depth=0,
         z=0,
     ):
-        _require_positive("inner_radius", inner_radius)
-        if outer_radius <= inner_radius:
-            raise ValueError(
-                f"outer_radius ({outer_radius}) must be greater than inner_radius ({inner_radius})"
+        position = _normalize_position(position)
+        self.points = points
+        theta = np.linspace(0, np.radians(angle), points)
+        rotation_rad = np.radians(rotation)
+        outer_vertices = [
+            (
+                position[0] + outer_radius * np.cos(t + rotation_rad),
+                position[1] + outer_radius * np.sin(t + rotation_rad),
+                position[2],
             )
-        _require_positive("angle", angle)
-        _require_nonnegative("depth", depth)
-        position = _normalize_position(position, z)
-        vertices = _bend_vertices(position, inner_radius, outer_radius, angle, rotation, points)
+            for t in theta
+        ]
+        inner_vertices = [
+            (
+                position[0] + inner_radius * np.cos(t + rotation_rad),
+                position[1] + inner_radius * np.sin(t + rotation_rad),
+                position[2],
+            )
+            for t in reversed(theta)
+        ]
+        vertices = outer_vertices + inner_vertices
         super().__init__(
             vertices=vertices,
             material=material,
@@ -541,34 +592,77 @@ class CircularBend(Polygon):
             depth=depth,
             z=z,
         )
-        self._replace_spec(
-            position=position,
-            points=points,
-            inner_radius=inner_radius,
-            outer_radius=outer_radius,
-            angle=angle,
-            rotation=rotation,
-        )
+        self.position = position
+        self.inner_radius = inner_radius
+        self.outer_radius = outer_radius
+        self.angle = angle
+        self.rotation = rotation
 
     def rotate(self, angle, axis="z", point=None):
         if axis == "z":
-            self._replace_spec(rotation=(self.rotation + angle) % 360)
-        return super().rotate(angle, axis, point or self.position)
+            self.rotation = (self.rotation + angle) % 360
+        super().rotate(angle, axis, point or self.position)
+        return self
 
     def scale(self, s_x, s_y=None, s_z=None):
-        inner_radius = self.inner_radius * s_x
-        outer_radius = self.outer_radius * s_x
-        return self._replace_spec(
-            inner_radius=inner_radius,
-            outer_radius=outer_radius,
-            vertices=_bend_vertices(
-                self.position,
-                inner_radius,
-                outer_radius,
-                self.angle,
-                self.rotation,
-                self.points,
-            ),
+        if s_y is None:
+            s_y = s_x
+        if s_z is None:
+            s_z = 1.0
+        self.inner_radius *= s_x
+        self.outer_radius *= s_x
+        theta = np.linspace(0, np.radians(self.angle), self.points)
+        rotation_rad = np.radians(self.rotation)
+        outer_vertices = [
+            (
+                self.position[0] + self.outer_radius * np.cos(t + rotation_rad),
+                self.position[1] + self.outer_radius * np.sin(t + rotation_rad),
+                self.position[2],
+            )
+            for t in theta
+        ]
+        inner_vertices = [
+            (
+                self.position[0] + self.inner_radius * np.cos(t + rotation_rad),
+                self.position[1] + self.inner_radius * np.sin(t + rotation_rad),
+                self.position[2],
+            )
+            for t in reversed(theta)
+        ]
+        self.vertices = outer_vertices + inner_vertices
+        return self
+
+    def add_to_plot(
+        self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
+    ):
+        if facecolor is None:
+            facecolor = self.color
+        if alpha is None:
+            alpha = 1
+        if linestyle is None:
+            linestyle = "-"
+        # Use parent polygon drawing
+        return super().add_to_plot(
+            ax,
+            facecolor=facecolor,
+            edgecolor=edgecolor,
+            alpha=alpha,
+            linestyle=linestyle,
+        )
+
+    def copy(self):
+        return CircularBend(
+            self.position,
+            self.inner_radius,
+            self.outer_radius,
+            self.angle,
+            self.rotation,
+            self.material,
+            self.color,
+            self.optimize,
+            self.points,
+            self.depth,
+            self.z,
         )
 
 
@@ -585,17 +679,13 @@ class Taper(Polygon):
         depth=0,
         z=0,
     ):
-        _require_positive("input_width", input_width)
-        _require_positive("output_width", output_width)
-        _require_positive("length", length)
-        _require_nonnegative("depth", depth)
-        position = _normalize_position(position, z)
-        x, y, z_pos = position
+        position = _normalize_position(position)
+        x, y, z = position
         vertices = [
-            (x, y - input_width / 2, z_pos),
-            (x + length, y - output_width / 2, z_pos),
-            (x + length, y + output_width / 2, z_pos),
-            (x, y + input_width / 2, z_pos),
+            (x, y - input_width / 2, z),
+            (x + length, y - output_width / 2, z),
+            (x + length, y + output_width / 2, z),
+            (x, y + input_width / 2, z),
         ]
         super().__init__(
             vertices=vertices,
@@ -603,27 +693,53 @@ class Taper(Polygon):
             color=color,
             optimize=optimize,
             depth=depth,
-            z=z_pos,
+            z=z,
         )
-        self._replace_spec(
-            position=position,
-            input_width=input_width,
-            output_width=output_width,
-            length=length,
-            optimize=optimize,
-        )
+        self.position = position
+        self.input_width = input_width
+        self.output_width = output_width
+        self.length = length
+        self.optimize = optimize
 
     def rotate(self, angle, axis="z", point=None):
         super().rotate(angle, axis, point)
-        return _replace_from_bbox(self, include_length=True)
+        min_x = min(v[0] for v in self.vertices)
+        min_y = min(v[1] for v in self.vertices)
+        min_z = min(v[2] for v in self.vertices)
+        max_x = max(v[0] for v in self.vertices)
+        max_y = max(v[1] for v in self.vertices)
+        max_z = max(v[2] for v in self.vertices)
+        self.position = (min_x, min_y, min_z)
+        self.length = max_x - min_x
+        return self
+
+    def copy(self):
+        new_taper = Taper(
+            self.position,
+            self.input_width,
+            self.output_width,
+            self.length,
+            self.material,
+            self.color,
+            self.optimize,
+            self.depth,
+            self.z,
+        )
+        new_taper.vertices = [(x, y, z) for x, y, z in self.vertices]
+        return new_taper
 
 
 class Sphere(Polygon):
     def __init__(
         self, position=(0, 0, 0), radius=1, material=None, color=None, optimize=False
     ):
-        _require_positive("radius", radius)
-        position = _normalize_position(position)
+        """Create a 3D sphere at position (x,y,z) with specified radius."""
+        # Validate dimensions
+        if radius <= 0:
+            raise ValueError(f"radius must be positive, got {radius}")
+
+        if len(position) == 2:
+            position = (position[0], position[1], 0.0)
         super().__init__(
             vertices=[],
             material=material,
@@ -632,7 +748,8 @@ class Sphere(Polygon):
             depth=2 * radius,
             z=position[2] - radius,
         )
-        self._replace_spec(position=position, radius=radius)
+        self.position = position
+        self.radius = radius
 
     def get_bounding_box(self):
         x, y, z = self.position
@@ -642,3 +759,8 @@ class Sphere(Polygon):
     def point_in_polygon(self, x, y, z=0):
         cx, cy, cz = self.position
         return (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2 <= self.radius**2
+
+    def copy(self):
+        return Sphere(
+            self.position, self.radius, self.material, self.color, self.optimize
+        )
