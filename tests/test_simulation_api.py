@@ -1,4 +1,6 @@
 import numpy as np
+import pytest
+
 from beamz import (
     Design,
     GaussianSource,
@@ -46,6 +48,20 @@ def test_simulation_accepts_explicit_sources_and_monitors():
 
     assert sim.sources == [source]
     assert sim.monitors == [monitor]
+
+
+def test_simulation_rejects_duplicate_named_monitors():
+    design = Design(width=4 * um, height=4 * um, material=Material(permittivity=1.0))
+    m1 = Monitor(start=(1 * um, 1 * um), end=(1 * um, 3 * um), name="port")
+    m2 = Monitor(start=(2 * um, 1 * um), end=(2 * um, 3 * um), name="port")
+
+    with pytest.raises(ValueError, match="Simulation\\._normalize_specs.*port"):
+        Simulation(
+            design=design,
+            monitors=[m1, m2],
+            time=_time_axis(),
+            resolution=0.2 * um,
+        )
 
 
 def test_design_rejects_device_objects():

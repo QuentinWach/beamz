@@ -250,6 +250,28 @@ class Simulation:
 
         normalized_sources = cls._dedupe_devices(normalized_sources)
         normalized_monitors = cls._dedupe_devices(normalized_monitors)
+        duplicate_monitor_names = sorted(
+            {
+                str(name)
+                for name in (
+                    getattr(monitor, "name", None) for monitor in normalized_monitors
+                )
+                if name
+                and sum(
+                    1
+                    for monitor in normalized_monitors
+                    if getattr(monitor, "name", None) == name
+                )
+                > 1
+            }
+        )
+        if duplicate_monitor_names:
+            names = ", ".join(duplicate_monitor_names)
+            raise ValueError(
+                "Simulation._normalize_specs found duplicate Monitor.name values: "
+                f"{names}. Monitor names must be unique because PortSpec.monitor_name "
+                "resolution depends on them."
+            )
         return normalized_sources, normalized_monitors
 
     def step(self):
