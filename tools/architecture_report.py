@@ -7,6 +7,7 @@ import ast
 import json
 import math
 import subprocess
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,6 +20,7 @@ PACKAGE_ROOT = ROOT / "beamz"
 OUTPUT = ROOT / "docs" / "architecture" / "index.html"
 AUX_PARTS = {"examples", "tests"}
 FACADE_BASENAMES = {"core", "compiled", "meshing", "mode", "monitors"}
+STDLIB_IMPORT_ROOTS = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
 
 
 @dataclass
@@ -314,7 +316,11 @@ def hotspot_table(modules: list[ModuleInfo]) -> list[dict]:
 def dependency_roots(modules: list[ModuleInfo]) -> list[dict]:
     counts = Counter()
     for info in modules:
-        counts.update(info.external_import_roots)
+        counts.update(
+            name
+            for name in info.external_import_roots
+            if name not in STDLIB_IMPORT_ROOTS
+        )
     rows = [{"name": name, "count": count} for name, count in counts.most_common(16)]
     return rows
 
