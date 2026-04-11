@@ -93,6 +93,8 @@ def animate_manual_field(
     smoothing=0.25,
     design=None,
     boundaries=None,
+    sources=None,
+    monitors=None,
     show_structures=True,
     show_sources=True,
     show_monitors=True,
@@ -117,8 +119,10 @@ def animate_manual_field(
         pause: Seconds to pause after drawing (keeps UI responsive).
         auto_interval: Recompute auto scaling every N frames when ``axis_scale`` is ``None``.
         smoothing: Exponential smoothing factor (0-1) applied to auto scale updates.
-        design: Optional FDTD design object to overlay structures, sources, and monitors.
+        design: Optional FDTD design object to overlay structures.
         boundaries: Optional list of boundary objects (PML, ABC, etc.) to visualize.
+        sources: Optional explicit source list for overlays.
+        monitors: Optional explicit monitor list for overlays.
         show_structures: Boolean to control if design structures are overlaid.
         show_sources: Boolean to control if design sources are overlaid.
         show_monitors: Boolean to control if design monitors are overlaid.
@@ -230,7 +234,8 @@ def animate_manual_field(
                 design,
                 line_color=line_color,
                 line_opacity=line_opacity,
-                sources=getattr(design, "sources", []) if show_sources else [],
+                sources=sources if show_sources else [],
+                monitors=monitors if show_monitors else [],
                 show_monitors=show_monitors,
             )
 
@@ -371,6 +376,8 @@ class JupyterAnimator:
         extent=None,
         design=None,
         boundaries=None,
+        sources=None,
+        monitors=None,
         plane_2d="xy",
     ):
         """Add a frame and optionally display it live.
@@ -385,6 +392,8 @@ class JupyterAnimator:
             extent: Matplotlib extent tuple (xmin, xmax, ymin, ymax)
             design: Design object for structure overlays
             boundaries: List of boundary objects for overlays
+            sources: Explicit source list for overlays
+            monitors: Explicit monitor list for overlays
             plane_2d: Simulation plane ('xy', 'yz', 'xz')
         """
         import time
@@ -431,6 +440,8 @@ class JupyterAnimator:
                     extent,
                     design,
                     boundaries,
+                    sources,
+                    monitors,
                     plane_2d,
                 )
                 self._last_display_time = current_time
@@ -446,6 +457,8 @@ class JupyterAnimator:
         extent,
         design,
         boundaries,
+        sources,
+        monitors,
         plane_2d,
     ):
         """Display a single frame in Jupyter, reusing a persistent figure."""
@@ -501,7 +514,7 @@ class JupyterAnimator:
                 plt.tight_layout()
 
             # Add structure overlays (static, only done once)
-            self._add_overlays(self._ax, design, boundaries)
+            self._add_overlays(self._ax, design, boundaries, sources, monitors)
 
             # Add scale bar for clean visualization
             if self.clean_visualization:
@@ -538,13 +551,15 @@ class JupyterAnimator:
             self._cbar = None
             self._title = None
 
-    def _add_overlays(self, ax, design, boundaries):
+    def _add_overlays(self, ax, design, boundaries, sources, monitors):
         """Add structure, source, monitor, and boundary overlays."""
         add_design_overlays(
             ax,
             design,
             line_color=self.line_color,
             line_opacity=self.line_opacity,
+            sources=sources,
+            monitors=monitors,
             skip_background=True,
         )
 

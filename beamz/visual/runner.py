@@ -175,6 +175,8 @@ def _record_video_frame(sim, video_recorder, cfg):
         extent=(0, sim.design.width, 0, sim.design.height),
         design=sim.design,
         boundaries=sim.boundaries,
+        sources=sim.sources,
+        monitors=sim.monitors,
         plane_2d=sim.plane_2d,
     )
 
@@ -218,6 +220,8 @@ def _update_live_display(
             extent=extent,
             design=sim.design,
             boundaries=sim.boundaries,
+            sources=sim.sources,
+            monitors=sim.monitors,
             plane_2d=sim.plane_2d,
         )
     else:
@@ -230,6 +234,8 @@ def _update_live_display(
             units=units,
             design=sim.design,
             boundaries=sim.boundaries,
+            sources=sim.sources,
+            monitors=sim.monitors,
             pause=0.001,
             axis_scale=cfg.axis_scale,
             cmap=cfg.cmap,

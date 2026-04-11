@@ -86,6 +86,8 @@ class VideoRecorder:
         extent=None,
         design=None,
         boundaries=None,
+        sources=None,
+        monitors=None,
         plane_2d="xy",
     ):
         """Add a frame to the video recording.
@@ -100,6 +102,8 @@ class VideoRecorder:
             extent: Matplotlib extent tuple (xmin, xmax, ymin, ymax)
             design: Design object for structure overlay
             boundaries: List of boundary objects (PML, etc.)
+            sources: Explicit source list for overlays
+            monitors: Explicit monitor list for overlays
             plane_2d: Simulation plane ('xy', 'yz', 'xz')
         """
         import numpy as np
@@ -111,6 +115,8 @@ class VideoRecorder:
             self.extent = extent
             self.design = design
             self.boundaries = boundaries
+            self.sources = sources
+            self.monitors = monitors
             self.plane_2d = plane_2d
 
         # Store frame data (make a copy to avoid reference issues)
@@ -263,6 +269,8 @@ class VideoRecorder:
                         self.design,
                         line_color=self.line_color,
                         line_opacity=self.line_opacity,
+                        sources=self.sources,
+                        monitors=self.monitors,
                     )
 
                     # Draw PML boundaries

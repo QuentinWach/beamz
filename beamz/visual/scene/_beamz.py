@@ -57,7 +57,7 @@ class _Bounds:
 def looks_like_beamz_design(value: Any) -> bool:
     return all(
         hasattr(value, name)
-        for name in ("structures", "sources", "monitors", "width", "height")
+        for name in ("structures", "width", "height")
     )
 
 
@@ -78,8 +78,6 @@ def design_to_scene(design: Any) -> SceneSpec:
     objects = [
         _domain_box(design, bounds),
         *_structure_objects(design),
-        *_monitor_objects(getattr(design, "monitors", [])),
-        *_source_objects(getattr(design, "sources", [])),
     ]
     return _build_scene(
         title="BEAMZ Design",
@@ -89,8 +87,6 @@ def design_to_scene(design: Any) -> SceneSpec:
             "object_type": type(design).__name__,
             "is_3d": bool(getattr(design, "is_3d", False)),
             "num_structures": len(getattr(design, "structures", [])),
-            "num_sources": len(getattr(design, "sources", [])),
-            "num_monitors": len(getattr(design, "monitors", [])),
         },
     )
 
@@ -636,11 +632,7 @@ def _simulation_sources(simulation: Any) -> list[Any]:
 def _combined_simulation_items(
     simulation: Any, *, attr_name: str, predicate: Callable[[Any], bool]
 ) -> list[Any]:
-    items = [
-        item
-        for item in list(getattr(getattr(simulation, "design", None), attr_name, []))
-        if predicate(item)
-    ]
+    items = []
     seen = {id(item) for item in items}
     for item in getattr(simulation, attr_name, []):
         if not predicate(item) or id(item) in seen:

@@ -88,17 +88,19 @@ def determine_if_3d(design):
     return False
 
 
-def show_design(design, unify_structures=True):
+def show_design(design, unify_structures=True, sources=None, monitors=None):
     """Display the design visually using 2D matplotlib or 3D plotly."""
     if determine_if_3d(design):
         from beamz.visual.design_3d import show_design_3d
 
-        show_design_3d(design, unify_structures)
+        show_design_3d(
+            design, unify_structures, sources=sources, monitors=monitors
+        )
     else:
-        show_design_2d(design, unify_structures)
+        show_design_2d(design, unify_structures, sources=sources, monitors=monitors)
 
 
-def show_design_2d(design, unify_structures=True):
+def show_design_2d(design, unify_structures=True, sources=None, monitors=None):
     """Display the design using 2D matplotlib visualization."""
     import matplotlib.pyplot as plt
 
@@ -115,12 +117,8 @@ def show_design_2d(design, unify_structures=True):
         tmp_design = design.copy()
         tmp_design.unify_polygons()
         structures_to_plot = tmp_design.structures
-        sources_to_plot = tmp_design.sources
-        monitors_to_plot = tmp_design.monitors
     else:
         structures_to_plot = design.structures
-        sources_to_plot = design.sources
-        monitors_to_plot = design.monitors
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_aspect("equal")
@@ -151,12 +149,12 @@ def show_design_2d(design, unify_structures=True):
             structure.add_to_plot(ax, facecolor=material_colors[material_key])
 
     # Add sources
-    for source in sources_to_plot:
+    for source in (sources or []):
         if hasattr(source, "add_to_plot"):
             source.add_to_plot(ax)
 
     # Add monitors
-    for monitor in monitors_to_plot:
+    for monitor in (monitors or []):
         if hasattr(monitor, "add_to_plot"):
             monitor.add_to_plot(ax)
 
