@@ -167,6 +167,31 @@ def test_compiled_monitor_accumulates_across_chunks(small_sim_params):
     assert np.allclose(t_chunked, t_full, rtol=0.0, atol=0.0)
 
 
+def test_run_snapshot_path_does_not_fall_back_to_python_step(small_sim_params):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    sim = Simulation(
+        design=design,
+        sources=[source],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    def _unexpected_step():
+        raise AssertionError("snapshot runs should stay on the compiled engine path")
+
+    sim.step = _unexpected_step
+    result = sim.run(snapshot_field="Ez", snapshot_interval=8, progress=False)
+
+    assert result is not None
+    assert len(result["snapshots"]) > 0
+    assert result["snapshots"][0]["step"] == 8
+
+
 def test_compiled_frequency_monitor_matches_direct_sum(small_sim_params):
     wl, dx, dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
@@ -489,7 +514,7 @@ def test_compiled_program_compiles_once(small_sim_params):
         dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
     )
 
-    eng1, _, _ = program.run(eng0, mon0)
+    eng1, _, _, _ = program.run(eng0, mon0)
     assert program.compile_count == 1
 
     # Recreate states since donation invalidates buffers.

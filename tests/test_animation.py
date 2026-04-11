@@ -1,75 +1,69 @@
 import numpy as np
 from pathlib import Path
 
-from beamz.simulation.snapshots import run_with_snapshots
+from beamz import (
+    LIGHT_SPEED,
+    PML,
+    Design,
+    GaussianSource,
+    Material,
+    Simulation,
+    calc_optimal_fdtd_params,
+    ramped_cosine,
+    um,
+)
 from beamz.visual.data import signal_plot_data
 
 
-class _DummyDesign:
-    def __init__(self):
-        self.width = 4.0
-        self.height = 3.0
-        self.depth = 0.0
-        self.is_3d = False
-        self.structures = []
-
-    def copy(self):
-        return self
-
-    def unify_polygons(self):
-        return None
-
-
-class _DummyFields:
-    def __init__(self):
-        self.Ez = np.ones((2, 3))
-
-    def available_components(self):
-        return ["Ez"]
-
-
-class _DummySim:
-    def __init__(self):
-        self.fields = _DummyFields()
-        self.design = _DummyDesign()
-        self.sources = []
-        self.monitors = []
-        self.boundaries = []
-        self.plane_2d = "xy"
-        self.current_step = 0
-        self.num_steps = 1
-        self.t = 0.0
-
-    def step(self):
-        if self.current_step >= self.num_steps:
-            return False
-        self.current_step += 1
-        self.t = 1.5e-15
-        return True
+def _make_snapshot_sim():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=2, safety_factor=0.95, points_per_wavelength=8
+    )
+    domain = 4.0 * wl
+    steps = 12
+    t = np.arange(0, steps * dt, dt)
+    freq = LIGHT_SPEED / wl
+    signal = ramped_cosine(
+        t,
+        amplitude=1.0,
+        frequency=freq,
+        ramp_duration=2 / freq,
+        t_max=t[-1] * 0.4,
+    )
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(position=(domain / 2, domain / 2), width=wl / 6, signal=signal)
+    return Simulation(
+        design=design,
+        sources=[source],
+        boundaries=[PML(thickness=1.0 * wl)],
+        time=t,
+        resolution=dx,
+    )
 
 
 def test_run_with_snapshots_collects_layout_and_field_payload():
     seen = []
-    sim = _DummySim()
+    sim = _make_snapshot_sim()
 
-    results = run_with_snapshots(
-        sim,
+    results = sim.run(
         snapshot_field="Ez",
-        snapshot_interval=1,
+        snapshot_interval=4,
         snapshot_callback=seen.append,
         store_snapshots=True,
+        progress=False,
     )
 
-    assert len(seen) == 1
+    assert len(seen) == 3
     snapshot = seen[0]
     assert snapshot["field_name"] == "Ez"
     assert snapshot["units"] == "V/µm"
-    assert snapshot["layout"]["design"]["width"] == 4.0
-    assert np.allclose(snapshot["field"], np.ones((2, 3)) * 1e-6)
+    assert snapshot["layout"]["design"]["width"] == sim.design.width
+    assert np.max(np.abs(snapshot["field"])) > 0.0
 
     assert results is not None
-    assert len(results.snapshots) == 1
-    assert results["snapshots"][0]["step"] == 1
+    assert len(results.snapshots) == 3
+    assert results["snapshots"][0]["step"] == 4
 
 
 def test_signal_plot_data_scales_picoseconds():
