@@ -1,98 +1,61 @@
-"""Snapshot streaming for simulation runs."""
+"""Snapshot helpers for compiled simulation runs."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable
-
 import numpy as np
 
-from beamz.visual.data import snapshot_payload
-
-
-@dataclass
-class SnapshotConfig:
-    """Configuration for streaming field snapshots during a run."""
-
-    snapshot_field: str | None = None
-    snapshot_interval: int = 10
-    snapshot_callback: Callable[[dict], None] | None = None
-    store_snapshots: bool = True
-    save_fields: list[str] | None = None
-    field_subsample: int = 1
-    progress: bool = False
+from beamz.visual.data import snapshot_payload, simulation_plot_data
 
 
 def run_with_snapshots(sim, **kwargs):
-    """Run a simulation and optionally stream/store field snapshots."""
-    cfg = SnapshotConfig(**kwargs)
-    field_history = {name: [] for name in (cfg.save_fields or [])}
-    snapshots = []
-    layout = None
+    """Backward-compatible wrapper around Simulation.run()."""
+    return sim.run(**kwargs)
 
+
+def validate_snapshot_field(sim, snapshot_field: str) -> None:
+    """Validate that a requested snapshot field exists on the simulation."""
     available = sim.fields.available_components()
-    if cfg.snapshot_field is not None and cfg.snapshot_field not in available:
+    if snapshot_field not in available:
         raise ValueError(
-            f"Field '{cfg.snapshot_field}' not found for snapshots. Available: {available}"
+            f"Field '{snapshot_field}' not found for snapshots. Available: {available}"
         )
 
-    while sim.step():
-        _store_fields(sim, field_history, cfg)
 
-        if cfg.snapshot_field is None:
-            continue
-        if sim.current_step % cfg.snapshot_interval != 0:
-            continue
-
-        snapshot = _build_snapshot(sim, cfg, layout)
-        if layout is None:
-            layout = snapshot["layout"]
-        if cfg.snapshot_callback is not None:
-            cfg.snapshot_callback(snapshot)
-        if cfg.store_snapshots:
-            snapshots.append(snapshot)
-
-    return _collect_results(sim, field_history, cfg, snapshots)
-
-
-def _store_fields(sim, field_history, cfg):
-    if not cfg.save_fields or sim.current_step % cfg.field_subsample != 0:
-        return
-    for field_name in cfg.save_fields:
-        if hasattr(sim.fields, field_name):
-            field_history[field_name].append(getattr(sim.fields, field_name).copy())
-
-
-def _build_snapshot(sim, cfg, layout):
-    field_name = cfg.snapshot_field
-    extent = (0.0, sim.design.width, 0.0, sim.design.height)
-    field = getattr(sim.fields, field_name)
-    units = "V/µm" if "E" in field_name else "A/m"
+def _snapshot_units_and_scale(field_name: str) -> tuple[str, float]:
     if "E" in field_name:
-        field = field * 1e-6
-
-    return snapshot_payload(
-        field=field,
-        field_name=field_name,
-        t=sim.t,
-        step=sim.current_step,
-        num_steps=sim.num_steps,
-        extent=extent,
-        units=units,
-        plane_2d=sim.plane_2d,
-        simulation=sim,
-        layout=layout,
-    )
+        return "V/µm", 1e-6
+    return "A/m", 1.0
 
 
-def _collect_results(sim, field_history, cfg, snapshots):
-    from beamz.simulation.core import SimulationResults
+def collect_compiled_snapshots(sim, *, field_name: str, snapshot_data, layout=None):
+    """Build host payloads from buffers emitted by the compiled kernel."""
+    frames, steps, times, count = snapshot_data
+    count_int = int(np.asarray(count))
+    if count_int <= 0:
+        return [], layout
 
-    monitors = [device for device in sim.monitors if hasattr(device, "power_history")]
-    fields = field_history if cfg.save_fields else None
-    return SimulationResults.from_run(
-        sim,
-        fields=fields,
-        monitors=monitors,
-        snapshots=snapshots,
-    )
+    if layout is None:
+        layout = simulation_plot_data(sim)
+
+    extent = (0.0, sim.design.width, 0.0, sim.design.height)
+    units, scale = _snapshot_units_and_scale(field_name)
+    frames_np = np.asarray(frames[:count_int], dtype=np.float32)
+    steps_np = np.asarray(steps[:count_int], dtype=np.int32)
+    times_np = np.asarray(times[:count_int], dtype=np.float32)
+
+    snapshots = []
+    for frame, step, time_value in zip(frames_np, steps_np, times_np, strict=False):
+        snapshots.append(
+            snapshot_payload(
+                field=frame * scale,
+                field_name=field_name,
+                t=time_value,
+                step=step,
+                num_steps=sim.num_steps,
+                extent=extent,
+                units=units,
+                plane_2d=sim.plane_2d,
+                layout=layout,
+            )
+        )
+    return snapshots, layout

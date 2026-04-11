@@ -154,6 +154,8 @@ class CompiledRunConfig:
     precision: str = "float32"
     loop_kind: str = "scan"
     source_single_slab_dense: bool = False
+    snapshot_field: str | None = None
+    snapshot_interval: int = 0
 
 
 @dataclass
@@ -233,6 +235,45 @@ class CompiledSimulation:
             s
             for s in self.source_specs
             if s.timing == timing and s.component == component
+        )
+
+    def _snapshot_field_shape(self) -> tuple[int, ...]:
+        field_name = self.config.snapshot_field
+        if field_name == "Ex":
+            return tuple(self.e_source_x.shape)
+        if field_name == "Ey":
+            return tuple(self.e_source_y.shape)
+        if field_name == "Ez":
+            return tuple(self.e_source_z.shape)
+        if field_name == "Hx":
+            return tuple(self.h_source_x.shape)
+        if field_name == "Hy":
+            return tuple(self.h_source_y.shape)
+        if field_name == "Hz":
+            return tuple(self.h_source_z.shape)
+        raise ValueError(f"Unsupported snapshot field: {field_name}")
+
+    def _empty_snapshot_state(
+        self,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray] | None:
+        if self.config.snapshot_field is None:
+            return None
+        max_snapshots = max(
+            1,
+            int(
+                np.ceil(
+                    self.config.num_steps / max(1, int(self.config.snapshot_interval))
+                )
+            ),
+        )
+        return (
+            jnp.zeros(
+                (max_snapshots, *self._snapshot_field_shape()),
+                dtype=jnp.float32,
+            ),
+            jnp.zeros((max_snapshots,), dtype=jnp.int32),
+            jnp.zeros((max_snapshots,), dtype=jnp.float32),
+            jnp.zeros((), dtype=jnp.int32),
         )
 
     def _apply_specs(
@@ -771,10 +812,37 @@ class CompiledSimulation:
         elif self.monitor_specs:
             monitors_2d = tuple(self.monitor_specs)
 
+        snapshot_field = self.config.snapshot_field
+        snapshot_enabled = snapshot_field is not None
+        snapshot_interval = max(1, int(self.config.snapshot_interval))
+
+        def _snapshot_values(
+            ex: jnp.ndarray,
+            ey: jnp.ndarray,
+            ez: jnp.ndarray,
+            hx: jnp.ndarray,
+            hy: jnp.ndarray,
+            hz: jnp.ndarray,
+        ) -> jnp.ndarray:
+            if snapshot_field == "Ex":
+                return ex
+            if snapshot_field == "Ey":
+                return ey
+            if snapshot_field == "Ez":
+                return ez
+            if snapshot_field == "Hx":
+                return hx
+            if snapshot_field == "Hy":
+                return hy
+            if snapshot_field == "Hz":
+                return hz
+            raise ValueError(f"Unsupported snapshot field: {snapshot_field}")
+
         def run_scan(
             engine_state: EngineState,
             monitor_state: MonitorState,
             coeffs: UpdateCoefficients,
+            snapshot_state=None,
         ):
             h_decay_x, h_source_x = coeffs.h_decay_x, coeffs.h_source_x
             h_source_lossless_x = coeffs.h_source_lossless_x
@@ -803,7 +871,10 @@ class CompiledSimulation:
             lossy_shell_hz = self.h_lossy_shell_z
 
             def body_with_coeffs(carry):
-                eng, mon, mat = carry
+                if snapshot_enabled:
+                    eng, mon, mat, snap_fields, snap_steps, snap_times, snap_count = carry
+                else:
+                    eng, mon, mat = carry
                 abs_step = eng.current_step
 
                 ex, ey, ez = eng.ex, eng.ey, eng.ez
@@ -1080,32 +1151,108 @@ class CompiledSimulation:
                     t=eng.t + dt,
                     current_step=eng.current_step + jnp.array(1, dtype=jnp.int32),
                 )
-                return (new_eng, mon, mat)
+                if not snapshot_enabled:
+                    return (new_eng, mon, mat)
+
+                new_step = new_eng.current_step
+                new_time = new_eng.t
+                should_snapshot = (new_step % snapshot_interval) == 0
+                slot = jnp.minimum(snap_count, snap_fields.shape[0] - 1)
+                snapshot_values = _snapshot_values(ex, ey, ez, hx, hy, hz)
+                field_start = (slot,) + (0,) * snapshot_values.ndim
+
+                snap_fields = jax.lax.cond(
+                    should_snapshot,
+                    lambda buf: jax.lax.dynamic_update_slice(
+                        buf,
+                        snapshot_values[jnp.newaxis, ...],
+                        field_start,
+                    ),
+                    lambda buf: buf,
+                    snap_fields,
+                )
+                snap_steps = jax.lax.cond(
+                    should_snapshot,
+                    lambda buf: jax.lax.dynamic_update_slice(
+                        buf,
+                        new_step[jnp.newaxis],
+                        (slot,),
+                    ),
+                    lambda buf: buf,
+                    snap_steps,
+                )
+                snap_times = jax.lax.cond(
+                    should_snapshot,
+                    lambda buf: jax.lax.dynamic_update_slice(
+                        buf,
+                        new_time[jnp.newaxis],
+                        (slot,),
+                    ),
+                    lambda buf: buf,
+                    snap_times,
+                )
+                snap_count = snap_count + should_snapshot.astype(jnp.int32)
+                return (
+                    new_eng,
+                    mon,
+                    mat,
+                    snap_fields,
+                    snap_steps,
+                    snap_times,
+                    snap_count,
+                )
 
             if self.config.loop_kind == "scan":
 
                 def _scan_body(carry, _unused):
                     return body_with_coeffs(carry), None
 
-                (engine_final, monitor_final, material_final), _ = jax.lax.scan(
+                init_carry = (
+                    (engine_state, monitor_state, material_state0, *snapshot_state)
+                    if snapshot_enabled
+                    else (engine_state, monitor_state, material_state0)
+                )
+                scan_out, _ = jax.lax.scan(
                     _scan_body,
-                    (engine_state, monitor_state, material_state0),
+                    init_carry,
                     xs=None,
                     length=self.config.num_steps,
                 )
             else:
-                init_carry = (engine_state, monitor_state, material_state0)
-                engine_final, monitor_final, material_final = jax.lax.fori_loop(
+                init_carry = (
+                    (engine_state, monitor_state, material_state0, *snapshot_state)
+                    if snapshot_enabled
+                    else (engine_state, monitor_state, material_state0)
+                )
+                scan_out = jax.lax.fori_loop(
                     0,
                     self.config.num_steps,
                     lambda _i, c: body_with_coeffs(c),
                     init_carry,
                 )
-            return engine_final, monitor_final, material_final
+            if snapshot_enabled:
+                (
+                    engine_final,
+                    monitor_final,
+                    material_final,
+                    snap_fields,
+                    snap_steps,
+                    snap_times,
+                    snap_count,
+                ) = scan_out
+                return (
+                    engine_final,
+                    monitor_final,
+                    material_final,
+                    (snap_fields, snap_steps, snap_times, snap_count),
+                )
+            engine_final, monitor_final, material_final = scan_out
+            return engine_final, monitor_final, material_final, None
 
         # Use function-style JIT wrapping for compatibility with older JAX
         # versions where decorator kwargs require the callable as first arg.
-        self._compiled_scan = jax.jit(run_scan, donate_argnums=(0, 1))
+        donate_argnums = (0, 1, 3) if snapshot_enabled else (0, 1)
+        self._compiled_scan = jax.jit(run_scan, donate_argnums=donate_argnums)
         self._compile_count += 1
 
     @property
@@ -1116,7 +1263,12 @@ class CompiledSimulation:
         self,
         engine_state: EngineState,
         monitor_state: MonitorState | None = None,
-    ) -> tuple[EngineState, MonitorState, MaterialState]:
+    ) -> tuple[
+        EngineState,
+        MonitorState,
+        MaterialState,
+        tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray] | None,
+    ]:
         """Execute the compiled simulation loop."""
         if monitor_state is None:
             if self.monitor_specs:
@@ -1174,12 +1326,21 @@ class CompiledSimulation:
         if self._compiled_scan is None:
             self._build_scan()
 
-        eng, mon, mat = self._compiled_scan(
-            engine_state,
-            monitor_state,
-            self._update_coefficients(),
-        )
-        return eng, mon, mat
+        snapshot_state = self._empty_snapshot_state()
+        if snapshot_state is None:
+            eng, mon, mat, snapshots = self._compiled_scan(
+                engine_state,
+                monitor_state,
+                self._update_coefficients(),
+            )
+        else:
+            eng, mon, mat, snapshots = self._compiled_scan(
+                engine_state,
+                monitor_state,
+                self._update_coefficients(),
+                snapshot_state,
+            )
+        return eng, mon, mat, snapshots
 
     def apply_monitor_state(self, monitor_state: MonitorState):
         """Push monitor-state buffers back to Monitor objects."""
@@ -1468,6 +1629,8 @@ def compile_simulation(design, sources, monitors, boundaries, run_cfg) -> Compil
         precision=getattr(run_cfg, "precision", "float32"),
         loop_kind=loop_kind,
         source_single_slab_dense=source_single_slab_dense,
+        snapshot_field=getattr(run_cfg, "snapshot_field", None),
+        snapshot_interval=int(getattr(run_cfg, "snapshot_interval", 0) or 0),
     )
 
     h_decay_x, h_source_x, h_source_lossless_x = ops.precompute_h_update_coefficients(

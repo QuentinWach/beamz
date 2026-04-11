@@ -585,13 +585,17 @@ class Simulation:
 
         return step_e
 
-    def compile(self, num_steps=None):
+    def compile(self, num_steps=None, snapshot_field=None, snapshot_interval=None):
         """Compile the v0.3 packed-data simulation program."""
         if num_steps is None:
             num_steps = self.num_steps - self.current_step
         num_steps = int(num_steps)
         if num_steps <= 0:
             raise ValueError("num_steps must be > 0")
+        snapshot_field = None if snapshot_field is None else str(snapshot_field)
+        snapshot_interval = (
+            0 if snapshot_field is None else max(1, int(snapshot_interval or 10))
+        )
 
         loop_kind_env = os.getenv("BEAMZ_COMPILED_LOOP_KIND", "scan").strip().lower()
         if loop_kind_env in {"fori", "fori_loop", "fori-loop"}:
@@ -625,6 +629,8 @@ class Simulation:
             e_shell_split,
             h_shell_split,
             source_single_slab_dense,
+            snapshot_field,
+            snapshot_interval,
         )
         cached = self._compiled_program_cache.get(signature)
         if cached is not None:
@@ -644,6 +650,8 @@ class Simulation:
             precision="float32",
             loop_kind=loop_kind,
             source_single_slab_dense=source_single_slab_dense,
+            snapshot_field=snapshot_field,
+            snapshot_interval=snapshot_interval,
         )
         program = compile_simulation(
             design=self.design,
@@ -658,7 +666,15 @@ class Simulation:
         return program
 
     def run_compiled(
-        self, num_steps=None, record_interval=None, record_fields=None, progress=True
+        self,
+        num_steps=None,
+        record_interval=None,
+        record_fields=None,
+        progress=True,
+        snapshot_field=None,
+        snapshot_interval=10,
+        snapshot_callback=None,
+        store_snapshots=True,
     ):
         """Run simulation using the v0.3 single-program compiled scan engine.
 
@@ -666,6 +682,8 @@ class Simulation:
         - Source/monitor callbacks are compiled as packed specs.
         - Monitor results are accumulated in-loop and written back to Monitor objects.
         - Field history recording is optional and chunked via repeated compiled runs.
+        - Snapshot extraction stays inside the compiled loop and is materialized
+          on the host after each compiled chunk completes.
         """
         if self.thermal is not None and getattr(self.thermal, "enabled", True):
             raise NotImplementedError(
@@ -680,6 +698,16 @@ class Simulation:
 
         if record_fields is None:
             record_fields = ["Ez"]
+        snapshot_field = None if snapshot_field is None else str(snapshot_field)
+        snapshot_interval = (
+            0 if snapshot_field is None else max(1, int(snapshot_interval or 10))
+        )
+        snapshots = []
+        snapshot_layout = None
+        if snapshot_field is not None:
+            from beamz.simulation.snapshots import validate_snapshot_field
+
+            validate_snapshot_field(self, snapshot_field)
 
         record_every = int(record_interval) if record_interval else None
         if record_every is not None and record_every <= 0:
@@ -697,7 +725,11 @@ class Simulation:
 
         while steps_remaining > 0:
             this_chunk = min(chunk_size, steps_remaining)
-            program = self.compile(num_steps=this_chunk)
+            program = self.compile(
+                num_steps=this_chunk,
+                snapshot_field=snapshot_field,
+                snapshot_interval=snapshot_interval,
+            )
 
             if progress and steps_done == 0 and program.compile_count == 0:
                 print(
@@ -779,7 +811,7 @@ class Simulation:
                     )
             self._compiled_monitor_state = monitor_state
 
-            engine_state, monitor_state, _ = program.run(
+            engine_state, monitor_state, _, snapshot_data = program.run(
                 engine_state=engine_state,
                 monitor_state=monitor_state,
             )
@@ -802,6 +834,20 @@ class Simulation:
                 for name in record_fields:
                     if hasattr(self.fields, name):
                         field_history[name].append(np.array(getattr(self.fields, name)))
+            if snapshot_data is not None:
+                from beamz.simulation.snapshots import collect_compiled_snapshots
+
+                new_snapshots, snapshot_layout = collect_compiled_snapshots(
+                    self,
+                    field_name=snapshot_field,
+                    snapshot_data=snapshot_data,
+                    layout=snapshot_layout,
+                )
+                if snapshot_callback is not None:
+                    for snapshot in new_snapshots:
+                        snapshot_callback(snapshot)
+                if store_snapshots:
+                    snapshots.extend(new_snapshots)
 
             steps_done += this_chunk
             steps_remaining -= this_chunk
@@ -830,6 +876,7 @@ class Simulation:
             self,
             fields=fields_result,
             monitors=self.monitors,
+            snapshots=snapshots,
         )
 
     def run_compiled_until_decay(
@@ -2648,25 +2695,20 @@ class Simulation:
                 "Use snapshot_field/snapshot_callback and render in examples."
             )
 
-        wants_snapshots = any(
-            kwargs.get(key) is not None
-            for key in ("snapshot_field", "snapshot_callback")
+        save_fields = kwargs.get("save_fields")
+        field_subsample = int(kwargs.get("field_subsample", 1))
+        progress = bool(kwargs.get("progress", False))
+        record_interval = field_subsample if save_fields else None
+        return self.run_compiled(
+            num_steps=None,
+            record_interval=record_interval,
+            record_fields=save_fields,
+            progress=progress,
+            snapshot_field=kwargs.get("snapshot_field"),
+            snapshot_interval=kwargs.get("snapshot_interval", 10),
+            snapshot_callback=kwargs.get("snapshot_callback"),
+            store_snapshots=bool(kwargs.get("store_snapshots", True)),
         )
-        if not wants_snapshots:
-            save_fields = kwargs.get("save_fields")
-            field_subsample = int(kwargs.get("field_subsample", 1))
-            progress = bool(kwargs.get("progress", False))
-            record_interval = field_subsample if save_fields else None
-            return self.run_compiled(
-                num_steps=None,
-                record_interval=record_interval,
-                record_fields=save_fields,
-                progress=progress,
-            )
-
-        from beamz.simulation.snapshots import run_with_snapshots
-
-        return run_with_snapshots(self, **kwargs)
 
     def to_scene(self):
         """Build a 3D scene representation of the simulation setup."""
