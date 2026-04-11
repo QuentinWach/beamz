@@ -27,7 +27,6 @@ from beamz import (
 )
 from beamz.design.io import gdsf
 from beamz.devices.sources.signals import gaussian_band_pulse
-from beamz.visual.example_plots import plot_simulation_overview, plot_sparameters_db
 
 # Fixed example hyperparameters. Edit these directly when using the example as a
 # starting point for another component or sweep.
@@ -51,6 +50,107 @@ SOURCE_OFFSET = 0.10 * µm
 DISTANCE_SOURCE_TO_MONITORS = 0.20 * µm
 OUTPUT_MONITOR_OFFSETS = {"o2": 0.70 * µm, "o3": 0.10 * µm, "o4": 0.70 * µm}
 RUN_AFTER_SOURCES_UOC = 90.0
+
+def positive_axis_direction(direction: str) -> str:
+    return "+" + str(direction)[1:]
+
+
+def incoming_wave(direction: str) -> str:
+    return "plus" if str(direction).startswith("+") else "minus"
+
+
+def outgoing_wave(direction: str) -> str:
+    return "minus" if str(direction).startswith("+") else "plus"
+
+
+def move_along(center: tuple[float, float], direction: str, distance: float):
+    x, y = center
+    return {
+        "+x": (x + distance, y),
+        "-x": (x - distance, y),
+        "+y": (x, y + distance),
+        "-y": (x, y - distance),
+    }[str(direction)]
+
+
+def port_plane(
+    port: dict,
+    *,
+    span: float,
+    z_span: float,
+    z_center: float,
+    offset: float = 0.0,
+):
+    cx, cy = move_along(port["center"], port["direction"], offset)
+    z0 = float(z_center) - 0.5 * float(z_span)
+    z1 = float(z_center) + 0.5 * float(z_span)
+    if str(port["direction"]).endswith("x"):
+        return (cx, cy - 0.5 * float(span), z0), (cx, cy + 0.5 * float(span), z1)
+    return (cx - 0.5 * float(span), cy, z0), (cx + 0.5 * float(span), cy, z1)
+
+
+def line_center(line):
+    a, b = line
+    return tuple(0.5 * (float(a[i]) + float(b[i])) for i in range(len(a)))
+
+def plot_simulation_overview(
+    out_path: Path,
+    eps_grid: np.ndarray,
+    *,
+    width: float,
+    height: float,
+    depth: float,
+    z_focus: float,
+    source_plane,
+    monitor_planes,
+):
+    eps_grid = np.asarray(eps_grid, dtype=float)
+    if eps_grid.ndim == 3:
+        z_idx = int(np.clip(round((z_focus / max(depth, 1e-30)) * (eps_grid.shape[0] - 1)), 0, eps_grid.shape[0] - 1))
+        eps_view = eps_grid[z_idx]
+    else:
+        eps_view = eps_grid
+
+    fig, ax = plt.subplots(figsize=(7.5, 6.0), dpi=220)
+    im = ax.imshow(
+        eps_view,
+        origin="lower",
+        extent=[0.0, width / µm, 0.0, height / µm],
+        cmap="viridis",
+        aspect="equal",
+    )
+    fig.colorbar(im, ax=ax, label="Permittivity", fraction=0.046, pad=0.04)
+
+    def _plot_plane(line, label, color):
+        (x0, y0, _), (x1, y1, _) = line
+        ax.plot([x0 / µm, x1 / µm], [y0 / µm, y1 / µm], color=color, lw=2.0, label=label)
+
+    _plot_plane(source_plane, "source", "white")
+    for name, plane in monitor_planes.items():
+        _plot_plane(plane, name, "tab:red")
+
+    ax.set_xlabel("x (µm)")
+    ax.set_ylabel("y (µm)")
+    ax.set_title("Simulation overview")
+    ax.legend(loc="upper right", fontsize=8, frameon=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def plot_sparameters_db(out_path: Path, wl_um: np.ndarray, s_matrix: dict):
+    fig, ax = plt.subplots(figsize=(7.5, 4.8), dpi=220)
+    for (out_port, in_port), values in sorted(s_matrix.items()):
+        arr = np.asarray(values, dtype=np.complex128)
+        ax.plot(wl_um, 20.0 * np.log10(np.maximum(np.abs(arr), 1e-12)), lw=2.0, label=f"S[{out_port},{in_port}]")
+    ax.set_xlabel("Wavelength (µm)")
+    ax.set_ylabel("Magnitude (dB)")
+    ax.set_title("S-parameters")
+    ax.grid(alpha=0.3)
+    ax.legend(loc="best", frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
 
 
 def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, mask: np.ndarray) -> float:
@@ -233,23 +333,23 @@ source_direction = src["direction"]
 span = max(float(src["width"]) + 2.0 * PORT_MARGIN, float(src["width"]) + 0.1 * µm)
 z_center = float(src["z_center"])
 z_span = CLAD_BELOW + CORE_T + CLAD_ABOVE
-source_plane = gdsf.port_plane(
+source_plane = port_plane(
     src,
     span=span,
     z_span=z_span,
     z_center=z_center,
     offset=SOURCE_OFFSET,
 )
-fwd_plane = gdsf.port_plane(
+fwd_plane = port_plane(
     src,
     span=span,
     z_span=z_span,
     z_center=z_center,
     offset=SOURCE_OFFSET + DISTANCE_SOURCE_TO_MONITORS,
 )
-source_center = gdsf.line_center(source_plane)
+source_center = line_center(source_plane)
 out_planes = {
-    port_name: gdsf.port_plane(
+    port_name: port_plane(
         ports[port_name],
         span=span,
         z_span=z_span,
@@ -265,7 +365,7 @@ for port_name in output_ports:
     print(f"  {port_name}: {OUTPUT_MONITOR_OFFSETS[port_name] / µm:.2f}")
 runtime_output_distance_um = 0.0
 for port_name in output_ports:
-    c_out = gdsf.line_center(out_planes[port_name])
+    c_out = line_center(out_planes[port_name])
     runtime_output_distance_um = max(
         runtime_output_distance_um,
         float(np.hypot(c_out[0] - source_center[0], c_out[1] - source_center[1])) / µm,
@@ -321,7 +421,7 @@ save_mode_profile_plot(
 )
 mode_plot_paths = [OUT_DIR / "beamz_crossing_mode_source_o1.png"]
 for port_name in output_ports:
-    plane_center = gdsf.line_center(out_planes[port_name])
+    plane_center = line_center(out_planes[port_name])
     mode_probe = ModeSource(
         grid=grid,
         center=plane_center,
@@ -404,11 +504,11 @@ print(
 source_spec = PortSpec(
     name="o1",
     monitor_name="o1_fwd",
-    direction=gdsf.positive_axis_direction(source_direction),
+    direction=positive_axis_direction(source_direction),
     polarization="te",
     mode_index=0,
-    incident_wave=gdsf.incoming_wave(source_direction),
-    scattered_wave=gdsf.outgoing_wave(source_direction),
+    incident_wave=incoming_wave(source_direction),
+    scattered_wave=outgoing_wave(source_direction),
 )
 selected_specs = [source_spec]
 for port_name in output_ports:
@@ -417,11 +517,11 @@ for port_name in output_ports:
         PortSpec(
             name=port_name,
             monitor_name=port_name,
-            direction=gdsf.positive_axis_direction(direction),
+            direction=positive_axis_direction(direction),
             polarization="te",
             mode_index=0,
-            incident_wave=gdsf.incoming_wave(direction),
-            scattered_wave=gdsf.outgoing_wave(direction),
+            incident_wave=incoming_wave(direction),
+            scattered_wave=outgoing_wave(direction),
         )
     )
 result = sim.get_S_matrix_modal_dft(
@@ -445,7 +545,7 @@ for port_name in output_ports:
     dom = wave_dominance_db(
         waves["a_plus"],
         waves["a_minus"],
-        gdsf.outgoing_wave(ports[port_name]["direction"]),
+        outgoing_wave(ports[port_name]["direction"]),
         valid,
     )
     selected_monitor_planes[port_name] = out_planes[port_name]

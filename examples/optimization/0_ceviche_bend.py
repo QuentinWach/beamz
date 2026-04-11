@@ -1,7 +1,8 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from beamz import *
 from beamz.optimization.topology import TopologyManager, compute_overlap_gradient, create_optimization_mask
+from beamz.devices.sources.signals import plot_signal
+import matplotlib.pyplot as plt
 
 # --- 1. Simulation Setup ---
 W = H = 7*µm
@@ -28,8 +29,7 @@ design += opt_region
 time = np.arange(0, 15*WL/LIGHT_SPEED, DT)
 signal = ramped_cosine(time, 1, LIGHT_SPEED/WL, ramp_duration=3.5*WL/LIGHT_SPEED, t_max=time[-1]/2)
 
-from beamz.devices.sources.signals import plot_signal
-plot_signal(signal, time, save_path='signal.png')
+plot_signal(signal, time, save_path="signal.png")
 src_fwd = ModeSource(None, center=(1.0*µm, H/2), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+x")
 src_adj = ModeSource(None, center=(W/2, 1.0*µm), width=WG_W*4, wavelength=WL, pol="tm", signal=signal, direction="+y")
 

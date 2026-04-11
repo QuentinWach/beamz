@@ -52,22 +52,6 @@ from beamz.simulation.compiled import (
     compile_simulation,
 )
 from beamz.simulation.core import PortSpec, Simulation
-from beamz.simulation.thermal import (
-    ConvectionBC,
-    MZITuningResult,
-    StaticThermalConfig,
-    StaticThermalResult,
-    StaticThermalSolver,
-    ThermalBoundaryProfile,
-    ThermalConfig,
-    ThermalCoupling,
-    ThermalScenario,
-    ThermalSink,
-    ThermalSource,
-    solve_static_thermal,
-    solve_thermal,
-    sweep_mzi_heater,
-)
 
 # Import UI helpers
 from beamz.visual.helpers import (
@@ -124,21 +108,6 @@ _exports = {
     "MonitorState": MonitorState,
     "RunState": RunState,
     "compile_simulation": compile_simulation,
-    # Thermal (new primary API)
-    "ThermalConfig": ThermalConfig,
-    "ThermalCoupling": ThermalCoupling,
-    "StaticThermalConfig": StaticThermalConfig,
-    "StaticThermalResult": StaticThermalResult,
-    "ThermalSource": ThermalSource,
-    "ThermalSink": ThermalSink,
-    "ConvectionBC": ConvectionBC,
-    "ThermalBoundaryProfile": ThermalBoundaryProfile,
-    "ThermalScenario": ThermalScenario,
-    "MZITuningResult": MZITuningResult,
-    "StaticThermalSolver": StaticThermalSolver,
-    "solve_thermal": solve_thermal,
-    "solve_static_thermal": solve_static_thermal,
-    "sweep_mzi_heater": sweep_mzi_heater,
     # Boundaries
     "Boundary": Boundary,
     "PML": PML,

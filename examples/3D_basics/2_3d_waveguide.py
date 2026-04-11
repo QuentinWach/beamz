@@ -70,8 +70,7 @@ monitor_xy = Monitor(
     plane_normal="z",
     name="xy_plane"
 )
-#design += monitor_xy
-#design.show()
+# Monitor stays separate from the design and is passed to the simulation below.
 
 # 5. Run the Simulation
 sim = Simulation(

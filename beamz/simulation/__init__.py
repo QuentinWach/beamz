@@ -12,22 +12,6 @@ from beamz.simulation.compiled import (
     compile_simulation,
 )
 from beamz.simulation.core import PortSpec, Simulation
-from beamz.simulation.thermal import (
-    ConvectionBC,
-    MZITuningResult,
-    StaticThermalConfig,
-    StaticThermalResult,
-    StaticThermalSolver,
-    ThermalBoundaryProfile,
-    ThermalConfig,
-    ThermalCoupling,
-    ThermalScenario,
-    ThermalSink,
-    ThermalSource,
-    solve_static_thermal,
-    solve_thermal,
-    sweep_mzi_heater,
-)
 
 __all__ = [
     "RegularGrid",
@@ -39,18 +23,4 @@ __all__ = [
     "MonitorState",
     "RunState",
     "compile_simulation",
-    "ThermalConfig",
-    "ThermalCoupling",
-    "StaticThermalConfig",
-    "StaticThermalResult",
-    "ThermalSource",
-    "ThermalSink",
-    "ConvectionBC",
-    "ThermalBoundaryProfile",
-    "ThermalScenario",
-    "MZITuningResult",
-    "StaticThermalSolver",
-    "solve_thermal",
-    "solve_static_thermal",
-    "sweep_mzi_heater",
 ]

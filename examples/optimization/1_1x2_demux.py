@@ -1,7 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 
 from beamz import *
+from beamz.optimization.polygonize import density_to_polygons
 from beamz.optimization.topology import (
     TopologyManager,
     compute_overlap_gradient,
@@ -31,7 +33,7 @@ EPS_CLAD = N_CLAD**2
 
 DX, DT = calc_optimal_fdtd_params(wavelength=WL_SHORT, n_max=N_CORE, points_per_wavelength=8)
 
-STEPS = 150
+STEPS = 75
 PRINT_EVERY = 5
 DEBUG_EVERY = 10
 SAVE_DEBUG = True
@@ -52,12 +54,26 @@ POWER_SUM_TOL = 1.02
 BINARITY_START = 0.01
 BINARITY_END = 0.18
 POLISH_BINARITY = 0.30
+FINAL_BINARY_POLISH_STEPS = 70
+FINAL_BINARY_LR = 0.00005
+FINAL_BINARY_BETA = 192.0
+FINAL_BINARY_BLUR = 0.08 * UM
+FINAL_BINARY_WEIGHT = 0.90
+FINAL_BINARY_GRAY_WEIGHT = 0.35
+FINAL_BINARY_SNAP_STEPS = 80
+FINAL_BINARY_SNAP_LR = 0.00003
+FINAL_BINARY_SNAP_BETA = 320.0
+FINAL_BINARY_SNAP_BLUR = 0.06 * UM
+FINAL_BINARY_SNAP_WEIGHT = 1.00
+FINAL_BINARY_SNAP_GRAY_WEIGHT = 0.75
+GRAY_LOW = 0.10
+GRAY_HIGH = 0.90
+TARGET_GRAY_FRAC = 0.06
+TARGET_BINARITY = 0.94
 GRAD_CLIP_PCT = 99.5
 GRAD_HARD_CAP = 50.0
 NORMALIZE_PER_WL_GRAD = True
 INITIAL_ASYM_NOISE = 1e-3
-ENABLE_EARLY_STOP = True
-EARLY_STOP_PATIENCE = 20
 POLISH_STEPS = 60
 MAIN_STEPS = max(STEPS - POLISH_STEPS, 1)
 POLISH_START = MAIN_STEPS + 1
@@ -73,6 +89,18 @@ X_MON_REF = X_INV0 - 0.70 * UM
 X_MON_IN = X_INV0 - 0.35 * UM
 X_MON_OUT = W - PML_T - 0.35 * UM
 MON_SPAN = 2.6 * WG_W
+
+SHORT_FLUX_CMAP = LinearSegmentedColormap.from_list(
+    "beamz_short_flux",
+    ["#000000", "#0000ff"],
+)
+LONG_FLUX_CMAP = LinearSegmentedColormap.from_list(
+    "beamz_long_flux",
+    ["#000000", "#ff0000"],
+)
+FINAL_AA_MODE = "stratified_jitter"
+FINAL_AA_SAMPLES = 128
+MIN_FINAL_FEATURE_AREA_CELLS = 0.5
 
 
 def build_waveform(wavelength):
@@ -273,6 +301,8 @@ def save_progress(path, hist):
     axes[2].plot(steps, hist["fom"][WL_SHORT], "b-", lw=2.0, label="FoM 1.30 um")
     axes[2].plot(steps, hist["fom"][WL_LONG], "r-", lw=2.0, label="FoM 1.55 um")
     axes[2].plot(steps, 100.0 * np.array(hist["power_sum"]), color="tab:purple", lw=1.2, label="Guided power sum")
+    axes[2].plot(steps, 100.0 * np.array(hist["gray_frac"]), color="0.65", lw=1.3, label="Gray frac")
+    axes[2].plot(steps, 100.0 * np.array(hist["binarity"]), color="tab:green", lw=1.5, label="Binarity")
     axes[2].legend(loc="best")
     axes[2].grid(alpha=0.3)
     axes[2].set_xlabel("Optimization step")
@@ -282,18 +312,185 @@ def save_progress(path, hist):
     plt.close(fig)
 
 def save_overlay(path, short_flux, long_flux, design_mask):
-    r = np.clip(short_flux / max(float(np.percentile(short_flux, 99.0)), 1.0), 0.0, 1.0).T ** 0.72
-    b = np.clip(long_flux / max(float(np.percentile(long_flux, 99.0)), 1.0), 0.0, 1.0).T ** 0.72
-    mask = design_mask.T > 0.5
-    base = np.zeros(mask.shape + (3,), dtype=float)
-    base[mask] = 0.16
-    rgb = np.maximum(base, np.stack([r, np.zeros_like(r), b], axis=-1))
-    eroded = np.zeros_like(mask, dtype=bool)
-    eroded[1:-1, 1:-1] = (
-        mask[1:-1, 1:-1] & mask[:-2, 1:-1] & mask[2:, 1:-1] & mask[1:-1, :-2] & mask[1:-1, 2:]
+    def _normalize_flux(flux):
+        flux = np.asarray(flux, dtype=float)
+        if flux.size == 0:
+            return flux
+        scale = float(np.percentile(flux, 99.5))
+        scale = max(scale, 1e-30)
+        norm = np.clip(flux / scale, 0.0, 1.0)
+        return norm ** 0.55
+
+    short_display = _normalize_flux(short_flux).T
+    long_display = _normalize_flux(long_flux).T
+    mask_display = np.asarray(design_mask, dtype=float).T
+
+    ny_plot, nx_plot = mask_display.shape
+    x = (np.arange(nx_plot) + 0.5) * DX / UM
+    y = (np.arange(ny_plot) + 0.5) * DX / UM
+    extent = [0.0, nx_plot * DX / UM, 0.0, ny_plot * DX / UM]
+
+    fig, ax = plt.subplots(figsize=(6.2, 6.2), facecolor="black")
+    ax.set_facecolor("black")
+
+    short_alpha = np.clip(short_display, 0.0, 1.0) ** 0.85
+    long_alpha = np.clip(long_display, 0.0, 1.0) ** 0.85
+
+    ax.imshow(
+        short_display,
+        cmap=SHORT_FLUX_CMAP,
+        origin="lower",
+        extent=extent,
+        interpolation="bicubic",
+        alpha=short_alpha,
     )
-    rgb[mask & (~eroded)] = 1.0
-    plt.imsave(path, rgb, origin="lower")
+    ax.imshow(
+        long_display,
+        cmap=LONG_FLUX_CMAP,
+        origin="lower",
+        extent=extent,
+        interpolation="bicubic",
+        alpha=long_alpha,
+    )
+
+    ax.contour(
+        x,
+        y,
+        mask_display,
+        levels=[0.5],
+        colors="white",
+        linewidths=1.3,
+        antialiased=True,
+    )
+
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    ax.text(
+        0.02,
+        0.98,
+        f"{WL_SHORT / UM:.2f} um",
+        color="#6cc6ff",
+        fontsize=10,
+        ha="left",
+        va="top",
+        transform=ax.transAxes,
+    )
+    ax.text(
+        0.98,
+        0.98,
+        f"{WL_LONG / UM:.2f} um",
+        color="#ff8d73",
+        fontsize=10,
+        ha="right",
+        va="top",
+        transform=ax.transAxes,
+    )
+
+    plt.tight_layout(pad=0.0)
+    fig.savefig(path, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
+
+def save_binary_density(path, density):
+    plt.imsave(
+        path,
+        np.asarray(density, dtype=float),
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        origin="lower",
+    )
+
+
+def save_outline(path, design):
+    fig, ax = plt.subplots(figsize=(6.2, 6.2), facecolor="black")
+    ax.set_facecolor("black")
+
+    for structure in getattr(design, "structures", ())[1:]:
+        vertices = getattr(structure, "vertices", None)
+        if not vertices:
+            continue
+        xy = np.asarray([(float(x), float(y)) for x, y, *_ in vertices], dtype=float) / UM
+        if xy.shape[0] >= 2:
+            closed = np.vstack([xy, xy[0]])
+            ax.plot(
+                closed[:, 0],
+                closed[:, 1],
+                color="white",
+                linewidth=1.3,
+                solid_joinstyle="round",
+                solid_capstyle="round",
+                antialiased=True,
+            )
+
+        for interior in getattr(structure, "interiors", ()) or ():
+            hole = np.asarray([(float(x), float(y)) for x, y, *_ in interior], dtype=float) / UM
+            if hole.shape[0] >= 2:
+                closed_hole = np.vstack([hole, hole[0]])
+                ax.plot(
+                    closed_hole[:, 0],
+                    closed_hole[:, 1],
+                    color="white",
+                    linewidth=1.3,
+                    solid_joinstyle="round",
+                    solid_capstyle="round",
+                    antialiased=True,
+                )
+
+    ax.set_xlim(0.0, W / UM)
+    ax.set_ylim(0.0, H / UM)
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    plt.tight_layout(pad=0.0)
+    fig.savefig(path, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
+
+def add_fixed_waveguides(design):
+    for x, y in ((0.0, Y_IN), (X_INV1, Y_TOP), (X_INV1, Y_BOT)):
+        design += Rectangle(
+            position=(x, y - 0.5 * WG_W),
+            width=(X_INV0 if x == 0.0 else W - X_INV1),
+            height=WG_W,
+            material=Material(permittivity=EPS_CORE),
+        )
+
+
+def build_final_design_from_density(density):
+    density = np.asarray(density, dtype=float)
+    i0 = max(0, int(np.floor(Y_INV0 / DX)))
+    i1 = min(density.shape[0], int(np.ceil((Y_INV0 + INV_H) / DX)))
+    j0 = max(0, int(np.floor(X_INV0 / DX)))
+    j1 = min(density.shape[1], int(np.ceil(X_INV1 / DX)))
+    density_window = density[i0:i1, j0:j1]
+
+    final_design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
+    add_fixed_waveguides(final_design)
+    for poly in density_to_polygons(
+        density_window,
+        material=Material(permittivity=EPS_CORE),
+        level=0.5,
+        # Use the actual cropped cell-edge origin, not the nominal design-box edge.
+        # X_INV0 / Y_INV0 are not generally integer multiples of DX, so using them
+        # shifts the contour by up to one cell and can leave visible gaps where the
+        # polygonized region meets the fixed waveguides.
+        x0=j0 * DX,
+        y0=i0 * DX,
+        dx=DX,
+        min_area=MIN_FINAL_FEATURE_AREA_CELLS * DX * DX,
+    ):
+        final_design += poly
+    final_design.unify_polygons()
+    return final_design
 
 def set_design(grid, base_eps, mask, density, opt):
     grid.permittivity[:] = base_eps
@@ -321,20 +518,34 @@ def score_density(grid, density):
 
 def flux_artifacts(grid, density):
     set_design(grid, base_eps, mask, density, opt)
+    return flux_artifacts_from_grid(grid)
+
+
+def flux_artifacts_from_grid(grid):
     fluxes, modal = {}, {}
     for wl in (WL_SHORT, WL_LONG):
         modal[wl], fields = run_forward(grid, wl, waves[wl], fields=("Ez", "Hx", "Hy"))
         fluxes[wl] = flux_map(fields, waves[wl]["time"], waves[wl]["gate_start"])
     design_mask = (grid.permittivity > 0.5 * (EPS_CLAD + EPS_CORE)).astype(float)
     return modal, fluxes, design_mask
+
+
+def density_metrics(density):
+    rho = np.asarray(density[mask], dtype=float)
+    if rho.size == 0:
+        return 1.0, 0.0
+    binarity = float(np.mean((2.0 * rho - 1.0) ** 2))
+    gray_frac = float(np.mean((rho > GRAY_LOW) & (rho < GRAY_HIGH)))
+    return binarity, gray_frac
+
+
+def maybe_update_best_binary(density):
+    binary_density = (np.asarray(density, dtype=float) >= 0.5).astype(float)
+    binary_score, binary_modal = score_density(grid, binary_density)
+    binary_ok = max(m["power_sum"] for m in binary_modal.values()) <= POWER_SUM_TOL
+    return binary_density, binary_score, binary_ok
 design = Design(width=W, height=H, material=Material(permittivity=EPS_CLAD))
-for x, y in ((0.0, Y_IN), (X_INV1, Y_TOP), (X_INV1, Y_BOT)):
-    design += Rectangle(
-        position=(x, y - 0.5 * WG_W),
-        width=(X_INV0 if x == 0.0 else W - X_INV1),
-        height=WG_W,
-        material=Material(permittivity=EPS_CORE),
-    )
+add_fixed_waveguides(design)
 opt_region = Rectangle(
     position=(X_INV0, Y_INV0),
     width=INV_W,
@@ -375,6 +586,8 @@ hist = {
     "ema": [],
     "route": [],
     "power_sum": [],
+    "binarity": [],
+    "gray_frac": [],
     "tx": {WL_SHORT: {"target": [], "leak": []}, WL_LONG: {"target": [], "leak": []}},
     "fom": {WL_SHORT: [], WL_LONG: []},
 }
@@ -383,15 +596,12 @@ best_projected_score = -np.inf
 best_projected_density = None
 best_binary_score = -np.inf
 best_binary_density = None
-best_binary_step = 0
+best_binary_binarity = 0.0
+best_binary_gray_frac = 1.0
 
-for step in range(1, STEPS + 1):
-    beta, blur_radius, binarity_weight, is_polish = step_settings(step)
-    if step == POLISH_START:
-        import optax
 
-        opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
-        opt._opt_state = None
+def run_iteration(beta, blur_radius, binarity_weight, gray_penalty_weight=0.0):
+    global ema, best_projected_score, best_projected_density
     opt.filter_radius = blur_radius
     opt.filter_radius_cells = max(1, int(round(blur_radius / opt.resolution)))
     density = opt.get_physical_density(beta)
@@ -433,10 +643,18 @@ for step in range(1, STEPS + 1):
         wl = cache["wl"]
         wave = cache["wave"]
         grad_top = np.array(
-            compute_overlap_gradient(cache["ez_hist"], run_adjoint(grid, wl, "top", wave), forward_start=wave["gate_index"])
+            compute_overlap_gradient(
+                cache["ez_hist"],
+                run_adjoint(grid, wl, "top", wave),
+                forward_start=wave["gate_index"],
+            )
         )
         grad_bot = np.array(
-            compute_overlap_gradient(cache["ez_hist"], run_adjoint(grid, wl, "bottom", wave), forward_start=wave["gate_index"])
+            compute_overlap_gradient(
+                cache["ez_hist"],
+                run_adjoint(grid, wl, "bottom", wave),
+                forward_start=wave["gate_index"],
+            )
         )
         if cache["target"] == "top":
             coeff_top, coeff_bot = (1.0 + LOSS_WEIGHT) / cache["norm"], (LOSS_WEIGHT - 1.0) / cache["norm"]
@@ -451,7 +669,11 @@ for step in range(1, STEPS + 1):
         )
         grad = coeff_top * grad_top + coeff_bot * grad_bot
         route_terms.append(fom)
-        grad_terms.append(grad / max(float(np.sqrt(np.mean(grad[mask] ** 2))), 1e-30) if NORMALIZE_PER_WL_GRAD else grad)
+        grad_terms.append(
+            grad / max(float(np.sqrt(np.mean(grad[mask] ** 2))), 1e-30)
+            if NORMALIZE_PER_WL_GRAD
+            else grad
+        )
         hist["fom"][wl].append(100.0 * fom)
         report.append(
             f"{wl / UM:.3f}um: T={100.0 * cache['target_tx']:5.1f}% "
@@ -460,11 +682,16 @@ for step in range(1, STEPS + 1):
         )
 
     grad_total = sum(grad_terms) / len(grad_terms)
+    binarity, gray_frac = density_metrics(density)
     rho = density[mask]
-    binarity = float(np.mean((2.0 * rho - 1.0) ** 2)) if rho.size > 0 else 0.0
+    gray_penalty = 0.0
     if rho.size > 0:
         grad_total[mask] += binarity_weight * (
             4.0 * (2.0 * rho - 1.0) / (max(opt.eps_max - opt.eps_min, 1e-30) * float(rho.size))
+        )
+        gray_penalty = float(np.mean(4.0 * rho * (1.0 - rho)))
+        grad_total[mask] += gray_penalty_weight * (
+            (8.0 * rho - 4.0) / (max(opt.eps_max - opt.eps_min, 1e-30) * float(rho.size))
         )
     if np.any(mask):
         clip = np.percentile(np.abs(grad_total[mask]), GRAD_CLIP_PCT)
@@ -473,78 +700,252 @@ for step in range(1, STEPS + 1):
         grad_total[mask] = np.clip(grad_total[mask], -GRAD_HARD_CAP, GRAD_HARD_CAP)
 
     route_obj = float(np.mean(route_terms))
-    objective = route_obj + binarity_weight * binarity
+    objective = route_obj + binarity_weight * binarity - gray_penalty_weight * gray_penalty
     max_power_sum = max(cache["power_sum"] for cache in caches)
     if max_power_sum <= POWER_SUM_TOL and route_obj > best_projected_score:
         best_projected_score = route_obj
         best_projected_density = density.copy()
+
     dmax = opt.apply_gradient(-grad_total, beta)
     hist["route"].append(route_obj)
     hist["objective"].append(objective)
+    hist["binarity"].append(binarity)
+    hist["gray_frac"].append(gray_frac)
     ema = objective if ema is None else EMA_ALPHA * objective + (1.0 - EMA_ALPHA) * ema
     hist["ema"].append(ema)
 
+    return {
+        "density": density,
+        "objective": objective,
+        "target_mean": target_mean,
+        "power_sum_mean": power_sum_mean,
+        "binarity": binarity,
+        "gray_frac": gray_frac,
+        "gray_penalty": gray_penalty,
+        "dmax": dmax,
+        "report": report,
+    }
+
+
+def update_best_binary(density, *, binarity, gray_frac):
+    global best_binary_score, best_binary_density, best_binary_binarity, best_binary_gray_frac
+
+    binary_density, binary_score, binary_ok = maybe_update_best_binary(density)
+    if binary_ok and binary_score > best_binary_score:
+        best_binary_score = binary_score
+        best_binary_density = binary_density.copy()
+        best_binary_binarity = binarity
+        best_binary_gray_frac = gray_frac
+    return binary_score, binary_ok
+
+
+last_result = None
+
+for step in range(1, STEPS + 1):
+    beta, blur_radius, binarity_weight, is_polish = step_settings(step)
+    if step == POLISH_START:
+        import optax
+
+        opt.optax_optimizer = optax.adam(learning_rate=POLISH_LR)
+        opt._opt_state = None
+
+    last_result = run_iteration(beta, blur_radius, binarity_weight)
+
     if step == 1 or step % PRINT_EVERY == 0 or step == STEPS:
         print(
-            f"[{step:03d}/{STEPS}] Obj={objective:.4f} meanT={100.0 * target_mean:.1f}% "
-            f"Psum={100.0 * power_sum_mean:.1f}% bin={binarity:.2f} "
-            f"{'polish' if is_polish else 'main'} beta={beta:.1f} dmax={dmax:.3e} | "
-            + " | ".join(report)
+            f"[{step:03d}/{STEPS}] Obj={last_result['objective']:.4f} "
+            f"meanT={100.0 * last_result['target_mean']:.1f}% "
+            f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
+            f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
+            f"{'polish' if is_polish else 'main'} beta={beta:.1f} dmax={last_result['dmax']:.3e} | "
+            + " | ".join(last_result["report"])
         )
+
+    update_best_binary(
+        last_result["density"],
+        binarity=last_result["binarity"],
+        gray_frac=last_result["gray_frac"],
+    )
 
     should_debug = step == 1 or step % DEBUG_EVERY == 0 or step == STEPS or is_polish
     if SAVE_DEBUG and should_debug:
-        binary_density = (density >= 0.5).astype(float)
-        binary_score, binary_modal = score_density(grid, binary_density)
-        if max(m["power_sum"] for m in binary_modal.values()) <= POWER_SUM_TOL and binary_score > best_binary_score:
-            best_binary_score = binary_score
-            best_binary_density = binary_density.copy()
-            best_binary_step = step
-        set_design(grid, base_eps, mask, density, opt)
+        set_design(grid, base_eps, mask, last_result["density"], opt)
         plt.imsave(f"{PREFIX}_topo_{step:03d}.png", grid.permittivity.T, cmap="gray", origin="lower")
         plt.imsave(
             f"{PREFIX}_density_{step:03d}.png",
-            density.T,
+            last_result["density"].T,
             cmap="gray",
             vmin=0.0,
             vmax=1.0,
             origin="lower",
         )
-        _, fluxes, _ = flux_artifacts(grid, density)
+        _, fluxes, _ = flux_artifacts(grid, last_result["density"])
         save_flux(f"{PREFIX}_flux_short_{step:03d}.png", fluxes[WL_SHORT])
         save_flux(f"{PREFIX}_flux_long_{step:03d}.png", fluxes[WL_LONG])
         save_progress(f"{PREFIX}_progress_{step:03d}.png", hist)
         save_progress(f"{PREFIX}_progress_latest.png", hist)
-        if (
-            ENABLE_EARLY_STOP
-            and is_polish
-            and best_binary_step > 0
-            and step - best_binary_step >= EARLY_STOP_PATIENCE
-            and binary_score < best_binary_score - 0.03
-        ):
-            print(f"Stopping polish at step {step:03d}; best binary checkpoint was step {best_binary_step:03d}.")
-            break
+
+need_binary_polish = (
+    last_result is not None
+    and (
+        best_binary_density is None
+        or last_result["gray_frac"] > TARGET_GRAY_FRAC
+        or last_result["binarity"] < TARGET_BINARITY
+    )
+)
+
+if need_binary_polish:
+    import optax
+
+    print(
+        "Entering final binary polish: "
+        f"gray={100.0 * last_result['gray_frac']:.1f}% "
+        f"bin={last_result['binarity']:.3f}"
+    )
+    opt.optax_optimizer = optax.adam(learning_rate=FINAL_BINARY_LR)
+    opt._opt_state = None
+
+    for polish_step in range(1, FINAL_BINARY_POLISH_STEPS + 1):
+        last_result = run_iteration(
+            FINAL_BINARY_BETA,
+            FINAL_BINARY_BLUR,
+            FINAL_BINARY_WEIGHT,
+            gray_penalty_weight=FINAL_BINARY_GRAY_WEIGHT,
+        )
+        update_best_binary(
+            last_result["density"],
+            binarity=last_result["binarity"],
+            gray_frac=last_result["gray_frac"],
+        )
+
+        if polish_step == 1 or polish_step % PRINT_EVERY == 0 or polish_step == FINAL_BINARY_POLISH_STEPS:
+            print(
+                f"[bp{polish_step:03d}/{FINAL_BINARY_POLISH_STEPS}] Obj={last_result['objective']:.4f} "
+                f"meanT={100.0 * last_result['target_mean']:.1f}% "
+                f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
+                f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
+                f"gpen={last_result['gray_penalty']:.3f} "
+                f"beta={FINAL_BINARY_BETA:.1f} dmax={last_result['dmax']:.3e}"
+            )
+
+        should_debug = SAVE_DEBUG and (
+            polish_step == 1
+            or polish_step % DEBUG_EVERY == 0
+            or polish_step == FINAL_BINARY_POLISH_STEPS
+        )
+        if should_debug:
+            set_design(grid, base_eps, mask, last_result["density"], opt)
+            plt.imsave(
+                f"{PREFIX}_topo_bp{polish_step:03d}.png",
+                grid.permittivity.T,
+                cmap="gray",
+                origin="lower",
+            )
+            plt.imsave(
+                f"{PREFIX}_density_bp{polish_step:03d}.png",
+                last_result["density"].T,
+                cmap="gray",
+                vmin=0.0,
+                vmax=1.0,
+                origin="lower",
+            )
+            _, fluxes, _ = flux_artifacts(grid, last_result["density"])
+            save_flux(f"{PREFIX}_flux_short_bp{polish_step:03d}.png", fluxes[WL_SHORT])
+            save_flux(f"{PREFIX}_flux_long_bp{polish_step:03d}.png", fluxes[WL_LONG])
+            save_progress(f"{PREFIX}_progress_bp{polish_step:03d}.png", hist)
+            save_progress(f"{PREFIX}_progress_latest.png", hist)
+
+    print(
+        "Entering final binary snap: "
+        f"gray={100.0 * last_result['gray_frac']:.1f}% "
+        f"bin={last_result['binarity']:.3f}"
+    )
+    opt.optax_optimizer = optax.adam(learning_rate=FINAL_BINARY_SNAP_LR)
+    opt._opt_state = None
+
+    for snap_step in range(1, FINAL_BINARY_SNAP_STEPS + 1):
+        last_result = run_iteration(
+            FINAL_BINARY_SNAP_BETA,
+            FINAL_BINARY_SNAP_BLUR,
+            FINAL_BINARY_SNAP_WEIGHT,
+            gray_penalty_weight=FINAL_BINARY_SNAP_GRAY_WEIGHT,
+        )
+        update_best_binary(
+            last_result["density"],
+            binarity=last_result["binarity"],
+            gray_frac=last_result["gray_frac"],
+        )
+
+        if snap_step == 1 or snap_step % PRINT_EVERY == 0 or snap_step == FINAL_BINARY_SNAP_STEPS:
+            print(
+                f"[bs{snap_step:03d}/{FINAL_BINARY_SNAP_STEPS}] Obj={last_result['objective']:.4f} "
+                f"meanT={100.0 * last_result['target_mean']:.1f}% "
+                f"Psum={100.0 * last_result['power_sum_mean']:.1f}% "
+                f"bin={last_result['binarity']:.3f} gray={100.0 * last_result['gray_frac']:.1f}% "
+                f"gpen={last_result['gray_penalty']:.3f} "
+                f"beta={FINAL_BINARY_SNAP_BETA:.1f} dmax={last_result['dmax']:.3e}"
+            )
+
+        should_debug = SAVE_DEBUG and (
+            snap_step == 1
+            or snap_step % DEBUG_EVERY == 0
+            or snap_step == FINAL_BINARY_SNAP_STEPS
+        )
+        if should_debug:
+            set_design(grid, base_eps, mask, last_result["density"], opt)
+            plt.imsave(
+                f"{PREFIX}_topo_bs{snap_step:03d}.png",
+                grid.permittivity.T,
+                cmap="gray",
+                origin="lower",
+            )
+            plt.imsave(
+                f"{PREFIX}_density_bs{snap_step:03d}.png",
+                last_result["density"].T,
+                cmap="gray",
+                vmin=0.0,
+                vmax=1.0,
+                origin="lower",
+            )
+            _, fluxes, _ = flux_artifacts(grid, last_result["density"])
+            save_flux(f"{PREFIX}_flux_short_bs{snap_step:03d}.png", fluxes[WL_SHORT])
+            save_flux(f"{PREFIX}_flux_long_bs{snap_step:03d}.png", fluxes[WL_LONG])
+            save_progress(f"{PREFIX}_progress_bs{snap_step:03d}.png", hist)
+            save_progress(f"{PREFIX}_progress_latest.png", hist)
 
 save_progress(f"{PREFIX}_progress_final.png", hist)
 
-if best_projected_density is None:
-    best_projected_density = density.copy()
-if best_binary_density is None:
-    best_binary_density = (best_projected_density >= 0.5).astype(float)
+if last_result is not None:
+    final_source_density = last_result["density"].copy()
+elif best_projected_density is not None:
+    final_source_density = best_projected_density.copy()
+else:
+    raise RuntimeError("No final density available.")
 
-for label, density, path in (
-    ("projected", best_projected_density, f"{PREFIX}_final_projected_flux_overlay.png"),
-    ("binary", best_binary_density, f"{PREFIX}_final_binary_flux_overlay.png"),
-):
-    modal, fluxes, design_mask = flux_artifacts(grid, density)
-    save_overlay(
-        path,
-        fluxes[WL_SHORT],
-        fluxes[WL_LONG],
-        design_mask,
-    )
-    print(
-        f"{label}: "
-        f"short target={100.0 * modal[WL_SHORT]['tx_top']:.2f}% leak={100.0 * modal[WL_SHORT]['tx_bot']:.2f}% | "
-        f"long target={100.0 * modal[WL_LONG]['tx_bot']:.2f}% leak={100.0 * modal[WL_LONG]['tx_top']:.2f}%"
-    )
+final_geometry_design = build_final_design_from_density(final_source_density)
+final_grid = final_geometry_design.rasterize(
+    DX,
+    aa_mode=FINAL_AA_MODE,
+    aa_samples=FINAL_AA_SAMPLES,
+    force_recompute=True,
+)
+final_binary_density = np.clip(
+    (np.asarray(final_grid.permittivity, dtype=float) - EPS_CLAD)
+    / max(EPS_CORE - EPS_CLAD, 1e-30),
+    0.0,
+    1.0,
+)
+final_binarity, final_gray_frac = density_metrics((np.asarray(final_source_density) >= 0.5).astype(float))
+final_modal, final_fluxes, final_design_mask = flux_artifacts_from_grid(final_grid)
+
+save_binary_density(f"{PREFIX}_final_binary_density.png", final_binary_density)
+save_outline(f"{PREFIX}_final_binary_outline.png", final_geometry_design)
+save_flux(f"{PREFIX}_final_binary_flux_short.png", final_fluxes[WL_SHORT])
+save_flux(f"{PREFIX}_final_binary_flux_long.png", final_fluxes[WL_LONG])
+
+print(
+    "final last-step binary: "
+    f"gray={100.0 * final_gray_frac:.1f}% bin={final_binarity:.3f} | "
+    f"short target={100.0 * final_modal[WL_SHORT]['tx_top']:.2f}% leak={100.0 * final_modal[WL_SHORT]['tx_bot']:.2f}% | "
+    f"long target={100.0 * final_modal[WL_LONG]['tx_bot']:.2f}% leak={100.0 * final_modal[WL_LONG]['tx_top']:.2f}%"
+)

@@ -381,8 +381,8 @@ def _remap_3d_solver_components(Ex, Ey, Ez, Hx, Hy, Hz, axis):
         return Ex, Ey, Ez, Hx, Hy, Hz
     if axis == "y":
         # Use the same right-handed x'->+y, y'->-x, z'->+z basis as the
-        # monitor-side modal extraction. Without the sign flip, y-directed 3D
-        # launches carry a persistent opposite-going modal component.
+        # monitor-side modal extraction. Source-profile parity corrections for
+        # y-directed launches are applied after profile construction.
         return -Ey, Ex, Ez, -Hy, Hx, Hz
     if axis == "z":
         # Cyclic remap from x-basis -> z-basis.
@@ -533,7 +533,6 @@ def _build_3d_profiles(
         Mapping component name -> index tuple for field injection.
     """
     nz, ny, nx = grid_shape
-    # Apply direction sign once while building source profiles.
     dir_sign = 1.0 if direction.startswith("+") else -1.0
     ETA_0 = np.sqrt(MU_0 / EPS_0)
     neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
@@ -803,6 +802,10 @@ def _build_3d_y(
     )
     d_area = float(resolution * resolution)
     profiles = _normalize_3d_profiles_by_flux(profiles, axis="y", d_area=d_area)
+    if dir_sign < 0.0:
+        for comp in ("Ex", "Ey", "Ez"):
+            if profiles.get(comp) is not None:
+                profiles[comp] = -profiles[comp]
 
     extra = {
         "_x_start": x_start,
@@ -1095,6 +1098,26 @@ def _project_3d_profiles_to_real(profiles):
     return out
 
 
+def _runtime_3d_profiles(profiles, axis: str, direction_sign: float):
+    """Apply runtime-only gauge corrections without mutating stored profiles."""
+    out = dict(profiles)
+    if axis != "y":
+        return out
+
+    if direction_sign > 0.0:
+        if out.get("Ex") is not None:
+            out["Ex"] = -out["Ex"]
+        if out.get("Hz") is not None:
+            out["Hz"] = -out["Hz"]
+    else:
+        if out.get("Ez") is not None:
+            out["Ez"] = -out["Ez"]
+        if out.get("Hx") is not None:
+            out["Hx"] = -out["Hx"]
+
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Huygens cross-product sign tables
 # sign = multiplier in: target += sign * source_profile * sig * dt / (material * dx)
@@ -1372,10 +1395,14 @@ class ModeSource:
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         dL = dz if is_3d else (dy if axis == "x" else dx)
         solver_direction = self.direction
-        if is_3d and axis in {"x", "y"}:
-            # 3D x/y cross-sections are solved in a rotated basis; flip +/- here so
-            # the resulting mode phase/gauge matches the 2D-corrected launch direction.
+        if is_3d and axis == "x":
+            # x-directed 3D launches are still anchored to the opposite signed
+            # solver branch to match the source-plane staggering conventions.
             solver_direction = ("-" if self.direction.startswith("+") else "+") + axis
+        elif is_3d and axis == "y":
+            # y-directed 3D launches are solved in a fixed +y basis for a
+            # stable gauge; launch direction is handled by source timing.
+            solver_direction = "+y"
 
         eps_profile_arr = np.asarray(eps_profile)
         n_local_max = float(
@@ -1870,6 +1897,9 @@ class ModeSource:
         else:
             self._dt_physical = delta_s * float(np.real(self._neff)) / LIGHT_SPEED
 
+        if self._direction_sign < 0.0:
+            self._dt_physical = -self._dt_physical
+
     def _get_signal_value(self, time, dt):
         """Interpolate signal value at arbitrary time."""
         idx_float = float(time / dt)
@@ -1953,6 +1983,7 @@ class ModeSource:
             "Hy": self._Hy_profile,
             "Hz": self._Hz_profile,
         }
+        profiles = _runtime_3d_profiles(profiles, self._axis, self._direction_sign)
         indices = {
             "Ex": self._Ex_indices,
             "Ey": self._Ey_indices,

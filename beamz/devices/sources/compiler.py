@@ -10,7 +10,11 @@ import numpy as np
 
 from beamz.const import EPS_0, MU_0
 from beamz.devices.sources.gaussian import GaussianSource
-from beamz.devices.sources.mode import ModeSource, _get_3d_huygens_terms
+from beamz.devices.sources.mode import (
+    ModeSource,
+    _get_3d_huygens_terms,
+    _runtime_3d_profiles,
+)
 
 
 @dataclass(frozen=True)
@@ -178,6 +182,7 @@ def _mode_3d_profiles_and_indices(src: ModeSource):
         "Hy": getattr(src, "_Hy_profile", None),
         "Hz": getattr(src, "_Hz_profile", None),
     }
+    profiles = _runtime_3d_profiles(profiles, src._axis, src._direction_sign)
     indices = {
         "Ex": getattr(src, "_Ex_indices", None),
         "Ey": getattr(src, "_Ey_indices", None),
