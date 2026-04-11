@@ -301,19 +301,26 @@ def save_mode_profile_plot(
 # 1. Import the GDSFactory/PDK component, extrude it to 3D, pad the domain,
 # and extend the ports into uniform straight sections.
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-prepared = gdsf.prepare_component(
-    COMPONENT_NAME,
-    layer=LAYER,
-    n_core=N_CORE,
-    n_clad=N_CLAD,
-    core_thickness=CORE_T,
-    clad_below=CLAD_BELOW,
-    clad_above=CLAD_ABOVE,
-    xy_padding=EXTENSION,
-    z_padding=Z_PADDING,
-    extension=EXTENSION,
-    port_overlap=PORT_OVERLAP,
-)
+try:
+    prepared = gdsf.prepare_component(
+        COMPONENT_NAME,
+        layer=LAYER,
+        n_core=N_CORE,
+        n_clad=N_CLAD,
+        core_thickness=CORE_T,
+        clad_below=CLAD_BELOW,
+        clad_above=CLAD_ABOVE,
+        xy_padding=EXTENSION,
+        z_padding=Z_PADDING,
+        extension=EXTENSION,
+        port_overlap=PORT_OVERLAP,
+    )
+except ValueError as exc:
+    print(
+        f"{exc} Install or activate the matching gdsfactory PDK before running "
+        f"{Path(__file__).name}."
+    )
+    raise SystemExit(0) from exc
 component_label, design, ports = prepared["component_label"], prepared["design"], prepared["ports"]
 source_port, output_ports = "o1", ["o2", "o3", "o4"]
 dx, dt = dxdt(WL0, n_max=N_CORE, dims=3, safety_factor=0.999, points_per_wavelength=PPW)

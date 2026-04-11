@@ -236,7 +236,11 @@ def main() -> int:
         results_dirs = [path.resolve() for path in args.results_dir]
         results_dir = results_dirs[0]
     else:
-        results_dir = _latest_results_dir()
+        try:
+            results_dir = _latest_results_dir()
+        except FileNotFoundError as exc:
+            print(f"{exc} Run sim_coupler_compare.py first to generate benchmark data.")
+            return 0
         results_dirs = [results_dir]
     rows = _load_summary_rows(
         results_dirs,
