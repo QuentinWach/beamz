@@ -6,7 +6,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _mpl_helpers import run_with_snapshots
+from _mpl_helpers import show_snapshots
 
 WL = 0.6*µm # wavelength of the source
 TIME = 25*WL/LIGHT_SPEED # total simulation duration
@@ -23,4 +23,6 @@ source = GaussianSource(position=(4*µm, 5*µm), width=WL/6, signal=signal)
 
 # Add source and PML boundaries to the simulation.
 sim = Simulation(design=design, sources=[source], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
-run_with_snapshots(sim, snapshot_field="Ez", snapshot_interval=1, clean_visualization=True)
+results = sim.run(snapshot_field="Ez", snapshot_interval=1, store_snapshots=True)
+if results is not None:
+    show_snapshots(results.snapshots, clean_visualization=True)

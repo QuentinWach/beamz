@@ -42,7 +42,7 @@ def _make_snapshot_sim():
     )
 
 
-def test_run_with_snapshots_collects_layout_and_field_payload():
+def test_simulation_run_collects_snapshot_layout_and_field_payload():
     seen = []
     sim = _make_snapshot_sim()
 

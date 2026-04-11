@@ -7,7 +7,7 @@ from beamz import calc_optimal_fdtd_params
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _mpl_helpers import plot_design, plot_grid, run_with_snapshots
+from _mpl_helpers import plot_design, plot_grid, show_snapshots
 
 WL = 1.55*µm
 TIME = 90*WL/LIGHT_SPEED
@@ -53,10 +53,10 @@ sim = Simulation(
     time=time_steps,
     resolution=DX
 )
-run_with_snapshots(
-    sim,
-    snapshot_field="Ez",
-    snapshot_interval=20,
-    cmap="twilight_zero",
-    clean_visualization=True,
-)
+results = sim.run(snapshot_field="Ez", snapshot_interval=20, store_snapshots=True)
+if results is not None:
+    show_snapshots(
+        results.snapshots,
+        cmap="twilight_zero",
+        clean_visualization=True,
+    )

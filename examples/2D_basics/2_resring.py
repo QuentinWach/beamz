@@ -6,7 +6,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _mpl_helpers import run_with_snapshots
+from _mpl_helpers import save_snapshot_video, show_snapshots
 
 # Parameters
 WL = 1.55*µm
@@ -50,12 +50,12 @@ sim = Simulation(
     time=time_steps,
     resolution=DX
 )
-run_with_snapshots(
-    sim,
-    snapshot_field="Ez",
-    snapshot_interval=15,
-    cmap="twilight_zero",
-    live_display=True,
-    save_video="resring.mp4",
-    video_fps=40,
-)
+results = sim.run(snapshot_field="Ez", snapshot_interval=15, store_snapshots=True)
+if results is not None:
+    show_snapshots(results.snapshots, cmap="twilight_zero")
+    save_snapshot_video(
+        results.snapshots,
+        filename="resring.mp4",
+        fps=40,
+        cmap="twilight_zero",
+    )

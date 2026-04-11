@@ -8,7 +8,7 @@ import numpy as np
 # Ensure local workspace package import when running from examples/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _mpl_helpers import plot_design, plot_grid, run_with_snapshots
+from _mpl_helpers import plot_design, plot_grid, show_snapshots
 from beamz import (
     LIGHT_SPEED,
     Design,
@@ -109,9 +109,6 @@ sim = Simulation(
     time=time_steps,
     resolution=DX,
 )
-run_with_snapshots(
-    sim,
-    snapshot_field="Ez",
-    snapshot_interval=15,
-    clean_visualization=True,
-)
+results = sim.run(snapshot_field="Ez", snapshot_interval=15, store_snapshots=True)
+if results is not None:
+    show_snapshots(results.snapshots, clean_visualization=True)

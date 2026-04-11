@@ -430,23 +430,19 @@ def _snapshot_figure(snapshot, *, cmap, clean_visualization, interpolation, figu
     return fig, ax
 
 
-def run_with_snapshots(
-    sim,
+def show_snapshots(
+    snapshots,
     *,
-    snapshot_field,
-    snapshot_interval=10,
     cmap="twilight_zero",
     clean_visualization=False,
     interpolation="bicubic",
-    live_display=True,
-    save_video=None,
-    video_fps=30,
+    pause=0.001,
 ):
-    context = {"fig": None, "ax": None}
+    if not snapshots:
+        return
 
-    def callback(snapshot):
-        if not live_display:
-            return
+    context = {"fig": None, "ax": None}
+    for snapshot in snapshots:
         fig, ax = _snapshot_figure(
             snapshot,
             cmap=cmap,
@@ -457,26 +453,7 @@ def run_with_snapshots(
         )
         context["fig"], context["ax"] = fig, ax
         plt.show(block=False)
-        plt.pause(0.001)
-
-    results = sim.run(
-        snapshot_field=snapshot_field,
-        snapshot_interval=snapshot_interval,
-        snapshot_callback=callback if live_display else None,
-        store_snapshots=save_video is not None,
-    )
-
-    if save_video is not None and results is not None and results.snapshots:
-        save_snapshot_video(
-            results.snapshots,
-            filename=save_video,
-            fps=video_fps,
-            cmap=cmap,
-            clean_visualization=clean_visualization,
-            interpolation=interpolation,
-        )
-
-    return results
+        plt.pause(pause)
 
 
 def save_snapshot_video(

@@ -7,11 +7,6 @@ import numpy as np
 from beamz.visual.data import snapshot_payload, simulation_plot_data
 
 
-def run_with_snapshots(sim, **kwargs):
-    """Backward-compatible wrapper around Simulation.run()."""
-    return sim.run(**kwargs)
-
-
 def validate_snapshot_field(sim, snapshot_field: str) -> None:
     """Validate that a requested snapshot field exists on the simulation."""
     available = sim.fields.available_components()
