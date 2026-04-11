@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -248,21 +247,6 @@ class Simulation:
     def _normalize_specs(cls, *, design, sources, monitors):
         normalized_sources = list(sources)
         normalized_monitors = list(monitors)
-
-        if (
-            design is not None
-            and not sources
-            and not monitors
-            and (getattr(design, "sources", None) or getattr(design, "monitors", None))
-        ):
-            warnings.warn(
-                "Passing sources and monitors via Design is deprecated. "
-                "Pass them to Simulation(sources=..., monitors=...) instead.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-            normalized_sources.extend(getattr(design, "sources", ()))
-            normalized_monitors.extend(getattr(design, "monitors", ()))
 
         normalized_sources = cls._dedupe_devices(normalized_sources)
         normalized_monitors = cls._dedupe_devices(normalized_monitors)

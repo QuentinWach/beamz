@@ -1,6 +1,4 @@
 import numpy as np
-import pytest
-
 from beamz import (
     Design,
     GaussianSource,
@@ -50,22 +48,24 @@ def test_simulation_accepts_explicit_sources_and_monitors():
     assert sim.monitors == [monitor]
 
 
-def test_simulation_falls_back_to_design_devices_with_deprecation_warning():
+def test_design_rejects_device_objects():
     design = Design(width=4 * um, height=4 * um, material=Material(permittivity=1.0))
     source = GaussianSource(position=(2 * um, 2 * um), width=0.2 * um, signal=[1.0, 0.0])
     monitor = Monitor(start=(1 * um, 1 * um), end=(1 * um, 3 * um), name="m1")
-    design += source
-    design += monitor
 
-    with pytest.deprecated_call(match="Passing sources and monitors via Design is deprecated"):
-        sim = Simulation(
-            design=design,
-            time=_time_axis(),
-            resolution=0.2 * um,
-        )
+    try:
+        design += source
+    except TypeError as exc:
+        assert "Simulation(sources=[...])" in str(exc)
+    else:
+        raise AssertionError("Expected Design to reject source objects")
 
-    assert sim.sources == [source]
-    assert sim.monitors == [monitor]
+    try:
+        design += monitor
+    except TypeError as exc:
+        assert "Simulation(monitors=[...])" in str(exc)
+    else:
+        raise AssertionError("Expected Design to reject monitor objects")
 
 
 def test_run_compiled_returns_simulation_results_with_backward_compatible_mapping():
