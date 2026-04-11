@@ -1,4 +1,5 @@
 import os
+import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Literal
@@ -47,6 +48,8 @@ class Simulation:
         self,
         design: Design = None,
         devices: list = None,
+        sources: list = None,
+        monitors: list[Monitor] = None,
         boundaries: list[Boundary] = None,
         thermal=None,
         resolution: float = 0.02 * µm,
@@ -55,12 +58,20 @@ class Simulation:
     ):
         self.design = design
         devices = devices or []
+        sources = sources or []
+        monitors = monitors or []
         boundaries = boundaries or []
         self.resolution = resolution
         self.is_3d = design.is_3d and design.depth > 0
         self.plane_2d = plane_2d.lower()
         if self.plane_2d not in ["xy", "yz", "xz"]:
             self.plane_2d = "xy"
+        self.sources, self.monitors, self.devices = self._normalize_devices(
+            design=design,
+            devices=devices,
+            sources=sources,
+            monitors=monitors,
+        )
 
         # Get material grids from design (design owns the material grids, we reference them)
         permittivity, conductivity, permeability = design.get_material_grids(resolution)
@@ -115,9 +126,6 @@ class Simulation:
         else:
             self.pml_data = None
 
-        # Store device references (no duplication)
-        self.devices = devices
-
         # Store boundary references (no duplication)
         self.boundaries = boundaries
 
@@ -131,6 +139,56 @@ class Simulation:
         self._compiled_program_signature = None
         self._compiled_program_cache = {}
         self._compiled_monitor_state = None
+
+    @staticmethod
+    def _dedupe_devices(devices):
+        seen = set()
+        ordered = []
+        for device in devices:
+            key = id(device)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(device)
+        return ordered
+
+    @classmethod
+    def _normalize_devices(cls, *, design, devices, sources, monitors):
+        normalized_sources = list(sources)
+        normalized_monitors = list(monitors)
+        other_devices = []
+
+        for device in devices:
+            if isinstance(device, Monitor):
+                normalized_monitors.append(device)
+            else:
+                if hasattr(device, "inject") or hasattr(device, "inject_h"):
+                    normalized_sources.append(device)
+                else:
+                    other_devices.append(device)
+
+        if (
+            design is not None
+            and not devices
+            and not sources
+            and not monitors
+            and (getattr(design, "sources", None) or getattr(design, "monitors", None))
+        ):
+            warnings.warn(
+                "Passing sources and monitors via Design is deprecated. "
+                "Pass them to Simulation(sources=..., monitors=...) instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            normalized_sources.extend(getattr(design, "sources", ()))
+            normalized_monitors.extend(getattr(design, "monitors", ()))
+
+        normalized_sources = cls._dedupe_devices(normalized_sources)
+        normalized_monitors = cls._dedupe_devices(normalized_monitors)
+        normalized_devices = cls._dedupe_devices(
+            [*normalized_sources, *normalized_monitors, *other_devices]
+        )
+        return normalized_sources, normalized_monitors, normalized_devices
 
     def step(self):
         """Perform one FDTD time step with correct Huygens source timing.
