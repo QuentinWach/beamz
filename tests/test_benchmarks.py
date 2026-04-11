@@ -72,7 +72,7 @@ class TestDipoleRadiation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.2 * wavelength)],
             time=time,
             resolution=dx,
@@ -144,7 +144,7 @@ class TestDipoleRadiation:
 
             sim = Simulation(
                 design=design,
-                devices=[source],
+                sources=[source],
                 boundaries=[PML(thickness=1.2 * wavelength)],
                 time=time,
                 resolution=dx,
@@ -212,7 +212,7 @@ class TestCavityResonance:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -296,7 +296,7 @@ class TestGridConvergence:
 
             sim = Simulation(
                 design=design,
-                devices=[source],
+                sources=[source],
                 boundaries=[PML(thickness=wavelength)],
                 time=time,
                 resolution=dx,
@@ -355,7 +355,7 @@ class TestGridConvergence:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -442,7 +442,7 @@ class TestWaveguideGroupVelocity:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.2 * wavelength)],
             time=time,
             resolution=dx,

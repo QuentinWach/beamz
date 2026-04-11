@@ -270,7 +270,7 @@ def _compile_monitor_3d_indices(
 
 
 def compile_monitor_specs(
-    devices: list,
+    monitors: list,
     fields,
     resolution: float,
     num_steps: int,
@@ -285,7 +285,6 @@ def compile_monitor_specs(
     max_records:
         Maximum number of records per monitor row in monitor-state buffers.
     """
-    monitors = [d for d in devices if isinstance(d, Monitor)]
     if not monitors:
         return tuple(), 0
 

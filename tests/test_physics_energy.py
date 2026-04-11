@@ -62,7 +62,7 @@ class TestEnergyConservation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -123,7 +123,7 @@ class TestEnergyConservation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -174,7 +174,7 @@ class TestEnergyConservation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -237,7 +237,7 @@ class TestEnergyConservation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -289,7 +289,7 @@ class TestEnergyConservation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,

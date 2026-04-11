@@ -1394,8 +1394,8 @@ def _lossy_fraction(
     return float(full_mask.mean())
 
 
-def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulation:
-    """Build a CompiledSimulation from design/devices/boundaries and a run config.
+def compile_simulation(design, sources, monitors, boundaries, run_cfg) -> CompiledSimulation:
+    """Build a CompiledSimulation from design/sources/monitors/boundaries and a run config.
 
     Required run_cfg attributes:
     - fields
@@ -1418,7 +1418,7 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
     t0 = float(getattr(run_cfg, "t0", 0.0))
 
     source_specs = compile_source_specs(
-        devices=devices,
+        sources=sources,
         fields=fields,
         dt=dt,
         resolution=resolution,
@@ -1428,14 +1428,14 @@ def compile_simulation(design, devices, boundaries, run_cfg) -> CompiledSimulati
     )
 
     monitor_specs, _ = compile_monitor_specs(
-        devices=devices,
+        monitors=monitors,
         fields=fields,
         resolution=resolution,
         num_steps=num_steps,
         dt=dt,
     )
 
-    monitor_devices = tuple(d for d in devices if isinstance(d, Monitor))
+    monitor_devices = tuple(monitors)
 
     loop_kind_raw = (
         str(

@@ -331,7 +331,7 @@ def run_beamz_single(
 
     sim = Simulation(
         design=design,
-        devices=[source],
+        sources=[source],
         boundaries=[PML(edges="all", thickness=cfg.pml_um * 1e-6)],
         time=t,
         resolution=dx_m,

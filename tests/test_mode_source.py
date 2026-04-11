@@ -495,7 +495,7 @@ class TestModeSourcePropagation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -559,7 +559,7 @@ class TestModeSourcePropagation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -889,7 +889,7 @@ class TestModeSourcePolarization:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -1073,7 +1073,7 @@ class TestModeSourceDirectionality3D:
         )
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=0.8 * wavelength)],
             time=time,
             resolution=dx,
@@ -1175,7 +1175,7 @@ class TestModeSourceDirectionality3D:
         )
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=0.8 * wavelength)],
             time=time,
             resolution=dx,
@@ -1352,7 +1352,7 @@ class TestModeSourceDirectionality3D:
 
         sim = Simulation(
             design=design,
-            devices=[source, monitor],
+            sources=[source], monitors=[monitor],
             boundaries=[PML(thickness=0.8 * wavelength)],
             time=time,
             resolution=dx,
@@ -1524,7 +1524,7 @@ class TestModeSourceDirectionality3D:
             )
             sim = Simulation(
                 design=design,
-                devices=[source, monitor],
+                sources=[source], monitors=[monitor],
                 boundaries=[PML(thickness=0.8 * wavelength)],
                 time=time,
                 resolution=dx,

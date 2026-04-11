@@ -171,7 +171,8 @@ def _make_simulation():
     extra_source = FakeGaussianSource()
     sim = Simulation.__new__(Simulation)
     sim.design = design
-    sim.devices = [design.sources[0], design.monitors[0], extra_source]
+    sim.sources = [design.sources[0], extra_source]
+    sim.monitors = [design.monitors[0]]
     sim.boundaries = [PML(edges=["left", "right"], thickness=0.15)]
     sim.resolution = 2.5e-8
     sim.is_3d = True
@@ -249,7 +250,8 @@ def test_simulation_to_scene_preserves_monitor_extents_for_x_normal_planes():
     design.monitors = [FakeMonitorX()]
     sim = Simulation.__new__(Simulation)
     sim.design = design
-    sim.devices = [design.monitors[0]]
+    sim.sources = []
+    sim.monitors = [design.monitors[0]]
     sim.boundaries = []
     sim.resolution = 2.5e-8
     sim.is_3d = True
@@ -280,7 +282,8 @@ def test_simulation_to_scene_preserves_monitor_center_for_legacy_plane_monitors(
     design.monitors = [legacy_monitor]
     sim = Simulation.__new__(Simulation)
     sim.design = design
-    sim.devices = [legacy_monitor]
+    sim.sources = []
+    sim.monitors = [legacy_monitor]
     sim.boundaries = []
     sim.resolution = 2.5e-8
     sim.is_3d = True
@@ -322,7 +325,8 @@ def test_mode_source_visualization_does_not_emit_direction_arrow():
     design.sources[0].wavelength = 99.0
     sim = Simulation.__new__(Simulation)
     sim.design = design
-    sim.devices = [design.sources[0]]
+    sim.sources = [design.sources[0]]
+    sim.monitors = []
     sim.boundaries = []
     sim.resolution = 2.5e-8
     sim.is_3d = True
@@ -341,7 +345,7 @@ def test_design_to_scene_keeps_adjacent_same_material_structures_separate():
     scene = simulation_to_scene(
         SimpleNamespace(
             design=_make_design_with_repeated_material(),
-            devices=[],
+            sources=[], monitors=[],
             boundaries=[],
             resolution=2.5e-8,
             is_3d=True,
@@ -373,7 +377,7 @@ def test_design_to_scene_includes_sphere_structures():
                 depth=0.6,
                 is_3d=True,
             ),
-            devices=[],
+            sources=[], monitors=[],
             boundaries=[],
             resolution=2.5e-8,
             is_3d=True,
@@ -402,7 +406,7 @@ def test_design_to_scene_unions_overlapping_same_material_structures():
     scene = simulation_to_scene(
         SimpleNamespace(
             design=_make_design_with_overlapping_material(),
-            devices=[],
+            sources=[], monitors=[],
             boundaries=[],
             resolution=2.5e-8,
             is_3d=True,
@@ -426,7 +430,7 @@ def test_structure_colors_are_deterministic_and_only_air_is_transparent():
     scene = simulation_to_scene(
         SimpleNamespace(
             design=_make_design_with_two_materials_and_air(),
-            devices=[],
+            sources=[], monitors=[],
             boundaries=[],
             resolution=2.5e-8,
             is_3d=True,

@@ -32,24 +32,22 @@ def test_simulation_normalizes_sources_and_monitors_from_explicit_args():
 
     assert sim.sources == [source]
     assert sim.monitors == [monitor]
-    assert sim.devices == [source, monitor]
 
 
-def test_simulation_normalizes_legacy_devices_into_sources_and_monitors():
+def test_simulation_accepts_explicit_sources_and_monitors():
     design = Design(width=4 * um, height=4 * um, material=Material(permittivity=1.0))
     source = GaussianSource(position=(2 * um, 2 * um), width=0.2 * um, signal=[1.0, 0.0])
     monitor = Monitor(start=(1 * um, 1 * um), end=(1 * um, 3 * um), name="m1")
 
     sim = Simulation(
         design=design,
-        devices=[source, monitor],
+        sources=[source], monitors=[monitor],
         time=_time_axis(),
         resolution=0.2 * um,
     )
 
     assert sim.sources == [source]
     assert sim.monitors == [monitor]
-    assert sim.devices == [source, monitor]
 
 
 def test_simulation_falls_back_to_design_devices_with_deprecation_warning():
@@ -68,7 +66,6 @@ def test_simulation_falls_back_to_design_devices_with_deprecation_warning():
 
     assert sim.sources == [source]
     assert sim.monitors == [monitor]
-    assert sim.devices == [source, monitor]
 
 
 def test_run_compiled_returns_simulation_results_with_backward_compatible_mapping():

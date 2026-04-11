@@ -83,13 +83,9 @@ def run_with_visualization(sim, **kwargs):
 
 def _setup_visualization(sim, cfg):
     """Set up all visualization components."""
-    from beamz.devices.monitors.monitors import Monitor
-
     active_monitor = None
     if cfg.animate_live and sim.is_3d:
-        active_monitor = next(
-            (d for d in sim.devices if isinstance(d, Monitor) and d.is_3d), None
-        )
+        active_monitor = next((d for d in sim.monitors if d.is_3d), None)
         if not active_monitor:
             cfg.animate_live = None
 
@@ -99,7 +95,7 @@ def _setup_visualization(sim, cfg):
             cfg.animate_live = None
 
     if cfg.wavelength is None:
-        for device in sim.devices:
+        for device in sim.sources:
             if hasattr(device, "wavelength"):
                 cfg.wavelength = device.wavelength
                 break

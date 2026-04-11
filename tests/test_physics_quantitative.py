@@ -127,7 +127,7 @@ class TestFresnelQuantitative:
 
         sim_ref = Simulation(
             design=design_ref,
-            devices=[source_ref, mon_ref],
+            sources=[source_ref], monitors=[mon_ref],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -163,7 +163,7 @@ class TestFresnelQuantitative:
 
         sim_full = Simulation(
             design=design_full,
-            devices=[source_full, mon_trans],
+            sources=[source_full], monitors=[mon_trans],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -244,7 +244,7 @@ class TestFresnelQuantitative:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -397,7 +397,7 @@ class TestModeSourceAccuracy:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.2 * wavelength)],
             time=time,
             resolution=dx,
@@ -479,7 +479,7 @@ class TestGridConvergenceQuantitative:
 
             sim = Simulation(
                 design=design,
-                devices=[source],
+                sources=[source],
                 boundaries=[PML(thickness=wavelength)],
                 time=time,
                 resolution=dx,
@@ -594,7 +594,7 @@ class TestGridConvergenceQuantitative:
 
             sim = Simulation(
                 design=design,
-                devices=[source],
+                sources=[source],
                 boundaries=[PML(thickness=wavelength)],
                 time=time,
                 resolution=dx,
@@ -681,7 +681,7 @@ class TestMieScattering2D:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -772,7 +772,7 @@ class TestMieScattering2D:
         # Run reference
         sim_ref = Simulation(
             design=design_ref,
-            devices=[source_ref],
+            sources=[source_ref],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -782,7 +782,7 @@ class TestMieScattering2D:
         # Run with scatterer
         sim_full = Simulation(
             design=design_full,
-            devices=[source_full],
+            sources=[source_full],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -888,7 +888,7 @@ class TestFabryPerotQuantitative:
 
         sim = Simulation(
             design=design,
-            devices=[source, mon_center],
+            sources=[source], monitors=[mon_center],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -960,7 +960,7 @@ class TestFabryPerotQuantitative:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -1047,7 +1047,7 @@ class TestEnergyConservationQuantitative:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -1105,7 +1105,7 @@ class TestEnergyConservationQuantitative:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -1186,7 +1186,7 @@ class TestPhysics3D:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -1272,7 +1272,7 @@ class TestPhysics3D:
         # Run reference
         sim_ref = Simulation(
             design=design_ref,
-            devices=[source_ref],
+            sources=[source_ref],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -1282,7 +1282,7 @@ class TestPhysics3D:
         # Run with sphere
         sim_full = Simulation(
             design=design_full,
-            devices=[source_full],
+            sources=[source_full],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,

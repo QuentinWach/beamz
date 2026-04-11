@@ -59,14 +59,14 @@ def test_run_compiled_matches_python_step_path(small_sim_params):
 
     sim_python = Simulation(
         design=design.copy(),
-        devices=[source_a],
+        sources=[source_a],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
     )
     sim_compiled = Simulation(
         design=design.copy(),
-        devices=[source_b],
+        sources=[source_b],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -98,7 +98,7 @@ def test_compiled_monitor_power_is_populated(small_sim_params):
 
     sim = Simulation(
         design=design,
-        devices=[source, monitor],
+        sources=[source], monitors=[monitor],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -125,7 +125,7 @@ def test_compiled_monitor_accumulates_across_chunks(small_sim_params):
     )
     sim_full = Simulation(
         design=design.copy(),
-        devices=[source_a, monitor_a],
+        sources=[source_a], monitors=[monitor_a],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -141,7 +141,7 @@ def test_compiled_monitor_accumulates_across_chunks(small_sim_params):
     )
     sim_chunked = Simulation(
         design=design.copy(),
-        devices=[source_b, monitor_b],
+        sources=[source_b], monitors=[monitor_b],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -185,7 +185,7 @@ def test_compiled_frequency_monitor_matches_direct_sum(small_sim_params):
 
     sim = Simulation(
         design=design,
-        devices=[source, monitor],
+        sources=[source], monitors=[monitor],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -223,7 +223,7 @@ def test_compiled_frequency_monitor_accumulates_across_chunks(small_sim_params):
     )
     sim_full = Simulation(
         design=design.copy(),
-        devices=[source_a, monitor_a],
+        sources=[source_a], monitors=[monitor_a],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -241,7 +241,7 @@ def test_compiled_frequency_monitor_accumulates_across_chunks(small_sim_params):
     )
     sim_chunked = Simulation(
         design=design.copy(),
-        devices=[source_b, monitor_b],
+        sources=[source_b], monitors=[monitor_b],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -303,7 +303,7 @@ def test_compiled_frequency_monitor_3d_populated():
     )
     sim = Simulation(
         design=design,
-        devices=[source, monitor],
+        sources=[source], monitors=[monitor],
         boundaries=[PML(thickness=0.6 * wl, edges="all")],
         time=t,
         resolution=dx,
@@ -339,7 +339,7 @@ def test_compiled_dft_component_monitor_populated(small_sim_params):
     )
     sim = Simulation(
         design=design,
-        devices=[source, monitor],
+        sources=[source], monitors=[monitor],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -457,7 +457,7 @@ def test_compiled_program_compiles_once(small_sim_params):
 
     sim = Simulation(
         design=design,
-        devices=[],
+        sources=[], monitors=[],
         boundaries=[PML(thickness=1.0 * wl)],
         time=t,
         resolution=dx,
@@ -528,7 +528,7 @@ def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
 
     sim = Simulation(
         design=design,
-        devices=[source],
+        sources=[source],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -609,7 +609,7 @@ def test_compile_mode_source_builds_e_and_h_specs():
 
     sim = Simulation(
         design=design,
-        devices=[source],
+        sources=[source],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -633,7 +633,7 @@ def test_cache_reuse_across_equal_chunks(small_sim_params):
 
     sim = Simulation(
         design=design,
-        devices=[source],
+        sources=[source],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
@@ -662,14 +662,14 @@ def test_waveform_absolute_indexing_correctness(small_sim_params):
 
     sim_single = Simulation(
         design=design.copy(),
-        devices=[source_a],
+        sources=[source_a],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
     )
     sim_chunked = Simulation(
         design=design.copy(),
-        devices=[source_b],
+        sources=[source_b],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,

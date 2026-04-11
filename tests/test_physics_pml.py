@@ -71,7 +71,7 @@ class TestPMLAbsorption:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=pml_thickness)],
             time=time,
             resolution=dx,
@@ -134,7 +134,7 @@ class TestPMLAbsorption:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -196,7 +196,7 @@ class TestPMLAbsorption:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=pml_thickness)],
             time=time,
             resolution=dx,
@@ -247,7 +247,7 @@ class TestPMLAbsorption:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,

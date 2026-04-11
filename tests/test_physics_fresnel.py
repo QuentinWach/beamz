@@ -89,7 +89,7 @@ class TestFresnelCoefficients:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -161,7 +161,7 @@ class TestFresnelCoefficients:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
@@ -217,7 +217,7 @@ class TestFresnelCoefficients:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,

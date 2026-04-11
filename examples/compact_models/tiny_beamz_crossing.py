@@ -450,7 +450,8 @@ for path in mode_plot_paths:
 # simulation object.
 sim = Simulation(
     design=design,
-    devices=[source, m_fwd, *out_monitors],
+    sources=[source],
+    monitors=[m_fwd, *out_monitors],
     boundaries=[
         PML(edges=["left", "right", "top", "bottom"], thickness=PML_XY), 
         PML(edges=["front", "back"], thickness=PML_Z)],

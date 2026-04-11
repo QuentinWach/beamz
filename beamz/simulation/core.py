@@ -142,7 +142,6 @@ class Simulation:
     def __init__(
         self,
         design: Design = None,
-        devices: list = None,
         sources: list = None,
         monitors: list[Monitor] = None,
         boundaries: list[Boundary] = None,
@@ -152,7 +151,6 @@ class Simulation:
         plane_2d: str = "xy",
     ):
         self.design = design
-        devices = devices or []
         sources = sources or []
         monitors = monitors or []
         boundaries = boundaries or []
@@ -161,9 +159,8 @@ class Simulation:
         self.plane_2d = plane_2d.lower()
         if self.plane_2d not in ["xy", "yz", "xz"]:
             self.plane_2d = "xy"
-        self.sources, self.monitors, self.devices = self._normalize_devices(
+        self.sources, self.monitors = self._normalize_specs(
             design=design,
-            devices=devices,
             sources=sources,
             monitors=monitors,
         )
@@ -248,23 +245,12 @@ class Simulation:
         return ordered
 
     @classmethod
-    def _normalize_devices(cls, *, design, devices, sources, monitors):
+    def _normalize_specs(cls, *, design, sources, monitors):
         normalized_sources = list(sources)
         normalized_monitors = list(monitors)
-        other_devices = []
-
-        for device in devices:
-            if isinstance(device, Monitor):
-                normalized_monitors.append(device)
-            else:
-                if hasattr(device, "inject") or hasattr(device, "inject_h"):
-                    normalized_sources.append(device)
-                else:
-                    other_devices.append(device)
 
         if (
             design is not None
-            and not devices
             and not sources
             and not monitors
             and (getattr(design, "sources", None) or getattr(design, "monitors", None))
@@ -280,10 +266,7 @@ class Simulation:
 
         normalized_sources = cls._dedupe_devices(normalized_sources)
         normalized_monitors = cls._dedupe_devices(normalized_monitors)
-        normalized_devices = cls._dedupe_devices(
-            [*normalized_sources, *normalized_monitors, *other_devices]
-        )
-        return normalized_sources, normalized_monitors, normalized_devices
+        return normalized_sources, normalized_monitors
 
     def step(self):
         """Perform one FDTD time step with correct Huygens source timing.
@@ -293,10 +276,10 @@ class Simulation:
         if self.current_step >= self.num_steps:
             return False
 
-        # Legacy devices (only have inject(), no inject_h/inject_e): inject before update
+        # Legacy sources (only have inject(), no inject_h/inject_e): inject before update
         self._inject_legacy_sources()
 
-        # Collect source terms from legacy devices (if any)
+        # Collect source terms from source objects that expose packed source terms.
         source_j, source_m = self._collect_source_terms()
 
         # 1. H update
@@ -325,9 +308,7 @@ class Simulation:
 
     def _record_monitors(self):
         """Record data from Monitor devices during simulation."""
-        for device in self.devices:
-            if not isinstance(device, Monitor):
-                continue
+        for device in self.monitors:
             should_record = device.should_record(self.current_step)
             dft_every_step = bool(
                 getattr(device, "dft_enabled", False)
@@ -364,7 +345,7 @@ class Simulation:
 
     def _inject_h_sources(self):
         """Inject magnetic currents (M) into H-fields after H update."""
-        for device in self.devices:
+        for device in self.sources:
             if hasattr(device, "inject_h"):
                 device.inject_h(
                     self.fields,
@@ -377,7 +358,7 @@ class Simulation:
 
     def _inject_e_sources(self):
         """Inject electric currents (J) into E-fields after E update."""
-        for device in self.devices:
+        for device in self.sources:
             if hasattr(device, "inject_e"):
                 device.inject_e(
                     self.fields,
@@ -390,7 +371,7 @@ class Simulation:
 
     def _inject_legacy_sources(self):
         """Inject from devices that only have inject() (no inject_h/inject_e)."""
-        for device in self.devices:
+        for device in self.sources:
             if hasattr(device, "inject") and not hasattr(device, "inject_h"):
                 device.inject(
                     self.fields,
@@ -406,7 +387,7 @@ class Simulation:
         source_j = {}  # Electric currents for E-field update
         source_m = {}  # Magnetic currents for H-field update
 
-        for device in self.devices:
+        for device in self.sources:
             if hasattr(device, "get_source_terms"):
                 j, m = device.get_source_terms(
                     self.fields,
@@ -659,7 +640,8 @@ class Simulation:
         )
         program = compile_simulation(
             design=self.design,
-            devices=self.devices,
+            sources=self.sources,
+            monitors=self.monitors,
             boundaries=self.boundaries,
             run_cfg=run_cfg,
         )
@@ -1072,8 +1054,8 @@ class Simulation:
     def _named_monitors(self):
         return {
             device.name: device
-            for device in self.devices
-            if isinstance(device, Monitor) and getattr(device, "name", None)
+            for device in self.monitors
+            if getattr(device, "name", None)
         }
 
     def _sample_monitor_component_spectrum(

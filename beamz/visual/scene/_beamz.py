@@ -122,7 +122,8 @@ def simulation_to_scene(simulation: Any) -> SceneSpec:
             "plane_2d": getattr(simulation, "plane_2d", "xy"),
             "dt": getattr(simulation, "dt", None),
             "num_steps": getattr(simulation, "num_steps", None),
-            "num_devices": len(getattr(simulation, "devices", [])),
+            "num_devices": len(_simulation_sources(simulation))
+            + len(_simulation_monitors(simulation)),
             "num_boundaries": len(getattr(simulation, "boundaries", [])),
         },
     )
@@ -635,13 +636,17 @@ def _simulation_sources(simulation: Any) -> list[Any]:
 def _combined_simulation_items(
     simulation: Any, *, attr_name: str, predicate: Callable[[Any], bool]
 ) -> list[Any]:
-    items = list(getattr(getattr(simulation, "design", None), attr_name, []))
+    items = [
+        item
+        for item in list(getattr(getattr(simulation, "design", None), attr_name, []))
+        if predicate(item)
+    ]
     seen = {id(item) for item in items}
-    for device in getattr(simulation, "devices", []):
-        if not predicate(device) or id(device) in seen:
+    for item in getattr(simulation, attr_name, []):
+        if not predicate(item) or id(item) in seen:
             continue
-        seen.add(id(device))
-        items.append(device)
+        seen.add(id(item))
+        items.append(item)
     return items
 
 
