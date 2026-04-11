@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import matplotlib.pyplot as plt
@@ -8,7 +9,94 @@ from matplotlib.patches import Rectangle as MatplotlibRectangle
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _MonitorState:
+    """Mutable runtime state kept separate from Monitor configuration."""
+
+    fields: dict[str, list]
+    frequency_flux_spectrum: np.ndarray
+    objective_value: Optional[float]
+    power_accumulated: np.ndarray | None
+    energy_history: list
+    power_history: list
+    power_timestamps: list
+    power_accumulation_count: int
+    step_count: int
+    last_record_step: int
+    _dft_accum: dict
+    _dft_weight_sum: np.ndarray
+    _dft_sample_count: int
+    _dft_phase: np.ndarray
+    _dft_last_t: float | None
+    _dft_last_dt: float | None
+    _dft_last_rot: np.ndarray | None
+
+    @classmethod
+    def create(cls, *, dft_frequencies: np.ndarray, frequency_points: np.ndarray):
+        fields = {
+            "Ex": [],
+            "Ey": [],
+            "Ez": [],
+            "Hx": [],
+            "Hy": [],
+            "Hz": [],
+            "t": [],
+        }
+        return cls(
+            fields=fields,
+            frequency_flux_spectrum=np.zeros(
+                frequency_points.shape, dtype=np.complex64
+            ),
+            objective_value=None,
+            power_accumulated=None,
+            energy_history=[],
+            power_history=[],
+            power_timestamps=[],
+            power_accumulation_count=0,
+            step_count=0,
+            last_record_step=-1,
+            _dft_accum={},
+            _dft_weight_sum=np.zeros(dft_frequencies.size, dtype=float),
+            _dft_sample_count=0,
+            _dft_phase=np.ones(dft_frequencies.size, dtype=np.complex128),
+            _dft_last_t=None,
+            _dft_last_dt=None,
+            _dft_last_rot=None,
+        )
+
+
 class Monitor:
+    _RUNTIME_ATTRS = {
+        "fields",
+        "frequency_flux_spectrum",
+        "objective_value",
+        "power_accumulated",
+        "energy_history",
+        "power_history",
+        "power_timestamps",
+        "power_accumulation_count",
+        "step_count",
+        "last_record_step",
+        "_dft_accum",
+        "_dft_weight_sum",
+        "_dft_sample_count",
+        "_dft_phase",
+        "_dft_last_t",
+        "_dft_last_dt",
+        "_dft_last_rot",
+    }
+
+    def __getattr__(self, name):
+        if name in self._RUNTIME_ATTRS and "_state" in self.__dict__:
+            return getattr(self._state, name)
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+
+    def __setattr__(self, name, value):
+        if name in self._RUNTIME_ATTRS and "_state" in self.__dict__:
+            setattr(self._state, name, value)
+            return
+        object.__setattr__(self, name, value)
+
     def __init__(
         self,
         design=None,
@@ -84,47 +172,18 @@ class Monitor:
         self.frequency_points = freq_arr
         self.frequency_record_interval = max(1, int(frequency_record_interval))
         self.accumulate_frequency = bool(freq_arr.size > 0)
-        self.frequency_flux_spectrum = np.zeros(freq_arr.shape, dtype=np.complex64)
         self.objective_function = objective_function
-        self.objective_value: Optional[float] = None
         self.name = name
 
         # Determine if this is a 3D monitor based on input parameters
         self.is_3d = self._determine_3d_mode(start, end, design)
 
-        # Initialize field storage
-        if self.is_3d:
-            # 3D fields: Ex, Ey, Ez, Hx, Hy, Hz
-            self.fields = {
-                "Ex": [],
-                "Ey": [],
-                "Ez": [],
-                "Hx": [],
-                "Hy": [],
-                "Hz": [],
-                "t": [],
-            }
-        else:
-            # 2D fields: Ez, Hx, Hy and optional TE set Ex, Ey, Hz
-            self.fields = {
-                "Ex": [],
-                "Ey": [],
-                "Ez": [],
-                "Hx": [],
-                "Hy": [],
-                "Hz": [],
-                "t": [],
-            }
+        # Runtime recording state is kept separate from the monitor spec.
+        self._state = _MonitorState.create(
+            dft_frequencies=self.dft_frequencies,
+            frequency_points=self.frequency_points,
+        )
 
-        # Power and energy storage
-        self.power_accumulated = None
-        self.energy_history = []
-        self.power_history = []
-        self.power_timestamps = []
-        self.power_accumulation_count = 0
-        # Recording control
-        self.step_count = 0
-        self.last_record_step = -1
         # Live visualization
         self.live_fig = None
         self.live_axes = None
@@ -132,14 +191,6 @@ class Monitor:
         self.update_interval = (
             10  # Update every N records (faster updates for visibility)
         )
-        # DFT accumulators: component -> complex[nf, npoints], plus scalar weight sum.
-        self._dft_accum = {}
-        self._dft_weight_sum = np.zeros(self.dft_frequencies.size, dtype=float)
-        self._dft_sample_count = 0
-        self._dft_phase = np.ones(self.dft_frequencies.size, dtype=np.complex128)
-        self._dft_last_t = None
-        self._dft_last_dt = None
-        self._dft_last_rot = None
 
         if self.is_3d:
             self._init_3d_monitor(start, end, plane_normal, plane_position, size)

@@ -89,3 +89,17 @@ def test_run_compiled_returns_simulation_results_with_backward_compatible_mappin
     assert result["monitors"] == [monitor]
     assert "monitor_results" in result
     assert isinstance(result.monitor_results["m1"], MonitorResults)
+
+
+def test_monitor_runtime_state_is_kept_in_private_container():
+    monitor = Monitor(start=(1 * um, 1 * um), end=(1 * um, 3 * um), name="m1")
+
+    assert "_state" in monitor.__dict__
+    assert "power_history" not in monitor.__dict__
+    assert "fields" not in monitor.__dict__
+
+    monitor.power_history = [1.0, 2.0]
+    monitor.fields["t"] = [0.0]
+
+    assert monitor._state.power_history == [1.0, 2.0]
+    assert monitor._state.fields["t"] == [0.0]
