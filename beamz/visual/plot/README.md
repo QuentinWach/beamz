@@ -1,1 +1,0 @@
-This is where plotting utilities for matplotlib will live.

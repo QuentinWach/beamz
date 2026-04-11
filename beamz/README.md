@@ -13,7 +13,7 @@ Orchestrates the finite-difference time-domain (FDTD) simulation and field evolu
 Provides topology optimization tools using JAX for automatic differentiation and the adjoint method.
 
 ### `visual/` - Visualization and UI
-Handles plotting, animation, and command-line interface interactions.
+Provides pure-data visualization helpers and interactive scene tooling.
 
 ### `const.py` - Physical Constants
 Defines fundamental physical constants (light speed, vacuum permittivity/permeability) and unit conversions (µm, nm).

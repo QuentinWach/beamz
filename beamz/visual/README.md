@@ -1,3 +1,3 @@
 # Visual
 
-Handles user interactions through plotting, animation, and the command line interface.
+Provides renderer-agnostic visualization data helpers and interactive scene UI.
