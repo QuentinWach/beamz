@@ -373,10 +373,18 @@ def _snapshot_figure(snapshot, *, cmap, clean_visualization, interpolation, figu
     actual_cmap = resolve_cmap(cmap)
 
     if figure is None or axes is None:
-        fig, ax = plt.subplots(figsize=(10, 8))
+        if clean_visualization:
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_axes([0, 0, 1, 1])
+        else:
+            fig, ax = plt.subplots(figsize=(10, 8))
     else:
-        fig, ax = figure, axes
-        ax.clear()
+        fig = figure
+        fig.clear()
+        if clean_visualization:
+            ax = fig.add_axes([0, 0, 1, 1])
+        else:
+            ax = fig.add_subplot(111)
 
     im = ax.imshow(
         field,
