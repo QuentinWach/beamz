@@ -413,8 +413,19 @@ class JupyterAnimator:
                     "extent": extent,
                     "design": design,
                     "boundaries": boundaries,
+                    "sources": sources,
+                    "monitors": monitors,
                     "plane_2d": plane_2d,
                 }
+            else:
+                if sources is not None:
+                    self.metadata["sources"] = sources
+                if monitors is not None:
+                    self.metadata["monitors"] = monitors
+                if boundaries is not None:
+                    self.metadata["boundaries"] = boundaries
+                if design is not None:
+                    self.metadata["design"] = design
 
         # Track global max for auto-scaling
         if self.axis_scale is None:
@@ -574,6 +585,15 @@ class JupyterAnimator:
                     alpha=self.line_opacity,
                 )
 
+    def _overlay_metadata(self):
+        """Return stored overlay metadata for replayed frames."""
+        return (
+            self.metadata.get("design"),
+            self.metadata.get("boundaries"),
+            self.metadata.get("sources"),
+            self.metadata.get("monitors"),
+        )
+
     def _build_replay(self, fps, facecolor="none"):
         """Build a FuncAnimation from stored frames.
 
@@ -637,16 +657,11 @@ class JupyterAnimator:
             title = ax.set_title("")
             plt.tight_layout()
 
-        self._add_overlays(
-            ax,
-            self.metadata.get("design"),
-            self.metadata.get("boundaries"),
-        )
+        design, boundaries, sources, monitors = self._overlay_metadata()
+        self._add_overlays(ax, design, boundaries, sources, monitors)
 
         if self.clean_visualization:
-            draw_scale_bar(
-                ax, self.metadata.get("design"), wavelength=self.wavelength, fontsize=14
-            )
+            draw_scale_bar(ax, design, wavelength=self.wavelength, fontsize=14)
 
         def update(frame_idx):
             im.set_data(self.frames[frame_idx])
@@ -804,11 +819,8 @@ class JupyterAnimator:
                         )
                     plt.tight_layout()
 
-                self._add_overlays(
-                    ax,
-                    self.metadata.get("design"),
-                    self.metadata.get("boundaries"),
-                )
+                design, boundaries, sources, monitors = self._overlay_metadata()
+                self._add_overlays(ax, design, boundaries, sources, monitors)
 
                 plt.show()
 
