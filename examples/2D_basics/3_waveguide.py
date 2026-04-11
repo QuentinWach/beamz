@@ -35,7 +35,7 @@ source = ModeSource(
     wavelength=WL,
     pol="tm",
     signal=signal,
-    direction="-x",
+    direction="+x",
 )
 
 # Run the simulation

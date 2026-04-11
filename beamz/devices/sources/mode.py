@@ -802,6 +802,10 @@ def _build_3d_y(
     )
     d_area = float(resolution * resolution)
     profiles = _normalize_3d_profiles_by_flux(profiles, axis="y", d_area=d_area)
+    if dir_sign < 0.0:
+        for comp in ("Ex", "Ey", "Ez"):
+            if profiles.get(comp) is not None:
+                profiles[comp] = -profiles[comp]
 
     extra = {
         "_x_start": x_start,
@@ -1091,6 +1095,26 @@ def _project_3d_profiles_to_real(profiles):
     out = {}
     for key, value in profiles.items():
         out[key] = _to_real_profile(value)
+    return out
+
+
+def _runtime_3d_profiles(profiles, axis: str, direction_sign: float):
+    """Apply runtime-only gauge corrections without mutating stored profiles."""
+    out = dict(profiles)
+    if axis != "y":
+        return out
+
+    if direction_sign > 0.0:
+        if out.get("Ex") is not None:
+            out["Ex"] = -out["Ex"]
+        if out.get("Hz") is not None:
+            out["Hz"] = -out["Hz"]
+    else:
+        if out.get("Ez") is not None:
+            out["Ez"] = -out["Ez"]
+        if out.get("Hx") is not None:
+            out["Hx"] = -out["Hx"]
+
     return out
 
 
@@ -1549,18 +1573,6 @@ class ModeSource:
         self._Hy_profile = profiles.get("Hy")
         self._Hz_profile = profiles.get("Hz")
 
-        if axis == "y":
-            if self._direction_sign > 0.0:
-                if self._Ex_profile is not None:
-                    self._Ex_profile = -self._Ex_profile
-                if self._Hz_profile is not None:
-                    self._Hz_profile = -self._Hz_profile
-            else:
-                if self._Ex_profile is not None:
-                    self._Ex_profile = -self._Ex_profile
-                if self._Hx_profile is not None:
-                    self._Hx_profile = -self._Hx_profile
-
         # Store indices on self
         self._Ex_indices = indices.get("Ex")
         self._Ey_indices = indices.get("Ey")
@@ -1971,6 +1983,7 @@ class ModeSource:
             "Hy": self._Hy_profile,
             "Hz": self._Hz_profile,
         }
+        profiles = _runtime_3d_profiles(profiles, self._axis, self._direction_sign)
         indices = {
             "Ex": self._Ex_indices,
             "Ey": self._Ey_indices,
