@@ -55,6 +55,7 @@ run_with_snapshots(
     snapshot_field="Ez",
     snapshot_interval=15,
     cmap="twilight_zero",
+    live_display=True,
     save_video="resring.mp4",
     video_fps=40,
 )

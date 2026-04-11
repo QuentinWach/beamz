@@ -430,29 +430,31 @@ def run_with_snapshots(
     cmap="twilight_zero",
     clean_visualization=False,
     interpolation="bicubic",
+    live_display=True,
     save_video=None,
     video_fps=30,
 ):
     context = {"fig": None, "ax": None}
 
     def callback(snapshot):
-        if save_video is None:
-            fig, ax = _snapshot_figure(
-                snapshot,
-                cmap=cmap,
-                clean_visualization=clean_visualization,
-                interpolation=interpolation,
-                figure=context["fig"],
-                axes=context["ax"],
-            )
-            context["fig"], context["ax"] = fig, ax
-            plt.show(block=False)
-            plt.pause(0.001)
+        if not live_display:
+            return
+        fig, ax = _snapshot_figure(
+            snapshot,
+            cmap=cmap,
+            clean_visualization=clean_visualization,
+            interpolation=interpolation,
+            figure=context["fig"],
+            axes=context["ax"],
+        )
+        context["fig"], context["ax"] = fig, ax
+        plt.show(block=False)
+        plt.pause(0.001)
 
     results = sim.run(
         snapshot_field=snapshot_field,
         snapshot_interval=snapshot_interval,
-        snapshot_callback=callback if save_video is None else None,
+        snapshot_callback=callback if live_display else None,
         store_snapshots=save_video is not None,
     )
 
