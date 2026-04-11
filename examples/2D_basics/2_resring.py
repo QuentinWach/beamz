@@ -1,5 +1,12 @@
+import sys
+from pathlib import Path
+
 from beamz import *
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from _mpl_helpers import run_with_snapshots
 
 # Parameters
 WL = 1.55*µm
@@ -43,11 +50,11 @@ sim = Simulation(
     time=time_steps,
     resolution=DX
 )
-sim.run(animate_live="Ez", 
-    animation_interval=15,
-    #axis_scale=[-1*DX**2, 1*DX*+2],
-    axis_scale=None,
-    cmap="twilight_zero", 
-    #clean_visualization=True,
+run_with_snapshots(
+    sim,
+    snapshot_field="Ez",
+    snapshot_interval=15,
+    cmap="twilight_zero",
     save_video="resring.mp4",
-    video_fps=40)
+    video_fps=40,
+)

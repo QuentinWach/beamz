@@ -59,7 +59,7 @@ source.initialize(grid.permittivity, DX)
 
 # Plot and save all mode field components (Ex, Ey, Ez, Hx, Hy, Hz)
 print("Plotting all mode field components...")
-#source.show()
+# plot_mode_profile(source) from examples/_mpl_helpers.py can be used here.
 print("Mode profile figure saved to mode_profile.png")
 
 # 4. Add Monitors
@@ -83,10 +83,5 @@ sim = Simulation(
 # Show the design
 sim.show()
 
-# Run with live animation of the Ez field on the XY monitor
-#results = sim.run(animate_live="Ez",
-#    animation_interval=15, 
-    #axis_scale=[-0.9e-4, 0.9e-4],
-#    clean_visualization=True, 
-#    save_video="3d_waveguide.mp4",
-#    video_fps=40)
+# Stream snapshots and animate/save them manually from examples/_mpl_helpers.py.
+# results = sim.run(snapshot_field="Ez", snapshot_interval=15, store_snapshots=True)

@@ -32,5 +32,5 @@ sim = Simulation(design=design, sources=[source], monitors=[monitor], boundaries
 
 sim.show()
 
-# The live animation uses the monitor passed into the simulation.
-#sim.run(animate_live="Hy", animation_interval=2, clean_visualization=False)
+# The simulation can stream snapshot payloads for manual plotting in examples.
+# results = sim.run(snapshot_field="Hy", snapshot_interval=2, store_snapshots=True)

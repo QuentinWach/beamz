@@ -1,5 +1,12 @@
+import sys
+from pathlib import Path
+
 from beamz import *
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from _mpl_helpers import run_with_snapshots
 
 WL = 0.6*µm # wavelength of the source
 TIME = 25*WL/LIGHT_SPEED # total simulation duration
@@ -16,4 +23,4 @@ source = GaussianSource(position=(4*µm, 5*µm), width=WL/6, signal=signal)
 
 # Add source and PML boundaries to the simulation.
 sim = Simulation(design=design, sources=[source], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
-sim.run(animate_live="Ez", animation_interval=1, clean_visualization=True)
+run_with_snapshots(sim, snapshot_field="Ez", snapshot_interval=1, clean_visualization=True)

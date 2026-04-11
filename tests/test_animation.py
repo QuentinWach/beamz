@@ -1,4 +1,5 @@
 import numpy as np
+from pathlib import Path
 
 from beamz.simulation.snapshots import run_with_snapshots
 from beamz.visual.data import signal_plot_data
@@ -76,3 +77,14 @@ def test_signal_plot_data_scales_picoseconds():
 
     assert payload["time_unit"] == "ps"
     assert np.allclose(payload["t_scaled"], np.array([0.0, 2.0]))
+
+
+def test_beamz_source_tree_contains_no_matplotlib_imports():
+    root = Path(__file__).resolve().parents[1] / "beamz"
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text()
+        if "import matplotlib" in text or "from matplotlib" in text:
+            offenders.append(path.relative_to(root).as_posix())
+
+    assert offenders == []
