@@ -420,7 +420,7 @@ flux_monitor = Monitor(
 
 sim = Simulation(
     design=design,
-    devices=[source, flux_monitor],
+    sources=[source], monitors=[flux_monitor],
     boundaries=[PML(edges=PML_EDGES, thickness=PML_THICKNESS)],
     time=time_steps,
     resolution=DX,
@@ -449,7 +449,7 @@ mid_source = ModeSource(
 )
 sim_mid = Simulation(
     design=design,
-    devices=[mid_source],
+    sources=[mid_source],
     boundaries=[PML(edges=PML_EDGES, thickness=PML_THICKNESS)],
     time=time_steps,
     resolution=DX,
@@ -498,7 +498,7 @@ xy_flux_source = ModeSource(
 )
 sim_xy_flux = Simulation(
     design=design,
-    devices=[xy_flux_source],
+    sources=[xy_flux_source],
     boundaries=[PML(edges=PML_EDGES, thickness=PML_THICKNESS)],
     time=time_steps,
     resolution=DX,

@@ -79,8 +79,14 @@ for step in range(STEPS):
                                  accumulate_power=True, record_fields=False)
     
     # Run forward simulation with output monitor
-    sim_fwd = Simulation(grid, [src_fwd, monitor_input_flux, output_monitor_fwd], 
-                        [PML(edges='all', thickness=1*µm)], time=time, resolution=DX)
+    sim_fwd = Simulation(
+        design=grid,
+        sources=[src_fwd],
+        monitors=[monitor_input_flux, output_monitor_fwd],
+        boundaries=[PML(edges="all", thickness=1 * µm)],
+        time=time,
+        resolution=DX,
+    )
     
     print(f"[{step+1}/{STEPS}] Forward Sim...", end="\r")
     results = sim_fwd.run(save_fields=['Ez'], field_subsample=2)
@@ -110,8 +116,14 @@ for step in range(STEPS):
     backward_monitor = Monitor(design=grid, start=(1.5*µm, H/2-WG_W*2), end=(1.5*µm, H/2+WG_W*2),
                               accumulate_power=True, record_fields=False)
     
-    sim_adj = Simulation(grid, [src_adj, monitor_back_flux, backward_monitor], 
-                        [PML(edges='all', thickness=1*µm)], time=time, resolution=DX)
+    sim_adj = Simulation(
+        design=grid,
+        sources=[src_adj],
+        monitors=[monitor_back_flux, backward_monitor],
+        boundaries=[PML(edges="all", thickness=1 * µm)],
+        time=time,
+        resolution=DX,
+    )
     
     adj_results = sim_adj.run(save_fields=['Ez'], field_subsample=2)
     adj_ez_history = [np.array(field) for field in adj_results['fields']['Ez']] if adj_results and 'fields' in adj_results else []
@@ -215,8 +227,14 @@ for i, wl_val in enumerate(wavelengths):
     mon_out = Monitor(design=grid, start=(W/2-WG_W*2, 1.5*µm), end=(W/2+WG_W*2, 1.5*µm), accumulate_power=True)
     
     # Simulation
-    sim_sweep = Simulation(grid, [src_sweep, mon_in, mon_out], 
-                           [PML(edges='all', thickness=1*µm)], time=time_sweep, resolution=DX)
+    sim_sweep = Simulation(
+        design=grid,
+        sources=[src_sweep],
+        monitors=[mon_in, mon_out],
+        boundaries=[PML(edges="all", thickness=1 * µm)],
+        time=time_sweep,
+        resolution=DX,
+    )
     
     # Run (no field saving needed for sweep, faster)
     sim_sweep.run(save_fields=[], field_subsample=10)
@@ -251,7 +269,14 @@ src_final.initialize(grid.permittivity, DX)
 mon_in_final = Monitor(design=grid, start=(1.5*µm, H/2-WG_W*2), end=(1.5*µm, H/2+WG_W*2), accumulate_power=True)
 mon_out_final = Monitor(design=grid, start=(W/2-WG_W*2, 1.5*µm), end=(W/2+WG_W*2, 1.5*µm), accumulate_power=True)
 
-sim_final = Simulation(grid, [src_final, mon_in_final, mon_out_final], [PML(edges='all', thickness=1*µm)], time=time_sweep, resolution=DX)
+sim_final = Simulation(
+    design=grid,
+    sources=[src_final],
+    monitors=[mon_in_final, mon_out_final],
+    boundaries=[PML(edges="all", thickness=1 * µm)],
+    time=time_sweep,
+    resolution=DX,
+)
 results_final = sim_final.run(save_fields=['Ez', 'Hx', 'Hy'], field_subsample=1)
 
 # Calculate final transmission for title

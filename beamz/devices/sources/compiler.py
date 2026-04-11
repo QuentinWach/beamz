@@ -195,7 +195,7 @@ def _mode_3d_profiles_and_indices(src: ModeSource):
 
 
 def compile_source_specs(
-    devices: list,
+    sources: list,
     fields,
     dt: float,
     resolution: float,
@@ -209,7 +209,7 @@ def compile_source_specs(
     """
     specs: list[CompiledSourceSpec] = []
 
-    for device in devices:
+    for device in sources:
         if isinstance(device, GaussianSource):
             specs.extend(
                 _compile_gaussian_source(

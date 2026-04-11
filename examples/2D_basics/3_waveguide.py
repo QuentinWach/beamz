@@ -41,7 +41,7 @@ source = ModeSource(
 # Run the simulation
 sim = Simulation(
     design=design, 
-    devices=[source], 
+    sources=[source], 
     boundaries=[PML(edges='all', thickness=1.2*WL)],
     time=time_steps,
     resolution=DX

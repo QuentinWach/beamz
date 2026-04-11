@@ -83,13 +83,9 @@ def run_with_visualization(sim, **kwargs):
 
 def _setup_visualization(sim, cfg):
     """Set up all visualization components."""
-    from beamz.devices.monitors.monitors import Monitor
-
     active_monitor = None
     if cfg.animate_live and sim.is_3d:
-        active_monitor = next(
-            (d for d in sim.devices if isinstance(d, Monitor) and d.is_3d), None
-        )
+        active_monitor = next((d for d in sim.monitors if d.is_3d), None)
         if not active_monitor:
             cfg.animate_live = None
 
@@ -99,7 +95,7 @@ def _setup_visualization(sim, cfg):
             cfg.animate_live = None
 
     if cfg.wavelength is None:
-        for device in sim.devices:
+        for device in sim.sources:
             if hasattr(device, "wavelength"):
                 cfg.wavelength = device.wavelength
                 break
@@ -179,6 +175,8 @@ def _record_video_frame(sim, video_recorder, cfg):
         extent=(0, sim.design.width, 0, sim.design.height),
         design=sim.design,
         boundaries=sim.boundaries,
+        sources=sim.sources,
+        monitors=sim.monitors,
         plane_2d=sim.plane_2d,
     )
 
@@ -222,6 +220,8 @@ def _update_live_display(
             extent=extent,
             design=sim.design,
             boundaries=sim.boundaries,
+            sources=sim.sources,
+            monitors=sim.monitors,
             plane_2d=sim.plane_2d,
         )
     else:
@@ -234,6 +234,8 @@ def _update_live_display(
             units=units,
             design=sim.design,
             boundaries=sim.boundaries,
+            sources=sim.sources,
+            monitors=sim.monitors,
             pause=0.001,
             axis_scale=cfg.axis_scale,
             cmap=cfg.cmap,
@@ -249,12 +251,18 @@ def _update_live_display(
 
 def _collect_results(sim, field_history, cfg, jupyter_animator):
     """Collect and return simulation results."""
-    monitors = [device for device in sim.devices if hasattr(device, "power_history")]
-    result = {}
-    if cfg.save_fields:
-        result["fields"] = field_history
-    if monitors:
-        result["monitors"] = monitors
-    if jupyter_animator and jupyter_animator.frames:
-        result["animation"] = jupyter_animator
-    return result if result else None
+    from beamz.simulation.core import SimulationResults
+
+    monitors = [device for device in sim.monitors if hasattr(device, "power_history")]
+    fields = field_history if cfg.save_fields else None
+    animation = (
+        jupyter_animator
+        if jupyter_animator is not None and jupyter_animator.frames
+        else None
+    )
+    return SimulationResults.from_run(
+        sim,
+        fields=fields,
+        monitors=monitors,
+        animation=animation,
+    )

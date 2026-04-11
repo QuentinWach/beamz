@@ -15,5 +15,5 @@ signal = ramped_cosine(time_steps, amplitude=1.0, frequency=LIGHT_SPEED/WL, ramp
 source = GaussianSource(position=(4*µm, 5*µm), width=WL/6, signal=signal)
 
 # Add source and PML boundaries to the simulation.
-sim = Simulation(design=design, devices=[source], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
+sim = Simulation(design=design, sources=[source], boundaries=[PML(edges='all', thickness=2*WL)], time=time_steps, resolution=DX)
 sim.run(animate_live="Ez", animation_interval=1, clean_visualization=True)

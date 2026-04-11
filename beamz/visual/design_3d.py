@@ -6,7 +6,13 @@ from beamz.visual.helpers import display_status, get_si_scale_and_label
 from beamz.visual.overlays import _get_deterministic_color
 
 
-def show_design_3d(design, unify_structures=True, max_vertices_for_unification=50):
+def show_design_3d(
+    design,
+    unify_structures=True,
+    max_vertices_for_unification=50,
+    sources=None,
+    monitors=None,
+):
     """Display the design using 3D plotly visualization."""
     try:
         import plotly.graph_objects as go
@@ -55,11 +61,11 @@ def show_design_3d(design, unify_structures=True, max_vertices_for_unification=5
     color_index = 0
 
     # Add monitors
-    for idx, monitor in enumerate(design.monitors):
+    for idx, monitor in enumerate(monitors or []):
         _add_monitor_to_3d_plot(fig, monitor, scale, unit, design=design, index=idx)
 
     # Add sources
-    for idx, source in enumerate(design.sources):
+    for idx, source in enumerate(sources or []):
         if isinstance(source, ModeSource):
             _add_mode_source_to_3d_plot(
                 fig, source, scale, unit, design=design, index=idx

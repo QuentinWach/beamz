@@ -11,12 +11,14 @@ from beamz.simulation.compiled import (
     RunState,
     compile_simulation,
 )
-from beamz.simulation.core import PortSpec, Simulation
+from beamz.simulation.core import MonitorResults, PortSpec, Simulation, SimulationResults
 
 __all__ = [
     "RegularGrid",
     "Simulation",
     "PortSpec",
+    "MonitorResults",
+    "SimulationResults",
     "CompiledRunConfig",
     "CompiledSimulation",
     "EngineState",

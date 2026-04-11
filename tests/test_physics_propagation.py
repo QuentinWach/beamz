@@ -65,7 +65,7 @@ class TestFreeSpacePropagation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -131,7 +131,7 @@ class TestFreeSpacePropagation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,
@@ -191,7 +191,7 @@ class TestFreeSpacePropagation:
 
         sim = Simulation(
             design=design,
-            devices=[source],
+            sources=[source],
             boundaries=[PML(thickness=wavelength)],
             time=time,
             resolution=dx,

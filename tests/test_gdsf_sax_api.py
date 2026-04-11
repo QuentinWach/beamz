@@ -98,7 +98,8 @@ def test_extract_port_waves_modal_coefficients_synthetic(monkeypatch):
     sim.is_3d = False
     sim.plane_2d = "xy"
     sim.resolution = 1.0
-    sim.devices = [
+    sim.sources = []
+    sim.monitors = [
         Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m_src"),
         Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m_ref"),
         Monitor(start=(1.0, 0.0), end=(1.0, 1.0), name="m_out"),
@@ -127,7 +128,8 @@ def test_extract_port_waves_modal_coefficients_synthetic(monkeypatch):
 
 def test_get_S_matrix_modal_column_keys_and_shapes(monkeypatch):
     sim = Simulation.__new__(Simulation)
-    sim.devices = []
+    sim.sources = []
+    sim.monitors = []
     sim.is_3d = False
     sim.plane_2d = "xy"
 
@@ -244,7 +246,8 @@ def test_extract_port_waves_cw_modal_coefficients_synthetic(monkeypatch):
     sim.is_3d = False
     sim.plane_2d = "xy"
     sim.resolution = 1.0
-    sim.devices = [
+    sim.sources = []
+    sim.monitors = [
         Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m_src"),
         Monitor(start=(0.0, 0.0), end=(0.0, 1.0), name="m_ref"),
         Monitor(start=(1.0, 0.0), end=(1.0, 1.0), name="m_out"),
@@ -276,7 +279,8 @@ def test_extract_port_waves_cw_modal_coefficients_synthetic(monkeypatch):
 
 def test_get_S_matrix_modal_cw_shapes_and_keys(monkeypatch):
     sim = Simulation.__new__(Simulation)
-    sim.devices = []
+    sim.sources = []
+    sim.monitors = []
     sim.is_3d = False
     sim.plane_2d = "xy"
     waves = {
@@ -719,7 +723,8 @@ def test_extract_port_waves_dft_modal_coefficients_synthetic(monkeypatch):
     sim.is_3d = False
     sim.plane_2d = "xy"
     sim.resolution = 1.0
-    sim.devices = [
+    sim.sources = []
+    sim.monitors = [
         Monitor(
             start=(0.0, 0.0),
             end=(0.0, 1.0),
@@ -763,7 +768,8 @@ def test_extract_port_waves_dft_modal_coefficients_synthetic(monkeypatch):
 
 def test_get_S_matrix_modal_dft_keys_shapes_and_valid_mask(monkeypatch):
     sim = Simulation.__new__(Simulation)
-    sim.devices = []
+    sim.sources = []
+    sim.monitors = []
     sim.is_3d = False
     sim.plane_2d = "xy"
     freqs = np.array([1.0, 2.0, 3.0], dtype=float)
@@ -820,7 +826,8 @@ def test_get_S_matrix_modal_dft_keys_shapes_and_valid_mask(monkeypatch):
 
 def test_get_S_matrix_modal_dft_respects_wave_selectors(monkeypatch):
     sim = Simulation.__new__(Simulation)
-    sim.devices = []
+    sim.sources = []
+    sim.monitors = []
     sim.is_3d = False
     sim.plane_2d = "xy"
     freqs = np.array([1.0, 2.0], dtype=float)
@@ -882,7 +889,8 @@ def test_get_S_matrix_modal_dft_respects_wave_selectors(monkeypatch):
 
 def test_get_S_matrix_modal_dft_auto_incident_selector_prefers_dominant(monkeypatch):
     sim = Simulation.__new__(Simulation)
-    sim.devices = []
+    sim.sources = []
+    sim.monitors = []
     sim.is_3d = False
     sim.plane_2d = "xy"
     freqs = np.array([1.0, 2.0], dtype=float)

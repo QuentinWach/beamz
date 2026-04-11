@@ -233,9 +233,10 @@ def run_forward(grid, wavelength, wave, fields=("Ez",)):
         )
     ]
     sim = Simulation(
-        grid,
-        [source, *monitors],
-        [PML(edges="all", thickness=PML_T)],
+        design=grid,
+        sources=[source],
+        monitors=monitors,
+        boundaries=[PML(edges="all", thickness=PML_T)],
         time=wave["time"],
         resolution=DX,
     )
@@ -253,9 +254,9 @@ def run_adjoint(grid, wavelength, target_port, wave):
         direction="-x",
     )
     sim = Simulation(
-        grid,
-        [source],
-        [PML(edges="all", thickness=PML_T)],
+        design=grid,
+        sources=[source],
+        boundaries=[PML(edges="all", thickness=PML_T)],
         time=wave["time"],
         resolution=DX,
     )

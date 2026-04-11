@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 
 import jax.numpy as jnp
 import numpy as np
@@ -9,6 +10,40 @@ from beamz.devices.sources.solve import solve_modes
 logger = logging.getLogger(__name__)
 
 _VALID_DIRECTIONS = {"+x", "-x", "+y", "-y", "+z", "-z"}
+
+
+@dataclass
+class _ModeSourceState:
+    """Mutable prepared state for ModeSource."""
+
+    _Ex_profile: np.ndarray | None = None
+    _Ey_profile: np.ndarray | None = None
+    _Ez_profile: np.ndarray | None = None
+    _Hx_profile: np.ndarray | None = None
+    _Hy_profile: np.ndarray | None = None
+    _Hz_profile: np.ndarray | None = None
+    _Ex_indices: tuple | None = None
+    _Ey_indices: tuple | None = None
+    _Ez_indices: tuple | None = None
+    _Hx_indices: tuple | None = None
+    _Hy_indices: tuple | None = None
+    _Hz_indices: tuple | None = None
+    _jz_profile: np.ndarray | None = None
+    _my_profile: np.ndarray | None = None
+    _mz_profile: np.ndarray | None = None
+    _jy_profile: np.ndarray | None = None
+    _jx_profile: np.ndarray | None = None
+    _ez_indices: tuple | None = None
+    _h_indices: tuple | None = None
+    _hz_indices: tuple | None = None
+    _e_indices: tuple | None = None
+    _h_component: str | None = None
+    _e_component: str | None = None
+    _neff: float | None = None
+    _impedance_neff: float | None = None
+    _dt_physical: float = 0.0
+    _launch_dt: float | None = None
+    _initialized: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1270,6 +1305,57 @@ class ModeSource:
     mode injection, accounting for proper Yee grid staggering.
     """
 
+    _RUNTIME_ATTRS = {
+        "_Ex_profile",
+        "_Ey_profile",
+        "_Ez_profile",
+        "_Hx_profile",
+        "_Hy_profile",
+        "_Hz_profile",
+        "_Ex_indices",
+        "_Ey_indices",
+        "_Ez_indices",
+        "_Hx_indices",
+        "_Hy_indices",
+        "_Hz_indices",
+        "_jz_profile",
+        "_my_profile",
+        "_mz_profile",
+        "_jy_profile",
+        "_jx_profile",
+        "_ez_indices",
+        "_h_indices",
+        "_hz_indices",
+        "_e_indices",
+        "_h_component",
+        "_e_component",
+        "_neff",
+        "_impedance_neff",
+        "_dt_physical",
+        "_launch_dt",
+        "_initialized",
+        "_resolution",
+        "_is_3d",
+        "_grid_shape",
+        "_axis",
+        "_eps_profile_2d",
+        "_y_start",
+        "_y_end",
+        "_x_start",
+        "_x_end",
+    }
+
+    def __getattr__(self, name):
+        if name in self._RUNTIME_ATTRS and "_state" in self.__dict__:
+            return getattr(self._state, name)
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+
+    def __setattr__(self, name, value):
+        if name in self._RUNTIME_ATTRS and "_state" in self.__dict__:
+            setattr(self._state, name, value)
+            return
+        object.__setattr__(self, name, value)
+
     def __init__(
         self, grid, center, width, wavelength, pol, signal, direction="+x", height=None
     ):
@@ -1287,41 +1373,7 @@ class ModeSource:
         self.direction, self._direction_axis, self._direction_sign = _parse_direction(
             direction
         )
-
-        # Storage for all 6 field component profiles (for 3D injection)
-        self._Ex_profile = None
-        self._Ey_profile = None
-        self._Ez_profile = None
-        self._Hx_profile = None
-        self._Hy_profile = None
-        self._Hz_profile = None
-
-        # Indices for each component's injection position
-        self._Ex_indices = None
-        self._Ey_indices = None
-        self._Ez_indices = None
-        self._Hx_indices = None
-        self._Hy_indices = None
-        self._Hz_indices = None
-
-        # Legacy attributes for compatibility and 2D
-        self._jz_profile = None
-        self._my_profile = None
-        self._mz_profile = None
-        self._jy_profile = None
-        self._jx_profile = None
-        self._ez_indices = None
-        self._h_indices = None
-        self._hz_indices = None
-        self._e_indices = None
-
-        self._h_component = None
-        self._e_component = None
-        self._neff = None
-        self._impedance_neff = None
-        self._dt_physical = 0.0
-        self._launch_dt = None
-        self._initialized = False
+        self._state = _ModeSourceState()
 
     def initialize(self, permittivity, resolution, dt=None):
         """Compute the mode and set up the source currents for all 6 components in 3D."""

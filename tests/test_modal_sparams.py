@@ -5,7 +5,8 @@ from beamz import PortSpec, Simulation
 
 def _run_modal_cw_column(waves, ports, frequency, output_ports):
     sim = Simulation.__new__(Simulation)
-    sim.devices = []
+    sim.sources = []
+    sim.monitors = []
     sim.is_3d = False
     sim.plane_2d = "xy"
 
@@ -36,7 +37,8 @@ def _run_modal_dft_column(
     waves, ports, frequencies, output_ports, min_incident_db=-40.0
 ):
     sim = Simulation.__new__(Simulation)
-    sim.devices = []
+    sim.sources = []
+    sim.monitors = []
     sim.is_3d = False
     sim.plane_2d = "xy"
 

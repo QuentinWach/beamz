@@ -75,7 +75,7 @@ monitor_xy = Monitor(
 # 5. Run the Simulation
 sim = Simulation(
     design=design, 
-    devices=[source, monitor_xy], 
+    sources=[source], monitors=[monitor_xy], 
     boundaries=[PML(edges='all', thickness=0.75*WL)],
     time=time_steps,
     resolution=DX)

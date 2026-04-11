@@ -51,7 +51,7 @@ from beamz.simulation.compiled import (
     RunState,
     compile_simulation,
 )
-from beamz.simulation.core import PortSpec, Simulation
+from beamz.simulation.core import MonitorResults, PortSpec, Simulation, SimulationResults
 
 # Import UI helpers
 from beamz.visual.helpers import (
@@ -102,6 +102,8 @@ _exports = {
     "RegularGrid": RegularGrid,
     "Simulation": Simulation,
     "PortSpec": PortSpec,
+    "MonitorResults": MonitorResults,
+    "SimulationResults": SimulationResults,
     "CompiledRunConfig": CompiledRunConfig,
     "CompiledSimulation": CompiledSimulation,
     "EngineState": EngineState,

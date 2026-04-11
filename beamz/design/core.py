@@ -431,7 +431,7 @@ class Design:
             depth=depth,
             material=material,
         )
-        self.structures, self.sources, self.monitors = [background], [], []
+        self.structures = [background]
         self.width, self.height, self.depth, self.time = width, height, depth, 0
         self.is_3d = depth is not None and depth > 0
         self.layers: dict[int, list[Polygon]] = {}
@@ -459,20 +459,26 @@ class Design:
         return True
 
     def add(self, structure: type[Polygon]):
-        """Add structure to the design and update 3D flag if needed."""
+        """Add a geometric structure to the design and update 3D state."""
         from beamz.devices.monitors import Monitor
         from beamz.devices.sources import GaussianSource, ModeSource
+
+        if isinstance(structure, Monitor):
+            raise TypeError(
+                "Design only accepts geometry. Pass monitors to "
+                "Simulation(monitors=[...]) instead."
+            )
+        if isinstance(structure, (ModeSource, GaussianSource)):
+            raise TypeError(
+                "Design only accepts geometry. Pass sources to "
+                "Simulation(sources=[...]) instead."
+            )
 
         # Set back-reference to design if the structure supports it
         if hasattr(structure, "design"):
             structure.design = self
 
-        if isinstance(structure, Monitor):
-            self.monitors.append(structure)
-        elif isinstance(structure, (ModeSource, GaussianSource)):
-            self.sources.append(structure)
-        else:
-            self.structures.append(structure)
+        self.structures.append(structure)
 
         if hasattr(structure, "is_3d") and structure.is_3d:
             self.is_3d = True
@@ -703,7 +709,7 @@ class Design:
             depth=self.depth,
             material=background_material,
         )
-        new_design.structures, new_design.sources, new_design.monitors = [], [], []
+        new_design.structures = []
 
         # Copy structures
         for structure in self.structures:
@@ -720,26 +726,6 @@ class Design:
                 new_design.structures.append(copied_structure)
             else:
                 new_design.structures.append(structure)
-
-        # Copy sources
-        for source in self.sources:
-            if hasattr(source, "copy"):
-                copied_source = source.copy()
-                if hasattr(copied_source, "design"):
-                    copied_source.design = new_design
-                new_design.sources.append(copied_source)
-            else:
-                new_design.sources.append(source)
-
-        # Copy monitors
-        for monitor in self.monitors:
-            if hasattr(monitor, "copy"):
-                copied_monitor = monitor.copy()
-                if hasattr(copied_monitor, "design"):
-                    copied_monitor.design = new_design
-                new_design.monitors.append(copied_monitor)
-            else:
-                new_design.monitors.append(monitor)
 
         new_design.is_3d, new_design.depth, new_design.time = (
             self.is_3d,

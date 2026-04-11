@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Literal
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -40,13 +43,106 @@ class PortSpec:
     scattered_wave: Literal["plus", "minus", "auto"] = "minus"
 
 
+@dataclass(frozen=True)
+class MonitorResults:
+    """Snapshot of one monitor's recorded outputs."""
+
+    monitor: Monitor
+    fields: dict[str, tuple[Any, ...]]
+    power_history: np.ndarray
+    power_timestamps: np.ndarray
+    frequency_flux_spectrum: np.ndarray
+    objective_value: float | None = None
+
+    @classmethod
+    def from_monitor(cls, monitor: Monitor) -> "MonitorResults":
+        fields = {
+            name: tuple(values)
+            for name, values in getattr(monitor, "fields", {}).items()
+        }
+        return cls(
+            monitor=monitor,
+            fields=fields,
+            power_history=np.asarray(getattr(monitor, "power_history", ()), dtype=float),
+            power_timestamps=np.asarray(
+                getattr(monitor, "power_timestamps", ()), dtype=float
+            ),
+            frequency_flux_spectrum=np.asarray(
+                getattr(monitor, "frequency_flux_spectrum", ()), dtype=np.complex64
+            ),
+            objective_value=getattr(monitor, "objective_value", None),
+        )
+
+
+@dataclass(frozen=True)
+class SimulationResults(Mapping[str, Any]):
+    """Primary run output with backward-compatible mapping access."""
+
+    simulation: "Simulation"
+    fields: dict[str, np.ndarray] | None = None
+    monitors: tuple[Monitor, ...] = ()
+    monitor_results: dict[str, MonitorResults] | None = None
+    animation: Any = None
+
+    def __getitem__(self, key: str) -> Any:
+        payload = self.to_dict()
+        if key not in payload:
+            raise KeyError(key)
+        return payload[key]
+
+    def __iter__(self):
+        return iter(self.to_dict())
+
+    def __len__(self) -> int:
+        return len(self.to_dict())
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {}
+        if self.fields is not None:
+            payload["fields"] = self.fields
+        if self.monitors:
+            payload["monitors"] = list(self.monitors)
+        if self.monitor_results:
+            payload["monitor_results"] = self.monitor_results
+        if self.animation is not None:
+            payload["animation"] = self.animation
+        return payload
+
+    @classmethod
+    def from_run(
+        cls,
+        simulation: "Simulation",
+        *,
+        fields: dict[str, np.ndarray] | None = None,
+        monitors: list[Monitor] | tuple[Monitor, ...] = (),
+        animation: Any = None,
+    ) -> "SimulationResults" | None:
+        monitor_tuple = tuple(monitors)
+        monitor_results = {
+            getattr(monitor, "name", None) or f"monitor_{idx}": MonitorResults.from_monitor(
+                monitor
+            )
+            for idx, monitor in enumerate(monitor_tuple)
+        }
+        if fields is None and not monitor_tuple and animation is None:
+            return None
+        return cls(
+            simulation=simulation,
+            fields=fields,
+            monitors=monitor_tuple,
+            monitor_results=monitor_results or None,
+            animation=animation,
+        )
+
+
 class Simulation:
     """FDTD simulation class supporting both 2D and 3D electromagnetic simulations."""
 
     def __init__(
         self,
         design: Design = None,
-        devices: list = None,
+        sources: list = None,
+        monitors: list[Monitor] = None,
         boundaries: list[Boundary] = None,
         thermal=None,
         resolution: float = 0.02 * µm,
@@ -54,13 +150,19 @@ class Simulation:
         plane_2d: str = "xy",
     ):
         self.design = design
-        devices = devices or []
+        sources = sources or []
+        monitors = monitors or []
         boundaries = boundaries or []
         self.resolution = resolution
         self.is_3d = design.is_3d and design.depth > 0
         self.plane_2d = plane_2d.lower()
         if self.plane_2d not in ["xy", "yz", "xz"]:
             self.plane_2d = "xy"
+        self.sources, self.monitors = self._normalize_specs(
+            design=design,
+            sources=sources,
+            monitors=monitors,
+        )
 
         # Get material grids from design (design owns the material grids, we reference them)
         permittivity, conductivity, permeability = design.get_material_grids(resolution)
@@ -115,9 +217,6 @@ class Simulation:
         else:
             self.pml_data = None
 
-        # Store device references (no duplication)
-        self.devices = devices
-
         # Store boundary references (no duplication)
         self.boundaries = boundaries
 
@@ -132,6 +231,49 @@ class Simulation:
         self._compiled_program_cache = {}
         self._compiled_monitor_state = None
 
+    @staticmethod
+    def _dedupe_devices(devices):
+        seen = set()
+        ordered = []
+        for device in devices:
+            key = id(device)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(device)
+        return ordered
+
+    @classmethod
+    def _normalize_specs(cls, *, design, sources, monitors):
+        normalized_sources = list(sources)
+        normalized_monitors = list(monitors)
+
+        normalized_sources = cls._dedupe_devices(normalized_sources)
+        normalized_monitors = cls._dedupe_devices(normalized_monitors)
+        duplicate_monitor_names = sorted(
+            {
+                str(name)
+                for name in (
+                    getattr(monitor, "name", None) for monitor in normalized_monitors
+                )
+                if name
+                and sum(
+                    1
+                    for monitor in normalized_monitors
+                    if getattr(monitor, "name", None) == name
+                )
+                > 1
+            }
+        )
+        if duplicate_monitor_names:
+            names = ", ".join(duplicate_monitor_names)
+            raise ValueError(
+                "Simulation._normalize_specs found duplicate Monitor.name values: "
+                f"{names}. Monitor names must be unique because PortSpec.monitor_name "
+                "resolution depends on them."
+            )
+        return normalized_sources, normalized_monitors
+
     def step(self):
         """Perform one FDTD time step with correct Huygens source timing.
 
@@ -140,10 +282,10 @@ class Simulation:
         if self.current_step >= self.num_steps:
             return False
 
-        # Legacy devices (only have inject(), no inject_h/inject_e): inject before update
+        # Legacy sources (only have inject(), no inject_h/inject_e): inject before update
         self._inject_legacy_sources()
 
-        # Collect source terms from legacy devices (if any)
+        # Collect source terms from source objects that expose packed source terms.
         source_j, source_m = self._collect_source_terms()
 
         # 1. H update
@@ -172,9 +314,7 @@ class Simulation:
 
     def _record_monitors(self):
         """Record data from Monitor devices during simulation."""
-        for device in self.devices:
-            if not isinstance(device, Monitor):
-                continue
+        for device in self.monitors:
             should_record = device.should_record(self.current_step)
             dft_every_step = bool(
                 getattr(device, "dft_enabled", False)
@@ -211,7 +351,7 @@ class Simulation:
 
     def _inject_h_sources(self):
         """Inject magnetic currents (M) into H-fields after H update."""
-        for device in self.devices:
+        for device in self.sources:
             if hasattr(device, "inject_h"):
                 device.inject_h(
                     self.fields,
@@ -224,7 +364,7 @@ class Simulation:
 
     def _inject_e_sources(self):
         """Inject electric currents (J) into E-fields after E update."""
-        for device in self.devices:
+        for device in self.sources:
             if hasattr(device, "inject_e"):
                 device.inject_e(
                     self.fields,
@@ -237,7 +377,7 @@ class Simulation:
 
     def _inject_legacy_sources(self):
         """Inject from devices that only have inject() (no inject_h/inject_e)."""
-        for device in self.devices:
+        for device in self.sources:
             if hasattr(device, "inject") and not hasattr(device, "inject_h"):
                 device.inject(
                     self.fields,
@@ -253,7 +393,7 @@ class Simulation:
         source_j = {}  # Electric currents for E-field update
         source_m = {}  # Magnetic currents for H-field update
 
-        for device in self.devices:
+        for device in self.sources:
             if hasattr(device, "get_source_terms"):
                 j, m = device.get_source_terms(
                     self.fields,
@@ -506,7 +646,8 @@ class Simulation:
         )
         program = compile_simulation(
             design=self.design,
-            devices=self.devices,
+            sources=self.sources,
+            monitors=self.monitors,
             boundaries=self.boundaries,
             run_cfg=run_cfg,
         )
@@ -678,16 +819,17 @@ class Simulation:
         if monitor_state is not None:
             program.apply_monitor_state(monitor_state)
 
-        result = {}
+        fields_result = None
         if field_history is not None:
-            result["fields"] = {
+            fields_result = {
                 k: np.stack(v) if len(v) > 0 else np.zeros((0,))
                 for k, v in field_history.items()
             }
-        monitors = [device for device in self.devices if isinstance(device, Monitor)]
-        if monitors:
-            result["monitors"] = monitors
-        return result if result else None
+        return SimulationResults.from_run(
+            self,
+            fields=fields_result,
+            monitors=self.monitors,
+        )
 
     def run_compiled_until_decay(
         self,
@@ -918,8 +1060,8 @@ class Simulation:
     def _named_monitors(self):
         return {
             device.name: device
-            for device in self.devices
-            if isinstance(device, Monitor) and getattr(device, "name", None)
+            for device in self.monitors
+            if getattr(device, "name", None)
         }
 
     def _sample_monitor_component_spectrum(
