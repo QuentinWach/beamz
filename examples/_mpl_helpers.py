@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FFMpegWriter
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.patches import Circle, FancyArrowPatch, PathPatch, Rectangle
+from matplotlib.patches import Circle, PathPatch, Rectangle
 from matplotlib.path import Path as MplPath
 
 from beamz.visual.helpers import get_si_scale_and_label
@@ -124,16 +124,30 @@ def _draw_source(ax, payload):
     elif payload["direction"] == "-y":
         dy = -arrow_length
 
-    arrow = FancyArrowPatch(
-        (center[0], center[1]),
-        (center[0] + dx, center[1] + dy),
-        arrowstyle="-|>",
-        mutation_scale=10,
+    end_x = center[0] + dx
+    end_y = center[1] + dy
+    ax.plot(
+        [center[0], end_x],
+        [center[1], end_y],
         color=style.get("edgecolor", "crimson"),
         linewidth=2,
         alpha=style.get("alpha", 0.8),
     )
-    ax.add_patch(arrow)
+    marker = {
+        "+x": ">",
+        "-x": "<",
+        "+y": "^",
+        "-y": "v",
+    }.get(payload["direction"], "o")
+    ax.plot(
+        [end_x],
+        [end_y],
+        marker=marker,
+        markersize=7,
+        color=style.get("edgecolor", "crimson"),
+        alpha=style.get("alpha", 0.8),
+        linestyle="none",
+    )
 
 
 def _draw_monitor(ax, payload):
