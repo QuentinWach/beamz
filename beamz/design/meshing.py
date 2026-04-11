@@ -869,8 +869,14 @@ class RegularGrid(BaseMeshGrid):
                     if samples_inside > 0:
                         grids.blend_at((i, j), props, samples_inside / num_samples)
 
-    def to_plot_data(self, field: str = "permittivity"):
+    def to_plot_data(
+        self,
+        field: str = "permittivity",
+        z_index=None,
+        z_position=None,
+    ):
         """Return renderer-agnostic grid data for manual plotting."""
+        del z_index, z_position
         from beamz.visual.data import grid_plot_data
 
         grid = getattr(self, field, None)
