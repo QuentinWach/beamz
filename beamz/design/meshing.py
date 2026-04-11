@@ -2,14 +2,10 @@ import os
 import time
 
 import numpy as np
+from shapely import contains_xy
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import box as shapely_box
 from shapely.prepared import prep
-
-try:
-    from matplotlib.path import Path as MplPath
-except Exception:  # pragma: no cover - matplotlib is expected but keep fallback safe
-    MplPath = None
 
 from beamz.design.structures import Rectangle
 from beamz.visual.helpers import (
@@ -873,15 +869,14 @@ class RegularGrid(BaseMeshGrid):
                     if samples_inside > 0:
                         grids.blend_at((i, j), props, samples_inside / num_samples)
 
-    def show(self, field: str = "permittivity"):
-        """Display the rasterized grid with properly scaled SI units."""
-        from beamz.visual.overlays import show_mesh_grid
+    def to_plot_data(self, field: str = "permittivity"):
+        """Return renderer-agnostic grid data for manual plotting."""
+        from beamz.visual.data import grid_plot_data
 
         grid = getattr(self, field, None)
-        if grid is not None:
-            show_mesh_grid(grid, self.design, field)
-        else:
-            print("Grid not rasterized yet.")
+        if grid is None:
+            raise RuntimeError("Grid not rasterized yet.")
+        return grid_plot_data(self, field=field)
 
 
 class RegularGrid3D(BaseMeshGrid):
@@ -1324,8 +1319,6 @@ class RegularGrid3D(BaseMeshGrid):
         Uses configurable supersampling in XY and exact voxel overlap in Z so imported
         taper polygons get the same subpixel smoothing behavior as fallback paths.
         """
-        if MplPath is None:
-            return False
         if not hasattr(structure, "vertices") or not structure.vertices:
             return False
         if hasattr(structure, "radius"):
@@ -1357,17 +1350,22 @@ class RegularGrid3D(BaseMeshGrid):
         x_local = x_centers[min_j:max_j]
         y_local = y_centers[min_i:max_i]
         xx, yy = np.meshgrid(x_local, y_local)
-        outer_path = MplPath(verts)
         interiors = getattr(structure, "interiors", None) or []
-
-        hole_paths = []
+        holes = []
         for hole in interiors:
             iv3 = np.asarray(hole, dtype=float)
             if iv3.ndim == 2 and iv3.shape[1] >= 3 and np.ptp(iv3[:, 2]) > 1e-12:
                 return False
             iv = np.asarray([(v[0], v[1]) for v in hole], dtype=float)
             if iv.ndim == 2 and iv.shape[0] >= 3:
-                hole_paths.append(MplPath(iv))
+                holes.append(iv)
+        polygon = ShapelyPolygon(verts, holes=holes if holes else None)
+        if polygon.is_empty:
+            return True
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        if polygon.is_empty or not polygon.is_valid:
+            return False
 
         sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
         n_samples_xy = float(sample_dx.size)
@@ -1416,11 +1414,9 @@ class RegularGrid3D(BaseMeshGrid):
                 points = np.column_stack(
                     ((xx + sample_dx[sidx]).ravel(), (yy + sample_dy[sidx]).ravel())
                 )
-            inside = outer_path.contains_points(points, radius=1e-15).reshape(xx.shape)
-            for hole_path in hole_paths:
-                inside &= ~hole_path.contains_points(points, radius=1e-15).reshape(
-                    xx.shape
-                )
+            inside = contains_xy(polygon.buffer(1e-15), points[:, 0], points[:, 1]).reshape(
+                xx.shape
+            )
             inside_count += inside.astype(float)
         frac_xy = inside_count / n_samples_xy
         if not np.any(frac_xy > 0.0):
@@ -1540,27 +1536,16 @@ class RegularGrid3D(BaseMeshGrid):
             "conductivity": self.conductivity[z_index, :, :],
         }
 
-    def show_3d(self, field="permittivity", slice_spacing=1, alpha=0.3):
-        """Display 3D visualization of the mesh."""
-        from beamz.visual.overlays import show_mesh_3d
+    def to_plot_data(self, field="permittivity", z_index=None, z_position=None):
+        """Return renderer-agnostic 2D slice data for manual plotting."""
+        from beamz.visual.data import grid_plot_data
 
-        grid = getattr(self, field, None)
-        if grid is None:
-            raise ValueError(f"Unknown field: {field}")
-        show_mesh_3d(grid, self.design, field, slice_spacing, alpha)
-
-    def show(self, field="permittivity", z_index=None, z_position=None):
-        """Display a 2D slice of the 3D mesh (backwards compatible interface)."""
-        from beamz.visual.overlays import show_mesh_slice
-
-        slice_data = self.get_2d_slice(z_index, z_position)
-        grid = slice_data[field]
-
-        if grid is not None:
-            z_idx = z_index if z_index is not None else self.shape[0] // 2
-            show_mesh_slice(grid, self.design, field, z_idx, self.resolution_z)
-        else:
-            print("Grid not rasterized yet.")
+        return grid_plot_data(
+            self,
+            field=field,
+            z_index=z_index,
+            z_position=z_position,
+        )
 
 
 # Convenience functions for automatic mesh selection

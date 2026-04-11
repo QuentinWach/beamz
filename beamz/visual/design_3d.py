@@ -2,8 +2,8 @@
 
 import numpy as np
 
+from beamz.visual.data import _get_deterministic_color
 from beamz.visual.helpers import display_status, get_si_scale_and_label
-from beamz.visual.overlays import _get_deterministic_color
 
 
 def show_design_3d(
@@ -17,15 +17,9 @@ def show_design_3d(
     try:
         import plotly.graph_objects as go
     except ImportError:
-        display_status(
-            "Plotly is required for 3D visualization. Install with: pip install plotly",
-            "error",
+        raise RuntimeError(
+            "Plotly is required for 3D visualization. Install with: pip install plotly"
         )
-        display_status("Falling back to 2D visualization...", "warning")
-        from beamz.visual.design_viz import show_design_2d
-
-        show_design_2d(design, unify_structures)
-        return
 
     max_dim = max(design.width, design.height, design.depth if design.depth else 0)
     scale, unit = get_si_scale_and_label(max_dim)

@@ -82,7 +82,7 @@ class SimulationResults(Mapping[str, Any]):
     fields: dict[str, np.ndarray] | None = None
     monitors: tuple[Monitor, ...] = ()
     monitor_results: dict[str, MonitorResults] | None = None
-    animation: Any = None
+    snapshots: tuple[dict[str, Any], ...] = ()
 
     def __getitem__(self, key: str) -> Any:
         payload = self.to_dict()
@@ -104,8 +104,8 @@ class SimulationResults(Mapping[str, Any]):
             payload["monitors"] = list(self.monitors)
         if self.monitor_results:
             payload["monitor_results"] = self.monitor_results
-        if self.animation is not None:
-            payload["animation"] = self.animation
+        if self.snapshots:
+            payload["snapshots"] = list(self.snapshots)
         return payload
 
     @classmethod
@@ -115,23 +115,24 @@ class SimulationResults(Mapping[str, Any]):
         *,
         fields: dict[str, np.ndarray] | None = None,
         monitors: list[Monitor] | tuple[Monitor, ...] = (),
-        animation: Any = None,
+        snapshots: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     ) -> "SimulationResults" | None:
         monitor_tuple = tuple(monitors)
+        snapshot_tuple = tuple(snapshots)
         monitor_results = {
             getattr(monitor, "name", None) or f"monitor_{idx}": MonitorResults.from_monitor(
                 monitor
             )
             for idx, monitor in enumerate(monitor_tuple)
         }
-        if fields is None and not monitor_tuple and animation is None:
+        if fields is None and not monitor_tuple and not snapshot_tuple:
             return None
         return cls(
             simulation=simulation,
             fields=fields,
             monitors=monitor_tuple,
             monitor_results=monitor_results or None,
-            animation=animation,
+            snapshots=snapshot_tuple,
         )
 
 
@@ -2614,23 +2615,44 @@ class Simulation:
         )
 
     def run(self, **kwargs):
-        """Run complete FDTD simulation with optional live field visualization.
+        """Run complete FDTD simulation with optional snapshot streaming.
 
-        Accepts all visualization parameters (animate_live, cmap, save_video, etc.).
-        See beamz.visual.runner.VizConfig for the full list of options.
-
-        Returns:
-            dict with keys:
-                - 'fields': dict of field histories if save_fields was provided
-                - 'monitors': list of Monitor objects with recorded data
-                - 'animation': JupyterAnimator object if running in Jupyter with animate_live
+        Supported streaming kwargs:
+            - snapshot_field: field component to stream/store (e.g. ``"Ez"``)
+            - snapshot_interval: emit every N steps
+            - snapshot_callback: callable receiving each snapshot payload
+            - store_snapshots: include emitted snapshots in the returned results
+            - save_fields / field_subsample / progress
         """
-        # Default non-visual path uses the compiled engine in v0.3.
-        wants_live_viz = any(
-            kwargs.get(k) is not None
-            for k in ("animate_live", "save_video", "jupyter_live")
+        removed_visual_keys = (
+            "animate_live",
+            "save_video",
+            "jupyter_live",
+            "video_field",
+            "video_fps",
+            "video_dpi",
+            "cmap",
+            "axis_scale",
+            "clean_visualization",
+            "wavelength",
+            "line_color",
+            "line_opacity",
+            "interpolation",
+            "store_animation",
         )
-        if not wants_live_viz:
+        removed = [key for key in removed_visual_keys if key in kwargs]
+        if removed:
+            raise TypeError(
+                "Matplotlib-backed simulation rendering was removed from beamz. "
+                f"Unsupported kwargs: {removed}. "
+                "Use snapshot_field/snapshot_callback and render in examples."
+            )
+
+        wants_snapshots = any(
+            kwargs.get(key) is not None
+            for key in ("snapshot_field", "snapshot_callback")
+        )
+        if not wants_snapshots:
             save_fields = kwargs.get("save_fields")
             field_subsample = int(kwargs.get("field_subsample", 1))
             progress = bool(kwargs.get("progress", False))
@@ -2642,15 +2664,21 @@ class Simulation:
                 progress=progress,
             )
 
-        from beamz.visual.runner import run_with_visualization
+        from beamz.simulation.snapshots import run_with_snapshots
 
-        return run_with_visualization(self, **kwargs)
+        return run_with_snapshots(self, **kwargs)
 
     def to_scene(self):
         """Build a 3D scene representation of the simulation setup."""
         from beamz.visual.scene import simulation_to_scene
 
         return simulation_to_scene(self)
+
+    def to_plot_data(self):
+        """Return renderer-agnostic simulation layout data."""
+        from beamz.visual.data import simulation_plot_data
+
+        return simulation_plot_data(self)
 
     def show(self, *, mode="auto", open_browser=True, **kwargs):
         """Display the simulation setup in the interactive 3D scene viewer."""

@@ -111,5 +111,8 @@ def gaussian_band_pulse(
     )
 
 
-# Backward-compatible re-export (canonical location: beamz.visual.source_plots)
-from beamz.visual.source_plots import plot_signal  # noqa: E402, F401
+def signal_plot_data(signals, t):
+    """Return scaled signal/time arrays for manual plotting."""
+    from beamz.visual.data import signal_plot_data as _signal_plot_data
+
+    return _signal_plot_data(signals, t)

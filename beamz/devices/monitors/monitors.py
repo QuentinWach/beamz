@@ -2,9 +2,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Rectangle as MatplotlibRectangle
 
 logger = logging.getLogger(__name__)
 
@@ -184,13 +182,7 @@ class Monitor:
             frequency_points=self.frequency_points,
         )
 
-        # Live visualization
-        self.live_fig = None
-        self.live_axes = None
-        self.live_plots = {}
-        self.update_interval = (
-            10  # Update every N records (faster updates for visibility)
-        )
+        self.update_interval = 10
 
         if self.is_3d:
             self._init_3d_monitor(start, end, plane_normal, plane_position, size)
@@ -658,13 +650,6 @@ class Monitor:
             self.last_record_step = step
         self._manage_memory()
 
-        if (
-            do_record
-            and self.live_update
-            and (len(self.fields["t"]) % self.update_interval == 0)
-        ):
-            self._update_live_plot_2d()
-
     def record_fields_3d(self, Ex, Ey, Ez, Hx, Hy, Hz, t, dx, dy, dz, step=0):
         """Record 3D field data from plane slice."""
         do_record = self.should_record(step)
@@ -764,13 +749,6 @@ class Monitor:
             self.last_record_step = step
         self._manage_memory()
 
-        if (
-            do_record
-            and self.live_update
-            and (len(self.fields["t"]) % self.update_interval == 0)
-        ):
-            self._update_live_plot_3d()
-
     def record_fields(self, *args, **kwargs):
         """Generic field recording method that delegates to 2D or 3D."""
         if self.is_3d and len(args) >= 6:
@@ -842,115 +820,11 @@ class Monitor:
             self.power_timestamps = self.power_timestamps[excess:]
 
     def start_live_visualization(self, field_component="Ez"):
-        """Start live field visualization."""
-        if not self.live_update:
-            self.live_update = True
-        if self.is_3d:
-            self._setup_live_plot_3d(field_component)
-        else:
-            self._setup_live_plot_2d(field_component)
-
-    def _setup_live_plot_2d(self, field_component):
-        """Setup live plotting for 2D monitor."""
-        self.live_fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        # Field amplitude plot
-        ax1.set_title(f"{field_component} along monitor line")
-        ax1.set_xlabel("Position along line")
-        ax1.set_ylabel(f"{field_component} amplitude")
-        self.live_plots["field_line"] = ax1.plot([], [], "b-")[0]
-        # Power history plot
-        ax2.set_title("Power vs Time")
-        ax2.set_xlabel("Time step")
-        ax2.set_ylabel("Total power")
-        self.live_plots["power_time"] = ax2.plot([], [], "r-")[0]
-        plt.tight_layout()
-        plt.ion()
-        plt.show()
-
-    def _setup_live_plot_3d(self, field_component):
-        """Setup live plotting for 3D monitor."""
-        self.live_fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
-        # Field magnitude plot
-        ax1.set_title(f"{field_component} magnitude on plane")
-        self.live_plots["field_2d"] = ax1.imshow(
-            np.zeros((10, 10)), cmap="RdBu", animated=True
+        """Removed matplotlib hook kept for backward compatibility."""
+        raise RuntimeError(
+            "Monitor.start_live_visualization() was removed from beamz. "
+            "Use Monitor.field_plot_data()/power_plot_data() and render in examples."
         )
-        ax1.set_xlabel("X")
-        ax1.set_ylabel("Y")
-        # Power history
-        ax2.set_title("Power vs Time")
-        ax2.set_xlabel("Time step")
-        ax2.set_ylabel("Total power")
-        self.live_plots["power_time"] = ax2.plot([], [], "r-")[0]
-        # Field profile along X
-        ax3.set_title(f"{field_component} along X (center)")
-        ax3.set_xlabel("X position")
-        ax3.set_ylabel(f"{field_component} amplitude")
-        self.live_plots["field_x"] = ax3.plot([], [], "b-")[0]
-        # Field profile along Y
-        ax4.set_title(f"{field_component} along Y (center)")
-        ax4.set_xlabel("Y position")
-        ax4.set_ylabel(f"{field_component} amplitude")
-        self.live_plots["field_y"] = ax4.plot([], [], "g-")[0]
-        plt.tight_layout()
-        plt.ion()
-        plt.show()
-
-    def _update_live_plot_2d(self):
-        """Update live plot for 2D monitor."""
-        if self.live_fig is None or not self.fields["t"]:
-            return
-        try:
-            # Update field line plot
-            latest_field = self.fields["Ez"][-1]
-            x_pos = range(len(latest_field))
-            self.live_plots["field_line"].set_data(x_pos, latest_field)
-            # Update power history
-            self.live_plots["power_time"].set_data(
-                range(len(self.power_history)), self.power_history
-            )
-            # Rescale axes
-            for ax in self.live_fig.axes:
-                ax.relim()
-                ax.autoscale_view()
-            self.live_fig.canvas.draw()
-            self.live_fig.canvas.flush_events()
-        except Exception:
-            logger.debug("Failed to update 2D monitor live plot.", exc_info=True)
-
-    def _update_live_plot_3d(self):
-        """Update live plot for 3D monitor."""
-        if self.live_fig is None or not self.fields["t"]:
-            return
-        try:
-            # Get latest field data
-            latest_field = self.fields["Ez"][-1]  # Default to Ez
-            # Update 2D field plot
-            self.live_plots["field_2d"].set_array(latest_field)
-            self.live_plots["field_2d"].set_clim(
-                vmin=np.min(latest_field), vmax=np.max(latest_field)
-            )
-            # Update power history
-            self.live_plots["power_time"].set_data(
-                range(len(self.power_history)), self.power_history
-            )
-            # Update field profiles
-            center_y = latest_field.shape[0] // 2
-            center_x = latest_field.shape[1] // 2
-            self.live_plots["field_x"].set_data(
-                range(latest_field.shape[1]), latest_field[center_y, :]
-            )
-            self.live_plots["field_y"].set_data(
-                range(latest_field.shape[0]), latest_field[:, center_x]
-            )
-            # Rescale axes
-            for ax in self.live_fig.axes[1:]:  # Skip imshow axis
-                ax.relim()
-                ax.autoscale_view()
-            self.live_fig.canvas.draw()
-            self.live_fig.canvas.flush_events()
-        except Exception:
-            logger.debug("Failed to update 3D monitor live plot.", exc_info=True)
 
     def get_field_statistics(self):
         """Get statistical information about recorded fields."""
@@ -1010,55 +884,19 @@ class Monitor:
                 data["frequency_flux_spectrum"], dtype=np.complex64
             )
 
-    def add_to_plot(
-        self, ax, facecolor="none", edgecolor="navy", alpha=1, linestyle="-"
+    def to_plot_data(
+        self, *, facecolor="none", edgecolor="navy", alpha=1.0, linestyle="-"
     ):
-        """Add monitor visualization to 2D plot."""
-        if self.monitor_type == "line":
-            # For line monitors, use edgecolor if facecolor is none
-            color = edgecolor if facecolor == "none" else facecolor
-            ax.plot(
-                (self.start[0], self.end[0]),
-                (self.start[1], self.end[1]),
-                lw=4,
-                color=color,
-                label="Monitor",
-                alpha=alpha,
-            )
-            ax.plot(
-                (self.start[0], self.end[0]),
-                (self.start[1], self.end[1]),
-                lw=1,
-                color=edgecolor,
-                linestyle=linestyle,
-            )
-        else:
-            # For 3D plane monitors, show projection on 2D plot
-            if self.plane_normal == "z" or (
-                hasattr(self, "end") and self.end is not None
-            ):
-                # xy plane - show as rectangle
-                rect = MatplotlibRectangle(
-                    (self.start[0], self.start[1]),
-                    self.size[0],
-                    self.size[1],
-                    fill=(facecolor != "none"),
-                    facecolor=facecolor,
-                    alpha=alpha * 0.3,
-                    edgecolor=edgecolor,
-                    linestyle=linestyle,
-                    linewidth=2,
-                )
-                ax.add_patch(rect)
-                ax.text(
-                    self.position[0],
-                    self.position[1],
-                    "Monitor\n(3D plane)",
-                    ha="center",
-                    va="center",
-                    fontsize=8,
-                    color=edgecolor,
-                )
+        """Return a renderer-agnostic monitor payload."""
+        from beamz.visual.data import monitor_plot_data
+
+        return monitor_plot_data(
+            self,
+            facecolor=facecolor,
+            edgecolor=edgecolor,
+            alpha=alpha,
+            linestyle=linestyle,
+        )
 
     def to_polygon(self):
         """Convert monitor to a polygon for 3D visualization."""
@@ -1085,23 +923,17 @@ class Monitor:
 
         return polygon
 
-    def plot_fields(self, **kwargs):
-        """Plot field data from the monitor. Delegates to visual.monitor_plots."""
-        from beamz.visual.monitor_plots import plot_monitor_fields
+    def field_plot_data(self, **kwargs):
+        """Return monitor-field data for manual plotting."""
+        from beamz.visual.data import monitor_field_plot_data
 
-        return plot_monitor_fields(self, **kwargs)
+        return monitor_field_plot_data(self, **kwargs)
 
-    def plot_power(self, **kwargs):
-        """Plot power history from the monitor. Delegates to visual.monitor_plots."""
-        from beamz.visual.monitor_plots import plot_monitor_power
+    def power_plot_data(self, **kwargs):
+        """Return monitor-power data for manual plotting."""
+        from beamz.visual.data import monitor_power_plot_data
 
-        return plot_monitor_power(self, **kwargs)
-
-    def animate_fields(self, **kwargs):
-        """Create an animation of field evolution. Delegates to visual.monitor_plots."""
-        from beamz.visual.monitor_plots import animate_monitor_fields
-
-        return animate_monitor_fields(self, **kwargs)
+        return monitor_power_plot_data(self, **kwargs)
 
     def get_field_at_time(self, field="Ez", time_value=None, time_index=None):
         """Get field data at a specific time.

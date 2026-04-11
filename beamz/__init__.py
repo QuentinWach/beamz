@@ -35,7 +35,7 @@ from beamz.design.structures import (
 from beamz.devices.monitors import Monitor
 from beamz.devices.sources import GaussianSource, ModeSource
 from beamz.devices.sources.mode import solve_modes
-from beamz.devices.sources.signals import ramped_cosine
+from beamz.devices.sources.signals import ramped_cosine, signal_plot_data
 from beamz.optimization.autodiff import transform_density
 from beamz.optimization.topology import (
     TopologyManager,
@@ -61,8 +61,6 @@ from beamz.visual.helpers import (
     dxdt,
     get_si_scale_and_label,
 )
-from beamz.visual.source_plots import plot_signal
-
 # Prepare a dictionary of all our exports
 _exports = {
     # Constants
@@ -95,7 +93,7 @@ _exports = {
     "Monitor": Monitor,
     # Signals
     "ramped_cosine": ramped_cosine,
-    "plot_signal": plot_signal,
+    "signal_plot_data": signal_plot_data,
     # Mode calculations
     "solve_modes": solve_modes,
     # Simulation

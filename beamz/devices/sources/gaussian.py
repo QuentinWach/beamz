@@ -145,15 +145,14 @@ class GaussianSource:
 
         self._spatial_profile_ez = jnp.exp(-dist_sq / (2 * self.width**2))
 
-    def add_to_plot(
-        self, ax, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"
+    def to_plot_data(
+        self, *, facecolor="none", edgecolor="orange", alpha=0.8, linestyle="-"
     ):
-        """Add source visualization to 2D matplotlib plot."""
-        from beamz.visual.overlays import add_gaussian_source_to_plot
+        """Return a renderer-agnostic source payload."""
+        from beamz.visual.data import gaussian_source_plot_data
 
-        add_gaussian_source_to_plot(
+        return gaussian_source_plot_data(
             self,
-            ax,
             facecolor=facecolor,
             edgecolor=edgecolor,
             alpha=alpha,

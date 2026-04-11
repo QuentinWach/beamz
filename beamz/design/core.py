@@ -736,8 +736,8 @@ class Design:
 
         return new_design
 
-    def show(self, **kwargs):
-        """Display the design using the visualization module."""
-        from beamz.visual.design_viz import show_design
+    def to_plot_data(self, **kwargs):
+        """Return renderer-agnostic design data for manual plotting."""
+        from beamz.visual.data import design_plot_data
 
-        show_design(self, **kwargs)
+        return design_plot_data(self, **kwargs)

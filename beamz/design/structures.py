@@ -191,18 +191,17 @@ class Polygon:
             ]
         return self
 
-    def add_to_plot(
-        self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
+    def to_plot_data(
+        self, *, facecolor=None, edgecolor="black", alpha=None, linestyle=None
     ):
-        from beamz.visual.design_viz import draw_polygon
+        from beamz.visual.data import structure_plot_data
 
-        return draw_polygon(
-            ax,
+        return structure_plot_data(
             self,
             facecolor=facecolor,
             edgecolor=edgecolor,
-            alpha=alpha,
-            linestyle=linestyle,
+            alpha=1.0 if alpha is None else alpha,
+            linestyle="-" if linestyle is None else linestyle,
         )
 
     def copy(self):
@@ -517,8 +516,8 @@ class Ring(Polygon):
         self.interiors = [inner_vertices]
         return self
 
-    def add_to_plot(
-        self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
+    def to_plot_data(
+        self, *, facecolor=None, edgecolor="black", alpha=None, linestyle=None
     ):
         if facecolor is None:
             facecolor = self.color
@@ -526,8 +525,7 @@ class Ring(Polygon):
             alpha = 1
         if linestyle is None:
             linestyle = "-"
-        return super().add_to_plot(
-            ax,
+        return super().to_plot_data(
             facecolor=facecolor,
             edgecolor=edgecolor,
             alpha=alpha,
@@ -632,8 +630,8 @@ class CircularBend(Polygon):
         self.vertices = outer_vertices + inner_vertices
         return self
 
-    def add_to_plot(
-        self, ax, facecolor=None, edgecolor="black", alpha=None, linestyle=None
+    def to_plot_data(
+        self, *, facecolor=None, edgecolor="black", alpha=None, linestyle=None
     ):
         if facecolor is None:
             facecolor = self.color
@@ -641,9 +639,7 @@ class CircularBend(Polygon):
             alpha = 1
         if linestyle is None:
             linestyle = "-"
-        # Use parent polygon drawing
-        return super().add_to_plot(
-            ax,
+        return super().to_plot_data(
             facecolor=facecolor,
             edgecolor=edgecolor,
             alpha=alpha,

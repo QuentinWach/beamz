@@ -2106,21 +2106,20 @@ class ModeSource:
                     else:
                         fields.Ey = fields.Ey.at[self._e_indices].add(e_injection)
 
-    def show(self, field=None):
-        """Visualize the 2D mode profile (for 3D simulations) or 1D profile (for 2D)."""
-        from beamz.visual.source_plots import show_mode_profile
+    def mode_profile_data(self, field=None):
+        """Return mode-profile arrays and metadata for manual plotting."""
+        from beamz.visual.data import mode_profile_data
 
-        show_mode_profile(self, field=field)
+        return mode_profile_data(self, field=field)
 
-    def add_to_plot(
-        self, ax, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"
+    def to_plot_data(
+        self, *, facecolor="none", edgecolor="crimson", alpha=0.8, linestyle="-"
     ):
-        """Add source visualization to 2D matplotlib plot."""
-        from beamz.visual.overlays import add_mode_source_to_plot
+        """Return a renderer-agnostic source payload."""
+        from beamz.visual.data import mode_source_plot_data
 
-        add_mode_source_to_plot(
+        return mode_source_plot_data(
             self,
-            ax,
             facecolor=facecolor,
             edgecolor=edgecolor,
             alpha=alpha,
