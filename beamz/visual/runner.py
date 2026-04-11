@@ -249,12 +249,18 @@ def _update_live_display(
 
 def _collect_results(sim, field_history, cfg, jupyter_animator):
     """Collect and return simulation results."""
-    monitors = [device for device in sim.devices if hasattr(device, "power_history")]
-    result = {}
-    if cfg.save_fields:
-        result["fields"] = field_history
-    if monitors:
-        result["monitors"] = monitors
-    if jupyter_animator and jupyter_animator.frames:
-        result["animation"] = jupyter_animator
-    return result if result else None
+    from beamz.simulation.core import SimulationResults
+
+    monitors = [device for device in sim.monitors if hasattr(device, "power_history")]
+    fields = field_history if cfg.save_fields else None
+    animation = (
+        jupyter_animator
+        if jupyter_animator is not None and jupyter_animator.frames
+        else None
+    )
+    return SimulationResults.from_run(
+        sim,
+        fields=fields,
+        monitors=monitors,
+        animation=animation,
+    )

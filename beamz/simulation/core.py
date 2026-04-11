@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import os
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Literal
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -39,6 +42,98 @@ class PortSpec:
     reference_monitor: str | None = None
     incident_wave: Literal["plus", "minus", "auto"] = "plus"
     scattered_wave: Literal["plus", "minus", "auto"] = "minus"
+
+
+@dataclass(frozen=True)
+class MonitorResults:
+    """Snapshot of one monitor's recorded outputs."""
+
+    monitor: Monitor
+    fields: dict[str, tuple[Any, ...]]
+    power_history: np.ndarray
+    power_timestamps: np.ndarray
+    frequency_flux_spectrum: np.ndarray
+    objective_value: float | None = None
+
+    @classmethod
+    def from_monitor(cls, monitor: Monitor) -> "MonitorResults":
+        fields = {
+            name: tuple(values)
+            for name, values in getattr(monitor, "fields", {}).items()
+        }
+        return cls(
+            monitor=monitor,
+            fields=fields,
+            power_history=np.asarray(getattr(monitor, "power_history", ()), dtype=float),
+            power_timestamps=np.asarray(
+                getattr(monitor, "power_timestamps", ()), dtype=float
+            ),
+            frequency_flux_spectrum=np.asarray(
+                getattr(monitor, "frequency_flux_spectrum", ()), dtype=np.complex64
+            ),
+            objective_value=getattr(monitor, "objective_value", None),
+        )
+
+
+@dataclass(frozen=True)
+class SimulationResults(Mapping[str, Any]):
+    """Primary run output with backward-compatible mapping access."""
+
+    simulation: "Simulation"
+    fields: dict[str, np.ndarray] | None = None
+    monitors: tuple[Monitor, ...] = ()
+    monitor_results: dict[str, MonitorResults] | None = None
+    animation: Any = None
+
+    def __getitem__(self, key: str) -> Any:
+        payload = self.to_dict()
+        if key not in payload:
+            raise KeyError(key)
+        return payload[key]
+
+    def __iter__(self):
+        return iter(self.to_dict())
+
+    def __len__(self) -> int:
+        return len(self.to_dict())
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {}
+        if self.fields is not None:
+            payload["fields"] = self.fields
+        if self.monitors:
+            payload["monitors"] = list(self.monitors)
+        if self.monitor_results:
+            payload["monitor_results"] = self.monitor_results
+        if self.animation is not None:
+            payload["animation"] = self.animation
+        return payload
+
+    @classmethod
+    def from_run(
+        cls,
+        simulation: "Simulation",
+        *,
+        fields: dict[str, np.ndarray] | None = None,
+        monitors: list[Monitor] | tuple[Monitor, ...] = (),
+        animation: Any = None,
+    ) -> "SimulationResults" | None:
+        monitor_tuple = tuple(monitors)
+        monitor_results = {
+            getattr(monitor, "name", None) or f"monitor_{idx}": MonitorResults.from_monitor(
+                monitor
+            )
+            for idx, monitor in enumerate(monitor_tuple)
+        }
+        if fields is None and not monitor_tuple and animation is None:
+            return None
+        return cls(
+            simulation=simulation,
+            fields=fields,
+            monitors=monitor_tuple,
+            monitor_results=monitor_results or None,
+            animation=animation,
+        )
 
 
 class Simulation:
@@ -736,16 +831,17 @@ class Simulation:
         if monitor_state is not None:
             program.apply_monitor_state(monitor_state)
 
-        result = {}
+        fields_result = None
         if field_history is not None:
-            result["fields"] = {
+            fields_result = {
                 k: np.stack(v) if len(v) > 0 else np.zeros((0,))
                 for k, v in field_history.items()
             }
-        monitors = [device for device in self.devices if isinstance(device, Monitor)]
-        if monitors:
-            result["monitors"] = monitors
-        return result if result else None
+        return SimulationResults.from_run(
+            self,
+            fields=fields_result,
+            monitors=self.monitors,
+        )
 
     def run_compiled_until_decay(
         self,
