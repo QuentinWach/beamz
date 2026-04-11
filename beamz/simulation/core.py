@@ -1150,7 +1150,11 @@ class Simulation:
         carrier = np.exp(-1j * 2.0 * np.pi * f0 * t_sel)[:, None]
         denom = max(float(np.sum(w)), 1e-18)
         demod = (2.0 / denom) * np.sum((w[:, None] * v_sel) * carrier, axis=0)
-        phase = self._monitor_projection_phase(component, np.asarray([f0]), self.dt)[0]
+        if hasattr(self, "dt") and self.dt is not None:
+            dt = float(self.dt)
+        else:
+            dt = 0.0
+        phase = self._monitor_projection_phase(component, np.asarray([f0]), dt)[0]
         demod = demod * phase
         return np.asarray(demod, dtype=np.complex128)
 
@@ -1195,8 +1199,6 @@ class Simulation:
             return ex, ey, ez, hx, hy, hz
         if axis == "y":
             # Use the right-handed basis x'->+y, y'->-x, z'->+z.
-            # Without the sign flip on the transverse x-like component, +y
-            # ports end up with their forward/backward modal labels reversed.
             return -ey, ex, ez, -hy, hx, hz
         if axis == "z":
             return ey, ez, ex, hy, hz, hx

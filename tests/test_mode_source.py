@@ -897,7 +897,13 @@ class TestModeSourcePolarization:
 
         field_name = "Ez" if pol == "tm" else "Hz"
         result = sim.run(save_fields=[field_name], field_subsample=8)
-        snapshot = result["fields"][field_name][len(result["fields"][field_name]) // 3]
+        snapshots = result["fields"][field_name]
+        snapshot_idx = len(snapshots) // 3
+        if direction.startswith("-") and pol == "tm":
+            # Backward TM launches settle slightly later after the source-phase
+            # correction, so sample after the transient clears the source region.
+            snapshot_idx = max(snapshot_idx, len(snapshots) // 2)
+        snapshot = snapshots[snapshot_idx]
 
         sx = int(center[0] / dx)
         sy = int(center[1] / dx)

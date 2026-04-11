@@ -381,8 +381,8 @@ def _remap_3d_solver_components(Ex, Ey, Ez, Hx, Hy, Hz, axis):
         return Ex, Ey, Ez, Hx, Hy, Hz
     if axis == "y":
         # Use the same right-handed x'->+y, y'->-x, z'->+z basis as the
-        # monitor-side modal extraction. Without the sign flip, y-directed 3D
-        # launches carry a persistent opposite-going modal component.
+        # monitor-side modal extraction. Source-profile parity corrections for
+        # y-directed launches are applied after profile construction.
         return -Ey, Ex, Ez, -Hy, Hx, Hz
     if axis == "z":
         # Cyclic remap from x-basis -> z-basis.
@@ -533,7 +533,6 @@ def _build_3d_profiles(
         Mapping component name -> index tuple for field injection.
     """
     nz, ny, nx = grid_shape
-    # Apply direction sign once while building source profiles.
     dir_sign = 1.0 if direction.startswith("+") else -1.0
     ETA_0 = np.sqrt(MU_0 / EPS_0)
     neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
@@ -1372,10 +1371,14 @@ class ModeSource:
         omega = 2 * np.pi * LIGHT_SPEED / self.wavelength
         dL = dz if is_3d else (dy if axis == "x" else dx)
         solver_direction = self.direction
-        if is_3d and axis in {"x", "y"}:
-            # 3D x/y cross-sections are solved in a rotated basis; flip +/- here so
-            # the resulting mode phase/gauge matches the 2D-corrected launch direction.
+        if is_3d and axis == "x":
+            # x-directed 3D launches are still anchored to the opposite signed
+            # solver branch to match the source-plane staggering conventions.
             solver_direction = ("-" if self.direction.startswith("+") else "+") + axis
+        elif is_3d and axis == "y":
+            # y-directed 3D launches are solved in a fixed +y basis for a
+            # stable gauge; launch direction is handled by source timing.
+            solver_direction = "+y"
 
         eps_profile_arr = np.asarray(eps_profile)
         n_local_max = float(
@@ -1545,6 +1548,18 @@ class ModeSource:
         self._Hx_profile = profiles.get("Hx")
         self._Hy_profile = profiles.get("Hy")
         self._Hz_profile = profiles.get("Hz")
+
+        if axis == "y":
+            if self._direction_sign > 0.0:
+                if self._Ex_profile is not None:
+                    self._Ex_profile = -self._Ex_profile
+                if self._Hz_profile is not None:
+                    self._Hz_profile = -self._Hz_profile
+            else:
+                if self._Ex_profile is not None:
+                    self._Ex_profile = -self._Ex_profile
+                if self._Hx_profile is not None:
+                    self._Hx_profile = -self._Hx_profile
 
         # Store indices on self
         self._Ex_indices = indices.get("Ex")
@@ -1869,6 +1884,9 @@ class ModeSource:
             self._dt_physical = _numeric_phase_delay(omega, k_num, delta_s)
         else:
             self._dt_physical = delta_s * float(np.real(self._neff)) / LIGHT_SPEED
+
+        if self._direction_sign < 0.0:
+            self._dt_physical = -self._dt_physical
 
     def _get_signal_value(self, time, dt):
         """Interpolate signal value at arbitrary time."""
