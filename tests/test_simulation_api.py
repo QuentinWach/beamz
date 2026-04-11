@@ -103,3 +103,14 @@ def test_monitor_runtime_state_is_kept_in_private_container():
 
     assert monitor._state.power_history == [1.0, 2.0]
     assert monitor._state.fields["t"] == [0.0]
+
+
+def test_source_runtime_state_is_kept_in_private_container():
+    source = GaussianSource(position=(2 * um, 2 * um), width=0.2 * um, signal=[1.0, 0.0])
+
+    assert "_state" in source.__dict__
+    assert "_spatial_profile_ez" not in source.__dict__
+    assert "_grid_indices" not in source.__dict__
+
+    source._grid_indices = (slice(0, 1), slice(0, 1))
+    assert source._state._grid_indices == (slice(0, 1), slice(0, 1))

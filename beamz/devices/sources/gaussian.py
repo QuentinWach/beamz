@@ -1,7 +1,17 @@
+from dataclasses import dataclass
+
 import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0
+
+
+@dataclass
+class _GaussianSourceState:
+    """Mutable prepared state for GaussianSource."""
+
+    _spatial_profile_ez: jnp.ndarray | None = None
+    _grid_indices: tuple[slice, ...] | tuple[slice, slice] | None = None
 
 
 class GaussianSource:
@@ -12,6 +22,19 @@ class GaussianSource:
 
     Supports JAX differentiability through position and width parameters.
     """
+
+    _RUNTIME_ATTRS = {"_spatial_profile_ez", "_grid_indices"}
+
+    def __getattr__(self, name):
+        if name in self._RUNTIME_ATTRS and "_state" in self.__dict__:
+            return getattr(self._state, name)
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
+
+    def __setattr__(self, name, value):
+        if name in self._RUNTIME_ATTRS and "_state" in self.__dict__:
+            setattr(self._state, name, value)
+            return
+        object.__setattr__(self, name, value)
 
     def __init__(self, position, width, signal):
         """Initialize the Gaussian source.
@@ -28,8 +51,7 @@ class GaussianSource:
             self.signal = jnp.asarray(signal)
         else:
             self.signal = signal
-        self._spatial_profile_ez = None
-        self._grid_indices = None
+        self._state = _GaussianSourceState()
 
     def _get_signal_value(self, time, dt):
         """Interpolate signal value at arbitrary time (JAX-compatible)."""
