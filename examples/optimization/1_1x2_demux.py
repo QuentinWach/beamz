@@ -644,14 +644,14 @@ def run_iteration(beta, blur_radius, binarity_weight, gray_penalty_weight=0.0):
     for cache in caches:
         wl = cache["wl"]
         wave = cache["wave"]
-        grad_top = np.array(
+        grad_top = opt.gradient_to_design_grid(
             compute_overlap_gradient(
                 cache["ez_hist"],
                 run_adjoint(grid, wl, "top", wave),
                 forward_start=wave["gate_index"],
             )
         )
-        grad_bot = np.array(
+        grad_bot = opt.gradient_to_design_grid(
             compute_overlap_gradient(
                 cache["ez_hist"],
                 run_adjoint(grid, wl, "bottom", wave),
