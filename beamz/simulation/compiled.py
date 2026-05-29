@@ -60,9 +60,9 @@ from beamz.simulation.boundaries import (
     cpml_update_h_from_e_3d_shell_split,
     create_metallic_boundary_masks,
     full_pec_curl_e_to_h_2d_xy,
-    full_pec_curl_e_to_h_3d,
     full_pec_curl_h_to_e_2d_xy,
-    full_pec_curl_h_to_e_3d,
+    full_pec_update_e_from_h_3d,
+    full_pec_update_h_from_e_3d,
     full_tm_2d_xy_masks,
     has_full_pec_3d,
     initialize_full_pec_3d_state,
@@ -1631,56 +1631,24 @@ class CompiledSimulation:
                             )
 
                     if is_3d and full_pec_3d:
-                        curl_ex, curl_ey, curl_ez = full_pec_curl_e_to_h_3d(
+                        fp_hx, fp_hy, fp_hz = full_pec_update_h_from_e_3d(
                             eng.fp_ex,
                             eng.fp_ey,
                             eng.fp_ez,
+                            fp_hx,
+                            fp_hy,
+                            fp_hz,
                             resolution,
-                            fp_hx.shape,
-                            fp_hy.shape,
-                            fp_hz.shape,
+                            h_decay_x=self.fp_h_decay_x,
+                            h_source_x=self.fp_h_source_x,
+                            h_decay_y=self.fp_h_decay_y,
+                            h_source_y=self.fp_h_source_y,
+                            h_decay_z=self.fp_h_decay_z,
+                            h_source_z=self.fp_h_source_z,
+                            hx_mask=self.fp_hx_mask,
+                            hy_mask=self.fp_hy_mask,
+                            hz_mask=self.fp_hz_mask,
                         )
-                        if self.fp_h_decay_x.size == 0:
-                            fp_hx = apply_zero_mask(
-                                fp_hx - self.fp_h_source_x * curl_ex,
-                                self.fp_hx_mask,
-                            )
-                            fp_hy = apply_zero_mask(
-                                fp_hy - self.fp_h_source_y * curl_ey,
-                                self.fp_hy_mask,
-                            )
-                            fp_hz = apply_zero_mask(
-                                fp_hz - self.fp_h_source_z * curl_ez,
-                                self.fp_hz_mask,
-                            )
-                        else:
-                            fp_hx = apply_zero_mask(
-                                advance_h_from_coefficients(
-                                    fp_hx,
-                                    curl_ex,
-                                    self.fp_h_decay_x,
-                                    self.fp_h_source_x,
-                                ),
-                                self.fp_hx_mask,
-                            )
-                            fp_hy = apply_zero_mask(
-                                advance_h_from_coefficients(
-                                    fp_hy,
-                                    curl_ey,
-                                    self.fp_h_decay_y,
-                                    self.fp_h_source_y,
-                                ),
-                                self.fp_hy_mask,
-                            )
-                            fp_hz = apply_zero_mask(
-                                advance_h_from_coefficients(
-                                    fp_hz,
-                                    curl_ez,
-                                    self.fp_h_decay_z,
-                                    self.fp_h_source_z,
-                                ),
-                                self.fp_hz_mask,
-                            )
                         hx = fp_hx[:-1, :-1, :-1]
                         hy = fp_hy[:-1, :-1, :-1]
                         hz = fp_hz[:-1, :-1, :-1]
@@ -1953,56 +1921,24 @@ class CompiledSimulation:
                     cpml3d_psi_e_terms = eng.cpml3d_psi_e_terms
 
                     if is_3d and full_pec_3d:
-                        curl_hx, curl_hy, curl_hz = full_pec_curl_h_to_e_3d(
+                        fp_ex, fp_ey, fp_ez = full_pec_update_e_from_h_3d(
                             eng.fp_hx,
                             eng.fp_hy,
                             eng.fp_hz,
+                            fp_ex,
+                            fp_ey,
+                            fp_ez,
                             resolution,
-                            fp_ex.shape,
-                            fp_ey.shape,
-                            fp_ez.shape,
+                            e_decay_x=self.fp_e_decay_x,
+                            e_source_x=self.fp_e_source_x,
+                            e_decay_y=self.fp_e_decay_y,
+                            e_source_y=self.fp_e_source_y,
+                            e_decay_z=self.fp_e_decay_z,
+                            e_source_z=self.fp_e_source_z,
+                            ex_mask=self.fp_ex_mask,
+                            ey_mask=self.fp_ey_mask,
+                            ez_mask=self.fp_ez_mask,
                         )
-                        if self.fp_e_decay_x.size == 0:
-                            fp_ex = apply_zero_mask(
-                                fp_ex + self.fp_e_source_x * curl_hx,
-                                self.fp_ex_mask,
-                            )
-                            fp_ey = apply_zero_mask(
-                                fp_ey + self.fp_e_source_y * curl_hy,
-                                self.fp_ey_mask,
-                            )
-                            fp_ez = apply_zero_mask(
-                                fp_ez + self.fp_e_source_z * curl_hz,
-                                self.fp_ez_mask,
-                            )
-                        else:
-                            fp_ex = apply_zero_mask(
-                                advance_e_from_coefficients(
-                                    fp_ex,
-                                    curl_hx,
-                                    self.fp_e_decay_x,
-                                    self.fp_e_source_x,
-                                ),
-                                self.fp_ex_mask,
-                            )
-                            fp_ey = apply_zero_mask(
-                                advance_e_from_coefficients(
-                                    fp_ey,
-                                    curl_hy,
-                                    self.fp_e_decay_y,
-                                    self.fp_e_source_y,
-                                ),
-                                self.fp_ey_mask,
-                            )
-                            fp_ez = apply_zero_mask(
-                                advance_e_from_coefficients(
-                                    fp_ez,
-                                    curl_hz,
-                                    self.fp_e_decay_z,
-                                    self.fp_e_source_z,
-                                ),
-                                self.fp_ez_mask,
-                            )
                         ex = fp_ex[:-1, :-1, :-1]
                         ey = fp_ey[:-1, :-1, :-1]
                         ez = fp_ez[:-1, :-1, :-1]

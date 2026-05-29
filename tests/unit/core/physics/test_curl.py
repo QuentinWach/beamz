@@ -9,6 +9,10 @@ from beamz.simulation.boundaries import (
     cpml_curl_h_to_e_3d,
     cpml_update_e_from_h_3d,
     cpml_update_h_from_e_3d,
+    full_pec_curl_e_to_h_3d,
+    full_pec_curl_h_to_e_3d,
+    full_pec_update_e_from_h_3d,
+    full_pec_update_h_from_e_3d,
 )
 from beamz.simulation.ops import curl_e_to_h_3d, curl_h_to_e_3d
 
@@ -61,6 +65,99 @@ def test_curl_h_to_e_3d_linear_field_has_constant_y_component():
     np.testing.assert_allclose(np.asarray(curl_hx)[1:-1, 1:-1, :], 0.0, atol=1e-6)
     np.testing.assert_allclose(np.asarray(curl_hy)[1:-1, :, 1:-1], 2.0, atol=1e-6)
     np.testing.assert_allclose(np.asarray(curl_hz)[:, 1:-1, 1:-1], 0.0, atol=1e-6)
+
+
+def test_full_pec_update_h_matches_curl_reference():
+    ex = jnp.arange(5 * 6 * 6, dtype=jnp.float32).reshape(5, 6, 6) / 100.0
+    ey = jnp.arange(5 * 5 * 7, dtype=jnp.float32).reshape(5, 5, 7) / 90.0
+    ez = jnp.arange(4 * 6 * 7, dtype=jnp.float32).reshape(4, 6, 7) / 80.0
+    hx = jnp.ones((4, 5, 7), dtype=jnp.float32)
+    hy = jnp.ones((4, 6, 6), dtype=jnp.float32) * 2.0
+    hz = jnp.ones((5, 5, 6), dtype=jnp.float32) * 3.0
+    source = jnp.asarray(0.125, dtype=jnp.float32)
+    mask_hx = jnp.zeros_like(hx, dtype=bool).at[:, 0, :].set(True)
+    mask_hy = jnp.zeros_like(hy, dtype=bool).at[:, :, 0].set(True)
+    mask_hz = jnp.zeros_like(hz, dtype=bool).at[0, :, :].set(True)
+
+    curl_x, curl_y, curl_z = full_pec_curl_e_to_h_3d(
+        ex, ey, ez, 0.5, hx.shape, hy.shape, hz.shape
+    )
+    expected = (
+        jnp.where(mask_hx, 0.0, hx - source * curl_x),
+        jnp.where(mask_hy, 0.0, hy - source * curl_y),
+        jnp.where(mask_hz, 0.0, hz - source * curl_z),
+    )
+
+    actual = full_pec_update_h_from_e_3d(
+        ex,
+        ey,
+        ez,
+        hx,
+        hy,
+        hz,
+        0.5,
+        h_decay_x=jnp.zeros((0, 0, 0), dtype=jnp.float32),
+        h_source_x=source,
+        h_decay_y=jnp.zeros((0, 0, 0), dtype=jnp.float32),
+        h_source_y=source,
+        h_decay_z=jnp.zeros((0, 0, 0), dtype=jnp.float32),
+        h_source_z=source,
+        hx_mask=mask_hx,
+        hy_mask=mask_hy,
+        hz_mask=mask_hz,
+    )
+
+    for got, want in zip(actual, expected, strict=True):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want), atol=1e-6)
+
+
+def test_full_pec_update_e_matches_curl_reference():
+    hx = jnp.arange(4 * 5 * 7, dtype=jnp.float32).reshape(4, 5, 7) / 100.0
+    hy = jnp.arange(4 * 6 * 6, dtype=jnp.float32).reshape(4, 6, 6) / 90.0
+    hz = jnp.arange(5 * 5 * 6, dtype=jnp.float32).reshape(5, 5, 6) / 80.0
+    ex = jnp.ones((5, 6, 6), dtype=jnp.float32)
+    ey = jnp.ones((5, 5, 7), dtype=jnp.float32) * 2.0
+    ez = jnp.ones((4, 6, 7), dtype=jnp.float32) * 3.0
+    region_x = (slice(1, -1), slice(1, -1), slice(None))
+    region_y = (slice(1, -1), slice(None), slice(1, -1))
+    region_z = (slice(None), slice(1, -1), slice(1, -1))
+    source_x = jnp.zeros_like(ex).at[region_x].set(0.11)
+    source_y = jnp.zeros_like(ey).at[region_y].set(0.12)
+    source_z = jnp.zeros_like(ez).at[region_z].set(0.13)
+    mask_ex = jnp.zeros_like(ex, dtype=bool).at[:, 0, :].set(True)
+    mask_ey = jnp.zeros_like(ey, dtype=bool).at[:, :, 0].set(True)
+    mask_ez = jnp.zeros_like(ez, dtype=bool).at[0, :, :].set(True)
+
+    curl_x, curl_y, curl_z = full_pec_curl_h_to_e_3d(
+        hx, hy, hz, 0.5, ex.shape, ey.shape, ez.shape
+    )
+    expected = (
+        jnp.where(mask_ex, 0.0, ex + source_x * curl_x),
+        jnp.where(mask_ey, 0.0, ey + source_y * curl_y),
+        jnp.where(mask_ez, 0.0, ez + source_z * curl_z),
+    )
+
+    actual = full_pec_update_e_from_h_3d(
+        hx,
+        hy,
+        hz,
+        ex,
+        ey,
+        ez,
+        0.5,
+        e_decay_x=jnp.zeros((0, 0, 0), dtype=jnp.float32),
+        e_source_x=source_x,
+        e_decay_y=jnp.zeros((0, 0, 0), dtype=jnp.float32),
+        e_source_y=source_y,
+        e_decay_z=jnp.zeros((0, 0, 0), dtype=jnp.float32),
+        e_source_z=source_z,
+        ex_mask=mask_ex,
+        ey_mask=mask_ey,
+        ez_mask=mask_ez,
+    )
+
+    for got, want in zip(actual, expected, strict=True):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want), atol=1e-6)
 
 
 def _cpml_coefficients(

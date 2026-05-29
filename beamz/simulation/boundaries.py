@@ -1482,6 +1482,118 @@ def full_pec_curl_e_to_h_3d(ex, ey, ez, resolution, hx_shape, hy_shape, hz_shape
     return curl_ex, curl_ey, curl_ez
 
 
+def full_pec_update_h_from_e_3d(
+    ex,
+    ey,
+    ez,
+    hx,
+    hy,
+    hz,
+    resolution,
+    *,
+    h_decay_x,
+    h_source_x,
+    h_decay_y,
+    h_source_y,
+    h_decay_z,
+    h_source_z,
+    hx_mask,
+    hy_mask,
+    hz_mask,
+):
+    """Update full-PEC H components without materializing a curl tuple."""
+
+    resolution = _scalar_like(resolution, ex.dtype)
+
+    curl_x = ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])) / (
+        resolution
+    )
+    if getattr(h_decay_x, "size", 0) == 0:
+        hx = hx - h_source_x * curl_x
+    else:
+        hx = h_decay_x * hx - h_source_x * curl_x
+    hx = jnp.where(hx_mask, jnp.zeros((), dtype=hx.dtype), hx)
+
+    curl_y = ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])) / (
+        resolution
+    )
+    if getattr(h_decay_y, "size", 0) == 0:
+        hy = hy - h_source_y * curl_y
+    else:
+        hy = h_decay_y * hy - h_source_y * curl_y
+    hy = jnp.where(hy_mask, jnp.zeros((), dtype=hy.dtype), hy)
+
+    curl_z = ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])) / (
+        resolution
+    )
+    if getattr(h_decay_z, "size", 0) == 0:
+        hz = hz - h_source_z * curl_z
+    else:
+        hz = h_decay_z * hz - h_source_z * curl_z
+    hz = jnp.where(hz_mask, jnp.zeros((), dtype=hz.dtype), hz)
+
+    return hx, hy, hz
+
+
+def full_pec_update_e_from_h_3d(
+    hx,
+    hy,
+    hz,
+    ex,
+    ey,
+    ez,
+    resolution,
+    *,
+    e_decay_x,
+    e_source_x,
+    e_decay_y,
+    e_source_y,
+    e_decay_z,
+    e_source_z,
+    ex_mask,
+    ey_mask,
+    ez_mask,
+):
+    """Update full-PEC E components without building full zero-padded curl grids."""
+
+    resolution = _scalar_like(resolution, hx.dtype)
+
+    region_x = (slice(1, -1), slice(1, -1), slice(None))
+    dHz_dy = (hz[:, 1:, :] - hz[:, :-1, :]) / resolution
+    dHy_dz = (hy[1:, :, :] - hy[:-1, :, :]) / resolution
+    curl_x = dHz_dy[1:-1, :, :] - dHy_dz[:, 1:-1, :]
+    if getattr(e_decay_x, "size", 0) == 0:
+        ex_region = ex[region_x] + e_source_x[region_x] * curl_x
+    else:
+        ex_region = e_decay_x[region_x] * ex[region_x] + e_source_x[region_x] * curl_x
+    ex = ex.at[region_x].set(ex_region)
+    ex = jnp.where(ex_mask, jnp.zeros((), dtype=ex.dtype), ex)
+
+    region_y = (slice(1, -1), slice(None), slice(1, -1))
+    dHx_dz = (hx[1:, :, :] - hx[:-1, :, :]) / resolution
+    dHz_dx = (hz[:, :, 1:] - hz[:, :, :-1]) / resolution
+    curl_y = dHx_dz[:, :, 1:-1] - dHz_dx[1:-1, :, :]
+    if getattr(e_decay_y, "size", 0) == 0:
+        ey_region = ey[region_y] + e_source_y[region_y] * curl_y
+    else:
+        ey_region = e_decay_y[region_y] * ey[region_y] + e_source_y[region_y] * curl_y
+    ey = ey.at[region_y].set(ey_region)
+    ey = jnp.where(ey_mask, jnp.zeros((), dtype=ey.dtype), ey)
+
+    region_z = (slice(None), slice(1, -1), slice(1, -1))
+    dHy_dx = (hy[:, :, 1:] - hy[:, :, :-1]) / resolution
+    dHx_dy = (hx[:, 1:, :] - hx[:, :-1, :]) / resolution
+    curl_z = dHy_dx[:, 1:-1, :] - dHx_dy[:, :, 1:-1]
+    if getattr(e_decay_z, "size", 0) == 0:
+        ez_region = ez[region_z] + e_source_z[region_z] * curl_z
+    else:
+        ez_region = e_decay_z[region_z] * ez[region_z] + e_source_z[region_z] * curl_z
+    ez = ez.at[region_z].set(ez_region)
+    ez = jnp.where(ez_mask, jnp.zeros((), dtype=ez.dtype), ez)
+
+    return ex, ey, ez
+
+
 def cpml_curl_e_to_h_3d(
     ex,
     ey,
