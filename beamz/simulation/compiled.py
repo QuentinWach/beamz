@@ -1160,14 +1160,18 @@ class CompiledSimulation:
             )
             need_sample = do_record | do_freq
 
-            power_sample = jnp.where(
-                need_sample,
-                (
+            def _sample_power(_unused):
+                return (
                     self._monitor_power_3d(mon, ex, ey, ez, hx, hy, hz)
                     if mon.is_3d
                     else self._monitor_power_2d(mon, ez, hx, hy)
-                ),
-                jnp.array(0.0, dtype=jnp.float32),
+                )
+
+            power_sample = jax.lax.cond(
+                need_sample,
+                _sample_power,
+                lambda _unused: jnp.array(0.0, dtype=jnp.float32),
+                operand=None,
             )
             power_val = jnp.where(
                 do_record, power_sample, jnp.array(0.0, dtype=jnp.float32)
@@ -1213,14 +1217,6 @@ class CompiledSimulation:
                 freq_phase_re = freq_phase_re.at[mi, : mon.freq_count].set(row_ph_re)
                 freq_phase_im = freq_phase_im.at[mi, : mon.freq_count].set(row_ph_im)
             if mon.dft_enabled and mon.freq_count > 0 and mon.dft_point_count > 0:
-                mi = mon.monitor_index
-                theta_now = (
-                    jnp.asarray(2.0 * np.pi, dtype=dft_dtype)
-                    * jnp.asarray(mon.freq_hz, dtype=dft_dtype)
-                    * jnp.asarray(t_phys, dtype=dft_dtype)
-                )
-                dft_ph_re = jnp.cos(theta_now)
-                dft_ph_im = jnp.sin(theta_now)
                 do_dft = monitor_dft_should_accumulate(
                     mon.dft_enabled and mon.freq_count > 0 and mon.dft_point_count > 0,
                     abs_step,
@@ -1229,66 +1225,83 @@ class CompiledSimulation:
                     mon.dft_t_end,
                     mon.dft_record_interval,
                 )
-                w = jnp.asarray(
-                    jnp.where(
-                        do_dft,
+
+                def _accumulate_dft(carry):
+                    d_re, d_im, d_w = carry
+                    mi = mon.monitor_index
+                    theta_now = (
+                        jnp.asarray(2.0 * np.pi, dtype=dft_dtype)
+                        * jnp.asarray(mon.freq_hz, dtype=dft_dtype)
+                        * jnp.asarray(t_phys, dtype=dft_dtype)
+                    )
+                    dft_ph_re = jnp.cos(theta_now)
+                    dft_ph_im = jnp.sin(theta_now)
+                    w = jnp.asarray(
                         monitor_dft_window_weight(
                             t_phys,
                             mon.dft_t_start,
                             mon.dft_t_end,
                             mon.dft_window_code == 1,
                         ),
-                        jnp.asarray(0.0, dtype=jnp.float32),
-                    ),
-                    dtype=jnp.float32,
-                )
-                sample_scale = jnp.asarray(
-                    monitor_dft_sample_scale(
-                        w,
-                        normalization_code=mon.dft_normalization_code,
-                        base_dt=dt_scalar,
-                        record_interval=mon.dft_record_interval,
-                        length_unit=mon.dft_length_unit,
-                    ),
-                    dtype=dft_dtype,
-                )
-
-                if mon.is_3d:
-                    vecs = self._monitor_dft_vectors_3d(mon, ex, ey, ez, hx, hy, hz)
-                else:
-                    vecs = self._monitor_dft_vectors_2d(
-                        mon,
-                        ex,
-                        ey,
-                        ez,
-                        hx,
-                        hy,
-                        hz,
-                        tm_ez=tm_ez,
-                        tm_hx=tm_hx,
-                        tm_hy=tm_hy,
+                        dtype=jnp.float32,
                     )
-                comp_mask = mon.dft_component_mask.astype(dft_dtype)[:, None, None]
-                delta_re = jnp.asarray(
-                    sample_scale
-                    * comp_mask
-                    * jnp.einsum("f,cp->cfp", dft_ph_re, vecs.astype(dft_dtype)),
-                    dtype=dft_dtype,
-                )
-                delta_im = jnp.asarray(
-                    sample_scale
-                    * comp_mask
-                    * jnp.einsum("f,cp->cfp", dft_ph_im, vecs.astype(dft_dtype)),
-                    dtype=dft_dtype,
-                )
-                dft_vec_re = dft_vec_re.at[
-                    mi, :, : mon.freq_count, : mon.dft_point_count
-                ].add(delta_re[:, : mon.freq_count, : mon.dft_point_count])
-                dft_vec_im = dft_vec_im.at[
-                    mi, :, : mon.freq_count, : mon.dft_point_count
-                ].add(delta_im[:, : mon.freq_count, : mon.dft_point_count])
-                dft_weight_sum = dft_weight_sum.at[mi, : mon.freq_count].add(
-                    jnp.asarray(w, dtype=dft_dtype)
+                    sample_scale = jnp.asarray(
+                        monitor_dft_sample_scale(
+                            w,
+                            normalization_code=mon.dft_normalization_code,
+                            base_dt=dt_scalar,
+                            record_interval=mon.dft_record_interval,
+                            length_unit=mon.dft_length_unit,
+                        ),
+                        dtype=dft_dtype,
+                    )
+
+                    if mon.is_3d:
+                        vecs = self._monitor_dft_vectors_3d(
+                            mon, ex, ey, ez, hx, hy, hz
+                        )
+                    else:
+                        vecs = self._monitor_dft_vectors_2d(
+                            mon,
+                            ex,
+                            ey,
+                            ez,
+                            hx,
+                            hy,
+                            hz,
+                            tm_ez=tm_ez,
+                            tm_hx=tm_hx,
+                            tm_hy=tm_hy,
+                        )
+                    comp_mask = mon.dft_component_mask.astype(dft_dtype)[:, None, None]
+                    delta_re = jnp.asarray(
+                        sample_scale
+                        * comp_mask
+                        * jnp.einsum("f,cp->cfp", dft_ph_re, vecs.astype(dft_dtype)),
+                        dtype=dft_dtype,
+                    )
+                    delta_im = jnp.asarray(
+                        sample_scale
+                        * comp_mask
+                        * jnp.einsum("f,cp->cfp", dft_ph_im, vecs.astype(dft_dtype)),
+                        dtype=dft_dtype,
+                    )
+                    d_re = d_re.at[mi, :, : mon.freq_count, : mon.dft_point_count].add(
+                        delta_re[:, : mon.freq_count, : mon.dft_point_count]
+                    )
+                    d_im = d_im.at[mi, :, : mon.freq_count, : mon.dft_point_count].add(
+                        delta_im[:, : mon.freq_count, : mon.dft_point_count]
+                    )
+                    d_w = d_w.at[mi, : mon.freq_count].add(
+                        jnp.asarray(w, dtype=dft_dtype)
+                    )
+                    return d_re, d_im, d_w
+
+                dft_vec_re, dft_vec_im, dft_weight_sum = jax.lax.cond(
+                    do_dft,
+                    _accumulate_dft,
+                    lambda carry: carry,
+                    (dft_vec_re, dft_vec_im, dft_weight_sum),
                 )
 
         return MonitorState(
