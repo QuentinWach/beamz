@@ -9,8 +9,6 @@ from beamz.simulation.boundaries import (
     cpml_curl_h_to_e_3d,
     cpml_update_e_from_h_3d,
     cpml_update_h_from_e_3d,
-    full_pec_curl_e_to_h_3d,
-    full_pec_curl_h_to_e_3d,
     full_pec_update_e_from_h_3d,
     full_pec_update_h_from_e_3d,
 )
@@ -67,6 +65,47 @@ def test_curl_h_to_e_3d_linear_field_has_constant_y_component():
     np.testing.assert_allclose(np.asarray(curl_hz)[:, 1:-1, 1:-1], 0.0, atol=1e-6)
 
 
+def _reference_full_pec_e_to_h_terms(ex, ey, ez, resolution):
+    return (
+        ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
+        / resolution,
+        ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
+        / resolution,
+        ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
+        / resolution,
+    )
+
+
+def _reference_full_pec_h_to_e_terms(
+    hx, hy, hz, resolution, ex_shape, ey_shape, ez_shape
+):
+    curl_x = jnp.zeros(ex_shape, dtype=hx.dtype)
+    curl_y = jnp.zeros(ey_shape, dtype=hx.dtype)
+    curl_z = jnp.zeros(ez_shape, dtype=hx.dtype)
+    curl_x = curl_x.at[1:-1, 1:-1, :].set(
+        (
+            (hz[:, 1:, :] - hz[:, :-1, :])[1:-1, :, :]
+            - (hy[1:, :, :] - hy[:-1, :, :])[:, 1:-1, :]
+        )
+        / resolution
+    )
+    curl_y = curl_y.at[1:-1, :, 1:-1].set(
+        (
+            (hx[1:, :, :] - hx[:-1, :, :])[:, :, 1:-1]
+            - (hz[:, :, 1:] - hz[:, :, :-1])[1:-1, :, :]
+        )
+        / resolution
+    )
+    curl_z = curl_z.at[:, 1:-1, 1:-1].set(
+        (
+            (hy[:, :, 1:] - hy[:, :, :-1])[:, 1:-1, :]
+            - (hx[:, 1:, :] - hx[:, :-1, :])[:, :, 1:-1]
+        )
+        / resolution
+    )
+    return curl_x, curl_y, curl_z
+
+
 def test_full_pec_update_h_matches_curl_reference():
     ex = jnp.arange(5 * 6 * 6, dtype=jnp.float32).reshape(5, 6, 6) / 100.0
     ey = jnp.arange(5 * 5 * 7, dtype=jnp.float32).reshape(5, 5, 7) / 90.0
@@ -79,9 +118,7 @@ def test_full_pec_update_h_matches_curl_reference():
     mask_hy = jnp.zeros_like(hy, dtype=bool).at[:, :, 0].set(True)
     mask_hz = jnp.zeros_like(hz, dtype=bool).at[0, :, :].set(True)
 
-    curl_x, curl_y, curl_z = full_pec_curl_e_to_h_3d(
-        ex, ey, ez, 0.5, hx.shape, hy.shape, hz.shape
-    )
+    curl_x, curl_y, curl_z = _reference_full_pec_e_to_h_terms(ex, ey, ez, 0.5)
     expected = (
         jnp.where(mask_hx, 0.0, hx - source * curl_x),
         jnp.where(mask_hy, 0.0, hy - source * curl_y),
@@ -128,7 +165,7 @@ def test_full_pec_update_e_matches_curl_reference():
     mask_ey = jnp.zeros_like(ey, dtype=bool).at[:, :, 0].set(True)
     mask_ez = jnp.zeros_like(ez, dtype=bool).at[0, :, :].set(True)
 
-    curl_x, curl_y, curl_z = full_pec_curl_h_to_e_3d(
+    curl_x, curl_y, curl_z = _reference_full_pec_h_to_e_terms(
         hx, hy, hz, 0.5, ex.shape, ey.shape, ez.shape
     )
     expected = (

@@ -2948,7 +2948,7 @@ class ModeSource(RuntimeStateProxy):
         from beamz.simulation import ops
         from beamz.simulation.boundaries import (
             build_h_boundary_views_for_e_3d,
-            full_pec_curl_h_to_e_3d,
+            full_pec_update_e_from_h_3d,
             has_full_pec_3d,
             initialize_full_pec_3d_state,
         )
@@ -2975,50 +2975,53 @@ class ModeSource(RuntimeStateProxy):
                 full = full.at[:-1, :-1, :-1].set(compact)
                 zero = jnp.asarray(0.0, dtype=full.dtype)
                 setattr(fp_state, comp, jnp.where(fp_state.masks[comp], zero, full))
-            curl_hx, curl_hy, curl_hz = full_pec_curl_h_to_e_3d(
-                fp_state.Hx,
-                fp_state.Hy,
-                fp_state.Hz,
-                self._resolution,
-                fp_state.Ex.shape,
-                fp_state.Ey.shape,
-                fp_state.Ez.shape,
-            )
             region_x = (slice(1, -1), slice(1, -1), slice(None))
             region_y = (slice(1, -1), slice(None), slice(1, -1))
             region_z = (slice(None), slice(1, -1), slice(1, -1))
-            ex_next = ops.advance_e_field(
+            denom_x = 1.0 + fp_state.sig_x_region * (
+                dt / (2.0 * EPS_0 * fp_state.eps_x_region)
+            )
+            denom_y = 1.0 + fp_state.sig_y_region * (
+                dt / (2.0 * EPS_0 * fp_state.eps_y_region)
+            )
+            denom_z = 1.0 + fp_state.sig_z_region * (
+                dt / (2.0 * EPS_0 * fp_state.eps_z_region)
+            )
+            e_decay_x = (
+                1.0
+                - fp_state.sig_x_region
+                * (dt / (2.0 * EPS_0 * fp_state.eps_x_region))
+            ) / denom_x
+            e_decay_y = (
+                1.0
+                - fp_state.sig_y_region
+                * (dt / (2.0 * EPS_0 * fp_state.eps_y_region))
+            ) / denom_y
+            e_decay_z = (
+                1.0
+                - fp_state.sig_z_region
+                * (dt / (2.0 * EPS_0 * fp_state.eps_z_region))
+            ) / denom_z
+            e_source_x = (dt / (EPS_0 * fp_state.eps_x_region)) / denom_x
+            e_source_y = (dt / (EPS_0 * fp_state.eps_y_region)) / denom_y
+            e_source_z = (dt / (EPS_0 * fp_state.eps_z_region)) / denom_z
+            ex_next, ey_next, ez_next = full_pec_update_e_from_h_3d(
+                fp_state.Hx,
+                fp_state.Hy,
+                fp_state.Hz,
                 fp_state.Ex,
-                curl_hx,
-                fp_state.sig_x_region,
-                fp_state.eps_x_region,
-                dt,
-                region_x,
-            )
-            ey_next = ops.advance_e_field(
                 fp_state.Ey,
-                curl_hy,
-                fp_state.sig_y_region,
-                fp_state.eps_y_region,
-                dt,
-                region_y,
-            )
-            ez_next = ops.advance_e_field(
                 fp_state.Ez,
-                curl_hz,
-                fp_state.sig_z_region,
-                fp_state.eps_z_region,
-                dt,
-                region_z,
-            )
-            ex_next = jnp.where(
-                fp_state.masks["Ex"], jnp.asarray(0.0, dtype=ex_next.dtype), ex_next
-            )
-            ey_next = jnp.where(
-                fp_state.masks["Ey"], jnp.asarray(0.0, dtype=ey_next.dtype), ey_next
-            )
-            ez_next = jnp.where(
-                fp_state.masks["Ez"], jnp.asarray(0.0, dtype=ez_next.dtype), ez_next
+                self._resolution,
+                e_decay_x=e_decay_x,
+                e_source_x=e_source_x,
+                e_decay_y=e_decay_y,
+                e_source_y=e_source_y,
+                e_decay_z=e_decay_z,
+                e_source_z=e_source_z,
+                ex_mask=fp_state.masks["Ex"],
+                ey_mask=fp_state.masks["Ey"],
+                ez_mask=fp_state.masks["Ez"],
             )
             return {
                 "Ex": np.asarray(ex_next[:-1, :-1, :-1]),

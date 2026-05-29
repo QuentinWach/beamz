@@ -6,10 +6,10 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 
+from beamz.const import EPS_0, MU_0
 from beamz.shared_kernels import (
     advance_e_from_curl,
     advance_h_from_curl,
-    apply_zero_mask,
     build_cpml_3d_terms,
     build_tm_xy_cpml_terms,
 )
@@ -19,9 +19,9 @@ from beamz.simulation.boundaries import (
     cpml_curl_e_to_h_3d,
     cpml_curl_h_to_e_3d,
     full_pec_curl_e_to_h_2d_xy,
-    full_pec_curl_e_to_h_3d,
     full_pec_curl_h_to_e_2d_xy,
-    full_pec_curl_h_to_e_3d,
+    full_pec_update_e_from_h_3d,
+    full_pec_update_h_from_e_3d,
     has_full_pec_2d_xy,
     has_full_pec_3d,
     initialize_full_pec_3d_state,
@@ -438,15 +438,49 @@ class Fields:
                 if self.full_pec_3d_state is None:
                     self.full_pec_3d_state = initialize_full_pec_3d_state(self)
                 state = self.full_pec_3d_state
-                curlE_x, curlE_y, curlE_z = full_pec_curl_e_to_h_3d(
+                source_x = source_y = source_z = None
+                if source_m:
+                    source_x = jnp.zeros_like(state.Hx)
+                    source_y = jnp.zeros_like(state.Hy)
+                    source_z = jnp.zeros_like(state.Hz)
+                    for comp in ("Hx", "Hy", "Hz"):
+                        if comp in source_m:
+                            for val, indices in source_m[comp]:
+                                if comp == "Hx":
+                                    source_x = source_x.at[indices].add(val)
+                                elif comp == "Hy":
+                                    source_y = source_y.at[indices].add(val)
+                                else:
+                                    source_z = source_z.at[indices].add(val)
+                denom_x = 1.0 + state.sigma_m_hx * (dt / (2.0 * MU_0))
+                denom_y = 1.0 + state.sigma_m_hy * (dt / (2.0 * MU_0))
+                denom_z = 1.0 + state.sigma_m_hz * (dt / (2.0 * MU_0))
+                state.Hx, state.Hy, state.Hz = full_pec_update_h_from_e_3d(
                     state.Ex,
                     state.Ey,
                     state.Ez,
+                    state.Hx,
+                    state.Hy,
+                    state.Hz,
                     self.resolution,
-                    state.Hx.shape,
-                    state.Hy.shape,
-                    state.Hz.shape,
+                    h_decay_x=(1.0 - state.sigma_m_hx * (dt / (2.0 * MU_0)))
+                    / denom_x,
+                    h_source_x=(dt / MU_0) / denom_x,
+                    h_decay_y=(1.0 - state.sigma_m_hy * (dt / (2.0 * MU_0)))
+                    / denom_y,
+                    h_source_y=(dt / MU_0) / denom_y,
+                    h_decay_z=(1.0 - state.sigma_m_hz * (dt / (2.0 * MU_0)))
+                    / denom_z,
+                    h_source_z=(dt / MU_0) / denom_z,
+                    hx_mask=state.masks["Hx"],
+                    hy_mask=state.masks["Hy"],
+                    hz_mask=state.masks["Hz"],
+                    source_m_x=source_x,
+                    source_m_y=source_y,
+                    source_m_z=source_z,
                 )
+                sync_compact_fields_from_full_pec_3d(self, state)
+                return
             else:
                 cpml = self._ensure_cpml_3d_state(dt)
                 if cpml is not None:
@@ -517,22 +551,7 @@ class Fields:
                         else:
                             curlE_z = curlE_z.at[indices].add(val)
 
-        if is_3d and has_full_pec_3d(getattr(self, "boundaries", None)):
-            state = self.full_pec_3d_state
-            state.Hx = apply_zero_mask(
-                advance_h_from_curl(state.Hx, curlE_x, state.sigma_m_hx, dt),
-                state.masks["Hx"],
-            )
-            state.Hy = apply_zero_mask(
-                advance_h_from_curl(state.Hy, curlE_y, state.sigma_m_hy, dt),
-                state.masks["Hy"],
-            )
-            state.Hz = apply_zero_mask(
-                advance_h_from_curl(state.Hz, curlE_z, state.sigma_m_hz, dt),
-                state.masks["Hz"],
-            )
-            sync_compact_fields_from_full_pec_3d(self, state)
-        elif (not is_3d) and self.plane_2d == "xy":
+        if (not is_3d) and self.plane_2d == "xy":
             state = self.ensure_tm_xy_state()
             self.Hx = advance_h_from_curl(self.Hx, curlE_x, state.sigma_m_hx, dt)
             self.Hy = advance_h_from_curl(self.Hy, curlE_y, state.sigma_m_hy, dt)
@@ -554,15 +573,70 @@ class Fields:
                 if self.full_pec_3d_state is None:
                     self.full_pec_3d_state = initialize_full_pec_3d_state(self)
                 state = self.full_pec_3d_state
-                curlH_x, curlH_y, curlH_z = full_pec_curl_h_to_e_3d(
+                source_x = source_y = source_z = None
+                if source_j:
+                    source_x = jnp.zeros_like(state.Ex)
+                    source_y = jnp.zeros_like(state.Ey)
+                    source_z = jnp.zeros_like(state.Ez)
+                    for comp in ("Ex", "Ey", "Ez"):
+                        if comp in source_j:
+                            for val, indices in source_j[comp]:
+                                if comp == "Ex":
+                                    source_x = source_x.at[indices].add(val)
+                                elif comp == "Ey":
+                                    source_y = source_y.at[indices].add(val)
+                                else:
+                                    source_z = source_z.at[indices].add(val)
+                region_x = (slice(1, -1), slice(1, -1), slice(None))
+                region_y = (slice(1, -1), slice(None), slice(1, -1))
+                region_z = (slice(None), slice(1, -1), slice(1, -1))
+                denom_x = 1.0 + state.sig_x_region * (
+                    dt / (2.0 * EPS_0 * state.eps_x_region)
+                )
+                denom_y = 1.0 + state.sig_y_region * (
+                    dt / (2.0 * EPS_0 * state.eps_y_region)
+                )
+                denom_z = 1.0 + state.sig_z_region * (
+                    dt / (2.0 * EPS_0 * state.eps_z_region)
+                )
+                e_decay_x = (
+                    1.0
+                    - state.sig_x_region * (dt / (2.0 * EPS_0 * state.eps_x_region))
+                ) / denom_x
+                e_decay_y = (
+                    1.0
+                    - state.sig_y_region * (dt / (2.0 * EPS_0 * state.eps_y_region))
+                ) / denom_y
+                e_decay_z = (
+                    1.0
+                    - state.sig_z_region * (dt / (2.0 * EPS_0 * state.eps_z_region))
+                ) / denom_z
+                e_source_x = (dt / (EPS_0 * state.eps_x_region)) / denom_x
+                e_source_y = (dt / (EPS_0 * state.eps_y_region)) / denom_y
+                e_source_z = (dt / (EPS_0 * state.eps_z_region)) / denom_z
+                state.Ex, state.Ey, state.Ez = full_pec_update_e_from_h_3d(
                     state.Hx,
                     state.Hy,
                     state.Hz,
+                    state.Ex,
+                    state.Ey,
+                    state.Ez,
                     self.resolution,
-                    state.Ex.shape,
-                    state.Ey.shape,
-                    state.Ez.shape,
+                    e_decay_x=e_decay_x,
+                    e_source_x=e_source_x,
+                    e_decay_y=e_decay_y,
+                    e_source_y=e_source_y,
+                    e_decay_z=e_decay_z,
+                    e_source_z=e_source_z,
+                    ex_mask=state.masks["Ex"],
+                    ey_mask=state.masks["Ey"],
+                    ez_mask=state.masks["Ez"],
+                    source_j_x=source_x,
+                    source_j_y=source_y,
+                    source_j_z=source_z,
                 )
+                sync_compact_fields_from_full_pec_3d(self, state)
+                return
             else:
                 cpml = self._ensure_cpml_3d_state(dt)
                 if cpml is not None:
@@ -652,40 +726,7 @@ class Fields:
                         else:
                             curlH_z = curlH_z.at[indices].add(val)
 
-        if is_3d and has_full_pec_3d(getattr(self, "boundaries", None)):
-            state = self.full_pec_3d_state
-            region_x = (slice(1, -1), slice(1, -1), slice(None))
-            region_y = (slice(1, -1), slice(None), slice(1, -1))
-            region_z = (slice(None), slice(1, -1), slice(1, -1))
-            state.Ex = advance_e_from_curl(
-                state.Ex,
-                curlH_x,
-                state.sig_x_region,
-                state.eps_x_region,
-                dt,
-                region_x,
-            )
-            state.Ey = advance_e_from_curl(
-                state.Ey,
-                curlH_y,
-                state.sig_y_region,
-                state.eps_y_region,
-                dt,
-                region_y,
-            )
-            state.Ez = advance_e_from_curl(
-                state.Ez,
-                curlH_z,
-                state.sig_z_region,
-                state.eps_z_region,
-                dt,
-                region_z,
-            )
-            state.Ex = apply_zero_mask(state.Ex, state.masks["Ex"])
-            state.Ey = apply_zero_mask(state.Ey, state.masks["Ey"])
-            state.Ez = apply_zero_mask(state.Ez, state.masks["Ez"])
-            sync_compact_fields_from_full_pec_3d(self, state)
-        elif (not is_3d) and self.plane_2d == "xy":
+        if (not is_3d) and self.plane_2d == "xy":
             state = self.ensure_tm_xy_state()
             self.Ex = advance_e_from_curl(
                 self.Ex, curlH_x, self.sig_x, self.eps_x, dt, self.region_x
