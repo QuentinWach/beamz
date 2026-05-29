@@ -34,9 +34,7 @@ from beamz.devices.sources.compiler import (
 )
 from beamz.shared_kernels import (
     advance_e_from_coefficients,
-    advance_e_from_curl,
     advance_h_from_coefficients,
-    advance_h_from_curl,
     apply_zero_mask,
     build_cpml_3d_terms,
     build_tm_xy_cpml_terms,
@@ -1638,20 +1636,20 @@ class CompiledSimulation:
                                 hz, curl_ez, h_decay_z, h_source_z
                             )
                         else:
-                            curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_3d(
+                            hx, hy, hz = ops.fused_update_h_lossy_3d(
                                 ex,
                                 ey,
                                 ez,
+                                hx,
+                                hy,
+                                hz,
+                                h_decay_x,
+                                h_source_x,
+                                h_decay_y,
+                                h_source_y,
+                                h_decay_z,
+                                h_source_z,
                                 resolution,
-                            )
-                            hx = advance_h_from_curl(
-                                hx, curl_ex, self.sigma_m_hx_raw, dt
-                            )
-                            hy = advance_h_from_curl(
-                                hy, curl_ey, self.sigma_m_hy_raw, dt
-                            )
-                            hz = advance_h_from_curl(
-                                hz, curl_ez, self.sigma_m_hz_raw, dt
                             )
                     elif use_physical_tm_xy:
                         if tm_full_pec:
@@ -1866,40 +1864,21 @@ class CompiledSimulation:
                                 ez, curl_hz, e_decay_z, e_source_z
                             )
                         else:
-                            curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_3d(
+                            ex, ey, ez = ops.fused_update_e_lossy_3d(
                                 hx,
                                 hy,
                                 hz,
-                                resolution,
-                                ex_shape=ex.shape,
-                                ey_shape=ey.shape,
-                                ez_shape=ez.shape,
-                                boundary_views=boundary_views,
-                            )
-                            full_region = (slice(None), slice(None), slice(None))
-                            ex = advance_e_from_curl(
                                 ex,
-                                curl_hx,
-                                self.sig_x_raw,
-                                self.eps_x_raw,
-                                dt,
-                                full_region,
-                            )
-                            ey = advance_e_from_curl(
                                 ey,
-                                curl_hy,
-                                self.sig_y_raw,
-                                self.eps_y_raw,
-                                dt,
-                                full_region,
-                            )
-                            ez = advance_e_from_curl(
                                 ez,
-                                curl_hz,
-                                self.sig_z_raw,
-                                self.eps_z_raw,
-                                dt,
-                                full_region,
+                                e_decay_x,
+                                e_source_x,
+                                e_decay_y,
+                                e_source_y,
+                                e_decay_z,
+                                e_source_z,
+                                resolution,
+                                boundary_views=boundary_views,
                             )
                     elif use_physical_tm_xy:
                         curl_hx, curl_hy = xy_te_curl_h_to_e_2d(
