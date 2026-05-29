@@ -1828,9 +1828,6 @@ class CompiledSimulation:
                         ey = fp_ey[:-1, :-1, :-1]
                         ez = fp_ez[:-1, :-1, :-1]
                     elif is_3d:
-                        boundary_views = build_h_boundary_views_for_e_3d(
-                            hx, hy, hz, None
-                        )
                         if self.use_cpml_3d:
                             ex, ey, ez, cpml3d_psi_e_terms = (
                                 cpml_update_e_from_h_3d(
@@ -1855,6 +1852,9 @@ class CompiledSimulation:
                                 )
                             )
                         else:
+                            boundary_views = build_h_boundary_views_for_e_3d(
+                                hx, hy, hz, None
+                            )
                             ex, ey, ez = ops.fused_update_e_lossy_3d(
                                 hx,
                                 hy,
