@@ -1329,27 +1329,28 @@ class CompiledSimulation:
         batched_mon = None
         monitors_2d: tuple[CompiledMonitorSpec, ...] = ()
         if self.monitor_specs and is_3d:
-            has_dft_monitor = any(
-                bool(getattr(s, "dft_enabled", False)) for s in self.monitor_specs
+            dft_3d = tuple(
+                s
+                for s in self.monitor_specs
+                if s.is_3d and bool(getattr(s, "dft_enabled", False))
             )
-            if has_dft_monitor:
-                # Keep monitor path simple and deterministic for per-component DFT
-                # accumulation in 3D modal extraction.
-                batched_mon = None
-                monitors_2d = tuple(self.monitor_specs)
-            else:
-                field_shapes = {
-                    "Ex": tuple(self.e_source_x.shape),
-                    "Ey": tuple(self.e_source_y.shape),
-                    "Ez": tuple(self.e_source_z.shape),
-                    "Hx": tuple(self.h_source_x.shape),
-                    "Hy": tuple(self.h_source_y.shape),
-                    "Hz": tuple(self.h_source_z.shape),
-                }
-                batched_mon = compile_batched_monitor_data(
-                    self.monitor_specs, field_shapes
-                )
-                monitors_2d = tuple(s for s in self.monitor_specs if not s.is_3d)
+            batchable_3d = tuple(
+                s
+                for s in self.monitor_specs
+                if s.is_3d and not bool(getattr(s, "dft_enabled", False))
+            )
+            field_shapes = {
+                "Ex": tuple(self.e_source_x.shape),
+                "Ey": tuple(self.e_source_y.shape),
+                "Ez": tuple(self.e_source_z.shape),
+                "Hx": tuple(self.h_source_x.shape),
+                "Hy": tuple(self.h_source_y.shape),
+                "Hz": tuple(self.h_source_z.shape),
+            }
+            batched_mon = compile_batched_monitor_data(batchable_3d, field_shapes)
+            # Keep DFT monitors unbatched for deterministic per-component modal
+            # accumulation while still batching ordinary 3D power/frequency monitors.
+            monitors_2d = tuple(s for s in self.monitor_specs if not s.is_3d) + dft_3d
         elif self.monitor_specs:
             monitors_2d = tuple(self.monitor_specs)
 
