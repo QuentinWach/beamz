@@ -513,7 +513,9 @@ class CompiledSimulation:
         )
 
     def _snapshot_field_shape(self) -> tuple[int, ...]:
-        def _nonempty_shape(primary: jnp.ndarray, fallback: jnp.ndarray) -> tuple[int, ...]:
+        def _nonempty_shape(
+            primary: jnp.ndarray, fallback: jnp.ndarray
+        ) -> tuple[int, ...]:
             shape = tuple(primary.shape)
             return shape if primary.size > 0 else tuple(fallback.shape)
 
@@ -1037,48 +1039,42 @@ class CompiledSimulation:
                     mask = bm.valid_mask[i]
                     exs = (
                         jnp.sum(
-                            ex_flat[bm.ex_interp_flat_idx[i]]
-                            * bm.ex_interp_weights[i],
+                            ex_flat[bm.ex_interp_flat_idx[i]] * bm.ex_interp_weights[i],
                             axis=-1,
                         )
                         * mask
                     )
                     eys = (
                         jnp.sum(
-                            ey_flat[bm.ey_interp_flat_idx[i]]
-                            * bm.ey_interp_weights[i],
+                            ey_flat[bm.ey_interp_flat_idx[i]] * bm.ey_interp_weights[i],
                             axis=-1,
                         )
                         * mask
                     )
                     ezs = (
                         jnp.sum(
-                            ez_flat[bm.ez_interp_flat_idx[i]]
-                            * bm.ez_interp_weights[i],
+                            ez_flat[bm.ez_interp_flat_idx[i]] * bm.ez_interp_weights[i],
                             axis=-1,
                         )
                         * mask
                     )
                     hxs = (
                         jnp.sum(
-                            hx_flat[bm.hx_interp_flat_idx[i]]
-                            * bm.hx_interp_weights[i],
+                            hx_flat[bm.hx_interp_flat_idx[i]] * bm.hx_interp_weights[i],
                             axis=-1,
                         )
                         * mask
                     )
                     hys = (
                         jnp.sum(
-                            hy_flat[bm.hy_interp_flat_idx[i]]
-                            * bm.hy_interp_weights[i],
+                            hy_flat[bm.hy_interp_flat_idx[i]] * bm.hy_interp_weights[i],
                             axis=-1,
                         )
                         * mask
                     )
                     hzs = (
                         jnp.sum(
-                            hz_flat[bm.hz_interp_flat_idx[i]]
-                            * bm.hz_interp_weights[i],
+                            hz_flat[bm.hz_interp_flat_idx[i]] * bm.hz_interp_weights[i],
                             axis=-1,
                         )
                         * mask
@@ -1281,9 +1277,7 @@ class CompiledSimulation:
                     )
 
                     if mon.is_3d:
-                        vecs = self._monitor_dft_vectors_3d(
-                            mon, ex, ey, ez, hx, hy, hz
-                        )
+                        vecs = self._monitor_dft_vectors_3d(mon, ex, ey, ez, hx, hy, hz)
                     else:
                         vecs = self._monitor_dft_vectors_2d(
                             mon,

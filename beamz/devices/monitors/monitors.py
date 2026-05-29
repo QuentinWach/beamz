@@ -1851,9 +1851,7 @@ class Monitor(RuntimeStateProxy):
                 a + b for a, b in zip(copied.start, offset, strict=False)
             )
         if getattr(copied, "end", None) is not None:
-            copied.end = tuple(
-                a + b for a, b in zip(copied.end, offset, strict=False)
-            )
+            copied.end = tuple(a + b for a, b in zip(copied.end, offset, strict=False))
         if getattr(copied, "position", None) is not None:
             copied.position = tuple(
                 a + b for a, b in zip(copied.position, offset, strict=False)
