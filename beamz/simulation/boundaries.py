@@ -1,6 +1,7 @@
 import warnings
 from dataclasses import dataclass
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -1572,6 +1573,117 @@ def cpml_update_h_from_e_3d(
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
 
 
+def _apply_lossy_shell_from_lossless_3d(
+    updated_lossless,
+    old,
+    source_lossless,
+    slabs,
+    decay_slabs,
+    source_slabs,
+):
+    out = updated_lossless
+    for starts, sizes, decay_s, source_s in zip(
+        (slab[0] for slab in slabs),
+        (slab[1] for slab in slabs),
+        decay_slabs,
+        source_slabs,
+    ):
+        old_s = jax.lax.dynamic_slice(old, starts, sizes)
+        lossless_s = jax.lax.dynamic_slice(updated_lossless, starts, sizes)
+        if getattr(source_lossless, "ndim", 0) == 0:
+            source_ll_s = source_lossless
+        else:
+            source_ll_s = jax.lax.dynamic_slice(source_lossless, starts, sizes)
+        beta = source_s / source_ll_s
+        lossy_s = (decay_s - beta) * old_s + beta * lossless_s
+        out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
+    return out
+
+
+def cpml_update_h_from_e_3d_shell_split(
+    ex,
+    ey,
+    ez,
+    hx,
+    hy,
+    hz,
+    h_source_lossless_x,
+    h_source_lossless_y,
+    h_source_lossless_z,
+    resolution,
+    *,
+    a_h_terms,
+    b_h_terms,
+    inv_kappa_h_terms,
+    psi_h_terms,
+    h_lossy_shell_x,
+    h_lossy_shell_y,
+    h_lossy_shell_z,
+    h_shell_decay_x,
+    h_shell_source_x,
+    h_shell_decay_y,
+    h_shell_source_y,
+    h_shell_decay_z,
+    h_shell_source_z,
+):
+    """CPML H update using lossless full-domain coefficients plus shell patches."""
+
+    resolution = _scalar_like(resolution, ex.dtype)
+
+    d0 = (ez[:, 1:, :] - ez[:, :-1, :]) / resolution
+    d1 = (ey[1:, :, :] - ey[:-1, :, :]) / resolution
+    psi0 = _cpml_update_native_term(d0, psi_h_terms[0], a_h_terms[0], b_h_terms[0])
+    psi1 = _cpml_update_native_term(d1, psi_h_terms[1], a_h_terms[1], b_h_terms[1])
+    hx_old = hx
+    hx = hx_old - h_source_lossless_x * (
+        (d0 * inv_kappa_h_terms[0] + psi0) - (d1 * inv_kappa_h_terms[1] + psi1)
+    )
+    hx = _apply_lossy_shell_from_lossless_3d(
+        hx,
+        hx_old,
+        h_source_lossless_x,
+        h_lossy_shell_x,
+        h_shell_decay_x,
+        h_shell_source_x,
+    )
+
+    d2 = (ex[1:, :, :] - ex[:-1, :, :]) / resolution
+    d3 = (ez[:, :, 1:] - ez[:, :, :-1]) / resolution
+    psi2 = _cpml_update_native_term(d2, psi_h_terms[2], a_h_terms[2], b_h_terms[2])
+    psi3 = _cpml_update_native_term(d3, psi_h_terms[3], a_h_terms[3], b_h_terms[3])
+    hy_old = hy
+    hy = hy_old - h_source_lossless_y * (
+        (d2 * inv_kappa_h_terms[2] + psi2) - (d3 * inv_kappa_h_terms[3] + psi3)
+    )
+    hy = _apply_lossy_shell_from_lossless_3d(
+        hy,
+        hy_old,
+        h_source_lossless_y,
+        h_lossy_shell_y,
+        h_shell_decay_y,
+        h_shell_source_y,
+    )
+
+    d4 = (ey[:, :, 1:] - ey[:, :, :-1]) / resolution
+    d5 = (ex[:, 1:, :] - ex[:, :-1, :]) / resolution
+    psi4 = _cpml_update_native_term(d4, psi_h_terms[4], a_h_terms[4], b_h_terms[4])
+    psi5 = _cpml_update_native_term(d5, psi_h_terms[5], a_h_terms[5], b_h_terms[5])
+    hz_old = hz
+    hz = hz_old - h_source_lossless_z * (
+        (d4 * inv_kappa_h_terms[4] + psi4) - (d5 * inv_kappa_h_terms[5] + psi5)
+    )
+    hz = _apply_lossy_shell_from_lossless_3d(
+        hz,
+        hz_old,
+        h_source_lossless_z,
+        h_lossy_shell_z,
+        h_shell_decay_z,
+        h_shell_source_z,
+    )
+
+    return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
+
+
 def cpml_curl_h_to_e_3d(
     hx,
     hy,
@@ -1685,6 +1797,100 @@ def cpml_update_e_from_h_3d(
     psi5 = _cpml_update_native_term(d5, psi_e_terms[5], a_e_terms[5], b_e_terms[5])
     ez = e_decay_z * ez + e_source_z * (
         (d4 * inv_kappa_e_terms[4] + psi4) - (d5 * inv_kappa_e_terms[5] + psi5)
+    )
+
+    return ex, ey, ez, (psi0, psi1, psi2, psi3, psi4, psi5)
+
+
+def cpml_update_e_from_h_3d_shell_split(
+    hx,
+    hy,
+    hz,
+    ex,
+    ey,
+    ez,
+    e_source_lossless_x,
+    e_source_lossless_y,
+    e_source_lossless_z,
+    resolution,
+    *,
+    a_e_terms,
+    b_e_terms,
+    inv_kappa_e_terms,
+    psi_e_terms,
+    e_lossy_shell_x,
+    e_lossy_shell_y,
+    e_lossy_shell_z,
+    e_shell_decay_x,
+    e_shell_source_x,
+    e_shell_decay_y,
+    e_shell_source_y,
+    e_shell_decay_z,
+    e_shell_source_z,
+    metallic_edges=frozenset(),
+):
+    """CPML E update using lossless material coefficients plus shell patches."""
+
+    metallic_edges = frozenset(metallic_edges or ())
+
+    def pad(arr, axis):
+        low_edge, high_edge = _edge_pair_for_axis(axis)
+        return _pad_with_boundary_ghosts(
+            arr,
+            axis,
+            low_metallic=low_edge in metallic_edges,
+            high_metallic=high_edge in metallic_edges,
+        )
+
+    d0 = _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution)
+    d1 = _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution)
+    psi0 = _cpml_update_native_term(d0, psi_e_terms[0], a_e_terms[0], b_e_terms[0])
+    psi1 = _cpml_update_native_term(d1, psi_e_terms[1], a_e_terms[1], b_e_terms[1])
+    ex_old = ex
+    ex = ex_old + e_source_lossless_x * (
+        (d0 * inv_kappa_e_terms[0] + psi0) - (d1 * inv_kappa_e_terms[1] + psi1)
+    )
+    ex = _apply_lossy_shell_from_lossless_3d(
+        ex,
+        ex_old,
+        e_source_lossless_x,
+        e_lossy_shell_x,
+        e_shell_decay_x,
+        e_shell_source_x,
+    )
+
+    d2 = _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution)
+    d3 = _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution)
+    psi2 = _cpml_update_native_term(d2, psi_e_terms[2], a_e_terms[2], b_e_terms[2])
+    psi3 = _cpml_update_native_term(d3, psi_e_terms[3], a_e_terms[3], b_e_terms[3])
+    ey_old = ey
+    ey = ey_old + e_source_lossless_y * (
+        (d2 * inv_kappa_e_terms[2] + psi2) - (d3 * inv_kappa_e_terms[3] + psi3)
+    )
+    ey = _apply_lossy_shell_from_lossless_3d(
+        ey,
+        ey_old,
+        e_source_lossless_y,
+        e_lossy_shell_y,
+        e_shell_decay_y,
+        e_shell_source_y,
+    )
+
+    d4 = _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution)
+    d5 = _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution)
+    psi4 = _cpml_update_native_term(d4, psi_e_terms[4], a_e_terms[4], b_e_terms[4])
+    psi5 = _cpml_update_native_term(d5, psi_e_terms[5], a_e_terms[5], b_e_terms[5])
+    ez_old = ez
+    ez = ez_old + e_source_lossless_z * (
+        (d4 * inv_kappa_e_terms[4] + psi4) - (d5 * inv_kappa_e_terms[5] + psi5)
+    )
+    ez = _apply_lossy_shell_from_lossless_3d(
+        ez,
+        ez_old,
+        e_source_lossless_z,
+        e_lossy_shell_z,
+        e_shell_decay_z,
+        e_shell_source_z,
     )
 
     return ex, ey, ez, (psi0, psi1, psi2, psi3, psi4, psi5)

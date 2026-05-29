@@ -7,6 +7,7 @@ import pytest
 
 from beamz import (
     LIGHT_SPEED,
+    Box,
     PEC,
     PML,
     Design,
@@ -405,7 +406,7 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
     ] == pytest.approx(1.0)
 
 
-def test_compiled_drops_unused_lossless_source_coefficients_3d():
+def test_compiled_uses_sparse_shell_coefficients_3d():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -426,14 +427,54 @@ def test_compiled_drops_unused_lossless_source_coefficients_3d():
 
     program = sim.compile(num_steps=1)
 
+    assert program.use_sparse_3d_e_coefficients
+    assert program.use_sparse_3d_h_coefficients
+    assert program.e_decay_x.shape == (0, 0, 0)
+    assert program.e_source_x.shape == (0, 0, 0)
+    assert program.h_decay_x.shape == (0, 0, 0)
+    assert program.h_source_x.shape == (0, 0, 0)
+    assert program.e_source_lossless_x.shape == sim.fields.Ex.shape
+    assert program.e_source_lossless_y.shape == sim.fields.Ey.shape
+    assert program.e_source_lossless_z.shape == sim.fields.Ez.shape
+    assert program.h_source_lossless_x.shape == ()
+    assert program.h_source_lossless_y.shape == ()
+    assert program.h_source_lossless_z.shape == ()
+    assert program.e_shell_decay_x
+    assert program.h_shell_decay_x
+
+
+def test_compiled_keeps_dense_coefficients_for_non_shell_3d_loss():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
+    )
+    design = Design(
+        width=3.0 * wl,
+        height=3.0 * wl,
+        depth=3.0 * wl,
+        material=Material(permittivity=1.0),
+    )
+    design += Box(
+        center=(1.5 * wl, 1.5 * wl, 1.5 * wl),
+        size=(0.5 * wl, 0.5 * wl, 0.5 * wl),
+        material=Material(permittivity=2.0, conductivity=5.0),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[],
+        boundaries=[],
+        time=np.arange(0, 2 * dt, dt),
+        resolution=dx,
+    )
+
+    program = sim.compile(num_steps=1)
+
+    assert not program.use_sparse_3d_e_coefficients
+    assert not program.use_sparse_3d_h_coefficients
+    assert program.e_decay_x.size > 0
     assert program.e_source_x.size > 0
+    assert program.h_decay_x.size > 0
     assert program.h_source_x.size > 0
-    assert program.e_source_lossless_x.shape == (0, 0, 0)
-    assert program.e_source_lossless_y.shape == (0, 0, 0)
-    assert program.e_source_lossless_z.shape == (0, 0, 0)
-    assert program.h_source_lossless_x.shape == (0, 0, 0)
-    assert program.h_source_lossless_y.shape == (0, 0, 0)
-    assert program.h_source_lossless_z.shape == (0, 0, 0)
 
 
 def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
