@@ -318,52 +318,6 @@ class PML(Boundary):
 
         return sigma, kappa, alpha
 
-    def _compute_1d_cpml_profile_with_coords(
-        self,
-        coords,
-        length,
-        low_active,
-        high_active,
-        *,
-        sigma_order=None,
-        kappa_order=None,
-        alpha_order=None,
-    ):
-        """Compute 1D CPML profiles on explicit Yee sample coordinates."""
-
-        sigma = jnp.zeros_like(coords)
-        kappa = jnp.ones_like(coords)
-        alpha = jnp.zeros_like(coords)
-        thickness = max(float(self.thickness), 1e-30)
-        sigma_order = float(self.m if sigma_order is None else sigma_order)
-        kappa_order = float(self.m if kappa_order is None else kappa_order)
-        alpha_order = float(1.0 if alpha_order is None else alpha_order)
-
-        def apply_u(u):
-            u = jnp.clip(u, 0.0, 1.0)
-            side_sigma = self.sigma_max * jnp.power(u, sigma_order)
-            side_kappa = 1.0 + (self.kappa_max - 1.0) * jnp.power(u, kappa_order)
-            side_alpha = self.alpha_max * jnp.power(1.0 - u, alpha_order)
-            return side_sigma, side_kappa, side_alpha
-
-        if low_active:
-            u = (thickness - coords) / thickness
-            mask = u > 0
-            side_sigma, side_kappa, side_alpha = apply_u(u)
-            sigma = sigma + jnp.where(mask, side_sigma, 0.0)
-            kappa = jnp.where(mask, side_kappa, kappa)
-            alpha = jnp.where(mask, side_alpha, alpha)
-
-        if high_active:
-            u = (coords - (length - thickness)) / thickness
-            mask = u > 0
-            side_sigma, side_kappa, side_alpha = apply_u(u)
-            sigma = sigma + jnp.where(mask, side_sigma, 0.0)
-            kappa = jnp.where(mask, side_kappa, kappa)
-            alpha = jnp.where(mask, side_alpha, alpha)
-
-        return sigma, kappa, alpha
-
     def _compute_fdtdx_staggered_profile_1d(
         self,
         total_samples,
@@ -1006,19 +960,6 @@ def sync_full_pec_3d_from_compact(fields, state: FullPec3DState) -> None:
         )
 
 
-def _tm_xy_ez_mask(shape: tuple[int, int], metallic_edges: set[str]) -> jnp.ndarray:
-    mask = np.zeros(shape, dtype=bool)
-    if "bottom" in metallic_edges:
-        mask[0, :] = True
-    if "top" in metallic_edges:
-        mask[-1, :] = True
-    if "left" in metallic_edges:
-        mask[:, 0] = True
-    if "right" in metallic_edges:
-        mask[:, -1] = True
-    return jnp.asarray(mask)
-
-
 def full_tm_2d_xy_masks(
     ez_shape: tuple[int, int], metallic_edges: set[str] | frozenset[str]
 ) -> dict[str, jnp.ndarray]:
@@ -1390,23 +1331,6 @@ def pec_curl_h_to_e_3d(hx, hy, hz, resolution, ex_shape, ey_shape, ez_shape):
     return curl_hx, curl_hy, curl_hz
 
 
-def _diff_integer_axis_with_high_pec_wall(arr, axis, resolution):
-    """Difference from an integer-aligned source axis to a half-step target axis.
-
-    Compact Beamz storage keeps the low PEC wall sample explicitly for
-    integer-aligned axes, but omits the corresponding high-wall sample. Meep's
-    metallic handling zeros the stored field at the wall, so the missing
-    high-side source plane is an explicit zero.
-    """
-
-    moved = jnp.moveaxis(arr, axis, 0)
-    interior = moved[1:] - moved[:-1]
-    high = -moved[-1:]
-    resolution = _scalar_like(resolution, moved.dtype)
-    out = jnp.concatenate([interior[:-1], high], axis=0) / resolution
-    return jnp.moveaxis(out, 0, axis)
-
-
 def pec_curl_e_to_h_3d(ex, ey, ez, resolution, hx_shape, hy_shape, hz_shape):
     """Compute the 3D H curl for a full-PEC cavity from explicit boundary layers."""
     resolution = _scalar_like(resolution, ex.dtype)
@@ -1430,6 +1354,14 @@ def pec_curl_e_to_h_3d(ex, ey, ez, resolution, hx_shape, hy_shape, hz_shape):
         f"curl_ez shape mismatch: {curl_ez.shape} vs {hz_shape}"
     )
     return curl_ex, curl_ey, curl_ez
+
+
+def _full_pec_advance_h_component(field, curl, decay, source, mask):
+    if getattr(decay, "size", 0) == 0:
+        field = field - source * curl
+    else:
+        field = decay * field - source * curl
+    return jnp.where(mask, jnp.zeros((), dtype=field.dtype), field)
 
 
 def full_pec_update_h_from_e_3d(
@@ -1459,33 +1391,27 @@ def full_pec_update_h_from_e_3d(
     )
     if source_m_x is not None:
         curl_x = curl_x + source_m_x
-    if getattr(h_decay_x, "size", 0) == 0:
-        hx = hx - h_source_x * curl_x
-    else:
-        hx = h_decay_x * hx - h_source_x * curl_x
-    hx = jnp.where(hx_mask, jnp.zeros((), dtype=hx.dtype), hx)
+    hx = _full_pec_advance_h_component(
+        hx, curl_x, h_decay_x, h_source_x, hx_mask
+    )
 
     curl_y = ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])) / (
         resolution
     )
     if source_m_y is not None:
         curl_y = curl_y + source_m_y
-    if getattr(h_decay_y, "size", 0) == 0:
-        hy = hy - h_source_y * curl_y
-    else:
-        hy = h_decay_y * hy - h_source_y * curl_y
-    hy = jnp.where(hy_mask, jnp.zeros((), dtype=hy.dtype), hy)
+    hy = _full_pec_advance_h_component(
+        hy, curl_y, h_decay_y, h_source_y, hy_mask
+    )
 
     curl_z = ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])) / (
         resolution
     )
     if source_m_z is not None:
         curl_z = curl_z + source_m_z
-    if getattr(h_decay_z, "size", 0) == 0:
-        hz = hz - h_source_z * curl_z
-    else:
-        hz = h_decay_z * hz - h_source_z * curl_z
-    hz = jnp.where(hz_mask, jnp.zeros((), dtype=hz.dtype), hz)
+    hz = _full_pec_advance_h_component(
+        hz, curl_z, h_decay_z, h_source_z, hz_mask
+    )
 
     return hx, hy, hz
 
@@ -1509,6 +1435,17 @@ def _full_pec_region_coefficient(coeff, region, field_shape):
     if tuple(getattr(coeff, "shape", ())) == tuple(field_shape):
         return coeff[region]
     return coeff
+
+
+def _full_pec_advance_e_component(field, curl, decay, source, mask, region):
+    if getattr(decay, "size", 0) == 0:
+        values = field[region] + source[region] * curl
+    else:
+        decay = _full_pec_region_coefficient(decay, region, field.shape)
+        source = _full_pec_region_coefficient(source, region, field.shape)
+        values = decay * field[region] + source * curl
+    field = field.at[region].set(values)
+    return jnp.where(mask, jnp.zeros((), dtype=field.dtype), field)
 
 
 def full_pec_update_e_from_h_3d(
@@ -1539,14 +1476,9 @@ def full_pec_update_e_from_h_3d(
     curl_x = dHz_dy[1:-1, :, :] - dHy_dz[:, 1:-1, :]
     if source_j_x is not None:
         curl_x = curl_x + source_j_x[region_x]
-    if getattr(e_decay_x, "size", 0) == 0:
-        ex_region = ex[region_x] + e_source_x[region_x] * curl_x
-    else:
-        decay_x = _full_pec_region_coefficient(e_decay_x, region_x, ex.shape)
-        source_x = _full_pec_region_coefficient(e_source_x, region_x, ex.shape)
-        ex_region = decay_x * ex[region_x] + source_x * curl_x
-    ex = ex.at[region_x].set(ex_region)
-    ex = jnp.where(ex_mask, jnp.zeros((), dtype=ex.dtype), ex)
+    ex = _full_pec_advance_e_component(
+        ex, curl_x, e_decay_x, e_source_x, ex_mask, region_x
+    )
 
     region_y = (slice(1, -1), slice(None), slice(1, -1))
     dHx_dz = (hx[1:, :, :] - hx[:-1, :, :]) / resolution
@@ -1554,14 +1486,9 @@ def full_pec_update_e_from_h_3d(
     curl_y = dHx_dz[:, :, 1:-1] - dHz_dx[1:-1, :, :]
     if source_j_y is not None:
         curl_y = curl_y + source_j_y[region_y]
-    if getattr(e_decay_y, "size", 0) == 0:
-        ey_region = ey[region_y] + e_source_y[region_y] * curl_y
-    else:
-        decay_y = _full_pec_region_coefficient(e_decay_y, region_y, ey.shape)
-        source_y = _full_pec_region_coefficient(e_source_y, region_y, ey.shape)
-        ey_region = decay_y * ey[region_y] + source_y * curl_y
-    ey = ey.at[region_y].set(ey_region)
-    ey = jnp.where(ey_mask, jnp.zeros((), dtype=ey.dtype), ey)
+    ey = _full_pec_advance_e_component(
+        ey, curl_y, e_decay_y, e_source_y, ey_mask, region_y
+    )
 
     region_z = (slice(None), slice(1, -1), slice(1, -1))
     dHy_dx = (hy[:, :, 1:] - hy[:, :, :-1]) / resolution
@@ -1569,14 +1496,9 @@ def full_pec_update_e_from_h_3d(
     curl_z = dHy_dx[:, 1:-1, :] - dHx_dy[:, :, 1:-1]
     if source_j_z is not None:
         curl_z = curl_z + source_j_z[region_z]
-    if getattr(e_decay_z, "size", 0) == 0:
-        ez_region = ez[region_z] + e_source_z[region_z] * curl_z
-    else:
-        decay_z = _full_pec_region_coefficient(e_decay_z, region_z, ez.shape)
-        source_z = _full_pec_region_coefficient(e_source_z, region_z, ez.shape)
-        ez_region = decay_z * ez[region_z] + source_z * curl_z
-    ez = ez.at[region_z].set(ez_region)
-    ez = jnp.where(ez_mask, jnp.zeros((), dtype=ez.dtype), ez)
+    ez = _full_pec_advance_e_component(
+        ez, curl_z, e_decay_z, e_source_z, ez_mask, region_z
+    )
 
     return ex, ey, ez
 

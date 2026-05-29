@@ -19,7 +19,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.const import EPS_0
 from beamz.devices.monitors.compiler import (
     BatchedMonitorData,
     CompiledMonitorSpec,
@@ -195,31 +194,6 @@ def _snapshot_warning_threshold_bytes() -> int:
     except ValueError:
         gib = 2.0
     return max(0, int(gib * 1024**3))
-
-
-def _embed_cpml_3d_term_to_full_volume(
-    term: jnp.ndarray,
-    region: str,
-    volume_shape: tuple[int, int, int],
-    *,
-    fill_value: float = 0.0,
-) -> jnp.ndarray:
-    out = jnp.full(
-        volume_shape, jnp.asarray(fill_value, dtype=term.dtype), dtype=term.dtype
-    )
-    if region == "Hx":
-        return out.at[:-1, :-1, :].set(term)
-    if region == "Hy":
-        return out.at[:-1, :, :-1].set(term)
-    if region == "Hz":
-        return out.at[:, :-1, :-1].set(term)
-    if region == "Ex":
-        return out.at[:, :, :-1].set(term)
-    if region == "Ey":
-        return out.at[:, :-1, :].set(term)
-    if region == "Ez":
-        return out.at[:-1, :, :].set(term)
-    raise ValueError(f"Unsupported CPML 3D region {region!r}")
 
 
 class EngineState(NamedTuple):
@@ -441,68 +415,10 @@ class CompiledSimulation:
     _compiled_scan: callable | None = None
     _compile_count: int = 0
 
-    @staticmethod
-    def _cpml_b_c(
-        sigma: jnp.ndarray,
-        kappa: jnp.ndarray,
-        alpha: jnp.ndarray,
-        dt: float,
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        sigma = jnp.asarray(sigma, dtype=jnp.float32)
-        kappa = jnp.maximum(jnp.asarray(kappa, dtype=jnp.float32), 1.0)
-        alpha = jnp.asarray(alpha, dtype=jnp.float32)
-        decay = (sigma / kappa + alpha) * (
-            jnp.asarray(dt, dtype=jnp.float32) / jnp.asarray(EPS_0, dtype=jnp.float32)
-        )
-        b = jnp.expm1(-decay) + 1.0
-        denom = sigma + kappa * alpha
-        c = jnp.nan_to_num(
-            ((b - 1.0) * sigma) / jnp.maximum(denom * kappa, 1e-30),
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        return b, c
-
     def _update_coefficients(self) -> UpdateCoefficients:
         """Build runtime coefficient container for jitted scan entrypoint."""
         return UpdateCoefficients(
-            h_decay_x=self.h_decay_x,
-            h_source_x=self.h_source_x,
-            h_source_lossless_x=self.h_source_lossless_x,
-            h_decay_y=self.h_decay_y,
-            h_source_y=self.h_source_y,
-            h_source_lossless_y=self.h_source_lossless_y,
-            h_decay_z=self.h_decay_z,
-            h_source_z=self.h_source_z,
-            h_source_lossless_z=self.h_source_lossless_z,
-            e_decay_x=self.e_decay_x,
-            e_source_x=self.e_source_x,
-            e_source_lossless_x=self.e_source_lossless_x,
-            e_decay_y=self.e_decay_y,
-            e_source_y=self.e_source_y,
-            e_source_lossless_y=self.e_source_lossless_y,
-            e_decay_z=self.e_decay_z,
-            e_source_z=self.e_source_z,
-            e_source_lossless_z=self.e_source_lossless_z,
-            tm_h_decay_x=self.tm_h_decay_x,
-            tm_h_source_x=self.tm_h_source_x,
-            tm_h_decay_y=self.tm_h_decay_y,
-            tm_h_source_y=self.tm_h_source_y,
-            tm_e_decay_z=self.tm_e_decay_z,
-            tm_e_source_z=self.tm_e_source_z,
-            h_shell_decay_x=self.h_shell_decay_x,
-            h_shell_source_x=self.h_shell_source_x,
-            h_shell_decay_y=self.h_shell_decay_y,
-            h_shell_source_y=self.h_shell_source_y,
-            h_shell_decay_z=self.h_shell_decay_z,
-            h_shell_source_z=self.h_shell_source_z,
-            e_shell_decay_x=self.e_shell_decay_x,
-            e_shell_source_x=self.e_shell_source_x,
-            e_shell_decay_y=self.e_shell_decay_y,
-            e_shell_source_y=self.e_shell_source_y,
-            e_shell_decay_z=self.e_shell_decay_z,
-            e_shell_source_z=self.e_shell_source_z,
+            **{name: getattr(self, name) for name in UpdateCoefficients._fields}
         )
 
     def _sources_for(
@@ -2951,16 +2867,13 @@ def compile_simulation(
         h_use_lossy_shell_y, h_lossy_shell_y = False, tuple()
         h_use_lossy_shell_z, h_lossy_shell_z = False, tuple()
 
+    empty3 = jnp.zeros((0, 0, 0), dtype=jnp.float32)
     if use_sparse_3d_h_coefficients:
-        h_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        h_source_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        h_source_lossless_x = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
-        h_decay_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        h_source_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        h_source_lossless_y = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
-        h_decay_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        h_source_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        h_source_lossless_z = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
+        h_decay_x = h_source_x = h_decay_y = h_source_y = empty3
+        h_decay_z = h_source_z = empty3
+        h_source_lossless_x = h_source_lossless_y = h_source_lossless_z = jnp.asarray(
+            dt / ops.MU_0, dtype=jnp.float32
+        )
         h_shell_decay_x, h_shell_source_x = _precompute_h_update_coefficient_slabs(
             fields.sigma_m_hx, h_lossy_shell_x, dt
         )
@@ -2971,44 +2884,34 @@ def compile_simulation(
             fields.sigma_m_hz, h_lossy_shell_z, dt
         )
     else:
-        (
-            h_decay_x,
-            h_source_x,
-            h_source_lossless_x,
-        ) = ops.precompute_h_update_coefficients(fields.sigma_m_hx, dt)
-        (
+        (h_decay_x, h_source_x, h_source_lossless_x), (
             h_decay_y,
             h_source_y,
             h_source_lossless_y,
-        ) = ops.precompute_h_update_coefficients(fields.sigma_m_hy, dt)
-        (
-            h_decay_z,
-            h_source_z,
-            h_source_lossless_z,
-        ) = ops.precompute_h_update_coefficients(fields.sigma_m_hz, dt)
+        ), (h_decay_z, h_source_z, h_source_lossless_z) = (
+            ops.precompute_h_update_coefficients(fields.sigma_m_hx, dt),
+            ops.precompute_h_update_coefficients(fields.sigma_m_hy, dt),
+            ops.precompute_h_update_coefficients(fields.sigma_m_hz, dt),
+        )
         h_shell_decay_x = h_shell_source_x = tuple()
         h_shell_decay_y = h_shell_source_y = tuple()
         h_shell_decay_z = h_shell_source_z = tuple()
 
     if use_sparse_3d_e_coefficients:
-        e_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        e_source_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        e_decay_x = e_source_x = e_decay_y = e_source_y = empty3
+        e_decay_z = e_source_z = empty3
         e_source_lossless_x = _precompute_e_lossless_source_coefficient(
             shape=tuple(fields.Ex.shape),
             permittivity=fields.eps_x,
             dt=dt,
             region=fields.region_x,
         )
-        e_decay_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        e_source_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
         e_source_lossless_y = _precompute_e_lossless_source_coefficient(
             shape=tuple(fields.Ey.shape),
             permittivity=fields.eps_y,
             dt=dt,
             region=fields.region_y,
         )
-        e_decay_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-        e_source_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
         e_source_lossless_z = _precompute_e_lossless_source_coefficient(
             shape=tuple(fields.Ez.shape),
             permittivity=fields.eps_z,
@@ -3040,38 +2943,36 @@ def compile_simulation(
             slabs=e_lossy_shell_z,
         )
     else:
-        (
-            e_decay_x,
-            e_source_x,
-            e_source_lossless_x,
-        ) = ops.precompute_e_update_coefficients(
-            shape=fields.Ex.shape,
-            conductivity=fields.sig_x,
-            permittivity=fields.eps_x,
-            dt=dt,
-            region=fields.region_x,
-        )
-        (
+        (e_decay_x, e_source_x, e_source_lossless_x), (
             e_decay_y,
             e_source_y,
             e_source_lossless_y,
-        ) = ops.precompute_e_update_coefficients(
-            shape=fields.Ey.shape,
-            conductivity=fields.sig_y,
-            permittivity=fields.eps_y,
-            dt=dt,
-            region=fields.region_y,
-        )
-        (
+        ), (
             e_decay_z,
             e_source_z,
             e_source_lossless_z,
-        ) = ops.precompute_e_update_coefficients(
-            shape=fields.Ez.shape,
-            conductivity=fields.sig_z,
-            permittivity=fields.eps_z,
-            dt=dt,
-            region=fields.region_z,
+        ) = (
+            ops.precompute_e_update_coefficients(
+                shape=fields.Ex.shape,
+                conductivity=fields.sig_x,
+                permittivity=fields.eps_x,
+                dt=dt,
+                region=fields.region_x,
+            ),
+            ops.precompute_e_update_coefficients(
+                shape=fields.Ey.shape,
+                conductivity=fields.sig_y,
+                permittivity=fields.eps_y,
+                dt=dt,
+                region=fields.region_y,
+            ),
+            ops.precompute_e_update_coefficients(
+                shape=fields.Ez.shape,
+                conductivity=fields.sig_z,
+                permittivity=fields.eps_z,
+                dt=dt,
+                region=fields.region_z,
+            ),
         )
         e_shell_decay_x = e_shell_source_x = tuple()
         e_shell_decay_y = e_shell_source_y = tuple()
