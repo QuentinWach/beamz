@@ -1278,6 +1278,12 @@ def _cpml_update_native_term(derivative, psi, a_term, b_term):
     return b_term * psi + a_term * derivative
 
 
+def _cpml_corrected_update_term(derivative, psi, a_term, b_term, inv_kappa_term):
+    psi_updated = _cpml_update_native_term(derivative, psi, a_term, b_term)
+    corrected = derivative * jnp.asarray(inv_kappa_term, dtype=psi.dtype) + psi_updated
+    return corrected, psi_updated
+
+
 def build_h_boundary_views_for_e_3d(hx, hy, hz, boundaries):
     """Return H-field views for the 3D E update with boundaries applied outside ops.
 
@@ -1546,29 +1552,53 @@ def cpml_update_h_from_e_3d(
 
     resolution = _scalar_like(resolution, ex.dtype)
 
-    d0 = (ez[:, 1:, :] - ez[:, :-1, :]) / resolution
-    d1 = (ey[1:, :, :] - ey[:-1, :, :]) / resolution
-    psi0 = _cpml_update_native_term(d0, psi_h_terms[0], a_h_terms[0], b_h_terms[0])
-    psi1 = _cpml_update_native_term(d1, psi_h_terms[1], a_h_terms[1], b_h_terms[1])
-    hx = h_decay_x * hx - h_source_x * (
-        (d0 * inv_kappa_h_terms[0] + psi0) - (d1 * inv_kappa_h_terms[1] + psi1)
+    term0, psi0 = _cpml_corrected_update_term(
+        (ez[:, 1:, :] - ez[:, :-1, :]) / resolution,
+        psi_h_terms[0],
+        a_h_terms[0],
+        b_h_terms[0],
+        inv_kappa_h_terms[0],
     )
+    term1, psi1 = _cpml_corrected_update_term(
+        (ey[1:, :, :] - ey[:-1, :, :]) / resolution,
+        psi_h_terms[1],
+        a_h_terms[1],
+        b_h_terms[1],
+        inv_kappa_h_terms[1],
+    )
+    hx = h_decay_x * hx - h_source_x * (term0 - term1)
 
-    d2 = (ex[1:, :, :] - ex[:-1, :, :]) / resolution
-    d3 = (ez[:, :, 1:] - ez[:, :, :-1]) / resolution
-    psi2 = _cpml_update_native_term(d2, psi_h_terms[2], a_h_terms[2], b_h_terms[2])
-    psi3 = _cpml_update_native_term(d3, psi_h_terms[3], a_h_terms[3], b_h_terms[3])
-    hy = h_decay_y * hy - h_source_y * (
-        (d2 * inv_kappa_h_terms[2] + psi2) - (d3 * inv_kappa_h_terms[3] + psi3)
+    term2, psi2 = _cpml_corrected_update_term(
+        (ex[1:, :, :] - ex[:-1, :, :]) / resolution,
+        psi_h_terms[2],
+        a_h_terms[2],
+        b_h_terms[2],
+        inv_kappa_h_terms[2],
     )
+    term3, psi3 = _cpml_corrected_update_term(
+        (ez[:, :, 1:] - ez[:, :, :-1]) / resolution,
+        psi_h_terms[3],
+        a_h_terms[3],
+        b_h_terms[3],
+        inv_kappa_h_terms[3],
+    )
+    hy = h_decay_y * hy - h_source_y * (term2 - term3)
 
-    d4 = (ey[:, :, 1:] - ey[:, :, :-1]) / resolution
-    d5 = (ex[:, 1:, :] - ex[:, :-1, :]) / resolution
-    psi4 = _cpml_update_native_term(d4, psi_h_terms[4], a_h_terms[4], b_h_terms[4])
-    psi5 = _cpml_update_native_term(d5, psi_h_terms[5], a_h_terms[5], b_h_terms[5])
-    hz = h_decay_z * hz - h_source_z * (
-        (d4 * inv_kappa_h_terms[4] + psi4) - (d5 * inv_kappa_h_terms[5] + psi5)
+    term4, psi4 = _cpml_corrected_update_term(
+        (ey[:, :, 1:] - ey[:, :, :-1]) / resolution,
+        psi_h_terms[4],
+        a_h_terms[4],
+        b_h_terms[4],
+        inv_kappa_h_terms[4],
     )
+    term5, psi5 = _cpml_corrected_update_term(
+        (ex[:, 1:, :] - ex[:, :-1, :]) / resolution,
+        psi_h_terms[5],
+        a_h_terms[5],
+        b_h_terms[5],
+        inv_kappa_h_terms[5],
+    )
+    hz = h_decay_z * hz - h_source_z * (term4 - term5)
 
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
 
@@ -1630,14 +1660,22 @@ def cpml_update_h_from_e_3d_shell_split(
 
     resolution = _scalar_like(resolution, ex.dtype)
 
-    d0 = (ez[:, 1:, :] - ez[:, :-1, :]) / resolution
-    d1 = (ey[1:, :, :] - ey[:-1, :, :]) / resolution
-    psi0 = _cpml_update_native_term(d0, psi_h_terms[0], a_h_terms[0], b_h_terms[0])
-    psi1 = _cpml_update_native_term(d1, psi_h_terms[1], a_h_terms[1], b_h_terms[1])
-    hx_old = hx
-    hx = hx_old - h_source_lossless_x * (
-        (d0 * inv_kappa_h_terms[0] + psi0) - (d1 * inv_kappa_h_terms[1] + psi1)
+    term0, psi0 = _cpml_corrected_update_term(
+        (ez[:, 1:, :] - ez[:, :-1, :]) / resolution,
+        psi_h_terms[0],
+        a_h_terms[0],
+        b_h_terms[0],
+        inv_kappa_h_terms[0],
     )
+    term1, psi1 = _cpml_corrected_update_term(
+        (ey[1:, :, :] - ey[:-1, :, :]) / resolution,
+        psi_h_terms[1],
+        a_h_terms[1],
+        b_h_terms[1],
+        inv_kappa_h_terms[1],
+    )
+    hx_old = hx
+    hx = hx_old - h_source_lossless_x * (term0 - term1)
     hx = apply_lossy_shell_from_lossless_3d(
         hx,
         hx_old,
@@ -1647,14 +1685,22 @@ def cpml_update_h_from_e_3d_shell_split(
         h_shell_source_x,
     )
 
-    d2 = (ex[1:, :, :] - ex[:-1, :, :]) / resolution
-    d3 = (ez[:, :, 1:] - ez[:, :, :-1]) / resolution
-    psi2 = _cpml_update_native_term(d2, psi_h_terms[2], a_h_terms[2], b_h_terms[2])
-    psi3 = _cpml_update_native_term(d3, psi_h_terms[3], a_h_terms[3], b_h_terms[3])
-    hy_old = hy
-    hy = hy_old - h_source_lossless_y * (
-        (d2 * inv_kappa_h_terms[2] + psi2) - (d3 * inv_kappa_h_terms[3] + psi3)
+    term2, psi2 = _cpml_corrected_update_term(
+        (ex[1:, :, :] - ex[:-1, :, :]) / resolution,
+        psi_h_terms[2],
+        a_h_terms[2],
+        b_h_terms[2],
+        inv_kappa_h_terms[2],
     )
+    term3, psi3 = _cpml_corrected_update_term(
+        (ez[:, :, 1:] - ez[:, :, :-1]) / resolution,
+        psi_h_terms[3],
+        a_h_terms[3],
+        b_h_terms[3],
+        inv_kappa_h_terms[3],
+    )
+    hy_old = hy
+    hy = hy_old - h_source_lossless_y * (term2 - term3)
     hy = apply_lossy_shell_from_lossless_3d(
         hy,
         hy_old,
@@ -1664,14 +1710,22 @@ def cpml_update_h_from_e_3d_shell_split(
         h_shell_source_y,
     )
 
-    d4 = (ey[:, :, 1:] - ey[:, :, :-1]) / resolution
-    d5 = (ex[:, 1:, :] - ex[:, :-1, :]) / resolution
-    psi4 = _cpml_update_native_term(d4, psi_h_terms[4], a_h_terms[4], b_h_terms[4])
-    psi5 = _cpml_update_native_term(d5, psi_h_terms[5], a_h_terms[5], b_h_terms[5])
-    hz_old = hz
-    hz = hz_old - h_source_lossless_z * (
-        (d4 * inv_kappa_h_terms[4] + psi4) - (d5 * inv_kappa_h_terms[5] + psi5)
+    term4, psi4 = _cpml_corrected_update_term(
+        (ey[:, :, 1:] - ey[:, :, :-1]) / resolution,
+        psi_h_terms[4],
+        a_h_terms[4],
+        b_h_terms[4],
+        inv_kappa_h_terms[4],
     )
+    term5, psi5 = _cpml_corrected_update_term(
+        (ex[:, 1:, :] - ex[:, :-1, :]) / resolution,
+        psi_h_terms[5],
+        a_h_terms[5],
+        b_h_terms[5],
+        inv_kappa_h_terms[5],
+    )
+    hz_old = hz
+    hz = hz_old - h_source_lossless_z * (term4 - term5)
     hz = apply_lossy_shell_from_lossless_3d(
         hz,
         hz_old,
@@ -1775,29 +1829,53 @@ def cpml_update_e_from_h_3d(
             high_metallic=high_edge in metallic_edges,
         )
 
-    d0 = _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution)
-    d1 = _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution)
-    psi0 = _cpml_update_native_term(d0, psi_e_terms[0], a_e_terms[0], b_e_terms[0])
-    psi1 = _cpml_update_native_term(d1, psi_e_terms[1], a_e_terms[1], b_e_terms[1])
-    ex = e_decay_x * ex + e_source_x * (
-        (d0 * inv_kappa_e_terms[0] + psi0) - (d1 * inv_kappa_e_terms[1] + psi1)
+    term0, psi0 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
+        psi_e_terms[0],
+        a_e_terms[0],
+        b_e_terms[0],
+        inv_kappa_e_terms[0],
     )
+    term1, psi1 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
+        psi_e_terms[1],
+        a_e_terms[1],
+        b_e_terms[1],
+        inv_kappa_e_terms[1],
+    )
+    ex = e_decay_x * ex + e_source_x * (term0 - term1)
 
-    d2 = _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution)
-    d3 = _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution)
-    psi2 = _cpml_update_native_term(d2, psi_e_terms[2], a_e_terms[2], b_e_terms[2])
-    psi3 = _cpml_update_native_term(d3, psi_e_terms[3], a_e_terms[3], b_e_terms[3])
-    ey = e_decay_y * ey + e_source_y * (
-        (d2 * inv_kappa_e_terms[2] + psi2) - (d3 * inv_kappa_e_terms[3] + psi3)
+    term2, psi2 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution),
+        psi_e_terms[2],
+        a_e_terms[2],
+        b_e_terms[2],
+        inv_kappa_e_terms[2],
     )
+    term3, psi3 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
+        psi_e_terms[3],
+        a_e_terms[3],
+        b_e_terms[3],
+        inv_kappa_e_terms[3],
+    )
+    ey = e_decay_y * ey + e_source_y * (term2 - term3)
 
-    d4 = _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution)
-    d5 = _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution)
-    psi4 = _cpml_update_native_term(d4, psi_e_terms[4], a_e_terms[4], b_e_terms[4])
-    psi5 = _cpml_update_native_term(d5, psi_e_terms[5], a_e_terms[5], b_e_terms[5])
-    ez = e_decay_z * ez + e_source_z * (
-        (d4 * inv_kappa_e_terms[4] + psi4) - (d5 * inv_kappa_e_terms[5] + psi5)
+    term4, psi4 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution),
+        psi_e_terms[4],
+        a_e_terms[4],
+        b_e_terms[4],
+        inv_kappa_e_terms[4],
     )
+    term5, psi5 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
+        psi_e_terms[5],
+        a_e_terms[5],
+        b_e_terms[5],
+        inv_kappa_e_terms[5],
+    )
+    ez = e_decay_z * ez + e_source_z * (term4 - term5)
 
     return ex, ey, ez, (psi0, psi1, psi2, psi3, psi4, psi5)
 
@@ -1842,14 +1920,22 @@ def cpml_update_e_from_h_3d_shell_split(
             high_metallic=high_edge in metallic_edges,
         )
 
-    d0 = _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution)
-    d1 = _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution)
-    psi0 = _cpml_update_native_term(d0, psi_e_terms[0], a_e_terms[0], b_e_terms[0])
-    psi1 = _cpml_update_native_term(d1, psi_e_terms[1], a_e_terms[1], b_e_terms[1])
-    ex_old = ex
-    ex = ex_old + e_source_lossless_x * (
-        (d0 * inv_kappa_e_terms[0] + psi0) - (d1 * inv_kappa_e_terms[1] + psi1)
+    term0, psi0 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
+        psi_e_terms[0],
+        a_e_terms[0],
+        b_e_terms[0],
+        inv_kappa_e_terms[0],
     )
+    term1, psi1 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
+        psi_e_terms[1],
+        a_e_terms[1],
+        b_e_terms[1],
+        inv_kappa_e_terms[1],
+    )
+    ex_old = ex
+    ex = ex_old + e_source_lossless_x * (term0 - term1)
     ex = apply_lossy_shell_from_lossless_3d(
         ex,
         ex_old,
@@ -1859,14 +1945,22 @@ def cpml_update_e_from_h_3d_shell_split(
         e_shell_source_x,
     )
 
-    d2 = _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution)
-    d3 = _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution)
-    psi2 = _cpml_update_native_term(d2, psi_e_terms[2], a_e_terms[2], b_e_terms[2])
-    psi3 = _cpml_update_native_term(d3, psi_e_terms[3], a_e_terms[3], b_e_terms[3])
-    ey_old = ey
-    ey = ey_old + e_source_lossless_y * (
-        (d2 * inv_kappa_e_terms[2] + psi2) - (d3 * inv_kappa_e_terms[3] + psi3)
+    term2, psi2 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution),
+        psi_e_terms[2],
+        a_e_terms[2],
+        b_e_terms[2],
+        inv_kappa_e_terms[2],
     )
+    term3, psi3 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
+        psi_e_terms[3],
+        a_e_terms[3],
+        b_e_terms[3],
+        inv_kappa_e_terms[3],
+    )
+    ey_old = ey
+    ey = ey_old + e_source_lossless_y * (term2 - term3)
     ey = apply_lossy_shell_from_lossless_3d(
         ey,
         ey_old,
@@ -1876,14 +1970,22 @@ def cpml_update_e_from_h_3d_shell_split(
         e_shell_source_y,
     )
 
-    d4 = _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution)
-    d5 = _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution)
-    psi4 = _cpml_update_native_term(d4, psi_e_terms[4], a_e_terms[4], b_e_terms[4])
-    psi5 = _cpml_update_native_term(d5, psi_e_terms[5], a_e_terms[5], b_e_terms[5])
-    ez_old = ez
-    ez = ez_old + e_source_lossless_z * (
-        (d4 * inv_kappa_e_terms[4] + psi4) - (d5 * inv_kappa_e_terms[5] + psi5)
+    term4, psi4 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution),
+        psi_e_terms[4],
+        a_e_terms[4],
+        b_e_terms[4],
+        inv_kappa_e_terms[4],
     )
+    term5, psi5 = _cpml_corrected_update_term(
+        _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
+        psi_e_terms[5],
+        a_e_terms[5],
+        b_e_terms[5],
+        inv_kappa_e_terms[5],
+    )
+    ez_old = ez
+    ez = ez_old + e_source_lossless_z * (term4 - term5)
     ez = apply_lossy_shell_from_lossless_3d(
         ez,
         ez_old,
