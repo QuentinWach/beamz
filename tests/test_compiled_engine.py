@@ -281,6 +281,11 @@ def test_run_compiled_supports_3d_custom_current_source():
 
     sim_compiled.run_compiled(progress=False)
 
+    assert sim_compiled._compiled_program is not None
+    assert sim_compiled._compiled_program.fp_h_decay_x.size == 0
+    assert sim_compiled._compiled_program.fp_e_decay_x.size == 0
+    assert sim_compiled._compiled_program.fp_e_source_x.size > 0
+
     assert sim_compiled.current_step == len(t)
     for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
         arr = np.asarray(getattr(sim_compiled.fields, component))

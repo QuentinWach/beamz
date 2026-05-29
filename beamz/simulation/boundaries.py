@@ -1573,7 +1573,7 @@ def cpml_update_h_from_e_3d(
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
 
 
-def _apply_lossy_shell_from_lossless_3d(
+def apply_lossy_shell_from_lossless_3d(
     updated_lossless,
     old,
     source_lossless,
@@ -1638,7 +1638,7 @@ def cpml_update_h_from_e_3d_shell_split(
     hx = hx_old - h_source_lossless_x * (
         (d0 * inv_kappa_h_terms[0] + psi0) - (d1 * inv_kappa_h_terms[1] + psi1)
     )
-    hx = _apply_lossy_shell_from_lossless_3d(
+    hx = apply_lossy_shell_from_lossless_3d(
         hx,
         hx_old,
         h_source_lossless_x,
@@ -1655,7 +1655,7 @@ def cpml_update_h_from_e_3d_shell_split(
     hy = hy_old - h_source_lossless_y * (
         (d2 * inv_kappa_h_terms[2] + psi2) - (d3 * inv_kappa_h_terms[3] + psi3)
     )
-    hy = _apply_lossy_shell_from_lossless_3d(
+    hy = apply_lossy_shell_from_lossless_3d(
         hy,
         hy_old,
         h_source_lossless_y,
@@ -1672,7 +1672,7 @@ def cpml_update_h_from_e_3d_shell_split(
     hz = hz_old - h_source_lossless_z * (
         (d4 * inv_kappa_h_terms[4] + psi4) - (d5 * inv_kappa_h_terms[5] + psi5)
     )
-    hz = _apply_lossy_shell_from_lossless_3d(
+    hz = apply_lossy_shell_from_lossless_3d(
         hz,
         hz_old,
         h_source_lossless_z,
@@ -1850,7 +1850,7 @@ def cpml_update_e_from_h_3d_shell_split(
     ex = ex_old + e_source_lossless_x * (
         (d0 * inv_kappa_e_terms[0] + psi0) - (d1 * inv_kappa_e_terms[1] + psi1)
     )
-    ex = _apply_lossy_shell_from_lossless_3d(
+    ex = apply_lossy_shell_from_lossless_3d(
         ex,
         ex_old,
         e_source_lossless_x,
@@ -1867,7 +1867,7 @@ def cpml_update_e_from_h_3d_shell_split(
     ey = ey_old + e_source_lossless_y * (
         (d2 * inv_kappa_e_terms[2] + psi2) - (d3 * inv_kappa_e_terms[3] + psi3)
     )
-    ey = _apply_lossy_shell_from_lossless_3d(
+    ey = apply_lossy_shell_from_lossless_3d(
         ey,
         ey_old,
         e_source_lossless_y,
@@ -1884,7 +1884,7 @@ def cpml_update_e_from_h_3d_shell_split(
     ez = ez_old + e_source_lossless_z * (
         (d4 * inv_kappa_e_terms[4] + psi4) - (d5 * inv_kappa_e_terms[5] + psi5)
     )
-    ez = _apply_lossy_shell_from_lossless_3d(
+    ez = apply_lossy_shell_from_lossless_3d(
         ez,
         ez_old,
         e_source_lossless_z,

@@ -1333,18 +1333,6 @@ class Simulation:
             loop_kind = "scan"
         else:
             raise ValueError("Invalid BEAMZ_COMPILED_LOOP_KIND (use: scan, fori_loop).")
-        e_shell_split = os.getenv("BEAMZ_ENABLE_E_SHELL_SPLIT", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        h_shell_split = os.getenv("BEAMZ_ENABLE_H_SHELL_SPLIT", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
         source_single_slab_dense = os.getenv(
             "BEAMZ_SOURCE_SINGLE_SLAB_DENSE", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1355,8 +1343,6 @@ class Simulation:
             self.is_3d,
             self.plane_2d,
             loop_kind,
-            e_shell_split,
-            h_shell_split,
             source_single_slab_dense,
             snapshot_field,
             snapshot_interval,

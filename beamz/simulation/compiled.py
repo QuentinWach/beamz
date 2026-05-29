@@ -52,6 +52,7 @@ from beamz.shared_kernels import (
 )
 from beamz.simulation import ops
 from beamz.simulation.boundaries import (
+    apply_lossy_shell_from_lossless_3d,
     build_h_boundary_views_for_e_3d,
     cpml_update_e_from_h_3d,
     cpml_update_e_from_h_3d_shell_split,
@@ -678,39 +679,6 @@ class CompiledSimulation:
             decay_s = jax.lax.dynamic_slice(decay, starts, sizes)
             source_s = jax.lax.dynamic_slice(source, starts, sizes)
             lossy_s = decay_s * old_s + source_s * curl_s
-            out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
-        return out
-
-    def _apply_lossy_shell_from_lossless(
-        self,
-        updated_lossless: jnp.ndarray,
-        old: jnp.ndarray,
-        source_lossless: jnp.ndarray,
-        slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
-        decay_slabs: tuple[jnp.ndarray, ...],
-        source_slabs: tuple[jnp.ndarray, ...],
-    ) -> jnp.ndarray:
-        """Apply lossy correction on shell slabs using old/lossless fields only.
-
-        Given:
-            lossless = old +/- source_lossless * curl
-            lossy    = decay * old +/- source * curl
-        we can eliminate curl on the shell via:
-            beta = source / source_lossless
-            lossy = (decay - beta) * old + beta * lossless
-        """
-        out = updated_lossless
-        for (starts, sizes), decay_s, source_s in zip(
-            slabs, decay_slabs, source_slabs
-        ):
-            old_s = jax.lax.dynamic_slice(old, starts, sizes)
-            lossless_s = jax.lax.dynamic_slice(updated_lossless, starts, sizes)
-            if getattr(source_lossless, "ndim", 0) == 0:
-                source_ll_s = source_lossless
-            else:
-                source_ll_s = jax.lax.dynamic_slice(source_lossless, starts, sizes)
-            beta = source_s / source_ll_s
-            lossy_s = (decay_s - beta) * old_s + beta * lossless_s
             out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
         return out
 
@@ -1678,24 +1646,47 @@ class CompiledSimulation:
                             fp_hy.shape,
                             fp_hz.shape,
                         )
-                        fp_hx = apply_zero_mask(
-                            advance_h_from_coefficients(
-                                fp_hx, curl_ex, self.fp_h_decay_x, self.fp_h_source_x
-                            ),
-                            self.fp_hx_mask,
-                        )
-                        fp_hy = apply_zero_mask(
-                            advance_h_from_coefficients(
-                                fp_hy, curl_ey, self.fp_h_decay_y, self.fp_h_source_y
-                            ),
-                            self.fp_hy_mask,
-                        )
-                        fp_hz = apply_zero_mask(
-                            advance_h_from_coefficients(
-                                fp_hz, curl_ez, self.fp_h_decay_z, self.fp_h_source_z
-                            ),
-                            self.fp_hz_mask,
-                        )
+                        if self.fp_h_decay_x.size == 0:
+                            fp_hx = apply_zero_mask(
+                                fp_hx - self.fp_h_source_x * curl_ex,
+                                self.fp_hx_mask,
+                            )
+                            fp_hy = apply_zero_mask(
+                                fp_hy - self.fp_h_source_y * curl_ey,
+                                self.fp_hy_mask,
+                            )
+                            fp_hz = apply_zero_mask(
+                                fp_hz - self.fp_h_source_z * curl_ez,
+                                self.fp_hz_mask,
+                            )
+                        else:
+                            fp_hx = apply_zero_mask(
+                                advance_h_from_coefficients(
+                                    fp_hx,
+                                    curl_ex,
+                                    self.fp_h_decay_x,
+                                    self.fp_h_source_x,
+                                ),
+                                self.fp_hx_mask,
+                            )
+                            fp_hy = apply_zero_mask(
+                                advance_h_from_coefficients(
+                                    fp_hy,
+                                    curl_ey,
+                                    self.fp_h_decay_y,
+                                    self.fp_h_source_y,
+                                ),
+                                self.fp_hy_mask,
+                            )
+                            fp_hz = apply_zero_mask(
+                                advance_h_from_coefficients(
+                                    fp_hz,
+                                    curl_ez,
+                                    self.fp_h_decay_z,
+                                    self.fp_h_source_z,
+                                ),
+                                self.fp_hz_mask,
+                            )
                         hx = fp_hx[:-1, :-1, :-1]
                         hy = fp_hy[:-1, :-1, :-1]
                         hz = fp_hz[:-1, :-1, :-1]
@@ -1746,7 +1737,7 @@ class CompiledSimulation:
                                     resolution,
                                 )
                                 if use_lossy_shell_hx:
-                                    hx = self._apply_lossy_shell_from_lossless(
+                                    hx = apply_lossy_shell_from_lossless_3d(
                                         hx,
                                         hx_old,
                                         h_source_lossless_x,
@@ -1755,7 +1746,7 @@ class CompiledSimulation:
                                         h_shell_source_x,
                                     )
                                 if use_lossy_shell_hy:
-                                    hy = self._apply_lossy_shell_from_lossless(
+                                    hy = apply_lossy_shell_from_lossless_3d(
                                         hy,
                                         hy_old,
                                         h_source_lossless_y,
@@ -1764,7 +1755,7 @@ class CompiledSimulation:
                                         h_shell_source_y,
                                     )
                                 if use_lossy_shell_hz:
-                                    hz = self._apply_lossy_shell_from_lossless(
+                                    hz = apply_lossy_shell_from_lossless_3d(
                                         hz,
                                         hz_old,
                                         h_source_lossless_z,
@@ -1977,24 +1968,47 @@ class CompiledSimulation:
                             fp_ey.shape,
                             fp_ez.shape,
                         )
-                        fp_ex = apply_zero_mask(
-                            advance_e_from_coefficients(
-                                fp_ex, curl_hx, self.fp_e_decay_x, self.fp_e_source_x
-                            ),
-                            self.fp_ex_mask,
-                        )
-                        fp_ey = apply_zero_mask(
-                            advance_e_from_coefficients(
-                                fp_ey, curl_hy, self.fp_e_decay_y, self.fp_e_source_y
-                            ),
-                            self.fp_ey_mask,
-                        )
-                        fp_ez = apply_zero_mask(
-                            advance_e_from_coefficients(
-                                fp_ez, curl_hz, self.fp_e_decay_z, self.fp_e_source_z
-                            ),
-                            self.fp_ez_mask,
-                        )
+                        if self.fp_e_decay_x.size == 0:
+                            fp_ex = apply_zero_mask(
+                                fp_ex + self.fp_e_source_x * curl_hx,
+                                self.fp_ex_mask,
+                            )
+                            fp_ey = apply_zero_mask(
+                                fp_ey + self.fp_e_source_y * curl_hy,
+                                self.fp_ey_mask,
+                            )
+                            fp_ez = apply_zero_mask(
+                                fp_ez + self.fp_e_source_z * curl_hz,
+                                self.fp_ez_mask,
+                            )
+                        else:
+                            fp_ex = apply_zero_mask(
+                                advance_e_from_coefficients(
+                                    fp_ex,
+                                    curl_hx,
+                                    self.fp_e_decay_x,
+                                    self.fp_e_source_x,
+                                ),
+                                self.fp_ex_mask,
+                            )
+                            fp_ey = apply_zero_mask(
+                                advance_e_from_coefficients(
+                                    fp_ey,
+                                    curl_hy,
+                                    self.fp_e_decay_y,
+                                    self.fp_e_source_y,
+                                ),
+                                self.fp_ey_mask,
+                            )
+                            fp_ez = apply_zero_mask(
+                                advance_e_from_coefficients(
+                                    fp_ez,
+                                    curl_hz,
+                                    self.fp_e_decay_z,
+                                    self.fp_e_source_z,
+                                ),
+                                self.fp_ez_mask,
+                            )
                         ex = fp_ex[:-1, :-1, :-1]
                         ey = fp_ey[:-1, :-1, :-1]
                         ez = fp_ez[:-1, :-1, :-1]
@@ -2050,7 +2064,7 @@ class CompiledSimulation:
                                     boundary_views=boundary_views,
                                 )
                                 if use_lossy_shell_ex:
-                                    ex = self._apply_lossy_shell_from_lossless(
+                                    ex = apply_lossy_shell_from_lossless_3d(
                                         ex,
                                         ex_old,
                                         e_source_lossless_x,
@@ -2059,7 +2073,7 @@ class CompiledSimulation:
                                         e_shell_source_x,
                                     )
                                 if use_lossy_shell_ey:
-                                    ey = self._apply_lossy_shell_from_lossless(
+                                    ey = apply_lossy_shell_from_lossless_3d(
                                         ey,
                                         ey_old,
                                         e_source_lossless_y,
@@ -2068,7 +2082,7 @@ class CompiledSimulation:
                                         e_shell_source_y,
                                     )
                                 if use_lossy_shell_ez:
-                                    ez = self._apply_lossy_shell_from_lossless(
+                                    ez = apply_lossy_shell_from_lossless_3d(
                                         ez,
                                         ez_old,
                                         e_source_lossless_z,
@@ -2745,17 +2759,6 @@ def _infer_lossy_shell_slabs(
     return True, global_slabs
 
 
-def _lossy_fraction(
-    field_shape: tuple[int, ...],
-    region: tuple[slice, ...],
-    conductivity_region: jnp.ndarray,
-) -> float:
-    """Fraction of lossy voxels for a field component."""
-    full_mask = np.zeros(field_shape, dtype=bool)
-    full_mask[region] = np.asarray(conductivity_region) > 0.0
-    return float(full_mask.mean())
-
-
 def _has_positive_conductivity(conductivity_region: jnp.ndarray) -> bool:
     return bool(np.asarray(conductivity_region).size) and bool(
         (np.asarray(conductivity_region) > 0.0).any()
@@ -2772,6 +2775,82 @@ def _slice_coefficient_slabs(
         dz, dy, dx = sizes
         out.append(arr[z : z + dz, y : y + dy, x : x + dx])
     return tuple(out)
+
+
+def _slice_region_slabs(
+    arr: jnp.ndarray,
+    *,
+    field_shape: tuple[int, int, int],
+    region: tuple[slice, slice, slice],
+    slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
+) -> tuple[jnp.ndarray, ...]:
+    layout = _region_offsets_and_sizes(field_shape, region)
+    if layout is None:
+        raise ValueError("Cannot slice slab coefficients for non-unit slice region.")
+    region_starts, _region_sizes = layout
+    out: list[jnp.ndarray] = []
+    for starts, sizes in slabs:
+        local_starts = tuple(starts[d] - region_starts[d] for d in range(3))
+        z, y, x = local_starts
+        dz, dy, dx = sizes
+        out.append(arr[z : z + dz, y : y + dy, x : x + dx])
+    return tuple(out)
+
+
+def _precompute_h_update_coefficient_slabs(
+    sigma_m: jnp.ndarray,
+    slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
+    dt: float,
+) -> tuple[tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...]]:
+    decay_slabs: list[jnp.ndarray] = []
+    source_slabs: list[jnp.ndarray] = []
+    for sigma_s in _slice_coefficient_slabs(sigma_m, slabs):
+        decay_s, source_s, _ = ops.precompute_h_update_coefficients(sigma_s, dt)
+        decay_slabs.append(decay_s)
+        source_slabs.append(source_s)
+    return tuple(decay_slabs), tuple(source_slabs)
+
+
+def _precompute_e_lossless_source_coefficient(
+    *,
+    shape: tuple[int, int, int],
+    permittivity: jnp.ndarray,
+    dt: float,
+    region: tuple[slice, slice, slice],
+) -> jnp.ndarray:
+    source = jnp.zeros(shape, dtype=jnp.float32)
+    local = (dt / (ops.EPS_0 * permittivity)).astype(jnp.float32)
+    return source.at[region].set(local)
+
+
+def _precompute_e_update_coefficient_slabs(
+    *,
+    field_shape: tuple[int, int, int],
+    conductivity: jnp.ndarray,
+    permittivity: jnp.ndarray,
+    dt: float,
+    region: tuple[slice, slice, slice],
+    slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
+) -> tuple[tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...]]:
+    conductivity_slabs = _slice_region_slabs(
+        conductivity, field_shape=field_shape, region=region, slabs=slabs
+    )
+    permittivity_slabs = _slice_region_slabs(
+        permittivity, field_shape=field_shape, region=region, slabs=slabs
+    )
+    decay_slabs: list[jnp.ndarray] = []
+    source_slabs: list[jnp.ndarray] = []
+    for conductivity_s, permittivity_s in zip(
+        conductivity_slabs, permittivity_slabs, strict=True
+    ):
+        denom = 1.0 + conductivity_s * (dt / (2.0 * ops.EPS_0 * permittivity_s))
+        decay_s = (
+            1.0 - conductivity_s * (dt / (2.0 * ops.EPS_0 * permittivity_s))
+        ) / denom
+        source_s = (dt / (ops.EPS_0 * permittivity_s)) / denom
+        decay_slabs.append(decay_s.astype(jnp.float32))
+        source_slabs.append(source_s.astype(jnp.float32))
+    return tuple(decay_slabs), tuple(source_slabs)
 
 
 def compile_simulation(
@@ -2854,37 +2933,213 @@ def compile_simulation(
         snapshot_interval=int(getattr(run_cfg, "snapshot_interval", 0) or 0),
     )
 
-    h_decay_x, h_source_x, h_source_lossless_x = ops.precompute_h_update_coefficients(
-        fields.sigma_m_hx, dt
-    )
-    h_decay_y, h_source_y, h_source_lossless_y = ops.precompute_h_update_coefficients(
-        fields.sigma_m_hy, dt
-    )
-    h_decay_z, h_source_z, h_source_lossless_z = ops.precompute_h_update_coefficients(
-        fields.sigma_m_hz, dt
-    )
+    use_sparse_3d_h_coefficients = False
+    use_sparse_3d_e_coefficients = False
+    if bool(run_cfg.is_3d):
+        e_use_lossy_shell_x, e_lossy_shell_x = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Ex.shape),
+            region=fields.region_x,
+            conductivity_region=fields.sig_x,
+        )
+        e_use_lossy_shell_y, e_lossy_shell_y = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Ey.shape),
+            region=fields.region_y,
+            conductivity_region=fields.sig_y,
+        )
+        e_use_lossy_shell_z, e_lossy_shell_z = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Ez.shape),
+            region=fields.region_z,
+            conductivity_region=fields.sig_z,
+        )
+        h_use_lossy_shell_x, h_lossy_shell_x = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Hx.shape),
+            region=(slice(None), slice(None), slice(None)),
+            conductivity_region=fields.sigma_m_hx,
+        )
+        h_use_lossy_shell_y, h_lossy_shell_y = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Hy.shape),
+            region=(slice(None), slice(None), slice(None)),
+            conductivity_region=fields.sigma_m_hy,
+        )
+        h_use_lossy_shell_z, h_lossy_shell_z = _infer_lossy_shell_slabs(
+            field_shape=tuple(fields.Hz.shape),
+            region=(slice(None), slice(None), slice(None)),
+            conductivity_region=fields.sigma_m_hz,
+        )
 
-    e_decay_x, e_source_x, e_source_lossless_x = ops.precompute_e_update_coefficients(
-        shape=fields.Ex.shape,
-        conductivity=fields.sig_x,
-        permittivity=fields.eps_x,
-        dt=dt,
-        region=fields.region_x,
-    )
-    e_decay_y, e_source_y, e_source_lossless_y = ops.precompute_e_update_coefficients(
-        shape=fields.Ey.shape,
-        conductivity=fields.sig_y,
-        permittivity=fields.eps_y,
-        dt=dt,
-        region=fields.region_y,
-    )
-    e_decay_z, e_source_z, e_source_lossless_z = ops.precompute_e_update_coefficients(
-        shape=fields.Ez.shape,
-        conductivity=fields.sig_z,
-        permittivity=fields.eps_z,
-        dt=dt,
-        region=fields.region_z,
-    )
+        e_has_loss_x = _has_positive_conductivity(fields.sig_x)
+        e_has_loss_y = _has_positive_conductivity(fields.sig_y)
+        e_has_loss_z = _has_positive_conductivity(fields.sig_z)
+        h_has_loss_x = _has_positive_conductivity(fields.sigma_m_hx)
+        h_has_loss_y = _has_positive_conductivity(fields.sigma_m_hy)
+        h_has_loss_z = _has_positive_conductivity(fields.sigma_m_hz)
+
+        use_sparse_3d_e_coefficients = (
+            (not e_has_loss_x or e_use_lossy_shell_x)
+            and (not e_has_loss_y or e_use_lossy_shell_y)
+            and (not e_has_loss_z or e_use_lossy_shell_z)
+        )
+        use_sparse_3d_h_coefficients = (
+            (not h_has_loss_x or h_use_lossy_shell_x)
+            and (not h_has_loss_y or h_use_lossy_shell_y)
+            and (not h_has_loss_z or h_use_lossy_shell_z)
+        )
+
+        if not use_sparse_3d_e_coefficients:
+            e_use_lossy_shell_x, e_use_lossy_shell_y, e_use_lossy_shell_z = (
+                False,
+                False,
+                False,
+            )
+            e_lossy_shell_x, e_lossy_shell_y, e_lossy_shell_z = (
+                tuple(),
+                tuple(),
+                tuple(),
+            )
+        if not use_sparse_3d_h_coefficients:
+            h_use_lossy_shell_x, h_use_lossy_shell_y, h_use_lossy_shell_z = (
+                False,
+                False,
+                False,
+            )
+            h_lossy_shell_x, h_lossy_shell_y, h_lossy_shell_z = (
+                tuple(),
+                tuple(),
+                tuple(),
+            )
+    else:
+        e_use_lossy_shell_x, e_lossy_shell_x = False, tuple()
+        e_use_lossy_shell_y, e_lossy_shell_y = False, tuple()
+        e_use_lossy_shell_z, e_lossy_shell_z = False, tuple()
+        h_use_lossy_shell_x, h_lossy_shell_x = False, tuple()
+        h_use_lossy_shell_y, h_lossy_shell_y = False, tuple()
+        h_use_lossy_shell_z, h_lossy_shell_z = False, tuple()
+
+    if use_sparse_3d_h_coefficients:
+        h_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        h_source_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        h_source_lossless_x = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
+        h_decay_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        h_source_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        h_source_lossless_y = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
+        h_decay_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        h_source_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        h_source_lossless_z = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
+        h_shell_decay_x, h_shell_source_x = _precompute_h_update_coefficient_slabs(
+            fields.sigma_m_hx, h_lossy_shell_x, dt
+        )
+        h_shell_decay_y, h_shell_source_y = _precompute_h_update_coefficient_slabs(
+            fields.sigma_m_hy, h_lossy_shell_y, dt
+        )
+        h_shell_decay_z, h_shell_source_z = _precompute_h_update_coefficient_slabs(
+            fields.sigma_m_hz, h_lossy_shell_z, dt
+        )
+    else:
+        (
+            h_decay_x,
+            h_source_x,
+            h_source_lossless_x,
+        ) = ops.precompute_h_update_coefficients(fields.sigma_m_hx, dt)
+        (
+            h_decay_y,
+            h_source_y,
+            h_source_lossless_y,
+        ) = ops.precompute_h_update_coefficients(fields.sigma_m_hy, dt)
+        (
+            h_decay_z,
+            h_source_z,
+            h_source_lossless_z,
+        ) = ops.precompute_h_update_coefficients(fields.sigma_m_hz, dt)
+        h_shell_decay_x = h_shell_source_x = tuple()
+        h_shell_decay_y = h_shell_source_y = tuple()
+        h_shell_decay_z = h_shell_source_z = tuple()
+
+    if use_sparse_3d_e_coefficients:
+        e_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        e_source_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        e_source_lossless_x = _precompute_e_lossless_source_coefficient(
+            shape=tuple(fields.Ex.shape),
+            permittivity=fields.eps_x,
+            dt=dt,
+            region=fields.region_x,
+        )
+        e_decay_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        e_source_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        e_source_lossless_y = _precompute_e_lossless_source_coefficient(
+            shape=tuple(fields.Ey.shape),
+            permittivity=fields.eps_y,
+            dt=dt,
+            region=fields.region_y,
+        )
+        e_decay_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        e_source_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+        e_source_lossless_z = _precompute_e_lossless_source_coefficient(
+            shape=tuple(fields.Ez.shape),
+            permittivity=fields.eps_z,
+            dt=dt,
+            region=fields.region_z,
+        )
+        e_shell_decay_x, e_shell_source_x = _precompute_e_update_coefficient_slabs(
+            field_shape=tuple(fields.Ex.shape),
+            conductivity=fields.sig_x,
+            permittivity=fields.eps_x,
+            dt=dt,
+            region=fields.region_x,
+            slabs=e_lossy_shell_x,
+        )
+        e_shell_decay_y, e_shell_source_y = _precompute_e_update_coefficient_slabs(
+            field_shape=tuple(fields.Ey.shape),
+            conductivity=fields.sig_y,
+            permittivity=fields.eps_y,
+            dt=dt,
+            region=fields.region_y,
+            slabs=e_lossy_shell_y,
+        )
+        e_shell_decay_z, e_shell_source_z = _precompute_e_update_coefficient_slabs(
+            field_shape=tuple(fields.Ez.shape),
+            conductivity=fields.sig_z,
+            permittivity=fields.eps_z,
+            dt=dt,
+            region=fields.region_z,
+            slabs=e_lossy_shell_z,
+        )
+    else:
+        (
+            e_decay_x,
+            e_source_x,
+            e_source_lossless_x,
+        ) = ops.precompute_e_update_coefficients(
+            shape=fields.Ex.shape,
+            conductivity=fields.sig_x,
+            permittivity=fields.eps_x,
+            dt=dt,
+            region=fields.region_x,
+        )
+        (
+            e_decay_y,
+            e_source_y,
+            e_source_lossless_y,
+        ) = ops.precompute_e_update_coefficients(
+            shape=fields.Ey.shape,
+            conductivity=fields.sig_y,
+            permittivity=fields.eps_y,
+            dt=dt,
+            region=fields.region_y,
+        )
+        (
+            e_decay_z,
+            e_source_z,
+            e_source_lossless_z,
+        ) = ops.precompute_e_update_coefficients(
+            shape=fields.Ez.shape,
+            conductivity=fields.sig_z,
+            permittivity=fields.eps_z,
+            dt=dt,
+            region=fields.region_z,
+        )
+        e_shell_decay_x = e_shell_source_x = tuple()
+        e_shell_decay_y = e_shell_source_y = tuple()
+        e_shell_decay_z = e_shell_source_z = tuple()
     use_physical_tm_xy = False
     use_cpml_tm_xy = False
     use_cpml_3d = False
@@ -2994,36 +3249,76 @@ def compile_simulation(
     full_pec_3d = bool(has_full_pec_3d(boundaries))
     if bool(run_cfg.is_3d) and full_pec_3d:
         fp_state = initialize_full_pec_3d_state(fields)
-        fp_h_decay_x, fp_h_source_x, _ = ops.precompute_h_update_coefficients(
-            fp_state.sigma_m_hx, dt
+        fp_has_loss = any(
+            _has_positive_conductivity(arr)
+            for arr in (
+                fp_state.sigma_m_hx,
+                fp_state.sigma_m_hy,
+                fp_state.sigma_m_hz,
+                fp_state.sig_x_region,
+                fp_state.sig_y_region,
+                fp_state.sig_z_region,
+            )
         )
-        fp_h_decay_y, fp_h_source_y, _ = ops.precompute_h_update_coefficients(
-            fp_state.sigma_m_hy, dt
-        )
-        fp_h_decay_z, fp_h_source_z, _ = ops.precompute_h_update_coefficients(
-            fp_state.sigma_m_hz, dt
-        )
-        fp_e_decay_x, fp_e_source_x, _ = ops.precompute_e_update_coefficients(
-            shape=fp_state.Ex.shape,
-            conductivity=fp_state.sig_x_region,
-            permittivity=fp_state.eps_x_region,
-            dt=dt,
-            region=(slice(1, -1), slice(1, -1), slice(None)),
-        )
-        fp_e_decay_y, fp_e_source_y, _ = ops.precompute_e_update_coefficients(
-            shape=fp_state.Ey.shape,
-            conductivity=fp_state.sig_y_region,
-            permittivity=fp_state.eps_y_region,
-            dt=dt,
-            region=(slice(1, -1), slice(None), slice(1, -1)),
-        )
-        fp_e_decay_z, fp_e_source_z, _ = ops.precompute_e_update_coefficients(
-            shape=fp_state.Ez.shape,
-            conductivity=fp_state.sig_z_region,
-            permittivity=fp_state.eps_z_region,
-            dt=dt,
-            region=(slice(None), slice(1, -1), slice(1, -1)),
-        )
+        if fp_has_loss:
+            fp_h_decay_x, fp_h_source_x, _ = ops.precompute_h_update_coefficients(
+                fp_state.sigma_m_hx, dt
+            )
+            fp_h_decay_y, fp_h_source_y, _ = ops.precompute_h_update_coefficients(
+                fp_state.sigma_m_hy, dt
+            )
+            fp_h_decay_z, fp_h_source_z, _ = ops.precompute_h_update_coefficients(
+                fp_state.sigma_m_hz, dt
+            )
+            fp_e_decay_x, fp_e_source_x, _ = ops.precompute_e_update_coefficients(
+                shape=fp_state.Ex.shape,
+                conductivity=fp_state.sig_x_region,
+                permittivity=fp_state.eps_x_region,
+                dt=dt,
+                region=(slice(1, -1), slice(1, -1), slice(None)),
+            )
+            fp_e_decay_y, fp_e_source_y, _ = ops.precompute_e_update_coefficients(
+                shape=fp_state.Ey.shape,
+                conductivity=fp_state.sig_y_region,
+                permittivity=fp_state.eps_y_region,
+                dt=dt,
+                region=(slice(1, -1), slice(None), slice(1, -1)),
+            )
+            fp_e_decay_z, fp_e_source_z, _ = ops.precompute_e_update_coefficients(
+                shape=fp_state.Ez.shape,
+                conductivity=fp_state.sig_z_region,
+                permittivity=fp_state.eps_z_region,
+                dt=dt,
+                region=(slice(None), slice(1, -1), slice(1, -1)),
+            )
+        else:
+            fp_h_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+            fp_h_source_x = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
+            fp_h_decay_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+            fp_h_source_y = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
+            fp_h_decay_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+            fp_h_source_z = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
+            fp_e_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+            fp_e_source_x = _precompute_e_lossless_source_coefficient(
+                shape=tuple(fp_state.Ex.shape),
+                permittivity=fp_state.eps_x_region,
+                dt=dt,
+                region=(slice(1, -1), slice(1, -1), slice(None)),
+            )
+            fp_e_decay_y = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+            fp_e_source_y = _precompute_e_lossless_source_coefficient(
+                shape=tuple(fp_state.Ey.shape),
+                permittivity=fp_state.eps_y_region,
+                dt=dt,
+                region=(slice(1, -1), slice(None), slice(1, -1)),
+            )
+            fp_e_decay_z = jnp.zeros((0, 0, 0), dtype=jnp.float32)
+            fp_e_source_z = _precompute_e_lossless_source_coefficient(
+                shape=tuple(fp_state.Ez.shape),
+                permittivity=fp_state.eps_z_region,
+                dt=dt,
+                region=(slice(None), slice(1, -1), slice(1, -1)),
+            )
         fp_ex_mask = fp_state.masks["Ex"]
         fp_ey_mask = fp_state.masks["Ey"]
         fp_ez_mask = fp_state.masks["Ez"]
@@ -3056,126 +3351,14 @@ def compile_simulation(
         plane_2d=run_cfg.plane_2d,
     )
 
-    use_sparse_3d_h_coefficients = False
-    use_sparse_3d_e_coefficients = False
-    if bool(run_cfg.is_3d):
-        e_use_lossy_shell_x, e_lossy_shell_x = _infer_lossy_shell_slabs(
-            field_shape=tuple(fields.Ex.shape),
-            region=fields.region_x,
-            conductivity_region=fields.sig_x,
-        )
-        e_use_lossy_shell_y, e_lossy_shell_y = _infer_lossy_shell_slabs(
-            field_shape=tuple(fields.Ey.shape),
-            region=fields.region_y,
-            conductivity_region=fields.sig_y,
-        )
-        e_use_lossy_shell_z, e_lossy_shell_z = _infer_lossy_shell_slabs(
-            field_shape=tuple(fields.Ez.shape),
-            region=fields.region_z,
-            conductivity_region=fields.sig_z,
-        )
-        h_use_lossy_shell_x, h_lossy_shell_x = _infer_lossy_shell_slabs(
-            field_shape=tuple(fields.Hx.shape),
-            region=(slice(None), slice(None), slice(None)),
-            conductivity_region=fields.sigma_m_hx,
-        )
-        h_use_lossy_shell_y, h_lossy_shell_y = _infer_lossy_shell_slabs(
-            field_shape=tuple(fields.Hy.shape),
-            region=(slice(None), slice(None), slice(None)),
-            conductivity_region=fields.sigma_m_hy,
-        )
-        h_use_lossy_shell_z, h_lossy_shell_z = _infer_lossy_shell_slabs(
-            field_shape=tuple(fields.Hz.shape),
-            region=(slice(None), slice(None), slice(None)),
-            conductivity_region=fields.sigma_m_hz,
-        )
-
-        e_has_loss_x = _has_positive_conductivity(fields.sig_x)
-        e_has_loss_y = _has_positive_conductivity(fields.sig_y)
-        e_has_loss_z = _has_positive_conductivity(fields.sig_z)
-        h_has_loss_x = _has_positive_conductivity(fields.sigma_m_hx)
-        h_has_loss_y = _has_positive_conductivity(fields.sigma_m_hy)
-        h_has_loss_z = _has_positive_conductivity(fields.sigma_m_hz)
-
-        use_sparse_3d_e_coefficients = (
-            (not e_has_loss_x or e_use_lossy_shell_x)
-            and (not e_has_loss_y or e_use_lossy_shell_y)
-            and (not e_has_loss_z or e_use_lossy_shell_z)
-        )
-        use_sparse_3d_h_coefficients = (
-            (not h_has_loss_x or h_use_lossy_shell_x)
-            and (not h_has_loss_y or h_use_lossy_shell_y)
-            and (not h_has_loss_z or h_use_lossy_shell_z)
-        )
-
-        if not use_sparse_3d_e_coefficients:
-            e_use_lossy_shell_x, e_use_lossy_shell_y, e_use_lossy_shell_z = (
-                False,
-                False,
-                False,
-            )
-            e_lossy_shell_x, e_lossy_shell_y, e_lossy_shell_z = (
-                tuple(),
-                tuple(),
-                tuple(),
-            )
-        if not use_sparse_3d_h_coefficients:
-            h_use_lossy_shell_x, h_use_lossy_shell_y, h_use_lossy_shell_z = (
-                False,
-                False,
-                False,
-            )
-            h_lossy_shell_x, h_lossy_shell_y, h_lossy_shell_z = (
-                tuple(),
-                tuple(),
-                tuple(),
-            )
-    else:
-        e_use_lossy_shell_x, e_lossy_shell_x = False, tuple()
-        e_use_lossy_shell_y, e_lossy_shell_y = False, tuple()
-        e_use_lossy_shell_z, e_lossy_shell_z = False, tuple()
-        h_use_lossy_shell_x, h_lossy_shell_x = False, tuple()
-        h_use_lossy_shell_y, h_lossy_shell_y = False, tuple()
-        h_use_lossy_shell_z, h_lossy_shell_z = False, tuple()
-
-    h_shell_decay_x = _slice_coefficient_slabs(h_decay_x, h_lossy_shell_x)
-    h_shell_source_x = _slice_coefficient_slabs(h_source_x, h_lossy_shell_x)
-    h_shell_decay_y = _slice_coefficient_slabs(h_decay_y, h_lossy_shell_y)
-    h_shell_source_y = _slice_coefficient_slabs(h_source_y, h_lossy_shell_y)
-    h_shell_decay_z = _slice_coefficient_slabs(h_decay_z, h_lossy_shell_z)
-    h_shell_source_z = _slice_coefficient_slabs(h_source_z, h_lossy_shell_z)
-    e_shell_decay_x = _slice_coefficient_slabs(e_decay_x, e_lossy_shell_x)
-    e_shell_source_x = _slice_coefficient_slabs(e_source_x, e_lossy_shell_x)
-    e_shell_decay_y = _slice_coefficient_slabs(e_decay_y, e_lossy_shell_y)
-    e_shell_source_y = _slice_coefficient_slabs(e_source_y, e_lossy_shell_y)
-    e_shell_decay_z = _slice_coefficient_slabs(e_decay_z, e_lossy_shell_z)
-    e_shell_source_z = _slice_coefficient_slabs(e_source_z, e_lossy_shell_z)
-
-    if use_sparse_3d_h_coefficients:
-        h_decay_x = _empty_like_rank(h_decay_x)
-        h_source_x = _empty_like_rank(h_source_x)
-        h_source_lossless_x = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
-        h_decay_y = _empty_like_rank(h_decay_y)
-        h_source_y = _empty_like_rank(h_source_y)
-        h_source_lossless_y = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
-        h_decay_z = _empty_like_rank(h_decay_z)
-        h_source_z = _empty_like_rank(h_source_z)
-        h_source_lossless_z = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)
-    elif not h_use_lossy_shell_x:
+    if (not use_sparse_3d_h_coefficients) and (not h_use_lossy_shell_x):
         h_source_lossless_x = _empty_like_rank(h_source_lossless_x)
     if (not use_sparse_3d_h_coefficients) and (not h_use_lossy_shell_y):
         h_source_lossless_y = _empty_like_rank(h_source_lossless_y)
     if (not use_sparse_3d_h_coefficients) and (not h_use_lossy_shell_z):
         h_source_lossless_z = _empty_like_rank(h_source_lossless_z)
 
-    if use_sparse_3d_e_coefficients:
-        e_decay_x = _empty_like_rank(e_decay_x)
-        e_source_x = _empty_like_rank(e_source_x)
-        e_decay_y = _empty_like_rank(e_decay_y)
-        e_source_y = _empty_like_rank(e_source_y)
-        e_decay_z = _empty_like_rank(e_decay_z)
-        e_source_z = _empty_like_rank(e_source_z)
-    elif not e_use_lossy_shell_x:
+    if (not use_sparse_3d_e_coefficients) and (not e_use_lossy_shell_x):
         e_source_lossless_x = _empty_like_rank(e_source_lossless_x)
     if (not use_sparse_3d_e_coefficients) and (not e_use_lossy_shell_y):
         e_source_lossless_y = _empty_like_rank(e_source_lossless_y)
