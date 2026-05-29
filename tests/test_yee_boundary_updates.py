@@ -317,15 +317,17 @@ def test_full_pec_updates_match_full_shapes():
         state.Hy,
         state.Hz,
         1.0,
-        h_decay_x=jnp.ones_like(state.Hx),
-        h_source_x=jnp.ones_like(state.Hx),
-        h_decay_y=jnp.ones_like(state.Hy),
-        h_source_y=jnp.ones_like(state.Hy),
-        h_decay_z=jnp.ones_like(state.Hz),
-        h_source_z=jnp.ones_like(state.Hz),
-        hx_mask=state.masks["Hx"],
-        hy_mask=state.masks["Hy"],
-        hz_mask=state.masks["Hz"],
+        h_decay=(
+            jnp.ones_like(state.Hx),
+            jnp.ones_like(state.Hy),
+            jnp.ones_like(state.Hz),
+        ),
+        h_source=(
+            jnp.ones_like(state.Hx),
+            jnp.ones_like(state.Hy),
+            jnp.ones_like(state.Hz),
+        ),
+        h_mask=(state.masks["Hx"], state.masks["Hy"], state.masks["Hz"]),
     )
     assert hx.shape == state.Hx.shape
     assert hy.shape == state.Hy.shape
@@ -339,15 +341,17 @@ def test_full_pec_updates_match_full_shapes():
         state.Ey,
         state.Ez,
         1.0,
-        e_decay_x=jnp.ones_like(state.Ex),
-        e_source_x=jnp.ones_like(state.Ex),
-        e_decay_y=jnp.ones_like(state.Ey),
-        e_source_y=jnp.ones_like(state.Ey),
-        e_decay_z=jnp.ones_like(state.Ez),
-        e_source_z=jnp.ones_like(state.Ez),
-        ex_mask=state.masks["Ex"],
-        ey_mask=state.masks["Ey"],
-        ez_mask=state.masks["Ez"],
+        e_decay=(
+            jnp.ones_like(state.Ex),
+            jnp.ones_like(state.Ey),
+            jnp.ones_like(state.Ez),
+        ),
+        e_source=(
+            jnp.ones_like(state.Ex),
+            jnp.ones_like(state.Ey),
+            jnp.ones_like(state.Ez),
+        ),
+        e_mask=(state.masks["Ex"], state.masks["Ey"], state.masks["Ez"]),
     )
     assert ex.shape == state.Ex.shape
     assert ey.shape == state.Ey.shape

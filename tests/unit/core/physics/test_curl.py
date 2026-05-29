@@ -133,15 +133,9 @@ def test_full_pec_update_h_matches_curl_reference():
         hy,
         hz,
         0.5,
-        h_decay_x=jnp.zeros((0, 0, 0), dtype=jnp.float32),
-        h_source_x=source,
-        h_decay_y=jnp.zeros((0, 0, 0), dtype=jnp.float32),
-        h_source_y=source,
-        h_decay_z=jnp.zeros((0, 0, 0), dtype=jnp.float32),
-        h_source_z=source,
-        hx_mask=mask_hx,
-        hy_mask=mask_hy,
-        hz_mask=mask_hz,
+        h_decay=(jnp.zeros((0, 0, 0), dtype=jnp.float32),) * 3,
+        h_source=(source, source, source),
+        h_mask=(mask_hx, mask_hy, mask_hz),
     )
 
     for got, want in zip(actual, expected, strict=True):
@@ -182,15 +176,9 @@ def test_full_pec_update_e_matches_curl_reference():
         ey,
         ez,
         0.5,
-        e_decay_x=jnp.zeros((0, 0, 0), dtype=jnp.float32),
-        e_source_x=source_x,
-        e_decay_y=jnp.zeros((0, 0, 0), dtype=jnp.float32),
-        e_source_y=source_y,
-        e_decay_z=jnp.zeros((0, 0, 0), dtype=jnp.float32),
-        e_source_z=source_z,
-        ex_mask=mask_ex,
-        ey_mask=mask_ey,
-        ez_mask=mask_ez,
+        e_decay=(jnp.zeros((0, 0, 0), dtype=jnp.float32),) * 3,
+        e_source=(source_x, source_y, source_z),
+        e_mask=(mask_ex, mask_ey, mask_ez),
     )
 
     for got, want in zip(actual, expected, strict=True):

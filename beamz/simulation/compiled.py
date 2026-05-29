@@ -61,6 +61,8 @@ from beamz.simulation.boundaries import (
     create_metallic_boundary_masks,
     full_pec_curl_e_to_h_2d_xy,
     full_pec_curl_h_to_e_2d_xy,
+    full_pec_e_update_coefficients_3d,
+    full_pec_h_update_coefficients_3d,
     full_pec_update_e_from_h_3d,
     full_pec_update_h_from_e_3d,
     full_tm_2d_xy_masks,
@@ -1639,15 +1641,17 @@ class CompiledSimulation:
                             fp_hy,
                             fp_hz,
                             resolution,
-                            h_decay_x=self.fp_h_decay_x,
-                            h_source_x=self.fp_h_source_x,
-                            h_decay_y=self.fp_h_decay_y,
-                            h_source_y=self.fp_h_source_y,
-                            h_decay_z=self.fp_h_decay_z,
-                            h_source_z=self.fp_h_source_z,
-                            hx_mask=self.fp_hx_mask,
-                            hy_mask=self.fp_hy_mask,
-                            hz_mask=self.fp_hz_mask,
+                            h_decay=(
+                                self.fp_h_decay_x,
+                                self.fp_h_decay_y,
+                                self.fp_h_decay_z,
+                            ),
+                            h_source=(
+                                self.fp_h_source_x,
+                                self.fp_h_source_y,
+                                self.fp_h_source_z,
+                            ),
+                            h_mask=(self.fp_hx_mask, self.fp_hy_mask, self.fp_hz_mask),
                         )
                         hx = fp_hx[:-1, :-1, :-1]
                         hy = fp_hy[:-1, :-1, :-1]
@@ -1929,15 +1933,17 @@ class CompiledSimulation:
                             fp_ey,
                             fp_ez,
                             resolution,
-                            e_decay_x=self.fp_e_decay_x,
-                            e_source_x=self.fp_e_source_x,
-                            e_decay_y=self.fp_e_decay_y,
-                            e_source_y=self.fp_e_source_y,
-                            e_decay_z=self.fp_e_decay_z,
-                            e_source_z=self.fp_e_source_z,
-                            ex_mask=self.fp_ex_mask,
-                            ey_mask=self.fp_ey_mask,
-                            ez_mask=self.fp_ez_mask,
+                            e_decay=(
+                                self.fp_e_decay_x,
+                                self.fp_e_decay_y,
+                                self.fp_e_decay_z,
+                            ),
+                            e_source=(
+                                self.fp_e_source_x,
+                                self.fp_e_source_y,
+                                self.fp_e_source_z,
+                            ),
+                            e_mask=(self.fp_ex_mask, self.fp_ey_mask, self.fp_ez_mask),
                         )
                         ex = fp_ex[:-1, :-1, :-1]
                         ey = fp_ey[:-1, :-1, :-1]
@@ -3191,36 +3197,16 @@ def compile_simulation(
             )
         )
         if fp_has_loss:
-            fp_h_decay_x, fp_h_source_x, _ = ops.precompute_h_update_coefficients(
-                fp_state.sigma_m_hx, dt
-            )
-            fp_h_decay_y, fp_h_source_y, _ = ops.precompute_h_update_coefficients(
-                fp_state.sigma_m_hy, dt
-            )
-            fp_h_decay_z, fp_h_source_z, _ = ops.precompute_h_update_coefficients(
-                fp_state.sigma_m_hz, dt
-            )
-            fp_e_decay_x, fp_e_source_x, _ = ops.precompute_e_update_coefficients(
-                shape=fp_state.Ex.shape,
-                conductivity=fp_state.sig_x_region,
-                permittivity=fp_state.eps_x_region,
-                dt=dt,
-                region=(slice(1, -1), slice(1, -1), slice(None)),
-            )
-            fp_e_decay_y, fp_e_source_y, _ = ops.precompute_e_update_coefficients(
-                shape=fp_state.Ey.shape,
-                conductivity=fp_state.sig_y_region,
-                permittivity=fp_state.eps_y_region,
-                dt=dt,
-                region=(slice(1, -1), slice(None), slice(1, -1)),
-            )
-            fp_e_decay_z, fp_e_source_z, _ = ops.precompute_e_update_coefficients(
-                shape=fp_state.Ez.shape,
-                conductivity=fp_state.sig_z_region,
-                permittivity=fp_state.eps_z_region,
-                dt=dt,
-                region=(slice(None), slice(1, -1), slice(1, -1)),
-            )
+            (fp_h_decay_x, fp_h_decay_y, fp_h_decay_z), (
+                fp_h_source_x,
+                fp_h_source_y,
+                fp_h_source_z,
+            ) = full_pec_h_update_coefficients_3d(fp_state, dt)
+            (fp_e_decay_x, fp_e_decay_y, fp_e_decay_z), (
+                fp_e_source_x,
+                fp_e_source_y,
+                fp_e_source_z,
+            ) = full_pec_e_update_coefficients_3d(fp_state, dt)
         else:
             fp_h_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
             fp_h_source_x = jnp.asarray(dt / ops.MU_0, dtype=jnp.float32)

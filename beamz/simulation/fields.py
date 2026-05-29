@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 
-from beamz.const import EPS_0, MU_0
 from beamz.shared_kernels import (
     advance_e_from_curl,
     advance_h_from_curl,
@@ -20,6 +19,8 @@ from beamz.simulation.boundaries import (
     cpml_curl_h_to_e_3d,
     full_pec_curl_e_to_h_2d_xy,
     full_pec_curl_h_to_e_2d_xy,
+    full_pec_e_update_coefficients_3d,
+    full_pec_h_update_coefficients_3d,
     full_pec_update_e_from_h_3d,
     full_pec_update_h_from_e_3d,
     has_full_pec_2d_xy,
@@ -40,6 +41,16 @@ from beamz.simulation.yee import (
     sample_voxel_grid_at_component_3d,
     sample_voxel_grid_at_tm_xy_full_component_2d,
 )
+
+
+def _component_source_tuple(source, components, targets):
+    if not source:
+        return (None, None, None)
+    arrays = [jnp.zeros_like(target) for target in targets]
+    for i, comp in enumerate(components):
+        for val, indices in source.get(comp, ()):
+            arrays[i] = arrays[i].at[indices].add(val)
+    return tuple(arrays)
 
 
 @dataclass
@@ -438,23 +449,7 @@ class Fields:
                 if self.full_pec_3d_state is None:
                     self.full_pec_3d_state = initialize_full_pec_3d_state(self)
                 state = self.full_pec_3d_state
-                source_x = source_y = source_z = None
-                if source_m:
-                    source_x = jnp.zeros_like(state.Hx)
-                    source_y = jnp.zeros_like(state.Hy)
-                    source_z = jnp.zeros_like(state.Hz)
-                    for comp in ("Hx", "Hy", "Hz"):
-                        if comp in source_m:
-                            for val, indices in source_m[comp]:
-                                if comp == "Hx":
-                                    source_x = source_x.at[indices].add(val)
-                                elif comp == "Hy":
-                                    source_y = source_y.at[indices].add(val)
-                                else:
-                                    source_z = source_z.at[indices].add(val)
-                denom_x = 1.0 + state.sigma_m_hx * (dt / (2.0 * MU_0))
-                denom_y = 1.0 + state.sigma_m_hy * (dt / (2.0 * MU_0))
-                denom_z = 1.0 + state.sigma_m_hz * (dt / (2.0 * MU_0))
+                h_decay, h_source = full_pec_h_update_coefficients_3d(state, dt)
                 state.Hx, state.Hy, state.Hz = full_pec_update_h_from_e_3d(
                     state.Ex,
                     state.Ey,
@@ -463,21 +458,18 @@ class Fields:
                     state.Hy,
                     state.Hz,
                     self.resolution,
-                    h_decay_x=(1.0 - state.sigma_m_hx * (dt / (2.0 * MU_0)))
-                    / denom_x,
-                    h_source_x=(dt / MU_0) / denom_x,
-                    h_decay_y=(1.0 - state.sigma_m_hy * (dt / (2.0 * MU_0)))
-                    / denom_y,
-                    h_source_y=(dt / MU_0) / denom_y,
-                    h_decay_z=(1.0 - state.sigma_m_hz * (dt / (2.0 * MU_0)))
-                    / denom_z,
-                    h_source_z=(dt / MU_0) / denom_z,
-                    hx_mask=state.masks["Hx"],
-                    hy_mask=state.masks["Hy"],
-                    hz_mask=state.masks["Hz"],
-                    source_m_x=source_x,
-                    source_m_y=source_y,
-                    source_m_z=source_z,
+                    h_decay=h_decay,
+                    h_source=h_source,
+                    h_mask=(
+                        state.masks["Hx"],
+                        state.masks["Hy"],
+                        state.masks["Hz"],
+                    ),
+                    source_m=_component_source_tuple(
+                        source_m,
+                        ("Hx", "Hy", "Hz"),
+                        (state.Hx, state.Hy, state.Hz),
+                    ),
                 )
                 sync_compact_fields_from_full_pec_3d(self, state)
                 return
@@ -573,47 +565,7 @@ class Fields:
                 if self.full_pec_3d_state is None:
                     self.full_pec_3d_state = initialize_full_pec_3d_state(self)
                 state = self.full_pec_3d_state
-                source_x = source_y = source_z = None
-                if source_j:
-                    source_x = jnp.zeros_like(state.Ex)
-                    source_y = jnp.zeros_like(state.Ey)
-                    source_z = jnp.zeros_like(state.Ez)
-                    for comp in ("Ex", "Ey", "Ez"):
-                        if comp in source_j:
-                            for val, indices in source_j[comp]:
-                                if comp == "Ex":
-                                    source_x = source_x.at[indices].add(val)
-                                elif comp == "Ey":
-                                    source_y = source_y.at[indices].add(val)
-                                else:
-                                    source_z = source_z.at[indices].add(val)
-                region_x = (slice(1, -1), slice(1, -1), slice(None))
-                region_y = (slice(1, -1), slice(None), slice(1, -1))
-                region_z = (slice(None), slice(1, -1), slice(1, -1))
-                denom_x = 1.0 + state.sig_x_region * (
-                    dt / (2.0 * EPS_0 * state.eps_x_region)
-                )
-                denom_y = 1.0 + state.sig_y_region * (
-                    dt / (2.0 * EPS_0 * state.eps_y_region)
-                )
-                denom_z = 1.0 + state.sig_z_region * (
-                    dt / (2.0 * EPS_0 * state.eps_z_region)
-                )
-                e_decay_x = (
-                    1.0
-                    - state.sig_x_region * (dt / (2.0 * EPS_0 * state.eps_x_region))
-                ) / denom_x
-                e_decay_y = (
-                    1.0
-                    - state.sig_y_region * (dt / (2.0 * EPS_0 * state.eps_y_region))
-                ) / denom_y
-                e_decay_z = (
-                    1.0
-                    - state.sig_z_region * (dt / (2.0 * EPS_0 * state.eps_z_region))
-                ) / denom_z
-                e_source_x = (dt / (EPS_0 * state.eps_x_region)) / denom_x
-                e_source_y = (dt / (EPS_0 * state.eps_y_region)) / denom_y
-                e_source_z = (dt / (EPS_0 * state.eps_z_region)) / denom_z
+                e_decay, e_source = full_pec_e_update_coefficients_3d(state, dt)
                 state.Ex, state.Ey, state.Ez = full_pec_update_e_from_h_3d(
                     state.Hx,
                     state.Hy,
@@ -622,18 +574,18 @@ class Fields:
                     state.Ey,
                     state.Ez,
                     self.resolution,
-                    e_decay_x=e_decay_x,
-                    e_source_x=e_source_x,
-                    e_decay_y=e_decay_y,
-                    e_source_y=e_source_y,
-                    e_decay_z=e_decay_z,
-                    e_source_z=e_source_z,
-                    ex_mask=state.masks["Ex"],
-                    ey_mask=state.masks["Ey"],
-                    ez_mask=state.masks["Ez"],
-                    source_j_x=source_x,
-                    source_j_y=source_y,
-                    source_j_z=source_z,
+                    e_decay=e_decay,
+                    e_source=e_source,
+                    e_mask=(
+                        state.masks["Ex"],
+                        state.masks["Ey"],
+                        state.masks["Ez"],
+                    ),
+                    source_j=_component_source_tuple(
+                        source_j,
+                        ("Ex", "Ey", "Ez"),
+                        (state.Ex, state.Ey, state.Ez),
+                    ),
                 )
                 sync_compact_fields_from_full_pec_3d(self, state)
                 return

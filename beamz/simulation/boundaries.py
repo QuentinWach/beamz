@@ -1441,22 +1441,18 @@ def full_pec_update_h_from_e_3d(
     hz,
     resolution,
     *,
-    h_decay_x,
-    h_source_x,
-    h_decay_y,
-    h_source_y,
-    h_decay_z,
-    h_source_z,
-    hx_mask,
-    hy_mask,
-    hz_mask,
-    source_m_x=None,
-    source_m_y=None,
-    source_m_z=None,
+    h_decay,
+    h_source,
+    h_mask,
+    source_m=(None, None, None),
 ):
     """Update full-PEC H components without materializing a curl tuple."""
 
     resolution = _scalar_like(resolution, ex.dtype)
+    h_decay_x, h_decay_y, h_decay_z = h_decay
+    h_source_x, h_source_y, h_source_z = h_source
+    hx_mask, hy_mask, hz_mask = h_mask
+    source_m_x, source_m_y, source_m_z = source_m
 
     curl_x = ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])) / (
         resolution
@@ -1494,6 +1490,19 @@ def full_pec_update_h_from_e_3d(
     return hx, hy, hz
 
 
+def full_pec_h_update_coefficients_3d(state, dt):
+    """Return grouped H update coefficients for a full-PEC 3D state."""
+
+    sigma = (state.sigma_m_hx, state.sigma_m_hy, state.sigma_m_hz)
+    denom = tuple(1.0 + term * (dt / (2.0 * MU_0)) for term in sigma)
+    decay = tuple(
+        (1.0 - term * (dt / (2.0 * MU_0))) / den
+        for term, den in zip(sigma, denom, strict=True)
+    )
+    source = tuple((dt / MU_0) / den for den in denom)
+    return decay, source
+
+
 def _full_pec_region_coefficient(coeff, region, field_shape):
     if getattr(coeff, "size", 0) == 0:
         return coeff
@@ -1511,22 +1520,18 @@ def full_pec_update_e_from_h_3d(
     ez,
     resolution,
     *,
-    e_decay_x,
-    e_source_x,
-    e_decay_y,
-    e_source_y,
-    e_decay_z,
-    e_source_z,
-    ex_mask,
-    ey_mask,
-    ez_mask,
-    source_j_x=None,
-    source_j_y=None,
-    source_j_z=None,
+    e_decay,
+    e_source,
+    e_mask,
+    source_j=(None, None, None),
 ):
     """Update full-PEC E components without building full zero-padded curl grids."""
 
     resolution = _scalar_like(resolution, hx.dtype)
+    e_decay_x, e_decay_y, e_decay_z = e_decay
+    e_source_x, e_source_y, e_source_z = e_source
+    ex_mask, ey_mask, ez_mask = e_mask
+    source_j_x, source_j_y, source_j_z = source_j
 
     region_x = (slice(1, -1), slice(1, -1), slice(None))
     dHz_dy = (hz[:, 1:, :] - hz[:, :-1, :]) / resolution
@@ -1574,6 +1579,26 @@ def full_pec_update_e_from_h_3d(
     ez = jnp.where(ez_mask, jnp.zeros((), dtype=ez.dtype), ez)
 
     return ex, ey, ez
+
+
+def full_pec_e_update_coefficients_3d(state, dt):
+    """Return grouped region-local E update coefficients for a full-PEC 3D state."""
+
+    conductivity = (state.sig_x_region, state.sig_y_region, state.sig_z_region)
+    permittivity = (state.eps_x_region, state.eps_y_region, state.eps_z_region)
+    denom = tuple(
+        1.0 + sigma * (dt / (2.0 * EPS_0 * eps))
+        for sigma, eps in zip(conductivity, permittivity, strict=True)
+    )
+    decay = tuple(
+        (1.0 - sigma * (dt / (2.0 * EPS_0 * eps))) / den
+        for sigma, eps, den in zip(conductivity, permittivity, denom, strict=True)
+    )
+    source = tuple(
+        (dt / (EPS_0 * eps)) / den
+        for eps, den in zip(permittivity, denom, strict=True)
+    )
+    return decay, source
 
 
 def cpml_curl_e_to_h_3d(
