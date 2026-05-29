@@ -405,6 +405,37 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
     ] == pytest.approx(1.0)
 
 
+def test_compiled_drops_unused_lossless_source_coefficients_3d():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
+    )
+    design = Design(
+        width=3.0 * wl,
+        height=2.0 * wl,
+        depth=2.0 * wl,
+        material=Material(permittivity=1.0),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[],
+        boundaries=[PML(edges="all", thickness=0.5 * wl, formulation="cpml")],
+        time=np.arange(0, 2 * dt, dt),
+        resolution=dx,
+    )
+
+    program = sim.compile(num_steps=1)
+
+    assert program.e_source_x.size > 0
+    assert program.h_source_x.size > 0
+    assert program.e_source_lossless_x.shape == (0, 0, 0)
+    assert program.e_source_lossless_y.shape == (0, 0, 0)
+    assert program.e_source_lossless_z.shape == (0, 0, 0)
+    assert program.h_source_lossless_x.shape == (0, 0, 0)
+    assert program.h_source_lossless_y.shape == (0, 0, 0)
+    assert program.h_source_lossless_z.shape == (0, 0, 0)
+
+
 def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(

@@ -178,6 +178,10 @@ def _empty_cpml_3d_terms(dtype=jnp.float32) -> tuple[jnp.ndarray, ...]:
     return tuple(jnp.zeros((0, 0, 0), dtype=dtype) for _ in range(6))
 
 
+def _empty_like_rank(arr: jnp.ndarray) -> jnp.ndarray:
+    return jnp.zeros((0,) * arr.ndim, dtype=arr.dtype)
+
+
 def _embed_cpml_3d_term_to_full_volume(
     term: jnp.ndarray,
     region: str,
@@ -2887,6 +2891,19 @@ def compile_simulation(
         h_use_lossy_shell_x, h_lossy_shell_x = False, tuple()
         h_use_lossy_shell_y, h_lossy_shell_y = False, tuple()
         h_use_lossy_shell_z, h_lossy_shell_z = False, tuple()
+
+    if not h_use_lossy_shell_x:
+        h_source_lossless_x = _empty_like_rank(h_source_lossless_x)
+    if not h_use_lossy_shell_y:
+        h_source_lossless_y = _empty_like_rank(h_source_lossless_y)
+    if not h_use_lossy_shell_z:
+        h_source_lossless_z = _empty_like_rank(h_source_lossless_z)
+    if not e_use_lossy_shell_x:
+        e_source_lossless_x = _empty_like_rank(e_source_lossless_x)
+    if not e_use_lossy_shell_y:
+        e_source_lossless_y = _empty_like_rank(e_source_lossless_y)
+    if not e_use_lossy_shell_z:
+        e_source_lossless_z = _empty_like_rank(e_source_lossless_z)
 
     return CompiledSimulation(
         config=config,
