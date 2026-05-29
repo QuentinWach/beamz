@@ -1269,6 +1269,14 @@ def _cpml_correct_native_term(derivative, psi, a_term, b_term, inv_kappa_term):
     return corrected, psi_updated
 
 
+def _cpml_update_native_term(derivative, psi, a_term, b_term):
+    dtype = psi.dtype
+    derivative = jnp.asarray(derivative, dtype=dtype)
+    a_term = jnp.asarray(a_term, dtype=dtype)
+    b_term = jnp.asarray(b_term, dtype=dtype)
+    return b_term * psi + a_term * derivative
+
+
 def build_h_boundary_views_for_e_3d(hx, hy, hz, boundaries):
     """Return H-field views for the 3D E update with boundaries applied outside ops.
 
@@ -1513,6 +1521,57 @@ def cpml_curl_e_to_h_3d(
     return curl_hx, curl_hy, curl_hz, (psi0, psi1, psi2, psi3, psi4, psi5)
 
 
+def cpml_update_h_from_e_3d(
+    ex,
+    ey,
+    ez,
+    hx,
+    hy,
+    hz,
+    h_decay_x,
+    h_source_x,
+    h_decay_y,
+    h_source_y,
+    h_decay_z,
+    h_source_z,
+    resolution,
+    *,
+    a_h_terms,
+    b_h_terms,
+    inv_kappa_h_terms,
+    psi_h_terms,
+):
+    """CPML-corrected H update from E without returning full curl arrays."""
+
+    resolution = _scalar_like(resolution, ex.dtype)
+
+    d0 = (ez[:, 1:, :] - ez[:, :-1, :]) / resolution
+    d1 = (ey[1:, :, :] - ey[:-1, :, :]) / resolution
+    psi0 = _cpml_update_native_term(d0, psi_h_terms[0], a_h_terms[0], b_h_terms[0])
+    psi1 = _cpml_update_native_term(d1, psi_h_terms[1], a_h_terms[1], b_h_terms[1])
+    hx = h_decay_x * hx - h_source_x * (
+        (d0 * inv_kappa_h_terms[0] + psi0) - (d1 * inv_kappa_h_terms[1] + psi1)
+    )
+
+    d2 = (ex[1:, :, :] - ex[:-1, :, :]) / resolution
+    d3 = (ez[:, :, 1:] - ez[:, :, :-1]) / resolution
+    psi2 = _cpml_update_native_term(d2, psi_h_terms[2], a_h_terms[2], b_h_terms[2])
+    psi3 = _cpml_update_native_term(d3, psi_h_terms[3], a_h_terms[3], b_h_terms[3])
+    hy = h_decay_y * hy - h_source_y * (
+        (d2 * inv_kappa_h_terms[2] + psi2) - (d3 * inv_kappa_h_terms[3] + psi3)
+    )
+
+    d4 = (ey[:, :, 1:] - ey[:, :, :-1]) / resolution
+    d5 = (ex[:, 1:, :] - ex[:, :-1, :]) / resolution
+    psi4 = _cpml_update_native_term(d4, psi_h_terms[4], a_h_terms[4], b_h_terms[4])
+    psi5 = _cpml_update_native_term(d5, psi_h_terms[5], a_h_terms[5], b_h_terms[5])
+    hz = h_decay_z * hz - h_source_z * (
+        (d4 * inv_kappa_h_terms[4] + psi4) - (d5 * inv_kappa_h_terms[5] + psi5)
+    )
+
+    return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
+
+
 def cpml_curl_h_to_e_3d(
     hx,
     hy,
@@ -1568,6 +1627,67 @@ def cpml_curl_h_to_e_3d(
     curl_ey = term2 - term3
     curl_ez = term4 - term5
     return curl_ex, curl_ey, curl_ez, (psi0, psi1, psi2, psi3, psi4, psi5)
+
+
+def cpml_update_e_from_h_3d(
+    hx,
+    hy,
+    hz,
+    ex,
+    ey,
+    ez,
+    e_decay_x,
+    e_source_x,
+    e_decay_y,
+    e_source_y,
+    e_decay_z,
+    e_source_z,
+    resolution,
+    *,
+    a_e_terms,
+    b_e_terms,
+    inv_kappa_e_terms,
+    psi_e_terms,
+    metallic_edges=frozenset(),
+):
+    """CPML-corrected E update from H without returning full curl arrays."""
+
+    metallic_edges = frozenset(metallic_edges or ())
+
+    def pad(arr, axis):
+        low_edge, high_edge = _edge_pair_for_axis(axis)
+        return _pad_with_boundary_ghosts(
+            arr,
+            axis,
+            low_metallic=low_edge in metallic_edges,
+            high_metallic=high_edge in metallic_edges,
+        )
+
+    d0 = _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution)
+    d1 = _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution)
+    psi0 = _cpml_update_native_term(d0, psi_e_terms[0], a_e_terms[0], b_e_terms[0])
+    psi1 = _cpml_update_native_term(d1, psi_e_terms[1], a_e_terms[1], b_e_terms[1])
+    ex = e_decay_x * ex + e_source_x * (
+        (d0 * inv_kappa_e_terms[0] + psi0) - (d1 * inv_kappa_e_terms[1] + psi1)
+    )
+
+    d2 = _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution)
+    d3 = _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution)
+    psi2 = _cpml_update_native_term(d2, psi_e_terms[2], a_e_terms[2], b_e_terms[2])
+    psi3 = _cpml_update_native_term(d3, psi_e_terms[3], a_e_terms[3], b_e_terms[3])
+    ey = e_decay_y * ey + e_source_y * (
+        (d2 * inv_kappa_e_terms[2] + psi2) - (d3 * inv_kappa_e_terms[3] + psi3)
+    )
+
+    d4 = _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution)
+    d5 = _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution)
+    psi4 = _cpml_update_native_term(d4, psi_e_terms[4], a_e_terms[4], b_e_terms[4])
+    psi5 = _cpml_update_native_term(d5, psi_e_terms[5], a_e_terms[5], b_e_terms[5])
+    ez = e_decay_z * ez + e_source_z * (
+        (d4 * inv_kappa_e_terms[4] + psi4) - (d5 * inv_kappa_e_terms[5] + psi5)
+    )
+
+    return ex, ey, ez, (psi0, psi1, psi2, psi3, psi4, psi5)
 
 
 def full_pec_curl_e_to_h_2d_xy(ez, resolution, hx_shape, hy_shape):

@@ -52,8 +52,8 @@ from beamz.shared_kernels import (
 from beamz.simulation import ops
 from beamz.simulation.boundaries import (
     build_h_boundary_views_for_e_3d,
-    cpml_curl_e_to_h_3d,
-    cpml_curl_h_to_e_3d,
+    cpml_update_e_from_h_3d,
+    cpml_update_h_from_e_3d,
     create_metallic_boundary_masks,
     full_pec_curl_e_to_h_2d_xy,
     full_pec_curl_e_to_h_3d,
@@ -1605,26 +1605,26 @@ class CompiledSimulation:
                         hz = fp_hz[:-1, :-1, :-1]
                     elif is_3d:
                         if self.use_cpml_3d:
-                            curl_ex, curl_ey, curl_ez, cpml3d_psi_h_terms = (
-                                cpml_curl_e_to_h_3d(
+                            hx, hy, hz, cpml3d_psi_h_terms = (
+                                cpml_update_h_from_e_3d(
                                     ex,
                                     ey,
                                     ez,
+                                    hx,
+                                    hy,
+                                    hz,
+                                    h_decay_x,
+                                    h_source_x,
+                                    h_decay_y,
+                                    h_source_y,
+                                    h_decay_z,
+                                    h_source_z,
                                     resolution,
                                     a_h_terms=self.cpml3d_a_h_terms,
                                     b_h_terms=self.cpml3d_b_h_terms,
                                     inv_kappa_h_terms=self.cpml3d_inv_kappa_h_terms,
                                     psi_h_terms=cpml3d_psi_h_terms,
                                 )
-                            )
-                            hx = advance_h_from_coefficients(
-                                hx, curl_ex, h_decay_x, h_source_x
-                            )
-                            hy = advance_h_from_coefficients(
-                                hy, curl_ey, h_decay_y, h_source_y
-                            )
-                            hz = advance_h_from_coefficients(
-                                hz, curl_ez, h_decay_z, h_source_z
                             )
                         else:
                             hx, hy, hz = ops.fused_update_h_lossy_3d(
@@ -1832,11 +1832,20 @@ class CompiledSimulation:
                             hx, hy, hz, None
                         )
                         if self.use_cpml_3d:
-                            curl_hx, curl_hy, curl_hz, cpml3d_psi_e_terms = (
-                                cpml_curl_h_to_e_3d(
+                            ex, ey, ez, cpml3d_psi_e_terms = (
+                                cpml_update_e_from_h_3d(
                                     hx,
                                     hy,
                                     hz,
+                                    ex,
+                                    ey,
+                                    ez,
+                                    e_decay_x,
+                                    e_source_x,
+                                    e_decay_y,
+                                    e_source_y,
+                                    e_decay_z,
+                                    e_source_z,
                                     resolution,
                                     a_e_terms=self.cpml3d_a_e_terms,
                                     b_e_terms=self.cpml3d_b_e_terms,
@@ -1844,15 +1853,6 @@ class CompiledSimulation:
                                     psi_e_terms=cpml3d_psi_e_terms,
                                     metallic_edges=self.cpml3d_metallic_edges,
                                 )
-                            )
-                            ex = advance_e_from_coefficients(
-                                ex, curl_hx, e_decay_x, e_source_x
-                            )
-                            ey = advance_e_from_coefficients(
-                                ey, curl_hy, e_decay_y, e_source_y
-                            )
-                            ez = advance_e_from_coefficients(
-                                ez, curl_hz, e_decay_z, e_source_z
                             )
                         else:
                             ex, ey, ez = ops.fused_update_e_lossy_3d(
