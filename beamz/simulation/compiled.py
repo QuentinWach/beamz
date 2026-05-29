@@ -980,144 +980,123 @@ class CompiledSimulation:
                 )
                 can_record = cnt[mi] < max_records
                 do_record = should_record & can_record & bm.accumulate_flags[i]
-
-                mask = bm.valid_mask[i]
-                exs = (
-                    jnp.sum(
-                        ex_flat[bm.ex_interp_flat_idx[i]] * bm.ex_interp_weights[i],
-                        axis=-1,
-                    )
-                    * mask
-                )
-                eys = (
-                    jnp.sum(
-                        ey_flat[bm.ey_interp_flat_idx[i]] * bm.ey_interp_weights[i],
-                        axis=-1,
-                    )
-                    * mask
-                )
-                ezs = (
-                    jnp.sum(
-                        ez_flat[bm.ez_interp_flat_idx[i]] * bm.ez_interp_weights[i],
-                        axis=-1,
-                    )
-                    * mask
-                )
-                hxs = (
-                    jnp.sum(
-                        hx_flat[bm.hx_interp_flat_idx[i]] * bm.hx_interp_weights[i],
-                        axis=-1,
-                    )
-                    * mask
-                )
-                hys = (
-                    jnp.sum(
-                        hy_flat[bm.hy_interp_flat_idx[i]] * bm.hy_interp_weights[i],
-                        axis=-1,
-                    )
-                    * mask
-                )
-                hzs = (
-                    jnp.sum(
-                        hz_flat[bm.hz_interp_flat_idx[i]] * bm.hz_interp_weights[i],
-                        axis=-1,
-                    )
-                    * mask
-                )
-
-                sx = eys * hzs - ezs * hys
-                sy = ezs * hxs - exs * hzs
-                sz = exs * hys - eys * hxs
-                power_val = (
-                    jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz)) * bm.power_scales[i]
-                )
-                axis_i = bm.normal_axes[i]
-                normal_flux = (
-                    jnp.sum(jnp.where(axis_i == 0, sx, jnp.where(axis_i == 1, sy, sz)))
-                    * bm.normal_signs[i]
-                    * bm.power_scales[i]
-                )
-                flux_sample = jnp.where(axis_i < 0, power_val, normal_flux)
-
-                slot = jnp.minimum(cnt[mi], max_records - 1)
-                pwr = pwr.at[mi, slot].set(
-                    jnp.where(do_record, flux_sample, pwr[mi, slot])
-                )
-                ts = ts.at[mi, slot].set(jnp.where(do_record, t_phys, ts[mi, slot]))
-                cnt = cnt.at[mi].set(cnt[mi] + jnp.where(do_record, 1, 0))
                 do_freq = bm.freq_enabled[i] & step_hits_interval(
                     abs_step, bm.freq_record_intervals[i]
                 )
-                mask_f = bm.freq_mask[i]
-                row_f_re = f_re[mi]
-                row_f_im = f_im[mi]
-                row_ph_re = ph_re[mi]
-                row_ph_im = ph_im[mi]
-                theta_now = (
-                    jnp.asarray(2.0 * np.pi, dtype=jnp.float32) * bm.freq_hz[i] * t_phys
-                )
-                cur_ph_re = jnp.cos(theta_now)
-                cur_ph_im = jnp.sin(theta_now)
-                delta_re = flux_sample * dt_scalar * cur_ph_re * mask_f
-                delta_im = flux_sample * dt_scalar * cur_ph_im * mask_f
-                zero_freq = jnp.asarray(0.0, dtype=row_f_re.dtype)
-                row_f_re = row_f_re + jnp.where(do_freq, delta_re, zero_freq)
-                row_f_im = row_f_im + jnp.where(do_freq, delta_im, zero_freq)
-                rot_re = bm.freq_rot_re[i]
-                rot_im = bm.freq_rot_im[i]
-                next_ph_re = row_ph_re * rot_re - row_ph_im * rot_im
-                next_ph_im = row_ph_re * rot_im + row_ph_im * rot_re
-                row_ph_re = jnp.where(do_freq, next_ph_re, row_ph_re)
-                row_ph_im = jnp.where(do_freq, next_ph_im, row_ph_im)
-                f_re = f_re.at[mi].set(row_f_re)
-                f_im = f_im.at[mi].set(row_f_im)
-                ph_re = ph_re.at[mi].set(row_ph_re)
-                ph_im = ph_im.at[mi].set(row_ph_im)
-                do_dft = monitor_dft_should_accumulate(
-                    bm.dft_enabled[i],
-                    abs_step,
-                    t_phys,
-                    bm.dft_t_start[i],
-                    bm.dft_t_end[i],
-                    bm.dft_record_intervals[i],
-                )
-                w = jnp.where(
-                    do_dft,
-                    monitor_dft_window_weight(
-                        t_phys,
-                        bm.dft_t_start[i],
-                        bm.dft_t_end[i],
-                        bm.dft_window_code[i] == 1,
-                    ),
-                    jnp.asarray(0.0, dtype=jnp.float32),
-                )
-                ph_vec_re = cur_ph_re.astype(dft_dtype) * mask_f.astype(dft_dtype)
-                ph_vec_im = cur_ph_im.astype(dft_dtype) * mask_f.astype(dft_dtype)
+                need_sample = do_record | do_freq
 
-                vecs = jnp.stack((exs, eys, ezs, hxs, hys, hzs), axis=0)
-                comp_mask = bm.dft_component_mask[i].astype(dft_dtype)[:, None, None]
-                sample_scale = monitor_dft_sample_scale(
-                    w,
-                    normalization_code=bm.dft_normalization_code[i],
-                    base_dt=dt_scalar,
-                    record_interval=bm.dft_record_intervals[i],
-                    length_unit=bm.dft_length_unit[i],
-                ).astype(dft_dtype)
-                delta_re_3d = (
-                    sample_scale
-                    * comp_mask
-                    * jnp.einsum("f,cp->cfp", ph_vec_re, vecs.astype(dft_dtype))
-                )
-                delta_im_3d = (
-                    sample_scale
-                    * comp_mask
-                    * jnp.einsum("f,cp->cfp", ph_vec_im, vecs.astype(dft_dtype))
-                )
-                d_re = d_re.at[mi].add(delta_re_3d)
-                d_im = d_im.at[mi].add(delta_im_3d)
-                d_w = d_w.at[mi].add(w.astype(dft_dtype) * mask_f.astype(dft_dtype))
+                def _sample_and_update(sample_carry):
+                    pwr, ts, cnt, f_re, f_im, ph_re, ph_im, d_re, d_im, d_w = (
+                        sample_carry
+                    )
+                    mask = bm.valid_mask[i]
+                    exs = (
+                        jnp.sum(
+                            ex_flat[bm.ex_interp_flat_idx[i]]
+                            * bm.ex_interp_weights[i],
+                            axis=-1,
+                        )
+                        * mask
+                    )
+                    eys = (
+                        jnp.sum(
+                            ey_flat[bm.ey_interp_flat_idx[i]]
+                            * bm.ey_interp_weights[i],
+                            axis=-1,
+                        )
+                        * mask
+                    )
+                    ezs = (
+                        jnp.sum(
+                            ez_flat[bm.ez_interp_flat_idx[i]]
+                            * bm.ez_interp_weights[i],
+                            axis=-1,
+                        )
+                        * mask
+                    )
+                    hxs = (
+                        jnp.sum(
+                            hx_flat[bm.hx_interp_flat_idx[i]]
+                            * bm.hx_interp_weights[i],
+                            axis=-1,
+                        )
+                        * mask
+                    )
+                    hys = (
+                        jnp.sum(
+                            hy_flat[bm.hy_interp_flat_idx[i]]
+                            * bm.hy_interp_weights[i],
+                            axis=-1,
+                        )
+                        * mask
+                    )
+                    hzs = (
+                        jnp.sum(
+                            hz_flat[bm.hz_interp_flat_idx[i]]
+                            * bm.hz_interp_weights[i],
+                            axis=-1,
+                        )
+                        * mask
+                    )
 
-                return pwr, ts, cnt, f_re, f_im, ph_re, ph_im, d_re, d_im, d_w
+                    sx = eys * hzs - ezs * hys
+                    sy = ezs * hxs - exs * hzs
+                    sz = exs * hys - eys * hxs
+                    power_val = (
+                        jnp.sum(jnp.sqrt(sx * sx + sy * sy + sz * sz))
+                        * bm.power_scales[i]
+                    )
+                    axis_i = bm.normal_axes[i]
+                    normal_flux = (
+                        jnp.sum(
+                            jnp.where(axis_i == 0, sx, jnp.where(axis_i == 1, sy, sz))
+                        )
+                        * bm.normal_signs[i]
+                        * bm.power_scales[i]
+                    )
+                    flux_sample = jnp.where(axis_i < 0, power_val, normal_flux)
+
+                    slot = jnp.minimum(cnt[mi], max_records - 1)
+                    pwr = pwr.at[mi, slot].set(
+                        jnp.where(do_record, flux_sample, pwr[mi, slot])
+                    )
+                    ts = ts.at[mi, slot].set(jnp.where(do_record, t_phys, ts[mi, slot]))
+                    cnt = cnt.at[mi].set(cnt[mi] + jnp.where(do_record, 1, 0))
+                    mask_f = bm.freq_mask[i]
+                    row_f_re = f_re[mi]
+                    row_f_im = f_im[mi]
+                    row_ph_re = ph_re[mi]
+                    row_ph_im = ph_im[mi]
+                    theta_now = (
+                        jnp.asarray(2.0 * np.pi, dtype=jnp.float32)
+                        * bm.freq_hz[i]
+                        * t_phys
+                    )
+                    cur_ph_re = jnp.cos(theta_now)
+                    cur_ph_im = jnp.sin(theta_now)
+                    delta_re = flux_sample * dt_scalar * cur_ph_re * mask_f
+                    delta_im = flux_sample * dt_scalar * cur_ph_im * mask_f
+                    zero_freq = jnp.asarray(0.0, dtype=row_f_re.dtype)
+                    row_f_re = row_f_re + jnp.where(do_freq, delta_re, zero_freq)
+                    row_f_im = row_f_im + jnp.where(do_freq, delta_im, zero_freq)
+                    rot_re = bm.freq_rot_re[i]
+                    rot_im = bm.freq_rot_im[i]
+                    next_ph_re = row_ph_re * rot_re - row_ph_im * rot_im
+                    next_ph_im = row_ph_re * rot_im + row_ph_im * rot_re
+                    row_ph_re = jnp.where(do_freq, next_ph_re, row_ph_re)
+                    row_ph_im = jnp.where(do_freq, next_ph_im, row_ph_im)
+                    f_re = f_re.at[mi].set(row_f_re)
+                    f_im = f_im.at[mi].set(row_f_im)
+                    ph_re = ph_re.at[mi].set(row_ph_re)
+                    ph_im = ph_im.at[mi].set(row_ph_im)
+                    return pwr, ts, cnt, f_re, f_im, ph_re, ph_im, d_re, d_im, d_w
+
+                return jax.lax.cond(
+                    need_sample,
+                    _sample_and_update,
+                    lambda sample_carry: sample_carry,
+                    (pwr, ts, cnt, f_re, f_im, ph_re, ph_im, d_re, d_im, d_w),
+                )
 
             (
                 powers,
