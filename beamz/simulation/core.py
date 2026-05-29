@@ -66,6 +66,92 @@ def _copy_with_update(obj, update=None):
     return copied
 
 
+def _compiled_cache_value_token(value, *, _seen=None):
+    """Build a conservative cache token for values that affect compiled specs."""
+    if _seen is None:
+        _seen = set()
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, slice):
+        return ("slice", value.start, value.stop, value.step)
+    if callable(value):
+        return ("callable", id(value))
+
+    try:
+        arr = np.asarray(value)
+    except Exception:
+        arr = None
+    if arr is not None and hasattr(value, "shape") and hasattr(value, "dtype"):
+        token = ("array", tuple(int(v) for v in arr.shape), str(arr.dtype))
+        if arr.size <= 4096:
+            try:
+                token = (*token, hash(arr.tobytes()))
+            except Exception:
+                token = (*token, id(value))
+        else:
+            token = (*token, id(value))
+        return token
+
+    obj_id = id(value)
+    if obj_id in _seen:
+        return ("cycle", obj_id)
+    _seen.add(obj_id)
+    try:
+        if isinstance(value, Mapping):
+            return (
+                "mapping",
+                tuple(
+                    sorted(
+                        (
+                            _compiled_cache_value_token(k, _seen=_seen),
+                            _compiled_cache_value_token(v, _seen=_seen),
+                        )
+                        for k, v in value.items()
+                    )
+                ),
+            )
+        if isinstance(value, (tuple, list)):
+            return (
+                type(value).__name__,
+                tuple(_compiled_cache_value_token(v, _seen=_seen) for v in value),
+            )
+        if isinstance(value, set):
+            return (
+                "set",
+                tuple(
+                    sorted(_compiled_cache_value_token(v, _seen=_seen) for v in value)
+                ),
+            )
+
+        attrs = getattr(value, "__dict__", None)
+        if attrs is not None:
+            runtime_attrs = set(getattr(value, "_RUNTIME_ATTRS", set()))
+            public_attrs = tuple(
+                sorted(
+                    (
+                        key,
+                        _compiled_cache_value_token(attr_value, _seen=_seen),
+                    )
+                    for key, attr_value in attrs.items()
+                    if key not in runtime_attrs and key != "_state"
+                )
+            )
+            return (
+                value.__class__.__module__,
+                value.__class__.__qualname__,
+                obj_id,
+                public_attrs,
+            )
+        return (type(value).__module__, type(value).__qualname__, repr(value))
+    finally:
+        _seen.discard(obj_id)
+
+
+def _compiled_cache_sequence_token(values):
+    return _compiled_cache_value_token(tuple(values or ()))
+
+
 def _material_index(material) -> float:
     eps = getattr(material, "permittivity", 1.0)
     try:
@@ -1346,6 +1432,9 @@ class Simulation:
             source_single_slab_dense,
             snapshot_field,
             snapshot_interval,
+            _compiled_cache_sequence_token(self.sources),
+            _compiled_cache_sequence_token(self.monitors),
+            _compiled_cache_sequence_token(self.boundaries),
         )
         cached = self._compiled_program_cache.get(signature)
         if cached is not None:

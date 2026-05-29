@@ -1688,6 +1688,30 @@ def test_cache_reuse_across_equal_chunks(small_sim_params):
     assert sim._compiled_program.compile_count == 1
 
 
+def test_compile_cache_invalidates_when_specs_change(small_sim_params):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    sim = Simulation(
+        design=design,
+        sources=[source],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+
+    with_source = sim.compile(num_steps=8)
+    assert with_source.source_specs
+
+    sim.sources = []
+    no_source = sim.compile(num_steps=8)
+
+    assert no_source is not with_source
+    assert no_source.source_specs == ()
+
+
 def test_waveform_absolute_indexing_correctness(small_sim_params):
     """Chunked execution with absolute waveform indexing should match single-shot."""
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
