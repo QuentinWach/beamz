@@ -330,15 +330,6 @@ class CompiledSimulation:
     tm_h_source_y: jnp.ndarray
     tm_e_decay_z: jnp.ndarray
     tm_e_source_z: jnp.ndarray
-    sigma_m_hx_raw: jnp.ndarray
-    sigma_m_hy_raw: jnp.ndarray
-    sigma_m_hz_raw: jnp.ndarray
-    sig_x_raw: jnp.ndarray
-    eps_x_raw: jnp.ndarray
-    sig_y_raw: jnp.ndarray
-    eps_y_raw: jnp.ndarray
-    sig_z_raw: jnp.ndarray
-    eps_z_raw: jnp.ndarray
     tm_ez_mask: jnp.ndarray
     tm_hx_mask: jnp.ndarray
     tm_hy_mask: jnp.ndarray
@@ -2934,15 +2925,6 @@ def compile_simulation(
         tm_h_source_y=tm_h_source_y,
         tm_e_decay_z=tm_e_decay_z,
         tm_e_source_z=tm_e_source_z,
-        sigma_m_hx_raw=fields.sigma_m_hx,
-        sigma_m_hy_raw=fields.sigma_m_hy,
-        sigma_m_hz_raw=fields.sigma_m_hz,
-        sig_x_raw=fields.sig_x,
-        eps_x_raw=fields.eps_x,
-        sig_y_raw=fields.sig_y,
-        eps_y_raw=fields.eps_y,
-        sig_z_raw=fields.sig_z,
-        eps_z_raw=fields.eps_z,
         tm_ez_mask=tm_ez_mask,
         tm_hx_mask=tm_hx_mask,
         tm_hy_mask=tm_hy_mask,
