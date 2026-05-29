@@ -675,6 +675,31 @@ def test_run_snapshot_path_does_not_fall_back_to_python_step(small_sim_params):
     assert result["snapshots"][0]["step"] == 8
 
 
+def test_compiled_snapshot_state_warns_for_large_preallocation(
+    small_sim_params, monkeypatch
+):
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    sim = Simulation(
+        design=design,
+        sources=[source],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+    program = sim.compile(num_steps=2, snapshot_field="Ez", snapshot_interval=1)
+
+    monkeypatch.setenv("BEAMZ_SNAPSHOT_WARN_GIB", "1e-8")
+    with pytest.warns(RuntimeWarning, match="Compiled field snapshots will allocate"):
+        snapshot_state = program._empty_snapshot_state()
+
+    assert snapshot_state is not None
+    assert snapshot_state[0].shape[0] == 2
+
+
 def test_compiled_frequency_monitor_matches_direct_sum(small_sim_params):
     wl, dx, dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))

@@ -11,6 +11,7 @@ import os
 import pathlib
 import platform
 import sys
+import warnings
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -180,6 +181,15 @@ def _empty_cpml_3d_terms(dtype=jnp.float32) -> tuple[jnp.ndarray, ...]:
 
 def _empty_like_rank(arr: jnp.ndarray) -> jnp.ndarray:
     return jnp.zeros((0,) * arr.ndim, dtype=arr.dtype)
+
+
+def _snapshot_warning_threshold_bytes() -> int:
+    raw = os.getenv("BEAMZ_SNAPSHOT_WARN_GIB", "2.0").strip()
+    try:
+        gib = float(raw)
+    except ValueError:
+        gib = 2.0
+    return max(0, int(gib * 1024**3))
 
 
 def _embed_cpml_3d_term_to_full_volume(
@@ -490,9 +500,25 @@ class CompiledSimulation:
                 )
             ),
         )
+        field_shape = self._snapshot_field_shape()
+        snapshot_bytes = int(
+            max_snapshots
+            * np.prod(field_shape, dtype=np.int64)
+            * np.dtype(np.float32).itemsize
+        )
+        warn_threshold = _snapshot_warning_threshold_bytes()
+        if warn_threshold > 0 and snapshot_bytes >= warn_threshold:
+            warnings.warn(
+                "Compiled field snapshots will allocate "
+                f"{snapshot_bytes / 1024**3:.2f} GiB for "
+                f"{max_snapshots} {self.config.snapshot_field} frames. "
+                "Increase snapshot_interval or disable store_snapshots for large runs.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return (
             jnp.zeros(
-                (max_snapshots, *self._snapshot_field_shape()),
+                (max_snapshots, *field_shape),
                 dtype=jnp.float32,
             ),
             jnp.zeros((max_snapshots,), dtype=jnp.int32),
