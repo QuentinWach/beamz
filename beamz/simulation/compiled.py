@@ -13,6 +13,7 @@ import platform
 import sys
 import warnings
 from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from typing import NamedTuple
 
 import jax
@@ -130,6 +131,75 @@ def _init_persistent_cache():
 
 
 _init_persistent_cache()
+
+
+def _array_nbytes(arr) -> int:
+    try:
+        shape = tuple(int(v) for v in arr.shape)
+        dtype = np.dtype(arr.dtype)
+    except Exception:
+        return 0
+    return int(np.prod(shape, dtype=np.int64) * dtype.itemsize)
+
+
+def _array_memory_entry(name: str, arr, category: str, residency: str) -> dict | None:
+    try:
+        shape = tuple(int(v) for v in arr.shape)
+        dtype = np.dtype(arr.dtype)
+    except Exception:
+        return None
+    return {
+        "name": str(name),
+        "category": str(category),
+        "residency": str(residency),
+        "shape": list(shape),
+        "dtype": str(dtype),
+        "bytes": _array_nbytes(arr),
+    }
+
+
+def _add_array_entries(
+    entries: list[dict],
+    name: str,
+    value,
+    *,
+    category: str,
+    residency: str = "persistent",
+) -> None:
+    entry = _array_memory_entry(name, value, category, residency)
+    if entry is not None:
+        entries.append(entry)
+        return
+    if isinstance(value, tuple):
+        for idx, item in enumerate(value):
+            _add_array_entries(
+                entries,
+                f"{name}[{idx}]",
+                item,
+                category=category,
+                residency=residency,
+            )
+
+
+def _memory_report(entries: list[dict]) -> dict:
+    totals_by_category: dict[str, int] = {}
+    totals_by_residency: dict[str, int] = {}
+    for entry in entries:
+        byte_count = int(entry["bytes"])
+        totals_by_category[entry["category"]] = (
+            totals_by_category.get(entry["category"], 0) + byte_count
+        )
+        totals_by_residency[entry["residency"]] = (
+            totals_by_residency.get(entry["residency"], 0) + byte_count
+        )
+    total = int(sum(int(entry["bytes"]) for entry in entries))
+    return {
+        "total_bytes": total,
+        "total_gib": total / 1024**3,
+        "totals_by_category": totals_by_category,
+        "totals_by_residency": totals_by_residency,
+        "entries": entries,
+    }
 
 
 def monitor_dft_accumulator_dtype():
@@ -252,12 +322,15 @@ class UpdateCoefficients(NamedTuple):
     e_decay_x: jnp.ndarray
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
+    e_permittivity_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_source_lossless_y: jnp.ndarray
+    e_permittivity_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_source_lossless_z: jnp.ndarray
+    e_permittivity_z: jnp.ndarray
     tm_h_decay_x: jnp.ndarray
     tm_h_source_x: jnp.ndarray
     tm_h_decay_y: jnp.ndarray
@@ -323,12 +396,15 @@ class CompiledSimulation:
     e_decay_x: jnp.ndarray
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
+    e_permittivity_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_source_lossless_y: jnp.ndarray
+    e_permittivity_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_source_lossless_z: jnp.ndarray
+    e_permittivity_z: jnp.ndarray
     tm_h_decay_x: jnp.ndarray
     tm_h_source_x: jnp.ndarray
     tm_h_decay_y: jnp.ndarray
@@ -431,19 +507,25 @@ class CompiledSimulation:
         )
 
     def _snapshot_field_shape(self) -> tuple[int, ...]:
-        def _nonempty_shape(
-            primary: jnp.ndarray, fallback: jnp.ndarray
-        ) -> tuple[int, ...]:
-            shape = tuple(primary.shape)
-            return shape if primary.size > 0 else tuple(fallback.shape)
+        def _first_nonempty_shape(*arrays: jnp.ndarray) -> tuple[int, ...]:
+            for arr in arrays:
+                if arr.size > 0:
+                    return tuple(arr.shape)
+            return tuple()
 
         field_name = self.config.snapshot_field
         if field_name == "Ex":
-            return _nonempty_shape(self.e_source_lossless_x, self.e_source_x)
+            return _first_nonempty_shape(
+                self.e_source_lossless_x, self.e_source_x, self.e_permittivity_x
+            )
         if field_name == "Ey":
-            return _nonempty_shape(self.e_source_lossless_y, self.e_source_y)
+            return _first_nonempty_shape(
+                self.e_source_lossless_y, self.e_source_y, self.e_permittivity_y
+            )
         if field_name == "Ez":
-            return _nonempty_shape(self.e_source_lossless_z, self.e_source_z)
+            return _first_nonempty_shape(
+                self.e_source_lossless_z, self.e_source_z, self.e_permittivity_z
+            )
         if field_name == "Hx":
             return tuple(self.hx_metal_mask.shape)
         if field_name == "Hy":
@@ -1367,10 +1449,13 @@ class CompiledSimulation:
             h_source_lossless_z = coeffs.h_source_lossless_z
             e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
             e_source_lossless_x = coeffs.e_source_lossless_x
+            e_permittivity_x = coeffs.e_permittivity_x
             e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
             e_source_lossless_y = coeffs.e_source_lossless_y
+            e_permittivity_y = coeffs.e_permittivity_y
             e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
             e_source_lossless_z = coeffs.e_source_lossless_z
+            e_permittivity_z = coeffs.e_permittivity_z
             tm_h_decay_x, tm_h_source_x = coeffs.tm_h_decay_x, coeffs.tm_h_source_x
             tm_h_decay_y, tm_h_source_y = coeffs.tm_h_decay_y, coeffs.tm_h_source_y
             tm_e_decay_z, tm_e_source_z = coeffs.tm_e_decay_z, coeffs.tm_e_source_z
@@ -1878,6 +1963,10 @@ class CompiledSimulation:
                                         e_source_lossless_x,
                                         e_source_lossless_y,
                                         e_source_lossless_z,
+                                        e_permittivity_x,
+                                        e_permittivity_y,
+                                        e_permittivity_z,
+                                        dt_scalar,
                                         resolution,
                                         a_e_terms=self.cpml3d_a_e_terms,
                                         b_e_terms=self.cpml3d_b_e_terms,
@@ -1902,6 +1991,33 @@ class CompiledSimulation:
                                     hx, hy, hz, None
                                 )
                                 ex_old, ey_old, ez_old = ex, ey, ez
+                                e_source_runtime_x = (
+                                    e_source_lossless_x
+                                    if e_source_lossless_x.size > 0
+                                    else dt_scalar
+                                    / (
+                                        jnp.asarray(ops.EPS_0, dtype=ex.dtype)
+                                        * e_permittivity_x
+                                    )
+                                )
+                                e_source_runtime_y = (
+                                    e_source_lossless_y
+                                    if e_source_lossless_y.size > 0
+                                    else dt_scalar
+                                    / (
+                                        jnp.asarray(ops.EPS_0, dtype=ey.dtype)
+                                        * e_permittivity_y
+                                    )
+                                )
+                                e_source_runtime_z = (
+                                    e_source_lossless_z
+                                    if e_source_lossless_z.size > 0
+                                    else dt_scalar
+                                    / (
+                                        jnp.asarray(ops.EPS_0, dtype=ez.dtype)
+                                        * e_permittivity_z
+                                    )
+                                )
                                 ex, ey, ez = ops.fused_update_e_lossless_3d(
                                     hx,
                                     hy,
@@ -1909,9 +2025,9 @@ class CompiledSimulation:
                                     ex,
                                     ey,
                                     ez,
-                                    e_source_lossless_x,
-                                    e_source_lossless_y,
-                                    e_source_lossless_z,
+                                    e_source_runtime_x,
+                                    e_source_runtime_y,
+                                    e_source_runtime_z,
                                     resolution,
                                     boundary_views=boundary_views,
                                 )
@@ -2302,6 +2418,191 @@ class CompiledSimulation:
     @property
     def compile_count(self) -> int:
         return self._compile_count
+
+    def memory_estimate(self, *, include_runtime: bool = True) -> dict:
+        """Return a JSON-friendly estimate of compiled-program array memory."""
+        entries: list[dict] = []
+        referenced_entries: list[dict] = []
+
+        update_names = set(UpdateCoefficients._fields)
+        referenced_update_names = {
+            "e_permittivity_x",
+            "e_permittivity_y",
+            "e_permittivity_z",
+        }
+        for name in referenced_update_names:
+            _add_array_entries(
+                referenced_entries,
+                name,
+                getattr(self, name),
+                category="compiled_referenced_inputs",
+                residency="reference",
+            )
+
+        for name in update_names:
+            if name in referenced_update_names:
+                continue
+            _add_array_entries(
+                entries,
+                name,
+                getattr(self, name),
+                category="compiled_update_coefficients",
+            )
+
+        for name in (
+            "tm_ez_mask",
+            "tm_hx_mask",
+            "tm_hy_mask",
+            "cpml_sigma_h_terms",
+            "cpml_kappa_h_aux_terms",
+            "cpml_alpha_h_terms",
+            "cpml_kappa_h_direct_terms",
+            "cpml_sigma_e_terms",
+            "cpml_kappa_e_terms",
+            "cpml_alpha_e_terms",
+            "cpml3d_a_h_terms",
+            "cpml3d_b_h_terms",
+            "cpml3d_inv_kappa_h_terms",
+            "cpml3d_a_e_terms",
+            "cpml3d_b_e_terms",
+            "cpml3d_inv_kappa_e_terms",
+            "fp_h_decay_x",
+            "fp_h_source_x",
+            "fp_h_decay_y",
+            "fp_h_source_y",
+            "fp_h_decay_z",
+            "fp_h_source_z",
+            "fp_e_decay_x",
+            "fp_e_source_x",
+            "fp_e_decay_y",
+            "fp_e_source_y",
+            "fp_e_decay_z",
+            "fp_e_source_z",
+            "fp_ex_mask",
+            "fp_ey_mask",
+            "fp_ez_mask",
+            "fp_hx_mask",
+            "fp_hy_mask",
+            "fp_hz_mask",
+            "ex_metal_mask",
+            "ey_metal_mask",
+            "ez_metal_mask",
+            "hx_metal_mask",
+            "hy_metal_mask",
+            "hz_metal_mask",
+        ):
+            _add_array_entries(
+                entries,
+                name,
+                getattr(self, name),
+                category="compiled_static_terms",
+            )
+
+        for spec_i, spec in enumerate(self.source_specs):
+            _add_array_entries(
+                entries,
+                f"source_specs[{spec_i}].coeff",
+                spec.coeff,
+                category="source_specs",
+            )
+            _add_array_entries(
+                entries,
+                f"source_specs[{spec_i}].waveform",
+                spec.waveform,
+                category="source_specs",
+            )
+
+        for spec_i, spec in enumerate(self.monitor_specs):
+            for field_info in dataclass_fields(spec):
+                value = getattr(spec, field_info.name)
+                _add_array_entries(
+                    entries,
+                    f"monitor_specs[{spec_i}].{field_info.name}",
+                    value,
+                    category="monitor_specs",
+                )
+
+        if include_runtime and self.monitor_specs:
+            max_records = max(
+                1, monitor_state_size(self.monitor_specs, self.config.num_steps)
+            )
+            max_freq = monitor_frequency_size(self.monitor_specs)
+            max_points = monitor_dft_point_size(self.monitor_specs)
+            dft_dtype = np.dtype(
+                np.float64 if jax.config.jax_enable_x64 else np.float32
+            )
+            monitor_shapes = {
+                "powers": (len(self.monitor_specs), max_records),
+                "timestamps": (len(self.monitor_specs), max_records),
+                "counts": (len(self.monitor_specs),),
+                "freq_flux_re": (len(self.monitor_specs), max_freq),
+                "freq_flux_im": (len(self.monitor_specs), max_freq),
+                "freq_phase_re": (len(self.monitor_specs), max_freq),
+                "freq_phase_im": (len(self.monitor_specs), max_freq),
+                "dft_vec_re": (
+                    len(self.monitor_specs),
+                    6,
+                    max_freq,
+                    max_points,
+                ),
+                "dft_vec_im": (
+                    len(self.monitor_specs),
+                    6,
+                    max_freq,
+                    max_points,
+                ),
+                "dft_weight_sum": (len(self.monitor_specs), max_freq),
+            }
+            for name, shape in monitor_shapes.items():
+                dtype = (
+                    np.dtype(np.int32)
+                    if name == "counts"
+                    else dft_dtype
+                    if name.startswith("dft_")
+                    else np.dtype(np.float32)
+                )
+                entries.append(
+                    {
+                        "name": f"monitor_state.{name}",
+                        "category": "monitor_state",
+                        "residency": "runtime",
+                        "shape": [int(v) for v in shape],
+                        "dtype": str(dtype),
+                        "bytes": int(np.prod(shape, dtype=np.int64) * dtype.itemsize),
+                    }
+                )
+
+        if include_runtime:
+            snapshot_state = self._empty_snapshot_state()
+            if snapshot_state is not None:
+                for name, arr in zip(
+                    ("fields", "steps", "times", "count"),
+                    snapshot_state,
+                    strict=True,
+                ):
+                    _add_array_entries(
+                        entries,
+                        f"snapshot_state.{name}",
+                        arr,
+                        category="snapshot_state",
+                        residency="runtime",
+                    )
+
+        report = _memory_report(entries)
+        report["referenced_inputs"] = _memory_report(referenced_entries)
+        report["config"] = {
+            "num_steps": int(self.config.num_steps),
+            "is_3d": bool(self.config.is_3d),
+            "loop_kind": self.config.loop_kind,
+            "use_cpml_3d": bool(self.use_cpml_3d),
+            "use_sparse_3d_e_coefficients": bool(
+                self.use_sparse_3d_e_coefficients
+            ),
+            "use_sparse_3d_h_coefficients": bool(
+                self.use_sparse_3d_h_coefficients
+            ),
+        }
+        return report
 
     def run(
         self,
@@ -2900,24 +3201,10 @@ def compile_simulation(
     if use_sparse_3d_e_coefficients:
         e_decay_x = e_source_x = e_decay_y = e_source_y = empty3
         e_decay_z = e_source_z = empty3
-        e_source_lossless_x = _precompute_e_lossless_source_coefficient(
-            shape=tuple(fields.Ex.shape),
-            permittivity=fields.eps_x,
-            dt=dt,
-            region=fields.region_x,
-        )
-        e_source_lossless_y = _precompute_e_lossless_source_coefficient(
-            shape=tuple(fields.Ey.shape),
-            permittivity=fields.eps_y,
-            dt=dt,
-            region=fields.region_y,
-        )
-        e_source_lossless_z = _precompute_e_lossless_source_coefficient(
-            shape=tuple(fields.Ez.shape),
-            permittivity=fields.eps_z,
-            dt=dt,
-            region=fields.region_z,
-        )
+        e_source_lossless_x = e_source_lossless_y = e_source_lossless_z = empty3
+        e_permittivity_x = fields.eps_x
+        e_permittivity_y = fields.eps_y
+        e_permittivity_z = fields.eps_z
         e_shell_decay_x, e_shell_source_x = _precompute_e_update_coefficient_slabs(
             field_shape=tuple(fields.Ex.shape),
             conductivity=fields.sig_x,
@@ -2974,6 +3261,7 @@ def compile_simulation(
                 region=fields.region_z,
             ),
         )
+        e_permittivity_x = e_permittivity_y = e_permittivity_z = empty3
         e_shell_decay_x = e_shell_source_x = tuple()
         e_shell_decay_y = e_shell_source_y = tuple()
         e_shell_decay_z = e_shell_source_z = tuple()
@@ -3200,12 +3488,15 @@ def compile_simulation(
         e_decay_x=e_decay_x,
         e_source_x=e_source_x,
         e_source_lossless_x=e_source_lossless_x,
+        e_permittivity_x=e_permittivity_x,
         e_decay_y=e_decay_y,
         e_source_y=e_source_y,
         e_source_lossless_y=e_source_lossless_y,
+        e_permittivity_y=e_permittivity_y,
         e_decay_z=e_decay_z,
         e_source_z=e_source_z,
         e_source_lossless_z=e_source_lossless_z,
+        e_permittivity_z=e_permittivity_z,
         tm_h_decay_x=tm_h_decay_x,
         tm_h_source_x=tm_h_source_x,
         tm_h_decay_y=tm_h_decay_y,

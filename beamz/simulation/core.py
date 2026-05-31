@@ -44,6 +44,8 @@ from beamz.simulation.boundaries import (
 from beamz.simulation.compiled import (
     EngineState,
     MonitorState,
+    _add_array_entries,
+    _memory_report,
     compile_simulation,
     monitor_dft_accumulator_dtype,
     monitor_dft_point_size,
@@ -1365,6 +1367,247 @@ class Simulation:
         self._compiled_program = program
         self._compiled_program_signature = signature
         return program
+
+    def memory_estimate(
+        self,
+        *,
+        include_compiled: bool = True,
+        num_steps: int | None = None,
+    ) -> dict:
+        """Return a JSON-friendly estimate of simulation and compiled memory."""
+        entries: list[dict] = []
+        field_arrays = (
+            "Ex",
+            "Ey",
+            "Ez",
+            "Hx",
+            "Hy",
+            "Hz",
+            "permittivity",
+            "conductivity",
+            "permeability",
+            "total_conductivity",
+            "eps_x",
+            "eps_y",
+            "eps_z",
+            "sig_x",
+            "sig_y",
+            "sig_z",
+            "sigma_m_hx",
+            "sigma_m_hy",
+            "sigma_m_hz",
+            "tm_ez_mask",
+            "tm_hx_mask",
+            "tm_hy_mask",
+            "ex_metal_mask",
+            "ey_metal_mask",
+            "ez_metal_mask",
+            "hx_metal_mask",
+            "hy_metal_mask",
+            "hz_metal_mask",
+        )
+        for name in field_arrays:
+            if hasattr(self.fields, name):
+                category = (
+                    "yee_fields"
+                    if name in {"Ex", "Ey", "Ez", "Hx", "Hy", "Hz"}
+                    else "material_center_grids"
+                    if name in {
+                        "permittivity",
+                        "conductivity",
+                        "permeability",
+                        "total_conductivity",
+                    }
+                    else "component_material_grids"
+                    if name.startswith(("eps_", "sig_", "sigma_m_"))
+                    else "field_masks"
+                )
+                _add_array_entries(
+                    entries,
+                    f"fields.{name}",
+                    getattr(self.fields, name),
+                    category=category,
+                )
+
+        pml_data = getattr(self, "pml_data", None)
+        if isinstance(pml_data, Mapping):
+            for key, value in pml_data.items():
+                _add_array_entries(
+                    entries,
+                    f"pml_data.{key}",
+                    value,
+                    category="pml_data",
+                )
+
+        report = _memory_report(entries)
+        report["grid_shape_zyx"] = [
+            int(v) for v in getattr(self.fields.permittivity, "shape", ())
+        ]
+        report["is_3d"] = bool(self.is_3d)
+        if include_compiled:
+            program = self.compile(
+                num_steps=num_steps if num_steps is not None else None
+            )
+            compiled_report = program.memory_estimate(include_runtime=True)
+            report["compiled"] = compiled_report
+            report["total_with_compiled_bytes"] = (
+                int(report["total_bytes"]) + int(compiled_report["total_bytes"])
+            )
+            report["total_with_compiled_gib"] = (
+                report["total_with_compiled_bytes"] / 1024**3
+            )
+        return report
+
+    def _compiled_runtime_inputs(self, program):
+        if (
+            (not self.is_3d)
+            and self.plane_2d == "xy"
+            and program.use_physical_tm_xy
+        ):
+            tm_ez = self.fields.Ez
+            tm_hx = self.fields.Hx
+            tm_hy = self.fields.Hy
+        else:
+            tm_ez = jnp.zeros((0, 0), dtype=self.fields.Ez.dtype)
+            tm_hx = jnp.zeros((0, 0), dtype=self.fields.Hx.dtype)
+            tm_hy = jnp.zeros((0, 0), dtype=self.fields.Hy.dtype)
+        if self.is_3d and program.full_pec_3d:
+            if self.fields.full_pec_3d_state is None:
+                self.fields.full_pec_3d_state = initialize_full_pec_3d_state(
+                    self.fields
+                )
+            fp_state = self.fields.full_pec_3d_state
+            fp_ex, fp_ey, fp_ez = fp_state.Ex, fp_state.Ey, fp_state.Ez
+            fp_hx, fp_hy, fp_hz = fp_state.Hx, fp_state.Hy, fp_state.Hz
+        else:
+            fp_ex = jnp.zeros((0, 0, 0), dtype=self.fields.Ex.dtype)
+            fp_ey = jnp.zeros((0, 0, 0), dtype=self.fields.Ey.dtype)
+            fp_ez = jnp.zeros((0, 0, 0), dtype=self.fields.Ez.dtype)
+            fp_hx = jnp.zeros((0, 0, 0), dtype=self.fields.Hx.dtype)
+            fp_hy = jnp.zeros((0, 0, 0), dtype=self.fields.Hy.dtype)
+            fp_hz = jnp.zeros((0, 0, 0), dtype=self.fields.Hz.dtype)
+
+        engine_state = EngineState(
+            ex=self.fields.Ex,
+            ey=self.fields.Ey,
+            ez=self.fields.Ez,
+            hx=self.fields.Hx,
+            hy=self.fields.Hy,
+            hz=self.fields.Hz,
+            tm_ez=tm_ez,
+            tm_hx=tm_hx,
+            tm_hy=tm_hy,
+            fp_ex=fp_ex,
+            fp_ey=fp_ey,
+            fp_ez=fp_ez,
+            fp_hx=fp_hx,
+            fp_hy=fp_hy,
+            fp_hz=fp_hz,
+            cpml_psi_h_terms=(
+                jnp.zeros_like(program.cpml_sigma_h_terms)
+                if program.use_cpml_tm_xy
+                else jnp.zeros((2, 0, 0), dtype=self.fields.Hx.dtype)
+            ),
+            cpml_psi_e_terms=(
+                jnp.zeros_like(program.cpml_sigma_e_terms)
+                if program.use_cpml_tm_xy
+                else jnp.zeros((2, 0, 0), dtype=self.fields.Ez.dtype)
+            ),
+            cpml3d_psi_h_terms=(
+                tuple(jnp.zeros_like(term) for term in program.cpml3d_b_h_terms)
+                if program.use_cpml_3d
+                else tuple(
+                    jnp.zeros((0, 0, 0), dtype=self.fields.Hx.dtype) for _ in range(6)
+                )
+            ),
+            cpml3d_psi_e_terms=(
+                tuple(jnp.zeros_like(term) for term in program.cpml3d_b_e_terms)
+                if program.use_cpml_3d
+                else tuple(
+                    jnp.zeros((0, 0, 0), dtype=self.fields.Ez.dtype) for _ in range(6)
+                )
+            ),
+            t=jnp.asarray(self.t, dtype=jnp.float32),
+            current_step=jnp.asarray(self.current_step, dtype=jnp.int32),
+        )
+
+        dft_dtype = monitor_dft_accumulator_dtype()
+        if program.monitor_specs:
+            records_horizon = max(1, int(self.num_steps - self.current_step))
+            max_records = max(
+                1, monitor_state_size(program.monitor_specs, records_horizon)
+            )
+            max_freq = monitor_frequency_size(program.monitor_specs)
+            max_points = monitor_dft_point_size(program.monitor_specs)
+            monitor_state = MonitorState(
+                powers=jnp.zeros(
+                    (len(program.monitor_specs), max_records), dtype=jnp.float32
+                ),
+                timestamps=jnp.zeros(
+                    (len(program.monitor_specs), max_records), dtype=jnp.float32
+                ),
+                counts=jnp.zeros((len(program.monitor_specs),), dtype=jnp.int32),
+                freq_flux_re=jnp.zeros(
+                    (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                ),
+                freq_flux_im=jnp.zeros(
+                    (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                ),
+                freq_phase_re=jnp.ones(
+                    (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                ),
+                freq_phase_im=jnp.zeros(
+                    (len(program.monitor_specs), max_freq), dtype=jnp.float32
+                ),
+                dft_vec_re=jnp.zeros(
+                    (len(program.monitor_specs), 6, max_freq, max_points),
+                    dtype=dft_dtype,
+                ),
+                dft_vec_im=jnp.zeros(
+                    (len(program.monitor_specs), 6, max_freq, max_points),
+                    dtype=dft_dtype,
+                ),
+                dft_weight_sum=jnp.zeros(
+                    (len(program.monitor_specs), max_freq), dtype=dft_dtype
+                ),
+            )
+        else:
+            monitor_state = MonitorState(
+                powers=jnp.zeros((0, 0), dtype=jnp.float32),
+                timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
+                counts=jnp.zeros((0,), dtype=jnp.int32),
+                freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
+                freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
+                dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=dft_dtype),
+                dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=dft_dtype),
+                dft_weight_sum=jnp.zeros((0, 0), dtype=dft_dtype),
+            )
+        return engine_state, monitor_state
+
+    def compiled_xla_memory_analysis(self, *, num_steps: int | None = None) -> dict:
+        """Compile the packed loop and return JAX/XLA memory analysis if available."""
+        program = self.compile(num_steps=num_steps)
+        engine_state, monitor_state = self._compiled_runtime_inputs(program)
+        if program._compiled_scan is None:
+            program._build_scan()
+        snapshot_state = program._empty_snapshot_state()
+        args = (engine_state, monitor_state, program._update_coefficients())
+        if snapshot_state is not None:
+            args = (*args, snapshot_state)
+        compiled = program._compiled_scan.lower(*args).compile()
+        analysis = getattr(compiled, "memory_analysis", lambda: None)()
+        if analysis is None:
+            return {"available": False}
+        out = {"available": True}
+        for name in dir(analysis):
+            if name.startswith("_"):
+                continue
+            value = getattr(analysis, name)
+            if isinstance(value, (int, float, str, bool)) or value is None:
+                out[name] = value
+        return out
 
     def run_compiled(
         self,

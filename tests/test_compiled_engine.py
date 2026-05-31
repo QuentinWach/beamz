@@ -7,9 +7,9 @@ import pytest
 
 from beamz import (
     LIGHT_SPEED,
-    Box,
     PEC,
     PML,
+    Box,
     Design,
     GaussianSource,
     Material,
@@ -438,14 +438,90 @@ def test_compiled_uses_sparse_shell_coefficients_3d():
     assert program.e_source_x.shape == (0, 0, 0)
     assert program.h_decay_x.shape == (0, 0, 0)
     assert program.h_source_x.shape == (0, 0, 0)
-    assert program.e_source_lossless_x.shape == sim.fields.Ex.shape
-    assert program.e_source_lossless_y.shape == sim.fields.Ey.shape
-    assert program.e_source_lossless_z.shape == sim.fields.Ez.shape
+    assert program.e_source_lossless_x.shape == (0, 0, 0)
+    assert program.e_source_lossless_y.shape == (0, 0, 0)
+    assert program.e_source_lossless_z.shape == (0, 0, 0)
+    assert program.e_permittivity_x is sim.fields.eps_x
+    assert program.e_permittivity_y is sim.fields.eps_y
+    assert program.e_permittivity_z is sim.fields.eps_z
     assert program.h_source_lossless_x.shape == ()
     assert program.h_source_lossless_y.shape == ()
     assert program.h_source_lossless_z.shape == ()
     assert program.e_shell_decay_x
     assert program.h_shell_decay_x
+
+
+def test_sparse_3d_snapshot_shape_uses_permittivity_reference():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
+    )
+    design = Design(
+        width=3.0 * wl,
+        height=2.0 * wl,
+        depth=2.0 * wl,
+        material=Material(permittivity=1.0),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[],
+        boundaries=[PML(edges="all", thickness=0.5 * wl, formulation="cpml")],
+        time=np.arange(0, 2 * dt, dt),
+        resolution=dx,
+    )
+
+    program = sim.compile(num_steps=2, snapshot_field="Ez", snapshot_interval=1)
+    snapshot_state = program._empty_snapshot_state()
+
+    assert program.use_sparse_3d_e_coefficients
+    assert program.e_source_lossless_z.shape == (0, 0, 0)
+    assert program.e_source_z.shape == (0, 0, 0)
+    assert program._snapshot_field_shape() == tuple(sim.fields.Ez.shape)
+    assert snapshot_state is not None
+    assert snapshot_state[0].shape == (2, *sim.fields.Ez.shape)
+
+
+def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
+    )
+    design = Design(
+        width=2.0 * wl,
+        height=1.5 * wl,
+        depth=1.0 * wl,
+        material=Material(permittivity=1.0),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[],
+        boundaries=[PML(edges="all", thickness=0.25 * wl, formulation="cpml")],
+        time=np.arange(0, 2 * dt, dt),
+        resolution=dx,
+    )
+
+    report = sim.memory_estimate(include_compiled=True, num_steps=1)
+
+    field_bytes = sum(
+        int(np.asarray(getattr(sim.fields, name)).nbytes)
+        for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+    )
+    assert report["totals_by_category"]["yee_fields"] == field_bytes
+    assert report["compiled"]["config"]["use_sparse_3d_e_coefficients"]
+    assert report["compiled"]["totals_by_category"]["compiled_update_coefficients"] > 0
+    compiled_names = {entry["name"] for entry in report["compiled"]["entries"]}
+    referenced_names = {
+        entry["name"]
+        for entry in report["compiled"]["referenced_inputs"]["entries"]
+    }
+    assert "e_permittivity_x" not in compiled_names
+    assert {"e_permittivity_x", "e_permittivity_y", "e_permittivity_z"} <= (
+        referenced_names
+    )
+    assert (
+        report["total_with_compiled_bytes"]
+        == report["total_bytes"] + report["compiled"]["total_bytes"]
+    )
 
 
 def test_compiled_keeps_dense_coefficients_for_non_shell_3d_loss():

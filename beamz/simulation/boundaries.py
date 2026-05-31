@@ -1651,6 +1651,9 @@ def apply_lossy_shell_from_lossless_3d(
     slabs,
     decay_slabs,
     source_slabs,
+    *,
+    source_permittivity=None,
+    dt=None,
 ):
     out = updated_lossless
     for starts, sizes, decay_s, source_s in zip(
@@ -1663,6 +1666,14 @@ def apply_lossy_shell_from_lossless_3d(
         lossless_s = jax.lax.dynamic_slice(updated_lossless, starts, sizes)
         if getattr(source_lossless, "ndim", 0) == 0:
             source_ll_s = source_lossless
+        elif getattr(source_lossless, "size", 0) == 0:
+            if source_permittivity is None or dt is None:
+                raise ValueError(
+                    "source_permittivity and dt are required when "
+                    "source_lossless is empty."
+                )
+            eps_s = jax.lax.dynamic_slice(source_permittivity, starts, sizes)
+            source_ll_s = dt / (_scalar_like(EPS_0, eps_s.dtype) * eps_s)
         else:
             source_ll_s = jax.lax.dynamic_slice(source_lossless, starts, sizes)
         beta = source_s / source_ll_s
@@ -1708,6 +1719,8 @@ def cpml_update_h_from_e_3d_shell_split(
         b_h_terms[0],
         inv_kappa_h_terms[0],
     )
+    hx_old = hx
+    hx = hx_old - h_source_lossless_x * term0
     term1, psi1 = _cpml_corrected_update_term(
         (ey[1:, :, :] - ey[:-1, :, :]) / resolution,
         psi_h_terms[1],
@@ -1715,8 +1728,7 @@ def cpml_update_h_from_e_3d_shell_split(
         b_h_terms[1],
         inv_kappa_h_terms[1],
     )
-    hx_old = hx
-    hx = hx_old - h_source_lossless_x * (term0 - term1)
+    hx = hx + h_source_lossless_x * term1
     hx = apply_lossy_shell_from_lossless_3d(
         hx,
         hx_old,
@@ -1733,6 +1745,8 @@ def cpml_update_h_from_e_3d_shell_split(
         b_h_terms[2],
         inv_kappa_h_terms[2],
     )
+    hy_old = hy
+    hy = hy_old - h_source_lossless_y * term2
     term3, psi3 = _cpml_corrected_update_term(
         (ez[:, :, 1:] - ez[:, :, :-1]) / resolution,
         psi_h_terms[3],
@@ -1740,8 +1754,7 @@ def cpml_update_h_from_e_3d_shell_split(
         b_h_terms[3],
         inv_kappa_h_terms[3],
     )
-    hy_old = hy
-    hy = hy_old - h_source_lossless_y * (term2 - term3)
+    hy = hy + h_source_lossless_y * term3
     hy = apply_lossy_shell_from_lossless_3d(
         hy,
         hy_old,
@@ -1758,6 +1771,8 @@ def cpml_update_h_from_e_3d_shell_split(
         b_h_terms[4],
         inv_kappa_h_terms[4],
     )
+    hz_old = hz
+    hz = hz_old - h_source_lossless_z * term4
     term5, psi5 = _cpml_corrected_update_term(
         (ex[:, 1:, :] - ex[:, :-1, :]) / resolution,
         psi_h_terms[5],
@@ -1765,8 +1780,7 @@ def cpml_update_h_from_e_3d_shell_split(
         b_h_terms[5],
         inv_kappa_h_terms[5],
     )
-    hz_old = hz
-    hz = hz_old - h_source_lossless_z * (term4 - term5)
+    hz = hz + h_source_lossless_z * term5
     hz = apply_lossy_shell_from_lossless_3d(
         hz,
         hz_old,
@@ -1931,6 +1945,10 @@ def cpml_update_e_from_h_3d_shell_split(
     e_source_lossless_x,
     e_source_lossless_y,
     e_source_lossless_z,
+    e_permittivity_x,
+    e_permittivity_y,
+    e_permittivity_z,
+    dt,
     resolution,
     *,
     a_e_terms,
@@ -1951,6 +1969,7 @@ def cpml_update_e_from_h_3d_shell_split(
     """CPML E update using lossless material coefficients plus shell patches."""
 
     metallic_edges = frozenset(metallic_edges or ())
+    dt = _scalar_like(dt, ex.dtype)
 
     def pad(arr, axis):
         low_edge, high_edge = _edge_pair_for_axis(axis)
@@ -1961,6 +1980,11 @@ def cpml_update_e_from_h_3d_shell_split(
             high_metallic=high_edge in metallic_edges,
         )
 
+    def e_scale(source_lossless, permittivity, dtype):
+        if getattr(source_lossless, "size", 0) > 0:
+            return source_lossless
+        return dt / (_scalar_like(EPS_0, dtype) * permittivity)
+
     term0, psi0 = _cpml_corrected_update_term(
         _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
         psi_e_terms[0],
@@ -1968,6 +1992,9 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[0],
         inv_kappa_e_terms[0],
     )
+    ex_old = ex
+    ex_source = e_scale(e_source_lossless_x, e_permittivity_x, ex.dtype)
+    ex = ex_old + ex_source * term0
     term1, psi1 = _cpml_corrected_update_term(
         _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
         psi_e_terms[1],
@@ -1975,8 +2002,7 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[1],
         inv_kappa_e_terms[1],
     )
-    ex_old = ex
-    ex = ex_old + e_source_lossless_x * (term0 - term1)
+    ex = ex - ex_source * term1
     ex = apply_lossy_shell_from_lossless_3d(
         ex,
         ex_old,
@@ -1984,6 +2010,8 @@ def cpml_update_e_from_h_3d_shell_split(
         e_lossy_shell_x,
         e_shell_decay_x,
         e_shell_source_x,
+        source_permittivity=e_permittivity_x,
+        dt=dt,
     )
 
     term2, psi2 = _cpml_corrected_update_term(
@@ -1993,6 +2021,9 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[2],
         inv_kappa_e_terms[2],
     )
+    ey_old = ey
+    ey_source = e_scale(e_source_lossless_y, e_permittivity_y, ey.dtype)
+    ey = ey_old + ey_source * term2
     term3, psi3 = _cpml_corrected_update_term(
         _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
         psi_e_terms[3],
@@ -2000,8 +2031,7 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[3],
         inv_kappa_e_terms[3],
     )
-    ey_old = ey
-    ey = ey_old + e_source_lossless_y * (term2 - term3)
+    ey = ey - ey_source * term3
     ey = apply_lossy_shell_from_lossless_3d(
         ey,
         ey_old,
@@ -2009,6 +2039,8 @@ def cpml_update_e_from_h_3d_shell_split(
         e_lossy_shell_y,
         e_shell_decay_y,
         e_shell_source_y,
+        source_permittivity=e_permittivity_y,
+        dt=dt,
     )
 
     term4, psi4 = _cpml_corrected_update_term(
@@ -2018,6 +2050,9 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[4],
         inv_kappa_e_terms[4],
     )
+    ez_old = ez
+    ez_source = e_scale(e_source_lossless_z, e_permittivity_z, ez.dtype)
+    ez = ez_old + ez_source * term4
     term5, psi5 = _cpml_corrected_update_term(
         _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
         psi_e_terms[5],
@@ -2025,8 +2060,7 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[5],
         inv_kappa_e_terms[5],
     )
-    ez_old = ez
-    ez = ez_old + e_source_lossless_z * (term4 - term5)
+    ez = ez - ez_source * term5
     ez = apply_lossy_shell_from_lossless_3d(
         ez,
         ez_old,
@@ -2034,6 +2068,8 @@ def cpml_update_e_from_h_3d_shell_split(
         e_lossy_shell_z,
         e_shell_decay_z,
         e_shell_source_z,
+        source_permittivity=e_permittivity_z,
+        dt=dt,
     )
 
     return ex, ey, ez, (psi0, psi1, psi2, psi3, psi4, psi5)
