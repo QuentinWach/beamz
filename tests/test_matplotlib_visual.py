@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import warnings
 
 import matplotlib
 
@@ -93,6 +94,21 @@ def test_mode_source_show_uses_profile_data():
 
     assert fig is ax.figure
     assert "Mode Source 1D Profile" in ax.get_title()
+
+
+def test_mode_source_profile_data_accepts_complex_neff_without_warning():
+    source = ModeSource.__new__(ModeSource)
+    source._Ez_profile = np.array([0.0, 1.0, 0.0])
+    source._jz_profile = None
+    source.grid = None
+    source.direction = "+x"
+    source._neff = 2.4 + 1e-6j
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        payload = source.mode_profile_data()
+
+    assert payload["neff"] == pytest.approx(2.4)
 
 
 def test_mode_source_plot_eps_and_source_spectrum():

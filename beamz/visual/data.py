@@ -16,6 +16,15 @@ def _as_float_tuple(values):
     return tuple(float(v) for v in values)
 
 
+def _as_real_float(value, default=np.nan):
+    if value is None:
+        return float(default)
+    array = np.asarray(value)
+    if array.size == 0:
+        return float(default)
+    return float(np.real(array.reshape(-1)[0]))
+
+
 def _vertices_2d(vertices):
     return [tuple(float(coord) for coord in vertex[:2]) for vertex in vertices]
 
@@ -666,7 +675,7 @@ def mode_profile_data(mode_source, field=None):
         "amplitude": np.abs(profile),
         "title": title,
         "direction": getattr(mode_source, "direction", None),
-        "neff": float(getattr(mode_source, "_neff", np.nan)),
+        "neff": _as_real_float(getattr(mode_source, "_neff", np.nan)),
         "is_2d": bool(profile.ndim == 2),
     }
 

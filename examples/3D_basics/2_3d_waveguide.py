@@ -1,122 +1,138 @@
+from __future__ import annotations
+
+import time
+
 import numpy as np
-import matplotlib.pyplot as plt
+
 from beamz import (
     Design,
-    Rectangle,
     Material,
     ModeSource,
-    Monitor,
+    PML,
+    Rectangle,
     Simulation,
     ramped_cosine,
 )
-from beamz.const import µm, LIGHT_SPEED
+from beamz.const import LIGHT_SPEED, µm
 from beamz.visual.helpers import calc_optimal_fdtd_params
-from beamz import *
 
-# Units and constants
-WL = 1.55 * µm  # Wavelength
-TIME = 100 * WL / LIGHT_SPEED  # Duration
+
+WL = 1.55 * µm
 N_AIR = 1.0
-N_CLAD = 1.44  # SiO2
-N_CORE = 3.48  # Silicon
+N_CLAD = 1.44
+N_CORE = 3.48
 
-# Calculate optimal grid parameters
-# 3D simulations can be memory intensive, so we use a slightly lower resolution (8 points/WL)
-DX, DT = calc_optimal_fdtd_params(
-    WL,
-    N_CORE,
-    dims=3,
-    safety_factor=0.999,
-    points_per_wavelength=10,
-    width=6.5 * µm,
-    height=6.5 * µm,
-    depth=4 * µm,
-)
+DOMAIN_WIDTH = 6.5 * µm
+DOMAIN_HEIGHT = 6.5 * µm
+DOMAIN_DEPTH = 4.0 * µm
+PML_THICKNESS = 0.75 * WL
+NUM_STEPS = 600
 
-# 1. Create the Design
-# A 10µm long waveguide along X, 4µm wide, 2µm thick
-design = Design(
-    width=6.5 * µm, height=6.5 * µm, depth=4 * µm, material=Material(N_AIR**2)
-)
-design += Rectangle(
-    position=(0, 0, 0),
-    width=6.5 * µm,
-    height=6.5 * µm,
-    depth=2 * µm,
-    material=Material(N_CLAD**2),
-)
-waveguide = Rectangle(
-    position=(0, 3 * µm, 2 * µm),
-    width=6.5 * µm,
-    height=0.5 * µm,
-    depth=0.22 * µm,
-    material=Material(N_CORE**2),
-)
-design += waveguide
-design.show()
 
-# 3. Add a Mode Source
-# Define the signal
-time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(
-    time_steps,
-    amplitude=1.0,
-    frequency=LIGHT_SPEED / WL,
-    ramp_duration=WL * 6 / LIGHT_SPEED,
-    t_max=TIME / 2,
-)
+def build_design() -> Design:
+    design = Design(
+        width=DOMAIN_WIDTH,
+        height=DOMAIN_HEIGHT,
+        depth=DOMAIN_DEPTH,
+        material=Material(N_AIR**2),
+    )
+    design += Rectangle(
+        position=(0.0, 0.0, 0.0),
+        width=DOMAIN_WIDTH,
+        height=DOMAIN_HEIGHT,
+        depth=2.0 * µm,
+        material=Material(N_CLAD**2),
+    )
+    design += Rectangle(
+        position=(0.0, 3.0 * µm, 2.0 * µm),
+        width=DOMAIN_WIDTH,
+        height=0.5 * µm,
+        depth=0.22 * µm,
+        material=Material(N_CORE**2),
+    )
+    return design
 
-# Define the source
-# We need to rasterize first to get the grid for ModeSource if we use it directly
-grid = design.rasterize(resolution=DX)
 
-# Source position: X should be inside waveguide, Y and Z at waveguide center
-# Waveguide: Y=[1.75, 2.25] (center=2.0µm), Z=[1.0, 1.22] (center=1.11µm)
-# Source width should be comparable to waveguide dimensions to capture the mode
-# Using 0.8µm (slightly larger than waveguide height 0.5µm) to capture mode field
-source = ModeSource(
-    grid=grid,
-    center=(3.25 * µm, 3.25 * µm, 2.11 * µm),  # Z at waveguide center
-    width=3.5 * µm,  # Closer to waveguide height (0.5µm) to better capture mode
-    height=0.8 * µm,
-    wavelength=WL,
-    pol="tm",
-    signal=signal,
-    direction="+x",
-)
+def main() -> None:
+    dx, dt = calc_optimal_fdtd_params(
+        WL,
+        N_CORE,
+        dims=3,
+        safety_factor=0.999,
+        points_per_wavelength=16,
+        width=DOMAIN_WIDTH,
+        height=DOMAIN_HEIGHT,
+        depth=DOMAIN_DEPTH,
+    )
+    time_steps = np.arange(NUM_STEPS, dtype=np.float64) * dt
+    signal = ramped_cosine(
+        time_steps,
+        amplitude=1.0,
+        frequency=LIGHT_SPEED / WL,
+        ramp_duration=WL * 6.0 / LIGHT_SPEED,
+        t_max=time_steps[-1] * 0.5,
+    )
 
-# Initialize the source to compute mode profiles
-source.initialize(grid.permittivity, DX)
+    t0 = time.perf_counter()
+    design = build_design()
+    grid = design.rasterize(resolution=dx)
+    raster_s = time.perf_counter() - t0
 
-# Plot the initialized mode profile.
-source.show()
-mode_ds = source.to_xarray(t=time_steps)
-mode_ds["amplitude"].plot()
-plt.show()
+    source = ModeSource(
+        grid=grid,
+        center=(3.25 * µm, 3.25 * µm, 2.11 * µm),
+        width=3.5 * µm,
+        height=0.8 * µm,
+        wavelength=WL,
+        pol="tm",
+        signal=signal,
+        direction="+x",
+    )
 
-# 4. Add Monitors
-# XY plane monitor in the middle of the waveguide thickness
-monitor_xy = Monitor(
-    start=(0, 0, 2.11 * µm),
-    size=(6.5 * µm, 6.5 * µm),
-    plane_normal="z",
-    name="xy_plane",
-)
-# Monitor stays separate from the design and is passed to the simulation below.
+    t0 = time.perf_counter()
+    source.initialize(grid.permittivity, dx)
+    source_s = time.perf_counter() - t0
 
-# 5. Run the Simulation
-sim = Simulation(
-    design=design,
-    sources=[source],
-    monitors=[monitor_xy],
-    boundaries=[PML(edges="all", thickness=0.75 * WL)],
-    time=time_steps,
-    resolution=DX,
-)
+    t0 = time.perf_counter()
+    sim = Simulation(
+        design=design,
+        sources=[source],
+        monitors=[],
+        boundaries=[PML(edges="all", thickness=PML_THICKNESS)],
+        time=time_steps,
+        resolution=dx,
+    )
+    setup_s = time.perf_counter() - t0
 
-# Show the design
-sim.show()
+    t0 = time.perf_counter()
+    sim.run_compiled(
+        num_steps=NUM_STEPS,
+        progress=False,
+        record_fields=[],
+        store_snapshots=False,
+    )
+    run_s = max(time.perf_counter() - t0, 1e-12)
 
-# Stream snapshots using the matplotlib-backed live view.
-# sim.animate("Ez", animation_interval=15)
-plt.show()
+    shape = tuple(int(v) for v in np.asarray(grid.permittivity).shape)
+    cells = int(np.prod(shape))
+    neff = float(np.real(np.asarray(source._neff)))
+    sim_time_fs = float((NUM_STEPS - 1) * dt * 1e15)
+
+    print("3D waveguide ModeSource benchmark")
+    print(f"grid={shape[0]} x {shape[1]} x {shape[2]} cells ({cells:,} total)")
+    print(f"dx={dx / µm:.4f} um, dt={dt * 1e18:.4f} as, steps={NUM_STEPS}")
+    print(f"mode_neff={neff:.6f}, simulated_time={sim_time_fs:.2f} fs")
+    print(
+        "timing: "
+        f"raster={raster_s:.3f}s, mode_source={source_s:.3f}s, "
+        f"setup={setup_s:.3f}s, run={run_s:.3f}s"
+    )
+    print(
+        "throughput: "
+        f"{NUM_STEPS / run_s:.2f} steps/s, "
+        f"{cells * NUM_STEPS / run_s / 1e6:.2f} MCUPS"
+    )
+
+
+if __name__ == "__main__":
+    main()
