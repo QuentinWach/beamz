@@ -33,6 +33,16 @@ class Cpml3DTerms:
 
 
 @dataclass(frozen=True)
+class Cpml3DPrimitiveTerms:
+    sigma_h_terms: tuple[jnp.ndarray, ...]
+    kappa_h_terms: tuple[jnp.ndarray, ...]
+    alpha_h_terms: tuple[jnp.ndarray, ...]
+    sigma_e_terms: tuple[jnp.ndarray, ...]
+    kappa_e_terms: tuple[jnp.ndarray, ...]
+    alpha_e_terms: tuple[jnp.ndarray, ...]
+
+
+@dataclass(frozen=True)
 class CpmlDerivative3DSpec:
     """A single split-field CPML derivative term on the Yee lattice."""
 
@@ -202,6 +212,43 @@ def build_cpml_3d_terms(
         a_e_terms=a_e_terms,
         b_e_terms=b_e_terms,
         inv_kappa_e_terms=inv_kappa_e_terms,
+    )
+
+
+def build_cpml_3d_primitive_terms(
+    pml_data: dict[str, jnp.ndarray] | None,
+) -> Cpml3DPrimitiveTerms | None:
+    if pml_data is None:
+        return None
+
+    axis_index = {"z": 0, "y": 1, "x": 2}
+
+    def compact_axis_profile(arr, axis_name):
+        arr = jnp.asarray(arr, dtype=jnp.float32)
+        if arr.ndim != 3:
+            return arr
+        idx = [0, 0, 0]
+        idx[axis_index[axis_name]] = slice(None)
+        profile = arr[tuple(idx)]
+        shape = [1, 1, 1]
+        shape[axis_index[axis_name]] = profile.shape[0]
+        return jnp.reshape(profile, tuple(shape))
+
+    def read_terms(specs, suffix):
+        return tuple(
+            compact_axis_profile(
+                pml_data[f"cpml3d_{spec.name}_{suffix}"], spec.derivative_axis
+            )
+            for spec in specs
+        )
+
+    return Cpml3DPrimitiveTerms(
+        sigma_h_terms=read_terms(CPML_3D_H_DERIVATIVES, "sigma"),
+        kappa_h_terms=read_terms(CPML_3D_H_DERIVATIVES, "kappa"),
+        alpha_h_terms=read_terms(CPML_3D_H_DERIVATIVES, "alpha"),
+        sigma_e_terms=read_terms(CPML_3D_E_DERIVATIVES, "sigma"),
+        kappa_e_terms=read_terms(CPML_3D_E_DERIVATIVES, "kappa"),
+        alpha_e_terms=read_terms(CPML_3D_E_DERIVATIVES, "alpha"),
     )
 
 

@@ -69,12 +69,9 @@ def test_curl_h_to_e_3d_linear_field_has_constant_y_component():
 
 def _reference_full_pec_e_to_h_terms(ex, ey, ez, resolution):
     return (
-        ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
-        / resolution,
-        ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
-        / resolution,
-        ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
-        / resolution,
+        ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])) / resolution,
+        ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])) / resolution,
+        ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])) / resolution,
     )
 
 
@@ -202,6 +199,46 @@ def _cpml_coefficients(
         b_terms.append(b_term)
         inv_kappa_terms.append(1.0 / kappa)
     return tuple(a_terms), tuple(b_terms), tuple(inv_kappa_terms)
+
+
+def _cpml_compact_profiles(shapes, axes, *, dt=0.05):
+    sigma_terms = []
+    kappa_terms = []
+    alpha_terms = []
+    a_terms = []
+    b_terms = []
+    inv_kappa_terms = []
+    for shape, axis in zip(shapes, axes, strict=True):
+        count = shape[axis]
+        profile_shape = [1, 1, 1]
+        profile_shape[axis] = count
+        sigma_profile = jnp.linspace(0.05, 0.45, count, dtype=jnp.float32).reshape(
+            profile_shape
+        )
+        kappa_profile = jnp.linspace(1.0, 1.6, count, dtype=jnp.float32).reshape(
+            profile_shape
+        )
+        alpha_profile = jnp.linspace(0.02, 0.08, count, dtype=jnp.float32).reshape(
+            profile_shape
+        )
+        sigma = jnp.broadcast_to(sigma_profile, shape)
+        kappa = jnp.broadcast_to(kappa_profile, shape)
+        alpha = jnp.broadcast_to(alpha_profile, shape)
+        a_term, b_term = _cpml_ab_from_profiles(sigma, kappa, alpha, dt)
+        sigma_terms.append(sigma_profile)
+        kappa_terms.append(kappa_profile)
+        alpha_terms.append(alpha_profile)
+        a_terms.append(a_term)
+        b_terms.append(b_term)
+        inv_kappa_terms.append(1.0 / kappa)
+    return (
+        tuple(sigma_terms),
+        tuple(kappa_terms),
+        tuple(alpha_terms),
+        tuple(a_terms),
+        tuple(b_terms),
+        tuple(inv_kappa_terms),
+    )
 
 
 def test_cpml_curl_e_to_h_3d_updates_psi_terms():
@@ -377,6 +414,86 @@ def test_cpml_update_h_from_e_3d_matches_curl_update_form():
         np.testing.assert_allclose(np.asarray(got), np.asarray(ref), atol=1e-6)
 
 
+def test_cpml_3d_primitive_profiles_match_derived_terms():
+    ex = jnp.arange(3 * 4 * 4, dtype=jnp.float32).reshape(3, 4, 4) / 10.0
+    ey = jnp.arange(3 * 3 * 5, dtype=jnp.float32).reshape(3, 3, 5) / 11.0
+    ez = jnp.arange(2 * 4 * 5, dtype=jnp.float32).reshape(2, 4, 5) / 12.0
+    hx = jnp.ones((2, 3, 5), dtype=jnp.float32)
+    hy = jnp.ones((2, 4, 4), dtype=jnp.float32) * 2.0
+    hz = jnp.ones((3, 3, 4), dtype=jnp.float32) * 3.0
+
+    term_shapes = (hx.shape, hx.shape, hy.shape, hy.shape, hz.shape, hz.shape)
+    derivative_axes = (1, 0, 0, 2, 2, 1)
+    (
+        sigma_terms,
+        kappa_terms,
+        alpha_terms,
+        a_terms,
+        b_terms,
+        inv_kappa_terms,
+    ) = _cpml_compact_profiles(term_shapes, derivative_axes, dt=0.05)
+    psi_init = tuple(jnp.zeros(shape, dtype=jnp.float32) for shape in term_shapes)
+    empty_terms = tuple(jnp.zeros((0, 0, 0), dtype=jnp.float32) for _ in range(6))
+    h_decay = (
+        jnp.full(hx.shape, 0.91, dtype=jnp.float32),
+        jnp.full(hy.shape, 0.92, dtype=jnp.float32),
+        jnp.full(hz.shape, 0.93, dtype=jnp.float32),
+    )
+    h_source = (
+        jnp.full(hx.shape, 0.11, dtype=jnp.float32),
+        jnp.full(hy.shape, 0.12, dtype=jnp.float32),
+        jnp.full(hz.shape, 0.13, dtype=jnp.float32),
+    )
+
+    derived = cpml_update_h_from_e_3d(
+        ex,
+        ey,
+        ez,
+        hx,
+        hy,
+        hz,
+        h_decay[0],
+        h_source[0],
+        h_decay[1],
+        h_source[1],
+        h_decay[2],
+        h_source[2],
+        resolution=0.2,
+        a_h_terms=a_terms,
+        b_h_terms=b_terms,
+        inv_kappa_h_terms=inv_kappa_terms,
+        psi_h_terms=psi_init,
+    )
+    primitive = cpml_update_h_from_e_3d(
+        ex,
+        ey,
+        ez,
+        hx,
+        hy,
+        hz,
+        h_decay[0],
+        h_source[0],
+        h_decay[1],
+        h_source[1],
+        h_decay[2],
+        h_source[2],
+        resolution=0.2,
+        a_h_terms=empty_terms,
+        b_h_terms=empty_terms,
+        inv_kappa_h_terms=empty_terms,
+        sigma_h_terms=sigma_terms,
+        kappa_h_terms=kappa_terms,
+        alpha_h_terms=alpha_terms,
+        dt=0.05,
+        psi_h_terms=psi_init,
+    )
+
+    for got, ref in zip(primitive[:3], derived[:3], strict=True):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(ref), rtol=1e-6)
+    for got, ref in zip(primitive[3], derived[3], strict=True):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(ref), rtol=1e-6)
+
+
 def test_cpml_update_e_from_h_3d_matches_curl_update_form():
     hx = jnp.arange(2 * 3 * 5, dtype=jnp.float32).reshape(2, 3, 5) / 10.0
     hy = jnp.arange(2 * 4 * 4, dtype=jnp.float32).reshape(2, 4, 4) / 11.0
@@ -462,9 +579,7 @@ def test_cpml_shell_split_e_update_empty_source_matches_dense_permittivity_scale
     empty3 = jnp.zeros((0, 0, 0), dtype=jnp.float32)
 
     term_shapes = (ex.shape, ex.shape, ey.shape, ey.shape, ez.shape, ez.shape)
-    a_terms, b_terms, inv_kappa_terms = _cpml_coefficients(
-        term_shapes, dt=float(dt)
-    )
+    a_terms, b_terms, inv_kappa_terms = _cpml_coefficients(term_shapes, dt=float(dt))
     psi_init = tuple(jnp.zeros(shape, dtype=jnp.float32) for shape in term_shapes)
     shell_kwargs = {
         "e_lossy_shell_x": tuple(),

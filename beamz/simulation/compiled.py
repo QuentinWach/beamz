@@ -37,6 +37,7 @@ from beamz.shared_kernels import (
     advance_e_from_coefficients,
     advance_h_from_coefficients,
     apply_zero_mask,
+    build_cpml_3d_primitive_terms,
     build_cpml_3d_terms,
     build_tm_xy_cpml_terms,
     full_tm_xy_component_to_centered_grid,
@@ -253,6 +254,24 @@ def _empty_cpml_3d_terms(dtype=jnp.float32) -> tuple[jnp.ndarray, ...]:
     return tuple(jnp.zeros((0, 0, 0), dtype=dtype) for _ in range(6))
 
 
+def _cpml_3d_h_term_shapes(hx, hy, hz) -> tuple[tuple[int, ...], ...]:
+    return (hx.shape, hx.shape, hy.shape, hy.shape, hz.shape, hz.shape)
+
+
+def _cpml_3d_e_term_shapes(ex, ey, ez) -> tuple[tuple[int, ...], ...]:
+    return (ex.shape, ex.shape, ey.shape, ey.shape, ez.shape, ez.shape)
+
+
+def _cpml_3d_shapes_match(terms, shapes) -> bool:
+    return len(terms) == len(shapes) and all(
+        tuple(term.shape) == tuple(shape) for term, shape in zip(terms, shapes)
+    )
+
+
+def _zeros_for_cpml_3d_shapes(shapes, dtype) -> tuple[jnp.ndarray, ...]:
+    return tuple(jnp.zeros(shape, dtype=dtype) for shape in shapes)
+
+
 def _empty_like_rank(arr: jnp.ndarray) -> jnp.ndarray:
     return jnp.zeros((0,) * arr.ndim, dtype=arr.dtype)
 
@@ -455,7 +474,14 @@ class CompiledSimulation:
     cpml3d_a_e_terms: tuple[jnp.ndarray, ...]
     cpml3d_b_e_terms: tuple[jnp.ndarray, ...]
     cpml3d_inv_kappa_e_terms: tuple[jnp.ndarray, ...]
+    cpml3d_sigma_h_terms: tuple[jnp.ndarray, ...]
+    cpml3d_kappa_h_terms: tuple[jnp.ndarray, ...]
+    cpml3d_alpha_h_terms: tuple[jnp.ndarray, ...]
+    cpml3d_sigma_e_terms: tuple[jnp.ndarray, ...]
+    cpml3d_kappa_e_terms: tuple[jnp.ndarray, ...]
+    cpml3d_alpha_e_terms: tuple[jnp.ndarray, ...]
     cpml3d_metallic_edges: frozenset[str]
+    use_primitive_cpml_3d_terms: bool
     full_pec_3d: bool
     fp_h_decay_x: jnp.ndarray
     fp_h_source_x: jnp.ndarray
@@ -1535,30 +1561,26 @@ class CompiledSimulation:
                         cpml_psi_e_terms=jnp.zeros_like(self.cpml_sigma_e_terms)
                     )
             if use_cpml_3d:
-                if len(engine_state.cpml3d_psi_h_terms) != len(
-                    self.cpml3d_b_h_terms
-                ) or any(
-                    psi.shape != coeff.shape
-                    for psi, coeff in zip(
-                        engine_state.cpml3d_psi_h_terms, self.cpml3d_b_h_terms
-                    )
+                h_psi_shapes = _cpml_3d_h_term_shapes(
+                    engine_state.hx, engine_state.hy, engine_state.hz
+                )
+                e_psi_shapes = _cpml_3d_e_term_shapes(
+                    engine_state.ex, engine_state.ey, engine_state.ez
+                )
+                if not _cpml_3d_shapes_match(
+                    engine_state.cpml3d_psi_h_terms, h_psi_shapes
                 ):
                     engine_state = engine_state._replace(
-                        cpml3d_psi_h_terms=tuple(
-                            jnp.zeros_like(term) for term in self.cpml3d_b_h_terms
+                        cpml3d_psi_h_terms=_zeros_for_cpml_3d_shapes(
+                            h_psi_shapes, engine_state.hx.dtype
                         )
                     )
-                if len(engine_state.cpml3d_psi_e_terms) != len(
-                    self.cpml3d_b_e_terms
-                ) or any(
-                    psi.shape != coeff.shape
-                    for psi, coeff in zip(
-                        engine_state.cpml3d_psi_e_terms, self.cpml3d_b_e_terms
-                    )
+                if not _cpml_3d_shapes_match(
+                    engine_state.cpml3d_psi_e_terms, e_psi_shapes
                 ):
                     engine_state = engine_state._replace(
-                        cpml3d_psi_e_terms=tuple(
-                            jnp.zeros_like(term) for term in self.cpml3d_b_e_terms
+                        cpml3d_psi_e_terms=_zeros_for_cpml_3d_shapes(
+                            e_psi_shapes, engine_state.ex.dtype
                         )
                     )
 
@@ -1636,23 +1658,15 @@ class CompiledSimulation:
                         if cpml_psi_e_terms.shape != self.cpml_sigma_e_terms.shape:
                             cpml_psi_e_terms = jnp.zeros_like(self.cpml_sigma_e_terms)
                     if use_cpml_3d:
-                        if len(cpml3d_psi_h_terms) != len(self.cpml3d_b_h_terms) or any(
-                            psi.shape != coeff.shape
-                            for psi, coeff in zip(
-                                cpml3d_psi_h_terms, self.cpml3d_b_h_terms
+                        h_psi_shapes = _cpml_3d_h_term_shapes(hx, hy, hz)
+                        e_psi_shapes = _cpml_3d_e_term_shapes(ex, ey, ez)
+                        if not _cpml_3d_shapes_match(cpml3d_psi_h_terms, h_psi_shapes):
+                            cpml3d_psi_h_terms = _zeros_for_cpml_3d_shapes(
+                                h_psi_shapes, hx.dtype
                             )
-                        ):
-                            cpml3d_psi_h_terms = tuple(
-                                jnp.zeros_like(term) for term in self.cpml3d_b_h_terms
-                            )
-                        if len(cpml3d_psi_e_terms) != len(self.cpml3d_b_e_terms) or any(
-                            psi.shape != coeff.shape
-                            for psi, coeff in zip(
-                                cpml3d_psi_e_terms, self.cpml3d_b_e_terms
-                            )
-                        ):
-                            cpml3d_psi_e_terms = tuple(
-                                jnp.zeros_like(term) for term in self.cpml3d_b_e_terms
+                        if not _cpml_3d_shapes_match(cpml3d_psi_e_terms, e_psi_shapes):
+                            cpml3d_psi_e_terms = _zeros_for_cpml_3d_shapes(
+                                e_psi_shapes, ex.dtype
                             )
 
                     if is_3d and full_pec_3d:
@@ -1699,6 +1713,22 @@ class CompiledSimulation:
                                         inv_kappa_h_terms=(
                                             self.cpml3d_inv_kappa_h_terms
                                         ),
+                                        sigma_h_terms=(
+                                            self.cpml3d_sigma_h_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        kappa_h_terms=(
+                                            self.cpml3d_kappa_h_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        alpha_h_terms=(
+                                            self.cpml3d_alpha_h_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        dt=dt_scalar,
                                         psi_h_terms=cpml3d_psi_h_terms,
                                         h_lossy_shell_x=lossy_shell_hx,
                                         h_lossy_shell_y=lossy_shell_hy,
@@ -1774,6 +1804,22 @@ class CompiledSimulation:
                                         inv_kappa_h_terms=(
                                             self.cpml3d_inv_kappa_h_terms
                                         ),
+                                        sigma_h_terms=(
+                                            self.cpml3d_sigma_h_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        kappa_h_terms=(
+                                            self.cpml3d_kappa_h_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        alpha_h_terms=(
+                                            self.cpml3d_alpha_h_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        dt=dt_scalar,
                                         psi_h_terms=cpml3d_psi_h_terms,
                                     )
                                 )
@@ -2009,6 +2055,21 @@ class CompiledSimulation:
                                         inv_kappa_e_terms=(
                                             self.cpml3d_inv_kappa_e_terms
                                         ),
+                                        sigma_e_terms=(
+                                            self.cpml3d_sigma_e_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        kappa_e_terms=(
+                                            self.cpml3d_kappa_e_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        alpha_e_terms=(
+                                            self.cpml3d_alpha_e_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
                                         psi_e_terms=cpml3d_psi_e_terms,
                                         e_lossy_shell_x=lossy_shell_ex,
                                         e_lossy_shell_y=lossy_shell_ey,
@@ -2113,6 +2174,22 @@ class CompiledSimulation:
                                         inv_kappa_e_terms=(
                                             self.cpml3d_inv_kappa_e_terms
                                         ),
+                                        sigma_e_terms=(
+                                            self.cpml3d_sigma_e_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        kappa_e_terms=(
+                                            self.cpml3d_kappa_e_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        alpha_e_terms=(
+                                            self.cpml3d_alpha_e_terms
+                                            if self.use_primitive_cpml_3d_terms
+                                            else None
+                                        ),
+                                        dt=dt_scalar,
                                         psi_e_terms=cpml3d_psi_e_terms,
                                         metallic_edges=self.cpml3d_metallic_edges,
                                     )
@@ -2524,6 +2601,12 @@ class CompiledSimulation:
             "cpml3d_a_e_terms",
             "cpml3d_b_e_terms",
             "cpml3d_inv_kappa_e_terms",
+            "cpml3d_sigma_h_terms",
+            "cpml3d_kappa_h_terms",
+            "cpml3d_alpha_h_terms",
+            "cpml3d_sigma_e_terms",
+            "cpml3d_kappa_e_terms",
+            "cpml3d_alpha_e_terms",
             "fp_h_decay_x",
             "fp_h_source_x",
             "fp_h_decay_y",
@@ -2653,12 +2736,9 @@ class CompiledSimulation:
             "is_3d": bool(self.config.is_3d),
             "loop_kind": self.config.loop_kind,
             "use_cpml_3d": bool(self.use_cpml_3d),
-            "use_sparse_3d_e_coefficients": bool(
-                self.use_sparse_3d_e_coefficients
-            ),
-            "use_sparse_3d_h_coefficients": bool(
-                self.use_sparse_3d_h_coefficients
-            ),
+            "use_primitive_cpml_3d_terms": bool(self.use_primitive_cpml_3d_terms),
+            "use_sparse_3d_e_coefficients": bool(self.use_sparse_3d_e_coefficients),
+            "use_sparse_3d_h_coefficients": bool(self.use_sparse_3d_h_coefficients),
             "use_primitive_3d_e_coefficients": bool(
                 self.use_primitive_3d_e_coefficients
             ),
@@ -3279,11 +3359,15 @@ def compile_simulation(
         h_shell_decay_y = h_shell_source_y = tuple()
         h_shell_decay_z = h_shell_source_z = tuple()
     else:
-        (h_decay_x, h_source_x, h_source_lossless_x), (
-            h_decay_y,
-            h_source_y,
-            h_source_lossless_y,
-        ), (h_decay_z, h_source_z, h_source_lossless_z) = (
+        (
+            (h_decay_x, h_source_x, h_source_lossless_x),
+            (
+                h_decay_y,
+                h_source_y,
+                h_source_lossless_y,
+            ),
+            (h_decay_z, h_source_z, h_source_lossless_z),
+        ) = (
             ops.precompute_h_update_coefficients(fields.sigma_m_hx, dt),
             ops.precompute_h_update_coefficients(fields.sigma_m_hy, dt),
             ops.precompute_h_update_coefficients(fields.sigma_m_hz, dt),
@@ -3339,14 +3423,18 @@ def compile_simulation(
         e_shell_decay_y = e_shell_source_y = tuple()
         e_shell_decay_z = e_shell_source_z = tuple()
     else:
-        (e_decay_x, e_source_x, e_source_lossless_x), (
-            e_decay_y,
-            e_source_y,
-            e_source_lossless_y,
-        ), (
-            e_decay_z,
-            e_source_z,
-            e_source_lossless_z,
+        (
+            (e_decay_x, e_source_x, e_source_lossless_x),
+            (
+                e_decay_y,
+                e_source_y,
+                e_source_lossless_y,
+            ),
+            (
+                e_decay_z,
+                e_source_z,
+                e_source_lossless_z,
+            ),
         ) = (
             ops.precompute_e_update_coefficients(
                 shape=fields.Ex.shape,
@@ -3392,7 +3480,14 @@ def compile_simulation(
     cpml3d_a_e_terms = _empty_cpml_3d_terms(jnp.float32)
     cpml3d_b_e_terms = _empty_cpml_3d_terms(jnp.float32)
     cpml3d_inv_kappa_e_terms = _empty_cpml_3d_terms(jnp.float32)
+    cpml3d_sigma_h_terms = _empty_cpml_3d_terms(jnp.float32)
+    cpml3d_kappa_h_terms = _empty_cpml_3d_terms(jnp.float32)
+    cpml3d_alpha_h_terms = _empty_cpml_3d_terms(jnp.float32)
+    cpml3d_sigma_e_terms = _empty_cpml_3d_terms(jnp.float32)
+    cpml3d_kappa_e_terms = _empty_cpml_3d_terms(jnp.float32)
+    cpml3d_alpha_e_terms = _empty_cpml_3d_terms(jnp.float32)
     cpml3d_metallic_edges = frozenset()
+    use_primitive_cpml_3d_terms = False
     if bool(run_cfg.is_3d):
         cpml3d_metallic_edges = frozenset(
             resolve_metallic_edges(boundaries, is_3d=True)
@@ -3401,14 +3496,24 @@ def compile_simulation(
             getattr(fields, "has_cpml", False) and getattr(fields, "pml_data", None)
         )
         if use_cpml_3d:
-            terms = build_cpml_3d_terms(fields.pml_data, dt=run_cfg.dt)
-            if terms is not None:
-                cpml3d_a_h_terms = terms.a_h_terms
-                cpml3d_b_h_terms = terms.b_h_terms
-                cpml3d_inv_kappa_h_terms = terms.inv_kappa_h_terms
-                cpml3d_a_e_terms = terms.a_e_terms
-                cpml3d_b_e_terms = terms.b_e_terms
-                cpml3d_inv_kappa_e_terms = terms.inv_kappa_e_terms
+            primitive_terms = build_cpml_3d_primitive_terms(fields.pml_data)
+            if primitive_terms is not None:
+                use_primitive_cpml_3d_terms = True
+                cpml3d_sigma_h_terms = primitive_terms.sigma_h_terms
+                cpml3d_kappa_h_terms = primitive_terms.kappa_h_terms
+                cpml3d_alpha_h_terms = primitive_terms.alpha_h_terms
+                cpml3d_sigma_e_terms = primitive_terms.sigma_e_terms
+                cpml3d_kappa_e_terms = primitive_terms.kappa_e_terms
+                cpml3d_alpha_e_terms = primitive_terms.alpha_e_terms
+            else:
+                terms = build_cpml_3d_terms(fields.pml_data, dt=run_cfg.dt)
+                if terms is not None:
+                    cpml3d_a_h_terms = terms.a_h_terms
+                    cpml3d_b_h_terms = terms.b_h_terms
+                    cpml3d_inv_kappa_h_terms = terms.inv_kappa_h_terms
+                    cpml3d_a_e_terms = terms.a_e_terms
+                    cpml3d_b_e_terms = terms.b_e_terms
+                    cpml3d_inv_kappa_e_terms = terms.inv_kappa_e_terms
     if not bool(run_cfg.is_3d) and run_cfg.plane_2d == "xy":
         tm_ez_shape = tuple(int(v) for v in fields.Ez.shape)
         # The physical full-state TMz lattice is the only supported xy-TM update
@@ -3496,15 +3601,21 @@ def compile_simulation(
             )
         )
         if fp_has_loss:
-            (fp_h_decay_x, fp_h_decay_y, fp_h_decay_z), (
-                fp_h_source_x,
-                fp_h_source_y,
-                fp_h_source_z,
+            (
+                (fp_h_decay_x, fp_h_decay_y, fp_h_decay_z),
+                (
+                    fp_h_source_x,
+                    fp_h_source_y,
+                    fp_h_source_z,
+                ),
             ) = full_pec_h_update_coefficients_3d(fp_state, dt)
-            (fp_e_decay_x, fp_e_decay_y, fp_e_decay_z), (
-                fp_e_source_x,
-                fp_e_source_y,
-                fp_e_source_z,
+            (
+                (fp_e_decay_x, fp_e_decay_y, fp_e_decay_z),
+                (
+                    fp_e_source_x,
+                    fp_e_source_y,
+                    fp_e_source_z,
+                ),
             ) = full_pec_e_update_coefficients_3d(fp_state, dt)
         else:
             fp_h_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
@@ -3651,7 +3762,14 @@ def compile_simulation(
         cpml3d_a_e_terms=cpml3d_a_e_terms,
         cpml3d_b_e_terms=cpml3d_b_e_terms,
         cpml3d_inv_kappa_e_terms=cpml3d_inv_kappa_e_terms,
+        cpml3d_sigma_h_terms=cpml3d_sigma_h_terms,
+        cpml3d_kappa_h_terms=cpml3d_kappa_h_terms,
+        cpml3d_alpha_h_terms=cpml3d_alpha_h_terms,
+        cpml3d_sigma_e_terms=cpml3d_sigma_e_terms,
+        cpml3d_kappa_e_terms=cpml3d_kappa_e_terms,
+        cpml3d_alpha_e_terms=cpml3d_alpha_e_terms,
         cpml3d_metallic_edges=cpml3d_metallic_edges,
+        use_primitive_cpml_3d_terms=use_primitive_cpml_3d_terms,
         full_pec_3d=full_pec_3d,
         fp_h_decay_x=fp_h_decay_x,
         fp_h_source_x=fp_h_source_x,

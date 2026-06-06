@@ -397,9 +397,13 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
     )
     program = sim.compile(num_steps=1)
 
-    cz = program.cpml3d_inv_kappa_e_terms[4].shape[0] // 2
-    cy = program.cpml3d_inv_kappa_e_terms[4].shape[1] // 2
-    cx = program.cpml3d_inv_kappa_e_terms[4].shape[2] // 2
+    assert program.use_primitive_cpml_3d_terms
+
+    cz = sim.fields.permittivity.shape[0] // 2
+    cy = sim.fields.permittivity.shape[1] // 2
+    cx = sim.fields.permittivity.shape[2] // 2
+    cx_e = program.cpml3d_kappa_e_terms[4].shape[2] // 2
+    cx_h = program.cpml3d_kappa_h_terms[3].shape[2] // 2
 
     assert np.asarray(sim.pml_data["kappa_x"], dtype=np.float64)[
         cz, cy, cx
@@ -407,11 +411,11 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
     assert np.asarray(sim.pml_data["kappa_y"], dtype=np.float64)[
         cz, cy, cx
     ] == pytest.approx(1.0)
-    assert np.asarray(program.cpml3d_inv_kappa_e_terms[4], dtype=np.float64)[
-        cz, cy, cx
+    assert np.asarray(program.cpml3d_kappa_e_terms[4], dtype=np.float64)[
+        0, 0, cx_e
     ] == pytest.approx(1.0)
-    assert np.asarray(program.cpml3d_inv_kappa_h_terms[3], dtype=np.float64)[
-        cz, cy, cx
+    assert np.asarray(program.cpml3d_kappa_h_terms[3], dtype=np.float64)[
+        0, 0, cx_h
     ] == pytest.approx(1.0)
 
 
@@ -578,15 +582,24 @@ def test_lossless_h_update_incremental_matches_curl_formula():
     resolution = jnp.asarray(2.5e-8, dtype=jnp.float32)
     inv_res = 1.0 / resolution
 
-    expected_hx = hx - h_src * (
-        (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
-    ) * inv_res
-    expected_hy = hy - h_src * (
-        (ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])
-    ) * inv_res
-    expected_hz = hz - h_src * (
-        (ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])
-    ) * inv_res
+    expected_hx = (
+        hx
+        - h_src
+        * ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
+        * inv_res
+    )
+    expected_hy = (
+        hy
+        - h_src
+        * ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
+        * inv_res
+    )
+    expected_hz = (
+        hz
+        - h_src
+        * ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
+        * inv_res
+    )
 
     actual = ops.fused_update_h_lossless_3d(
         ex, ey, ez, hx, hy, hz, h_src, h_src, h_src, resolution
@@ -745,8 +758,7 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
     assert report["compiled"]["totals_by_category"]["compiled_update_coefficients"] > 0
     compiled_names = {entry["name"] for entry in report["compiled"]["entries"]}
     referenced_names = {
-        entry["name"]
-        for entry in report["compiled"]["referenced_inputs"]["entries"]
+        entry["name"] for entry in report["compiled"]["referenced_inputs"]["entries"]
     }
     assert "e_permittivity_x" not in compiled_names
     assert {"e_permittivity_x", "e_permittivity_y", "e_permittivity_z"} <= (
@@ -876,53 +888,48 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
     sigma_e_x, kappa_e_x, alpha_e_x = expected_profile(nx, sample_kind="E")
     sigma_h_x, kappa_h_x, alpha_h_x = expected_profile(max(nx - 1, 0), sample_kind="H")
 
-    sigma_e_native = sigma_e_x[None, None, :].repeat(nz - 1, axis=0).repeat(ny, axis=1)
-    kappa_e_native = kappa_e_x[None, None, :].repeat(nz - 1, axis=0).repeat(ny, axis=1)
-    alpha_e_native = alpha_e_x[None, None, :].repeat(nz - 1, axis=0).repeat(ny, axis=1)
-    sigma_h_native = sigma_h_x[None, None, :].repeat(nz - 1, axis=0).repeat(ny, axis=1)
-    kappa_h_native = kappa_h_x[None, None, :].repeat(nz - 1, axis=0).repeat(ny, axis=1)
-    alpha_h_native = alpha_h_x[None, None, :].repeat(nz - 1, axis=0).repeat(ny, axis=1)
-
-    decay_e = (sigma_e_native / kappa_e_native + alpha_e_native) * (dt / EPS_0)
-    b_e = np.expm1(-decay_e) + 1.0
-    a_e = np.nan_to_num(
-        ((b_e - 1.0) * sigma_e_native)
-        / np.maximum(
-            (sigma_e_native + kappa_e_native * alpha_e_native) * kappa_e_native, 1e-30
-        )
-    )
-    decay_h = (sigma_h_native / kappa_h_native + alpha_h_native) * (dt / EPS_0)
-    b_h = np.expm1(-decay_h) + 1.0
-    a_h = np.nan_to_num(
-        ((b_h - 1.0) * sigma_h_native)
-        / np.maximum(
-            (sigma_h_native + kappa_h_native * alpha_h_native) * kappa_h_native, 1e-30
-        )
-    )
+    assert program.use_primitive_cpml_3d_terms
+    assert program.cpml3d_a_e_terms[4].shape == (0, 0, 0)
+    assert program.cpml3d_b_e_terms[4].shape == (0, 0, 0)
+    assert program.cpml3d_inv_kappa_e_terms[4].shape == (0, 0, 0)
+    assert program.cpml3d_sigma_e_terms[4].shape == (1, 1, nx)
+    assert program.cpml3d_sigma_h_terms[3].shape == (1, 1, max(nx - 1, 0))
 
     np.testing.assert_allclose(
-        np.asarray(program.cpml3d_inv_kappa_e_terms[4]),
-        1.0 / kappa_e_native,
+        np.asarray(program.cpml3d_sigma_e_terms[4][0, 0, :]),
+        sigma_e_x,
         rtol=1e-6,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(program.cpml3d_b_e_terms[4]), b_e, rtol=1e-6, atol=1e-6
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.cpml3d_a_e_terms[4]), a_e, rtol=1e-6, atol=1e-6
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.cpml3d_inv_kappa_h_terms[3]),
-        1.0 / kappa_h_native,
+        np.asarray(program.cpml3d_kappa_e_terms[4][0, 0, :]),
+        kappa_e_x,
         rtol=1e-6,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(program.cpml3d_b_h_terms[3]), b_h, rtol=1e-6, atol=1e-6
+        np.asarray(program.cpml3d_alpha_e_terms[4][0, 0, :]),
+        alpha_e_x,
+        rtol=1e-6,
+        atol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(program.cpml3d_a_h_terms[3]), a_h, rtol=1e-6, atol=1e-6
+        np.asarray(program.cpml3d_sigma_h_terms[3][0, 0, :]),
+        sigma_h_x,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(program.cpml3d_kappa_h_terms[3][0, 0, :]),
+        kappa_h_x,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(program.cpml3d_alpha_h_terms[3][0, 0, :]),
+        alpha_h_x,
+        rtol=1e-6,
+        atol=1e-6,
     )
 
 
