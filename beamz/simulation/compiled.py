@@ -1991,46 +1991,37 @@ class CompiledSimulation:
                                     hx, hy, hz, None
                                 )
                                 ex_old, ey_old, ez_old = ex, ey, ez
-                                e_source_runtime_x = (
-                                    e_source_lossless_x
-                                    if e_source_lossless_x.size > 0
-                                    else dt_scalar
-                                    / (
-                                        jnp.asarray(ops.EPS_0, dtype=ex.dtype)
-                                        * e_permittivity_x
+                                if e_source_lossless_x.size > 0:
+                                    ex, ey, ez = ops.fused_update_e_lossless_3d(
+                                        hx,
+                                        hy,
+                                        hz,
+                                        ex,
+                                        ey,
+                                        ez,
+                                        e_source_lossless_x,
+                                        e_source_lossless_y,
+                                        e_source_lossless_z,
+                                        resolution,
+                                        boundary_views=boundary_views,
                                     )
-                                )
-                                e_source_runtime_y = (
-                                    e_source_lossless_y
-                                    if e_source_lossless_y.size > 0
-                                    else dt_scalar
-                                    / (
-                                        jnp.asarray(ops.EPS_0, dtype=ey.dtype)
-                                        * e_permittivity_y
+                                else:
+                                    ex, ey, ez = (
+                                        ops.fused_update_e_lossless_3d_permittivity(
+                                            hx,
+                                            hy,
+                                            hz,
+                                            ex,
+                                            ey,
+                                            ez,
+                                            e_permittivity_x,
+                                            e_permittivity_y,
+                                            e_permittivity_z,
+                                            dt_scalar,
+                                            resolution,
+                                            boundary_views=boundary_views,
+                                        )
                                     )
-                                )
-                                e_source_runtime_z = (
-                                    e_source_lossless_z
-                                    if e_source_lossless_z.size > 0
-                                    else dt_scalar
-                                    / (
-                                        jnp.asarray(ops.EPS_0, dtype=ez.dtype)
-                                        * e_permittivity_z
-                                    )
-                                )
-                                ex, ey, ez = ops.fused_update_e_lossless_3d(
-                                    hx,
-                                    hy,
-                                    hz,
-                                    ex,
-                                    ey,
-                                    ez,
-                                    e_source_runtime_x,
-                                    e_source_runtime_y,
-                                    e_source_runtime_z,
-                                    resolution,
-                                    boundary_views=boundary_views,
-                                )
                                 if use_lossy_shell_ex:
                                     ex = apply_lossy_shell_from_lossless_3d(
                                         ex,

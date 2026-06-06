@@ -31,7 +31,11 @@ from beamz.devices.sources.compiler import (
     _sample_waveform,
 )
 from beamz.devices.sources.mode import _analytic_signal_quadrature
-from beamz.simulation.boundaries import initialize_full_pec_3d_state
+from beamz.simulation import ops
+from beamz.simulation.boundaries import (
+    build_h_boundary_views_for_e_3d,
+    initialize_full_pec_3d_state,
+)
 from beamz.simulation.compiled import (
     CompiledRunConfig,
     CompiledSimulation,
@@ -506,6 +510,97 @@ def test_sparse_3d_sponge_pml_uses_permittivity_for_lossy_shell():
     assert program.e_source_lossless_x.shape == (0, 0, 0)
 
     sim.run_compiled(num_steps=1, progress=False)
+
+
+def test_sparse_3d_permittivity_e_update_matches_dense_source_grid():
+    key = jax.random.PRNGKey(7)
+    keys = jax.random.split(key, 9)
+    hx = jax.random.normal(keys[0], (3, 4, 6), dtype=jnp.float32)
+    hy = jax.random.normal(keys[1], (3, 5, 5), dtype=jnp.float32)
+    hz = jax.random.normal(keys[2], (4, 4, 5), dtype=jnp.float32)
+    ex = jax.random.normal(keys[3], (4, 5, 5), dtype=jnp.float32)
+    ey = jax.random.normal(keys[4], (4, 4, 6), dtype=jnp.float32)
+    ez = jax.random.normal(keys[5], (3, 5, 6), dtype=jnp.float32)
+    eps_x = 1.0 + jnp.abs(jax.random.normal(keys[6], ex.shape, dtype=jnp.float32))
+    eps_y = 1.0 + jnp.abs(jax.random.normal(keys[7], ey.shape, dtype=jnp.float32))
+    eps_z = 1.0 + jnp.abs(jax.random.normal(keys[8], ez.shape, dtype=jnp.float32))
+    dt = jnp.asarray(1.0e-17, dtype=jnp.float32)
+    resolution = jnp.asarray(2.5e-8, dtype=jnp.float32)
+    views = build_h_boundary_views_for_e_3d(hx, hy, hz, None)
+
+    dense = ops.fused_update_e_lossless_3d(
+        hx,
+        hy,
+        hz,
+        ex,
+        ey,
+        ez,
+        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_x),
+        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_y),
+        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_z),
+        resolution,
+        boundary_views=views,
+    )
+    sparse = ops.fused_update_e_lossless_3d_permittivity(
+        hx,
+        hy,
+        hz,
+        ex,
+        ey,
+        ez,
+        eps_x,
+        eps_y,
+        eps_z,
+        dt,
+        resolution,
+        boundary_views=views,
+    )
+
+    for dense_component, sparse_component in zip(dense, sparse, strict=True):
+        np.testing.assert_allclose(
+            np.asarray(sparse_component),
+            np.asarray(dense_component),
+            rtol=2e-6,
+            atol=1e-6,
+        )
+
+
+def test_lossless_h_update_incremental_matches_curl_formula():
+    key = jax.random.PRNGKey(11)
+    keys = jax.random.split(key, 6)
+    ex = jax.random.normal(keys[0], (4, 5, 5), dtype=jnp.float32)
+    ey = jax.random.normal(keys[1], (4, 4, 6), dtype=jnp.float32)
+    ez = jax.random.normal(keys[2], (3, 5, 6), dtype=jnp.float32)
+    hx = jax.random.normal(keys[3], (3, 4, 6), dtype=jnp.float32)
+    hy = jax.random.normal(keys[4], (3, 5, 5), dtype=jnp.float32)
+    hz = jax.random.normal(keys[5], (4, 4, 5), dtype=jnp.float32)
+    h_src = jnp.asarray(3.0e-12, dtype=jnp.float32)
+    resolution = jnp.asarray(2.5e-8, dtype=jnp.float32)
+    inv_res = 1.0 / resolution
+
+    expected_hx = hx - h_src * (
+        (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
+    ) * inv_res
+    expected_hy = hy - h_src * (
+        (ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])
+    ) * inv_res
+    expected_hz = hz - h_src * (
+        (ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])
+    ) * inv_res
+
+    actual = ops.fused_update_h_lossless_3d(
+        ex, ey, ez, hx, hy, hz, h_src, h_src, h_src, resolution
+    )
+
+    for actual_component, expected_component in zip(
+        actual, (expected_hx, expected_hy, expected_hz), strict=True
+    ):
+        np.testing.assert_allclose(
+            np.asarray(actual_component),
+            np.asarray(expected_component),
+            rtol=2e-6,
+            atol=1e-6,
+        )
 
 
 def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():

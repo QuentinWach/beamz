@@ -366,24 +366,12 @@ def fused_update_h_lossless_3d(
 ):
     """H_new = H_old - source_lossless * curl_E (no intermediate curl arrays)."""
     inv_res = 1.0 / resolution
-    hx = (
-        hx
-        - h_src_ll_x
-        * ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
-        * inv_res
-    )
-    hy = (
-        hy
-        - h_src_ll_y
-        * ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
-        * inv_res
-    )
-    hz = (
-        hz
-        - h_src_ll_z
-        * ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
-        * inv_res
-    )
+    hx = hx - h_src_ll_x * (ez[:, 1:, :] - ez[:, :-1, :]) * inv_res
+    hx = hx + h_src_ll_x * (ey[1:, :, :] - ey[:-1, :, :]) * inv_res
+    hy = hy - h_src_ll_y * (ex[1:, :, :] - ex[:-1, :, :]) * inv_res
+    hy = hy + h_src_ll_y * (ez[:, :, 1:] - ez[:, :, :-1]) * inv_res
+    hz = hz - h_src_ll_z * (ey[:, :, 1:] - ey[:, :, :-1]) * inv_res
+    hz = hz + h_src_ll_z * (ex[:, 1:, :] - ex[:, :-1, :]) * inv_res
     return hx, hy, hz
 
 
@@ -446,6 +434,60 @@ def fused_update_e_lossless_3d(
         _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution)
         - _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution)
     )
+    return ex, ey, ez
+
+
+def fused_update_e_lossless_3d_permittivity(
+    hx,
+    hy,
+    hz,
+    ex,
+    ey,
+    ez,
+    e_permittivity_x,
+    e_permittivity_y,
+    e_permittivity_z,
+    dt,
+    resolution,
+    *,
+    boundary_views,
+):
+    """E_new = E_old + dt/(eps0*eps_r) * curl_H without dense source grids."""
+    dt_over_eps0 = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
+
+    ex = ex + (
+        dt_over_eps0
+        * _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution)
+        / e_permittivity_x
+    )
+    ex = ex - (
+        dt_over_eps0
+        * _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution)
+        / e_permittivity_x
+    )
+
+    ey = ey + (
+        dt_over_eps0
+        * _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution)
+        / e_permittivity_y
+    )
+    ey = ey - (
+        dt_over_eps0
+        * _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution)
+        / e_permittivity_y
+    )
+
+    ez = ez + (
+        dt_over_eps0
+        * _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution)
+        / e_permittivity_z
+    )
+    ez = ez - (
+        dt_over_eps0
+        * _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution)
+        / e_permittivity_z
+    )
+
     return ex, ey, ez
 
 
