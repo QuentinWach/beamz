@@ -407,6 +407,12 @@ class CompiledSimulation:
     source_specs: tuple[CompiledSourceSpec, ...]
     monitor_specs: tuple[CompiledMonitorSpec, ...]
     monitor_devices: tuple[Monitor, ...]
+    field_shape_ex: tuple[int, ...]
+    field_shape_ey: tuple[int, ...]
+    field_shape_ez: tuple[int, ...]
+    field_shape_hx: tuple[int, ...]
+    field_shape_hy: tuple[int, ...]
+    field_shape_hz: tuple[int, ...]
 
     # Static update coefficients (full-grid, dense updates; no per-step scatters)
     h_decay_x: jnp.ndarray
@@ -547,31 +553,19 @@ class CompiledSimulation:
         )
 
     def _snapshot_field_shape(self) -> tuple[int, ...]:
-        def _first_nonempty_shape(*arrays: jnp.ndarray) -> tuple[int, ...]:
-            for arr in arrays:
-                if arr.size > 0:
-                    return tuple(arr.shape)
-            return tuple()
-
         field_name = self.config.snapshot_field
         if field_name == "Ex":
-            return _first_nonempty_shape(
-                self.e_source_lossless_x, self.e_source_x, self.e_permittivity_x
-            )
+            return self.field_shape_ex
         if field_name == "Ey":
-            return _first_nonempty_shape(
-                self.e_source_lossless_y, self.e_source_y, self.e_permittivity_y
-            )
+            return self.field_shape_ey
         if field_name == "Ez":
-            return _first_nonempty_shape(
-                self.e_source_lossless_z, self.e_source_z, self.e_permittivity_z
-            )
+            return self.field_shape_ez
         if field_name == "Hx":
-            return tuple(self.hx_metal_mask.shape)
+            return self.field_shape_hx
         if field_name == "Hy":
-            return tuple(self.hy_metal_mask.shape)
+            return self.field_shape_hy
         if field_name == "Hz":
-            return tuple(self.hz_metal_mask.shape)
+            return self.field_shape_hz
         raise ValueError(f"Unsupported snapshot field: {field_name}")
 
     def _empty_snapshot_state(
@@ -703,6 +697,42 @@ class CompiledSimulation:
 
     def _apply_metal_mask(self, arr: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
         return jnp.where(mask, jnp.asarray(0.0, dtype=arr.dtype), arr)
+
+    @staticmethod
+    def _apply_metal_edges_3d(
+        arr: jnp.ndarray, component: str, metallic_edges: frozenset[str]
+    ) -> jnp.ndarray:
+        """Zero compact-grid Yee samples constrained by low-side PEC walls."""
+
+        out = arr
+        zero = jnp.asarray(0.0, dtype=arr.dtype)
+        if component == "Ex":
+            if "front" in metallic_edges:
+                out = out.at[0, :, :].set(zero)
+            if "bottom" in metallic_edges:
+                out = out.at[:, 0, :].set(zero)
+        elif component == "Ey":
+            if "front" in metallic_edges:
+                out = out.at[0, :, :].set(zero)
+            if "left" in metallic_edges:
+                out = out.at[:, :, 0].set(zero)
+        elif component == "Ez":
+            if "bottom" in metallic_edges:
+                out = out.at[:, 0, :].set(zero)
+            if "left" in metallic_edges:
+                out = out.at[:, :, 0].set(zero)
+        elif component == "Hx":
+            if "left" in metallic_edges:
+                out = out.at[:, :, 0].set(zero)
+        elif component == "Hy":
+            if "bottom" in metallic_edges:
+                out = out.at[:, 0, :].set(zero)
+        elif component == "Hz":
+            if "front" in metallic_edges:
+                out = out.at[0, :, :].set(zero)
+        else:
+            raise ValueError(f"Unsupported 3D field component {component!r}")
+        return out
 
     def _apply_lossy_shell(
         self,
@@ -1419,24 +1449,12 @@ class CompiledSimulation:
                 if s.is_3d and not bool(getattr(s, "dft_enabled", False))
             )
             field_shapes = {
-                "Ex": tuple(
-                    self.e_source_lossless_x.shape
-                    if self.e_source_lossless_x.size > 0
-                    else self.e_source_x.shape
-                ),
-                "Ey": tuple(
-                    self.e_source_lossless_y.shape
-                    if self.e_source_lossless_y.size > 0
-                    else self.e_source_y.shape
-                ),
-                "Ez": tuple(
-                    self.e_source_lossless_z.shape
-                    if self.e_source_lossless_z.size > 0
-                    else self.e_source_z.shape
-                ),
-                "Hx": tuple(self.hx_metal_mask.shape),
-                "Hy": tuple(self.hy_metal_mask.shape),
-                "Hz": tuple(self.hz_metal_mask.shape),
+                "Ex": self.field_shape_ex,
+                "Ey": self.field_shape_ey,
+                "Ez": self.field_shape_ez,
+                "Hx": self.field_shape_hx,
+                "Hy": self.field_shape_hy,
+                "Hz": self.field_shape_hz,
             }
             batched_mon = compile_batched_monitor_data(batchable_3d, field_shapes)
             # Keep DFT monitors unbatched for deterministic per-component modal
@@ -1540,6 +1558,7 @@ class CompiledSimulation:
             use_cpml_tm_xy = self.use_cpml_tm_xy
             use_cpml_3d = self.use_cpml_3d
             full_pec_3d = self.full_pec_3d
+            metallic_edges_3d = self.cpml3d_metallic_edges
             use_sparse_3d_h_coefficients = self.use_sparse_3d_h_coefficients
             use_sparse_3d_e_coefficients = self.use_sparse_3d_e_coefficients
             use_primitive_3d_h_coefficients = self.use_primitive_3d_h_coefficients
@@ -1987,9 +2006,18 @@ class CompiledSimulation:
                         fp_hx = fp_hx.at[:-1, :-1, :-1].set(hx_post)
                         fp_hy = fp_hy.at[:-1, :-1, :-1].set(hy_post)
                         fp_hz = fp_hz.at[:-1, :-1, :-1].set(hz)
-                    hx = self._apply_metal_mask(hx_post, hx_metal_mask)
-                    hy = self._apply_metal_mask(hy_post, hy_metal_mask)
-                    hz = self._apply_metal_mask(hz, hz_metal_mask)
+                    if is_3d:
+                        hx = self._apply_metal_edges_3d(
+                            hx_post, "Hx", metallic_edges_3d
+                        )
+                        hy = self._apply_metal_edges_3d(
+                            hy_post, "Hy", metallic_edges_3d
+                        )
+                        hz = self._apply_metal_edges_3d(hz, "Hz", metallic_edges_3d)
+                    else:
+                        hx = self._apply_metal_mask(hx_post, hx_metal_mask)
+                        hy = self._apply_metal_mask(hy_post, hy_metal_mask)
+                        hz = self._apply_metal_mask(hz, hz_metal_mask)
                     eng = eng._replace(
                         hx=hx, hy=hy, hz=hz, fp_hx=fp_hx, fp_hy=fp_hy, fp_hz=fp_hz
                     )
@@ -2369,9 +2397,14 @@ class CompiledSimulation:
                         fp_ex = fp_ex.at[:-1, :-1, :-1].set(ex)
                         fp_ey = fp_ey.at[:-1, :-1, :-1].set(ey)
                         fp_ez = fp_ez.at[:-1, :-1, :-1].set(ez)
-                    ex = self._apply_metal_mask(ex, ex_metal_mask)
-                    ey = self._apply_metal_mask(ey, ey_metal_mask)
-                    ez = self._apply_metal_mask(ez, ez_metal_mask)
+                    if is_3d:
+                        ex = self._apply_metal_edges_3d(ex, "Ex", metallic_edges_3d)
+                        ey = self._apply_metal_edges_3d(ey, "Ey", metallic_edges_3d)
+                        ez = self._apply_metal_edges_3d(ez, "Ez", metallic_edges_3d)
+                    else:
+                        ex = self._apply_metal_mask(ex, ex_metal_mask)
+                        ey = self._apply_metal_mask(ey, ey_metal_mask)
+                        ez = self._apply_metal_mask(ez, ez_metal_mask)
                     if use_physical_tm_xy:
                         ez = jnp.where(tm_ez_mask, jnp.asarray(0.0, dtype=ez.dtype), ez)
                     eng = eng._replace(
@@ -3676,6 +3709,16 @@ def compile_simulation(
         is_3d=bool(run_cfg.is_3d),
         plane_2d=run_cfg.plane_2d,
     )
+    if bool(run_cfg.is_3d):
+        empty_mask3 = jnp.zeros((0, 0, 0), dtype=bool)
+        metallic_masks = {
+            "Ex": empty_mask3,
+            "Ey": empty_mask3,
+            "Ez": empty_mask3,
+            "Hx": empty_mask3,
+            "Hy": empty_mask3,
+            "Hz": empty_mask3,
+        }
 
     if (not use_sparse_3d_h_coefficients) and (not h_use_lossy_shell_x):
         h_source_lossless_x = _empty_like_rank(h_source_lossless_x)
@@ -3697,6 +3740,12 @@ def compile_simulation(
         source_specs=source_specs,
         monitor_specs=monitor_specs,
         monitor_devices=monitor_devices,
+        field_shape_ex=tuple(int(v) for v in fields.Ex.shape),
+        field_shape_ey=tuple(int(v) for v in fields.Ey.shape),
+        field_shape_ez=tuple(int(v) for v in fields.Ez.shape),
+        field_shape_hx=tuple(int(v) for v in fields.Hx.shape),
+        field_shape_hy=tuple(int(v) for v in fields.Hy.shape),
+        field_shape_hz=tuple(int(v) for v in fields.Hz.shape),
         h_decay_x=h_decay_x,
         h_source_x=h_source_x,
         h_source_lossless_x=h_source_lossless_x,

@@ -34,6 +34,7 @@ from beamz.devices.sources.mode import _analytic_signal_quadrature
 from beamz.simulation import ops
 from beamz.simulation.boundaries import (
     build_h_boundary_views_for_e_3d,
+    create_metallic_boundary_masks,
     initialize_full_pec_3d_state,
 )
 from beamz.simulation.compiled import (
@@ -419,6 +420,29 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
     ] == pytest.approx(1.0)
 
 
+def test_compiled_3d_metallic_edge_zeroing_matches_masks():
+    fields = SimpleNamespace(
+        Ex=jnp.ones((3, 4, 5), dtype=jnp.float32),
+        Ey=jnp.ones((3, 4, 5), dtype=jnp.float32),
+        Ez=jnp.ones((3, 4, 5), dtype=jnp.float32),
+        Hx=jnp.ones((3, 4, 5), dtype=jnp.float32),
+        Hy=jnp.ones((3, 4, 5), dtype=jnp.float32),
+        Hz=jnp.ones((3, 4, 5), dtype=jnp.float32),
+    )
+    edges = frozenset({"front", "bottom", "left"})
+    masks = create_metallic_boundary_masks(
+        fields,
+        [PEC(edges=list(edges))],
+        is_3d=True,
+    )
+
+    for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+        field = getattr(fields, component)
+        expected = jnp.where(masks[component], 0.0, field)
+        actual = CompiledSimulation._apply_metal_edges_3d(field, component, edges)
+        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+
+
 def test_compiled_uses_sparse_shell_coefficients_3d():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
@@ -452,6 +476,10 @@ def test_compiled_uses_sparse_shell_coefficients_3d():
     assert program.e_permittivity_x is sim.fields.eps_x
     assert program.e_permittivity_y is sim.fields.eps_y
     assert program.e_permittivity_z is sim.fields.eps_z
+    assert program.ex_metal_mask.shape == (0, 0, 0)
+    assert program.hx_metal_mask.shape == (0, 0, 0)
+    assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
+    assert program.field_shape_hx == tuple(sim.fields.Hx.shape)
     assert program.h_source_lossless_x.shape == ()
     assert program.h_source_lossless_y.shape == ()
     assert program.h_source_lossless_z.shape == ()
