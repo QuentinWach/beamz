@@ -1726,6 +1726,9 @@ class CompiledSimulation:
                                         h_source_lossless_x,
                                         h_source_lossless_y,
                                         h_source_lossless_z,
+                                        h_sigma_m_x,
+                                        h_sigma_m_y,
+                                        h_sigma_m_z,
                                         resolution,
                                         a_h_terms=self.cpml3d_a_h_terms,
                                         b_h_terms=self.cpml3d_b_h_terms,
@@ -1782,6 +1785,8 @@ class CompiledSimulation:
                                         lossy_shell_hx,
                                         h_shell_decay_x,
                                         h_shell_source_x,
+                                        source_conductivity=h_sigma_m_x,
+                                        dt=dt_scalar,
                                     )
                                 if use_lossy_shell_hy:
                                     hy = apply_lossy_shell_from_lossless_3d(
@@ -1791,6 +1796,8 @@ class CompiledSimulation:
                                         lossy_shell_hy,
                                         h_shell_decay_y,
                                         h_shell_source_y,
+                                        source_conductivity=h_sigma_m_y,
+                                        dt=dt_scalar,
                                     )
                                 if use_lossy_shell_hz:
                                     hz = apply_lossy_shell_from_lossless_3d(
@@ -1800,6 +1807,8 @@ class CompiledSimulation:
                                         lossy_shell_hz,
                                         h_shell_decay_z,
                                         h_shell_source_z,
+                                        source_conductivity=h_sigma_m_z,
+                                        dt=dt_scalar,
                                     )
                         else:
                             if self.use_cpml_3d:
@@ -2073,6 +2082,9 @@ class CompiledSimulation:
                                         e_source_lossless_x,
                                         e_source_lossless_y,
                                         e_source_lossless_z,
+                                        e_conductivity_x,
+                                        e_conductivity_y,
+                                        e_conductivity_z,
                                         e_permittivity_x,
                                         e_permittivity_y,
                                         e_permittivity_z,
@@ -2155,6 +2167,7 @@ class CompiledSimulation:
                                         lossy_shell_ex,
                                         e_shell_decay_x,
                                         e_shell_source_x,
+                                        source_conductivity=e_conductivity_x,
                                         source_permittivity=e_permittivity_x,
                                         dt=dt_scalar,
                                     )
@@ -2166,6 +2179,7 @@ class CompiledSimulation:
                                         lossy_shell_ey,
                                         e_shell_decay_y,
                                         e_shell_source_y,
+                                        source_conductivity=e_conductivity_y,
                                         source_permittivity=e_permittivity_y,
                                         dt=dt_scalar,
                                     )
@@ -2177,6 +2191,7 @@ class CompiledSimulation:
                                         lossy_shell_ez,
                                         e_shell_decay_z,
                                         e_shell_source_z,
+                                        source_conductivity=e_conductivity_z,
                                         source_permittivity=e_permittivity_z,
                                         dt=dt_scalar,
                                     )
@@ -3095,52 +3110,6 @@ def _has_positive_conductivity(conductivity_region: jnp.ndarray) -> bool:
     )
 
 
-def _slice_coefficient_slabs(
-    arr: jnp.ndarray,
-    slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
-) -> tuple[jnp.ndarray, ...]:
-    out: list[jnp.ndarray] = []
-    for starts, sizes in slabs:
-        z, y, x = starts
-        dz, dy, dx = sizes
-        out.append(arr[z : z + dz, y : y + dy, x : x + dx])
-    return tuple(out)
-
-
-def _slice_region_slabs(
-    arr: jnp.ndarray,
-    *,
-    field_shape: tuple[int, int, int],
-    region: tuple[slice, slice, slice],
-    slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
-) -> tuple[jnp.ndarray, ...]:
-    layout = _region_offsets_and_sizes(field_shape, region)
-    if layout is None:
-        raise ValueError("Cannot slice slab coefficients for non-unit slice region.")
-    region_starts, _region_sizes = layout
-    out: list[jnp.ndarray] = []
-    for starts, sizes in slabs:
-        local_starts = tuple(starts[d] - region_starts[d] for d in range(3))
-        z, y, x = local_starts
-        dz, dy, dx = sizes
-        out.append(arr[z : z + dz, y : y + dy, x : x + dx])
-    return tuple(out)
-
-
-def _precompute_h_update_coefficient_slabs(
-    sigma_m: jnp.ndarray,
-    slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
-    dt: float,
-) -> tuple[tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...]]:
-    decay_slabs: list[jnp.ndarray] = []
-    source_slabs: list[jnp.ndarray] = []
-    for sigma_s in _slice_coefficient_slabs(sigma_m, slabs):
-        decay_s, source_s, _ = ops.precompute_h_update_coefficients(sigma_s, dt)
-        decay_slabs.append(decay_s)
-        source_slabs.append(source_s)
-    return tuple(decay_slabs), tuple(source_slabs)
-
-
 def _precompute_e_lossless_source_coefficient(
     *,
     shape: tuple[int, int, int],
@@ -3151,36 +3120,6 @@ def _precompute_e_lossless_source_coefficient(
     source = jnp.zeros(shape, dtype=jnp.float32)
     local = (dt / (ops.EPS_0 * permittivity)).astype(jnp.float32)
     return source.at[region].set(local)
-
-
-def _precompute_e_update_coefficient_slabs(
-    *,
-    field_shape: tuple[int, int, int],
-    conductivity: jnp.ndarray,
-    permittivity: jnp.ndarray,
-    dt: float,
-    region: tuple[slice, slice, slice],
-    slabs: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...],
-) -> tuple[tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...]]:
-    conductivity_slabs = _slice_region_slabs(
-        conductivity, field_shape=field_shape, region=region, slabs=slabs
-    )
-    permittivity_slabs = _slice_region_slabs(
-        permittivity, field_shape=field_shape, region=region, slabs=slabs
-    )
-    decay_slabs: list[jnp.ndarray] = []
-    source_slabs: list[jnp.ndarray] = []
-    for conductivity_s, permittivity_s in zip(
-        conductivity_slabs, permittivity_slabs, strict=True
-    ):
-        denom = 1.0 + conductivity_s * (dt / (2.0 * ops.EPS_0 * permittivity_s))
-        decay_s = (
-            1.0 - conductivity_s * (dt / (2.0 * ops.EPS_0 * permittivity_s))
-        ) / denom
-        source_s = (dt / (ops.EPS_0 * permittivity_s)) / denom
-        decay_slabs.append(decay_s.astype(jnp.float32))
-        source_slabs.append(source_s.astype(jnp.float32))
-    return tuple(decay_slabs), tuple(source_slabs)
 
 
 def compile_simulation(
@@ -3371,16 +3310,12 @@ def compile_simulation(
         h_source_lossless_x = h_source_lossless_y = h_source_lossless_z = jnp.asarray(
             dt / ops.MU_0, dtype=jnp.float32
         )
-        h_sigma_m_x = h_sigma_m_y = h_sigma_m_z = empty3
-        h_shell_decay_x, h_shell_source_x = _precompute_h_update_coefficient_slabs(
-            fields.sigma_m_hx, h_lossy_shell_x, dt
-        )
-        h_shell_decay_y, h_shell_source_y = _precompute_h_update_coefficient_slabs(
-            fields.sigma_m_hy, h_lossy_shell_y, dt
-        )
-        h_shell_decay_z, h_shell_source_z = _precompute_h_update_coefficient_slabs(
-            fields.sigma_m_hz, h_lossy_shell_z, dt
-        )
+        h_sigma_m_x = fields.sigma_m_hx
+        h_sigma_m_y = fields.sigma_m_hy
+        h_sigma_m_z = fields.sigma_m_hz
+        h_shell_decay_x = h_shell_source_x = tuple()
+        h_shell_decay_y = h_shell_source_y = tuple()
+        h_shell_decay_z = h_shell_source_z = tuple()
     elif use_primitive_3d_h_coefficients:
         h_decay_x = h_source_x = h_decay_y = h_source_y = empty3
         h_decay_z = h_source_z = empty3
@@ -3414,34 +3349,15 @@ def compile_simulation(
         e_decay_x = e_source_x = e_decay_y = e_source_y = empty3
         e_decay_z = e_source_z = empty3
         e_source_lossless_x = e_source_lossless_y = e_source_lossless_z = empty3
-        e_conductivity_x = e_conductivity_y = e_conductivity_z = empty3
+        e_conductivity_x = fields.sig_x
+        e_conductivity_y = fields.sig_y
+        e_conductivity_z = fields.sig_z
         e_permittivity_x = fields.eps_x
         e_permittivity_y = fields.eps_y
         e_permittivity_z = fields.eps_z
-        e_shell_decay_x, e_shell_source_x = _precompute_e_update_coefficient_slabs(
-            field_shape=tuple(fields.Ex.shape),
-            conductivity=fields.sig_x,
-            permittivity=fields.eps_x,
-            dt=dt,
-            region=fields.region_x,
-            slabs=e_lossy_shell_x,
-        )
-        e_shell_decay_y, e_shell_source_y = _precompute_e_update_coefficient_slabs(
-            field_shape=tuple(fields.Ey.shape),
-            conductivity=fields.sig_y,
-            permittivity=fields.eps_y,
-            dt=dt,
-            region=fields.region_y,
-            slabs=e_lossy_shell_y,
-        )
-        e_shell_decay_z, e_shell_source_z = _precompute_e_update_coefficient_slabs(
-            field_shape=tuple(fields.Ez.shape),
-            conductivity=fields.sig_z,
-            permittivity=fields.eps_z,
-            dt=dt,
-            region=fields.region_z,
-            slabs=e_lossy_shell_z,
-        )
+        e_shell_decay_x = e_shell_source_x = tuple()
+        e_shell_decay_y = e_shell_source_y = tuple()
+        e_shell_decay_z = e_shell_source_z = tuple()
     elif use_primitive_3d_e_coefficients:
         e_decay_x = e_source_x = e_decay_y = e_source_y = empty3
         e_decay_z = e_source_z = empty3

@@ -480,11 +480,13 @@ def test_compiled_uses_sparse_shell_coefficients_3d():
     assert program.hx_metal_mask.shape == (0, 0, 0)
     assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
     assert program.field_shape_hx == tuple(sim.fields.Hx.shape)
+    assert program.e_conductivity_x is sim.fields.sig_x
+    assert program.h_sigma_m_x is sim.fields.sigma_m_hx
     assert program.h_source_lossless_x.shape == ()
     assert program.h_source_lossless_y.shape == ()
     assert program.h_source_lossless_z.shape == ()
-    assert program.e_shell_decay_x
-    assert program.h_shell_decay_x
+    assert program.e_shell_decay_x == tuple()
+    assert program.h_shell_decay_x == tuple()
 
 
 def test_sparse_3d_snapshot_shape_uses_permittivity_reference():

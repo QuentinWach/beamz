@@ -1682,16 +1682,18 @@ def apply_lossy_shell_from_lossless_3d(
     decay_slabs,
     source_slabs,
     *,
+    source_conductivity=None,
     source_permittivity=None,
     dt=None,
 ):
     out = updated_lossless
-    for starts, sizes, decay_s, source_s in zip(
-        (slab[0] for slab in slabs),
-        (slab[1] for slab in slabs),
-        decay_slabs,
-        source_slabs,
-    ):
+    use_primitive_factors = (
+        len(decay_slabs) == 0
+        and len(source_slabs) == 0
+        and source_conductivity is not None
+        and dt is not None
+    )
+    for idx, (starts, sizes) in enumerate(slabs):
         old_s = jax.lax.dynamic_slice(old, starts, sizes)
         lossless_s = jax.lax.dynamic_slice(updated_lossless, starts, sizes)
         if getattr(source_lossless, "ndim", 0) == 0:
@@ -1706,6 +1708,32 @@ def apply_lossy_shell_from_lossless_3d(
             source_ll_s = dt / (_scalar_like(EPS_0, eps_s.dtype) * eps_s)
         else:
             source_ll_s = jax.lax.dynamic_slice(source_lossless, starts, sizes)
+        if use_primitive_factors:
+            sigma_s = jax.lax.dynamic_slice(source_conductivity, starts, sizes)
+            if source_permittivity is None:
+                alpha = sigma_s * (
+                    _scalar_like(dt, sigma_s.dtype)
+                    / (
+                        _scalar_like(2.0, sigma_s.dtype)
+                        * _scalar_like(MU_0, sigma_s.dtype)
+                    )
+                )
+            else:
+                eps_s = jax.lax.dynamic_slice(source_permittivity, starts, sizes)
+                alpha = sigma_s * (
+                    _scalar_like(dt, sigma_s.dtype)
+                    / (
+                        _scalar_like(2.0, sigma_s.dtype)
+                        * _scalar_like(EPS_0, sigma_s.dtype)
+                        * eps_s
+                    )
+                )
+            denom = _scalar_like(1.0, sigma_s.dtype) + alpha
+            decay_s = (_scalar_like(1.0, sigma_s.dtype) - alpha) / denom
+            source_s = source_ll_s / denom
+        else:
+            decay_s = decay_slabs[idx]
+            source_s = source_slabs[idx]
         beta = source_s / source_ll_s
         lossy_s = (decay_s - beta) * old_s + beta * lossless_s
         out = jax.lax.dynamic_update_slice(out, lossy_s, starts)
@@ -1722,6 +1750,9 @@ def cpml_update_h_from_e_3d_shell_split(
     h_source_lossless_x,
     h_source_lossless_y,
     h_source_lossless_z,
+    h_sigma_m_x,
+    h_sigma_m_y,
+    h_sigma_m_z,
     resolution,
     *,
     a_h_terms,
@@ -1771,6 +1802,8 @@ def cpml_update_h_from_e_3d_shell_split(
         h_lossy_shell_x,
         h_shell_decay_x,
         h_shell_source_x,
+        source_conductivity=h_sigma_m_x,
+        dt=dt,
     )
 
     term2, psi2 = correct(2, (ex[1:, :, :] - ex[:-1, :, :]) / resolution)
@@ -1785,6 +1818,8 @@ def cpml_update_h_from_e_3d_shell_split(
         h_lossy_shell_y,
         h_shell_decay_y,
         h_shell_source_y,
+        source_conductivity=h_sigma_m_y,
+        dt=dt,
     )
 
     term4, psi4 = correct(4, (ey[:, :, 1:] - ey[:, :, :-1]) / resolution)
@@ -1799,6 +1834,8 @@ def cpml_update_h_from_e_3d_shell_split(
         h_lossy_shell_z,
         h_shell_decay_z,
         h_shell_source_z,
+        source_conductivity=h_sigma_m_z,
+        dt=dt,
     )
 
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
@@ -1960,6 +1997,9 @@ def cpml_update_e_from_h_3d_shell_split(
     e_source_lossless_x,
     e_source_lossless_y,
     e_source_lossless_z,
+    e_conductivity_x,
+    e_conductivity_y,
+    e_conductivity_z,
     e_permittivity_x,
     e_permittivity_y,
     e_permittivity_z,
@@ -2041,6 +2081,7 @@ def cpml_update_e_from_h_3d_shell_split(
         e_lossy_shell_x,
         e_shell_decay_x,
         e_shell_source_x,
+        source_conductivity=e_conductivity_x,
         source_permittivity=e_permittivity_x,
         dt=dt,
     )
@@ -2063,6 +2104,7 @@ def cpml_update_e_from_h_3d_shell_split(
         e_lossy_shell_y,
         e_shell_decay_y,
         e_shell_source_y,
+        source_conductivity=e_conductivity_y,
         source_permittivity=e_permittivity_y,
         dt=dt,
     )
@@ -2085,6 +2127,7 @@ def cpml_update_e_from_h_3d_shell_split(
         e_lossy_shell_z,
         e_shell_decay_z,
         e_shell_source_z,
+        source_conductivity=e_conductivity_z,
         source_permittivity=e_permittivity_z,
         dt=dt,
     )
