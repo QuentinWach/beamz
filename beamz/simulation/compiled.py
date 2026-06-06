@@ -2039,6 +2039,8 @@ class CompiledSimulation:
                                         lossy_shell_ex,
                                         e_shell_decay_x,
                                         e_shell_source_x,
+                                        source_permittivity=e_permittivity_x,
+                                        dt=dt_scalar,
                                     )
                                 if use_lossy_shell_ey:
                                     ey = apply_lossy_shell_from_lossless_3d(
@@ -2048,6 +2050,8 @@ class CompiledSimulation:
                                         lossy_shell_ey,
                                         e_shell_decay_y,
                                         e_shell_source_y,
+                                        source_permittivity=e_permittivity_y,
+                                        dt=dt_scalar,
                                     )
                                 if use_lossy_shell_ez:
                                     ez = apply_lossy_shell_from_lossless_3d(
@@ -2057,6 +2061,8 @@ class CompiledSimulation:
                                         lossy_shell_ez,
                                         e_shell_decay_z,
                                         e_shell_source_z,
+                                        source_permittivity=e_permittivity_z,
+                                        dt=dt_scalar,
                                     )
                         else:
                             if self.use_cpml_3d:

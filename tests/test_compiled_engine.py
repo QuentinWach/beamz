@@ -481,6 +481,33 @@ def test_sparse_3d_snapshot_shape_uses_permittivity_reference():
     assert snapshot_state[0].shape == (2, *sim.fields.Ez.shape)
 
 
+def test_sparse_3d_sponge_pml_uses_permittivity_for_lossy_shell():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
+    )
+    design = Design(
+        width=2.0 * wl,
+        height=2.0 * wl,
+        depth=1.5 * wl,
+        material=Material(permittivity=1.0),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[],
+        boundaries=[PML(edges="all", thickness=0.5 * wl)],
+        time=np.arange(0, 2 * dt, dt),
+        resolution=dx,
+    )
+
+    program = sim.compile(num_steps=1)
+    assert not program.use_cpml_3d
+    assert program.use_sparse_3d_e_coefficients
+    assert program.e_source_lossless_x.shape == (0, 0, 0)
+
+    sim.run_compiled(num_steps=1, progress=False)
+
+
 def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
