@@ -655,21 +655,11 @@ def test_lossless_h_update_incremental_matches_curl_formula():
     actual = ops.fused_update_h_lossless_3d(
         ex, ey, ez, hx, hy, hz, h_src, h_src, h_src, resolution
     )
-    sliced = ops.fused_update_h_lossless_3d_z_sliced(
-        ex, ey, ez, hx, hy, hz, h_src, h_src, h_src, resolution
-    )
-
-    for actual_component, sliced_component, expected_component in zip(
-        actual, sliced, (expected_hx, expected_hy, expected_hz), strict=True
+    for actual_component, expected_component in zip(
+        actual, (expected_hx, expected_hy, expected_hz), strict=True
     ):
         np.testing.assert_allclose(
             np.asarray(actual_component),
-            np.asarray(expected_component),
-            rtol=2e-6,
-            atol=1e-6,
-        )
-        np.testing.assert_allclose(
-            np.asarray(sliced_component),
             np.asarray(expected_component),
             rtol=2e-6,
             atol=1e-6,

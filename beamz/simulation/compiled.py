@@ -1765,7 +1765,7 @@ class CompiledSimulation:
                                 )
                             else:
                                 hx_old, hy_old, hz_old = hx, hy, hz
-                                hx, hy, hz = ops.fused_update_h_lossless_3d_z_sliced(
+                                hx, hy, hz = ops.fused_update_h_lossless_3d(
                                     ex,
                                     ey,
                                     ez,
