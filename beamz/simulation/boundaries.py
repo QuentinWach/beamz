@@ -1980,10 +1980,17 @@ def cpml_update_e_from_h_3d_shell_split(
             high_metallic=high_edge in metallic_edges,
         )
 
-    def e_scale(source_lossless, permittivity, dtype):
+    def add_e_term(field, source_lossless, permittivity, term):
         if getattr(source_lossless, "size", 0) > 0:
-            return source_lossless
-        return dt / (_scalar_like(EPS_0, dtype) * permittivity)
+            return field + source_lossless * term
+        scale = _scalar_like(dt, field.dtype) / _scalar_like(EPS_0, field.dtype)
+        return field + scale * term / permittivity
+
+    def subtract_e_term(field, source_lossless, permittivity, term):
+        if getattr(source_lossless, "size", 0) > 0:
+            return field - source_lossless * term
+        scale = _scalar_like(dt, field.dtype) / _scalar_like(EPS_0, field.dtype)
+        return field - scale * term / permittivity
 
     term0, psi0 = _cpml_corrected_update_term(
         _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
@@ -1993,8 +2000,7 @@ def cpml_update_e_from_h_3d_shell_split(
         inv_kappa_e_terms[0],
     )
     ex_old = ex
-    ex_source = e_scale(e_source_lossless_x, e_permittivity_x, ex.dtype)
-    ex = ex_old + ex_source * term0
+    ex = add_e_term(ex_old, e_source_lossless_x, e_permittivity_x, term0)
     term1, psi1 = _cpml_corrected_update_term(
         _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
         psi_e_terms[1],
@@ -2002,7 +2008,7 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[1],
         inv_kappa_e_terms[1],
     )
-    ex = ex - ex_source * term1
+    ex = subtract_e_term(ex, e_source_lossless_x, e_permittivity_x, term1)
     ex = apply_lossy_shell_from_lossless_3d(
         ex,
         ex_old,
@@ -2022,8 +2028,7 @@ def cpml_update_e_from_h_3d_shell_split(
         inv_kappa_e_terms[2],
     )
     ey_old = ey
-    ey_source = e_scale(e_source_lossless_y, e_permittivity_y, ey.dtype)
-    ey = ey_old + ey_source * term2
+    ey = add_e_term(ey_old, e_source_lossless_y, e_permittivity_y, term2)
     term3, psi3 = _cpml_corrected_update_term(
         _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
         psi_e_terms[3],
@@ -2031,7 +2036,7 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[3],
         inv_kappa_e_terms[3],
     )
-    ey = ey - ey_source * term3
+    ey = subtract_e_term(ey, e_source_lossless_y, e_permittivity_y, term3)
     ey = apply_lossy_shell_from_lossless_3d(
         ey,
         ey_old,
@@ -2051,8 +2056,7 @@ def cpml_update_e_from_h_3d_shell_split(
         inv_kappa_e_terms[4],
     )
     ez_old = ez
-    ez_source = e_scale(e_source_lossless_z, e_permittivity_z, ez.dtype)
-    ez = ez_old + ez_source * term4
+    ez = add_e_term(ez_old, e_source_lossless_z, e_permittivity_z, term4)
     term5, psi5 = _cpml_corrected_update_term(
         _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
         psi_e_terms[5],
@@ -2060,7 +2064,7 @@ def cpml_update_e_from_h_3d_shell_split(
         b_e_terms[5],
         inv_kappa_e_terms[5],
     )
-    ez = ez - ez_source * term5
+    ez = subtract_e_term(ez, e_source_lossless_z, e_permittivity_z, term5)
     ez = apply_lossy_shell_from_lossless_3d(
         ez,
         ez_old,
