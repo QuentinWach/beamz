@@ -589,13 +589,34 @@ def test_sparse_3d_permittivity_e_update_matches_dense_source_grid():
         resolution,
         boundary_views=views,
     )
+    sparse_z_sliced = ops.fused_update_e_lossless_3d_permittivity_z_sliced(
+        hx,
+        hy,
+        hz,
+        ex,
+        ey,
+        ez,
+        eps_x,
+        eps_y,
+        eps_z,
+        dt,
+        resolution,
+    )
 
-    for dense_component, sparse_component in zip(dense, sparse, strict=True):
+    for dense_component, sparse_component, sliced_component in zip(
+        dense, sparse, sparse_z_sliced, strict=True
+    ):
         np.testing.assert_allclose(
             np.asarray(sparse_component),
             np.asarray(dense_component),
             rtol=2e-6,
             atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            np.asarray(sliced_component),
+            np.asarray(dense_component),
+            rtol=1e-5,
+            atol=1e-5,
         )
 
 
@@ -634,12 +655,21 @@ def test_lossless_h_update_incremental_matches_curl_formula():
     actual = ops.fused_update_h_lossless_3d(
         ex, ey, ez, hx, hy, hz, h_src, h_src, h_src, resolution
     )
+    sliced = ops.fused_update_h_lossless_3d_z_sliced(
+        ex, ey, ez, hx, hy, hz, h_src, h_src, h_src, resolution
+    )
 
-    for actual_component, expected_component in zip(
-        actual, (expected_hx, expected_hy, expected_hz), strict=True
+    for actual_component, sliced_component, expected_component in zip(
+        actual, sliced, (expected_hx, expected_hy, expected_hz), strict=True
     ):
         np.testing.assert_allclose(
             np.asarray(actual_component),
+            np.asarray(expected_component),
+            rtol=2e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            np.asarray(sliced_component),
             np.asarray(expected_component),
             rtol=2e-6,
             atol=1e-6,
@@ -872,8 +902,6 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
     program = sim.compile(num_steps=1)
 
     nx = int(sim.fields.permittivity.shape[2])
-    ny = int(sim.fields.permittivity.shape[1])
-    nz = int(sim.fields.permittivity.shape[0])
     pml_cells = int(round(thickness / dx))
 
     def expected_profile(count: int, *, sample_kind: str):

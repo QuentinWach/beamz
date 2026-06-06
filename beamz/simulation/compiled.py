@@ -1765,7 +1765,7 @@ class CompiledSimulation:
                                 )
                             else:
                                 hx_old, hy_old, hz_old = hx, hy, hz
-                                hx, hy, hz = ops.fused_update_h_lossless_3d(
+                                hx, hy, hz = ops.fused_update_h_lossless_3d_z_sliced(
                                     ex,
                                     ey,
                                     ez,
@@ -2124,11 +2124,11 @@ class CompiledSimulation:
                                     )
                                 )
                             else:
-                                boundary_views = build_h_boundary_views_for_e_3d(
-                                    hx, hy, hz, None
-                                )
                                 ex_old, ey_old, ez_old = ex, ey, ez
                                 if e_source_lossless_x.size > 0:
+                                    boundary_views = build_h_boundary_views_for_e_3d(
+                                        hx, hy, hz, None
+                                    )
                                     ex, ey, ez = ops.fused_update_e_lossless_3d(
                                         hx,
                                         hy,
@@ -2144,7 +2144,7 @@ class CompiledSimulation:
                                     )
                                 else:
                                     ex, ey, ez = (
-                                        ops.fused_update_e_lossless_3d_permittivity(
+                                        ops.fused_update_e_lossless_3d_permittivity_z_sliced(
                                             hx,
                                             hy,
                                             hz,
@@ -2156,7 +2156,6 @@ class CompiledSimulation:
                                             e_permittivity_z,
                                             dt_scalar,
                                             resolution,
-                                            boundary_views=boundary_views,
                                         )
                                     )
                                 if use_lossy_shell_ex:

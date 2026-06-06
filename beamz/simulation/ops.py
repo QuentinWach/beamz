@@ -1,6 +1,7 @@
 """Numerical operations for FDTD field updates: curls, field advancement, material handling on staggered Yee grids."""
 
 import jax.numpy as jnp
+from jax import lax
 
 from beamz.const import EPS_0, MU_0
 from beamz.simulation.yee import (
@@ -311,6 +312,52 @@ def _adjacent_difference(arr, axis, resolution):
     return jnp.moveaxis(diff, 0, axis)
 
 
+def _plane_factor(factor, z_index):
+    if getattr(factor, "ndim", 0) == 3:
+        return lax.dynamic_index_in_dim(factor, z_index, axis=0, keepdims=False)
+    return factor
+
+
+def _zero_ghost_adjacent_difference_2d(arr, axis):
+    """Adjacent difference of a 2D plane with zero ghosts at both ends."""
+
+    if axis == 0:
+        low = arr[:1, :]
+        middle = arr[1:, :] - arr[:-1, :]
+        high = -arr[-1:, :]
+    elif axis == 1:
+        low = arr[:, :1]
+        middle = arr[:, 1:] - arr[:, :-1]
+        high = -arr[:, -1:]
+    else:
+        raise ValueError(f"Unsupported 2D axis {axis!r}")
+    return jnp.concatenate([low, middle, high], axis=axis)
+
+
+def _zero_ghost_z_difference_plane(arr, z_index):
+    """One z-plane adjacent difference for zero-ghost padded half-step fields."""
+
+    last_out = arr.shape[0]
+
+    def low_plane(_):
+        return lax.dynamic_index_in_dim(arr, 0, axis=0, keepdims=False)
+
+    def high_plane(_):
+        return -lax.dynamic_index_in_dim(arr, arr.shape[0] - 1, axis=0, keepdims=False)
+
+    def middle_plane(_):
+        hi = lax.dynamic_index_in_dim(arr, z_index, axis=0, keepdims=False)
+        lo = lax.dynamic_index_in_dim(arr, z_index - 1, axis=0, keepdims=False)
+        return hi - lo
+
+    return lax.cond(
+        z_index == 0,
+        low_plane,
+        lambda _: lax.cond(z_index == last_out, high_plane, middle_plane, None),
+        None,
+    )
+
+
 def curl_h_to_e_3d(
     hx,
     hy,
@@ -366,12 +413,69 @@ def fused_update_h_lossless_3d(
 ):
     """H_new = H_old - source_lossless * curl_E (no intermediate curl arrays)."""
     inv_res = 1.0 / resolution
-    hx = hx - h_src_ll_x * (ez[:, 1:, :] - ez[:, :-1, :]) * inv_res
-    hx = hx + h_src_ll_x * (ey[1:, :, :] - ey[:-1, :, :]) * inv_res
-    hy = hy - h_src_ll_y * (ex[1:, :, :] - ex[:-1, :, :]) * inv_res
-    hy = hy + h_src_ll_y * (ez[:, :, 1:] - ez[:, :, :-1]) * inv_res
-    hz = hz - h_src_ll_z * (ey[:, :, 1:] - ey[:, :, :-1]) * inv_res
-    hz = hz + h_src_ll_z * (ex[:, 1:, :] - ex[:, :-1, :]) * inv_res
+    hx = hx - h_src_ll_x * (
+        (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
+    ) * inv_res
+    hy = hy - h_src_ll_y * (
+        (ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])
+    ) * inv_res
+    hz = hz - h_src_ll_z * (
+        (ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])
+    ) * inv_res
+    return hx, hy, hz
+
+
+def fused_update_h_lossless_3d_z_sliced(
+    ex, ey, ez, hx, hy, hz, h_src_ll_x, h_src_ll_y, h_src_ll_z, resolution
+):
+    """Lossless 3D H update with z-plane curl temporaries instead of full grids."""
+
+    inv_res = 1.0 / resolution
+
+    def update_hx_plane(z_index, value):
+        plane = lax.dynamic_index_in_dim(value, z_index, axis=0, keepdims=False)
+        ez_plane = lax.dynamic_index_in_dim(ez, z_index, axis=0, keepdims=False)
+        ey_hi = lax.dynamic_index_in_dim(ey, z_index + 1, axis=0, keepdims=False)
+        ey_lo = lax.dynamic_index_in_dim(ey, z_index, axis=0, keepdims=False)
+        curl = (
+            (ez_plane[1:, :] - ez_plane[:-1, :])
+            - (ey_hi - ey_lo)
+        )
+        updated = plane - _plane_factor(h_src_ll_x, z_index) * curl * inv_res
+        return lax.dynamic_update_slice_in_dim(
+            value, updated[jnp.newaxis, ...], z_index, axis=0
+        )
+
+    def update_hy_plane(z_index, value):
+        plane = lax.dynamic_index_in_dim(value, z_index, axis=0, keepdims=False)
+        ex_hi = lax.dynamic_index_in_dim(ex, z_index + 1, axis=0, keepdims=False)
+        ex_lo = lax.dynamic_index_in_dim(ex, z_index, axis=0, keepdims=False)
+        ez_plane = lax.dynamic_index_in_dim(ez, z_index, axis=0, keepdims=False)
+        curl = (
+            (ex_hi - ex_lo)
+            - (ez_plane[:, 1:] - ez_plane[:, :-1])
+        )
+        updated = plane - _plane_factor(h_src_ll_y, z_index) * curl * inv_res
+        return lax.dynamic_update_slice_in_dim(
+            value, updated[jnp.newaxis, ...], z_index, axis=0
+        )
+
+    def update_hz_plane(z_index, value):
+        plane = lax.dynamic_index_in_dim(value, z_index, axis=0, keepdims=False)
+        ey_plane = lax.dynamic_index_in_dim(ey, z_index, axis=0, keepdims=False)
+        ex_plane = lax.dynamic_index_in_dim(ex, z_index, axis=0, keepdims=False)
+        curl = (
+            (ey_plane[:, 1:] - ey_plane[:, :-1])
+            - (ex_plane[1:, :] - ex_plane[:-1, :])
+        )
+        updated = plane - _plane_factor(h_src_ll_z, z_index) * curl * inv_res
+        return lax.dynamic_update_slice_in_dim(
+            value, updated[jnp.newaxis, ...], z_index, axis=0
+        )
+
+    hx = lax.fori_loop(0, hx.shape[0], update_hx_plane, hx)
+    hy = lax.fori_loop(0, hy.shape[0], update_hy_plane, hy)
+    hz = lax.fori_loop(0, hz.shape[0], update_hz_plane, hz)
     return hx, hy, hz
 
 
@@ -557,40 +661,83 @@ def fused_update_e_lossless_3d_permittivity(
 ):
     """E_new = E_old + dt/(eps0*eps_r) * curl_H without dense source grids."""
     dt_over_eps0 = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
-
-    ex = ex + (
-        dt_over_eps0
-        * _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution)
-        / e_permittivity_x
+    ex = ex + dt_over_eps0 * (1.0 / e_permittivity_x) * (
+        _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution)
+        - _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution)
     )
-    ex = ex - (
-        dt_over_eps0
-        * _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution)
-        / e_permittivity_x
+    ey = ey + dt_over_eps0 * (1.0 / e_permittivity_y) * (
+        _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution)
+        - _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution)
     )
-
-    ey = ey + (
-        dt_over_eps0
-        * _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution)
-        / e_permittivity_y
-    )
-    ey = ey - (
-        dt_over_eps0
-        * _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution)
-        / e_permittivity_y
+    ez = ez + dt_over_eps0 * (1.0 / e_permittivity_z) * (
+        _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution)
+        - _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution)
     )
 
-    ez = ez + (
-        dt_over_eps0
-        * _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution)
-        / e_permittivity_z
-    )
-    ez = ez - (
-        dt_over_eps0
-        * _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution)
-        / e_permittivity_z
-    )
+    return ex, ey, ez
 
+
+def fused_update_e_lossless_3d_permittivity_z_sliced(
+    hx,
+    hy,
+    hz,
+    ex,
+    ey,
+    ez,
+    e_permittivity_x,
+    e_permittivity_y,
+    e_permittivity_z,
+    dt,
+    resolution,
+):
+    """Lossless 3D E update with z-plane curl temporaries and inline inv_eps."""
+
+    dt_over_eps0 = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
+    scale = dt_over_eps0 / resolution
+
+    def update_ex_plane(z_index, value):
+        plane = lax.dynamic_index_in_dim(value, z_index, axis=0, keepdims=False)
+        hz_plane = lax.dynamic_index_in_dim(hz, z_index, axis=0, keepdims=False)
+        d_hz_dy = _zero_ghost_adjacent_difference_2d(hz_plane, axis=0)
+        d_hy_dz = _zero_ghost_z_difference_plane(hy, z_index)
+        eps_plane = lax.dynamic_index_in_dim(
+            e_permittivity_x, z_index, axis=0, keepdims=False
+        )
+        updated = plane + scale * (1.0 / eps_plane) * (d_hz_dy - d_hy_dz)
+        return lax.dynamic_update_slice_in_dim(
+            value, updated[jnp.newaxis, ...], z_index, axis=0
+        )
+
+    def update_ey_plane(z_index, value):
+        plane = lax.dynamic_index_in_dim(value, z_index, axis=0, keepdims=False)
+        d_hx_dz = _zero_ghost_z_difference_plane(hx, z_index)
+        hz_plane = lax.dynamic_index_in_dim(hz, z_index, axis=0, keepdims=False)
+        d_hz_dx = _zero_ghost_adjacent_difference_2d(hz_plane, axis=1)
+        eps_plane = lax.dynamic_index_in_dim(
+            e_permittivity_y, z_index, axis=0, keepdims=False
+        )
+        updated = plane + scale * (1.0 / eps_plane) * (d_hx_dz - d_hz_dx)
+        return lax.dynamic_update_slice_in_dim(
+            value, updated[jnp.newaxis, ...], z_index, axis=0
+        )
+
+    def update_ez_plane(z_index, value):
+        plane = lax.dynamic_index_in_dim(value, z_index, axis=0, keepdims=False)
+        hy_plane = lax.dynamic_index_in_dim(hy, z_index, axis=0, keepdims=False)
+        hx_plane = lax.dynamic_index_in_dim(hx, z_index, axis=0, keepdims=False)
+        d_hy_dx = _zero_ghost_adjacent_difference_2d(hy_plane, axis=1)
+        d_hx_dy = _zero_ghost_adjacent_difference_2d(hx_plane, axis=0)
+        eps_plane = lax.dynamic_index_in_dim(
+            e_permittivity_z, z_index, axis=0, keepdims=False
+        )
+        updated = plane + scale * (1.0 / eps_plane) * (d_hy_dx - d_hx_dy)
+        return lax.dynamic_update_slice_in_dim(
+            value, updated[jnp.newaxis, ...], z_index, axis=0
+        )
+
+    ex = lax.fori_loop(0, ex.shape[0], update_ex_plane, ex)
+    ey = lax.fori_loop(0, ey.shape[0], update_ey_plane, ey)
+    ez = lax.fori_loop(0, ez.shape[0], update_ez_plane, ez)
     return ex, ey, ez
 
 
