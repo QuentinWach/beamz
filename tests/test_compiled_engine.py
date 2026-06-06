@@ -603,6 +603,118 @@ def test_lossless_h_update_incremental_matches_curl_formula():
         )
 
 
+def test_primitive_material_3d_lossy_updates_match_dense_coefficients():
+    key = jax.random.PRNGKey(13)
+    keys = jax.random.split(key, 15)
+    hx = jax.random.normal(keys[0], (3, 4, 6), dtype=jnp.float32)
+    hy = jax.random.normal(keys[1], (3, 5, 5), dtype=jnp.float32)
+    hz = jax.random.normal(keys[2], (4, 4, 5), dtype=jnp.float32)
+    ex = jax.random.normal(keys[3], (4, 5, 5), dtype=jnp.float32)
+    ey = jax.random.normal(keys[4], (4, 4, 6), dtype=jnp.float32)
+    ez = jax.random.normal(keys[5], (3, 5, 6), dtype=jnp.float32)
+    eps_x = 1.0 + jnp.abs(jax.random.normal(keys[6], ex.shape, dtype=jnp.float32))
+    eps_y = 1.0 + jnp.abs(jax.random.normal(keys[7], ey.shape, dtype=jnp.float32))
+    eps_z = 1.0 + jnp.abs(jax.random.normal(keys[8], ez.shape, dtype=jnp.float32))
+    sig_x = jnp.abs(jax.random.normal(keys[9], ex.shape, dtype=jnp.float32)) * 0.1
+    sig_y = jnp.abs(jax.random.normal(keys[10], ey.shape, dtype=jnp.float32)) * 0.1
+    sig_z = jnp.abs(jax.random.normal(keys[11], ez.shape, dtype=jnp.float32)) * 0.1
+    sigma_m_x = jnp.abs(jax.random.normal(keys[12], hx.shape, dtype=jnp.float32)) * 0.1
+    sigma_m_y = jnp.abs(jax.random.normal(keys[13], hy.shape, dtype=jnp.float32)) * 0.1
+    sigma_m_z = jnp.abs(jax.random.normal(keys[14], hz.shape, dtype=jnp.float32)) * 0.1
+    dt = jnp.asarray(1.0e-17, dtype=jnp.float32)
+    resolution = jnp.asarray(2.5e-8, dtype=jnp.float32)
+    views = build_h_boundary_views_for_e_3d(hx, hy, hz, None)
+
+    (h_decay_x, h_src_x, _), (h_decay_y, h_src_y, _), (h_decay_z, h_src_z, _) = (
+        ops.precompute_h_update_coefficients(sigma_m_x, dt),
+        ops.precompute_h_update_coefficients(sigma_m_y, dt),
+        ops.precompute_h_update_coefficients(sigma_m_z, dt),
+    )
+    dense_h = ops.fused_update_h_lossy_3d(
+        ex,
+        ey,
+        ez,
+        hx,
+        hy,
+        hz,
+        h_decay_x,
+        h_src_x,
+        h_decay_y,
+        h_src_y,
+        h_decay_z,
+        h_src_z,
+        resolution,
+    )
+    primitive_h = ops.fused_update_h_lossy_3d_material(
+        ex,
+        ey,
+        ez,
+        hx,
+        hy,
+        hz,
+        sigma_m_x,
+        sigma_m_y,
+        sigma_m_z,
+        dt,
+        resolution,
+    )
+
+    (e_decay_x, e_src_x, _), (e_decay_y, e_src_y, _), (e_decay_z, e_src_z, _) = (
+        ops.precompute_e_update_coefficients(
+            ex.shape, sig_x, eps_x, dt, (slice(None),) * 3
+        ),
+        ops.precompute_e_update_coefficients(
+            ey.shape, sig_y, eps_y, dt, (slice(None),) * 3
+        ),
+        ops.precompute_e_update_coefficients(
+            ez.shape, sig_z, eps_z, dt, (slice(None),) * 3
+        ),
+    )
+    dense_e = ops.fused_update_e_lossy_3d(
+        hx,
+        hy,
+        hz,
+        ex,
+        ey,
+        ez,
+        e_decay_x,
+        e_src_x,
+        e_decay_y,
+        e_src_y,
+        e_decay_z,
+        e_src_z,
+        resolution,
+        boundary_views=views,
+    )
+    primitive_e = ops.fused_update_e_lossy_3d_material(
+        hx,
+        hy,
+        hz,
+        ex,
+        ey,
+        ez,
+        sig_x,
+        eps_x,
+        sig_y,
+        eps_y,
+        sig_z,
+        eps_z,
+        dt,
+        resolution,
+        boundary_views=views,
+    )
+
+    for primitive_component, dense_component in zip(
+        (*primitive_h, *primitive_e), (*dense_h, *dense_e), strict=True
+    ):
+        np.testing.assert_allclose(
+            np.asarray(primitive_component),
+            np.asarray(dense_component),
+            rtol=2e-6,
+            atol=1e-6,
+        )
+
+
 def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
@@ -646,7 +758,7 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
     )
 
 
-def test_compiled_keeps_dense_coefficients_for_non_shell_3d_loss():
+def test_compiled_uses_primitive_material_coefficients_for_non_shell_3d_loss():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -665,7 +777,7 @@ def test_compiled_keeps_dense_coefficients_for_non_shell_3d_loss():
     sim = Simulation(
         design=design,
         sources=[],
-        boundaries=[],
+        boundaries=[PML(edges="all", thickness=0.5 * wl)],
         time=np.arange(0, 2 * dt, dt),
         resolution=dx,
     )
@@ -674,10 +786,17 @@ def test_compiled_keeps_dense_coefficients_for_non_shell_3d_loss():
 
     assert not program.use_sparse_3d_e_coefficients
     assert not program.use_sparse_3d_h_coefficients
-    assert program.e_decay_x.size > 0
-    assert program.e_source_x.size > 0
-    assert program.h_decay_x.size > 0
-    assert program.h_source_x.size > 0
+    assert program.use_primitive_3d_e_coefficients
+    assert program.use_primitive_3d_h_coefficients
+    assert program.e_decay_x.shape == (0, 0, 0)
+    assert program.e_source_x.shape == (0, 0, 0)
+    assert program.h_decay_x.shape == (0, 0, 0)
+    assert program.h_source_x.shape == (0, 0, 0)
+    assert program.e_conductivity_x is sim.fields.sig_x
+    assert program.e_permittivity_x is sim.fields.eps_x
+    assert program.h_sigma_m_x is sim.fields.sigma_m_hx
+
+    sim.run_compiled(num_steps=1, progress=False)
 
 
 def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():

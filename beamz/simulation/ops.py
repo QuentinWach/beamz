@@ -407,6 +407,54 @@ def fused_update_h_lossy_3d(
     return hx, hy, hz
 
 
+def fused_update_h_lossy_3d_material(
+    ex,
+    ey,
+    ez,
+    hx,
+    hy,
+    hz,
+    h_sigma_m_x,
+    h_sigma_m_y,
+    h_sigma_m_z,
+    dt,
+    resolution,
+):
+    """H_new from sigma_m grids without persistent dense decay/source grids."""
+    inv_res = 1.0 / resolution
+    dt_over_mu0 = jnp.asarray(dt, dtype=hx.dtype) / jnp.asarray(MU_0, dtype=hx.dtype)
+    half_dt_over_mu0 = 0.5 * dt_over_mu0
+
+    alpha_x = h_sigma_m_x * half_dt_over_mu0
+    denom_x = 1.0 + alpha_x
+    hx = (
+        (1.0 - alpha_x) / denom_x * hx
+        - (dt_over_mu0 / denom_x)
+        * ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
+        * inv_res
+    )
+
+    alpha_y = h_sigma_m_y * half_dt_over_mu0
+    denom_y = 1.0 + alpha_y
+    hy = (
+        (1.0 - alpha_y) / denom_y * hy
+        - (dt_over_mu0 / denom_y)
+        * ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
+        * inv_res
+    )
+
+    alpha_z = h_sigma_m_z * half_dt_over_mu0
+    denom_z = 1.0 + alpha_z
+    hz = (
+        (1.0 - alpha_z) / denom_z * hz
+        - (dt_over_mu0 / denom_z)
+        * ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
+        * inv_res
+    )
+
+    return hx, hy, hz
+
+
 def fused_update_e_lossless_3d(
     hx,
     hy,
@@ -434,6 +482,61 @@ def fused_update_e_lossless_3d(
         _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution)
         - _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution)
     )
+    return ex, ey, ez
+
+
+def fused_update_e_lossy_3d_material(
+    hx,
+    hy,
+    hz,
+    ex,
+    ey,
+    ez,
+    e_conductivity_x,
+    e_permittivity_x,
+    e_conductivity_y,
+    e_permittivity_y,
+    e_conductivity_z,
+    e_permittivity_z,
+    dt,
+    resolution,
+    *,
+    boundary_views,
+):
+    """E_new from sigma/epsilon grids without persistent dense decay/source grids."""
+    dt_over_eps0 = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
+    half_dt_over_eps0 = 0.5 * dt_over_eps0
+
+    beta_x = e_conductivity_x * half_dt_over_eps0 / e_permittivity_x
+    denom_x = 1.0 + beta_x
+    curl_hx = _adjacent_difference(
+        boundary_views["hz_y"], axis=1, resolution=resolution
+    ) - (_adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution))
+    ex = (
+        (1.0 - beta_x) / denom_x * ex
+        + (dt_over_eps0 / e_permittivity_x) / denom_x * curl_hx
+    )
+
+    beta_y = e_conductivity_y * half_dt_over_eps0 / e_permittivity_y
+    denom_y = 1.0 + beta_y
+    curl_hy = _adjacent_difference(
+        boundary_views["hx_z"], axis=0, resolution=resolution
+    ) - (_adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution))
+    ey = (
+        (1.0 - beta_y) / denom_y * ey
+        + (dt_over_eps0 / e_permittivity_y) / denom_y * curl_hy
+    )
+
+    beta_z = e_conductivity_z * half_dt_over_eps0 / e_permittivity_z
+    denom_z = 1.0 + beta_z
+    curl_hz = _adjacent_difference(
+        boundary_views["hy_x"], axis=2, resolution=resolution
+    ) - (_adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution))
+    ez = (
+        (1.0 - beta_z) / denom_z * ez
+        + (dt_over_eps0 / e_permittivity_z) / denom_z * curl_hz
+    )
+
     return ex, ey, ez
 
 

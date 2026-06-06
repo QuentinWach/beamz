@@ -313,23 +313,29 @@ class UpdateCoefficients(NamedTuple):
     h_decay_x: jnp.ndarray
     h_source_x: jnp.ndarray
     h_source_lossless_x: jnp.ndarray
+    h_sigma_m_x: jnp.ndarray
     h_decay_y: jnp.ndarray
     h_source_y: jnp.ndarray
     h_source_lossless_y: jnp.ndarray
+    h_sigma_m_y: jnp.ndarray
     h_decay_z: jnp.ndarray
     h_source_z: jnp.ndarray
     h_source_lossless_z: jnp.ndarray
+    h_sigma_m_z: jnp.ndarray
     e_decay_x: jnp.ndarray
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
+    e_conductivity_x: jnp.ndarray
     e_permittivity_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_source_lossless_y: jnp.ndarray
+    e_conductivity_y: jnp.ndarray
     e_permittivity_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_source_lossless_z: jnp.ndarray
+    e_conductivity_z: jnp.ndarray
     e_permittivity_z: jnp.ndarray
     tm_h_decay_x: jnp.ndarray
     tm_h_source_x: jnp.ndarray
@@ -387,23 +393,29 @@ class CompiledSimulation:
     h_decay_x: jnp.ndarray
     h_source_x: jnp.ndarray
     h_source_lossless_x: jnp.ndarray
+    h_sigma_m_x: jnp.ndarray
     h_decay_y: jnp.ndarray
     h_source_y: jnp.ndarray
     h_source_lossless_y: jnp.ndarray
+    h_sigma_m_y: jnp.ndarray
     h_decay_z: jnp.ndarray
     h_source_z: jnp.ndarray
     h_source_lossless_z: jnp.ndarray
+    h_sigma_m_z: jnp.ndarray
     e_decay_x: jnp.ndarray
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
+    e_conductivity_x: jnp.ndarray
     e_permittivity_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_source_lossless_y: jnp.ndarray
+    e_conductivity_y: jnp.ndarray
     e_permittivity_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_source_lossless_z: jnp.ndarray
+    e_conductivity_z: jnp.ndarray
     e_permittivity_z: jnp.ndarray
     tm_h_decay_x: jnp.ndarray
     tm_h_source_x: jnp.ndarray
@@ -479,6 +491,8 @@ class CompiledSimulation:
     h_lossy_shell_z: tuple[tuple[tuple[int, int, int], tuple[int, int, int]], ...]
     use_sparse_3d_h_coefficients: bool
     use_sparse_3d_e_coefficients: bool
+    use_primitive_3d_h_coefficients: bool
+    use_primitive_3d_e_coefficients: bool
 
     # Explicit metallic-wall masks aligned to the Yee staggering.
     ex_metal_mask: jnp.ndarray
@@ -1443,18 +1457,24 @@ class CompiledSimulation:
         ):
             h_decay_x, h_source_x = coeffs.h_decay_x, coeffs.h_source_x
             h_source_lossless_x = coeffs.h_source_lossless_x
+            h_sigma_m_x = coeffs.h_sigma_m_x
             h_decay_y, h_source_y = coeffs.h_decay_y, coeffs.h_source_y
             h_source_lossless_y = coeffs.h_source_lossless_y
+            h_sigma_m_y = coeffs.h_sigma_m_y
             h_decay_z, h_source_z = coeffs.h_decay_z, coeffs.h_source_z
             h_source_lossless_z = coeffs.h_source_lossless_z
+            h_sigma_m_z = coeffs.h_sigma_m_z
             e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
             e_source_lossless_x = coeffs.e_source_lossless_x
+            e_conductivity_x = coeffs.e_conductivity_x
             e_permittivity_x = coeffs.e_permittivity_x
             e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
             e_source_lossless_y = coeffs.e_source_lossless_y
+            e_conductivity_y = coeffs.e_conductivity_y
             e_permittivity_y = coeffs.e_permittivity_y
             e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
             e_source_lossless_z = coeffs.e_source_lossless_z
+            e_conductivity_z = coeffs.e_conductivity_z
             e_permittivity_z = coeffs.e_permittivity_z
             tm_h_decay_x, tm_h_source_x = coeffs.tm_h_decay_x, coeffs.tm_h_source_x
             tm_h_decay_y, tm_h_source_y = coeffs.tm_h_decay_y, coeffs.tm_h_source_y
@@ -1496,6 +1516,8 @@ class CompiledSimulation:
             full_pec_3d = self.full_pec_3d
             use_sparse_3d_h_coefficients = self.use_sparse_3d_h_coefficients
             use_sparse_3d_e_coefficients = self.use_sparse_3d_e_coefficients
+            use_primitive_3d_h_coefficients = self.use_primitive_3d_h_coefficients
+            use_primitive_3d_e_coefficients = self.use_primitive_3d_e_coefficients
             tm_ez_mask = self.tm_ez_mask
             tm_hx_mask = self.tm_hx_mask
             tm_hy_mask = self.tm_hy_mask
@@ -1754,6 +1776,20 @@ class CompiledSimulation:
                                         ),
                                         psi_h_terms=cpml3d_psi_h_terms,
                                     )
+                                )
+                            elif use_primitive_3d_h_coefficients:
+                                hx, hy, hz = ops.fused_update_h_lossy_3d_material(
+                                    ex,
+                                    ey,
+                                    ez,
+                                    hx,
+                                    hy,
+                                    hz,
+                                    h_sigma_m_x,
+                                    h_sigma_m_y,
+                                    h_sigma_m_z,
+                                    dt_scalar,
+                                    resolution,
                                 )
                             else:
                                 hx, hy, hz = ops.fused_update_h_lossy_3d(
@@ -2085,22 +2121,41 @@ class CompiledSimulation:
                                 boundary_views = build_h_boundary_views_for_e_3d(
                                     hx, hy, hz, None
                                 )
-                                ex, ey, ez = ops.fused_update_e_lossy_3d(
-                                    hx,
-                                    hy,
-                                    hz,
-                                    ex,
-                                    ey,
-                                    ez,
-                                    e_decay_x,
-                                    e_source_x,
-                                    e_decay_y,
-                                    e_source_y,
-                                    e_decay_z,
-                                    e_source_z,
-                                    resolution,
-                                    boundary_views=boundary_views,
-                                )
+                                if use_primitive_3d_e_coefficients:
+                                    ex, ey, ez = ops.fused_update_e_lossy_3d_material(
+                                        hx,
+                                        hy,
+                                        hz,
+                                        ex,
+                                        ey,
+                                        ez,
+                                        e_conductivity_x,
+                                        e_permittivity_x,
+                                        e_conductivity_y,
+                                        e_permittivity_y,
+                                        e_conductivity_z,
+                                        e_permittivity_z,
+                                        dt_scalar,
+                                        resolution,
+                                        boundary_views=boundary_views,
+                                    )
+                                else:
+                                    ex, ey, ez = ops.fused_update_e_lossy_3d(
+                                        hx,
+                                        hy,
+                                        hz,
+                                        ex,
+                                        ey,
+                                        ez,
+                                        e_decay_x,
+                                        e_source_x,
+                                        e_decay_y,
+                                        e_source_y,
+                                        e_decay_z,
+                                        e_source_z,
+                                        resolution,
+                                        boundary_views=boundary_views,
+                                    )
                     elif use_physical_tm_xy:
                         curl_hx, curl_hy = xy_te_curl_h_to_e_2d(
                             hz,
@@ -2423,6 +2478,12 @@ class CompiledSimulation:
 
         update_names = set(UpdateCoefficients._fields)
         referenced_update_names = {
+            "h_sigma_m_x",
+            "h_sigma_m_y",
+            "h_sigma_m_z",
+            "e_conductivity_x",
+            "e_conductivity_y",
+            "e_conductivity_z",
             "e_permittivity_x",
             "e_permittivity_y",
             "e_permittivity_z",
@@ -2597,6 +2658,12 @@ class CompiledSimulation:
             ),
             "use_sparse_3d_h_coefficients": bool(
                 self.use_sparse_3d_h_coefficients
+            ),
+            "use_primitive_3d_e_coefficients": bool(
+                self.use_primitive_3d_e_coefficients
+            ),
+            "use_primitive_3d_h_coefficients": bool(
+                self.use_primitive_3d_h_coefficients
             ),
         }
         return report
@@ -3085,6 +3152,12 @@ def compile_simulation(
 
     use_sparse_3d_h_coefficients = False
     use_sparse_3d_e_coefficients = False
+    has_cpml_3d = bool(
+        run_cfg.is_3d
+        and getattr(fields, "has_cpml", False)
+        and getattr(fields, "pml_data", None)
+    )
+    full_pec_3d_static = bool(run_cfg.is_3d and has_full_pec_3d(boundaries))
     if bool(run_cfg.is_3d):
         e_use_lossy_shell_x, e_lossy_shell_x = _infer_lossy_shell_slabs(
             field_shape=tuple(fields.Ex.shape),
@@ -3165,6 +3238,19 @@ def compile_simulation(
         h_use_lossy_shell_y, h_lossy_shell_y = False, tuple()
         h_use_lossy_shell_z, h_lossy_shell_z = False, tuple()
 
+    use_primitive_3d_e_coefficients = bool(
+        run_cfg.is_3d
+        and (not has_cpml_3d)
+        and (not full_pec_3d_static)
+        and (not use_sparse_3d_e_coefficients)
+    )
+    use_primitive_3d_h_coefficients = bool(
+        run_cfg.is_3d
+        and (not has_cpml_3d)
+        and (not full_pec_3d_static)
+        and (not use_sparse_3d_h_coefficients)
+    )
+
     empty3 = jnp.zeros((0, 0, 0), dtype=jnp.float32)
     if use_sparse_3d_h_coefficients:
         h_decay_x = h_source_x = h_decay_y = h_source_y = empty3
@@ -3172,6 +3258,7 @@ def compile_simulation(
         h_source_lossless_x = h_source_lossless_y = h_source_lossless_z = jnp.asarray(
             dt / ops.MU_0, dtype=jnp.float32
         )
+        h_sigma_m_x = h_sigma_m_y = h_sigma_m_z = empty3
         h_shell_decay_x, h_shell_source_x = _precompute_h_update_coefficient_slabs(
             fields.sigma_m_hx, h_lossy_shell_x, dt
         )
@@ -3181,6 +3268,16 @@ def compile_simulation(
         h_shell_decay_z, h_shell_source_z = _precompute_h_update_coefficient_slabs(
             fields.sigma_m_hz, h_lossy_shell_z, dt
         )
+    elif use_primitive_3d_h_coefficients:
+        h_decay_x = h_source_x = h_decay_y = h_source_y = empty3
+        h_decay_z = h_source_z = empty3
+        h_source_lossless_x = h_source_lossless_y = h_source_lossless_z = empty3
+        h_sigma_m_x = fields.sigma_m_hx
+        h_sigma_m_y = fields.sigma_m_hy
+        h_sigma_m_z = fields.sigma_m_hz
+        h_shell_decay_x = h_shell_source_x = tuple()
+        h_shell_decay_y = h_shell_source_y = tuple()
+        h_shell_decay_z = h_shell_source_z = tuple()
     else:
         (h_decay_x, h_source_x, h_source_lossless_x), (
             h_decay_y,
@@ -3191,6 +3288,7 @@ def compile_simulation(
             ops.precompute_h_update_coefficients(fields.sigma_m_hy, dt),
             ops.precompute_h_update_coefficients(fields.sigma_m_hz, dt),
         )
+        h_sigma_m_x = h_sigma_m_y = h_sigma_m_z = empty3
         h_shell_decay_x = h_shell_source_x = tuple()
         h_shell_decay_y = h_shell_source_y = tuple()
         h_shell_decay_z = h_shell_source_z = tuple()
@@ -3199,6 +3297,7 @@ def compile_simulation(
         e_decay_x = e_source_x = e_decay_y = e_source_y = empty3
         e_decay_z = e_source_z = empty3
         e_source_lossless_x = e_source_lossless_y = e_source_lossless_z = empty3
+        e_conductivity_x = e_conductivity_y = e_conductivity_z = empty3
         e_permittivity_x = fields.eps_x
         e_permittivity_y = fields.eps_y
         e_permittivity_z = fields.eps_z
@@ -3226,6 +3325,19 @@ def compile_simulation(
             region=fields.region_z,
             slabs=e_lossy_shell_z,
         )
+    elif use_primitive_3d_e_coefficients:
+        e_decay_x = e_source_x = e_decay_y = e_source_y = empty3
+        e_decay_z = e_source_z = empty3
+        e_source_lossless_x = e_source_lossless_y = e_source_lossless_z = empty3
+        e_conductivity_x = fields.sig_x
+        e_conductivity_y = fields.sig_y
+        e_conductivity_z = fields.sig_z
+        e_permittivity_x = fields.eps_x
+        e_permittivity_y = fields.eps_y
+        e_permittivity_z = fields.eps_z
+        e_shell_decay_x = e_shell_source_x = tuple()
+        e_shell_decay_y = e_shell_source_y = tuple()
+        e_shell_decay_z = e_shell_source_z = tuple()
     else:
         (e_decay_x, e_source_x, e_source_lossless_x), (
             e_decay_y,
@@ -3258,6 +3370,7 @@ def compile_simulation(
                 region=fields.region_z,
             ),
         )
+        e_conductivity_x = e_conductivity_y = e_conductivity_z = empty3
         e_permittivity_x = e_permittivity_y = e_permittivity_z = empty3
         e_shell_decay_x = e_shell_source_x = tuple()
         e_shell_decay_y = e_shell_source_y = tuple()
@@ -3476,23 +3589,29 @@ def compile_simulation(
         h_decay_x=h_decay_x,
         h_source_x=h_source_x,
         h_source_lossless_x=h_source_lossless_x,
+        h_sigma_m_x=h_sigma_m_x,
         h_decay_y=h_decay_y,
         h_source_y=h_source_y,
         h_source_lossless_y=h_source_lossless_y,
+        h_sigma_m_y=h_sigma_m_y,
         h_decay_z=h_decay_z,
         h_source_z=h_source_z,
         h_source_lossless_z=h_source_lossless_z,
+        h_sigma_m_z=h_sigma_m_z,
         e_decay_x=e_decay_x,
         e_source_x=e_source_x,
         e_source_lossless_x=e_source_lossless_x,
+        e_conductivity_x=e_conductivity_x,
         e_permittivity_x=e_permittivity_x,
         e_decay_y=e_decay_y,
         e_source_y=e_source_y,
         e_source_lossless_y=e_source_lossless_y,
+        e_conductivity_y=e_conductivity_y,
         e_permittivity_y=e_permittivity_y,
         e_decay_z=e_decay_z,
         e_source_z=e_source_z,
         e_source_lossless_z=e_source_lossless_z,
+        e_conductivity_z=e_conductivity_z,
         e_permittivity_z=e_permittivity_z,
         tm_h_decay_x=tm_h_decay_x,
         tm_h_source_x=tm_h_source_x,
@@ -3566,6 +3685,8 @@ def compile_simulation(
         h_lossy_shell_z=h_lossy_shell_z,
         use_sparse_3d_h_coefficients=use_sparse_3d_h_coefficients,
         use_sparse_3d_e_coefficients=use_sparse_3d_e_coefficients,
+        use_primitive_3d_h_coefficients=use_primitive_3d_h_coefficients,
+        use_primitive_3d_e_coefficients=use_primitive_3d_e_coefficients,
         ex_metal_mask=metallic_masks["Ex"],
         ey_metal_mask=metallic_masks["Ey"],
         ez_metal_mask=metallic_masks["Ez"],
