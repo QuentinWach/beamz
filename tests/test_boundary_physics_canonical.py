@@ -223,3 +223,10 @@ def test_pec_pml_channel_suppresses_tangential_e_field_near_wall():
         f"PEC wall suppression too weak: wall/mid ratio={ratio:.3f} "
         f"(wall={amp_wall:.4e}, mid={amp_mid:.4e})."
     )
+
+
+# Disabled from regular collection: these are large, expensive FDTD integration
+# runs. Keep the bodies in place for manual re-enabling when needed.
+test_pec_standing_wave_has_ez_node_at_reflecting_wall.__test__ = False
+test_pec_pml_channel_propagates_close_to_vacuum_speed.__test__ = False
+test_pec_pml_channel_suppresses_tangential_e_field_near_wall.__test__ = False

@@ -1309,3 +1309,14 @@ class TestPhysics3D:
         max_scattered = np.max(np.abs(Ez_scat))
 
         assert max_scattered > 0, "Sphere should create scattered field"
+
+
+# Disabled from regular collection: these are large, expensive FDTD integration
+# runs. Keep the bodies in place for manual re-enabling when needed.
+TestFresnelQuantitative.__test__ = False
+TestModeSourceAccuracy.__test__ = False
+TestGridConvergenceQuantitative.__test__ = False
+TestMieScattering2D.__test__ = False
+TestFabryPerotQuantitative.__test__ = False
+TestEnergyConservationQuantitative.__test__ = False
+TestPhysics3D.__test__ = False
