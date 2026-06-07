@@ -59,6 +59,16 @@ class _ModeSourceState:
     _initialized: bool = False
 
 
+@dataclass(frozen=True)
+class _ModeSource3DResidual:
+    """Compact local 3D source residual emitted by ModeSource compilation."""
+
+    component: str
+    timing: str
+    index: tuple[slice, slice, slice]
+    residual: np.ndarray
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
