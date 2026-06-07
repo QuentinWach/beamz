@@ -30,7 +30,10 @@ from beamz.devices.sources.compiler import (
     _compile_mode_source_3d,
     _sample_waveform,
 )
-from beamz.devices.sources.mode import _analytic_signal_quadrature
+from beamz.devices.sources.mode import (
+    _analytic_signal_quadrature,
+    _ModeSource3DResidual,
+)
 from beamz.simulation import ops
 from beamz.simulation.boundaries import (
     build_h_boundary_views_for_e_3d,
@@ -2007,7 +2010,7 @@ def test_compile_3d_mode_source_reinitializes_missing_launch_dt(monkeypatch):
     assert seen_dt == [dt]
 
 
-def test_compile_3d_mode_source_uses_discrete_phasor_residual_slabs():
+def test_compile_3d_mode_source_uses_compact_phasor_residual_slabs():
     fields = SimpleNamespace(
         permittivity=jnp.ones((2, 2, 2)),
         permeability=jnp.ones((2, 2, 2)),
@@ -2022,31 +2025,28 @@ def test_compile_3d_mode_source_uses_discrete_phasor_residual_slabs():
         eps_z=jnp.full((1, 2, 2), 4.0),
     )
 
-    def h_delta(_fields, *, dt):
+    def compact_residuals(_fields, *, dt):
         del _fields, dt
-        return {
-            "Hx": np.zeros((1, 1, 2), dtype=np.float32),
-            "Hy": np.asarray([[[1.0 + 2.0j], [0.0]]], dtype=np.complex128),
-            "Hz": np.zeros((2, 1, 1), dtype=np.float32),
-        }
-
-    def e_delta(_fields, *, dt):
-        del _fields, dt
-        return {
-            "Ex": np.asarray(
-                [[[0.0], [3.0 - 4.0j]], [[0.0], [0.0]]],
-                dtype=np.complex128,
+        return (
+            _ModeSource3DResidual(
+                component="Hy",
+                timing="h",
+                index=(slice(0, 1), slice(0, 1), slice(0, 1)),
+                residual=np.asarray([[[1.0 + 2.0j]]], dtype=np.complex128),
             ),
-            "Ey": np.zeros((2, 1, 2), dtype=np.float32),
-            "Ez": np.zeros((1, 2, 2), dtype=np.float32),
-        }
+            _ModeSource3DResidual(
+                component="Ex",
+                timing="e",
+                index=(slice(0, 1), slice(1, 2), slice(0, 1)),
+                residual=np.asarray([[[3.0 - 4.0j]]], dtype=np.complex128),
+            ),
+        )
 
     source = SimpleNamespace(
         _axis="z",
         pol="te",
         _direction_sign=1.0,
-        _compute_discrete_3d_h_phasor_delta=h_delta,
-        _compute_discrete_3d_e_phasor_delta=e_delta,
+        _compute_discrete_3d_phasor_residuals=compact_residuals,
     )
     waveform = jnp.asarray([2.0, 3.0], dtype=jnp.float32)
     quadrature = jnp.asarray([5.0, 7.0], dtype=jnp.float32)
