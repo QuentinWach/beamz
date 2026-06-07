@@ -3435,36 +3435,19 @@ class ModeSource(RuntimeStateProxy):
 
     def _compute_discrete_3d_h_phasor_delta(self, fields, *, dt):
         """Complex carrier residual for compiled 3D ModeSource H injection."""
-        full_prev = self._build_incident_3d_phasor_state(
-            fields, t_e=0.0, t_h=-0.5 * float(dt), masked=False
+        return self._expand_3d_residuals(
+            self._compute_discrete_3d_h_phasor_residuals(fields, dt=float(dt)),
+            fields,
+            ("Hx", "Hy", "Hz"),
         )
-        masked_prev = self._build_incident_3d_phasor_state(
-            fields, t_e=0.0, t_h=-0.5 * float(dt), masked=True
-        )
-        h_full_next = self._advance_incident_h_3d(fields, full_prev, dt)
-        h_mask_next = self._advance_incident_h_3d(fields, masked_prev, dt)
-        return {
-            "Hx": h_full_next["Hx"] - h_mask_next["Hx"],
-            "Hy": h_full_next["Hy"] - h_mask_next["Hy"],
-            "Hz": h_full_next["Hz"] - h_mask_next["Hz"],
-        }
 
     def _compute_discrete_3d_e_phasor_delta(self, fields, *, dt):
         """Complex carrier residual for compiled 3D ModeSource E injection."""
-        full_prev = self._build_incident_3d_phasor_state(
-            fields, t_e=0.0, t_h=-0.5 * float(dt), masked=False
+        return self._expand_3d_residuals(
+            self._compute_discrete_3d_e_phasor_residuals(fields, dt=float(dt)),
+            fields,
+            ("Ex", "Ey", "Ez"),
         )
-        masked_prev = self._build_incident_3d_phasor_state(
-            fields, t_e=0.0, t_h=-0.5 * float(dt), masked=True
-        )
-        h_full_next = self._advance_incident_h_3d(fields, full_prev, dt)
-        e_full_next = self._advance_incident_e_3d(fields, full_prev, h_full_next, dt)
-        e_mask_next = self._advance_incident_e_3d(fields, masked_prev, h_full_next, dt)
-        return {
-            "Ex": e_full_next["Ex"] - e_mask_next["Ex"],
-            "Ey": e_full_next["Ey"] - e_mask_next["Ey"],
-            "Ez": e_full_next["Ez"] - e_mask_next["Ez"],
-        }
 
     def _inject_3d_h(self, fields, t, dt, resolution):
         """Inject H-field components for 3D source via exact discrete residual."""
