@@ -86,6 +86,7 @@ benchmarks/results/ir/
 benchmarks/results/trace/
 benchmarks/results/**
 !benchmarks/results/.gitkeep
+old_examples/
 
 beamz/devices/reference/
 notes/
