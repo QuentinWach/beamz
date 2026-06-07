@@ -858,34 +858,22 @@ def _compile_mode_source_3d(
     specs: list[CompiledSourceSpec] = []
     del resolution, e_waveform, e_quadrature_waveform, t0
 
-    def append_delta_specs(timing: str, deltas: dict[str, np.ndarray]):
-        for component, delta in deltas.items():
-            bbox = _nonzero_bbox(np.asarray(delta), atol=1e-30)
-            if bbox is None:
-                continue
-            profile = np.asarray(delta, dtype=np.complex128)[bbox]
-            target = np.asarray(getattr(fields, component)[bbox])
-            _append_phasor_source_specs(
-                specs,
-                component=component,
-                timing=timing,
-                index=bbox,
-                profile=profile,
-                target=target,
-                dt=1.0,
-                scale_denom=np.asarray(1.0, dtype=np.float64),
-                waveform=h_waveform,
-                quadrature_waveform=h_quadrature_waveform,
-                target_shape=tuple(getattr(fields, component).shape),
-            )
-
-    append_delta_specs(
-        "h",
-        src._compute_discrete_3d_h_phasor_delta(fields, dt=float(dt)),
-    )
-    append_delta_specs(
-        "e",
-        src._compute_discrete_3d_e_phasor_delta(fields, dt=float(dt)),
-    )
+    for residual in src._compute_discrete_3d_phasor_residuals(fields, dt=float(dt)):
+        component = residual.component
+        index = residual.index
+        target = np.asarray(getattr(fields, component)[index])
+        _append_phasor_source_specs(
+            specs,
+            component=component,
+            timing=residual.timing,
+            index=index,
+            profile=np.asarray(residual.residual, dtype=np.complex128),
+            target=target,
+            dt=1.0,
+            scale_denom=np.asarray(1.0, dtype=np.float64),
+            waveform=h_waveform,
+            quadrature_waveform=h_quadrature_waveform,
+            target_shape=tuple(getattr(fields, component).shape),
+        )
 
     return tuple(specs)
