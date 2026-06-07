@@ -1684,6 +1684,7 @@ def apply_lossy_shell_from_lossless_3d(
     *,
     source_conductivity=None,
     source_permittivity=None,
+    source_inv_permittivity=None,
     dt=None,
 ):
     out = updated_lossless
@@ -1699,25 +1700,47 @@ def apply_lossy_shell_from_lossless_3d(
         if getattr(source_lossless, "ndim", 0) == 0:
             source_ll_s = source_lossless
         elif getattr(source_lossless, "size", 0) == 0:
-            if source_permittivity is None or dt is None:
+            if source_permittivity is None and source_inv_permittivity is None:
                 raise ValueError(
-                    "source_permittivity and dt are required when "
+                    "source_permittivity or source_inv_permittivity is required when "
                     "source_lossless is empty."
                 )
-            eps_s = jax.lax.dynamic_slice(source_permittivity, starts, sizes)
-            source_ll_s = dt / (_scalar_like(EPS_0, eps_s.dtype) * eps_s)
+            if dt is None:
+                raise ValueError("dt is required when source_lossless is empty.")
+            if source_inv_permittivity is None:
+                eps_s = jax.lax.dynamic_slice(source_permittivity, starts, sizes)
+                source_ll_s = dt / (_scalar_like(EPS_0, eps_s.dtype) * eps_s)
+            else:
+                inv_eps_s = jax.lax.dynamic_slice(
+                    source_inv_permittivity, starts, sizes
+                )
+                source_ll_s = dt * inv_eps_s / _scalar_like(EPS_0, inv_eps_s.dtype)
         else:
             source_ll_s = jax.lax.dynamic_slice(source_lossless, starts, sizes)
         if use_primitive_factors:
             sigma_s = jax.lax.dynamic_slice(source_conductivity, starts, sizes)
             if source_permittivity is None:
-                alpha = sigma_s * (
-                    _scalar_like(dt, sigma_s.dtype)
-                    / (
-                        _scalar_like(2.0, sigma_s.dtype)
-                        * _scalar_like(MU_0, sigma_s.dtype)
+                if source_inv_permittivity is None:
+                    alpha = sigma_s * (
+                        _scalar_like(dt, sigma_s.dtype)
+                        / (
+                            _scalar_like(2.0, sigma_s.dtype)
+                            * _scalar_like(MU_0, sigma_s.dtype)
+                        )
                     )
-                )
+                else:
+                    inv_eps_s = jax.lax.dynamic_slice(
+                        source_inv_permittivity, starts, sizes
+                    )
+                    alpha = (
+                        sigma_s
+                        * _scalar_like(dt, sigma_s.dtype)
+                        * inv_eps_s
+                        / (
+                            _scalar_like(2.0, sigma_s.dtype)
+                            * _scalar_like(EPS_0, sigma_s.dtype)
+                        )
+                    )
             else:
                 eps_s = jax.lax.dynamic_slice(source_permittivity, starts, sizes)
                 alpha = sigma_s * (
@@ -2000,9 +2023,9 @@ def cpml_update_e_from_h_3d_shell_split(
     e_conductivity_x,
     e_conductivity_y,
     e_conductivity_z,
-    e_permittivity_x,
-    e_permittivity_y,
-    e_permittivity_z,
+    e_inv_permittivity_x,
+    e_inv_permittivity_y,
+    e_inv_permittivity_z,
     dt,
     resolution,
     *,
@@ -2051,29 +2074,29 @@ def cpml_update_e_from_h_3d_shell_split(
             dt,
         )
 
-    def add_e_term(field, source_lossless, permittivity, term):
+    def add_e_term(field, source_lossless, inv_permittivity, term):
         if getattr(source_lossless, "size", 0) > 0:
             return field + source_lossless * term
         scale = _scalar_like(dt, field.dtype) / _scalar_like(EPS_0, field.dtype)
-        return field + scale * term / permittivity
+        return field + scale * term * inv_permittivity
 
-    def subtract_e_term(field, source_lossless, permittivity, term):
+    def subtract_e_term(field, source_lossless, inv_permittivity, term):
         if getattr(source_lossless, "size", 0) > 0:
             return field - source_lossless * term
         scale = _scalar_like(dt, field.dtype) / _scalar_like(EPS_0, field.dtype)
-        return field - scale * term / permittivity
+        return field - scale * term * inv_permittivity
 
     term0, psi0 = correct(
         0,
         _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
     )
     ex_old = ex
-    ex = add_e_term(ex_old, e_source_lossless_x, e_permittivity_x, term0)
+    ex = add_e_term(ex_old, e_source_lossless_x, e_inv_permittivity_x, term0)
     term1, psi1 = correct(
         1,
         _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
     )
-    ex = subtract_e_term(ex, e_source_lossless_x, e_permittivity_x, term1)
+    ex = subtract_e_term(ex, e_source_lossless_x, e_inv_permittivity_x, term1)
     ex = apply_lossy_shell_from_lossless_3d(
         ex,
         ex_old,
@@ -2082,7 +2105,7 @@ def cpml_update_e_from_h_3d_shell_split(
         e_shell_decay_x,
         e_shell_source_x,
         source_conductivity=e_conductivity_x,
-        source_permittivity=e_permittivity_x,
+        source_inv_permittivity=e_inv_permittivity_x,
         dt=dt,
     )
 
@@ -2091,12 +2114,12 @@ def cpml_update_e_from_h_3d_shell_split(
         _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution),
     )
     ey_old = ey
-    ey = add_e_term(ey_old, e_source_lossless_y, e_permittivity_y, term2)
+    ey = add_e_term(ey_old, e_source_lossless_y, e_inv_permittivity_y, term2)
     term3, psi3 = correct(
         3,
         _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
     )
-    ey = subtract_e_term(ey, e_source_lossless_y, e_permittivity_y, term3)
+    ey = subtract_e_term(ey, e_source_lossless_y, e_inv_permittivity_y, term3)
     ey = apply_lossy_shell_from_lossless_3d(
         ey,
         ey_old,
@@ -2105,7 +2128,7 @@ def cpml_update_e_from_h_3d_shell_split(
         e_shell_decay_y,
         e_shell_source_y,
         source_conductivity=e_conductivity_y,
-        source_permittivity=e_permittivity_y,
+        source_inv_permittivity=e_inv_permittivity_y,
         dt=dt,
     )
 
@@ -2114,12 +2137,12 @@ def cpml_update_e_from_h_3d_shell_split(
         _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution),
     )
     ez_old = ez
-    ez = add_e_term(ez_old, e_source_lossless_z, e_permittivity_z, term4)
+    ez = add_e_term(ez_old, e_source_lossless_z, e_inv_permittivity_z, term4)
     term5, psi5 = correct(
         5,
         _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
     )
-    ez = subtract_e_term(ez, e_source_lossless_z, e_permittivity_z, term5)
+    ez = subtract_e_term(ez, e_source_lossless_z, e_inv_permittivity_z, term5)
     ez = apply_lossy_shell_from_lossless_3d(
         ez,
         ez_old,
@@ -2128,7 +2151,7 @@ def cpml_update_e_from_h_3d_shell_split(
         e_shell_decay_z,
         e_shell_source_z,
         source_conductivity=e_conductivity_z,
-        source_permittivity=e_permittivity_z,
+        source_inv_permittivity=e_inv_permittivity_z,
         dt=dt,
     )
 

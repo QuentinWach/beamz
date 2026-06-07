@@ -537,11 +537,11 @@ def fused_update_e_lossy_3d_material(
     ey,
     ez,
     e_conductivity_x,
-    e_permittivity_x,
+    e_inv_permittivity_x,
     e_conductivity_y,
-    e_permittivity_y,
+    e_inv_permittivity_y,
     e_conductivity_z,
-    e_permittivity_z,
+    e_inv_permittivity_z,
     dt,
     resolution,
     *,
@@ -551,49 +551,49 @@ def fused_update_e_lossy_3d_material(
     dt_over_eps0 = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
     half_dt_over_eps0 = 0.5 * dt_over_eps0
 
-    beta_x = e_conductivity_x * half_dt_over_eps0 / e_permittivity_x
+    beta_x = e_conductivity_x * half_dt_over_eps0 * e_inv_permittivity_x
     denom_x = 1.0 + beta_x
     curl_hx = _adjacent_difference(
         boundary_views["hz_y"], axis=1, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution))
     ex = (
         (1.0 - beta_x) / denom_x * ex
-        + (dt_over_eps0 / e_permittivity_x) / denom_x * curl_hx
+        + (dt_over_eps0 * e_inv_permittivity_x) / denom_x * curl_hx
     )
 
-    beta_y = e_conductivity_y * half_dt_over_eps0 / e_permittivity_y
+    beta_y = e_conductivity_y * half_dt_over_eps0 * e_inv_permittivity_y
     denom_y = 1.0 + beta_y
     curl_hy = _adjacent_difference(
         boundary_views["hx_z"], axis=0, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution))
     ey = (
         (1.0 - beta_y) / denom_y * ey
-        + (dt_over_eps0 / e_permittivity_y) / denom_y * curl_hy
+        + (dt_over_eps0 * e_inv_permittivity_y) / denom_y * curl_hy
     )
 
-    beta_z = e_conductivity_z * half_dt_over_eps0 / e_permittivity_z
+    beta_z = e_conductivity_z * half_dt_over_eps0 * e_inv_permittivity_z
     denom_z = 1.0 + beta_z
     curl_hz = _adjacent_difference(
         boundary_views["hy_x"], axis=2, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution))
     ez = (
         (1.0 - beta_z) / denom_z * ez
-        + (dt_over_eps0 / e_permittivity_z) / denom_z * curl_hz
+        + (dt_over_eps0 * e_inv_permittivity_z) / denom_z * curl_hz
     )
 
     return ex, ey, ez
 
 
-def fused_update_e_lossless_3d_permittivity(
+def fused_update_e_lossless_3d_inv_permittivity(
     hx,
     hy,
     hz,
     ex,
     ey,
     ez,
-    e_permittivity_x,
-    e_permittivity_y,
-    e_permittivity_z,
+    e_inv_permittivity_x,
+    e_inv_permittivity_y,
+    e_inv_permittivity_z,
     dt,
     resolution,
     *,
@@ -601,15 +601,15 @@ def fused_update_e_lossless_3d_permittivity(
 ):
     """E_new = E_old + dt/(eps0*eps_r) * curl_H without dense source grids."""
     dt_over_eps0 = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
-    ex = ex + dt_over_eps0 * (1.0 / e_permittivity_x) * (
+    ex = ex + dt_over_eps0 * e_inv_permittivity_x * (
         _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution)
         - _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution)
     )
-    ey = ey + dt_over_eps0 * (1.0 / e_permittivity_y) * (
+    ey = ey + dt_over_eps0 * e_inv_permittivity_y * (
         _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution)
         - _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution)
     )
-    ez = ez + dt_over_eps0 * (1.0 / e_permittivity_z) * (
+    ez = ez + dt_over_eps0 * e_inv_permittivity_z * (
         _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution)
         - _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution)
     )
@@ -617,16 +617,16 @@ def fused_update_e_lossless_3d_permittivity(
     return ex, ey, ez
 
 
-def fused_update_e_lossless_3d_permittivity_z_sliced(
+def fused_update_e_lossless_3d_inv_permittivity_z_sliced(
     hx,
     hy,
     hz,
     ex,
     ey,
     ez,
-    e_permittivity_x,
-    e_permittivity_y,
-    e_permittivity_z,
+    e_inv_permittivity_x,
+    e_inv_permittivity_y,
+    e_inv_permittivity_z,
     dt,
     resolution,
 ):
@@ -640,10 +640,10 @@ def fused_update_e_lossless_3d_permittivity_z_sliced(
         hz_plane = lax.dynamic_index_in_dim(hz, z_index, axis=0, keepdims=False)
         d_hz_dy = _zero_ghost_adjacent_difference_2d(hz_plane, axis=0)
         d_hy_dz = _zero_ghost_z_difference_plane(hy, z_index)
-        eps_plane = lax.dynamic_index_in_dim(
-            e_permittivity_x, z_index, axis=0, keepdims=False
+        inv_eps_plane = lax.dynamic_index_in_dim(
+            e_inv_permittivity_x, z_index, axis=0, keepdims=False
         )
-        updated = plane + scale * (1.0 / eps_plane) * (d_hz_dy - d_hy_dz)
+        updated = plane + scale * inv_eps_plane * (d_hz_dy - d_hy_dz)
         return lax.dynamic_update_slice_in_dim(
             value, updated[jnp.newaxis, ...], z_index, axis=0
         )
@@ -653,10 +653,10 @@ def fused_update_e_lossless_3d_permittivity_z_sliced(
         d_hx_dz = _zero_ghost_z_difference_plane(hx, z_index)
         hz_plane = lax.dynamic_index_in_dim(hz, z_index, axis=0, keepdims=False)
         d_hz_dx = _zero_ghost_adjacent_difference_2d(hz_plane, axis=1)
-        eps_plane = lax.dynamic_index_in_dim(
-            e_permittivity_y, z_index, axis=0, keepdims=False
+        inv_eps_plane = lax.dynamic_index_in_dim(
+            e_inv_permittivity_y, z_index, axis=0, keepdims=False
         )
-        updated = plane + scale * (1.0 / eps_plane) * (d_hx_dz - d_hz_dx)
+        updated = plane + scale * inv_eps_plane * (d_hx_dz - d_hz_dx)
         return lax.dynamic_update_slice_in_dim(
             value, updated[jnp.newaxis, ...], z_index, axis=0
         )
@@ -667,10 +667,10 @@ def fused_update_e_lossless_3d_permittivity_z_sliced(
         hx_plane = lax.dynamic_index_in_dim(hx, z_index, axis=0, keepdims=False)
         d_hy_dx = _zero_ghost_adjacent_difference_2d(hy_plane, axis=1)
         d_hx_dy = _zero_ghost_adjacent_difference_2d(hx_plane, axis=0)
-        eps_plane = lax.dynamic_index_in_dim(
-            e_permittivity_z, z_index, axis=0, keepdims=False
+        inv_eps_plane = lax.dynamic_index_in_dim(
+            e_inv_permittivity_z, z_index, axis=0, keepdims=False
         )
-        updated = plane + scale * (1.0 / eps_plane) * (d_hy_dx - d_hx_dy)
+        updated = plane + scale * inv_eps_plane * (d_hy_dx - d_hx_dy)
         return lax.dynamic_update_slice_in_dim(
             value, updated[jnp.newaxis, ...], z_index, axis=0
         )

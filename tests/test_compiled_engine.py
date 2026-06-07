@@ -473,9 +473,18 @@ def test_compiled_uses_sparse_shell_coefficients_3d():
     assert program.e_source_lossless_x.shape == (0, 0, 0)
     assert program.e_source_lossless_y.shape == (0, 0, 0)
     assert program.e_source_lossless_z.shape == (0, 0, 0)
-    assert program.e_permittivity_x is sim.fields.eps_x
-    assert program.e_permittivity_y is sim.fields.eps_y
-    assert program.e_permittivity_z is sim.fields.eps_z
+    np.testing.assert_allclose(
+        np.asarray(program.e_inv_permittivity_x),
+        np.asarray(1.0 / sim.fields.eps_x),
+    )
+    np.testing.assert_allclose(
+        np.asarray(program.e_inv_permittivity_y),
+        np.asarray(1.0 / sim.fields.eps_y),
+    )
+    np.testing.assert_allclose(
+        np.asarray(program.e_inv_permittivity_z),
+        np.asarray(1.0 / sim.fields.eps_z),
+    )
     assert program.ex_metal_mask.shape == (0, 0, 0)
     assert program.hx_metal_mask.shape == (0, 0, 0)
     assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
@@ -558,6 +567,9 @@ def test_sparse_3d_permittivity_e_update_matches_dense_source_grid():
     eps_x = 1.0 + jnp.abs(jax.random.normal(keys[6], ex.shape, dtype=jnp.float32))
     eps_y = 1.0 + jnp.abs(jax.random.normal(keys[7], ey.shape, dtype=jnp.float32))
     eps_z = 1.0 + jnp.abs(jax.random.normal(keys[8], ez.shape, dtype=jnp.float32))
+    inv_eps_x = 1.0 / eps_x
+    inv_eps_y = 1.0 / eps_y
+    inv_eps_z = 1.0 / eps_z
     dt = jnp.asarray(1.0e-17, dtype=jnp.float32)
     resolution = jnp.asarray(2.5e-8, dtype=jnp.float32)
     views = build_h_boundary_views_for_e_3d(hx, hy, hz, None)
@@ -575,30 +587,30 @@ def test_sparse_3d_permittivity_e_update_matches_dense_source_grid():
         resolution,
         boundary_views=views,
     )
-    sparse = ops.fused_update_e_lossless_3d_permittivity(
+    sparse = ops.fused_update_e_lossless_3d_inv_permittivity(
         hx,
         hy,
         hz,
         ex,
         ey,
         ez,
-        eps_x,
-        eps_y,
-        eps_z,
+        inv_eps_x,
+        inv_eps_y,
+        inv_eps_z,
         dt,
         resolution,
         boundary_views=views,
     )
-    sparse_z_sliced = ops.fused_update_e_lossless_3d_permittivity_z_sliced(
+    sparse_z_sliced = ops.fused_update_e_lossless_3d_inv_permittivity_z_sliced(
         hx,
         hy,
         hz,
         ex,
         ey,
         ez,
-        eps_x,
-        eps_y,
-        eps_z,
+        inv_eps_x,
+        inv_eps_y,
+        inv_eps_z,
         dt,
         resolution,
     )
@@ -678,6 +690,9 @@ def test_primitive_material_3d_lossy_updates_match_dense_coefficients():
     eps_x = 1.0 + jnp.abs(jax.random.normal(keys[6], ex.shape, dtype=jnp.float32))
     eps_y = 1.0 + jnp.abs(jax.random.normal(keys[7], ey.shape, dtype=jnp.float32))
     eps_z = 1.0 + jnp.abs(jax.random.normal(keys[8], ez.shape, dtype=jnp.float32))
+    inv_eps_x = 1.0 / eps_x
+    inv_eps_y = 1.0 / eps_y
+    inv_eps_z = 1.0 / eps_z
     sig_x = jnp.abs(jax.random.normal(keys[9], ex.shape, dtype=jnp.float32)) * 0.1
     sig_y = jnp.abs(jax.random.normal(keys[10], ey.shape, dtype=jnp.float32)) * 0.1
     sig_z = jnp.abs(jax.random.normal(keys[11], ez.shape, dtype=jnp.float32)) * 0.1
@@ -757,11 +772,11 @@ def test_primitive_material_3d_lossy_updates_match_dense_coefficients():
         ey,
         ez,
         sig_x,
-        eps_x,
+        inv_eps_x,
         sig_y,
-        eps_y,
+        inv_eps_y,
         sig_z,
-        eps_z,
+        inv_eps_z,
         dt,
         resolution,
         boundary_views=views,
@@ -810,8 +825,8 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
     referenced_names = {
         entry["name"] for entry in report["compiled"]["referenced_inputs"]["entries"]
     }
-    assert "e_permittivity_x" not in compiled_names
-    assert {"e_permittivity_x", "e_permittivity_y", "e_permittivity_z"} <= (
+    assert "e_inv_permittivity_x" not in compiled_names
+    assert {"e_inv_permittivity_x", "e_inv_permittivity_y", "e_inv_permittivity_z"} <= (
         referenced_names
     )
     assert (
@@ -855,7 +870,10 @@ def test_compiled_uses_primitive_material_coefficients_for_non_shell_3d_loss():
     assert program.h_decay_x.shape == (0, 0, 0)
     assert program.h_source_x.shape == (0, 0, 0)
     assert program.e_conductivity_x is sim.fields.sig_x
-    assert program.e_permittivity_x is sim.fields.eps_x
+    np.testing.assert_allclose(
+        np.asarray(program.e_inv_permittivity_x),
+        np.asarray(1.0 / sim.fields.eps_x),
+    )
     assert program.h_sigma_m_x is sim.fields.sigma_m_hx
 
     sim.run_compiled(num_steps=1, progress=False)

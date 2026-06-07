@@ -345,17 +345,17 @@ class UpdateCoefficients(NamedTuple):
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
     e_conductivity_x: jnp.ndarray
-    e_permittivity_x: jnp.ndarray
+    e_inv_permittivity_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_source_lossless_y: jnp.ndarray
     e_conductivity_y: jnp.ndarray
-    e_permittivity_y: jnp.ndarray
+    e_inv_permittivity_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_source_lossless_z: jnp.ndarray
     e_conductivity_z: jnp.ndarray
-    e_permittivity_z: jnp.ndarray
+    e_inv_permittivity_z: jnp.ndarray
     tm_h_decay_x: jnp.ndarray
     tm_h_source_x: jnp.ndarray
     tm_h_decay_y: jnp.ndarray
@@ -431,17 +431,17 @@ class CompiledSimulation:
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
     e_conductivity_x: jnp.ndarray
-    e_permittivity_x: jnp.ndarray
+    e_inv_permittivity_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_source_lossless_y: jnp.ndarray
     e_conductivity_y: jnp.ndarray
-    e_permittivity_y: jnp.ndarray
+    e_inv_permittivity_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_source_lossless_z: jnp.ndarray
     e_conductivity_z: jnp.ndarray
-    e_permittivity_z: jnp.ndarray
+    e_inv_permittivity_z: jnp.ndarray
     tm_h_decay_x: jnp.ndarray
     tm_h_source_x: jnp.ndarray
     tm_h_decay_y: jnp.ndarray
@@ -1511,15 +1511,15 @@ class CompiledSimulation:
             e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
             e_source_lossless_x = coeffs.e_source_lossless_x
             e_conductivity_x = coeffs.e_conductivity_x
-            e_permittivity_x = coeffs.e_permittivity_x
+            e_inv_permittivity_x = coeffs.e_inv_permittivity_x
             e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
             e_source_lossless_y = coeffs.e_source_lossless_y
             e_conductivity_y = coeffs.e_conductivity_y
-            e_permittivity_y = coeffs.e_permittivity_y
+            e_inv_permittivity_y = coeffs.e_inv_permittivity_y
             e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
             e_source_lossless_z = coeffs.e_source_lossless_z
             e_conductivity_z = coeffs.e_conductivity_z
-            e_permittivity_z = coeffs.e_permittivity_z
+            e_inv_permittivity_z = coeffs.e_inv_permittivity_z
             tm_h_decay_x, tm_h_source_x = coeffs.tm_h_decay_x, coeffs.tm_h_source_x
             tm_h_decay_y, tm_h_source_y = coeffs.tm_h_decay_y, coeffs.tm_h_source_y
             tm_e_decay_z, tm_e_source_z = coeffs.tm_e_decay_z, coeffs.tm_e_source_z
@@ -2085,9 +2085,9 @@ class CompiledSimulation:
                                         e_conductivity_x,
                                         e_conductivity_y,
                                         e_conductivity_z,
-                                        e_permittivity_x,
-                                        e_permittivity_y,
-                                        e_permittivity_z,
+                                        e_inv_permittivity_x,
+                                        e_inv_permittivity_y,
+                                        e_inv_permittivity_z,
                                         dt_scalar,
                                         resolution,
                                         a_e_terms=self.cpml3d_a_e_terms,
@@ -2144,16 +2144,16 @@ class CompiledSimulation:
                                     )
                                 else:
                                     ex, ey, ez = (
-                                        ops.fused_update_e_lossless_3d_permittivity_z_sliced(
+                                        ops.fused_update_e_lossless_3d_inv_permittivity_z_sliced(
                                             hx,
                                             hy,
                                             hz,
                                             ex,
                                             ey,
                                             ez,
-                                            e_permittivity_x,
-                                            e_permittivity_y,
-                                            e_permittivity_z,
+                                            e_inv_permittivity_x,
+                                            e_inv_permittivity_y,
+                                            e_inv_permittivity_z,
                                             dt_scalar,
                                             resolution,
                                         )
@@ -2167,7 +2167,7 @@ class CompiledSimulation:
                                         e_shell_decay_x,
                                         e_shell_source_x,
                                         source_conductivity=e_conductivity_x,
-                                        source_permittivity=e_permittivity_x,
+                                        source_inv_permittivity=e_inv_permittivity_x,
                                         dt=dt_scalar,
                                     )
                                 if use_lossy_shell_ey:
@@ -2179,7 +2179,7 @@ class CompiledSimulation:
                                         e_shell_decay_y,
                                         e_shell_source_y,
                                         source_conductivity=e_conductivity_y,
-                                        source_permittivity=e_permittivity_y,
+                                        source_inv_permittivity=e_inv_permittivity_y,
                                         dt=dt_scalar,
                                     )
                                 if use_lossy_shell_ez:
@@ -2191,7 +2191,7 @@ class CompiledSimulation:
                                         e_shell_decay_z,
                                         e_shell_source_z,
                                         source_conductivity=e_conductivity_z,
-                                        source_permittivity=e_permittivity_z,
+                                        source_inv_permittivity=e_inv_permittivity_z,
                                         dt=dt_scalar,
                                     )
                         else:
@@ -2249,11 +2249,11 @@ class CompiledSimulation:
                                         ey,
                                         ez,
                                         e_conductivity_x,
-                                        e_permittivity_x,
+                                        e_inv_permittivity_x,
                                         e_conductivity_y,
-                                        e_permittivity_y,
+                                        e_inv_permittivity_y,
                                         e_conductivity_z,
-                                        e_permittivity_z,
+                                        e_inv_permittivity_z,
                                         dt_scalar,
                                         resolution,
                                         boundary_views=boundary_views,
@@ -2608,9 +2608,9 @@ class CompiledSimulation:
             "e_conductivity_x",
             "e_conductivity_y",
             "e_conductivity_z",
-            "e_permittivity_x",
-            "e_permittivity_y",
-            "e_permittivity_z",
+            "e_inv_permittivity_x",
+            "e_inv_permittivity_y",
+            "e_inv_permittivity_z",
         }
         for name in referenced_update_names:
             _add_array_entries(
@@ -3351,9 +3351,9 @@ def compile_simulation(
         e_conductivity_x = fields.sig_x
         e_conductivity_y = fields.sig_y
         e_conductivity_z = fields.sig_z
-        e_permittivity_x = fields.eps_x
-        e_permittivity_y = fields.eps_y
-        e_permittivity_z = fields.eps_z
+        e_inv_permittivity_x = 1.0 / fields.eps_x
+        e_inv_permittivity_y = 1.0 / fields.eps_y
+        e_inv_permittivity_z = 1.0 / fields.eps_z
         e_shell_decay_x = e_shell_source_x = tuple()
         e_shell_decay_y = e_shell_source_y = tuple()
         e_shell_decay_z = e_shell_source_z = tuple()
@@ -3364,9 +3364,9 @@ def compile_simulation(
         e_conductivity_x = fields.sig_x
         e_conductivity_y = fields.sig_y
         e_conductivity_z = fields.sig_z
-        e_permittivity_x = fields.eps_x
-        e_permittivity_y = fields.eps_y
-        e_permittivity_z = fields.eps_z
+        e_inv_permittivity_x = 1.0 / fields.eps_x
+        e_inv_permittivity_y = 1.0 / fields.eps_y
+        e_inv_permittivity_z = 1.0 / fields.eps_z
         e_shell_decay_x = e_shell_source_x = tuple()
         e_shell_decay_y = e_shell_source_y = tuple()
         e_shell_decay_z = e_shell_source_z = tuple()
@@ -3407,7 +3407,7 @@ def compile_simulation(
             ),
         )
         e_conductivity_x = e_conductivity_y = e_conductivity_z = empty3
-        e_permittivity_x = e_permittivity_y = e_permittivity_z = empty3
+        e_inv_permittivity_x = e_inv_permittivity_y = e_inv_permittivity_z = empty3
         e_shell_decay_x = e_shell_source_x = tuple()
         e_shell_decay_y = e_shell_source_y = tuple()
         e_shell_decay_z = e_shell_source_z = tuple()
@@ -3677,17 +3677,17 @@ def compile_simulation(
         e_source_x=e_source_x,
         e_source_lossless_x=e_source_lossless_x,
         e_conductivity_x=e_conductivity_x,
-        e_permittivity_x=e_permittivity_x,
+        e_inv_permittivity_x=e_inv_permittivity_x,
         e_decay_y=e_decay_y,
         e_source_y=e_source_y,
         e_source_lossless_y=e_source_lossless_y,
         e_conductivity_y=e_conductivity_y,
-        e_permittivity_y=e_permittivity_y,
+        e_inv_permittivity_y=e_inv_permittivity_y,
         e_decay_z=e_decay_z,
         e_source_z=e_source_z,
         e_source_lossless_z=e_source_lossless_z,
         e_conductivity_z=e_conductivity_z,
-        e_permittivity_z=e_permittivity_z,
+        e_inv_permittivity_z=e_inv_permittivity_z,
         tm_h_decay_x=tm_h_decay_x,
         tm_h_source_x=tm_h_source_x,
         tm_h_decay_y=tm_h_decay_y,
