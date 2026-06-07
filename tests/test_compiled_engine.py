@@ -46,6 +46,11 @@ from beamz.simulation.compiled import (
     EngineState,
     MonitorState,
 )
+from beamz.shared_kernels import (
+    CPML_3D_E_DERIVATIVES,
+    CPML_3D_H_DERIVATIVES,
+    build_cpml_3d_primitive_terms,
+)
 
 pytestmark = [pytest.mark.compiled, pytest.mark.component]
 
@@ -421,6 +426,28 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
     assert np.asarray(program.cpml3d_kappa_h_terms[3], dtype=np.float64)[
         0, 0, cx_h
     ] == pytest.approx(1.0)
+
+
+def test_cpml_3d_primitive_terms_fall_back_for_nonseparable_profiles():
+    shape = (3, 4, 5)
+    pml_data = {}
+    for spec in (*CPML_3D_H_DERIVATIVES, *CPML_3D_E_DERIVATIVES):
+        axis = {"z": 0, "y": 1, "x": 2}[spec.derivative_axis]
+        profile_shape = [1, 1, 1]
+        profile_shape[axis] = shape[axis]
+        base = jnp.linspace(0.0, 1.0, shape[axis], dtype=jnp.float32).reshape(
+            profile_shape
+        )
+        separable = jnp.broadcast_to(base, shape)
+        pml_data[f"cpml3d_{spec.name}_sigma"] = separable
+        pml_data[f"cpml3d_{spec.name}_kappa"] = 1.0 + separable
+        pml_data[f"cpml3d_{spec.name}_alpha"] = 0.1 * separable
+
+    key = f"cpml3d_{CPML_3D_E_DERIVATIVES[0].name}_sigma"
+    nonseparable = pml_data[key].at[1, 1, 1].add(0.25)
+    pml_data[key] = nonseparable
+
+    assert build_cpml_3d_primitive_terms(pml_data) is None
 
 
 def test_compiled_3d_metallic_edge_zeroing_matches_masks():
@@ -800,11 +827,16 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
     assert report["totals_by_category"]["yee_fields"] == field_bytes
     assert report["compiled"]["totals_by_category"]["compiled_update_coefficients"] > 0
     compiled_names = {entry["name"] for entry in report["compiled"]["entries"]}
+    referenced_names = {
+        entry["name"]
+        for entry in report["compiled"]["referenced_inputs"]["entries"]
+    }
     assert not any(
         key.startswith("use_") and key.endswith("_3d_e_coefficients")
         for key in report["compiled"]["config"]
     )
-    assert "e_inv_permittivity_x" not in compiled_names
+    assert "e_inv_permittivity_x" in compiled_names
+    assert "e_inv_permittivity_x" not in referenced_names
     assert (
         report["total_with_compiled_bytes"]
         == report["total_bytes"] + report["compiled"]["total_bytes"]

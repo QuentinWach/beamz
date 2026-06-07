@@ -2144,9 +2144,6 @@ class CompiledSimulation:
             "e_conductivity_x",
             "e_conductivity_y",
             "e_conductivity_z",
-            "e_inv_permittivity_x",
-            "e_inv_permittivity_y",
-            "e_inv_permittivity_z",
         }
         for name in referenced_update_names:
             _add_array_entries(

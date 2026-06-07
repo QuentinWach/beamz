@@ -232,23 +232,54 @@ def build_cpml_3d_primitive_terms(
         profile = arr[tuple(idx)]
         shape = [1, 1, 1]
         shape[axis_index[axis_name]] = profile.shape[0]
-        return jnp.reshape(profile, tuple(shape))
+        compact = jnp.reshape(profile, tuple(shape))
+        if not np.allclose(
+            np.asarray(arr),
+            np.asarray(jnp.broadcast_to(compact, arr.shape)),
+            rtol=1e-6,
+            atol=1e-7,
+        ):
+            return None
+        return compact
 
     def read_terms(specs, suffix):
-        return tuple(
-            compact_axis_profile(
-                pml_data[f"cpml3d_{spec.name}_{suffix}"], spec.derivative_axis
+        terms = []
+        for spec in specs:
+            term = compact_axis_profile(
+                pml_data[f"cpml3d_{spec.name}_{suffix}"],
+                spec.derivative_axis,
             )
-            for spec in specs
+            if term is None:
+                return None
+            terms.append(term)
+        return tuple(terms)
+
+    sigma_h_terms = read_terms(CPML_3D_H_DERIVATIVES, "sigma")
+    kappa_h_terms = read_terms(CPML_3D_H_DERIVATIVES, "kappa")
+    alpha_h_terms = read_terms(CPML_3D_H_DERIVATIVES, "alpha")
+    sigma_e_terms = read_terms(CPML_3D_E_DERIVATIVES, "sigma")
+    kappa_e_terms = read_terms(CPML_3D_E_DERIVATIVES, "kappa")
+    alpha_e_terms = read_terms(CPML_3D_E_DERIVATIVES, "alpha")
+    if any(
+        terms is None
+        for terms in (
+            sigma_h_terms,
+            kappa_h_terms,
+            alpha_h_terms,
+            sigma_e_terms,
+            kappa_e_terms,
+            alpha_e_terms,
         )
+    ):
+        return None
 
     return Cpml3DPrimitiveTerms(
-        sigma_h_terms=read_terms(CPML_3D_H_DERIVATIVES, "sigma"),
-        kappa_h_terms=read_terms(CPML_3D_H_DERIVATIVES, "kappa"),
-        alpha_h_terms=read_terms(CPML_3D_H_DERIVATIVES, "alpha"),
-        sigma_e_terms=read_terms(CPML_3D_E_DERIVATIVES, "sigma"),
-        kappa_e_terms=read_terms(CPML_3D_E_DERIVATIVES, "kappa"),
-        alpha_e_terms=read_terms(CPML_3D_E_DERIVATIVES, "alpha"),
+        sigma_h_terms=sigma_h_terms,
+        kappa_h_terms=kappa_h_terms,
+        alpha_h_terms=alpha_h_terms,
+        sigma_e_terms=sigma_e_terms,
+        kappa_e_terms=kappa_e_terms,
+        alpha_e_terms=alpha_e_terms,
     )
 
 
