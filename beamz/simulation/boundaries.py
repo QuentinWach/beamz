@@ -1906,6 +1906,11 @@ def tm_xy_cpml_curl_e_to_h_2d(
     """
 
     dtype = ez.dtype
+    sigma_h_terms = jnp.asarray(sigma_h_terms, dtype=dtype)
+    kappa_h_aux_terms = jnp.asarray(kappa_h_aux_terms, dtype=dtype)
+    alpha_h_terms = jnp.asarray(alpha_h_terms, dtype=dtype)
+    kappa_h_direct_terms = jnp.asarray(kappa_h_direct_terms, dtype=dtype)
+    psi_h_terms = jnp.asarray(psi_h_terms, dtype=dtype)
     resolution = _scalar_like(resolution, dtype)
     one = _scalar_like(1.0, dtype)
     zero = _scalar_like(0.0, dtype)
@@ -1967,6 +1972,10 @@ def tm_xy_cpml_curl_h_to_e_2d(
     """
 
     dtype = hx.dtype
+    sigma_e_terms = jnp.asarray(sigma_e_terms, dtype=dtype)
+    kappa_e_terms = jnp.asarray(kappa_e_terms, dtype=dtype)
+    alpha_e_terms = jnp.asarray(alpha_e_terms, dtype=dtype)
+    psi_e_terms = jnp.asarray(psi_e_terms, dtype=dtype)
     resolution = _scalar_like(resolution, dtype)
     one = _scalar_like(1.0, dtype)
     zero = _scalar_like(0.0, dtype)

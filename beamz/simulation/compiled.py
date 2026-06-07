@@ -2023,6 +2023,7 @@ class CompiledSimulation:
                         tm_hx=new_tm_hx if use_physical_tm_xy else None,
                         tm_hy=new_tm_hy if use_physical_tm_xy else None,
                     )
+                    snapshot_values = snapshot_values.astype(snap_fields.dtype)
                     field_start = (slot,) + (0,) * snapshot_values.ndim
                     snap_fields = jax.lax.cond(
                         should_snapshot,
