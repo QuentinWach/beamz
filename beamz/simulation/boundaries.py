@@ -349,10 +349,17 @@ class PML(Boundary):
         alpha_order = float(1.0 if alpha_order is None else alpha_order)
 
         def apply_u(u):
-            u = jnp.clip(u, 0.0, 1.0)
-            side_sigma = self.sigma_max * jnp.power(u, sigma_order)
-            side_kappa = 1.0 + (self.kappa_max - 1.0) * jnp.power(u, kappa_order)
-            side_alpha = self.alpha_max * jnp.power(1.0 - u, alpha_order)
+            dtype = sigma.dtype
+            u = jnp.clip(jnp.asarray(u, dtype=dtype), 0.0, 1.0)
+            side_sigma = jnp.asarray(self.sigma_max, dtype=dtype) * jnp.power(
+                u, sigma_order
+            )
+            side_kappa = jnp.asarray(1.0, dtype=dtype) + (
+                jnp.asarray(self.kappa_max, dtype=dtype) - jnp.asarray(1.0, dtype=dtype)
+            ) * jnp.power(u, kappa_order)
+            side_alpha = jnp.asarray(self.alpha_max, dtype=dtype) * jnp.power(
+                jnp.asarray(1.0, dtype=dtype) - u, alpha_order
+            )
             return side_sigma, side_kappa, side_alpha
 
         def low_distances(count):
@@ -1906,6 +1913,7 @@ def tm_xy_cpml_curl_e_to_h_2d(
     """
 
     dtype = ez.dtype
+    psi_h_dtype = jnp.asarray(psi_h_terms).dtype
     sigma_h_terms = jnp.asarray(sigma_h_terms, dtype=dtype)
     kappa_h_aux_terms = jnp.asarray(kappa_h_aux_terms, dtype=dtype)
     alpha_h_terms = jnp.asarray(alpha_h_terms, dtype=dtype)
@@ -1940,6 +1948,7 @@ def tm_xy_cpml_curl_e_to_h_2d(
     psi_h_updated = b_terms * psi_h_terms + a_terms * d_terms
     psi_h_updated = psi_h_updated.at[0, -1, :].set(zero)
     psi_h_updated = psi_h_updated.at[1, :, -1].set(zero)
+    psi_h_updated = psi_h_updated.astype(psi_h_dtype)
     curl_hx = (one / jnp.maximum(kappa_h_direct_terms[0, :-1, :], one)) * d_ez_dy_full[
         :-1, :
     ] + psi_h_updated[0, :-1, :]
@@ -1948,7 +1957,7 @@ def tm_xy_cpml_curl_e_to_h_2d(
         + psi_h_updated[1, :, :-1]
     )
 
-    return curl_hx, curl_hy, psi_h_updated
+    return curl_hx.astype(dtype), curl_hy.astype(dtype), psi_h_updated
 
 
 def tm_xy_cpml_curl_h_to_e_2d(
@@ -1972,6 +1981,7 @@ def tm_xy_cpml_curl_h_to_e_2d(
     """
 
     dtype = hx.dtype
+    psi_e_dtype = jnp.asarray(psi_e_terms).dtype
     sigma_e_terms = jnp.asarray(sigma_e_terms, dtype=dtype)
     kappa_e_terms = jnp.asarray(kappa_e_terms, dtype=dtype)
     alpha_e_terms = jnp.asarray(alpha_e_terms, dtype=dtype)
@@ -2014,6 +2024,7 @@ def tm_xy_cpml_curl_h_to_e_2d(
         neginf=zero,
     )
     psi_e_updated = b_terms * psi_e_terms + a_terms * d_terms
+    psi_e_updated = psi_e_updated.astype(psi_e_dtype)
     curl_hz = (
         (one / kappa_e_terms[0]) * d_hy_dx
         + psi_e_updated[0]
@@ -2023,7 +2034,7 @@ def tm_xy_cpml_curl_h_to_e_2d(
     assert curl_hz.shape == ez_shape, (
         f"curl_hz shape mismatch: {curl_hz.shape} vs {ez_shape}"
     )
-    return curl_hz, psi_e_updated
+    return curl_hz.astype(dtype), psi_e_updated
 
 
 def xy_te_curl_e_to_h_2d(ex, ey, resolution, hz_shape):

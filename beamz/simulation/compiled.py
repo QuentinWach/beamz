@@ -577,11 +577,12 @@ class CompiledSimulation:
                 and spec.slab_starts is not None
                 and spec.slab_sizes is not None
             ):
-                patch = spec.coeff * amp
+                patch = (spec.coeff * amp).astype(out.dtype)
                 cur = jax.lax.dynamic_slice(out, spec.slab_starts, spec.slab_sizes)
                 out = jax.lax.dynamic_update_slice(out, cur + patch, spec.slab_starts)
             else:
-                out = out.at[spec.index].add(spec.coeff * amp)
+                patch = (spec.coeff * amp).astype(out.dtype)
+                out = out.at[spec.index].add(patch)
         return out
 
     def _apply_batched_slabs(
@@ -611,8 +612,8 @@ class CompiledSimulation:
                     for d in range(ndim)
                 )
                 dense_coeff = jnp.pad(group.coeffs[0], pad_width)
-                return arr + dense_coeff * amp
-            patch = group.coeffs[0] * amp
+                return arr + (dense_coeff * amp).astype(arr.dtype)
+            patch = (group.coeffs[0] * amp).astype(arr.dtype)
             cur = jax.lax.dynamic_slice(arr, starts_0, group.max_sizes)
             return jax.lax.dynamic_update_slice(arr, cur + patch, starts_0)
 
@@ -620,7 +621,7 @@ class CompiledSimulation:
 
             def apply_one(out, i: int):
                 amp_i = group.waveforms[i, safe_idx]
-                patch_i = group.coeffs[i] * amp_i
+                patch_i = (group.coeffs[i] * amp_i).astype(out.dtype)
                 starts_i = group.starts_tuple[i]
                 cur_i = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
                 return jax.lax.dynamic_update_slice(out, cur_i + patch_i, starts_i)
@@ -629,7 +630,7 @@ class CompiledSimulation:
 
         def body(i, out):
             amp = group.waveforms[i, safe_idx]
-            patch = group.coeffs[i] * amp
+            patch = (group.coeffs[i] * amp).astype(out.dtype)
             starts_i = [group.starts[i, d] for d in range(ndim)]
             cur = jax.lax.dynamic_slice(out, starts_i, group.max_sizes)
             return jax.lax.dynamic_update_slice(out, cur + patch, starts_i)
@@ -1551,7 +1552,12 @@ class CompiledSimulation:
                         fp_ey = fp_ey.at[:-1, :-1, :-1].set(ey)
                         fp_ez = fp_ez.at[:-1, :-1, :-1].set(ez)
                     eng = eng._replace(
-                        ex=ex, ey=ey, ez=ez, fp_ex=fp_ex, fp_ey=fp_ey, fp_ez=fp_ez
+                        ex=ex.astype(eng.ex.dtype),
+                        ey=ey.astype(eng.ey.dtype),
+                        ez=ez.astype(eng.ez.dtype),
+                        fp_ex=fp_ex.astype(eng.fp_ex.dtype),
+                        fp_ey=fp_ey.astype(eng.fp_ey.dtype),
+                        fp_ez=fp_ez.astype(eng.fp_ez.dtype),
                     )
                     return _merge_carry(
                         eng, mon, mat, snap_fields, snap_steps, snap_times, snap_count
@@ -1721,16 +1727,34 @@ class CompiledSimulation:
                         hz = h_decay_z * hz - h_source_z * curl_ez
 
                     eng = eng._replace(
-                        hx=hx,
-                        hy=hy,
-                        hz=hz,
-                        fp_hx=fp_hx,
-                        fp_hy=fp_hy,
-                        fp_hz=fp_hz,
-                        cpml_psi_h_terms=cpml_psi_h_terms,
-                        cpml_psi_e_terms=cpml_psi_e_terms,
-                        cpml3d_psi_h_terms=cpml3d_psi_h_terms,
-                        cpml3d_psi_e_terms=cpml3d_psi_e_terms,
+                        hx=hx.astype(eng.hx.dtype),
+                        hy=hy.astype(eng.hy.dtype),
+                        hz=hz.astype(eng.hz.dtype),
+                        fp_hx=fp_hx.astype(eng.fp_hx.dtype),
+                        fp_hy=fp_hy.astype(eng.fp_hy.dtype),
+                        fp_hz=fp_hz.astype(eng.fp_hz.dtype),
+                        cpml_psi_h_terms=cpml_psi_h_terms.astype(
+                            eng.cpml_psi_h_terms.dtype
+                        ),
+                        cpml_psi_e_terms=cpml_psi_e_terms.astype(
+                            eng.cpml_psi_e_terms.dtype
+                        ),
+                        cpml3d_psi_h_terms=tuple(
+                            term.astype(ref.dtype)
+                            for term, ref in zip(
+                                cpml3d_psi_h_terms,
+                                eng.cpml3d_psi_h_terms,
+                                strict=True,
+                            )
+                        ),
+                        cpml3d_psi_e_terms=tuple(
+                            term.astype(ref.dtype)
+                            for term, ref in zip(
+                                cpml3d_psi_e_terms,
+                                eng.cpml3d_psi_e_terms,
+                                strict=True,
+                            )
+                        ),
                     )
                     return _merge_carry(
                         eng, mon, mat, snap_fields, snap_steps, snap_times, snap_count
@@ -1766,7 +1790,12 @@ class CompiledSimulation:
                         hy = self._apply_metal_mask(hy_post, hy_metal_mask)
                         hz = self._apply_metal_mask(hz, hz_metal_mask)
                     eng = eng._replace(
-                        hx=hx, hy=hy, hz=hz, fp_hx=fp_hx, fp_hy=fp_hy, fp_hz=fp_hz
+                        hx=hx.astype(eng.hx.dtype),
+                        hy=hy.astype(eng.hy.dtype),
+                        hz=hz.astype(eng.hz.dtype),
+                        fp_hx=fp_hx.astype(eng.fp_hx.dtype),
+                        fp_hy=fp_hy.astype(eng.fp_hy.dtype),
+                        fp_hz=fp_hz.astype(eng.fp_hz.dtype),
                     )
                     return _merge_carry(
                         eng, mon, mat, snap_fields, snap_steps, snap_times, snap_count
@@ -1920,14 +1949,23 @@ class CompiledSimulation:
                         ez = e_decay_z * ez + e_source_z * curl_hz
 
                     eng = eng._replace(
-                        ex=ex,
-                        ey=ey,
-                        ez=ez,
-                        fp_ex=fp_ex,
-                        fp_ey=fp_ey,
-                        fp_ez=fp_ez,
-                        cpml_psi_e_terms=cpml_psi_e_terms,
-                        cpml3d_psi_e_terms=cpml3d_psi_e_terms,
+                        ex=ex.astype(eng.ex.dtype),
+                        ey=ey.astype(eng.ey.dtype),
+                        ez=ez.astype(eng.ez.dtype),
+                        fp_ex=fp_ex.astype(eng.fp_ex.dtype),
+                        fp_ey=fp_ey.astype(eng.fp_ey.dtype),
+                        fp_ez=fp_ez.astype(eng.fp_ez.dtype),
+                        cpml_psi_e_terms=cpml_psi_e_terms.astype(
+                            eng.cpml_psi_e_terms.dtype
+                        ),
+                        cpml3d_psi_e_terms=tuple(
+                            term.astype(ref.dtype)
+                            for term, ref in zip(
+                                cpml3d_psi_e_terms,
+                                eng.cpml3d_psi_e_terms,
+                                strict=True,
+                            )
+                        ),
                     )
                     return _merge_carry(
                         eng, mon, mat, snap_fields, snap_steps, snap_times, snap_count
@@ -1955,9 +1993,16 @@ class CompiledSimulation:
                         ey = self._apply_metal_mask(ey, ey_metal_mask)
                         ez = self._apply_metal_mask(ez, ez_metal_mask)
                     if use_physical_tm_xy:
-                        ez = jnp.where(tm_ez_mask, jnp.asarray(0.0, dtype=ez.dtype), ez)
+                        ez = jnp.where(
+                            tm_ez_mask, jnp.asarray(0.0, dtype=ez.dtype), ez
+                        )
                     eng = eng._replace(
-                        ex=ex, ey=ey, ez=ez, fp_ex=fp_ex, fp_ey=fp_ey, fp_ez=fp_ez
+                        ex=ex.astype(eng.ex.dtype),
+                        ey=ey.astype(eng.ey.dtype),
+                        ez=ez.astype(eng.ez.dtype),
+                        fp_ex=fp_ex.astype(eng.fp_ex.dtype),
+                        fp_ey=fp_ey.astype(eng.fp_ey.dtype),
+                        fp_ez=fp_ez.astype(eng.fp_ez.dtype),
                     )
                     return _merge_carry(
                         eng, mon, mat, snap_fields, snap_steps, snap_times, snap_count
@@ -2011,7 +2056,10 @@ class CompiledSimulation:
                     new_step = eng.current_step
                     new_time = eng.t
                     should_snapshot = (new_step % snapshot_interval) == 0
-                    slot = jnp.minimum(snap_count, snap_fields.shape[0] - 1)
+                    slot = jnp.minimum(
+                        snap_count,
+                        jnp.asarray(snap_fields.shape[0] - 1, dtype=snap_count.dtype),
+                    )
                     snapshot_values = _snapshot_values(
                         ex,
                         ey,
@@ -2024,7 +2072,10 @@ class CompiledSimulation:
                         tm_hy=new_tm_hy if use_physical_tm_xy else None,
                     )
                     snapshot_values = snapshot_values.astype(snap_fields.dtype)
-                    field_start = (slot,) + (0,) * snapshot_values.ndim
+                    field_start = (slot,) + tuple(
+                        jnp.asarray(0, dtype=slot.dtype)
+                        for _ in range(snapshot_values.ndim)
+                    )
                     snap_fields = jax.lax.cond(
                         should_snapshot,
                         lambda buf: jax.lax.dynamic_update_slice(

@@ -1684,45 +1684,57 @@ class Simulation:
                     flush=True,
                 )
 
+            compiled_dtype = (
+                jnp.float32
+                if str(program.config.precision).lower() == "float32"
+                else jnp.float64
+            )
+            ex = jnp.asarray(self.fields.Ex, dtype=compiled_dtype)
+            ey = jnp.asarray(self.fields.Ey, dtype=compiled_dtype)
+            ez = jnp.asarray(self.fields.Ez, dtype=compiled_dtype)
+            hx = jnp.asarray(self.fields.Hx, dtype=compiled_dtype)
+            hy = jnp.asarray(self.fields.Hy, dtype=compiled_dtype)
+            hz = jnp.asarray(self.fields.Hz, dtype=compiled_dtype)
+
             if (
                 (not self.is_3d)
                 and self.plane_2d == "xy"
                 and program.use_physical_tm_xy
             ):
-                tm_ez = self.fields.Ez
-                tm_hx = self.fields.Hx
-                tm_hy = self.fields.Hy
+                tm_ez = ez
+                tm_hx = hx
+                tm_hy = hy
             else:
-                tm_ez = jnp.zeros((0, 0), dtype=self.fields.Ez.dtype)
-                tm_hx = jnp.zeros((0, 0), dtype=self.fields.Hx.dtype)
-                tm_hy = jnp.zeros((0, 0), dtype=self.fields.Hy.dtype)
+                tm_ez = jnp.zeros((0, 0), dtype=compiled_dtype)
+                tm_hx = jnp.zeros((0, 0), dtype=compiled_dtype)
+                tm_hy = jnp.zeros((0, 0), dtype=compiled_dtype)
             if self.is_3d and program.full_pec_3d:
                 if self.fields.full_pec_3d_state is None:
                     self.fields.full_pec_3d_state = initialize_full_pec_3d_state(
                         self.fields
                     )
                 fp_state = self.fields.full_pec_3d_state
-                fp_ex = fp_state.Ex
-                fp_ey = fp_state.Ey
-                fp_ez = fp_state.Ez
-                fp_hx = fp_state.Hx
-                fp_hy = fp_state.Hy
-                fp_hz = fp_state.Hz
+                fp_ex = jnp.asarray(fp_state.Ex, dtype=compiled_dtype)
+                fp_ey = jnp.asarray(fp_state.Ey, dtype=compiled_dtype)
+                fp_ez = jnp.asarray(fp_state.Ez, dtype=compiled_dtype)
+                fp_hx = jnp.asarray(fp_state.Hx, dtype=compiled_dtype)
+                fp_hy = jnp.asarray(fp_state.Hy, dtype=compiled_dtype)
+                fp_hz = jnp.asarray(fp_state.Hz, dtype=compiled_dtype)
             else:
-                fp_ex = jnp.zeros((0, 0, 0), dtype=self.fields.Ex.dtype)
-                fp_ey = jnp.zeros((0, 0, 0), dtype=self.fields.Ey.dtype)
-                fp_ez = jnp.zeros((0, 0, 0), dtype=self.fields.Ez.dtype)
-                fp_hx = jnp.zeros((0, 0, 0), dtype=self.fields.Hx.dtype)
-                fp_hy = jnp.zeros((0, 0, 0), dtype=self.fields.Hy.dtype)
-                fp_hz = jnp.zeros((0, 0, 0), dtype=self.fields.Hz.dtype)
+                fp_ex = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+                fp_ey = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+                fp_ez = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+                fp_hx = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+                fp_hy = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+                fp_hz = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
 
             engine_state = EngineState(
-                ex=self.fields.Ex,
-                ey=self.fields.Ey,
-                ez=self.fields.Ez,
-                hx=self.fields.Hx,
-                hy=self.fields.Hy,
-                hz=self.fields.Hz,
+                ex=ex,
+                ey=ey,
+                ez=ez,
+                hx=hx,
+                hy=hy,
+                hz=hz,
                 tm_ez=tm_ez,
                 tm_hx=tm_hx,
                 tm_hy=tm_hy,
@@ -1735,18 +1747,18 @@ class Simulation:
                 cpml_psi_h_terms=(
                     jnp.zeros_like(program.cpml_sigma_h_terms)
                     if program.use_cpml_tm_xy
-                    else jnp.zeros((2, 0, 0), dtype=self.fields.Hx.dtype)
+                    else jnp.zeros((2, 0, 0), dtype=compiled_dtype)
                 ),
                 cpml_psi_e_terms=(
                     jnp.zeros_like(program.cpml_sigma_e_terms)
                     if program.use_cpml_tm_xy
-                    else jnp.zeros((2, 0, 0), dtype=self.fields.Ez.dtype)
+                    else jnp.zeros((2, 0, 0), dtype=compiled_dtype)
                 ),
                 cpml3d_psi_h_terms=(
                     tuple(jnp.zeros_like(term) for term in program.cpml3d_b_h_terms)
                     if program.use_cpml_3d
                     else tuple(
-                        jnp.zeros((0, 0, 0), dtype=self.fields.Hx.dtype)
+                        jnp.zeros((0, 0, 0), dtype=compiled_dtype)
                         for _ in range(6)
                     )
                 ),
@@ -1754,7 +1766,7 @@ class Simulation:
                     tuple(jnp.zeros_like(term) for term in program.cpml3d_b_e_terms)
                     if program.use_cpml_3d
                     else tuple(
-                        jnp.zeros((0, 0, 0), dtype=self.fields.Ez.dtype)
+                        jnp.zeros((0, 0, 0), dtype=compiled_dtype)
                         for _ in range(6)
                     )
                 ),

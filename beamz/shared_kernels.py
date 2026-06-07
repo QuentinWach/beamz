@@ -343,7 +343,7 @@ def advance_e_from_curl(field, curl, conductivity, permittivity, dt, region):
     factor = (1.0 - conductivity * (dt / (2.0 * EPS_0 * permittivity))) / denom
     source = (dt / (EPS_0 * permittivity)) / denom
     new_values = field[region] * factor + source * curl[region]
-    return field.at[region].set(new_values)
+    return field.at[region].set(new_values.astype(field.dtype))
 
 
 def advance_h_from_coefficients(field, curl, decay, source):

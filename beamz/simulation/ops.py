@@ -30,6 +30,7 @@ def curl_e_to_h_2d(e_fields, resolution, plane="xy"):
         # E = (Ex, Ey, Ez) with ∂/∂x = 0
         # Dimensions (nz, ny). Axis 0=z, Axis 1=y.
         Ex, Ey, Ez = e_fields
+        resolution = jnp.asarray(resolution, dtype=Ex.dtype)
         # ∇×E = (∂Ez/∂y - ∂Ey/∂z)x̂ + (∂Ex/∂z)ŷ + (-∂Ex/∂y)ẑ
 
         # Hx = ∂Ez/∂y - ∂Ey/∂z
@@ -51,6 +52,7 @@ def curl_e_to_h_2d(e_fields, resolution, plane="xy"):
         # E = (Ex, Ey, Ez) with ∂/∂y = 0
         # Dimensions (nz, nx). Axis 0=z, Axis 1=x.
         Ex, Ey, Ez = e_fields
+        resolution = jnp.asarray(resolution, dtype=Ex.dtype)
         # ∇×E = (-∂Ey/∂z)x̂ + (∂Ex/∂z - ∂Ez/∂x)ŷ + (∂Ey/∂x)ẑ
 
         # Hx = -∂Ey/∂z
@@ -82,12 +84,14 @@ def curl_h_to_e_2d(h_fields, resolution, e_shapes, plane="xy"):
     elif plane == "yz":
         # ∂/∂x = 0
         Hx, Hy, Hz = h_fields
+        dtype = Hx.dtype
+        resolution = jnp.asarray(resolution, dtype=dtype)
         # Ex ~ ∂Hz/∂y - ∂Hy/∂z
         # Ey ~ ∂Hx/∂z
         # Ez ~ -∂Hx/∂y
 
         # Ex (nz, ny). Hz(nz-1, ny). Hy(nz, ny-1).
-        curl_ex = jnp.zeros(e_shapes[0])
+        curl_ex = jnp.zeros(e_shapes[0], dtype=dtype)
         curl_ex = curl_ex.at[1:-1, 1:-1].set(
             (Hz[1:-1, 1:] - Hz[1:-1, :-1]) / resolution
             - (Hy[1:, 1:-1] - Hy[:-1, 1:-1]) / resolution
@@ -95,12 +99,12 @@ def curl_h_to_e_2d(h_fields, resolution, e_shapes, plane="xy"):
 
         # Ey ~ ∂Hx/∂z
         # Ey (nz, ny-1). Hx (nz-1, ny-1).
-        curl_ey = jnp.zeros(e_shapes[1])
+        curl_ey = jnp.zeros(e_shapes[1], dtype=dtype)
         curl_ey = curl_ey.at[1:-1, :].set((Hx[1:, :] - Hx[:-1, :]) / resolution)
 
         # Ez ~ -∂Hx/∂y
         # Ez (nz-1, ny). Hx (nz-1, ny-1).
-        curl_ez = jnp.zeros(e_shapes[2])
+        curl_ez = jnp.zeros(e_shapes[2], dtype=dtype)
         curl_ez = curl_ez.at[:, 1:-1].set(-(Hx[:, 1:] - Hx[:, :-1]) / resolution)
 
         return curl_ex, curl_ey, curl_ez
@@ -108,25 +112,27 @@ def curl_h_to_e_2d(h_fields, resolution, e_shapes, plane="xy"):
     elif plane == "xz":
         # ∂/∂y = 0
         Hx, Hy, Hz = h_fields
+        dtype = Hx.dtype
+        resolution = jnp.asarray(resolution, dtype=dtype)
         # (∇×H)_x = ∂Hz/∂y - ∂Hy/∂z = -∂Hy/∂z
         # (∇×H)_y = ∂Hx/∂z - ∂Hz/∂x
         # (∇×H)_z = ∂Hy/∂x - ∂Hx/∂y(0) = ∂Hy/∂x
 
         # Ex ~ -∂Hy/∂z
         # Ex (nz, nx-1). Hy (nz-1, nx-1).
-        curl_ex = jnp.zeros(e_shapes[0])
+        curl_ex = jnp.zeros(e_shapes[0], dtype=dtype)
         curl_ex = curl_ex.at[1:-1, :].set(-(Hy[1:, :] - Hy[:-1, :]) / resolution)
 
         # Ey ~ ∂Hx/∂z - ∂Hz/∂x
         # Ey (nz, nx). Hx (nz-1, nx). Hz (nz, nx-1).
-        curl_ey = jnp.zeros(e_shapes[1])
+        curl_ey = jnp.zeros(e_shapes[1], dtype=dtype)
         dHx_dz = (Hx[1:, :] - Hx[:-1, :]) / resolution
         dHz_dx = (Hz[:, 1:] - Hz[:, :-1]) / resolution
         curl_ey = curl_ey.at[1:-1, 1:-1].set(dHx_dz[:, 1:-1] - dHz_dx[1:-1, :])
 
         # Ez ~ ∂Hy/∂x
         # Ez (nz-1, nx). Hy (nz-1, nx-1).
-        curl_ez = jnp.zeros(e_shapes[2])
+        curl_ez = jnp.zeros(e_shapes[2], dtype=dtype)
         curl_ez = curl_ez.at[:, 1:-1].set((Hy[:, 1:] - Hy[:, :-1]) / resolution)
 
         return curl_ex, curl_ey, curl_ez
@@ -306,6 +312,7 @@ def curl_e_to_h_3d(ex, ey, ez, resolution):
 def _adjacent_difference(arr, axis, resolution):
     """Pure local adjacent difference with no embedded boundary semantics."""
 
+    resolution = jnp.asarray(resolution, dtype=arr.dtype)
     moved = jnp.moveaxis(arr, axis, 0)
     diff = (moved[1:] - moved[:-1]) / resolution
     return jnp.moveaxis(diff, 0, axis)
@@ -365,7 +372,7 @@ def fused_update_h_lossless_3d(
     ex, ey, ez, hx, hy, hz, h_src_ll_x, h_src_ll_y, h_src_ll_z, resolution
 ):
     """H_new = H_old - source_lossless * curl_E (no intermediate curl arrays)."""
-    inv_res = 1.0 / resolution
+    inv_res = jnp.asarray(1.0, dtype=hx.dtype) / jnp.asarray(resolution, dtype=hx.dtype)
     hx = hx - h_src_ll_x * (
         (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
     ) * inv_res
@@ -394,7 +401,7 @@ def fused_update_h_lossy_3d(
     resolution,
 ):
     """H_new = decay * H_old - source * curl_E (no intermediate curl arrays)."""
-    inv_res = 1.0 / resolution
+    inv_res = jnp.asarray(1.0, dtype=hx.dtype) / jnp.asarray(resolution, dtype=hx.dtype)
     curl_ex = (
         (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
     ) * inv_res
@@ -424,32 +431,34 @@ def fused_update_h_lossy_3d_material(
     resolution,
 ):
     """H_new from sigma_m grids without persistent dense decay/source grids."""
-    inv_res = 1.0 / resolution
+    one = jnp.asarray(1.0, dtype=hx.dtype)
+    half = jnp.asarray(0.5, dtype=hx.dtype)
+    inv_res = one / jnp.asarray(resolution, dtype=hx.dtype)
     dt_over_mu0 = jnp.asarray(dt, dtype=hx.dtype) / jnp.asarray(MU_0, dtype=hx.dtype)
-    half_dt_over_mu0 = 0.5 * dt_over_mu0
+    half_dt_over_mu0 = half * dt_over_mu0
 
     alpha_x = h_sigma_m_x * half_dt_over_mu0
-    denom_x = 1.0 + alpha_x
+    denom_x = one + alpha_x
     hx = (
-        (1.0 - alpha_x) / denom_x * hx
+        (one - alpha_x) / denom_x * hx
         - (dt_over_mu0 / denom_x)
         * ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
         * inv_res
     )
 
     alpha_y = h_sigma_m_y * half_dt_over_mu0
-    denom_y = 1.0 + alpha_y
+    denom_y = one + alpha_y
     hy = (
-        (1.0 - alpha_y) / denom_y * hy
+        (one - alpha_y) / denom_y * hy
         - (dt_over_mu0 / denom_y)
         * ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
         * inv_res
     )
 
     alpha_z = h_sigma_m_z * half_dt_over_mu0
-    denom_z = 1.0 + alpha_z
+    denom_z = one + alpha_z
     hz = (
-        (1.0 - alpha_z) / denom_z * hz
+        (one - alpha_z) / denom_z * hz
         - (dt_over_mu0 / denom_z)
         * ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
         * inv_res
@@ -507,36 +516,38 @@ def fused_update_e_lossy_3d_material(
     boundary_views,
 ):
     """E_new from sigma/epsilon grids without persistent dense decay/source grids."""
+    one = jnp.asarray(1.0, dtype=ex.dtype)
+    half = jnp.asarray(0.5, dtype=ex.dtype)
     dt_over_eps0 = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
-    half_dt_over_eps0 = 0.5 * dt_over_eps0
+    half_dt_over_eps0 = half * dt_over_eps0
 
     beta_x = e_conductivity_x * half_dt_over_eps0 * e_inv_permittivity_x
-    denom_x = 1.0 + beta_x
+    denom_x = one + beta_x
     curl_hx = _adjacent_difference(
         boundary_views["hz_y"], axis=1, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution))
     ex = (
-        (1.0 - beta_x) / denom_x * ex
+        (one - beta_x) / denom_x * ex
         + (dt_over_eps0 * e_inv_permittivity_x) / denom_x * curl_hx
     )
 
     beta_y = e_conductivity_y * half_dt_over_eps0 * e_inv_permittivity_y
-    denom_y = 1.0 + beta_y
+    denom_y = one + beta_y
     curl_hy = _adjacent_difference(
         boundary_views["hx_z"], axis=0, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution))
     ey = (
-        (1.0 - beta_y) / denom_y * ey
+        (one - beta_y) / denom_y * ey
         + (dt_over_eps0 * e_inv_permittivity_y) / denom_y * curl_hy
     )
 
     beta_z = e_conductivity_z * half_dt_over_eps0 * e_inv_permittivity_z
-    denom_z = 1.0 + beta_z
+    denom_z = one + beta_z
     curl_hz = _adjacent_difference(
         boundary_views["hy_x"], axis=2, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution))
     ez = (
-        (1.0 - beta_z) / denom_z * ez
+        (one - beta_z) / denom_z * ez
         + (dt_over_eps0 * e_inv_permittivity_z) / denom_z * curl_hz
     )
 
