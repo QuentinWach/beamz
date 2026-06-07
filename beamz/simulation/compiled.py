@@ -3259,6 +3259,15 @@ def compile_simulation(
             and (not h_has_loss_z or h_use_lossy_shell_z)
         )
 
+        if os.getenv("BEAMZ_DISABLE_SPARSE_3D_SHELL", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            use_sparse_3d_e_coefficients = False
+            use_sparse_3d_h_coefficients = False
+
         if not use_sparse_3d_e_coefficients:
             e_use_lossy_shell_x, e_use_lossy_shell_y, e_use_lossy_shell_z = (
                 False,

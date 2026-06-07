@@ -555,6 +555,34 @@ def test_sparse_3d_sponge_pml_uses_permittivity_for_lossy_shell():
     sim.run_compiled(num_steps=1, progress=False)
 
 
+def test_sparse_3d_shell_can_be_disabled_for_primitive_benchmark(monkeypatch):
+    monkeypatch.setenv("BEAMZ_DISABLE_SPARSE_3D_SHELL", "1")
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
+    )
+    design = Design(
+        width=2.0 * wl,
+        height=2.0 * wl,
+        depth=1.5 * wl,
+        material=Material(permittivity=1.0),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[],
+        boundaries=[PML(edges="all", thickness=0.5 * wl)],
+        time=np.arange(0, 2 * dt, dt),
+        resolution=dx,
+    )
+
+    program = sim.compile(num_steps=1)
+
+    assert not program.use_sparse_3d_e_coefficients
+    assert not program.use_sparse_3d_h_coefficients
+    assert program.use_primitive_3d_e_coefficients
+    assert program.use_primitive_3d_h_coefficients
+
+
 def test_sparse_3d_permittivity_e_update_matches_dense_source_grid():
     key = jax.random.PRNGKey(7)
     keys = jax.random.split(key, 9)
