@@ -2,15 +2,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from beamz.const import EPS_0, MU_0
 from beamz.simulation.boundaries import (
     _cpml_ab_from_profiles,
-    apply_lossy_shell_from_lossless_3d,
     build_h_boundary_views_for_e_3d,
     cpml_curl_e_to_h_3d,
     cpml_curl_h_to_e_3d,
     cpml_update_e_from_h_3d,
-    cpml_update_e_from_h_3d_shell_split,
     cpml_update_h_from_e_3d,
     full_pec_update_e_from_h_3d,
     full_pec_update_h_from_e_3d,
@@ -495,67 +492,6 @@ def test_cpml_3d_primitive_profiles_match_derived_terms():
         np.testing.assert_allclose(np.asarray(got), np.asarray(ref), rtol=1e-6)
 
 
-def test_lossy_shell_primitive_factors_match_precomputed_slabs():
-    old = jnp.arange(2 * 3 * 4, dtype=jnp.float32).reshape(2, 3, 4) / 10.0
-    lossless = old + 0.25
-    slabs = (((0, 0, 0), old.shape),)
-    dt = jnp.asarray(2.0e-17, dtype=jnp.float32)
-    empty3 = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-
-    sigma_e = 0.01 + jnp.arange(old.size, dtype=jnp.float32).reshape(old.shape) / 500.0
-    eps = 1.0 + jnp.arange(old.size, dtype=jnp.float32).reshape(old.shape) / 100.0
-    denom_e = 1.0 + sigma_e * (dt / (2.0 * EPS_0 * eps))
-    decay_e = (1.0 - sigma_e * (dt / (2.0 * EPS_0 * eps))) / denom_e
-    source_e = (dt / (EPS_0 * eps)) / denom_e
-    precomputed_e = apply_lossy_shell_from_lossless_3d(
-        lossless,
-        old,
-        empty3,
-        slabs,
-        (decay_e,),
-        (source_e,),
-        source_permittivity=eps,
-        dt=dt,
-    )
-    primitive_e = apply_lossy_shell_from_lossless_3d(
-        lossless,
-        old,
-        empty3,
-        slabs,
-        tuple(),
-        tuple(),
-        source_conductivity=sigma_e,
-        source_permittivity=eps,
-        dt=dt,
-    )
-    np.testing.assert_allclose(np.asarray(primitive_e), np.asarray(precomputed_e))
-
-    sigma_h = 0.01 + jnp.arange(old.size, dtype=jnp.float32).reshape(old.shape) / 400.0
-    source_lossless_h = dt / jnp.asarray(MU_0, dtype=jnp.float32)
-    denom_h = 1.0 + sigma_h * (dt / (2.0 * MU_0))
-    decay_h = (1.0 - sigma_h * (dt / (2.0 * MU_0))) / denom_h
-    source_h = (dt / MU_0) / denom_h
-    precomputed_h = apply_lossy_shell_from_lossless_3d(
-        lossless,
-        old,
-        source_lossless_h,
-        slabs,
-        (decay_h,),
-        (source_h,),
-    )
-    primitive_h = apply_lossy_shell_from_lossless_3d(
-        lossless,
-        old,
-        source_lossless_h,
-        slabs,
-        tuple(),
-        tuple(),
-        source_conductivity=sigma_h,
-        dt=dt,
-    )
-    np.testing.assert_allclose(np.asarray(primitive_h), np.asarray(precomputed_h))
-
-
 def test_cpml_update_e_from_h_3d_matches_curl_update_form():
     hx = jnp.arange(2 * 3 * 5, dtype=jnp.float32).reshape(2, 3, 5) / 10.0
     hy = jnp.arange(2 * 4 * 4, dtype=jnp.float32).reshape(2, 4, 4) / 11.0
@@ -619,92 +555,4 @@ def test_cpml_update_e_from_h_3d_matches_curl_update_form():
     np.testing.assert_allclose(np.asarray(ey_got), np.asarray(ey_ref), atol=1e-6)
     np.testing.assert_allclose(np.asarray(ez_got), np.asarray(ez_ref), atol=1e-6)
     for got, ref in zip(psi_got, psi_ref, strict=True):
-        np.testing.assert_allclose(np.asarray(got), np.asarray(ref), atol=1e-6)
-
-
-def test_cpml_shell_split_e_update_empty_source_matches_dense_permittivity_scale():
-    hx = jnp.arange(2 * 3 * 5, dtype=jnp.float32).reshape(2, 3, 5) / 10.0
-    hy = jnp.arange(2 * 4 * 4, dtype=jnp.float32).reshape(2, 4, 4) / 11.0
-    hz = jnp.arange(3 * 3 * 4, dtype=jnp.float32).reshape(3, 3, 4) / 12.0
-    ex = jnp.ones((3, 4, 4), dtype=jnp.float32)
-    ey = jnp.ones((3, 3, 5), dtype=jnp.float32) * 2.0
-    ez = jnp.ones((2, 4, 5), dtype=jnp.float32) * 3.0
-    eps_x = 1.0 + jnp.arange(ex.size, dtype=jnp.float32).reshape(ex.shape) / 50.0
-    eps_y = 1.0 + jnp.arange(ey.size, dtype=jnp.float32).reshape(ey.shape) / 60.0
-    eps_z = 1.0 + jnp.arange(ez.size, dtype=jnp.float32).reshape(ez.shape) / 70.0
-    dt = jnp.asarray(5.0e-18, dtype=jnp.float32)
-    dense_sources = (
-        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_x),
-        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_y),
-        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_z),
-    )
-    empty3 = jnp.zeros((0, 0, 0), dtype=jnp.float32)
-
-    term_shapes = (ex.shape, ex.shape, ey.shape, ey.shape, ez.shape, ez.shape)
-    a_terms, b_terms, inv_kappa_terms = _cpml_coefficients(term_shapes, dt=float(dt))
-    psi_init = tuple(jnp.zeros(shape, dtype=jnp.float32) for shape in term_shapes)
-    shell_kwargs = {
-        "e_lossy_shell_x": tuple(),
-        "e_lossy_shell_y": tuple(),
-        "e_lossy_shell_z": tuple(),
-        "e_shell_decay_x": tuple(),
-        "e_shell_source_x": tuple(),
-        "e_shell_decay_y": tuple(),
-        "e_shell_source_y": tuple(),
-        "e_shell_decay_z": tuple(),
-        "e_shell_source_z": tuple(),
-    }
-
-    dense = cpml_update_e_from_h_3d_shell_split(
-        hx,
-        hy,
-        hz,
-        ex,
-        ey,
-        ez,
-        dense_sources[0],
-        dense_sources[1],
-        dense_sources[2],
-        empty3,
-        empty3,
-        empty3,
-        empty3,
-        empty3,
-        empty3,
-        dt,
-        resolution=0.2,
-        a_e_terms=a_terms,
-        b_e_terms=b_terms,
-        inv_kappa_e_terms=inv_kappa_terms,
-        psi_e_terms=psi_init,
-        **shell_kwargs,
-    )
-    sparse = cpml_update_e_from_h_3d_shell_split(
-        hx,
-        hy,
-        hz,
-        ex,
-        ey,
-        ez,
-        empty3,
-        empty3,
-        empty3,
-        empty3,
-        empty3,
-        empty3,
-        1.0 / eps_x,
-        1.0 / eps_y,
-        1.0 / eps_z,
-        dt,
-        resolution=0.2,
-        a_e_terms=a_terms,
-        b_e_terms=b_terms,
-        inv_kappa_e_terms=inv_kappa_terms,
-        psi_e_terms=psi_init,
-        **shell_kwargs,
-    )
-
-    for got, ref in zip(sparse[:3], dense[:3], strict=True):
-        np.testing.assert_allclose(np.asarray(got), np.asarray(ref), rtol=1e-6)
-    for got, ref in zip(sparse[3], dense[3], strict=True):
         np.testing.assert_allclose(np.asarray(got), np.asarray(ref), atol=1e-6)

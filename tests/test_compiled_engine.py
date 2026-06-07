@@ -446,7 +446,7 @@ def test_compiled_3d_metallic_edge_zeroing_matches_masks():
         np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
 
 
-def test_compiled_uses_sparse_shell_coefficients_3d():
+def test_compiled_3d_cpml_uses_dense_update_coefficients():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -467,41 +467,29 @@ def test_compiled_uses_sparse_shell_coefficients_3d():
 
     program = sim.compile(num_steps=1)
 
-    assert program.use_sparse_3d_e_coefficients
-    assert program.use_sparse_3d_h_coefficients
-    assert program.e_decay_x.shape == (0, 0, 0)
-    assert program.e_source_x.shape == (0, 0, 0)
-    assert program.h_decay_x.shape == (0, 0, 0)
-    assert program.h_source_x.shape == (0, 0, 0)
+    assert program.use_cpml_3d
+    assert program.e_decay_x.shape == sim.fields.Ex.shape
+    assert program.e_source_x.shape == sim.fields.Ex.shape
+    assert program.h_decay_x.shape == sim.fields.Hx.shape
+    assert program.h_source_x.shape == sim.fields.Hx.shape
     assert program.e_source_lossless_x.shape == (0, 0, 0)
     assert program.e_source_lossless_y.shape == (0, 0, 0)
     assert program.e_source_lossless_z.shape == (0, 0, 0)
-    np.testing.assert_allclose(
-        np.asarray(program.e_inv_permittivity_x),
-        np.asarray(1.0 / sim.fields.eps_x),
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.e_inv_permittivity_y),
-        np.asarray(1.0 / sim.fields.eps_y),
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.e_inv_permittivity_z),
-        np.asarray(1.0 / sim.fields.eps_z),
-    )
+    assert program.e_inv_permittivity_x.shape == (0, 0, 0)
+    assert program.e_inv_permittivity_y.shape == (0, 0, 0)
+    assert program.e_inv_permittivity_z.shape == (0, 0, 0)
     assert program.ex_metal_mask.shape == (0, 0, 0)
     assert program.hx_metal_mask.shape == (0, 0, 0)
     assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
     assert program.field_shape_hx == tuple(sim.fields.Hx.shape)
-    assert program.e_conductivity_x is sim.fields.sig_x
-    assert program.h_sigma_m_x is sim.fields.sigma_m_hx
-    assert program.h_source_lossless_x.shape == ()
-    assert program.h_source_lossless_y.shape == ()
-    assert program.h_source_lossless_z.shape == ()
-    assert program.e_shell_decay_x == tuple()
-    assert program.h_shell_decay_x == tuple()
+    assert program.e_conductivity_x.shape == (0, 0, 0)
+    assert program.h_sigma_m_x.shape == (0, 0, 0)
+    assert program.h_source_lossless_x.shape == (0, 0, 0)
+    assert program.h_source_lossless_y.shape == (0, 0, 0)
+    assert program.h_source_lossless_z.shape == (0, 0, 0)
 
 
-def test_sparse_3d_snapshot_shape_uses_permittivity_reference():
+def test_compiled_3d_snapshot_shape_uses_field_reference():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -523,15 +511,14 @@ def test_sparse_3d_snapshot_shape_uses_permittivity_reference():
     program = sim.compile(num_steps=2, snapshot_field="Ez", snapshot_interval=1)
     snapshot_state = program._empty_snapshot_state()
 
-    assert program.use_sparse_3d_e_coefficients
     assert program.e_source_lossless_z.shape == (0, 0, 0)
-    assert program.e_source_z.shape == (0, 0, 0)
+    assert program.e_source_z.shape == sim.fields.Ez.shape
     assert program._snapshot_field_shape() == tuple(sim.fields.Ez.shape)
     assert snapshot_state is not None
     assert snapshot_state[0].shape == (2, *sim.fields.Ez.shape)
 
 
-def test_sparse_3d_sponge_pml_uses_permittivity_for_lossy_shell():
+def test_compiled_3d_sponge_pml_uses_material_coefficients():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -552,41 +539,23 @@ def test_sparse_3d_sponge_pml_uses_permittivity_for_lossy_shell():
 
     program = sim.compile(num_steps=1)
     assert not program.use_cpml_3d
-    assert program.use_sparse_3d_e_coefficients
+    assert program.e_decay_x.shape == (0, 0, 0)
+    assert program.e_source_x.shape == (0, 0, 0)
+    assert program.h_decay_x.shape == (0, 0, 0)
+    assert program.h_source_x.shape == (0, 0, 0)
     assert program.e_source_lossless_x.shape == (0, 0, 0)
+    assert program.h_source_lossless_x.shape == (0, 0, 0)
+    assert program.e_conductivity_x is sim.fields.sig_x
+    assert program.h_sigma_m_x is sim.fields.sigma_m_hx
+    np.testing.assert_allclose(
+        np.asarray(program.e_inv_permittivity_x),
+        np.asarray(1.0 / sim.fields.eps_x),
+    )
 
     sim.run_compiled(num_steps=1, progress=False)
 
 
-def test_sparse_3d_shell_can_be_disabled_for_primitive_benchmark(monkeypatch):
-    monkeypatch.setenv("BEAMZ_DISABLE_SPARSE_3D_SHELL", "1")
-    wl = 1.55 * um
-    dx, dt = calc_optimal_fdtd_params(
-        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
-    )
-    design = Design(
-        width=2.0 * wl,
-        height=2.0 * wl,
-        depth=1.5 * wl,
-        material=Material(permittivity=1.0),
-    )
-    sim = Simulation(
-        design=design,
-        sources=[],
-        boundaries=[PML(edges="all", thickness=0.5 * wl)],
-        time=np.arange(0, 2 * dt, dt),
-        resolution=dx,
-    )
-
-    program = sim.compile(num_steps=1)
-
-    assert not program.use_sparse_3d_e_coefficients
-    assert not program.use_sparse_3d_h_coefficients
-    assert program.use_primitive_3d_e_coefficients
-    assert program.use_primitive_3d_h_coefficients
-
-
-def test_sparse_3d_permittivity_e_update_matches_dense_source_grid():
+def test_material_3d_permittivity_e_update_matches_dense_source_grid():
     key = jax.random.PRNGKey(7)
     keys = jax.random.split(key, 9)
     hx = jax.random.normal(keys[0], (3, 4, 6), dtype=jnp.float32)
@@ -618,7 +587,7 @@ def test_sparse_3d_permittivity_e_update_matches_dense_source_grid():
         resolution,
         boundary_views=views,
     )
-    sparse = ops.fused_update_e_lossless_3d_inv_permittivity(
+    material = ops.fused_update_e_lossless_3d_inv_permittivity(
         hx,
         hy,
         hz,
@@ -632,34 +601,13 @@ def test_sparse_3d_permittivity_e_update_matches_dense_source_grid():
         resolution,
         boundary_views=views,
     )
-    sparse_z_sliced = ops.fused_update_e_lossless_3d_inv_permittivity_z_sliced(
-        hx,
-        hy,
-        hz,
-        ex,
-        ey,
-        ez,
-        inv_eps_x,
-        inv_eps_y,
-        inv_eps_z,
-        dt,
-        resolution,
-    )
 
-    for dense_component, sparse_component, sliced_component in zip(
-        dense, sparse, sparse_z_sliced, strict=True
-    ):
+    for dense_component, material_component in zip(dense, material, strict=True):
         np.testing.assert_allclose(
-            np.asarray(sparse_component),
+            np.asarray(material_component),
             np.asarray(dense_component),
             rtol=2e-6,
             atol=1e-6,
-        )
-        np.testing.assert_allclose(
-            np.asarray(sliced_component),
-            np.asarray(dense_component),
-            rtol=1e-5,
-            atol=1e-5,
         )
 
 
@@ -850,23 +798,20 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
         for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
     )
     assert report["totals_by_category"]["yee_fields"] == field_bytes
-    assert report["compiled"]["config"]["use_sparse_3d_e_coefficients"]
     assert report["compiled"]["totals_by_category"]["compiled_update_coefficients"] > 0
     compiled_names = {entry["name"] for entry in report["compiled"]["entries"]}
-    referenced_names = {
-        entry["name"] for entry in report["compiled"]["referenced_inputs"]["entries"]
-    }
-    assert "e_inv_permittivity_x" not in compiled_names
-    assert {"e_inv_permittivity_x", "e_inv_permittivity_y", "e_inv_permittivity_z"} <= (
-        referenced_names
+    assert not any(
+        key.startswith("use_") and key.endswith("_3d_e_coefficients")
+        for key in report["compiled"]["config"]
     )
+    assert "e_inv_permittivity_x" not in compiled_names
     assert (
         report["total_with_compiled_bytes"]
         == report["total_bytes"] + report["compiled"]["total_bytes"]
     )
 
 
-def test_compiled_uses_primitive_material_coefficients_for_non_shell_3d_loss():
+def test_compiled_uses_material_coefficients_for_3d_loss():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -892,10 +837,6 @@ def test_compiled_uses_primitive_material_coefficients_for_non_shell_3d_loss():
 
     program = sim.compile(num_steps=1)
 
-    assert not program.use_sparse_3d_e_coefficients
-    assert not program.use_sparse_3d_h_coefficients
-    assert program.use_primitive_3d_e_coefficients
-    assert program.use_primitive_3d_h_coefficients
     assert program.e_decay_x.shape == (0, 0, 0)
     assert program.e_source_x.shape == (0, 0, 0)
     assert program.h_decay_x.shape == (0, 0, 0)
