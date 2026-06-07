@@ -1167,9 +1167,7 @@ def _large_guide_mode_basis_profiles(
 
     omega = 2.0 * np.pi * LIGHT_SPEED / float(source.wavelength)
     solver_direction = direction
-    if axis == "x":
-        solver_direction = ("-" if direction.startswith("+") else "+") + axis
-    elif axis == "y":
+    if axis == "y":
         solver_direction = "+y"
     target_neff = 0.98 * float(np.sqrt(np.max(eps_profile)))
     neff_val, e_fields, h_fields, _ = solve_modes(
@@ -1191,10 +1189,10 @@ def _large_guide_mode_basis_profiles(
     Hz_raw = np.asarray(np.squeeze(h_fields[mode_index][2]))
 
     Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw = _remap_3d_solver_components(
-        Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw, "x"
+        Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw, axis
     )
     ref_field = _select_3d_phase_ref(
-        "x", source.pol, Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw
+        axis, source.pol, Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw
     )
     ref_flat = np.asarray(ref_field).reshape(-1)
     phase_ref = np.angle(ref_flat[int(np.argmax(np.abs(ref_flat)))])
@@ -1282,9 +1280,7 @@ def _large_guide_full_plane_mode_basis_profiles(
 
     omega = 2.0 * np.pi * LIGHT_SPEED / float(source.wavelength)
     solver_direction = direction
-    if axis == "x":
-        solver_direction = ("-" if direction.startswith("+") else "+") + axis
-    elif axis == "y":
+    if axis == "y":
         solver_direction = "+y"
     target_neff = 0.98 * float(np.sqrt(np.max(eps_profile)))
     _neff_val, e_fields, h_fields, _ = solve_modes(
@@ -1306,10 +1302,10 @@ def _large_guide_full_plane_mode_basis_profiles(
     Hz_raw = np.asarray(np.squeeze(h_fields[mode_index][2]))
 
     Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw = _remap_3d_solver_components(
-        Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw, "x"
+        Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw, axis
     )
     ref_field = _select_3d_phase_ref(
-        "x", source.pol, Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw
+        axis, source.pol, Ex_raw, Ey_raw, Ez_raw, Hx_raw, Hy_raw, Hz_raw
     )
     ref_flat = np.asarray(ref_field).reshape(-1)
     phase_ref = np.angle(ref_flat[int(np.argmax(np.abs(ref_flat)))])
@@ -1920,7 +1916,7 @@ def test_runtime_gauge_and_flux_normalization_do_not_change_3d_mode_purity():
         ("+y", "tm"),
     ),
 )
-def test_lateral_rectangular_guide_secondary_pair_grows_during_profile_build(
+def test_lateral_rectangular_guide_secondary_pair_is_suppressed_during_profile_build(
     direction: str, pol: str
 ):
     sim, source_spans = _build_tiny_straight_guide_sim(
@@ -1944,12 +1940,12 @@ def test_lateral_rectangular_guide_secondary_pair_grows_during_profile_build(
 
     assert (
         metrics["built_complex"]["weak_h_norm_ratio"]
-        > 1.02 * metrics["aligned_raw"]["weak_h_norm_ratio"]
+        < 0.98 * metrics["aligned_raw"]["weak_h_norm_ratio"]
     )
     if pol == "te":
         assert (
             metrics["built_complex"]["weak_e_norm_ratio"]
-            > 1.02 * metrics["aligned_raw"]["weak_e_norm_ratio"]
+            < 0.98 * metrics["aligned_raw"]["weak_e_norm_ratio"]
         )
 
 
@@ -2954,7 +2950,7 @@ test_real_projection_preserves_forward_purity_under_current_profile_basis.__test
     False
 )
 test_runtime_gauge_and_flux_normalization_do_not_change_3d_mode_purity.__test__ = False
-test_lateral_rectangular_guide_secondary_pair_grows_during_profile_build.__test__ = (
+test_lateral_rectangular_guide_secondary_pair_is_suppressed_during_profile_build.__test__ = (
     False
 )
 test_secondary_h_pair_is_specific_to_doubly_confined_lateral_guides.__test__ = False
