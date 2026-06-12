@@ -11,7 +11,7 @@ pip install beamz
 ![License](https://img.shields.io/github/license/QuentinWach/beamz)
 ![Last Update](https://img.shields.io/github/last-commit/QuentinWach/beamz)
 [![Tests](https://github.com/QuentinWach/beamz/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/QuentinWach/beamz/actions/workflows/tests.yml)
-[![Coverage](https://raw.githubusercontent.com/QuentinWach/beamz/main/.github/badges/coverage.svg)](https://github.com/QuentinWach/beamz/actions/workflows/full-tests.yml)
+[![Coverage](https://raw.githubusercontent.com/QuentinWach/beamz/main/.github/badges/coverage.svg)](https://github.com/QuentinWach/beamz/actions/workflows/tests.yml)
 
 
 ## Core Features

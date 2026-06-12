@@ -9,25 +9,25 @@ marked by contract, not just by subsystem.
 - `component`: Small real-component tests with limited simulation scope.
 - `integration`: End-to-end tests that span multiple subsystems.
 - `characterization`: Numerical sweeps and behavior-profiling tests. These are
-  useful for research and regression analysis, but they should not be the
-  default fast gate.
+  useful for research and regression analysis.
 - `compiled`: Tests that exercise the compiled/JAX execution path.
 - `pdk`: Tests that depend on an external PDK or design-kit install.
-- `slow`: Tests that are too expensive for the default fast feedback loop.
+- `slow`: Expensive tests. These remain marked for discoverability, but the
+  default CI gate runs them.
 
 ## Running tests
 
-The pull-request CI gate intentionally runs a marked fast slice:
+The pull-request and main-branch CI gates run the complete test suite with
+coverage:
 
 ```bash
-pytest tests/ -m "(unit or component or optimization) and not slow and not characterization and not pdk"
+python -m pytest tests/ --cov=beamz --cov-report=term-missing --cov-report=xml --cov-fail-under=75
 ```
 
-The full suite, including coverage, is still the release-quality signal and runs
-on the weekly/manual GitHub workflow:
+For local development, use the same batch:
 
 ```bash
-pytest tests/ --cov=beamz --cov-report=term-missing --cov-report=xml
+make test
 ```
 
 ## Placement guidance
@@ -37,7 +37,8 @@ pytest tests/ --cov=beamz --cov-report=term-missing --cov-report=xml
 - Keep small compiled-engine and monitor tests in compiled/component files.
 - Keep expensive physics validation in integration-oriented files.
 - Keep broad numerical sweeps and exploratory residual checks in
-  characterization files, not mixed into core API tests.
+  characterization files, not mixed into core API tests. They still run in CI;
+  the marker is for ownership and selective local debugging.
 
 ## Rules of thumb
 
@@ -45,4 +46,5 @@ pytest tests/ --cov=beamz --cov-report=term-missing --cov-report=xml
 - Avoid asserting internal helper names or exact implementation wording in
   exception messages.
 - Do not freeze known defects as expected behavior.
-- Mark heavy tests explicitly so fast PR jobs can exclude them.
+- Mark heavy tests explicitly so they can be found and run selectively during
+  local debugging.

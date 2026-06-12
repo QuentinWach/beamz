@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-fast lint dead-code audit format clean build publish
+.PHONY: help install install-dev test lint dead-code audit format clean build publish
 
 help:  ## Show this help message
 	@echo "Usage: make [target]"
@@ -13,13 +13,10 @@ install-dev:  ## Install package with dev dependencies
 	uv sync --all-extras
 
 test:  ## Run all tests with coverage
-	uv run pytest tests/ -v --tb=short --cov=beamz --cov-report=xml --cov-report=term-missing
-
-test-fast:  ## Run tests excluding slow ones
-	uv run pytest tests/ -v -m "not slow" --tb=short
+	uv run python -m pytest tests/ -v --tb=short --cov=beamz --cov-report=xml --cov-report=term-missing --cov-fail-under=75
 
 test-single:  ## Run a single test file (usage: make test-single FILE=test_physics_energy.py)
-	uv run pytest tests/$(FILE) -v --tb=short
+	uv run python -m pytest tests/$(FILE) -v --tb=short
 
 lint:  ## Run linting checks
 	uv run --extra lint ruff check beamz/
@@ -27,7 +24,7 @@ lint:  ## Run linting checks
 dead-code:  ## Run high-confidence dead code checks
 	uv run --extra lint vulture beamz/ --min-confidence 80
 
-audit: lint dead-code test-fast  ## Run core code quality audit
+audit: lint dead-code test  ## Run core code quality audit
 
 format:  ## Format code and fix package lint issues
 	uv run --extra lint ruff format beamz/ tests/

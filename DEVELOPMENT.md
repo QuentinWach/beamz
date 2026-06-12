@@ -51,17 +51,16 @@ All development commands use the Makefile:
 ```bash
 make help          # Show all available commands
 make test          # Run tests with coverage
-make test-fast     # Run quick tests
 make format        # Format code and fix package lint issues
 make lint          # Check code quality
 make dead-code     # Check for high-confidence dead code
-make audit         # Run lint, dead-code checks, and fast tests
+make audit         # Run lint, dead-code checks, and tests
 make build         # Build distribution
 ```
 
 Or use uv directly:
 ```bash
-uv run pytest tests/
+uv run python -m pytest tests/
 uv run --extra lint ruff check beamz/
 uv run --extra lint ruff format beamz/
 ```
@@ -90,18 +89,15 @@ uv remove <package-name>
 # All tests with coverage
 make test
 
-# Fast tests (skip @pytest.mark.slow)
-make test-fast
-
 # Single test file
 make test-single FILE=test_physics_energy.py
 
 # Specific test function
-uv run pytest tests/test_physics_energy.py::test_energy_conservation -v
+uv run python -m pytest tests/test_physics_energy.py::test_energy_conservation -v
 
 # Tests by marker
-uv run pytest -m design
-uv run pytest -m simulation
+uv run python -m pytest -m design
+uv run python -m pytest -m simulation
 ```
 
 ### Writing Tests
@@ -267,14 +263,15 @@ uv sync
 
 GitHub Actions workflows use uv:
 - `.github/workflows/tests.yml` - Run tests on push/PR
-- Configured for Python 3.10 and 3.11
+- Configured for Python 3.11
 - Uses `astral-sh/setup-uv@v5` action
+- Runs the full suite with coverage and enforces the current coverage baseline
 
 ## Best Practices
 
 1. **Always use `uv add/remove`** for dependencies (keeps lockfile in sync)
 2. **Run `make format`** before committing
-3. **Run `make test-fast`** during development
+3. **Run focused `uv run python -m pytest ...` commands** while iterating
 4. **Run `make test`** before pushing
 5. **Keep lockfile committed** (ensures reproducibility)
 6. **Use `make` commands** for consistency

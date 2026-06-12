@@ -1,4 +1,4 @@
-name: Fast Tests
+name: Tests
 
 on:
   push:
@@ -7,14 +7,15 @@ on:
       - ".github/badges/coverage.svg"
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  fast-test:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 75
 
     steps:
       - uses: actions/checkout@v4
@@ -31,10 +32,49 @@ jobs:
       - name: Install dependencies
         run: uv sync --python 3.11 --all-extras
 
-      - name: Run fast test gate
+      - name: Run test suite
         run: >
-          uv run --python 3.11 pytest tests/
-          -m "(unit or component or optimization) and not slow and not characterization and not pdk"
+          uv run --no-active --python 3.11 python -m pytest tests/
           -v
           --tb=short
-          --durations=25
+          --durations=50
+          --cov=beamz
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=75
+
+      - name: Upload coverage report
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  coverage-badge:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+
+      - name: Generate coverage badge
+        run: python scripts/update_coverage_badge.py coverage.xml .github/badges/coverage.svg
+
+      - name: Commit coverage badge
+        run: |
+          if git diff --quiet -- .github/badges/coverage.svg; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/coverage.svg
+          git commit -m "ci: update coverage badge"
+          git push
