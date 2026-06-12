@@ -14,7 +14,7 @@ pip install beamz
 
 
 ## Core Features
-- **100% Python**, free (MIT license) & open-source.
+- **100% Python**, free (Apache-2.0 license) & open-source.
 - Modular architecture with a high-level API.
 - **GPU-accelerated** (but CPU-capable).
 - Built-in layout flow (GDSII import/export).
