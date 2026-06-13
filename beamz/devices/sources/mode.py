@@ -2969,9 +2969,7 @@ class ModeSource(RuntimeStateProxy):
     ) -> None:
         local_sel: list[slice] = []
         patch_sel: list[slice] = []
-        for local_axis, patch_axis in zip(
-            local_global_index, patch_index, strict=True
-        ):
+        for local_axis, patch_axis in zip(local_global_index, patch_index, strict=True):
             lo = max(int(local_axis.start or 0), int(patch_axis.start or 0))
             hi = min(int(local_axis.stop or 0), int(patch_axis.stop or 0))
             if hi <= lo:
@@ -3070,7 +3068,9 @@ class ModeSource(RuntimeStateProxy):
 
                 coord = float(base_coord + shift * d_axis)
                 mask_coord = (
-                    ref_coord if comp_name in staggered_along_axis[axis] else plane_coord
+                    ref_coord
+                    if comp_name in staggered_along_axis[axis]
+                    else plane_coord
                 )
                 if direction_sign * (coord - mask_coord) >= -1e-12:
                     continue
@@ -3152,7 +3152,9 @@ class ModeSource(RuntimeStateProxy):
         cell_bbox = self._union_cell_bbox_for_patches(patches, grid_shape, halo=1)
         if cell_bbox is None:
             return ()
-        local, indices = self._local_incident_residual_arrays(fields, patches, cell_bbox)
+        local, indices = self._local_incident_residual_arrays(
+            fields, patches, cell_bbox
+        )
 
         resolution = float(self._resolution or 0.0)
         ex = local["Ex"]
@@ -3197,7 +3199,9 @@ class ModeSource(RuntimeStateProxy):
         cell_bbox = self._union_cell_bbox_for_patches(patches, grid_shape, halo=0)
         if cell_bbox is None:
             return ()
-        local, indices = self._local_incident_residual_arrays(fields, patches, cell_bbox)
+        local, indices = self._local_incident_residual_arrays(
+            fields, patches, cell_bbox
+        )
         material = {
             "Ex": ("sig_x", "eps_x"),
             "Ey": ("sig_y", "eps_y"),

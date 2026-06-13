@@ -1412,7 +1412,8 @@ class Simulation:
                     "yee_fields"
                     if name in {"Ex", "Ey", "Ez", "Hx", "Hy", "Hz"}
                     else "material_center_grids"
-                    if name in {
+                    if name
+                    in {
                         "permittivity",
                         "conductivity",
                         "permeability",
@@ -1450,8 +1451,8 @@ class Simulation:
             )
             compiled_report = program.memory_estimate(include_runtime=True)
             report["compiled"] = compiled_report
-            report["total_with_compiled_bytes"] = (
-                int(report["total_bytes"]) + int(compiled_report["total_bytes"])
+            report["total_with_compiled_bytes"] = int(report["total_bytes"]) + int(
+                compiled_report["total_bytes"]
             )
             report["total_with_compiled_gib"] = (
                 report["total_with_compiled_bytes"] / 1024**3
@@ -1459,11 +1460,7 @@ class Simulation:
         return report
 
     def _compiled_runtime_inputs(self, program):
-        if (
-            (not self.is_3d)
-            and self.plane_2d == "xy"
-            and program.use_physical_tm_xy
-        ):
+        if (not self.is_3d) and self.plane_2d == "xy" and program.use_physical_tm_xy:
             tm_ez = self.fields.Ez
             tm_hx = self.fields.Hx
             tm_hy = self.fields.Hy
@@ -1758,16 +1755,14 @@ class Simulation:
                     tuple(jnp.zeros_like(term) for term in program.cpml3d_b_h_terms)
                     if program.use_cpml_3d
                     else tuple(
-                        jnp.zeros((0, 0, 0), dtype=compiled_dtype)
-                        for _ in range(6)
+                        jnp.zeros((0, 0, 0), dtype=compiled_dtype) for _ in range(6)
                     )
                 ),
                 cpml3d_psi_e_terms=(
                     tuple(jnp.zeros_like(term) for term in program.cpml3d_b_e_terms)
                     if program.use_cpml_3d
                     else tuple(
-                        jnp.zeros((0, 0, 0), dtype=compiled_dtype)
-                        for _ in range(6)
+                        jnp.zeros((0, 0, 0), dtype=compiled_dtype) for _ in range(6)
                     )
                 ),
                 t=jnp.asarray(self.t, dtype=jnp.float32),

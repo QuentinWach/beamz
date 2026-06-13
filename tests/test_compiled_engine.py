@@ -828,8 +828,7 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
     assert report["compiled"]["totals_by_category"]["compiled_update_coefficients"] > 0
     compiled_names = {entry["name"] for entry in report["compiled"]["entries"]}
     referenced_names = {
-        entry["name"]
-        for entry in report["compiled"]["referenced_inputs"]["entries"]
+        entry["name"] for entry in report["compiled"]["referenced_inputs"]["entries"]
     }
     assert not any(
         key.startswith("use_") and key.endswith("_3d_e_coefficients")

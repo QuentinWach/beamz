@@ -373,15 +373,24 @@ def fused_update_h_lossless_3d(
 ):
     """H_new = H_old - source_lossless * curl_E (no intermediate curl arrays)."""
     inv_res = jnp.asarray(1.0, dtype=hx.dtype) / jnp.asarray(resolution, dtype=hx.dtype)
-    hx = hx - h_src_ll_x * (
-        (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
-    ) * inv_res
-    hy = hy - h_src_ll_y * (
-        (ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])
-    ) * inv_res
-    hz = hz - h_src_ll_z * (
-        (ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])
-    ) * inv_res
+    hx = (
+        hx
+        - h_src_ll_x
+        * ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
+        * inv_res
+    )
+    hy = (
+        hy
+        - h_src_ll_y
+        * ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
+        * inv_res
+    )
+    hz = (
+        hz
+        - h_src_ll_z
+        * ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
+        * inv_res
+    )
     return hx, hy, hz
 
 
@@ -439,30 +448,21 @@ def fused_update_h_lossy_3d_material(
 
     alpha_x = h_sigma_m_x * half_dt_over_mu0
     denom_x = one + alpha_x
-    hx = (
-        (one - alpha_x) / denom_x * hx
-        - (dt_over_mu0 / denom_x)
-        * ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
-        * inv_res
-    )
+    hx = (one - alpha_x) / denom_x * hx - (dt_over_mu0 / denom_x) * (
+        (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
+    ) * inv_res
 
     alpha_y = h_sigma_m_y * half_dt_over_mu0
     denom_y = one + alpha_y
-    hy = (
-        (one - alpha_y) / denom_y * hy
-        - (dt_over_mu0 / denom_y)
-        * ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
-        * inv_res
-    )
+    hy = (one - alpha_y) / denom_y * hy - (dt_over_mu0 / denom_y) * (
+        (ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])
+    ) * inv_res
 
     alpha_z = h_sigma_m_z * half_dt_over_mu0
     denom_z = one + alpha_z
-    hz = (
-        (one - alpha_z) / denom_z * hz
-        - (dt_over_mu0 / denom_z)
-        * ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
-        * inv_res
-    )
+    hz = (one - alpha_z) / denom_z * hz - (dt_over_mu0 / denom_z) * (
+        (ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])
+    ) * inv_res
 
     return hx, hy, hz
 
@@ -526,30 +526,27 @@ def fused_update_e_lossy_3d_material(
     curl_hx = _adjacent_difference(
         boundary_views["hz_y"], axis=1, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution))
-    ex = (
-        (one - beta_x) / denom_x * ex
-        + (dt_over_eps0 * e_inv_permittivity_x) / denom_x * curl_hx
-    )
+    ex = (one - beta_x) / denom_x * ex + (
+        dt_over_eps0 * e_inv_permittivity_x
+    ) / denom_x * curl_hx
 
     beta_y = e_conductivity_y * half_dt_over_eps0 * e_inv_permittivity_y
     denom_y = one + beta_y
     curl_hy = _adjacent_difference(
         boundary_views["hx_z"], axis=0, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution))
-    ey = (
-        (one - beta_y) / denom_y * ey
-        + (dt_over_eps0 * e_inv_permittivity_y) / denom_y * curl_hy
-    )
+    ey = (one - beta_y) / denom_y * ey + (
+        dt_over_eps0 * e_inv_permittivity_y
+    ) / denom_y * curl_hy
 
     beta_z = e_conductivity_z * half_dt_over_eps0 * e_inv_permittivity_z
     denom_z = one + beta_z
     curl_hz = _adjacent_difference(
         boundary_views["hy_x"], axis=2, resolution=resolution
     ) - (_adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution))
-    ez = (
-        (one - beta_z) / denom_z * ez
-        + (dt_over_eps0 * e_inv_permittivity_z) / denom_z * curl_hz
-    )
+    ez = (one - beta_z) / denom_z * ez + (
+        dt_over_eps0 * e_inv_permittivity_z
+    ) / denom_z * curl_hz
 
     return ex, ey, ez
 
