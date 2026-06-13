@@ -296,6 +296,11 @@ def _cpml_active_slab_counts(a_term, inv_kappa_term, axis: int) -> tuple[int, in
 def _cpml_packed_slab_shape(
     full_shape: tuple[int, int, int], axis: int, low: int, high: int
 ) -> tuple[int, int, int]:
+    if int(low) + int(high) > int(full_shape[int(axis)]):
+        raise ValueError(
+            "Packed CPML slab counts exceed derivative axis length: "
+            f"shape={full_shape}, axis={axis}, low={low}, high={high}"
+        )
     shape = list(full_shape)
     shape[int(axis)] = int(low) + int(high)
     return tuple(shape)
@@ -329,6 +334,28 @@ def _cpml_packed_slab_shapes(
     specs: tuple[CpmlPackedSlabSpec, ...]
 ) -> tuple[tuple[int, int, int], ...]:
     return tuple(spec.shape for spec in specs)
+
+
+def _cpml_psi_state_bytes(shapes, dtype) -> int:
+    dtype = np.dtype(dtype)
+    return int(sum(int(np.prod(shape, dtype=np.int64)) for shape in shapes)) * int(
+        dtype.itemsize
+    )
+
+
+def _should_pack_cpml_3d_psi(shapes, dtype) -> bool:
+    raw = os.getenv("BEAMZ_CPML_PACKED_PSI", "auto").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    threshold_raw = os.getenv("BEAMZ_CPML_PACKED_PSI_MIN_GIB", "1.0").strip()
+    try:
+        threshold_gib = float(threshold_raw)
+    except ValueError:
+        threshold_gib = 1.0
+    threshold_bytes = max(0, int(threshold_gib * 1024**3))
+    return _cpml_psi_state_bytes(shapes, dtype) >= threshold_bytes
 
 
 def _empty_like_rank(arr: jnp.ndarray) -> jnp.ndarray:
@@ -2924,13 +2951,20 @@ def compile_simulation(
                     e_full_shapes,
                     CPML_3D_E_DERIVATIVES,
                 )
-                cpml3d_h_psi_shapes = _cpml_packed_slab_shapes(
-                    cpml3d_h_slab_specs
+                full_psi_shapes = (*h_full_shapes, *e_full_shapes)
+                use_cpml_3d_packed_psi = _should_pack_cpml_3d_psi(
+                    full_psi_shapes, fields.Hx.dtype
                 )
-                cpml3d_e_psi_shapes = _cpml_packed_slab_shapes(
-                    cpml3d_e_slab_specs
-                )
-                use_cpml_3d_packed_psi = True
+                if use_cpml_3d_packed_psi:
+                    cpml3d_h_psi_shapes = _cpml_packed_slab_shapes(
+                        cpml3d_h_slab_specs
+                    )
+                    cpml3d_e_psi_shapes = _cpml_packed_slab_shapes(
+                        cpml3d_e_slab_specs
+                    )
+                else:
+                    cpml3d_h_psi_shapes = h_full_shapes
+                    cpml3d_e_psi_shapes = e_full_shapes
             else:
                 terms = build_cpml_3d_terms(fields.pml_data, dt=run_cfg.dt)
                 if terms is not None:

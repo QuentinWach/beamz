@@ -882,7 +882,9 @@ def test_compiled_uses_material_coefficients_for_3d_loss():
     sim.run_compiled(num_steps=1, progress=False)
 
 
-def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
+def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding(monkeypatch):
+    monkeypatch.setenv("BEAMZ_CPML_PACKED_PSI", "1")
+
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -978,6 +980,46 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
     assert program.cpml3d_h_psi_shapes[3] == program.cpml3d_h_slab_specs[3].shape
     assert program.cpml3d_e_psi_shapes[4][2] < sim.fields.Ez.shape[2]
     assert program.cpml3d_h_psi_shapes[3][2] < sim.fields.Hy.shape[2]
+
+    h_full_shapes = (
+        sim.fields.Hx.shape,
+        sim.fields.Hx.shape,
+        sim.fields.Hy.shape,
+        sim.fields.Hy.shape,
+        sim.fields.Hz.shape,
+        sim.fields.Hz.shape,
+    )
+    e_full_shapes = (
+        sim.fields.Ex.shape,
+        sim.fields.Ex.shape,
+        sim.fields.Ey.shape,
+        sim.fields.Ey.shape,
+        sim.fields.Ez.shape,
+        sim.fields.Ez.shape,
+    )
+    full_psi_cells = 0
+    packed_psi_cells = 0
+    for slab_spec, psi_shape, full_shape in zip(
+        (*program.cpml3d_h_slab_specs, *program.cpml3d_e_slab_specs),
+        (*program.cpml3d_h_psi_shapes, *program.cpml3d_e_psi_shapes),
+        (*h_full_shapes, *e_full_shapes),
+        strict=True,
+    ):
+        assert isinstance(slab_spec.axis, int)
+        assert isinstance(slab_spec.low, int)
+        assert isinstance(slab_spec.high, int)
+        assert isinstance(slab_spec.shape, tuple)
+        assert slab_spec.shape == psi_shape
+        assert slab_spec.low >= 0
+        assert slab_spec.high >= 0
+        assert slab_spec.low + slab_spec.high == psi_shape[slab_spec.axis]
+        assert slab_spec.low + slab_spec.high <= full_shape[slab_spec.axis]
+        for dim, (packed_size, full_size) in enumerate(zip(psi_shape, full_shape)):
+            if dim != slab_spec.axis:
+                assert packed_size == full_size
+        full_psi_cells += int(np.prod(full_shape))
+        packed_psi_cells += int(np.prod(psi_shape))
+    assert packed_psi_cells < full_psi_cells
 
     np.testing.assert_allclose(
         np.asarray(program.cpml3d_sigma_e_terms[4][0, 0, :]),
