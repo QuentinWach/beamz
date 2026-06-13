@@ -505,6 +505,77 @@ def _tidy3d_pml_thickness(sim):
     return None
 
 
+def _mode_source_launched_field_mask(
+    simulation,
+    monitor,
+    *,
+    x_coords,
+    y_coords,
+) -> np.ndarray | None:
+    """Return a display mask that hides source-side ModeSource construction."""
+    sources = tuple(getattr(simulation, "sources", ()) or ())
+    if not sources:
+        return None
+
+    x = np.asarray(x_coords, dtype=float).reshape(-1)
+    y = np.asarray(y_coords, dtype=float).reshape(-1)
+    if x.size == 0 or y.size == 0:
+        return None
+
+    mask = np.ones((int(y.size), int(x.size)), dtype=bool)
+    found = False
+    fields = getattr(simulation, "fields", None)
+    dt = getattr(simulation, "dt", None)
+    plane_z = float(getattr(monitor, "plane_position", 0.0))
+    resolution = float(getattr(simulation, "resolution", 0.0) or 0.0)
+    support_tol = max(1e-15, 0.51 * resolution)
+
+    for source in sources:
+        direction = str(getattr(source, "direction", "")).lower()
+        if len(direction) < 2 or direction[0] not in {"+", "-"}:
+            continue
+        axis = direction[-1]
+        if axis not in {"x", "y"}:
+            continue
+
+        bounds = None
+        support_fn = getattr(source, "_injection_support_bounds", None)
+        if callable(support_fn):
+            try:
+                bounds = support_fn(fields, dt=dt)
+            except Exception:
+                bounds = None
+        if bounds is not None and "z" in bounds:
+            z0, z1 = (float(v) for v in bounds["z"])
+            if not (z0 - support_tol <= plane_z <= z1 + support_tol):
+                continue
+
+        phase_coord = getattr(source, "_phase_plane_coord", None)
+        if phase_coord is None:
+            center = getattr(source, "center", None)
+            if center is None or len(center) < 2:
+                continue
+            phase_coord = center[0 if axis == "x" else 1]
+        phase_coord = float(phase_coord)
+        phase_tol = max(1e-15, 1e-9 * max(abs(phase_coord), resolution, 1e-9))
+        direction_sign = 1.0 if direction.startswith("+") else -1.0
+        coord = x if axis == "x" else y
+        launched_side = (
+            coord >= phase_coord - phase_tol
+            if direction_sign > 0.0
+            else coord <= phase_coord + phase_tol
+        )
+        source_mask = (
+            np.broadcast_to(launched_side[None, :], mask.shape)
+            if axis == "x"
+            else np.broadcast_to(launched_side[:, None], mask.shape)
+        )
+        mask &= source_mask
+        found = True
+
+    return mask if found else None
+
+
 def _normal_axis_from_device(device):
     direction = getattr(device, "direction", None)
     if direction is not None:
@@ -1079,6 +1150,7 @@ def plot_tidy3d_dft_field(
     xlim=None,
     ylim=None,
     source_normalize=True,
+    hide_source_construction=True,
     show_units=True,
     show=True,
 ):
@@ -1141,6 +1213,18 @@ def plot_tidy3d_dft_field(
 
     field_scale, field_units = _tidy3d_field_display_scale_and_units(field)
     arr = arr * field_scale
+    x_coords = np.asarray(target1, dtype=float)
+    y_coords = np.asarray(target0, dtype=float)
+    if hide_source_construction:
+        launched_mask = _mode_source_launched_field_mask(
+            simulation,
+            monitor,
+            x_coords=x_coords,
+            y_coords=y_coords,
+        )
+        if launched_mask is not None and launched_mask.shape == arr.shape:
+            arr = np.where(launched_mask, arr, 0.0 + 0.0j)
+
     val_key = str(val).lower()
     if val_key in {"real", "re"}:
         plot_arr = np.real(arr)
@@ -1158,8 +1242,6 @@ def plot_tidy3d_dft_field(
     if origin is None:
         origin = _tidy3d_origin_for_simulation(simulation)
     ox, oy, oz = (float(v) for v in origin)
-    x_coords = np.asarray(target1, dtype=float)
-    y_coords = np.asarray(target0, dtype=float)
     dx = (
         float(np.mean(np.diff(x_coords)))
         if x_coords.size > 1

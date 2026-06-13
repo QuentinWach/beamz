@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 import warnings
+from types import SimpleNamespace
 
 import matplotlib
 
@@ -493,6 +493,88 @@ def test_tidy3d_dft_field_plot_source_normalizes_and_uses_micron_units():
         np.testing.assert_allclose(image.get_array(), np.full((2, 2), 12.0 * np.pi))
         assert image.get_clim() == pytest.approx((-12.0 * np.pi, 12.0 * np.pi))
         assert fig.axes[-1].get_ylabel() == "Re(Ey) (V/um)"
+    finally:
+        plt.close(fig)
+
+
+def _mode_source_mask_plot_fixture():
+    class DftPlaneMonitor:
+        is_3d = True
+        plane_normal = "z"
+        plane_position = 0.0
+        _compiled_dft_shape_3d = (2, 4)
+
+        def get_dft_frequencies(self):
+            return np.asarray([1.0])
+
+        def get_dft_component(self, component):
+            assert component == "Ey"
+            return np.full((1, 8), 1.0e6, dtype=np.complex128)
+
+        def get_analysis_plane_coords_3d(self, **_kwargs):
+            return (
+                np.asarray([0.25 * um, 0.75 * um]),
+                np.asarray([0.125 * um, 0.375 * um, 0.625 * um, 0.875 * um]),
+            )
+
+    class Source:
+        direction = "+x"
+        _phase_plane_coord = 0.5 * um
+
+        def _injection_support_bounds(self, fields=None, *, dt=None):
+            return {"z": (-0.25 * um, 0.25 * um)}
+
+    simulation = SimpleNamespace(
+        resolution=0.25 * um,
+        dt=1e-16,
+        fields=SimpleNamespace(permittivity=np.ones((1, 2, 4))),
+        sources=[Source()],
+        design=SimpleNamespace(width=1.0 * um, height=1.0 * um, depth=0.0),
+    )
+    return simulation, DftPlaneMonitor()
+
+
+def test_tidy3d_dft_field_plot_hides_mode_source_construction_by_default():
+    simulation, monitor = _mode_source_mask_plot_fixture()
+
+    fig, ax = plot_tidy3d_dft_field(
+        simulation,
+        monitor,
+        field="Ey",
+        source_normalize=False,
+        overlay_core=False,
+        percentile=100,
+        show=False,
+    )
+    try:
+        image = ax.images[0]
+        expected = np.asarray(
+            [
+                [0.0, 0.0, 1.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ]
+        )
+        np.testing.assert_allclose(image.get_array(), expected)
+    finally:
+        plt.close(fig)
+
+
+def test_tidy3d_dft_field_plot_can_show_mode_source_construction():
+    simulation, monitor = _mode_source_mask_plot_fixture()
+
+    fig, ax = plot_tidy3d_dft_field(
+        simulation,
+        monitor,
+        field="Ey",
+        source_normalize=False,
+        overlay_core=False,
+        hide_source_construction=False,
+        percentile=100,
+        show=False,
+    )
+    try:
+        image = ax.images[0]
+        np.testing.assert_allclose(image.get_array(), np.ones((2, 4)))
     finally:
         plt.close(fig)
 
