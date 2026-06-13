@@ -450,54 +450,6 @@ def _select_3d_impedance_index(axis, pol, eps_profile_2d, Ex, Ey, Ez, Hx, Hy, Hz
     return _weighted_local_index(eps_profile_2d, tangential)
 
 
-def _impedance_match_3d_tangential_pairs(
-    axis, Ex_s, Ey_s, Ez_s, Hx_s, Hy_s, Hz_s, Z_target, eps=1e-12
-):
-    """Match tangential 3D E components to paired H components via LS impedance fit."""
-    e_map = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s}
-    h_map = {"Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
-    pair_map = {
-        "x": [("Ey", "Hz"), ("Ez", "Hy")],
-        "y": [("Ex", "Hz"), ("Ez", "Hx")],
-        "z": [("Ex", "Hy"), ("Ey", "Hx")],
-    }
-    for e_name, h_name in pair_map[axis]:
-        e_field = np.asarray(e_map[e_name])
-        h_field = np.asarray(h_map[h_name])
-        abs_e = np.abs(e_field)
-        abs_h = np.abs(h_field)
-
-        # Robust local impedance estimate: use pointwise |E|/|H| over strong-field H support.
-        h_peak = float(np.max(abs_h))
-        if h_peak > eps:
-            mask = abs_h > (0.05 * h_peak)
-            if np.any(mask):
-                local_ratio = abs_e[mask] / (abs_h[mask] + eps)
-                ratio = float(np.median(local_ratio))
-            else:
-                ratio = 0.0
-        else:
-            ratio = 0.0
-
-        if not np.isfinite(ratio) or ratio <= eps:
-            e_norm = float(np.sqrt(np.sum(abs_e**2) + eps))
-            h_norm = float(np.sqrt(np.sum(abs_h**2) + eps))
-            ratio = e_norm / (h_norm + eps)
-
-        if not np.isfinite(ratio) or ratio <= eps:
-            continue
-        z_abs = float(abs(Z_target))
-        scale = z_abs / ratio
-        max_scale = max(20.0, 8.0 * z_abs)
-        scale = float(np.clip(scale, 1.0 / max_scale, max_scale))
-        e_map[e_name] = e_field * scale
-    return (
-        e_map["Ex"],
-        e_map["Ey"],
-        e_map["Ez"],
-    )
-
-
 def _parse_direction(direction):
     """Parse and validate direction string into (axis, sign)."""
     direction = str(direction).lower()
@@ -696,7 +648,7 @@ def _build_3d_profiles(
     omega,
     dt,
 ):
-    """Build staggered, windowed, impedance-corrected injection profiles for 3D.
+    """Build staggered, windowed injection profiles for 3D.
 
     Returns
     -------
@@ -705,16 +657,9 @@ def _build_3d_profiles(
     indices : dict
         Mapping component name -> index tuple for field injection.
     """
+    _ = (impedance_neff, omega, dt)
     nz, ny, nx = grid_shape
     dir_sign = 1.0 if direction.startswith("+") else -1.0
-    ETA_0 = np.sqrt(MU_0 / EPS_0)
-    neff_imp_r = max(float(np.real(impedance_neff)), 1e-6)
-    d_axis = resolution
-    if dt is not None:
-        k_num_imp = _solve_numeric_k_axis(omega, dt, d_axis, neff_imp_r)
-        Z_target = _numeric_impedance_axis(omega, dt, d_axis, k_num_imp, neff_imp_r)
-    else:
-        Z_target = ETA_0 / neff_imp_r
 
     if axis == "x":
         return _build_3d_x(
@@ -725,7 +670,6 @@ def _build_3d_profiles(
             Hy,
             Hz,
             dir_sign,
-            Z_target,
             center,
             width,
             height,
@@ -745,7 +689,6 @@ def _build_3d_profiles(
             Hy,
             Hz,
             dir_sign,
-            Z_target,
             center,
             width,
             height,
@@ -765,7 +708,6 @@ def _build_3d_profiles(
             Hy,
             Hz,
             dir_sign,
-            Z_target,
             center,
             width,
             height,
@@ -787,7 +729,6 @@ def _build_3d_x(
     Hy,
     Hz,
     dir_sign,
-    Z_target,
     center,
     width,
     height,
@@ -868,18 +809,6 @@ def _build_3d_x(
         ),
     }
 
-    # Match J/M balance using pairwise tangential impedance fits before windowing.
-    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
-        "x",
-        Ex_s,
-        Ey_s,
-        Ez_s,
-        Hx_s,
-        Hy_s,
-        Hz_s,
-        Z_target,
-    )
-
     # --- crop & window ---
     staggered = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s, "Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
     profiles = _crop_and_window_all(
@@ -920,7 +849,6 @@ def _build_3d_y(
     Hy,
     Hz,
     dir_sign,
-    Z_target,
     center,
     width,
     height,
@@ -1001,18 +929,6 @@ def _build_3d_y(
         ),
     }
 
-    # Match J/M balance using pairwise tangential impedance fits before windowing.
-    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
-        "y",
-        Ex_s,
-        Ey_s,
-        Ez_s,
-        Hx_s,
-        Hy_s,
-        Hz_s,
-        Z_target,
-    )
-
     # --- crop & window ---
     staggered = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s, "Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
     profiles = _crop_and_window_all(
@@ -1057,7 +973,6 @@ def _build_3d_z(
     Hy,
     Hz,
     dir_sign,
-    Z_target,
     center,
     width,
     height,
@@ -1141,18 +1056,6 @@ def _build_3d_z(
             hz_x,
         ),
     }
-
-    # Match J/M balance using pairwise tangential impedance fits before windowing.
-    Ex_s, Ey_s, Ez_s = _impedance_match_3d_tangential_pairs(
-        "z",
-        Ex_s,
-        Ey_s,
-        Ez_s,
-        Hx_s,
-        Hy_s,
-        Hz_s,
-        Z_target,
-    )
 
     # --- crop & window ---
     staggered = {"Ex": Ex_s, "Ey": Ey_s, "Ez": Ez_s, "Hx": Hx_s, "Hy": Hy_s, "Hz": Hz_s}
