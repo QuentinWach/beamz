@@ -304,12 +304,12 @@ def test_profile_shapes_match_3d_field_grid():
     ):
         assert payload[key].shape == fields.permittivity.shape
 
-    assert payload["cpml3d_Hxy_sigma"].shape == fields.Hx.shape
-    assert payload["cpml3d_Hyz_sigma"].shape == fields.Hy.shape
-    assert payload["cpml3d_Hzx_sigma"].shape == fields.Hz.shape
-    assert payload["cpml3d_Exy_sigma"].shape == fields.Ex.shape
-    assert payload["cpml3d_Eyz_sigma"].shape == fields.Ey.shape
-    assert payload["cpml3d_Ezx_sigma"].shape == fields.Ez.shape
+    assert payload["cpml3d_Hxy_sigma"].shape == (1, fields.Hx.shape[1], 1)
+    assert payload["cpml3d_Hyz_sigma"].shape == (fields.Hy.shape[0], 1, 1)
+    assert payload["cpml3d_Hzx_sigma"].shape == (1, 1, fields.Hz.shape[2])
+    assert payload["cpml3d_Exy_sigma"].shape == (1, fields.Ex.shape[1], 1)
+    assert payload["cpml3d_Eyz_sigma"].shape == (fields.Ey.shape[0], 1, 1)
+    assert payload["cpml3d_Ezx_sigma"].shape == (1, 1, fields.Ez.shape[2])
 
 
 def test_face_resolution_matches_dimensionality():

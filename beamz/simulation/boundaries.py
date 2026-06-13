@@ -722,10 +722,10 @@ class PML(Boundary):
             "x": ("left", "right"),
         }
 
-        def bcast_axis(profile, axis_name, target_shape):
+        def compact_axis(profile, axis_name):
             shape_1d = [1, 1, 1]
             shape_1d[axis_index[axis_name]] = profile.shape[0]
-            return jnp.broadcast_to(jnp.reshape(profile, tuple(shape_1d)), target_shape)
+            return jnp.reshape(profile, tuple(shape_1d))
 
         def profile_for_spec(spec):
             target = getattr(fields, spec.target_component)
@@ -744,18 +744,15 @@ class PML(Boundary):
             )
 
         for spec in (*CPML_3D_H_DERIVATIVES, *CPML_3D_E_DERIVATIVES):
-            target_shape = tuple(
-                int(v) for v in getattr(fields, spec.target_component).shape
-            )
             sigma_1d, kappa_1d, alpha_1d = profile_for_spec(spec)
-            out[f"cpml3d_{spec.name}_sigma"] = bcast_axis(
-                sigma_1d, spec.derivative_axis, target_shape
+            out[f"cpml3d_{spec.name}_sigma"] = compact_axis(
+                sigma_1d, spec.derivative_axis
             )
-            out[f"cpml3d_{spec.name}_kappa"] = bcast_axis(
-                kappa_1d, spec.derivative_axis, target_shape
+            out[f"cpml3d_{spec.name}_kappa"] = compact_axis(
+                kappa_1d, spec.derivative_axis
             )
-            out[f"cpml3d_{spec.name}_alpha"] = bcast_axis(
-                alpha_1d, spec.derivative_axis, target_shape
+            out[f"cpml3d_{spec.name}_alpha"] = compact_axis(
+                alpha_1d, spec.derivative_axis
             )
         return out
 
