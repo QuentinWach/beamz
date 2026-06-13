@@ -40,6 +40,7 @@ from beamz.shared_kernels import (
     build_cpml_3d_primitive_terms,
     build_cpml_3d_terms,
     build_tm_xy_cpml_terms,
+    cpml_precompute_native_terms,
     full_tm_xy_component_to_centered_grid,
     monitor_dft_sample_scale,
     monitor_dft_should_accumulate,
@@ -1637,21 +1638,6 @@ class CompiledSimulation:
                                 a_h_terms=self.cpml3d_a_h_terms,
                                 b_h_terms=self.cpml3d_b_h_terms,
                                 inv_kappa_h_terms=self.cpml3d_inv_kappa_h_terms,
-                                sigma_h_terms=(
-                                    self.cpml3d_sigma_h_terms
-                                    if self.use_primitive_cpml_3d_terms
-                                    else None
-                                ),
-                                kappa_h_terms=(
-                                    self.cpml3d_kappa_h_terms
-                                    if self.use_primitive_cpml_3d_terms
-                                    else None
-                                ),
-                                alpha_h_terms=(
-                                    self.cpml3d_alpha_h_terms
-                                    if self.use_primitive_cpml_3d_terms
-                                    else None
-                                ),
                                 dt=dt_scalar,
                                 psi_h_terms=cpml3d_psi_h_terms,
                             )
@@ -1852,21 +1838,6 @@ class CompiledSimulation:
                                 a_e_terms=self.cpml3d_a_e_terms,
                                 b_e_terms=self.cpml3d_b_e_terms,
                                 inv_kappa_e_terms=self.cpml3d_inv_kappa_e_terms,
-                                sigma_e_terms=(
-                                    self.cpml3d_sigma_e_terms
-                                    if self.use_primitive_cpml_3d_terms
-                                    else None
-                                ),
-                                kappa_e_terms=(
-                                    self.cpml3d_kappa_e_terms
-                                    if self.use_primitive_cpml_3d_terms
-                                    else None
-                                ),
-                                alpha_e_terms=(
-                                    self.cpml3d_alpha_e_terms
-                                    if self.use_primitive_cpml_3d_terms
-                                    else None
-                                ),
                                 dt=dt_scalar,
                                 psi_e_terms=cpml3d_psi_e_terms,
                                 metallic_edges=self.cpml3d_metallic_edges,
@@ -2784,6 +2755,26 @@ def compile_simulation(
                 cpml3d_sigma_e_terms = primitive_terms.sigma_e_terms
                 cpml3d_kappa_e_terms = primitive_terms.kappa_e_terms
                 cpml3d_alpha_e_terms = primitive_terms.alpha_e_terms
+                (
+                    cpml3d_a_h_terms,
+                    cpml3d_b_h_terms,
+                    cpml3d_inv_kappa_h_terms,
+                ) = cpml_precompute_native_terms(
+                    cpml3d_sigma_h_terms,
+                    cpml3d_kappa_h_terms,
+                    cpml3d_alpha_h_terms,
+                    run_cfg.dt,
+                )
+                (
+                    cpml3d_a_e_terms,
+                    cpml3d_b_e_terms,
+                    cpml3d_inv_kappa_e_terms,
+                ) = cpml_precompute_native_terms(
+                    cpml3d_sigma_e_terms,
+                    cpml3d_kappa_e_terms,
+                    cpml3d_alpha_e_terms,
+                    run_cfg.dt,
+                )
             else:
                 terms = build_cpml_3d_terms(fields.pml_data, dt=run_cfg.dt)
                 if terms is not None:

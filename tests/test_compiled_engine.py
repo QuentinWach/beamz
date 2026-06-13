@@ -968,9 +968,9 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
     )
 
     assert program.use_primitive_cpml_3d_terms
-    assert program.cpml3d_a_e_terms[4].shape == (0, 0, 0)
-    assert program.cpml3d_b_e_terms[4].shape == (0, 0, 0)
-    assert program.cpml3d_inv_kappa_e_terms[4].shape == (0, 0, 0)
+    assert program.cpml3d_a_e_terms[4].shape == (1, 1, nx)
+    assert program.cpml3d_b_e_terms[4].shape == (1, 1, nx)
+    assert program.cpml3d_inv_kappa_e_terms[4].shape == (1, 1, nx)
     assert program.cpml3d_sigma_e_terms[4].shape == (1, 1, nx)
     assert program.cpml3d_sigma_h_terms[3].shape == (1, 1, max(nx - 1, 0))
 
@@ -989,6 +989,12 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
     np.testing.assert_allclose(
         np.asarray(program.cpml3d_alpha_e_terms[4][0, 0, :]),
         alpha_e_x,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(program.cpml3d_inv_kappa_e_terms[4][0, 0, :]),
+        1.0 / kappa_e_x,
         rtol=1e-6,
         atol=1e-6,
     )

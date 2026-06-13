@@ -232,20 +232,21 @@ def build_cpml_3d_primitive_terms(
         arr = jnp.asarray(arr)
         if arr.ndim != 3:
             return arr
+        arr_np = np.asarray(arr)
         idx = [0, 0, 0]
         idx[axis_index[axis_name]] = slice(None)
-        profile = arr[tuple(idx)]
+        profile = arr_np[tuple(idx)]
         shape = [1, 1, 1]
         shape[axis_index[axis_name]] = profile.shape[0]
-        compact = jnp.reshape(profile, tuple(shape))
+        compact = np.reshape(profile, tuple(shape))
         if not np.allclose(
-            np.asarray(arr),
-            np.asarray(jnp.broadcast_to(compact, arr.shape)),
+            arr_np,
+            np.broadcast_to(compact, arr_np.shape),
             rtol=1e-6,
             atol=1e-7,
         ):
             return None
-        return compact
+        return jnp.asarray(compact)
 
     def read_terms(specs, suffix):
         terms = []
