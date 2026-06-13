@@ -1,4 +1,3 @@
-# Adapted from FDTDx by Yannik Mahlau
 from collections import namedtuple
 from typing import Literal, Tuple, Union
 
