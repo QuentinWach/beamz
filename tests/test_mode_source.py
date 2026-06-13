@@ -8,6 +8,7 @@ Tests verify:
 """
 
 import inspect
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -299,6 +300,74 @@ def _build_3d_waveguide(axis, wavelength, n_core, n_clad, guide_width):
 @pytest.mark.unit
 class TestModeSourceDiscreteHelpers:
     """Unit tests for deterministic discrete launch helpers."""
+
+    def test_initialize_3d_consumes_micromode_discrete_mode_contract(self, monkeypatch):
+        captured = {}
+
+        profiles = {
+            name: np.full((2, 3), idx + 1.0, dtype=np.complex128)
+            for idx, name in enumerate(("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"))
+        }
+        indices = {
+            "Ex": (slice(0, 2), 2, slice(0, 3)),
+            "Ey": (slice(0, 2), 1, slice(0, 3)),
+            "Ez": (slice(0, 2), 2, slice(0, 3)),
+            "Hx": (slice(0, 2), 1, slice(0, 3)),
+            "Hy": (slice(0, 2), 2, slice(0, 3)),
+            "Hz": (slice(0, 2), 1, slice(0, 3)),
+        }
+
+        def fake_solve_beamz_mode_plane(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                neff=2.0 + 0.0j,
+                profiles=profiles,
+                component_indices=indices,
+                k_num_axis=7.0,
+                phase_reference_coord=0.25,
+                phase_plane_coord=0.5,
+                power_scale=3.0,
+            )
+
+        monkeypatch.setattr(
+            mode_module,
+            "solve_beamz_mode_plane",
+            fake_solve_beamz_mode_plane,
+        )
+
+        permittivity = np.ones((4, 5, 6), dtype=np.float64)
+        source = ModeSource(
+            grid=SimpleNamespace(),
+            center=(2.5, 2.5, 2.0),
+            width=3.0,
+            height=3.0,
+            wavelength=TEST_WAVELENGTH,
+            pol="te",
+            signal=np.ones(8),
+            direction="+y",
+            power=4.0,
+        )
+
+        source.initialize(permittivity, resolution=1.0, dt=1e-15)
+
+        assert captured["axis"] == "y"
+        assert captured["direction"] == "+y"
+        assert captured["solver_direction"] == "+y"
+        assert captured["transverse_axes"] == ("z", "x")
+        assert captured["scalar_permittivity"].shape == (4, 6)
+        assert captured["component_shapes"]["Ex"] == (4, 5, 5)
+        assert source._initialized
+        assert source._discrete_mode is not None
+        assert source._profiles_are_runtime_oriented is True
+        assert source._k_num_axis == 7.0
+        assert source._phase_ref_coord == 0.25
+        assert source._phase_plane_coord == 0.5
+        np.testing.assert_allclose(source._Ex_profile, 2.0 * profiles["Ex"])
+
+        runtime_profiles, runtime_indices = source._get_3d_profiles_and_indices()
+        np.testing.assert_allclose(runtime_profiles["Ex"], 2.0 * profiles["Ex"])
+        np.testing.assert_allclose(runtime_profiles["Hz"], 2.0 * profiles["Hz"])
+        assert runtime_indices["Ex"] == indices["Ex"]
 
     def test_numeric_k_satisfies_dispersion_identity(self):
         wavelength = TEST_WAVELENGTH

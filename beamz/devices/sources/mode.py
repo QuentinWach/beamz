@@ -12,7 +12,7 @@ from beamz.devices.sources._materials import (
     component_permeability_at,
     component_permittivity_at,
 )
-from beamz.devices.sources.solve import solve_modes
+from beamz.devices.sources.solve import solve_beamz_mode_plane, solve_modes
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,8 @@ class _ModeSourceState:
     _discrete_launch_max_shift: int = 2
     _launch_dt: float | None = None
     _snapped_region: object | None = None
+    _discrete_mode: object | None = None
+    _profiles_are_runtime_oriented: bool = False
     _initialized: bool = False
 
 
@@ -1680,6 +1682,8 @@ class ModeSource(RuntimeStateProxy):
         "_discrete_launch_max_shift",
         "_launch_power_scale",
         "_launch_dt",
+        "_discrete_mode",
+        "_profiles_are_runtime_oriented",
         "_initialized",
         "_resolution",
         "_is_3d",
@@ -1850,6 +1854,8 @@ class ModeSource(RuntimeStateProxy):
         self._axis = axis
         self._dt_physical = 0.0
         self._launch_dt = dt
+        self._discrete_mode = None
+        self._profiles_are_runtime_oriented = False
         self._snapped_region = snap_mode_source_region(
             center=tuple(float(v) for v in self.center),
             width=float(self.width),
@@ -1940,6 +1946,32 @@ class ModeSource(RuntimeStateProxy):
             )
             self._neff = neff_val[0]
         else:
+            if is_3d:
+                discrete_mode = self._setup_discrete_3d_mode_from_micromode(
+                    eps_profile=eps_profile,
+                    permittivity=permittivity,
+                    center_idx=center_idx,
+                    offset_idx=offset_idx,
+                    axis=axis,
+                    grid_shape=(nz, ny, nx),
+                    resolution=resolution,
+                    omega=omega,
+                    dt=dt,
+                    solver_direction=solver_direction,
+                    target_neff=(
+                        self.mode_target_neff
+                        if self.mode_target_neff is not None
+                        else target_neff
+                    ),
+                )
+                if discrete_mode is not None:
+                    self._compute_dt_physical(axis, is_3d, dx, dy, dz, dt=dt)
+                    self._k_num_axis = float(discrete_mode.k_num_axis)
+                    self._phase_ref_coord = float(discrete_mode.phase_reference_coord)
+                    self._phase_plane_coord = float(discrete_mode.phase_plane_coord)
+                    self._initialized = True
+                    return
+
             mode_candidates = 3
             try:
                 neff_val, e_fields, h_fields, _ = solve_modes(
@@ -2055,6 +2087,131 @@ class ModeSource(RuntimeStateProxy):
     def get_snapped_region(self):
         """Return the canonical snapped source region after initialization."""
         return self._snapped_region
+
+    def _setup_discrete_3d_mode_from_micromode(
+        self,
+        *,
+        eps_profile,
+        permittivity,
+        center_idx,
+        offset_idx,
+        axis,
+        grid_shape,
+        resolution,
+        omega,
+        dt,
+        solver_direction,
+        target_neff,
+    ):
+        """Request a BEAMZ-shaped DiscreteMode from micromode, if available."""
+        from beamz.simulation.yee import (
+            component_shape_3d,
+            sample_voxel_grid_at_component_3d,
+            sample_voxel_grid_at_e_component_3d_centered,
+        )
+
+        nz, ny, nx = grid_shape
+        component_shapes = {
+            component: component_shape_3d(component, grid_shape)
+            for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        }
+        permittivity_arr = np.asarray(permittivity)
+        permeability_arr = np.ones_like(permittivity_arr, dtype=np.float64)
+        component_permittivity = {
+            component: np.asarray(
+                sample_voxel_grid_at_e_component_3d_centered(
+                    permittivity_arr,
+                    component,
+                    stored_shape=component_shapes[component],
+                )
+            )
+            for component in ("Ex", "Ey", "Ez")
+        }
+        component_permeability = {
+            component: np.asarray(
+                sample_voxel_grid_at_component_3d(
+                    permeability_arr,
+                    component,
+                    stored_shape=component_shapes[component],
+                )
+            )
+            for component in ("Hx", "Hy", "Hz")
+        }
+        transverse_axes = {
+            "x": ("z", "y"),
+            "y": ("z", "x"),
+            "z": ("y", "x"),
+        }[axis]
+        center = tuple(float(value) for value in self.center)
+        if len(center) < 3:
+            center = (
+                center[0] if len(center) > 0 else 0.5 * nx * float(resolution),
+                center[1] if len(center) > 1 else 0.5 * ny * float(resolution),
+                0.5 * nz * float(resolution),
+            )
+
+        discrete_mode = solve_beamz_mode_plane(
+            scalar_permittivity=np.asarray(eps_profile),
+            frequency=float(omega) / (2.0 * np.pi),
+            resolution=float(resolution),
+            dt=None if dt is None else float(dt),
+            axis=axis,
+            direction=self.direction,
+            solver_direction=solver_direction,
+            transverse_axes=transverse_axes,
+            grid_shape=grid_shape,
+            component_shapes=component_shapes,
+            component_permittivity=component_permittivity,
+            component_permeability=component_permeability,
+            center=center,
+            width=float(self.width),
+            height=float(self.height if self.height is not None else self.width),
+            plane_index=int(center_idx),
+            offset_index=int(offset_idx),
+            mode_index=int(self.mode_index),
+            polarization=self.pol,
+            target_neff=target_neff,
+            num_modes=(
+                int(self.mode_num_modes)
+                if self.mode_num_modes is not None
+                else max(int(self.mode_index) + 1, 3)
+            ),
+        )
+        if discrete_mode is None:
+            return None
+
+        profiles = {
+            name: np.asarray(value, dtype=np.complex128)
+            for name, value in discrete_mode.profiles.items()
+        }
+        profiles = _scale_profiles_for_power(profiles, self.power)
+        indices = dict(discrete_mode.component_indices)
+        self._Ex_profile = profiles.get("Ex")
+        self._Ey_profile = profiles.get("Ey")
+        self._Ez_profile = profiles.get("Ez")
+        self._Hx_profile = profiles.get("Hx")
+        self._Hy_profile = profiles.get("Hy")
+        self._Hz_profile = profiles.get("Hz")
+        self._Ex_indices = indices.get("Ex")
+        self._Ey_indices = indices.get("Ey")
+        self._Ez_indices = indices.get("Ez")
+        self._Hx_indices = indices.get("Hx")
+        self._Hy_indices = indices.get("Hy")
+        self._Hz_indices = indices.get("Hz")
+        self._neff = np.complex128(discrete_mode.neff)
+        self._impedance_neff = None
+        self._launch_power_scale = float(discrete_mode.power_scale)
+        self._phase_plane_coord = float(discrete_mode.phase_plane_coord)
+        self._phase_ref_coord = float(discrete_mode.phase_reference_coord)
+        self._k_num_axis = float(discrete_mode.k_num_axis)
+        self._h_component = _dominant_3d_pair(axis, self.pol)[1]
+        self._e_component = _dominant_3d_pair(axis, self.pol)[0]
+        self._profiles_are_runtime_oriented = True
+        self._discrete_mode = discrete_mode
+
+        self._jz_profile = self._Hz_profile
+        self._my_profile = self._Ez_profile
+        return discrete_mode
 
     def _setup_3d_injection(
         self,
@@ -2612,7 +2769,8 @@ class ModeSource(RuntimeStateProxy):
             "Hy": self._Hy_profile,
             "Hz": self._Hz_profile,
         }
-        profiles = _runtime_3d_profiles(profiles, self._axis, self._direction_sign)
+        if not getattr(self, "_profiles_are_runtime_oriented", False):
+            profiles = _runtime_3d_profiles(profiles, self._axis, self._direction_sign)
         indices = {
             "Ex": self._Ex_indices,
             "Ey": self._Ey_indices,
