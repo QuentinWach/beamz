@@ -25,6 +25,10 @@ Things to check while tuning:
 - A 12-cell BeamZ CPML at 15 steps per wavelength in silicon is only about
   0.356 um thick at 1.55 um. That is much thinner than the simple half-vacuum-
   wavelength rule of thumb, so the profile must be discretely well matched.
+- CPML-width sweeps should keep the non-PML design region fixed and add CPML
+  outside it. If the total simulation box is fixed, increasing CPML cells shrinks
+  the physical aperture and changes the source/monitor problem; that is not a
+  clean absorber convergence test.
 - Material must be extruded through the CPML along each absorber normal. If the
   waveguide, substrate, or cladding changes along the PML normal inside the
   absorber, reflections can be boundary-termination reflections rather than

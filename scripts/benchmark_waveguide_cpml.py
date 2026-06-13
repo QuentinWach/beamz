@@ -131,7 +131,7 @@ def build_and_run(args):
     background_ext = args.background_ext_um * um
     substrate_height = port_extension
     cladding_height = core_height + port_extension
-    sim_size = (
+    interior_size = (
         waveguide_length,
         core_width + 2.0 * port_extension,
         substrate_height + cladding_height + background_ext,
@@ -165,10 +165,18 @@ def build_and_run(args):
     )
     grid_resolution = grid_spec.resolve_resolution(max_index=max_index)
     pml_t = args.cpml_cells * grid_resolution
+    if args.domain_mode == "interior":
+        sim_size = tuple(float(v + 2.0 * pml_t) for v in interior_size)
+        non_pml_size = interior_size
+    else:
+        sim_size = interior_size
+        non_pml_size = tuple(
+            float(max(v - 2.0 * pml_t, 0.0)) for v in interior_size
+        )
     run_time = args.run_time_cycles / freq0
 
-    non_pml_x_min = -0.5 * sim_size[0] + pml_t
-    non_pml_x_max = 0.5 * sim_size[0] - pml_t
+    non_pml_x_min = -0.5 * non_pml_size[0]
+    non_pml_x_max = 0.5 * non_pml_size[0]
     src_x = non_pml_x_min + args.source_offset_um * um
     diagnostic_gap = args.diagnostic_gap_um * um
     source_back_x = max(src_x - diagnostic_gap, non_pml_x_min + 0.2 * um)
@@ -187,13 +195,13 @@ def build_and_run(args):
     )
 
     requested_source_plane_scale = math.sqrt(args.source_area_fraction)
-    non_pml_y = max(sim_size[1] - 2.0 * pml_t, 0.0)
-    non_pml_z = max(sim_size[2] - 2.0 * pml_t, 0.0)
-    source_plane_y = min(sim_size[1] * requested_source_plane_scale, non_pml_y)
-    source_plane_z = min(sim_size[2] * requested_source_plane_scale, non_pml_z)
+    non_pml_y = non_pml_size[1]
+    non_pml_z = non_pml_size[2]
+    source_plane_y = min(interior_size[1] * requested_source_plane_scale, non_pml_y)
+    source_plane_z = min(interior_size[2] * requested_source_plane_scale, non_pml_z)
     source_plane_size = (0.0, source_plane_y, source_plane_z)
     source_plane_area_fraction = (source_plane_y * source_plane_z) / (
-        sim_size[1] * sim_size[2]
+        interior_size[1] * interior_size[2]
     )
     src_plane = bz.Box(center=(src_x, 0, 0.0), size=source_plane_size)
 
@@ -354,6 +362,9 @@ def build_and_run(args):
             "dt_s": float(sim.dt),
             "cpml_cells": int(args.cpml_cells),
             "cpml_thickness_um": float(pml_t / um),
+            "domain_mode": args.domain_mode,
+            "interior_size_um": [float(v / um) for v in interior_size],
+            "simulation_size_um": [float(v / um) for v in sim_size],
             "sigma_scale": args.sigma_scale,
             "x_sigma_scale": x_sigma_scale,
             "transverse_sigma_scale": transverse_sigma_scale,
@@ -404,6 +415,15 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--source-offset-um", type=float, default=0.75)
     parser.add_argument("--diagnostic-gap-um", type=float, default=0.50)
     parser.add_argument("--source-area-fraction", type=float, default=0.65)
+    parser.add_argument(
+        "--domain-mode",
+        choices=("total", "interior"),
+        default="total",
+        help=(
+            "'total' keeps the notebook's fixed simulation box; 'interior' "
+            "keeps the non-PML design region fixed and adds CPML outside it."
+        ),
+    )
     parser.add_argument("--target-reflection", type=float, default=1e-6)
     parser.add_argument("--cpml-order", type=int, default=3)
     parser.add_argument("--kappa-max", type=float, default=2.0)
