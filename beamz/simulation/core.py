@@ -1515,14 +1515,20 @@ class Simulation:
                 else jnp.zeros((2, 0, 0), dtype=self.fields.Ez.dtype)
             ),
             cpml3d_psi_h_terms=(
-                tuple(jnp.zeros_like(term) for term in program.cpml3d_b_h_terms)
+                tuple(
+                    jnp.zeros(shape, dtype=self.fields.Hx.dtype)
+                    for shape in program.cpml3d_h_psi_shapes
+                )
                 if program.use_cpml_3d
                 else tuple(
                     jnp.zeros((0, 0, 0), dtype=self.fields.Hx.dtype) for _ in range(6)
                 )
             ),
             cpml3d_psi_e_terms=(
-                tuple(jnp.zeros_like(term) for term in program.cpml3d_b_e_terms)
+                tuple(
+                    jnp.zeros(shape, dtype=self.fields.Ex.dtype)
+                    for shape in program.cpml3d_e_psi_shapes
+                )
                 if program.use_cpml_3d
                 else tuple(
                     jnp.zeros((0, 0, 0), dtype=self.fields.Ez.dtype) for _ in range(6)
@@ -1756,14 +1762,20 @@ class Simulation:
                     else jnp.zeros((2, 0, 0), dtype=compiled_dtype)
                 ),
                 cpml3d_psi_h_terms=(
-                    tuple(jnp.zeros_like(term) for term in program.cpml3d_b_h_terms)
+                    tuple(
+                        jnp.zeros(shape, dtype=compiled_dtype)
+                        for shape in program.cpml3d_h_psi_shapes
+                    )
                     if program.use_cpml_3d
                     else tuple(
                         jnp.zeros((0, 0, 0), dtype=compiled_dtype) for _ in range(6)
                     )
                 ),
                 cpml3d_psi_e_terms=(
-                    tuple(jnp.zeros_like(term) for term in program.cpml3d_b_e_terms)
+                    tuple(
+                        jnp.zeros(shape, dtype=compiled_dtype)
+                        for shape in program.cpml3d_e_psi_shapes
+                    )
                     if program.use_cpml_3d
                     else tuple(
                         jnp.zeros((0, 0, 0), dtype=compiled_dtype) for _ in range(6)

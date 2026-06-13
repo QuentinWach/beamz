@@ -1356,6 +1356,70 @@ def _cpml_correct_term(
     )
 
 
+def _axis_region(ndim, axis, start, stop):
+    region = [slice(None)] * ndim
+    region[axis] = slice(start, stop)
+    return tuple(region)
+
+
+def _cpml_pack_slab(arr, slab_spec):
+    """Pack low/high CPML slabs for one derivative term into one static array."""
+
+    axis = int(slab_spec.axis)
+    low = int(slab_spec.low)
+    high = int(slab_spec.high)
+    if low <= 0 and high <= 0:
+        return jnp.zeros(slab_spec.shape, dtype=arr.dtype)
+
+    parts = []
+    if low > 0:
+        parts.append(arr[_axis_region(arr.ndim, axis, 0, low)])
+    if high > 0:
+        parts.append(arr[_axis_region(arr.ndim, axis, arr.shape[axis] - high, None)])
+    if len(parts) == 1:
+        return parts[0]
+    return jnp.concatenate(parts, axis=axis)
+
+
+def _cpml_unpack_slab(base, slab, slab_spec):
+    """Scatter one packed low/high CPML slab array back into a full derivative."""
+
+    axis = int(slab_spec.axis)
+    low = int(slab_spec.low)
+    high = int(slab_spec.high)
+    out = base
+    offset = 0
+    if low > 0:
+        slab_low = slab[_axis_region(slab.ndim, axis, 0, low)]
+        out = out.at[_axis_region(out.ndim, axis, 0, low)].set(slab_low)
+        offset = low
+    if high > 0:
+        slab_high = slab[_axis_region(slab.ndim, axis, offset, offset + high)]
+        out = out.at[
+            _axis_region(out.ndim, axis, out.shape[axis] - high, None)
+        ].set(slab_high)
+    return out
+
+
+def _cpml_correct_packed_slab_term(
+    derivative, psi, a_term, b_term, inv_kappa_term, slab_spec
+):
+    """Update CPML psi only in packed CPML slabs for one derivative term."""
+
+    if int(slab_spec.low) <= 0 and int(slab_spec.high) <= 0:
+        return derivative, psi
+    dtype = psi.dtype
+    derivative_slab = _cpml_pack_slab(jnp.asarray(derivative, dtype=dtype), slab_spec)
+    a_slab = _cpml_pack_slab(jnp.asarray(a_term, dtype=dtype), slab_spec)
+    b_slab = _cpml_pack_slab(jnp.asarray(b_term, dtype=dtype), slab_spec)
+    inv_kappa_slab = _cpml_pack_slab(
+        jnp.asarray(inv_kappa_term, dtype=dtype), slab_spec
+    )
+    psi_updated = b_slab * psi + a_slab * derivative_slab
+    corrected_slab = derivative_slab * inv_kappa_slab + psi_updated
+    return _cpml_unpack_slab(derivative, corrected_slab, slab_spec), psi_updated
+
+
 def build_h_boundary_views_for_e_3d(hx, hy, hz, boundaries):
     """Return H-field views for the 3D E update with boundaries applied outside ops.
 
@@ -1754,6 +1818,56 @@ def cpml_update_h_from_e_3d(
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
 
 
+def cpml_update_h_from_e_3d_packed_psi(
+    ex,
+    ey,
+    ez,
+    hx,
+    hy,
+    hz,
+    h_decay_x,
+    h_source_x,
+    h_decay_y,
+    h_source_y,
+    h_decay_z,
+    h_source_z,
+    resolution,
+    *,
+    a_h_terms,
+    b_h_terms,
+    inv_kappa_h_terms,
+    psi_h_terms,
+    slab_specs,
+):
+    """CPML-corrected H update with psi stored only in packed CPML slabs."""
+
+    resolution = _scalar_like(resolution, ex.dtype)
+
+    def correct(idx, derivative):
+        return _cpml_correct_packed_slab_term(
+            derivative,
+            psi_h_terms[idx],
+            a_h_terms[idx],
+            b_h_terms[idx],
+            inv_kappa_h_terms[idx],
+            slab_specs[idx],
+        )
+
+    term0, psi0 = correct(0, (ez[:, 1:, :] - ez[:, :-1, :]) / resolution)
+    term1, psi1 = correct(1, (ey[1:, :, :] - ey[:-1, :, :]) / resolution)
+    hx = h_decay_x * hx - h_source_x * (term0 - term1)
+
+    term2, psi2 = correct(2, (ex[1:, :, :] - ex[:-1, :, :]) / resolution)
+    term3, psi3 = correct(3, (ez[:, :, 1:] - ez[:, :, :-1]) / resolution)
+    hy = h_decay_y * hy - h_source_y * (term2 - term3)
+
+    term4, psi4 = correct(4, (ey[:, :, 1:] - ey[:, :, :-1]) / resolution)
+    term5, psi5 = correct(5, (ex[:, 1:, :] - ex[:, :-1, :]) / resolution)
+    hz = h_decay_z * hz - h_source_z * (term4 - term5)
+
+    return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
+
+
 def cpml_curl_h_to_e_3d(
     hx,
     hy,
@@ -1865,6 +1979,84 @@ def cpml_update_e_from_h_3d(
             None if kappa_e_terms is None else kappa_e_terms[idx],
             None if alpha_e_terms is None else alpha_e_terms[idx],
             dt,
+        )
+
+    term0, psi0 = correct(
+        0,
+        _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
+    )
+    term1, psi1 = correct(
+        1,
+        _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
+    )
+    ex = e_decay_x * ex + e_source_x * (term0 - term1)
+
+    term2, psi2 = correct(
+        2,
+        _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution),
+    )
+    term3, psi3 = correct(
+        3,
+        _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
+    )
+    ey = e_decay_y * ey + e_source_y * (term2 - term3)
+
+    term4, psi4 = correct(
+        4,
+        _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution),
+    )
+    term5, psi5 = correct(
+        5,
+        _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
+    )
+    ez = e_decay_z * ez + e_source_z * (term4 - term5)
+
+    return ex, ey, ez, (psi0, psi1, psi2, psi3, psi4, psi5)
+
+
+def cpml_update_e_from_h_3d_packed_psi(
+    hx,
+    hy,
+    hz,
+    ex,
+    ey,
+    ez,
+    e_decay_x,
+    e_source_x,
+    e_decay_y,
+    e_source_y,
+    e_decay_z,
+    e_source_z,
+    resolution,
+    *,
+    a_e_terms,
+    b_e_terms,
+    inv_kappa_e_terms,
+    psi_e_terms,
+    slab_specs,
+    metallic_edges=frozenset(),
+):
+    """CPML-corrected E update with psi stored only in packed CPML slabs."""
+
+    metallic_edges = frozenset(metallic_edges or ())
+
+    def pad(arr, axis):
+        low_edge, high_edge = _edge_pair_for_axis(axis)
+        return _pad_with_boundary_ghosts(
+            arr,
+            axis,
+            low_metallic=low_edge in metallic_edges,
+            high_metallic=high_edge in metallic_edges,
+        )
+
+    def correct(idx, derivative):
+        return _cpml_correct_packed_slab_term(
+            derivative,
+            psi_e_terms[idx],
+            a_e_terms[idx],
+            b_e_terms[idx],
+            inv_kappa_e_terms[idx],
+            slab_specs[idx],
         )
 
     term0, psi0 = correct(
