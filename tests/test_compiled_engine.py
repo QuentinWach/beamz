@@ -34,6 +34,11 @@ from beamz.devices.sources.mode import (
     _analytic_signal_quadrature,
     _ModeSource3DResidual,
 )
+from beamz.shared_kernels import (
+    CPML_3D_E_DERIVATIVES,
+    CPML_3D_H_DERIVATIVES,
+    build_cpml_3d_primitive_terms,
+)
 from beamz.simulation import ops
 from beamz.simulation.boundaries import (
     build_h_boundary_views_for_e_3d,
@@ -45,11 +50,6 @@ from beamz.simulation.compiled import (
     CompiledSimulation,
     EngineState,
     MonitorState,
-)
-from beamz.shared_kernels import (
-    CPML_3D_E_DERIVATIVES,
-    CPML_3D_H_DERIVATIVES,
-    build_cpml_3d_primitive_terms,
 )
 
 pytestmark = [pytest.mark.compiled, pytest.mark.component]
@@ -1843,7 +1843,7 @@ def test_compile_3d_mode_source_derives_chebyshev_profile_frequencies(monkeypatc
     np.testing.assert_allclose(seen_freqs, expected, rtol=1e-15, atol=0.0)
 
 
-def test_compile_3d_broadband_mode_source_reuses_finite_plane_context(monkeypatch):
+def test_compile_3d_broadband_mode_source_defers_profile_solves(monkeypatch):
     dt = 1e-15
     freq0 = 200e12
     fwidth = 20e12
@@ -1868,23 +1868,10 @@ def test_compile_3d_broadband_mode_source_reuses_finite_plane_context(monkeypatc
         mode_num_modes=2,
     )
     fields = SimpleNamespace(permittivity=jnp.ones((3, 6, 7), dtype=jnp.float32))
-    seen_solves = []
     seen_profile_sources = []
 
-    def fake_solve_modes(**kwargs):
-        eps = np.asarray(kwargs["eps"])
-        seen_solves.append(
-            {
-                "eps_shape": eps.shape,
-                "direction": kwargs["direction"],
-                "target_neff": kwargs["target_neff"],
-                "m": kwargs["m"],
-            }
-        )
-        fields_out = np.zeros((2, 3, *eps.shape), dtype=np.complex128)
-        fields_out[0] = 1.0
-        fields_out[1] = 2.0
-        return np.asarray([2.1, 1.9], dtype=np.complex128), fields_out, fields_out, 0
+    def fail_solve_modes(**_kwargs):
+        raise AssertionError("broadband compilation should defer profile solves.")
 
     def fake_initialize(self, permittivity, resolution, dt=None):
         del dt
@@ -1897,9 +1884,9 @@ def test_compile_3d_broadband_mode_source_reuses_finite_plane_context(monkeypatc
         seen_profile_sources.append(profile_src)
         return ()
 
-    monkeypatch.setattr(source_compiler, "solve_modes", fake_solve_modes)
     monkeypatch.setattr(ModeSource, "initialize", fake_initialize)
     monkeypatch.setattr(source_compiler, "_compile_mode_source_3d", fake_compile)
+    monkeypatch.setattr(source_compiler, "solve_modes", fail_solve_modes, raising=False)
 
     source_compiler._compile_mode_source(
         source,
@@ -1911,20 +1898,16 @@ def test_compile_3d_broadband_mode_source_reuses_finite_plane_context(monkeypatc
         total_steps=64,
     )
 
-    assert len(seen_solves) == 3
-    assert all(item == seen_solves[0] for item in seen_solves)
-    assert seen_solves[0] == {
-        "eps_shape": (3, 4),
-        "direction": "+x",
-        "target_neff": 2.3,
-        "m": 2,
-    }
     assert len(seen_profile_sources) == 3
     for profile_src in seen_profile_sources:
-        assert profile_src.mode_neff == 1.9 + 0.0j
-        assert profile_src.mode_e_field.shape == (3, 6, 7)
-        assert np.count_nonzero(profile_src.mode_e_field[0] == 2.0) == 12
-        assert np.count_nonzero(profile_src.mode_e_field[0]) == 12
+        assert profile_src.mode_neff is None
+        assert profile_src.mode_e_field is None
+        assert profile_src.mode_h_field is None
+        assert profile_src.mode_eps_profile_full is eps_full
+        assert profile_src.mode_crop_slices == crop_slices
+        assert profile_src.mode_index == 1
+        assert profile_src.mode_target_neff == 2.3
+        assert profile_src.mode_num_modes == 2
 
 
 def test_compile_3d_mode_source_reinitializes_missing_launch_dt(monkeypatch):

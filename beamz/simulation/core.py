@@ -31,7 +31,7 @@ from beamz.devices.sources.mode import (
     _select_core_confined_mode_index,  # noqa: F401 - compatibility monkeypatch hook
     _solve_numeric_k_axis,
 )
-from beamz.devices.sources.solve import solve_modes
+from beamz.devices.sources.solve import solve_beamz_mode_plane, solve_modes
 from beamz.simulation.boundaries import (
     PML,
     Boundary,
@@ -54,7 +54,11 @@ from beamz.simulation.compiled import (
 )
 from beamz.simulation.fields import Fields
 from beamz.simulation.step_sequence import run_step_sequence
-from beamz.simulation.yee import component_coordinates_3d_um
+from beamz.simulation.yee import (
+    component_coordinates_3d_um,
+    sample_voxel_grid_at_component_3d,
+    sample_voxel_grid_at_e_component_3d_centered,
+)
 from beamz.visual.helpers import _finish_inline_progress, _print_inline_progress
 
 
@@ -3039,6 +3043,329 @@ class Simulation:
         dl = max(dl, float(self.resolution) * 1e-9)
         return np.asarray(eps_profile_full[lo:hi], dtype=np.complex128), local_idx, dl
 
+    def _component_index_plane_coords_3d(self, component, index, axis):
+        coords_um = component_coordinates_3d_um(
+            component,
+            tuple(int(v) for v in np.asarray(self.fields.permittivity).shape),
+            float(self.resolution / µm),
+        )
+        axis0, axis1 = self._plane_axes_for_port_axis(axis)
+        axis_indices = {"z": index[0], "y": index[1], "x": index[2]}
+        coord0 = np.asarray(coords_um[axis0][axis_indices[axis0]], dtype=np.float64)
+        coord1 = np.asarray(coords_um[axis1][axis_indices[axis1]], dtype=np.float64)
+        return coord0.reshape(-1) * float(µm), coord1.reshape(-1) * float(µm)
+
+    def _discrete_mode_projection_grids_3d(
+        self,
+        discrete_mode,
+        profiles,
+        *,
+        monitor,
+        axis,
+        components,
+        analysis_coords0,
+        analysis_coords1,
+    ):
+        del monitor
+        grids = {}
+        samples = {}
+        for name in components:
+            if name not in profiles:
+                continue
+            arr = np.asarray(profiles[name], dtype=np.complex128)
+            if arr.ndim == 1:
+                arr = arr[:, None]
+            index = discrete_mode.component_indices.get(name)
+            if index is None:
+                continue
+            src0, src1 = self._component_index_plane_coords_3d(name, index, axis)
+            rows = min(int(arr.shape[0]), int(src0.size))
+            cols = min(int(arr.shape[1]), int(src1.size))
+            if rows <= 0 or cols <= 0:
+                continue
+            grid = self._interpolate_plane_matrix_2d(
+                arr[:rows, :cols],
+                src0[:rows],
+                src1[:cols],
+                np.asarray(analysis_coords0, dtype=np.float64),
+                np.asarray(analysis_coords1, dtype=np.float64),
+            )
+            grids[name] = grid
+            samples[name] = grid.reshape(-1)
+        return grids, samples
+
+    def _build_discrete_port_projection_3d(
+        self,
+        *,
+        spec,
+        monitor,
+        frequency,
+        parts,
+        direction_sign,
+        target_neff,
+        mode_candidates,
+        analysis_coords0,
+        analysis_coords1,
+    ):
+        if type(monitor).__name__ != "ModeMonitor":
+            return None
+        if not hasattr(monitor, "center") or not hasattr(monitor, "size_spec"):
+            return None
+        perm = np.asarray(self.fields.permittivity)
+        if perm.ndim != 3:
+            return None
+
+        axis = parts["axis"]
+        axis_index = {"z": 0, "y": 1, "x": 2}[axis]
+        try:
+            z_idx, y_idx, x_idx = monitor.get_grid_slice_3d(
+                self.resolution,
+                self.resolution,
+                self.resolution,
+                perm.shape,
+            )
+        except Exception:
+            return None
+
+        normal_index = {"z": z_idx, "y": y_idx, "x": x_idx}[axis]
+        if isinstance(normal_index, slice):
+            start = 0 if normal_index.start is None else int(normal_index.start)
+            stop = (
+                perm.shape[axis_index]
+                if normal_index.stop is None
+                else int(normal_index.stop)
+            )
+            plane_index = int(
+                np.clip(
+                    (start + max(start + 1, stop) - 1) // 2,
+                    0,
+                    perm.shape[axis_index] - 1,
+                )
+            )
+        else:
+            plane_index = int(np.clip(int(normal_index), 0, perm.shape[axis_index] - 1))
+        if direction_sign > 0.0:
+            offset_index = max(0, plane_index - 1)
+        else:
+            offset_index = min(max(perm.shape[axis_index] - 2, 0), plane_index + 1)
+
+        mode_spec = getattr(monitor, "mode_spec", None)
+        num_modes = int(
+            max(
+                int(mode_candidates),
+                int(getattr(mode_spec, "num_modes", 0) or 0),
+                int(spec.mode_index) + 1,
+            )
+        )
+        target = getattr(mode_spec, "target_neff", None)
+        if target is None:
+            target = target_neff
+
+        center = tuple(float(value) for value in monitor.center)
+        size = tuple(float(value) for value in monitor.size_spec)
+        if axis == "x":
+            width, height = size[1], size[2]
+        elif axis == "y":
+            width, height = size[0], size[2]
+        else:
+            width, height = size[0], size[1]
+
+        eps_profile_full = np.take(perm, plane_index, axis=axis_index)
+        transverse_axes = self._plane_axes_for_port_axis(axis)
+        component_shapes = {
+            name: tuple(int(v) for v in np.asarray(getattr(self.fields, name)).shape)
+            for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        }
+        permittivity_arr = np.asarray(perm)
+        permeability_arr = np.ones_like(permittivity_arr, dtype=np.float64)
+        component_permittivity = {
+            component: np.asarray(
+                sample_voxel_grid_at_e_component_3d_centered(
+                    permittivity_arr,
+                    component,
+                    stored_shape=component_shapes[component],
+                )
+            )
+            for component in ("Ex", "Ey", "Ez")
+        }
+        component_permeability = {
+            component: np.asarray(
+                sample_voxel_grid_at_component_3d(
+                    permeability_arr,
+                    component,
+                    stored_shape=component_shapes[component],
+                )
+            )
+            for component in ("Hx", "Hy", "Hz")
+        }
+        try:
+            discrete_mode = solve_beamz_mode_plane(
+                scalar_permittivity=np.asarray(eps_profile_full, dtype=np.complex128),
+                frequency=float(frequency),
+                resolution=float(self.resolution),
+                dt=None if getattr(self, "dt", None) is None else float(self.dt),
+                axis=axis,
+                direction=str(spec.direction),
+                solver_direction=str(spec.direction),
+                transverse_axes=transverse_axes,
+                grid_shape=tuple(int(v) for v in perm.shape),
+                component_shapes=component_shapes,
+                component_permittivity=component_permittivity,
+                component_permeability=component_permeability,
+                center=center,
+                width=float(width),
+                height=float(height),
+                plane_index=int(plane_index),
+                offset_index=int(offset_index),
+                mode_index=int(spec.mode_index),
+                polarization=str(spec.polarization).lower(),
+                target_neff=target,
+                num_modes=num_modes,
+                aperture_pad_cells=0,
+                aperture_window_alpha=0.0,
+            )
+        except Exception:
+            return None
+        if discrete_mode is None:
+            return None
+
+        proj_components = tuple(parts.get("projection_components_3d", ()))
+        if not proj_components:
+            return None
+        d_area = self._analysis_plane_sample_area(
+            analysis_coords0,
+            analysis_coords1,
+            float(self.resolution),
+        )
+        plus_grids, plus_components = self._discrete_mode_projection_grids_3d(
+            discrete_mode,
+            discrete_mode.backward_profiles,
+            monitor=monitor,
+            axis=axis,
+            components=proj_components,
+            analysis_coords0=analysis_coords0,
+            analysis_coords1=analysis_coords1,
+        )
+        minus_grids, minus_components = self._discrete_mode_projection_grids_3d(
+            discrete_mode,
+            discrete_mode.profiles,
+            monitor=monitor,
+            axis=axis,
+            components=proj_components,
+            analysis_coords0=analysis_coords0,
+            analysis_coords1=analysis_coords1,
+        )
+        if any(
+            name not in plus_components or name not in minus_components
+            for name in proj_components
+        ):
+            return None
+
+        plus_components = _normalize_3d_profiles_by_flux(
+            {
+                name: np.asarray(plus_components[name], dtype=np.complex128)
+                for name in proj_components
+            },
+            axis=axis,
+            d_area=float(d_area),
+            direction_sign=float(direction_sign),
+        )
+        minus_components = _normalize_3d_profiles_by_flux(
+            {
+                name: np.asarray(minus_components[name], dtype=np.complex128)
+                for name in proj_components
+            },
+            axis=axis,
+            d_area=float(d_area),
+            direction_sign=float(direction_sign),
+        )
+        mode_matrix = np.column_stack(
+            [
+                np.concatenate([plus_components[name] for name in proj_components]),
+                np.concatenate([minus_components[name] for name in proj_components]),
+            ]
+        )
+        overlap_matrix = np.asarray(
+            [
+                [
+                    _safe_modal_overlap_3d(
+                        plus_components,
+                        plus_components,
+                        axis,
+                        float(d_area),
+                        direction_sign=direction_sign,
+                    ),
+                    _safe_modal_overlap_3d(
+                        plus_components,
+                        minus_components,
+                        axis,
+                        float(d_area),
+                        direction_sign=direction_sign,
+                    ),
+                ],
+                [
+                    _safe_modal_overlap_3d(
+                        minus_components,
+                        plus_components,
+                        axis,
+                        float(d_area),
+                        direction_sign=direction_sign,
+                    ),
+                    _safe_modal_overlap_3d(
+                        minus_components,
+                        minus_components,
+                        axis,
+                        float(d_area),
+                        direction_sign=direction_sign,
+                    ),
+                ],
+            ],
+            dtype=np.complex128,
+        )
+        projection = {
+            "e_component": parts["e_component"],
+            "h_component": parts["h_component"],
+            "components": tuple(proj_components),
+            "mode_matrix": mode_matrix,
+            "condition_number": float(np.linalg.cond(overlap_matrix)),
+            "pinv": np.linalg.pinv(mode_matrix),
+            "mode_neff": float(np.real(np.asarray(discrete_mode.neff))),
+            "mode_neff_bwd": float(np.real(np.asarray(discrete_mode.neff))),
+            "mode_components": {
+                name: np.asarray(plus_components[name], dtype=np.complex128)
+                for name in proj_components
+            },
+            "mode_components_bwd": {
+                name: np.asarray(minus_components[name], dtype=np.complex128)
+                for name in proj_components
+            },
+            "overlap_matrix": overlap_matrix,
+            "axis": axis,
+            "direction_sign": float(direction_sign),
+            "d_area": float(d_area),
+            "power_norm": 1.0,
+            "mode_parity": self._mode_parity_signature(
+                plus_grids,
+                parts["e_component"],
+            ),
+            "mode_parity_bwd": self._mode_parity_signature(
+                minus_grids,
+                parts["e_component"],
+            ),
+            "mode_component_grids": plus_grids,
+            "mode_component_grids_bwd": minus_grids,
+            "pair_score": np.nan,
+            "discrete_contract": "micromode.beamz.DiscreteMode/v1",
+            "analysis_coords0": np.asarray(analysis_coords0, dtype=np.float64),
+            "analysis_coords1": np.asarray(analysis_coords1, dtype=np.float64),
+        }
+        projection["modal_plane_delay_s"] = self._modal_projection_plane_delay_s(
+            spec,
+            frequency,
+            projection["mode_neff"],
+        )
+        return projection
+
     def _build_port_projection(
         self,
         spec,
@@ -3082,6 +3409,22 @@ class Simulation:
         )
         target_neff = 0.98 * n_local_max
         mode_candidates = max(int(spec.mode_index) + 1, 3 if self.is_3d else 1)
+
+        if self.is_3d and analysis_coords0 is not None and analysis_coords1 is not None:
+            projection = self._build_discrete_port_projection_3d(
+                spec=spec,
+                monitor=monitor,
+                frequency=frequency,
+                parts=parts,
+                direction_sign=direction_sign,
+                target_neff=target_neff,
+                mode_candidates=mode_candidates,
+                analysis_coords0=analysis_coords0,
+                analysis_coords1=analysis_coords1,
+            )
+            if projection is not None:
+                cache[key] = projection
+                return projection
 
         def _solve_candidate_set(direction):
             try:

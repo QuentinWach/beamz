@@ -2206,6 +2206,10 @@ class ModeSource(RuntimeStateProxy):
         self._k_num_axis = float(discrete_mode.k_num_axis)
         self._h_component = _dominant_3d_pair(axis, self.pol)[1]
         self._e_component = _dominant_3d_pair(axis, self.pol)[0]
+        self._discrete_launch_max_shift = max(
+            int(getattr(self, "_discrete_launch_max_shift", 2)),
+            12,
+        )
         self._profiles_are_runtime_oriented = True
         self._discrete_mode = discrete_mode
 

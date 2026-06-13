@@ -249,14 +249,6 @@ class ModeSolver:
             crop_slices,
         )
 
-    @staticmethod
-    def _embed_mode_fields(field, full_shape, crop_slices):
-        arr = np.asarray(field, dtype=np.complex128)
-        out = np.zeros((3, *tuple(full_shape)), dtype=np.complex128)
-        for comp in range(3):
-            out[(comp, *crop_slices)] = np.asarray(arr[comp], dtype=np.complex128)
-        return out
-
     def to_source(
         self,
         *,
@@ -286,31 +278,7 @@ class ModeSolver:
             crop_slices,
         ) = self._plane_eps_context()
         mode_count = max(int(mode_index) + 1, int(self.mode_spec.num_modes))
-        neffs, e_fields, h_fields, _ = solve_modes(
-            eps=eps_profile_full[crop_slices],
-            omega=2.0 * np.pi * freq0,
-            dL=self.simulation.resolution,
-            m=mode_count,
-            direction=full_direction,
-            filter_pol=polarization or self.mode_spec.polarization,
-            target_neff=self.mode_spec.target_neff,
-            return_fields=True,
-        )
         selected = int(mode_index)
-        if selected >= len(neffs):
-            raise ValueError(
-                f"Requested mode_index={mode_index}, but only {len(neffs)} modes were found."
-            )
-        mode_e_field = self._embed_mode_fields(
-            e_fields[selected],
-            eps_profile_full.shape,
-            crop_slices,
-        )
-        mode_h_field = self._embed_mode_fields(
-            h_fields[selected],
-            eps_profile_full.shape,
-            crop_slices,
-        )
         profile_freqs = None
         num_freqs = getattr(self.mode_spec, "num_freqs", None)
         if getattr(self.mode_spec, "num_freqs", None):
@@ -333,9 +301,6 @@ class ModeSolver:
             source_time=source_time,
             profile_frequencies=profile_freqs,
             num_freqs=num_freqs,
-            mode_neff=neffs[selected],
-            mode_e_field=mode_e_field,
-            mode_h_field=mode_h_field,
             mode_eps_profile_full=eps_profile_full,
             mode_crop_slices=crop_slices,
             mode_index=selected,

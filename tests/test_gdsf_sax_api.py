@@ -1,4 +1,5 @@
 import importlib.util
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1205,6 +1206,125 @@ def test_build_port_projection_3d_interpolates_cropped_yee_profiles(monkeypatch)
     )
 
     assert projection["mode_component_grids"]["Ey"].shape == (4, 4)
+
+
+def test_build_port_projection_3d_modemonitor_uses_discrete_contract(monkeypatch):
+    import beamz.simulation.core as core_mod
+
+    sim = Simulation.__new__(Simulation)
+    sim.is_3d = True
+    sim.resolution = 1.0
+    sim.dt = 0.1
+    grid_shape = (4, 4, 4)
+    sim.fields = type(
+        "F",
+        (),
+        {
+            **{
+                comp: np.zeros(component_shape_3d(comp, grid_shape), dtype=float)
+                for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+            },
+            "permittivity": np.ones(grid_shape, dtype=float),
+        },
+    )()
+
+    def fail_solve_modes(**kwargs):
+        del kwargs
+        raise AssertionError("legacy solve_modes should not be used")
+
+    captured = {}
+
+    def fake_solve_beamz_mode_plane(**kwargs):
+        captured.update(kwargs)
+        profile_shape = (2, 2)
+        zeros = np.zeros(profile_shape, dtype=np.complex128)
+        forward = {
+            "Ex": zeros.copy(),
+            "Ey": np.ones(profile_shape, dtype=np.complex128),
+            "Ez": zeros.copy(),
+            "Hx": zeros.copy(),
+            "Hy": zeros.copy(),
+            "Hz": np.ones(profile_shape, dtype=np.complex128),
+        }
+        backward = {
+            name: (-value if name.startswith("H") else value.copy())
+            for name, value in forward.items()
+        }
+        indices = {
+            "Ex": (slice(1, 3), slice(1, 3), 1),
+            "Ey": (slice(1, 3), slice(1, 3), 1),
+            "Ez": (slice(1, 3), slice(1, 3), 1),
+            "Hx": (slice(1, 3), slice(1, 3), 1),
+            "Hy": (slice(1, 3), slice(1, 3), 1),
+            "Hz": (slice(1, 3), slice(1, 3), 1),
+        }
+        return SimpleNamespace(
+            neff=2.25,
+            profiles=forward,
+            backward_profiles=backward,
+            component_indices=indices,
+        )
+
+    monkeypatch.setattr(core_mod, "solve_modes", fail_solve_modes)
+    monkeypatch.setattr(
+        core_mod,
+        "solve_beamz_mode_plane",
+        fake_solve_beamz_mode_plane,
+    )
+
+    class ModeMonitor:
+        name = "m_discrete_contract"
+        center = (1.5, 1.5, 1.5)
+        size_spec = (0.0, 2.0, 2.0)
+        mode_spec = SimpleNamespace(num_modes=4, target_neff=2.25)
+
+        @staticmethod
+        def get_grid_slice_3d(dx, dy, dz, field_shape):
+            del dx, dy, dz, field_shape
+            return slice(1, 3), slice(1, 3), 1
+
+        @staticmethod
+        def get_analysis_plane_coords_3d(*, dx, dy, dz, field_shape):
+            del dx, dy, dz, field_shape
+            return np.asarray([1.25, 2.25]), np.asarray([1.25, 2.25])
+
+        @staticmethod
+        def get_snapped_region(**kwargs):
+            del kwargs
+            return None
+
+        @staticmethod
+        def get_dft_component(component):
+            del component
+            return np.zeros((1, 4), dtype=np.complex128)
+
+    projection = sim._build_port_projection(
+        spec=PortSpec(
+            name="p",
+            monitor_name="m_discrete_contract",
+            direction="+x",
+            polarization="te",
+        ),
+        monitor=ModeMonitor(),
+        frequency=1.0,
+        cache={},
+    )
+
+    assert captured["direction"] == "+x"
+    assert captured["solver_direction"] == "+x"
+    assert captured["transverse_axes"] == ("z", "y")
+    assert captured["plane_index"] == 1
+    assert captured["offset_index"] == 0
+    assert captured["num_modes"] == 4
+    assert captured["target_neff"] == 2.25
+    assert captured["aperture_pad_cells"] == 0
+    assert captured["aperture_window_alpha"] == 0.0
+    assert captured["component_permittivity"]["Ey"].shape == (4, 3, 4)
+    assert captured["component_permeability"]["Hz"].shape == (4, 3, 3)
+    assert projection["discrete_contract"] == "micromode.beamz.DiscreteMode/v1"
+    assert projection["components"] == ("Ey", "Ez", "Hy", "Hz")
+    assert np.real(projection["mode_components"]["Hz"][0]) < 0.0
+    assert np.real(projection["mode_components_bwd"]["Hz"][0]) > 0.0
 
 
 def test_project_modal_coefficients_3d_group_recovers_multiple_modes():

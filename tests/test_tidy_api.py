@@ -325,7 +325,7 @@ def test_mode_solver_can_create_source_from_source_time():
     assert source.source_time is source_time
 
 
-def test_mode_solver_to_source_embeds_selected_cropped_mode(monkeypatch):
+def test_mode_solver_to_source_defers_to_discrete_mode_source(monkeypatch):
     sim = bz.Simulation(
         size=(6.0, 6.0, 6.0),
         structures=[],
@@ -341,36 +341,22 @@ def test_mode_solver_to_source_embeds_selected_cropped_mode(monkeypatch):
         mode_spec=bz.ModeSpec(num_modes=2, target_neff=2.3),
         freqs=[2.0e14],
     )
-    seen = {}
+    def fail_solve_modes(**_kwargs):
+        raise AssertionError("to_source should let ModeSource solve the launch mode.")
 
-    def fake_solve_modes(**kwargs):
-        eps = np.asarray(kwargs["eps"])
-        seen["eps_shape"] = eps.shape
-        seen["direction"] = kwargs["direction"]
-        seen["target_neff"] = kwargs["target_neff"]
-        fields = np.zeros((2, 3, *eps.shape), dtype=np.complex128)
-        fields[0] = 1.0
-        fields[1] = 2.0
-        return np.array([2.1 + 0.0j, 1.7 + 0.0j]), fields, 10.0 * fields, 0
-
-    monkeypatch.setattr(
-        "beamz.devices.sources.modesolver.solve_modes", fake_solve_modes
-    )
+    monkeypatch.setattr("beamz.devices.sources.modesolver.solve_modes", fail_solve_modes)
 
     source = solver.to_source(mode_index=1, direction="+")
 
     assert source.direction == "+x"
-    assert source.mode_neff == 1.7 + 0.0j
-    assert seen == {
-        "eps_shape": (4, 2),
-        "direction": "+x",
-        "target_neff": 2.3,
-    }
-    assert source.mode_e_field.shape == (3, 6, 6)
-    assert source.mode_h_field.shape == (3, 6, 6)
-    assert np.count_nonzero(source.mode_e_field[0] == 2.0) == 8
-    assert np.count_nonzero(source.mode_h_field[0] == 20.0) == 8
-    assert np.count_nonzero(source.mode_e_field[0]) == 8
+    assert source.mode_neff is None
+    assert source.mode_e_field is None
+    assert source.mode_h_field is None
+    assert source.mode_eps_profile_full.shape == (6, 6)
+    assert source.mode_crop_slices == (slice(1, 5), slice(2, 4))
+    assert source.mode_index == 1
+    assert source.mode_target_neff == 2.3
+    assert source.mode_num_modes == 2
 
 
 def test_mode_source_uses_precomputed_mode_without_resolving(monkeypatch):

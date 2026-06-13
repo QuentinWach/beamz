@@ -362,6 +362,7 @@ class TestModeSourceDiscreteHelpers:
         assert source._k_num_axis == 7.0
         assert source._phase_ref_coord == 0.25
         assert source._phase_plane_coord == 0.5
+        assert source._discrete_launch_max_shift == 12
         np.testing.assert_allclose(source._Ex_profile, 2.0 * profiles["Ex"])
 
         runtime_profiles, runtime_indices = source._get_3d_profiles_and_indices()
