@@ -128,24 +128,30 @@ def cpml_precompute_native_terms(
     a_terms = []
     b_terms = []
     inv_kappa_terms = []
-    dt_arr = jnp.asarray(dt, dtype=jnp.float32)
-    eps0 = jnp.asarray(EPS_0, dtype=jnp.float32)
     for sigma, kappa, alpha in zip(sigma_terms, kappa_terms, alpha_terms, strict=True):
-        sigma = jnp.asarray(sigma, dtype=jnp.float32)
-        kappa = jnp.maximum(jnp.asarray(kappa, dtype=jnp.float32), 1.0)
-        alpha = jnp.asarray(alpha, dtype=jnp.float32)
+        dtype = jnp.result_type(sigma, kappa, alpha, jnp.float32)
+        sigma = jnp.asarray(sigma, dtype=dtype)
+        kappa = jnp.maximum(
+            jnp.asarray(kappa, dtype=dtype), jnp.asarray(1.0, dtype=dtype)
+        )
+        alpha = jnp.asarray(alpha, dtype=dtype)
+        dt_arr = jnp.asarray(dt, dtype=dtype)
+        eps0 = jnp.asarray(EPS_0, dtype=dtype)
         decay = (sigma / kappa + alpha) * (dt_arr / eps0)
-        b = jnp.expm1(-decay) + 1.0
+        one = jnp.asarray(1.0, dtype=dtype)
+        zero = jnp.asarray(0.0, dtype=dtype)
+        b = jnp.expm1(-decay) + one
         denom = sigma + kappa * alpha
         a = jnp.nan_to_num(
-            ((b - 1.0) * sigma) / jnp.maximum(denom * kappa, 1e-30),
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
+            ((b - one) * sigma)
+            / jnp.maximum(denom * kappa, jnp.asarray(1e-30, dtype=dtype)),
+            nan=zero,
+            posinf=zero,
+            neginf=zero,
         )
         a_terms.append(a)
         b_terms.append(b)
-        inv_kappa_terms.append(1.0 / kappa)
+        inv_kappa_terms.append(one / kappa)
     return tuple(a_terms), tuple(b_terms), tuple(inv_kappa_terms)
 
 
@@ -156,18 +162,18 @@ def build_tm_xy_cpml_terms(
 ) -> CpmlTm2DxyTerms | None:
     if tm_xy is None:
         return None
-    sigma_hx = jnp.asarray(tm_xy["Hx_y_sigma"], dtype=jnp.float32)
-    kappa_hx = jnp.asarray(tm_xy["Hx_y_kappa"], dtype=jnp.float32)
-    alpha_hx = jnp.asarray(tm_xy["Hx_y_alpha"], dtype=jnp.float32)
-    sigma_hy = jnp.asarray(tm_xy["Hy_x_sigma"], dtype=jnp.float32)
-    kappa_hy = jnp.asarray(tm_xy["Hy_x_kappa"], dtype=jnp.float32)
-    alpha_hy = jnp.asarray(tm_xy["Hy_x_alpha"], dtype=jnp.float32)
-    sigma_ez_x = jnp.asarray(tm_xy["Ez_x_sigma"], dtype=jnp.float32)
-    kappa_ez_x = jnp.asarray(tm_xy["Ez_x_kappa"], dtype=jnp.float32)
-    alpha_ez_x = jnp.asarray(tm_xy["Ez_x_alpha"], dtype=jnp.float32)
-    sigma_ez_y = jnp.asarray(tm_xy["Ez_y_sigma"], dtype=jnp.float32)
-    kappa_ez_y = jnp.asarray(tm_xy["Ez_y_kappa"], dtype=jnp.float32)
-    alpha_ez_y = jnp.asarray(tm_xy["Ez_y_alpha"], dtype=jnp.float32)
+    sigma_hx = jnp.asarray(tm_xy["Hx_y_sigma"])
+    kappa_hx = jnp.asarray(tm_xy["Hx_y_kappa"])
+    alpha_hx = jnp.asarray(tm_xy["Hx_y_alpha"])
+    sigma_hy = jnp.asarray(tm_xy["Hy_x_sigma"])
+    kappa_hy = jnp.asarray(tm_xy["Hy_x_kappa"])
+    alpha_hy = jnp.asarray(tm_xy["Hy_x_alpha"])
+    sigma_ez_x = jnp.asarray(tm_xy["Ez_x_sigma"])
+    kappa_ez_x = jnp.asarray(tm_xy["Ez_x_kappa"])
+    alpha_ez_x = jnp.asarray(tm_xy["Ez_x_alpha"])
+    sigma_ez_y = jnp.asarray(tm_xy["Ez_y_sigma"])
+    kappa_ez_y = jnp.asarray(tm_xy["Ez_y_kappa"])
+    alpha_ez_y = jnp.asarray(tm_xy["Ez_y_alpha"])
     return CpmlTm2DxyTerms(
         sigma_h_terms=embed_tm_xy_h_terms(sigma_hx, sigma_hy, ez_shape),
         kappa_h_aux_terms=embed_tm_xy_h_terms(kappa_hx, kappa_hy, ez_shape),
@@ -189,7 +195,7 @@ def build_cpml_3d_terms(
 
     def read_terms(specs, suffix):
         return tuple(
-            jnp.asarray(pml_data[f"cpml3d_{spec.name}_{suffix}"], dtype=jnp.float32)
+            jnp.asarray(pml_data[f"cpml3d_{spec.name}_{suffix}"])
             for spec in specs
         )
 
@@ -224,7 +230,7 @@ def build_cpml_3d_primitive_terms(
     axis_index = {"z": 0, "y": 1, "x": 2}
 
     def compact_axis_profile(arr, axis_name):
-        arr = jnp.asarray(arr, dtype=jnp.float32)
+        arr = jnp.asarray(arr)
         if arr.ndim != 3:
             return arr
         idx = [0, 0, 0]

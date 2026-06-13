@@ -2,6 +2,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from beamz.shared_kernels import (
+    CPML_3D_E_DERIVATIVES,
+    CPML_3D_H_DERIVATIVES,
+    build_cpml_3d_primitive_terms,
+    build_cpml_3d_terms,
+    build_tm_xy_cpml_terms,
+)
 from beamz.simulation.boundaries import (
     _cpml_ab_from_profiles,
     build_h_boundary_views_for_e_3d,
@@ -237,6 +244,60 @@ def _cpml_compact_profiles(shapes, axes, *, dt=0.05):
         tuple(b_terms),
         tuple(inv_kappa_terms),
     )
+
+
+def test_cpml_term_builders_preserve_float64_when_x64_enabled():
+    import jax
+
+    previous_x64 = bool(jax.config.jax_enable_x64)
+    try:
+        jax.config.update("jax_enable_x64", True)
+        dtype = jnp.float64
+        shape = (2, 3, 4)
+        pml_data = {}
+        for spec in (*CPML_3D_H_DERIVATIVES, *CPML_3D_E_DERIVATIVES):
+            pml_data[f"cpml3d_{spec.name}_sigma"] = jnp.full(
+                shape, 0.2, dtype=dtype
+            )
+            pml_data[f"cpml3d_{spec.name}_kappa"] = jnp.full(
+                shape, 1.4, dtype=dtype
+            )
+            pml_data[f"cpml3d_{spec.name}_alpha"] = jnp.full(
+                shape, 0.03, dtype=dtype
+            )
+
+        terms = build_cpml_3d_terms(pml_data, dt=np.float64(0.05))
+        assert all(term.dtype == dtype for term in terms.a_h_terms)
+        assert all(term.dtype == dtype for term in terms.b_h_terms)
+        assert all(term.dtype == dtype for term in terms.inv_kappa_h_terms)
+        assert all(term.dtype == dtype for term in terms.a_e_terms)
+        assert all(term.dtype == dtype for term in terms.b_e_terms)
+        assert all(term.dtype == dtype for term in terms.inv_kappa_e_terms)
+
+        primitive = build_cpml_3d_primitive_terms(pml_data)
+        assert all(term.dtype == dtype for term in primitive.sigma_h_terms)
+        assert all(term.dtype == dtype for term in primitive.kappa_e_terms)
+
+        ez_shape = (3, 4)
+        tm_xy = {
+            "Hx_y_sigma": jnp.full((2, 4), 0.2, dtype=dtype),
+            "Hx_y_kappa": jnp.full((2, 4), 1.4, dtype=dtype),
+            "Hx_y_alpha": jnp.full((2, 4), 0.03, dtype=dtype),
+            "Hy_x_sigma": jnp.full((3, 3), 0.2, dtype=dtype),
+            "Hy_x_kappa": jnp.full((3, 3), 1.4, dtype=dtype),
+            "Hy_x_alpha": jnp.full((3, 3), 0.03, dtype=dtype),
+            "Ez_x_sigma": jnp.full(ez_shape, 0.2, dtype=dtype),
+            "Ez_x_kappa": jnp.full(ez_shape, 1.4, dtype=dtype),
+            "Ez_x_alpha": jnp.full(ez_shape, 0.03, dtype=dtype),
+            "Ez_y_sigma": jnp.full(ez_shape, 0.2, dtype=dtype),
+            "Ez_y_kappa": jnp.full(ez_shape, 1.4, dtype=dtype),
+            "Ez_y_alpha": jnp.full(ez_shape, 0.03, dtype=dtype),
+        }
+        tm_terms = build_tm_xy_cpml_terms(tm_xy, ez_shape=ez_shape)
+        assert tm_terms.sigma_h_terms.dtype == dtype
+        assert tm_terms.kappa_e_terms.dtype == dtype
+    finally:
+        jax.config.update("jax_enable_x64", previous_x64)
 
 
 def test_cpml_curl_e_to_h_3d_updates_psi_terms():
