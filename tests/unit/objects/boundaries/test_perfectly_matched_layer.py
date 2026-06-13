@@ -200,14 +200,20 @@ def test_pml_warns_when_material_changes_along_absorber_normal():
         )
 
 
-def test_cpml_rejects_material_changes_along_absorber_normal():
+def test_cpml_extends_material_changes_along_absorber_normal():
     eps = np.ones((6, 8), dtype=np.float32)
     eps[:, 0] = 3.0
     eps[:, 1] = 2.0
+    sigma = np.zeros_like(eps)
+    sigma[:, 0] = 0.7
+    sigma[:, 1] = 0.4
+    mu = np.ones_like(eps)
+    mu[:, 0] = 1.5
+    mu[:, 1] = 1.25
     fields = Fields(
         permittivity=eps,
-        conductivity=np.zeros_like(eps),
-        permeability=np.ones_like(eps),
+        conductivity=sigma,
+        permeability=mu,
         resolution=0.1,
         plane_2d="xy",
     )
@@ -220,14 +226,17 @@ def test_cpml_rejects_material_changes_along_absorber_normal():
         formulation="cpml",
     )
 
-    with pytest.raises(ValueError, match="CPML material varies"):
-        pml.create_pml_regions(
-            fields,
-            design,
-            resolution=0.1,
-            dt=1e-15,
-            plane_2d="xy",
-        )
+    pml.create_pml_regions(
+        fields,
+        design,
+        resolution=0.1,
+        dt=1e-15,
+        plane_2d="xy",
+    )
+
+    np.testing.assert_allclose(np.asarray(fields.permittivity)[:, :2], 1.0)
+    np.testing.assert_allclose(np.asarray(fields.conductivity)[:, :2], 0.0)
+    np.testing.assert_allclose(np.asarray(fields.permeability)[:, :2], 1.0)
 
 
 def test_pml_allows_material_extruded_through_absorber():

@@ -137,7 +137,7 @@ class PML(Boundary):
                 out = self._create_cpml_profiles_3d(fields, design)
             else:
                 out = self._create_cpml_profiles_2d(fields, design, plane_2d)
-            self._raise_if_cpml_material_not_extruded(fields, out, plane_2d)
+            self._extend_cpml_materials_to_absorber(fields, out, plane_2d)
             return out
 
         if fields.permittivity.ndim == 3:
@@ -152,6 +152,19 @@ class PML(Boundary):
         material = np.asarray(fields.permittivity)
         if material.size == 0:
             return []
+        bad_edges = []
+        for edge, axis, side, count in self._pml_material_edge_counts(
+            material, pml_data, plane_2d
+        ):
+            if count <= 0 or count >= material.shape[axis]:
+                continue
+            if self._pml_edge_material_varies(material, axis, side, count):
+                bad_edges.append(edge)
+        return bad_edges
+
+    def _pml_material_edge_counts(self, material, pml_data, plane_2d="xy"):
+        """Return active absorber-cell counts for material extrusion checks."""
+        mat = np.asarray(material)
         axis_map_3d = {"z": 0, "y": 1, "x": 2}
         axis_map_2d = {
             "xy": {"y": 0, "x": 1},
@@ -166,9 +179,9 @@ class PML(Boundary):
             "front": ("z", "low"),
             "back": ("z", "high"),
         }
-        is_3d = material.ndim == 3
+        is_3d = mat.ndim == 3
         axis_map = axis_map_3d if is_3d else axis_map_2d
-        bad_edges = []
+        edge_counts = []
         for edge in self._get_edges_for_dimensionality(is_3d):
             axis_name, side = edge_axes.get(edge, (None, None))
             if axis_name not in axis_map:
@@ -186,11 +199,8 @@ class PML(Boundary):
             else:
                 rev = active_1d[::-1]
                 count = int(np.argmax(~rev)) if np.any(~rev) else 0
-            if count <= 0 or count >= material.shape[axis]:
-                continue
-            if self._pml_edge_material_varies(material, axis, side, count):
-                bad_edges.append(edge)
-        return bad_edges
+            edge_counts.append((edge, axis, side, count))
+        return edge_counts
 
     def _warn_if_material_not_extruded(self, fields, pml_data, plane_2d="xy"):
         """Warn when material changes along the PML normal inside the absorber."""
@@ -204,15 +214,31 @@ class PML(Boundary):
                 stacklevel=3,
             )
 
-    def _raise_if_cpml_material_not_extruded(self, fields, pml_data, plane_2d="xy"):
-        """Reject CPML when geometry varies through the absorber."""
-        bad_edges = self._pml_material_variation_edges(fields, pml_data, plane_2d)
-        if bad_edges:
-            raise ValueError(
-                "CPML material varies along the absorber normal on edges "
-                f"{bad_edges}. Extrude the boundary material profile through the "
-                "CPML or keep geometry clear of the absorber."
-            )
+    def _extend_cpml_materials_to_absorber(self, fields, pml_data, plane_2d="xy"):
+        """Copy first-interior material values through active CPML slabs."""
+
+        for attr in ("permittivity", "conductivity", "permeability"):
+            source = getattr(fields, attr)
+            material = np.array(source, copy=True)
+            for _edge, axis, side, count in self._pml_material_edge_counts(
+                material, pml_data, plane_2d
+            ):
+                if count <= 0 or count >= material.shape[axis]:
+                    continue
+                if side == "low":
+                    dst_sel = [slice(None)] * material.ndim
+                    dst_sel[axis] = slice(0, count)
+                    ref_sel = [slice(None)] * material.ndim
+                    ref_sel[axis] = count
+                else:
+                    dst_sel = [slice(None)] * material.ndim
+                    dst_sel[axis] = slice(material.shape[axis] - count, None)
+                    ref_sel = [slice(None)] * material.ndim
+                    ref_sel[axis] = material.shape[axis] - count - 1
+                material[tuple(dst_sel)] = np.expand_dims(
+                    material[tuple(ref_sel)], axis=axis
+                )
+            setattr(fields, attr, jnp.asarray(material, dtype=source.dtype))
 
     @staticmethod
     def _pml_edge_material_varies(material, axis: int, side: str, count: int) -> bool:
