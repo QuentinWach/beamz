@@ -52,7 +52,9 @@ class TestPMLAbsorption:
         for key in ("sigma_x", "sigma_y", "kappa_x", "kappa_y", "alpha_x", "alpha_y"):
             assert key in sim.pml_data
 
-    def test_cpml_contributes_loss_to_material_updates(self, vacuum_domain_small):
+    def test_cpml_keeps_auxiliary_loss_out_of_material_updates(
+        self, vacuum_domain_small
+    ):
         design = vacuum_domain_small["design"]
         dx = vacuum_domain_small["dx"]
         dt = vacuum_domain_small["dt"]
@@ -71,9 +73,11 @@ class TestPMLAbsorption:
         ) + np.asarray(sim.pml_data["sigma_y"], dtype=np.float64)
         total_sigma = np.asarray(sim.fields.total_conductivity, dtype=np.float64)
 
+        np.testing.assert_allclose(total_sigma, np.asarray(sim.fields.conductivity))
         assert float(np.max(sigma_shell)) > 0.0
-        assert float(np.max(total_sigma)) >= float(np.max(sigma_shell))
-        assert float(np.max(total_sigma)) > float(np.max(sim.fields.conductivity))
+        assert float(np.max(total_sigma)) == pytest.approx(
+            float(np.max(sim.fields.conductivity))
+        )
 
     def test_sponge_absorber_still_contributes_loss_in_material_updates(
         self, vacuum_domain_small

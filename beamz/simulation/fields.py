@@ -121,7 +121,7 @@ class Fields:
             self._init_material_parameters()
 
     def set_pml_conductivity(self, pml_data):
-        """Set effective conductivity for PML regions."""
+        """Attach absorber/PML profile data and refresh material coefficients."""
         self.has_pml = True
         self.has_cpml = str(pml_data.get("formulation", "sponge")).lower() == "cpml"
         # Convert PML data arrays to JAX
@@ -134,11 +134,11 @@ class Fields:
         self._init_material_parameters()
 
     def _init_material_parameters(self):
-        """Initialize material parameters including PML conductivity if present."""
+        """Initialize material parameters including sponge absorber loss if present."""
         is_3d = self.permittivity.ndim == 3
         base_sigma = self.conductivity
 
-        if self.has_pml and hasattr(self, "pml_data"):
+        if self.has_pml and not self.has_cpml and hasattr(self, "pml_data"):
             sigma_pml = jnp.zeros_like(base_sigma)
             if is_3d:
                 pml_keys = ("sigma_x", "sigma_y", "sigma_z")

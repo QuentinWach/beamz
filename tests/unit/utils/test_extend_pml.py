@@ -1,10 +1,9 @@
 """BeamZ-native equivalent of low-level absorber/PML material coupling tests.
 
-BeamZ does not copy material tensors into a separate PML extension region. Its
-equivalent contract is how the graded absorbing shell merges into
-``Fields.total_conductivity``. CPML also contributes its graded shell to the
-collocated material update coefficients; its auxiliary sigma/kappa/alpha profiles
-are then applied on top of that loss in the curl corrections.
+The legacy absorbing layer merges a graded lossy shell into
+``Fields.total_conductivity``. CPML keeps its sigma/kappa/alpha profiles
+auxiliary to the curl correction and leaves ordinary material conductivity
+unchanged.
 """
 
 import numpy as np
@@ -92,7 +91,7 @@ def test_absorbing_layer_preserves_larger_base_conductivity():
     assert total_sigma[3, 4] == pytest.approx(9.0)
 
 
-def test_cpml_auxiliary_profiles_merge_shell_into_total_conductivity():
+def test_cpml_auxiliary_profiles_do_not_merge_shell_into_total_conductivity():
     fields = _make_fields(base_sigma=0.25)
     design = _make_design()
     pml = PML(
@@ -107,8 +106,9 @@ def test_cpml_auxiliary_profiles_merge_shell_into_total_conductivity():
 
     total_sigma = np.asarray(fields.total_conductivity, dtype=np.float64)
     shell = np.asarray(payload["sigma_x"] + payload["sigma_y"], dtype=np.float64)
-    np.testing.assert_allclose(total_sigma, np.maximum(0.25, shell))
-    assert float(np.max(total_sigma)) > 0.25
+    np.testing.assert_allclose(total_sigma, np.full_like(total_sigma, 0.25))
+    assert float(np.max(shell)) > 0.0
+    assert float(np.max(total_sigma)) == pytest.approx(0.25)
 
 
 def test_sigma_alias_still_builds_absorbing_shell():
