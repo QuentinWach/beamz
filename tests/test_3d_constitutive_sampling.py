@@ -27,8 +27,8 @@ from beamz.devices.sources.mode import (
     _match_shape,
     _modal_overlap_3d_profiles,
     _modal_power_3d_from_profiles,
-    _numeric_phase_delay,
     _normalize_3d_profiles_by_flux,
+    _numeric_phase_delay,
     _phase_reference_3d_profiles,
     _project_3d_profiles_to_real,
     _remap_3d_solver_components,
@@ -791,7 +791,7 @@ def _max_complex_part(deltas: dict[str, np.ndarray]) -> tuple[float, float]:
     return max_abs, max_imag
 
 
-def _full_and_residual_reconstructed_phasor_step(
+def _target_and_residual_reconstructed_phasor_step(
     source: ModeSource,
     fields,
     *,
@@ -811,6 +811,7 @@ def _full_and_residual_reconstructed_phasor_step(
     )
 
     h_full_next = source._advance_incident_h_3d(fields, full_prev, dt)
+    h_target_next = source._mask_incident_3d_state_to_launched_side(h_full_next)
     h_mask_next = source._advance_incident_h_3d(fields, masked_prev, dt)
     h_delta = source._compute_discrete_3d_h_phasor_delta(fields, dt=dt)
     h_reconstructed = {
@@ -818,19 +819,25 @@ def _full_and_residual_reconstructed_phasor_step(
     }
 
     e_full_next = source._advance_incident_e_3d(fields, full_prev, h_full_next, dt)
-    e_mask_next = source._advance_incident_e_3d(fields, masked_prev, h_full_next, dt)
+    e_target_next = source._mask_incident_3d_state_to_launched_side(e_full_next)
+    e_mask_next = source._advance_incident_e_3d(
+        fields,
+        masked_prev,
+        h_target_next,
+        dt,
+    )
     e_delta = source._compute_discrete_3d_e_phasor_delta(fields, dt=dt)
     e_reconstructed = {
         comp: e_mask_next[comp] + e_delta[comp] for comp in ("Ex", "Ey", "Ez")
     }
 
-    full_next = {
-        "Ex": e_full_next["Ex"],
-        "Ey": e_full_next["Ey"],
-        "Ez": e_full_next["Ez"],
-        "Hx": h_full_next["Hx"],
-        "Hy": h_full_next["Hy"],
-        "Hz": h_full_next["Hz"],
+    target_next = {
+        "Ex": e_target_next["Ex"],
+        "Ey": e_target_next["Ey"],
+        "Ez": e_target_next["Ez"],
+        "Hx": h_target_next["Hx"],
+        "Hy": h_target_next["Hy"],
+        "Hz": h_target_next["Hz"],
     }
     reconstructed = {
         "Ex": e_reconstructed["Ex"],
@@ -840,7 +847,7 @@ def _full_and_residual_reconstructed_phasor_step(
         "Hy": h_reconstructed["Hy"],
         "Hz": h_reconstructed["Hz"],
     }
-    return full_next, reconstructed
+    return target_next, reconstructed
 
 
 def _source_profile_stage_snapshots(
@@ -2520,7 +2527,7 @@ def test_tiny_discrete_3d_h_source_matches_commutator_residual():
     np.testing.assert_allclose(np.asarray(sim.fields.Ez), 0.0, atol=1e-8, rtol=0.0)
 
 
-def test_tiny_discrete_3d_split_source_recovers_full_incident_step_in_source_interior():
+def test_tiny_discrete_3d_split_source_recovers_launched_incident_step_in_source_interior():
     base_sim, source_spans = _build_tiny_straight_guide_sim(
         ppw=6,
         axis="x",
@@ -2564,7 +2571,9 @@ def test_tiny_discrete_3d_split_source_recovers_full_incident_step_in_source_int
         masked=True,
     )
     full_h_next = source._advance_incident_h_3d(sim.fields, full_prev, dt)
+    target_h_next = source._mask_incident_3d_state_to_launched_side(full_h_next)
     full_e_next = source._advance_incident_e_3d(sim.fields, full_prev, full_h_next, dt)
+    target_e_next = source._mask_incident_3d_state_to_launched_side(full_e_next)
 
     _set_field_state(sim.fields, masked_prev)
     sim.fields.update_h(dt)
@@ -2579,13 +2588,13 @@ def test_tiny_discrete_3d_split_source_recovers_full_incident_step_in_source_int
     _sync_full_pec_after_direct_injection(sim.fields)
 
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Hx), full_h_next["Hx"], atol=1e-6, rtol=1e-6
+        np.asarray(sim.fields.Hx), target_h_next["Hx"], atol=1e-6, rtol=1e-6
     )
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Hy), full_h_next["Hy"], atol=1e-6, rtol=1e-6
+        np.asarray(sim.fields.Hy), target_h_next["Hy"], atol=1e-6, rtol=1e-6
     )
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Hz), full_h_next["Hz"], atol=1e-6, rtol=1e-6
+        np.asarray(sim.fields.Hz), target_h_next["Hz"], atol=1e-6, rtol=1e-6
     )
     np.testing.assert_allclose(
         np.asarray(sim.fields.Ex), masked_prev["Ex"], atol=1e-6, rtol=1e-6
@@ -2608,34 +2617,32 @@ def test_tiny_discrete_3d_split_source_recovers_full_incident_step_in_source_int
     )
     _sync_full_pec_after_direct_injection(sim.fields)
 
-    ys = slice(source._y_start + 1, source._y_end - 1)
-    zs = slice(source._z_start + 1, source._z_end - 1)
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Ex)[zs, ys, :],
-        full_e_next["Ex"][zs, ys, :],
+        np.asarray(sim.fields.Ex),
+        target_e_next["Ex"],
         atol=1e-6,
         rtol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Ey)[zs, ys, :],
-        full_e_next["Ey"][zs, ys, :],
+        np.asarray(sim.fields.Ey),
+        target_e_next["Ey"],
         atol=1e-6,
         rtol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Ez)[zs, ys, :],
-        full_e_next["Ez"][zs, ys, :],
+        np.asarray(sim.fields.Ez),
+        target_e_next["Ez"],
         atol=1e-6,
         rtol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Hx), full_h_next["Hx"], atol=1e-6, rtol=1e-6
+        np.asarray(sim.fields.Hx), target_h_next["Hx"], atol=1e-6, rtol=1e-6
     )
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Hy), full_h_next["Hy"], atol=1e-6, rtol=1e-6
+        np.asarray(sim.fields.Hy), target_h_next["Hy"], atol=1e-6, rtol=1e-6
     )
     np.testing.assert_allclose(
-        np.asarray(sim.fields.Hz), full_h_next["Hz"], atol=1e-6, rtol=1e-6
+        np.asarray(sim.fields.Hz), target_h_next["Hz"], atol=1e-6, rtol=1e-6
     )
 
 
@@ -2663,10 +2670,22 @@ def test_source_plane_full_incident_phasor_matches_runtime_profile_basis(
         t_h=-0.5 * dt,
         masked=False,
     )
-    profiles, _indices = source._get_3d_profiles_and_indices()
+    profiles, indices = source._get_3d_profiles_and_indices()
 
     max_shift = int(source._discrete_launch_max_shift)
+    checked = 0
     for shift in range(-max_shift, max_shift + 1):
+        if any(
+            _shift_component_indices_along_axis(
+                indices[comp],
+                str(source._axis),
+                int(shift),
+                np.asarray(full_state[comp]).shape,
+            )
+            is None
+            for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        ):
+            continue
         deembedded = _source_plane_deembedded_phasor_profiles(
             source,
             full_state,
@@ -2674,6 +2693,7 @@ def test_source_plane_full_incident_phasor_matches_runtime_profile_basis(
             t_h=-0.5 * dt,
             shift=shift,
         )
+        checked += 1
         for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
             np.testing.assert_allclose(
                 deembedded[comp],
@@ -2681,6 +2701,7 @@ def test_source_plane_full_incident_phasor_matches_runtime_profile_basis(
                 rtol=1e-12,
                 atol=1e-12,
             )
+    assert checked > 0
 
     profile_metrics = _source_basis_branch_metrics(
         source,
@@ -2775,7 +2796,7 @@ def test_source_plane_three_way_projection_localizes_rejected_branch_to_yee_upda
         t_h=-0.5 * dt,
         masked=False,
     )
-    full_next, reconstructed_next = _full_and_residual_reconstructed_phasor_step(
+    target_next, reconstructed_next = _target_and_residual_reconstructed_phasor_step(
         source,
         sim.fields,
         dt=dt,
@@ -2797,11 +2818,11 @@ def test_source_plane_three_way_projection_localizes_rejected_branch_to_yee_upda
             t_h=-0.5 * dt,
         ),
     )
-    full_update_metrics = _source_basis_branch_metrics(
+    target_update_metrics = _source_basis_branch_metrics(
         source,
         _source_plane_deembedded_phasor_profiles(
             source,
-            full_next,
+            target_next,
             t_e=dt,
             t_h=0.5 * dt,
         ),
@@ -2833,11 +2854,11 @@ def test_source_plane_three_way_projection_localizes_rejected_branch_to_yee_upda
             abs=1e-12,
         )
     assert initial_metrics["backward_ratio"] < 1e-12
-    assert full_update_metrics["forward_abs"] > 0.9
-    assert full_update_metrics["backward_ratio"] < 0.15
+    assert target_update_metrics["forward_abs"] > 0.9
+    assert target_update_metrics["backward_ratio"] < 0.15
     for key in ("forward_abs", "backward_abs", "backward_ratio"):
         assert residual_metrics[key] == pytest.approx(
-            full_update_metrics[key],
+            target_update_metrics[key],
             rel=5e-6,
             abs=5e-8,
         )
@@ -2851,7 +2872,7 @@ def test_source_plane_three_way_projection_localizes_rejected_branch_to_yee_upda
         ("+z", "tm"),
     ),
 )
-def test_discrete_3d_phasor_residual_is_exact_full_minus_masked_update(
+def test_discrete_3d_phasor_residual_is_exact_launched_side_update(
     direction: str,
     pol: str,
 ):
@@ -2872,12 +2893,13 @@ def test_discrete_3d_phasor_residual_is_exact_full_minus_masked_update(
     )
 
     h_full_next = source._advance_incident_h_3d(sim.fields, full_prev, dt)
+    h_target_next = source._mask_incident_3d_state_to_launched_side(h_full_next)
     h_mask_next = source._advance_incident_h_3d(sim.fields, masked_prev, dt)
     h_delta = source._compute_discrete_3d_h_phasor_delta(sim.fields, dt=dt)
     for comp in ("Hx", "Hy", "Hz"):
         np.testing.assert_allclose(
             h_mask_next[comp] + h_delta[comp],
-            h_full_next[comp],
+            h_target_next[comp],
             rtol=1e-6,
             atol=1e-6,
         )
@@ -2888,17 +2910,18 @@ def test_discrete_3d_phasor_residual_is_exact_full_minus_masked_update(
         h_full_next,
         dt,
     )
+    e_target_next = source._mask_incident_3d_state_to_launched_side(e_full_next)
     e_mask_next = source._advance_incident_e_3d(
         sim.fields,
         masked_prev,
-        h_full_next,
+        h_target_next,
         dt,
     )
     e_delta = source._compute_discrete_3d_e_phasor_delta(sim.fields, dt=dt)
     for comp in ("Ex", "Ey", "Ez"):
         np.testing.assert_allclose(
             e_mask_next[comp] + e_delta[comp],
-            e_full_next[comp],
+            e_target_next[comp],
             rtol=1e-6,
             atol=1e-6,
         )

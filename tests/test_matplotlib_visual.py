@@ -497,7 +497,7 @@ def test_tidy3d_dft_field_plot_source_normalizes_and_uses_micron_units():
         plt.close(fig)
 
 
-def _mode_source_mask_plot_fixture():
+def _mode_source_raw_plot_fixture():
     class DftPlaneMonitor:
         is_3d = True
         plane_normal = "z"
@@ -534,8 +534,8 @@ def _mode_source_mask_plot_fixture():
     return simulation, DftPlaneMonitor()
 
 
-def test_tidy3d_dft_field_plot_hides_mode_source_construction_by_default():
-    simulation, monitor = _mode_source_mask_plot_fixture()
+def test_tidy3d_dft_field_plot_shows_raw_monitor_data_with_mode_source():
+    simulation, monitor = _mode_source_raw_plot_fixture()
 
     fig, ax = plot_tidy3d_dft_field(
         simulation,
@@ -543,32 +543,6 @@ def test_tidy3d_dft_field_plot_hides_mode_source_construction_by_default():
         field="Ey",
         source_normalize=False,
         overlay_core=False,
-        percentile=100,
-        show=False,
-    )
-    try:
-        image = ax.images[0]
-        expected = np.asarray(
-            [
-                [0.0, 0.0, 1.0, 1.0],
-                [0.0, 0.0, 1.0, 1.0],
-            ]
-        )
-        np.testing.assert_allclose(image.get_array(), expected)
-    finally:
-        plt.close(fig)
-
-
-def test_tidy3d_dft_field_plot_can_show_mode_source_construction():
-    simulation, monitor = _mode_source_mask_plot_fixture()
-
-    fig, ax = plot_tidy3d_dft_field(
-        simulation,
-        monitor,
-        field="Ey",
-        source_normalize=False,
-        overlay_core=False,
-        hide_source_construction=False,
         percentile=100,
         show=False,
     )

@@ -3002,25 +3002,48 @@ class ModeSource(RuntimeStateProxy):
 
         return field_arrays
 
-    @staticmethod
-    def _component_local_slices_from_cell_bbox(
+    def _launched_side_component_mask_3d(
+        self,
         component: str,
-        cell_bbox: tuple[slice, slice, slice],
-        component_shape: tuple[int, int, int],
-    ) -> tuple[slice, slice, slice]:
-        offsets = component_axis_offsets_3d(component)
-        out: list[slice] = []
-        for axis_name, cell_slice, dim_size in zip(
-            ("z", "y", "x"), cell_bbox, component_shape, strict=True
-        ):
-            start = max(0, int(cell_slice.start or 0))
-            if float(offsets[axis_name]) == 0.5:
-                stop = min(int(cell_slice.stop or 0) - 1, int(dim_size))
-            else:
-                stop = min(int(cell_slice.stop or 0), int(dim_size))
-            start = min(start, int(dim_size))
-            out.append(slice(start, max(start, stop)))
-        return tuple(out)  # type: ignore[return-value]
+        shape: tuple[int, int, int],
+    ) -> np.ndarray:
+        """Return a broadcast mask for the component-local launched side."""
+        axis = self._axis
+        if axis is None:
+            raise RuntimeError(
+                "3D incident mask requested before source initialization"
+            )
+        dx = dy = dz = float(self._resolution or 0.0)
+        d_axis = {"x": dx, "y": dy, "z": dz}[axis]
+        axis_pos = {"z": 0, "y": 1, "x": 2}[axis]
+        staggered_along_axis = {
+            "x": {"Ex", "Hy", "Hz"},
+            "y": {"Ey", "Hx", "Hz"},
+            "z": {"Ez", "Hx", "Hy"},
+        }
+        offset = 1.0 if component in staggered_along_axis[axis] else 0.5
+        coord = (np.arange(int(shape[axis_pos]), dtype=np.float64) + offset) * d_axis
+        mask_coord = (
+            float(self._phase_ref_coord)
+            if component in staggered_along_axis[axis]
+            else float(self._phase_plane_coord)
+        )
+        launched = float(self._direction_sign) * (coord - mask_coord) >= -1e-12
+        reshape = [1, 1, 1]
+        reshape[axis_pos] = int(launched.size)
+        return launched.reshape(tuple(reshape))
+
+    def _mask_incident_3d_state_to_launched_side(
+        self,
+        state: dict[str, np.ndarray],
+    ) -> dict[str, np.ndarray]:
+        """Keep only the side of an incident state that should enter the grid."""
+        out: dict[str, np.ndarray] = {}
+        for component, values in state.items():
+            arr = np.asarray(values)
+            mask = self._launched_side_component_mask_3d(component, arr.shape)
+            out[component] = np.where(mask, arr, np.zeros((), dtype=arr.dtype))
+        return out
 
     @staticmethod
     def _component_slices_to_cell_bbox(
@@ -3036,63 +3059,6 @@ class ModeSource(RuntimeStateProxy):
                 stop += 1
             bounds.append((start, stop))
         return tuple(bounds)  # type: ignore[return-value]
-
-    @staticmethod
-    def _index_and_profile_to_slices(
-        index: tuple,
-        field_shape: tuple[int, int, int],
-        profile: np.ndarray,
-    ) -> tuple[tuple[slice, slice, slice], np.ndarray]:
-        slices: list[slice] = []
-        squeezed_shape: list[int] = []
-        int_axes: list[int] = []
-        for axis, key in enumerate(index):
-            if isinstance(key, slice):
-                start, stop, step = key.indices(field_shape[axis])
-                if step != 1:
-                    raise ValueError("3D ModeSource residual indices must be slabs")
-                slices.append(slice(int(start), int(stop)))
-                squeezed_shape.append(int(stop - start))
-                continue
-            idx = int(key)
-            if idx < 0:
-                idx += int(field_shape[axis])
-            if idx < 0 or idx >= int(field_shape[axis]):
-                raise IndexError("ModeSource residual index out of bounds")
-            slices.append(slice(idx, idx + 1))
-            int_axes.append(axis)
-
-        target_shape = tuple(s.stop - s.start for s in slices)
-        arr = np.asarray(profile, dtype=np.complex128)
-        if arr.shape == tuple(squeezed_shape):
-            for axis in int_axes:
-                arr = np.expand_dims(arr, axis=axis)
-        elif arr.shape != target_shape:
-            if arr.size == int(np.prod(target_shape)):
-                arr = arr.reshape(target_shape)
-            else:
-                arr = np.broadcast_to(arr, target_shape)
-        return tuple(slices), np.asarray(arr, dtype=np.complex128)  # type: ignore[return-value]
-
-    @staticmethod
-    def _add_patch_to_local(
-        local: np.ndarray,
-        local_global_index: tuple[slice, slice, slice],
-        patch_index: tuple[slice, slice, slice],
-        patch: np.ndarray,
-    ) -> None:
-        local_sel: list[slice] = []
-        patch_sel: list[slice] = []
-        for local_axis, patch_axis in zip(local_global_index, patch_index, strict=True):
-            lo = max(int(local_axis.start or 0), int(patch_axis.start or 0))
-            hi = min(int(local_axis.stop or 0), int(patch_axis.stop or 0))
-            if hi <= lo:
-                return
-            local_start = int(local_axis.start or 0)
-            patch_start = int(patch_axis.start or 0)
-            local_sel.append(slice(lo - local_start, hi - local_start))
-            patch_sel.append(slice(lo - patch_start, hi - patch_start))
-        local[tuple(local_sel)] += patch[tuple(patch_sel)]
 
     @staticmethod
     def _crop_local_residual(
@@ -3127,179 +3093,33 @@ class ModeSource(RuntimeStateProxy):
             residual=values[local_crop].copy(),
         )
 
-    def _incident_3d_phasor_residual_patches(self, fields, *, dt: float):
-        """Return compact full-minus-masked incident phasor patches."""
-        profiles, indices = self._get_3d_profiles_and_indices()
-        dx = dy = dz = float(self._resolution or 0.0)
-        axis = self._axis
-        if axis is None:
-            raise RuntimeError(
-                "3D incident phasor requested before source initialization"
-            )
-        k_num = self._k_num_axis
-        omega = self._omega_launch
-        if k_num is None or omega is None:
-            raise RuntimeError(
-                "3D incident phasor requested without discrete launch metadata"
-            )
-
-        plane_coord = float(self._phase_plane_coord)
-        ref_coord = float(self._phase_ref_coord)
-        d_axis = {"x": dx, "y": dy, "z": dz}[axis]
-        max_shift = int(max(1, self._discrete_launch_max_shift))
-        direction_sign = float(self._direction_sign)
-        staggered_along_axis = {
-            "x": {"Ex", "Hy", "Hz"},
-            "y": {"Ey", "Hx", "Hz"},
-            "z": {"Ez", "Hx", "Hy"},
-        }
-        field_shapes = {
-            name: tuple(int(v) for v in getattr(fields, name).shape)
-            for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
-        }
-        patches: dict[str, list[tuple[tuple[slice, slice, slice], np.ndarray]]] = {
-            name: [] for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
-        }
-
-        for comp_name, profile in profiles.items():
-            idx = indices.get(comp_name)
-            if profile is None or idx is None:
-                continue
-
-            base_axis_idx = _axis_index_from_component_indices(idx, axis)
-            base_coord = _component_axis_coord(
-                comp_name, base_axis_idx, axis, dx, dy, dz
-            )
-            profile_arr = np.asarray(profile, dtype=np.complex128)
-            base_time = 0.0 if comp_name.startswith("E") else -0.5 * float(dt)
-
-            for shift in range(-max_shift, max_shift + 1):
-                shifted_idx = _shift_component_indices_along_axis(
-                    idx, axis, shift, field_shapes[comp_name]
-                )
-                if shifted_idx is None:
-                    continue
-
-                coord = float(base_coord + shift * d_axis)
-                mask_coord = (
-                    ref_coord
-                    if comp_name in staggered_along_axis[axis]
-                    else plane_coord
-                )
-                if direction_sign * (coord - mask_coord) >= -1e-12:
-                    continue
-
-                delay = _numeric_phase_delay(omega, k_num, coord - ref_coord)
-                phase = float(omega) * (base_time - delay)
-                index_slices, patch = self._index_and_profile_to_slices(
-                    shifted_idx,
-                    field_shapes[comp_name],
-                    profile_arr * np.exp(1j * phase),
-                )
-                patches[comp_name].append((index_slices, patch))
-        return patches
-
-    @staticmethod
-    def _union_cell_bbox_for_patches(
-        patches: dict[str, list[tuple[tuple[slice, slice, slice], np.ndarray]]],
-        grid_shape: tuple[int, int, int],
-        *,
-        halo: int,
-    ) -> tuple[slice, slice, slice] | None:
-        lows = [int(v) for v in grid_shape]
-        highs = [0, 0, 0]
-        found = False
-        for component, comp_patches in patches.items():
-            for index, _patch in comp_patches:
-                found = True
-                bounds = ModeSource._component_slices_to_cell_bbox(component, index)
-                for axis, (lo, hi) in enumerate(bounds):
-                    lows[axis] = min(lows[axis], int(lo))
-                    highs[axis] = max(highs[axis], int(hi))
-        if not found:
-            return None
-        return tuple(
-            slice(
-                max(0, lows[axis] - int(halo)),
-                min(int(grid_shape[axis]), highs[axis] + int(halo)),
-            )
-            for axis in range(3)
-        )  # type: ignore[return-value]
-
-    def _local_incident_residual_arrays(
-        self,
-        fields,
-        patches: dict[str, list[tuple[tuple[slice, slice, slice], np.ndarray]]],
-        cell_bbox: tuple[slice, slice, slice],
-    ) -> tuple[
-        dict[str, np.ndarray],
-        dict[str, tuple[slice, slice, slice]],
-    ]:
-        arrays: dict[str, np.ndarray] = {}
-        indices: dict[str, tuple[slice, slice, slice]] = {}
-        for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
-            comp_shape = tuple(int(v) for v in getattr(fields, component).shape)
-            local_index = self._component_local_slices_from_cell_bbox(
-                component,
-                cell_bbox,
-                comp_shape,  # type: ignore[arg-type]
-            )
-            indices[component] = local_index
-            local_shape = tuple(
-                int(item.stop or 0) - int(item.start or 0) for item in local_index
-            )
-            local = np.zeros(local_shape, dtype=np.complex128)
-            for patch_index, patch in patches[component]:
-                self._add_patch_to_local(local, local_index, patch_index, patch)
-            arrays[component] = local
-        return arrays, indices
-
     def _compute_discrete_3d_h_phasor_residuals(
         self,
         fields,
         *,
         dt: float,
     ) -> tuple[_ModeSource3DResidual, ...]:
-        """Complex carrier H residuals computed on the local Yee stencil only."""
-        patches = self._incident_3d_phasor_residual_patches(fields, dt=float(dt))
-        grid_shape = tuple(int(v) for v in fields.permittivity.shape)
-        cell_bbox = self._union_cell_bbox_for_patches(patches, grid_shape, halo=1)
-        if cell_bbox is None:
-            return ()
-        local, indices = self._local_incident_residual_arrays(
-            fields, patches, cell_bbox
+        """Complex carrier H residuals for the launched-side TF/SF update."""
+        full_prev = self._build_incident_3d_phasor_state(
+            fields,
+            t_e=0.0,
+            t_h=-0.5 * float(dt),
+            masked=False,
         )
-
-        resolution = float(self._resolution or 0.0)
-        ex = local["Ex"]
-        ey = local["Ey"]
-        ez = local["Ez"]
-        curl = {
-            "Hx": (ez[:, 1:, :] - ez[:, :-1, :]) / resolution
-            - (ey[1:, :, :] - ey[:-1, :, :]) / resolution,
-            "Hy": (ex[1:, :, :] - ex[:-1, :, :]) / resolution
-            - (ez[:, :, 1:] - ez[:, :, :-1]) / resolution,
-            "Hz": (ey[:, :, 1:] - ey[:, :, :-1]) / resolution
-            - (ex[:, 1:, :] - ex[:, :-1, :]) / resolution,
+        masked_prev = self._build_incident_3d_phasor_state(
+            fields,
+            t_e=0.0,
+            t_h=-0.5 * float(dt),
+            masked=True,
+        )
+        h_full_next = self._advance_incident_h_3d(fields, full_prev, dt)
+        h_target_next = self._mask_incident_3d_state_to_launched_side(h_full_next)
+        h_mask_next = self._advance_incident_h_3d(fields, masked_prev, dt)
+        delta = {
+            component: h_target_next[component] - h_mask_next[component]
+            for component in ("Hx", "Hy", "Hz")
         }
-        sigma_attr = {
-            "Hx": "sigma_m_hx",
-            "Hy": "sigma_m_hy",
-            "Hz": "sigma_m_hz",
-        }
-        out: list[_ModeSource3DResidual] = []
-        for component in ("Hx", "Hy", "Hz"):
-            local_index = indices[component]
-            sigma = np.asarray(getattr(fields, sigma_attr[component])[local_index])
-            alpha = sigma * (float(dt) / (2.0 * MU_0))
-            denom = 1.0 + alpha
-            factor = (1.0 - alpha) / denom
-            source_coeff = (float(dt) / MU_0) / denom
-            delta = local[component] * factor - source_coeff * curl[component]
-            residual = self._crop_local_residual(component, "h", local_index, delta)
-            if residual is not None:
-                out.append(residual)
-        return tuple(out)
+        return self._dense_3d_delta_residuals(delta, timing="h")
 
     def _compute_discrete_3d_e_phasor_residuals(
         self,
@@ -3307,30 +3127,51 @@ class ModeSource(RuntimeStateProxy):
         *,
         dt: float,
     ) -> tuple[_ModeSource3DResidual, ...]:
-        """Complex carrier E residuals computed from compact incident patches."""
-        patches = self._incident_3d_phasor_residual_patches(fields, dt=float(dt))
-        grid_shape = tuple(int(v) for v in fields.permittivity.shape)
-        cell_bbox = self._union_cell_bbox_for_patches(patches, grid_shape, halo=0)
-        if cell_bbox is None:
-            return ()
-        local, indices = self._local_incident_residual_arrays(
-            fields, patches, cell_bbox
+        """Complex carrier E residuals for the launched-side TF/SF update."""
+        full_prev = self._build_incident_3d_phasor_state(
+            fields,
+            t_e=0.0,
+            t_h=-0.5 * float(dt),
+            masked=False,
         )
-        material = {
-            "Ex": ("sig_x", "eps_x"),
-            "Ey": ("sig_y", "eps_y"),
-            "Ez": ("sig_z", "eps_z"),
+        masked_prev = self._build_incident_3d_phasor_state(
+            fields,
+            t_e=0.0,
+            t_h=-0.5 * float(dt),
+            masked=True,
+        )
+        h_full_next = self._advance_incident_h_3d(fields, full_prev, dt)
+        h_target_next = self._mask_incident_3d_state_to_launched_side(h_full_next)
+        e_full_next = self._advance_incident_e_3d(fields, full_prev, h_full_next, dt)
+        e_target_next = self._mask_incident_3d_state_to_launched_side(e_full_next)
+        e_mask_next = self._advance_incident_e_3d(
+            fields,
+            masked_prev,
+            h_target_next,
+            dt,
+        )
+        delta = {
+            component: e_target_next[component] - e_mask_next[component]
+            for component in ("Ex", "Ey", "Ez")
         }
+        return self._dense_3d_delta_residuals(delta, timing="e")
+
+    def _dense_3d_delta_residuals(
+        self,
+        delta: dict[str, np.ndarray],
+        *,
+        timing: str,
+    ) -> tuple[_ModeSource3DResidual, ...]:
         out: list[_ModeSource3DResidual] = []
-        for component in ("Ex", "Ey", "Ez"):
-            local_index = indices[component]
-            sig_name, eps_name = material[component]
-            sigma = np.asarray(getattr(fields, sig_name)[local_index])
-            eps = np.asarray(getattr(fields, eps_name)[local_index])
-            beta = sigma * (float(dt) / (2.0 * EPS_0 * eps))
-            factor = (1.0 - beta) / (1.0 + beta)
-            delta = local[component] * factor
-            residual = self._crop_local_residual(component, "e", local_index, delta)
+        for component, values in delta.items():
+            arr = np.asarray(values, dtype=np.complex128)
+            full_index = tuple(slice(0, int(size)) for size in arr.shape)
+            residual = self._crop_local_residual(
+                component,
+                timing,
+                full_index,  # type: ignore[arg-type]
+                arr,
+            )
             if residual is not None:
                 out.append(residual)
         return tuple(out)
@@ -3527,11 +3368,12 @@ class ModeSource(RuntimeStateProxy):
             fields, t_e=float(t), t_h=float(t - 0.5 * dt), dt=dt, masked=True
         )
         h_full_next = self._advance_incident_h_3d(fields, full_prev, dt)
+        h_target_next = self._mask_incident_3d_state_to_launched_side(h_full_next)
         h_mask_next = self._advance_incident_h_3d(fields, masked_prev, dt)
         return {
-            "Hx": h_full_next["Hx"] - h_mask_next["Hx"],
-            "Hy": h_full_next["Hy"] - h_mask_next["Hy"],
-            "Hz": h_full_next["Hz"] - h_mask_next["Hz"],
+            "Hx": h_target_next["Hx"] - h_mask_next["Hx"],
+            "Hy": h_target_next["Hy"] - h_mask_next["Hy"],
+            "Hz": h_target_next["Hz"] - h_mask_next["Hz"],
         }
 
     def _compute_discrete_3d_e_delta(self, fields, *, t, dt):
@@ -3543,12 +3385,19 @@ class ModeSource(RuntimeStateProxy):
             fields, t_e=float(t), t_h=float(t - 0.5 * dt), dt=dt, masked=True
         )
         h_full_next = self._advance_incident_h_3d(fields, full_prev, dt)
+        h_target_next = self._mask_incident_3d_state_to_launched_side(h_full_next)
         e_full_next = self._advance_incident_e_3d(fields, full_prev, h_full_next, dt)
-        e_mask_next = self._advance_incident_e_3d(fields, masked_prev, h_full_next, dt)
+        e_target_next = self._mask_incident_3d_state_to_launched_side(e_full_next)
+        e_mask_next = self._advance_incident_e_3d(
+            fields,
+            masked_prev,
+            h_target_next,
+            dt,
+        )
         return {
-            "Ex": e_full_next["Ex"] - e_mask_next["Ex"],
-            "Ey": e_full_next["Ey"] - e_mask_next["Ey"],
-            "Ez": e_full_next["Ez"] - e_mask_next["Ez"],
+            "Ex": e_target_next["Ex"] - e_mask_next["Ex"],
+            "Ey": e_target_next["Ey"] - e_mask_next["Ey"],
+            "Ez": e_target_next["Ez"] - e_mask_next["Ez"],
         }
 
     def _compute_discrete_3d_h_phasor_delta(self, fields, *, dt):

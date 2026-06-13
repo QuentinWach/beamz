@@ -19,7 +19,6 @@ from beamz.devices.sources.mode import (
 from beamz.simulation.yee import component_coordinates_3d_um
 from tests.utils import TEST_WAVELENGTH
 
-
 _COMPONENTS_3D = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
 
 
@@ -94,7 +93,7 @@ def _assert_reconstructs(full, masked, delta):
     ("direction", "pol"),
     [("+x", "tm"), ("+y", "te"), ("+z", "tm")],
 )
-def test_split_3d_mode_source_residual_reconstructs_full_incident_update(
+def test_split_3d_mode_source_residual_reconstructs_launched_incident_update(
     direction, pol
 ):
     source, sim, dt, freq = _build_uniform_3d_source_case(direction, pol)
@@ -109,14 +108,16 @@ def test_split_3d_mode_source_residual_reconstructs_full_incident_update(
     )
 
     h_full = source._advance_incident_h_3d(sim.fields, full_prev, dt)
+    h_target = source._mask_incident_3d_state_to_launched_side(h_full)
     h_masked = source._advance_incident_h_3d(sim.fields, masked_prev, dt)
     h_delta = source._compute_discrete_3d_h_delta(sim.fields, t=t_e, dt=dt)
-    _assert_reconstructs(h_full, h_masked, h_delta)
+    _assert_reconstructs(h_target, h_masked, h_delta)
 
     e_full = source._advance_incident_e_3d(sim.fields, full_prev, h_full, dt)
-    e_masked = source._advance_incident_e_3d(sim.fields, masked_prev, h_full, dt)
+    e_target = source._mask_incident_3d_state_to_launched_side(e_full)
+    e_masked = source._advance_incident_e_3d(sim.fields, masked_prev, h_target, dt)
     e_delta = source._compute_discrete_3d_e_delta(sim.fields, t=t_e, dt=dt)
-    _assert_reconstructs(e_full, e_masked, e_delta)
+    _assert_reconstructs(e_target, e_masked, e_delta)
 
 
 def _affine_value(x, y, z, dx):
