@@ -136,6 +136,20 @@ def test_cpml_auto_sigma_and_alpha_use_tuned_defaults():
     assert pml._DEFAULT_CPML_ALPHA_NORMALIZED == pytest.approx(0.1)
 
 
+def test_cpml_3d_auto_alpha_uses_tuned_default():
+    fields = _make_fields_3d()
+    design = _make_design_3d()
+    pml = PML(thickness=0.2, sigma_max=5.0, alpha_max=None, formulation="cpml")
+    dt = 2e-15
+
+    pml.create_pml_regions(fields, design, resolution=0.1, dt=dt)
+
+    assert pml.alpha_max == pytest.approx(
+        2.0 * EPS_0 * pml._DEFAULT_3D_CPML_ALPHA_NORMALIZED / dt
+    )
+    assert pml._DEFAULT_3D_CPML_ALPHA_NORMALIZED == pytest.approx(0.05)
+
+
 def test_profile_shapes_match_2d_field_grid():
     fields = _make_fields_2d(shape=(7, 9))
     design = _make_design_2d(shape=(7, 9))

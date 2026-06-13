@@ -915,7 +915,7 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
     nx = int(sim.fields.permittivity.shape[2])
     pml_cells = int(round(thickness / dx))
 
-    def expected_profile(count: int, *, sample_kind: str):
+    def expected_profile(count: int, *, sample_kind: str, domain_cells: int):
         sigma = np.zeros((count,), dtype=np.float32)
         kappa = np.ones((count,), dtype=np.float32)
         alpha = np.zeros((count,), dtype=np.float32)
@@ -935,27 +935,37 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
                 np.arange(pml_cells - 1.5, -0.5, -1.0, dtype=np.float32),
                 0.0,
             )[: min(count, pml_cells)]
-            high_d = np.arange(0.0, pml_cells, 1.0, dtype=np.float32)[
-                : min(count, pml_cells)
-            ]
 
-        for side, d in (("low", low_d), ("high", high_d)):
-            u = np.clip(d / max(float(pml_cells), 1e-30), 0.0, 1.0)
-            side_sigma = sigma_max * np.power(u, 3.0)
-            side_kappa = 1.0 + (4.0 - 1.0) * np.power(u, 3.0)
-            side_alpha = 300.0 * np.power(1.0 - u, 1.0)
-            if side == "low":
-                sigma[: len(d)] = np.maximum(sigma[: len(d)], side_sigma)
-                kappa[: len(d)] = np.maximum(kappa[: len(d)], side_kappa)
-                alpha[: len(d)] = np.maximum(alpha[: len(d)], side_alpha)
-            else:
-                sigma[-len(d) :] = np.maximum(sigma[-len(d) :], side_sigma)
-                kappa[-len(d) :] = np.maximum(kappa[-len(d) :], side_kappa)
-                alpha[-len(d) :] = np.maximum(alpha[-len(d) :], side_alpha)
+        u = np.clip(low_d / max(float(pml_cells), 1e-30), 0.0, 1.0)
+        side_sigma = sigma_max * np.power(u, 3.0)
+        side_kappa = 1.0 + (4.0 - 1.0) * np.power(u, 3.0)
+        side_alpha = 300.0 * np.power(1.0 - u, 1.0)
+        sigma[: len(low_d)] = np.maximum(sigma[: len(low_d)], side_sigma)
+        kappa[: len(low_d)] = np.maximum(kappa[: len(low_d)], side_kappa)
+        alpha[: len(low_d)] = np.maximum(alpha[: len(low_d)], side_alpha)
+
+        if sample_kind == "E":
+            offset = 0.0
+        else:
+            offset = 0.5
+        coords = np.arange(count, dtype=np.float32) + np.float32(offset)
+        d = np.clip(coords - (float(domain_cells) - float(pml_cells)), 0.0, pml_cells)
+        mask = d > 0.0
+        u = np.clip(d / max(float(pml_cells), 1e-30), 0.0, 1.0)
+        side_sigma = sigma_max * np.power(u, 3.0)
+        side_kappa = 1.0 + (4.0 - 1.0) * np.power(u, 3.0)
+        side_alpha = 300.0 * np.power(1.0 - u, 1.0)
+        sigma = np.where(mask, np.maximum(sigma, side_sigma), sigma)
+        kappa = np.where(mask, np.maximum(kappa, side_kappa), kappa)
+        alpha = np.where(mask, np.maximum(alpha, side_alpha), alpha)
         return sigma, kappa, alpha
 
-    sigma_e_x, kappa_e_x, alpha_e_x = expected_profile(nx, sample_kind="E")
-    sigma_h_x, kappa_h_x, alpha_h_x = expected_profile(max(nx - 1, 0), sample_kind="H")
+    sigma_e_x, kappa_e_x, alpha_e_x = expected_profile(
+        nx, sample_kind="E", domain_cells=nx
+    )
+    sigma_h_x, kappa_h_x, alpha_h_x = expected_profile(
+        max(nx - 1, 0), sample_kind="H", domain_cells=nx
+    )
 
     assert program.use_primitive_cpml_3d_terms
     assert program.cpml3d_a_e_terms[4].shape == (0, 0, 0)

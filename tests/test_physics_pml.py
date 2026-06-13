@@ -387,6 +387,52 @@ class TestPMLAbsorption:
         # H samples are half-cell shifted and stay strictly positive through the low-side slab.
         assert float(sigma_low_h[0]) > float(sigma_low_h[1]) > 0.0
 
+    def test_cpml_compact_3d_high_side_uses_domain_cell_coordinates(self):
+        pml = PML(thickness=1.0, formulation="cpml", sigma_max=10.0, alpha_max=1.0)
+        profile_fn = getattr(
+            pml,
+            next(name for name in dir(pml) if name.endswith("_staggered_profile_1d")),
+        )
+
+        sigma_low_e, _, _ = profile_fn(
+            total_samples=20,
+            spacing=0.1,
+            low_active=True,
+            high_active=False,
+            sample_kind="E",
+        )
+        sigma_high_e, _, _ = profile_fn(
+            total_samples=20,
+            spacing=0.1,
+            low_active=False,
+            high_active=True,
+            sample_kind="E",
+            domain_cells=20,
+        )
+        sigma_low_h, _, _ = profile_fn(
+            total_samples=19,
+            spacing=0.1,
+            low_active=True,
+            high_active=False,
+            sample_kind="H",
+        )
+        sigma_high_h, _, _ = profile_fn(
+            total_samples=19,
+            spacing=0.1,
+            low_active=False,
+            high_active=True,
+            sample_kind="H",
+            domain_cells=20,
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(sigma_high_e[-10:]), np.asarray(sigma_low_e[:10])[::-1]
+        )
+        np.testing.assert_allclose(
+            np.asarray(sigma_high_h[-10:]), np.asarray(sigma_low_h[:10])[::-1]
+        )
+        assert float(sigma_high_h[-10]) == pytest.approx(0.0)
+
     def test_tm_xy_curl_h_to_e_updates_open_boundary_nodes(self):
         hx = np.array(
             [

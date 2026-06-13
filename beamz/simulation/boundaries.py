@@ -69,6 +69,7 @@ class PML(Boundary):
     """
 
     _DEFAULT_CPML_ALPHA_NORMALIZED = 0.1
+    _DEFAULT_3D_CPML_ALPHA_NORMALIZED = 0.05
     _DEFAULT_CPML_SIGMA_SCALE = 0.5
     _DEFAULT_THIN_3D_CPML_SIGMA_SCALE = 0.25
     _THIN_3D_CPML_MAX_CELLS = 16.0
@@ -133,10 +134,13 @@ class PML(Boundary):
             # Convert a conservative normalized CFS alpha into the solver's
             # conductivity-like units so the default CPML keeps a nonzero
             # complex-frequency shift instead of silently falling back to alpha=0.
+            alpha_normalized = self._DEFAULT_CPML_ALPHA_NORMALIZED
+            if getattr(fields.permittivity, "ndim", 0) == 3:
+                alpha_normalized = self._DEFAULT_3D_CPML_ALPHA_NORMALIZED
             self.alpha_max = (
                 2.0
                 * EPS_0
-                * self._DEFAULT_CPML_ALPHA_NORMALIZED
+                * alpha_normalized
                 / max(float(dt), 1e-30)
             )
 
@@ -360,6 +364,7 @@ class PML(Boundary):
         high_active,
         *,
         sample_kind,
+        domain_cells=None,
         sigma_order=None,
         kappa_order=None,
         alpha_order=None,
@@ -397,6 +402,28 @@ class PML(Boundary):
             )
             return side_sigma, side_kappa, side_alpha
 
+        if sample_kind == "E":
+            offset = 0.0
+            inferred_domain_cells = int(total_samples) - 1
+        elif sample_kind == "H":
+            offset = 0.5
+            inferred_domain_cells = int(total_samples)
+        else:
+            raise ValueError(f"Unsupported CPML sample kind {sample_kind!r}")
+        domain_cells = (
+            inferred_domain_cells if domain_cells is None else int(domain_cells)
+        )
+        coords = jnp.arange(int(total_samples), dtype=jnp.float32) + jnp.asarray(
+            offset, dtype=jnp.float32
+        )
+
+        def side_values(dist):
+            mask = dist > 0.0
+            side_sigma, side_kappa, side_alpha = apply_u(
+                dist / max(float(pml_cells), 1e-30)
+            )
+            return mask, side_sigma, side_kappa, side_alpha
+
         def low_distances(count):
             if sample_kind == "E":
                 return jnp.arange(count - 1, -1, -1, dtype=jnp.float32)
@@ -426,14 +453,24 @@ class PML(Boundary):
             alpha = alpha.at[:count].set(side_alpha)
 
         if high_active:
-            count = min(int(total_samples), pml_cells)
-            d = high_distances(count)
-            side_sigma, side_kappa, side_alpha = apply_u(
-                d / max(float(pml_cells), 1e-30)
-            )
-            sigma = sigma.at[-count:].set(jnp.maximum(sigma[-count:], side_sigma))
-            kappa = kappa.at[-count:].set(jnp.maximum(kappa[-count:], side_kappa))
-            alpha = alpha.at[-count:].set(jnp.maximum(alpha[-count:], side_alpha))
+            if domain_cells == inferred_domain_cells:
+                count = min(int(total_samples), pml_cells)
+                d = high_distances(count)
+                side_sigma, side_kappa, side_alpha = apply_u(
+                    d / max(float(pml_cells), 1e-30)
+                )
+                sigma = sigma.at[-count:].set(jnp.maximum(sigma[-count:], side_sigma))
+                kappa = kappa.at[-count:].set(jnp.maximum(kappa[-count:], side_kappa))
+                alpha = alpha.at[-count:].set(jnp.maximum(alpha[-count:], side_alpha))
+            else:
+                # Compact 3D Yee arrays omit the high-side boundary sample, so
+                # the profile length alone cannot locate the absorber interface.
+                start = float(domain_cells) - float(pml_cells)
+                d = jnp.clip(coords - start, 0.0, float(pml_cells))
+                mask, side_sigma, side_kappa, side_alpha = side_values(d)
+                sigma = jnp.where(mask, jnp.maximum(sigma, side_sigma), sigma)
+                kappa = jnp.where(mask, jnp.maximum(kappa, side_kappa), kappa)
+                alpha = jnp.where(mask, jnp.maximum(alpha, side_alpha), alpha)
 
         return sigma, kappa, alpha
 
@@ -578,6 +615,7 @@ class PML(Boundary):
                     "bottom" in edges,
                     "top" in edges,
                     sample_kind="E",
+                    domain_cells=ny,
                 )
             )
             sigma_ez_x, kappa_ez_x, alpha_ez_x = (
@@ -587,6 +625,7 @@ class PML(Boundary):
                     "left" in edges,
                     "right" in edges,
                     sample_kind="E",
+                    domain_cells=nx,
                 )
             )
             sigma_hx_y, kappa_hx_y, alpha_hx_y = (
@@ -596,6 +635,7 @@ class PML(Boundary):
                     "bottom" in edges,
                     "top" in edges,
                     sample_kind="H",
+                    domain_cells=ny,
                 )
             )
             sigma_hy_x, kappa_hy_x, alpha_hy_x = (
@@ -605,6 +645,7 @@ class PML(Boundary):
                     "left" in edges,
                     "right" in edges,
                     sample_kind="H",
+                    domain_cells=nx,
                 )
             )
             out["tm_xy_cpml"] = {
@@ -699,6 +740,7 @@ class PML(Boundary):
                 low_edge in edges,
                 high_edge in edges,
                 sample_kind=sample_kind,
+                domain_cells=shape[axis_index[axis_name]],
             )
 
         for spec in (*CPML_3D_H_DERIVATIVES, *CPML_3D_E_DERIVATIVES):

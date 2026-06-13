@@ -4,11 +4,11 @@ The 12-cell straight-waveguide benchmark should be interpreted as a guided-mode
 CPML reflection test, not as a ModeSource directionality test. The source-side
 modal diagnostic separates three effects:
 
-- `back monitor: +x wave toward source` estimates residual source-side backward
-  injection. This should stay far below -40 dB when the launched-side ModeSource
-  residual is working.
-- `back monitor: -x wave toward left CPML` estimates power returned from the
-  left CPML after the source launches into the non-PML region.
+- `back monitor: +x wave toward source` estimates left-CPML return traveling
+  back toward the source.
+- `back monitor: -x wave toward left CPML` estimates source-side backward launch
+  leaving the source region toward the left CPML. It is useful, but it is not a
+  pure CPML-return measurement.
 - `front monitor: -x wave returning from right CPML` estimates power returned
   from the right CPML after the guided mode reaches the downstream absorber.
 - The target for a simple straight guide should be at least below -40 dB across
@@ -36,9 +36,16 @@ Things to check while tuning:
 - The CPML profile must be sampled on the same Yee locations used by the update.
   E and H terms have different offsets, and the interface cell should remain
   well matched instead of starting with a strong conductivity jump.
+- Compact 3D Yee arrays do not store every high-side boundary sample. High-side
+  CPML grading must therefore use the material-domain cell count and component
+  Yee offset, not only the length of the target component array.
 - Sigma, kappa, alpha, and polynomial order interact. Too little sigma leaves
   energy unabsorbed before the outer boundary; too much sigma or alpha creates a
   discrete impedance mismatch at the entrance.
+- In the straight 3D silicon-waveguide benchmark, the default normalized CFS
+  alpha is intentionally conservative at 0.05. A larger value improved some
+  source-side numbers but raised downstream CPML return for 15-cell guided-mode
+  terminations.
 - Monitor planes need enough distance from the ModeSource and from CPMLs to
   avoid measuring TF/SF near fields, source residuals, or absorber near fields.
 - The mode/source aperture should use the largest plane that stays outside the
