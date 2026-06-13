@@ -256,15 +256,9 @@ def test_cpml_term_builders_preserve_float64_when_x64_enabled():
         shape = (2, 3, 4)
         pml_data = {}
         for spec in (*CPML_3D_H_DERIVATIVES, *CPML_3D_E_DERIVATIVES):
-            pml_data[f"cpml3d_{spec.name}_sigma"] = jnp.full(
-                shape, 0.2, dtype=dtype
-            )
-            pml_data[f"cpml3d_{spec.name}_kappa"] = jnp.full(
-                shape, 1.4, dtype=dtype
-            )
-            pml_data[f"cpml3d_{spec.name}_alpha"] = jnp.full(
-                shape, 0.03, dtype=dtype
-            )
+            pml_data[f"cpml3d_{spec.name}_sigma"] = jnp.full(shape, 0.2, dtype=dtype)
+            pml_data[f"cpml3d_{spec.name}_kappa"] = jnp.full(shape, 1.4, dtype=dtype)
+            pml_data[f"cpml3d_{spec.name}_alpha"] = jnp.full(shape, 0.03, dtype=dtype)
 
         terms = build_cpml_3d_terms(pml_data, dt=np.float64(0.05))
         assert all(term.dtype == dtype for term in terms.a_h_terms)

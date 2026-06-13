@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from beamz import EPS_0, MU_0, AbsorbingLayer, PML, Design, Material, um
+from beamz import EPS_0, MU_0, PML, AbsorbingLayer, Design, Material, um
 from beamz.simulation.fields import Fields
 
 pytestmark = pytest.mark.unit
@@ -120,15 +120,11 @@ def test_cpml_auto_sigma_and_alpha_use_tuned_defaults():
     pml = PML(thickness=0.2, sigma_max=None, alpha_max=None, formulation="cpml")
     dt = 2e-15
 
-    pml.create_pml_regions(
-        fields, design, resolution=0.1, dt=dt, plane_2d="xy"
-    )
+    pml.create_pml_regions(fields, design, resolution=0.1, dt=dt, plane_2d="xy")
 
     eta = np.sqrt(MU_0 / EPS_0)
     unscaled_sigma = -(
-        (pml.m + 1)
-        * np.log(pml.target_reflection)
-        / (2.0 * eta * float(pml.thickness))
+        (pml.m + 1) * np.log(pml.target_reflection) / (2.0 * eta * float(pml.thickness))
     )
     assert pml.sigma_max == pytest.approx(
         unscaled_sigma * pml._DEFAULT_CPML_SIGMA_SCALE

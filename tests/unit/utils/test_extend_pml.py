@@ -9,7 +9,7 @@ unchanged.
 import numpy as np
 import pytest
 
-from beamz import AbsorbingLayer, Design, Material, PML
+from beamz import PML, AbsorbingLayer, Design, Material
 from beamz.simulation.fields import Fields
 
 pytestmark = pytest.mark.unit

@@ -195,8 +195,7 @@ def build_cpml_3d_terms(
 
     def read_terms(specs, suffix):
         return tuple(
-            jnp.asarray(pml_data[f"cpml3d_{spec.name}_{suffix}"])
-            for spec in specs
+            jnp.asarray(pml_data[f"cpml3d_{spec.name}_{suffix}"]) for spec in specs
         )
 
     sigma_h_terms = read_terms(CPML_3D_H_DERIVATIVES, "sigma")

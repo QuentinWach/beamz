@@ -22,14 +22,13 @@ from beamz import (
     ramped_cosine,
     um,
 )
+from beamz.shared_kernels import build_tm_xy_cpml_terms
 from beamz.simulation.boundaries import (
     _cpml_ab_from_profiles,
     cpml_curl_e_to_h_3d,
     cpml_curl_h_to_e_3d,
     tm_xy_curl_h_to_e_2d,
 )
-from beamz.shared_kernels import build_tm_xy_cpml_terms
-
 from tests.utils import compute_field_energy
 
 
@@ -139,17 +138,15 @@ def _homogeneous_cpml_reflection_db(
     sample_times = np.arange(samples.size) * dt
     speed = LIGHT_SPEED / refractive_index
     incident_center = pulse_center + (probe_x - source_x) / speed
-    reflected_center = pulse_center + (
-        (pml_start_x - source_x) + (pml_start_x - probe_x)
-    ) / speed
-
-    incident_window = (
-        (sample_times >= incident_center - 2.0 * period)
-        & (sample_times <= incident_center + 2.5 * period)
+    reflected_center = (
+        pulse_center + ((pml_start_x - source_x) + (pml_start_x - probe_x)) / speed
     )
-    reflected_window = (
-        (sample_times >= reflected_center - 2.0 * period)
-        & (sample_times <= reflected_center + 4.0 * period)
+
+    incident_window = (sample_times >= incident_center - 2.0 * period) & (
+        sample_times <= incident_center + 2.5 * period
+    )
+    reflected_window = (sample_times >= reflected_center - 2.0 * period) & (
+        sample_times <= reflected_center + 4.0 * period
     )
     incident = float(np.max(np.abs(samples[incident_window])))
     reflected = float(np.max(np.abs(samples[reflected_window])))
