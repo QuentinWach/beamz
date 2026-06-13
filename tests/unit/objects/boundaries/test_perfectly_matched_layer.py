@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from beamz import AbsorbingLayer, PML, Design, Material, um
+from beamz import EPS_0, MU_0, AbsorbingLayer, PML, Design, Material, um
 from beamz.simulation.fields import Fields
 
 pytestmark = pytest.mark.unit
@@ -112,6 +112,32 @@ def test_cpml_alpha_is_computed_when_omitted():
     assert float(pml.alpha_max) > 0.0
     assert float(np.max(np.asarray(payload["alpha_x"], dtype=np.float64))) > 0.0
     assert float(np.max(np.asarray(payload["alpha_y"], dtype=np.float64))) > 0.0
+
+
+def test_cpml_auto_sigma_and_alpha_use_tuned_defaults():
+    fields = _make_fields_2d()
+    design = _make_design_2d()
+    pml = PML(thickness=0.2, sigma_max=None, alpha_max=None, formulation="cpml")
+    dt = 2e-15
+
+    pml.create_pml_regions(
+        fields, design, resolution=0.1, dt=dt, plane_2d="xy"
+    )
+
+    eta = np.sqrt(MU_0 / EPS_0)
+    unscaled_sigma = -(
+        (pml.m + 1)
+        * np.log(pml.target_reflection)
+        / (2.0 * eta * float(pml.thickness))
+    )
+    assert pml.sigma_max == pytest.approx(
+        unscaled_sigma * pml._DEFAULT_CPML_SIGMA_SCALE
+    )
+    assert pml._DEFAULT_CPML_SIGMA_SCALE == pytest.approx(0.5)
+    assert pml.alpha_max == pytest.approx(
+        2.0 * EPS_0 * pml._DEFAULT_CPML_ALPHA_NORMALIZED / dt
+    )
+    assert pml._DEFAULT_CPML_ALPHA_NORMALIZED == pytest.approx(0.1)
 
 
 def test_profile_shapes_match_2d_field_grid():

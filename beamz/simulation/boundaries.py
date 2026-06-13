@@ -68,8 +68,8 @@ class PML(Boundary):
     convolutional PML in the solver update equations.
     """
 
-    _DEFAULT_CPML_ALPHA_NORMALIZED = 0.225
-    _DEFAULT_CPML_SIGMA_SCALE = 0.375
+    _DEFAULT_CPML_ALPHA_NORMALIZED = 0.1
+    _DEFAULT_CPML_SIGMA_SCALE = 0.5
 
     def __init__(
         self,
@@ -116,9 +116,10 @@ class PML(Boundary):
                 / (2.0 * eta * thickness)
             )
             if self.formulation == "cpml":
-                # The CPML curl correction plus collocated material loss is
-                # sensitive to over-damping at the absorber entrance. A softer
-                # ramp reduces impedance mismatch on BeamZ's native Yee grid.
+                # Keep the physical reflection formula but use a slightly softer
+                # discrete-grid ramp at the absorber entrance. The CPML sigma is
+                # applied only in the auxiliary curl correction, not as material
+                # conductivity.
                 self.sigma_max *= self._DEFAULT_CPML_SIGMA_SCALE
         if self.formulation == "cpml" and self.alpha_max is None:
             # Convert a conservative normalized CFS alpha into the solver's

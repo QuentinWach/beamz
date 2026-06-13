@@ -10,11 +10,17 @@ import numpy as np
 import pytest
 
 from beamz import (
+    EPS_0,
     LIGHT_SPEED,
     PML,
+    Design,
     GaussianSource,
+    Material,
+    ModeSource,
     Simulation,
+    calc_optimal_fdtd_params,
     ramped_cosine,
+    um,
 )
 from beamz.simulation.boundaries import (
     _cpml_ab_from_profiles,
@@ -25,6 +31,129 @@ from beamz.simulation.boundaries import (
 from beamz.shared_kernels import build_tm_xy_cpml_terms
 
 from tests.utils import compute_field_energy
+
+
+class _TaperedLineEzSource:
+    """Small test-only line current source for CPML reflection measurements."""
+
+    def __init__(self, *, x, y0, y1, signal):
+        self.x = float(x)
+        self.y0 = float(y0)
+        self.y1 = float(y1)
+        self.signal = jnp.asarray(signal)
+        self._indices = None
+        self._profile = None
+
+    def _initialize(self, fields, resolution):
+        ny, nx = fields.Ez.shape
+        ix = int(np.clip(round(self.x / resolution), 0, nx - 1))
+        y0 = int(np.clip(round(self.y0 / resolution), 0, ny - 1))
+        y1 = int(np.clip(round(self.y1 / resolution), y0 + 1, ny))
+        n = max(y1 - y0, 1)
+
+        weights = np.ones(n, dtype=np.float32)
+        taper = max(1, n // 8)
+        if taper > 1:
+            ramp = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, taper)))
+            weights[:taper] = ramp
+            weights[-taper:] = ramp[::-1]
+
+        self._indices = (slice(y0, y1), ix)
+        self._profile = jnp.asarray(weights)
+
+    def inject(self, fields, t, dt, current_step, resolution, design):
+        if self._indices is None:
+            self._initialize(fields, resolution)
+
+        idx_float = (t + 0.5 * dt) / dt
+        idx_low = jnp.floor(idx_float).astype(jnp.int32)
+        idx_high = idx_low + 1
+        frac = idx_float - jnp.floor(idx_float)
+        signal_len = self.signal.shape[0]
+        value = (1.0 - frac) * self.signal[jnp.clip(idx_low, 0, signal_len - 1)]
+        value += frac * self.signal[jnp.clip(idx_high, 0, signal_len - 1)]
+        value = jnp.where((idx_low >= 0) & (idx_low < signal_len - 1), value, 0.0)
+
+        injection = -self._profile * value * dt / EPS_0
+        fields.Ez = fields.Ez.at[self._indices].add(injection)
+
+
+def _homogeneous_cpml_reflection_db(
+    *, points_per_wavelength: int, refractive_index: float = 1.0
+) -> float:
+    """Measure time-gated normal-incidence CPML amplitude reflection in dB."""
+
+    wavelength = 1.0 * um
+    frequency = LIGHT_SPEED / wavelength
+    dx, dt = calc_optimal_fdtd_params(
+        wavelength,
+        refractive_index,
+        dims=2,
+        safety_factor=0.95,
+        points_per_wavelength=points_per_wavelength,
+    )
+
+    width = 14.0 * wavelength
+    height = 8.0 * wavelength
+    pml_thickness = 1.0 * wavelength
+    design = Design(
+        width=width,
+        height=height,
+        material=Material(permittivity=refractive_index**2),
+    )
+
+    period = 1.0 / frequency
+    time = np.arange(0.0, 38.0 * period, dt)
+    pulse_center = 4.0 * period
+    pulse_sigma = 0.7 * period
+    signal = np.exp(-((time - pulse_center) ** 2) / (2.0 * pulse_sigma**2))
+    signal *= np.cos(2.0 * np.pi * frequency * time)
+
+    source_x = 3.0 * wavelength
+    probe_x = 6.0 * wavelength
+    pml_start_x = width - pml_thickness
+    source = _TaperedLineEzSource(
+        x=source_x,
+        y0=2.0 * wavelength,
+        y1=6.0 * wavelength,
+        signal=signal.astype(np.float32),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[source],
+        boundaries=[PML(thickness=pml_thickness, formulation="cpml")],
+        time=time,
+        resolution=dx,
+    )
+
+    probe_ix = int(round(probe_x / dx))
+    probe_y0 = int(round(3.0 * wavelength / dx))
+    probe_y1 = int(round(5.0 * wavelength / dx))
+    samples = []
+    for _ in range(len(time)):
+        sim.step()
+        ez = np.asarray(sim.fields.Ez)
+        samples.append(float(np.mean(ez[probe_y0:probe_y1, probe_ix])))
+
+    samples = np.asarray(samples)
+    sample_times = np.arange(samples.size) * dt
+    speed = LIGHT_SPEED / refractive_index
+    incident_center = pulse_center + (probe_x - source_x) / speed
+    reflected_center = pulse_center + (
+        (pml_start_x - source_x) + (pml_start_x - probe_x)
+    ) / speed
+
+    incident_window = (
+        (sample_times >= incident_center - 2.0 * period)
+        & (sample_times <= incident_center + 2.5 * period)
+    )
+    reflected_window = (
+        (sample_times >= reflected_center - 2.0 * period)
+        & (sample_times <= reflected_center + 4.0 * period)
+    )
+    incident = float(np.max(np.abs(samples[incident_window])))
+    reflected = float(np.max(np.abs(samples[reflected_window])))
+    return 20.0 * np.log10(max(reflected, 1e-300) / max(incident, 1e-300))
 
 
 @pytest.mark.simulation
@@ -447,6 +576,89 @@ class TestPMLAbsorption:
         )
         np.testing.assert_allclose(
             np.asarray(curl_ez), np.asarray(curl_ez_ref), rtol=1e-6, atol=1e-6
+        )
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("points_per_wavelength", [10, 11, 12])
+    def test_cpml_homogeneous_vacuum_reflection_below_minus_40_db(
+        self, points_per_wavelength
+    ):
+        reflection_db = _homogeneous_cpml_reflection_db(
+            points_per_wavelength=points_per_wavelength,
+            refractive_index=1.0,
+        )
+
+        assert reflection_db < -40.0, (
+            f"CPML reflection was {reflection_db:.2f} dB for "
+            f"{points_per_wavelength} cells per wavelength."
+        )
+
+    @pytest.mark.slow
+    def test_cpml_homogeneous_dielectric_reflection_below_minus_40_db(self):
+        reflection_db = _homogeneous_cpml_reflection_db(
+            points_per_wavelength=12,
+            refractive_index=1.5,
+        )
+
+        assert reflection_db < -40.0, (
+            f"Uniform dielectric CPML reflection was {reflection_db:.2f} dB."
+        )
+
+    @pytest.mark.slow
+    def test_cpml_absorbs_slab_waveguide_mode_after_turnoff(self, waveguide_domain):
+        design = waveguide_domain["design"]
+        wavelength = waveguide_domain["wavelength"]
+        dx = waveguide_domain["dx"]
+        dt = waveguide_domain["dt"]
+        domain_height = waveguide_domain["domain_height"]
+        core_width = waveguide_domain["core_width"]
+
+        frequency = LIGHT_SPEED / wavelength
+        time = np.arange(0.0, 45.0 / frequency, dt)
+        signal = ramped_cosine(
+            time,
+            amplitude=1.0,
+            frequency=frequency,
+            ramp_duration=3.0 / frequency,
+            t_max=15.0 / frequency,
+        )
+
+        grid = design.rasterize(resolution=dx)
+        source = ModeSource(
+            grid=grid,
+            center=(3.0 * wavelength, domain_height / 2.0),
+            width=3.0 * core_width,
+            wavelength=wavelength,
+            pol="tm",
+            signal=signal,
+            direction="+x",
+        )
+        sim = Simulation(
+            design=design,
+            sources=[source],
+            boundaries=[PML(thickness=wavelength, formulation="cpml")],
+            time=time,
+            resolution=dx,
+        )
+
+        result = sim.run(save_fields=["Ez"], field_subsample=60)
+        frames = [np.asarray(frame) for frame in result["fields"]["Ez"]]
+        energies = np.asarray([compute_field_energy(frame, dx) for frame in frames])
+        peak_energy = float(np.max(energies))
+        late_energy = float(np.mean(energies[-3:]))
+        residual_db = 10.0 * np.log10(max(late_energy, 1e-300) / peak_energy)
+
+        last_frame = frames[-1]
+        source_ix = int(round(3.0 * wavelength / dx))
+        upstream_energy = float(compute_field_energy(last_frame[:, :source_ix], dx))
+        downstream_energy = float(compute_field_energy(last_frame[:, source_ix:], dx))
+        upstream_fraction = upstream_energy / (upstream_energy + downstream_energy)
+
+        assert residual_db < -25.0, (
+            f"Waveguide CPML residual energy was {residual_db:.2f} dB."
+        )
+        assert upstream_fraction < 0.25, (
+            f"Waveguide CPML left {upstream_fraction:.2%} of late energy upstream."
         )
 
     def test_pml_reflection_level(self, vacuum_domain_small):
