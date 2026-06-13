@@ -2088,6 +2088,55 @@ class ModeSource(RuntimeStateProxy):
         """Return the canonical snapped source region after initialization."""
         return self._snapped_region
 
+    def _snapped_support_bounds(self) -> dict[str, tuple[float, float]] | None:
+        snapped = self._snapped_region
+        if snapped is None:
+            return None
+        return {
+            axis: snapped.axis_bounds(axis)
+            for axis in ("x", "y", "z")[: int(snapped.ndim)]
+        }
+
+    def _injection_support_bounds(
+        self,
+        fields=None,
+        *,
+        dt: float | None = None,
+    ) -> dict[str, tuple[float, float]] | None:
+        """Return physical grid-coordinate bounds touched by source injection."""
+        fallback = self._snapped_support_bounds()
+        if (
+            fields is None
+            or dt is None
+            or not bool(getattr(self, "_is_3d", False))
+            or getattr(self, "_omega_launch", None) is None
+            or getattr(self, "_k_num_axis", None) is None
+        ):
+            return fallback
+
+        residuals = self._compute_discrete_3d_phasor_residuals(fields, dt=float(dt))
+        if not residuals:
+            return fallback
+
+        grid_shape = tuple(int(v) for v in np.asarray(fields.permittivity).shape)
+        lows = [int(v) for v in grid_shape]
+        highs = [0, 0, 0]
+        for residual in residuals:
+            bounds = self._component_slices_to_cell_bbox(
+                residual.component,
+                residual.index,
+            )
+            for axis_idx, (lo, hi) in enumerate(bounds):
+                lows[axis_idx] = min(lows[axis_idx], int(lo))
+                highs[axis_idx] = max(highs[axis_idx], int(hi))
+
+        resolution = float(self._resolution or 0.0)
+        z_bounds, y_bounds, x_bounds = (
+            (lows[axis_idx] * resolution, highs[axis_idx] * resolution)
+            for axis_idx in range(3)
+        )
+        return {"x": x_bounds, "y": y_bounds, "z": z_bounds}
+
     def _setup_discrete_3d_mode_from_micromode(
         self,
         *,

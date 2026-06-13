@@ -370,6 +370,58 @@ class TestModeSourceDiscreteHelpers:
         np.testing.assert_allclose(runtime_profiles["Hz"], 2.0 * profiles["Hz"])
         assert runtime_indices["Ex"] == indices["Ex"]
 
+    def test_injection_support_bounds_union_discrete_residual_cells(
+        self, monkeypatch
+    ):
+        source = ModeSource(
+            grid=SimpleNamespace(),
+            center=(0.0, 0.0, 0.0),
+            width=1.0,
+            height=1.0,
+            wavelength=TEST_WAVELENGTH,
+            pol="te",
+            signal=np.ones(8),
+            direction="+x",
+        )
+        source._is_3d = True
+        source._resolution = 0.25
+        source._omega_launch = 1.0
+        source._k_num_axis = 1.0
+
+        residuals = (
+            mode_module._ModeSource3DResidual(
+                component="Ey",
+                timing="e",
+                index=(slice(2, 5), slice(1, 3), slice(3, 6)),
+                residual=np.ones((3, 2, 3), dtype=np.complex128),
+            ),
+            mode_module._ModeSource3DResidual(
+                component="Hx",
+                timing="h",
+                index=(slice(0, 2), slice(4, 6), slice(1, 2)),
+                residual=np.ones((2, 2, 1), dtype=np.complex128),
+            ),
+        )
+
+        def fake_residuals(_fields, *, dt):
+            assert dt == 2.0
+            return residuals
+
+        monkeypatch.setattr(
+            source,
+            "_compute_discrete_3d_phasor_residuals",
+            fake_residuals,
+        )
+
+        fields = SimpleNamespace(permittivity=np.zeros((6, 7, 8), dtype=float))
+
+        bounds = source._injection_support_bounds(fields, dt=2.0)
+
+        assert bounds is not None
+        np.testing.assert_allclose(bounds["x"], (0.25, 1.50))
+        np.testing.assert_allclose(bounds["y"], (0.25, 1.75))
+        np.testing.assert_allclose(bounds["z"], (0.00, 1.25))
+
     def test_numeric_k_satisfies_dispersion_identity(self):
         wavelength = TEST_WAVELENGTH
         omega = 2 * np.pi * LIGHT_SPEED / wavelength
