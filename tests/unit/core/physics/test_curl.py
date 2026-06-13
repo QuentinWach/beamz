@@ -2,6 +2,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from beamz import PML
 from beamz.shared_kernels import (
     CPML_3D_E_DERIVATIVES,
     CPML_3D_H_DERIVATIVES,
@@ -19,6 +20,7 @@ from beamz.simulation.boundaries import (
     full_pec_update_e_from_h_3d,
     full_pec_update_h_from_e_3d,
 )
+from beamz.simulation.fields import Fields
 from beamz.simulation.ops import curl_e_to_h_3d, curl_h_to_e_3d
 
 pytestmark = pytest.mark.unit
@@ -246,6 +248,87 @@ def _cpml_compact_profiles(shapes, axes, *, dt=0.05):
     )
 
 
+def _fill_field_components(fields, components):
+    for component in components:
+        current = getattr(fields, component)
+        values = jnp.arange(current.size, dtype=current.dtype).reshape(current.shape)
+        setattr(fields, component, values / jnp.asarray(100.0, dtype=current.dtype))
+
+
+def test_3d_field_update_h_does_not_initialize_cpml_state_without_cpml():
+    material = np.ones((4, 5, 6), dtype=np.float32)
+    fields = Fields(
+        permittivity=material,
+        conductivity=np.zeros_like(material),
+        permeability=np.ones_like(material),
+        resolution=0.2,
+    )
+    fields.boundaries = [PML(formulation="sponge")]
+    _fill_field_components(fields, ("Ex", "Ey", "Ez"))
+
+    assert fields.cpml_3d_state is None
+
+    fields.update_h(1e-15)
+
+    assert fields.cpml_3d_state is None
+
+
+def test_3d_field_update_e_does_not_initialize_cpml_state_without_cpml():
+    material = np.ones((4, 5, 6), dtype=np.float32)
+    fields = Fields(
+        permittivity=material,
+        conductivity=np.zeros_like(material),
+        permeability=np.ones_like(material),
+        resolution=0.2,
+    )
+    fields.boundaries = [PML(formulation="sponge")]
+    _fill_field_components(fields, ("Hx", "Hy", "Hz"))
+
+    assert fields.cpml_3d_state is None
+
+    fields.update_e(1e-15)
+
+    assert fields.cpml_3d_state is None
+
+
+def test_tm_xy_field_update_h_does_not_initialize_cpml_state_without_cpml():
+    material = np.ones((5, 6), dtype=np.float32)
+    fields = Fields(
+        permittivity=material,
+        conductivity=np.zeros_like(material),
+        permeability=np.ones_like(material),
+        resolution=0.2,
+        plane_2d="xy",
+    )
+    fields.boundaries = [PML(formulation="sponge")]
+    _fill_field_components(fields, ("Ez",))
+
+    assert fields.cpml_tm_xy_state is None
+
+    fields.update_h(1e-15)
+
+    assert fields.cpml_tm_xy_state is None
+
+
+def test_tm_xy_field_update_e_does_not_initialize_cpml_state_without_cpml():
+    material = np.ones((5, 6), dtype=np.float32)
+    fields = Fields(
+        permittivity=material,
+        conductivity=np.zeros_like(material),
+        permeability=np.ones_like(material),
+        resolution=0.2,
+        plane_2d="xy",
+    )
+    fields.boundaries = [PML(formulation="sponge")]
+    _fill_field_components(fields, ("Hx", "Hy"))
+
+    assert fields.cpml_tm_xy_state is None
+
+    fields.update_e(1e-15)
+
+    assert fields.cpml_tm_xy_state is None
+
+
 def test_cpml_term_builders_preserve_float64_when_x64_enabled():
     import jax
 
@@ -325,6 +408,10 @@ def test_cpml_curl_e_to_h_3d_updates_psi_terms():
     assert curl_hy.shape == term_shapes[2]
     assert curl_hz.shape == term_shapes[4]
     assert any(not jnp.allclose(term, 0.0) for term in psi_updated)
+    for got, shape in zip(psi_updated, term_shapes, strict=True):
+        assert got.shape == shape
+        assert got.dtype == jnp.float32
+        assert bool(jnp.all(jnp.isfinite(got)))
 
 
 def test_cpml_curl_h_to_e_3d_updates_psi_terms():
@@ -358,6 +445,10 @@ def test_cpml_curl_h_to_e_3d_updates_psi_terms():
     assert curl_ey.shape == term_shapes[2]
     assert curl_ez.shape == term_shapes[4]
     assert any(not jnp.allclose(term, 0.0) for term in psi_updated)
+    for got, shape in zip(psi_updated, term_shapes, strict=True):
+        assert got.shape == shape
+        assert got.dtype == jnp.float32
+        assert bool(jnp.all(jnp.isfinite(got)))
 
 
 def test_cpml_curl_h_to_e_3d_uses_open_ghosts_on_nonmetal_edges():

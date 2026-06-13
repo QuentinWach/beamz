@@ -374,3 +374,102 @@ def test_staggered_profile_shape_dtype_and_monotonicity():
     )
     assert float(kappa_high_h[-1]) > float(kappa_high_h[-2]) >= 1.0
     assert float(alpha_high_h[-1]) < float(alpha_high_h[-2]) < float(alpha_high_h[-3])
+
+
+@pytest.mark.parametrize("sample_kind", ["E", "H"])
+def test_staggered_profile_directionality_on_both_faces(sample_kind):
+    pml = PML(
+        thickness=0.4,
+        sigma_max=10.0,
+        alpha_max=1.0,
+        formulation="cpml",
+    )
+    profile_fn = getattr(
+        pml,
+        next(name for name in dir(pml) if name.endswith("_staggered_profile_1d")),
+    )
+    pml_cells = 4
+
+    sigma_low, kappa_low, alpha_low = profile_fn(
+        total_samples=12,
+        spacing=0.1,
+        low_active=True,
+        high_active=False,
+        sample_kind=sample_kind,
+    )
+    sigma_high, kappa_high, alpha_high = profile_fn(
+        total_samples=12,
+        spacing=0.1,
+        low_active=False,
+        high_active=True,
+        sample_kind=sample_kind,
+    )
+
+    sigma_low = np.asarray(sigma_low, dtype=np.float64)
+    kappa_low = np.asarray(kappa_low, dtype=np.float64)
+    alpha_low = np.asarray(alpha_low, dtype=np.float64)
+    sigma_high = np.asarray(sigma_high, dtype=np.float64)
+    kappa_high = np.asarray(kappa_high, dtype=np.float64)
+    alpha_high = np.asarray(alpha_high, dtype=np.float64)
+
+    assert np.all(np.diff(sigma_low[:pml_cells]) <= 0.0)
+    assert np.all(np.diff(kappa_low[:pml_cells]) <= 0.0)
+    assert np.all(np.diff(alpha_low[:pml_cells]) >= 0.0)
+    np.testing.assert_allclose(sigma_low[pml_cells:], 0.0)
+    np.testing.assert_allclose(kappa_low[pml_cells:], 1.0)
+    np.testing.assert_allclose(alpha_low[pml_cells:], 0.0)
+
+    assert np.all(np.diff(sigma_high[-pml_cells:]) >= 0.0)
+    assert np.all(np.diff(kappa_high[-pml_cells:]) >= 0.0)
+    assert np.all(np.diff(alpha_high[-pml_cells:]) <= 0.0)
+    np.testing.assert_allclose(sigma_high[:-pml_cells], 0.0)
+    np.testing.assert_allclose(kappa_high[:-pml_cells], 1.0)
+    np.testing.assert_allclose(alpha_high[:-pml_cells], 0.0)
+
+
+def test_cpml_grid_profiles_are_directional_and_identity_interior():
+    fields = _make_fields_2d(shape=(8, 12))
+    design = _make_design_2d(shape=(8, 12))
+    pml = PML(
+        thickness=0.3,
+        sigma_max=10.0,
+        alpha_max=1.0,
+        formulation="cpml",
+    )
+
+    payload = pml.create_pml_regions(
+        fields, design, resolution=0.1, dt=1e-15, plane_2d="xy"
+    )
+
+    center_y = fields.permittivity.shape[0] // 2
+    center_x = fields.permittivity.shape[1] // 2
+    x_sigma = np.asarray(payload["sigma_x"][center_y], dtype=np.float64)
+    x_kappa = np.asarray(payload["kappa_x"][center_y], dtype=np.float64)
+    x_alpha = np.asarray(payload["alpha_x"][center_y], dtype=np.float64)
+    y_sigma = np.asarray(payload["sigma_y"][:, center_x], dtype=np.float64)
+    y_kappa = np.asarray(payload["kappa_y"][:, center_x], dtype=np.float64)
+    y_alpha = np.asarray(payload["alpha_y"][:, center_x], dtype=np.float64)
+
+    assert x_sigma[0] > x_sigma[1] > x_sigma[2] > 0.0
+    assert x_sigma[-1] > x_sigma[-2] > x_sigma[-3] > 0.0
+    assert x_kappa[0] > x_kappa[1] > x_kappa[2] > 1.0
+    assert x_kappa[-1] > x_kappa[-2] > x_kappa[-3] > 1.0
+    assert x_alpha[0] == pytest.approx(0.0)
+    assert x_alpha[1] < x_alpha[2]
+    assert x_alpha[-3] > x_alpha[-2]
+    assert x_alpha[-1] == pytest.approx(0.0)
+    np.testing.assert_allclose(x_sigma[3:-3], 0.0)
+    np.testing.assert_allclose(x_kappa[3:-3], 1.0)
+    np.testing.assert_allclose(x_alpha[3:-3], 0.0)
+
+    assert y_sigma[0] > y_sigma[1] > 0.0
+    assert y_sigma[-1] > y_sigma[-2] > 0.0
+    assert y_kappa[0] > y_kappa[1] > 1.0
+    assert y_kappa[-1] > y_kappa[-2] > 1.0
+    assert y_alpha[0] == pytest.approx(0.0)
+    assert y_alpha[1] > 0.0
+    assert y_alpha[-2] > 0.0
+    assert y_alpha[-1] == pytest.approx(0.0)
+    np.testing.assert_allclose(y_sigma[3:-3], 0.0)
+    np.testing.assert_allclose(y_kappa[3:-3], 1.0)
+    np.testing.assert_allclose(y_alpha[3:-3], 0.0)
