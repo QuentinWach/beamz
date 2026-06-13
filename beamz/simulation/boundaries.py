@@ -70,6 +70,8 @@ class PML(Boundary):
 
     _DEFAULT_CPML_ALPHA_NORMALIZED = 0.1
     _DEFAULT_CPML_SIGMA_SCALE = 0.5
+    _DEFAULT_THIN_3D_CPML_SIGMA_SCALE = 0.25
+    _THIN_3D_CPML_MAX_CELLS = 16.0
 
     def __init__(
         self,
@@ -116,11 +118,17 @@ class PML(Boundary):
                 / (2.0 * eta * thickness)
             )
             if self.formulation == "cpml":
-                # Keep the physical reflection formula but use a slightly softer
-                # discrete-grid ramp at the absorber entrance. The CPML sigma is
-                # applied only in the auxiliary curl correction, not as material
-                # conductivity.
-                self.sigma_max *= self._DEFAULT_CPML_SIGMA_SCALE
+                # Keep the physical reflection formula but soften the
+                # discrete-grid ramp at the absorber entrance. Thin 3D guided
+                # mode CPMLs are especially sensitive to entrance mismatch.
+                sigma_scale = self._DEFAULT_CPML_SIGMA_SCALE
+                pml_cells = float(self.thickness) / max(float(resolution), 1e-30)
+                if (
+                    getattr(fields.permittivity, "ndim", 0) == 3
+                    and pml_cells <= self._THIN_3D_CPML_MAX_CELLS
+                ):
+                    sigma_scale = self._DEFAULT_THIN_3D_CPML_SIGMA_SCALE
+                self.sigma_max *= sigma_scale
         if self.formulation == "cpml" and self.alpha_max is None:
             # Convert a conservative normalized CFS alpha into the solver's
             # conductivity-like units so the default CPML keeps a nonzero
