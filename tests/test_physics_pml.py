@@ -252,7 +252,9 @@ class TestPMLAbsorption:
         assert float(np.max(alpha_x)) > 0.0
         assert float(np.max(alpha_y)) > 0.0
 
-    def test_cpml_default_sigma_keeps_2d_softening(self, vacuum_domain_small):
+    def test_cpml_default_sigma_uses_target_reflection_formula_2d(
+        self, vacuum_domain_small
+    ):
         design = vacuum_domain_small["design"]
         dx = vacuum_domain_small["dx"]
         dt = vacuum_domain_small["dt"]
@@ -274,9 +276,9 @@ class TestPMLAbsorption:
 
         eta = np.sqrt(MU_0 / EPS_0)
         unscaled = -4.0 * np.log(1e-6) / (2.0 * eta * wavelength)
-        assert pml.sigma_max == pytest.approx(0.5 * unscaled)
+        assert pml.sigma_max == pytest.approx(unscaled)
 
-    def test_cpml_default_sigma_uses_thin_3d_softening(self):
+    def test_cpml_default_sigma_uses_target_reflection_formula_3d(self):
         dx = 0.1 * um
         dt = dx / (2.0 * LIGHT_SPEED)
         thickness = 12.0 * dx
@@ -303,7 +305,7 @@ class TestPMLAbsorption:
 
         eta = np.sqrt(MU_0 / EPS_0)
         unscaled = -4.0 * np.log(1e-6) / (2.0 * eta * thickness)
-        assert pml.sigma_max == pytest.approx(0.25 * unscaled)
+        assert pml.sigma_max == pytest.approx(unscaled)
 
     def test_split_cpml_boundaries_preserve_identity_kappa_2d(
         self, vacuum_domain_small

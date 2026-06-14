@@ -114,7 +114,7 @@ def test_cpml_alpha_is_computed_when_omitted():
     assert float(np.max(np.asarray(payload["alpha_y"], dtype=np.float64))) > 0.0
 
 
-def test_cpml_auto_sigma_and_alpha_use_tuned_defaults():
+def test_cpml_auto_sigma_uses_target_reflection_formula_directly():
     fields = _make_fields_2d()
     design = _make_design_2d()
     pml = PML(thickness=0.2, sigma_max=None, alpha_max=None, formulation="cpml")
@@ -126,10 +126,7 @@ def test_cpml_auto_sigma_and_alpha_use_tuned_defaults():
     unscaled_sigma = -(
         (pml.m + 1) * np.log(pml.target_reflection) / (2.0 * eta * float(pml.thickness))
     )
-    assert pml.sigma_max == pytest.approx(
-        unscaled_sigma * pml._DEFAULT_CPML_SIGMA_SCALE
-    )
-    assert pml._DEFAULT_CPML_SIGMA_SCALE == pytest.approx(0.5)
+    assert pml.sigma_max == pytest.approx(unscaled_sigma)
     assert pml.alpha_max == pytest.approx(
         2.0 * EPS_0 * pml._DEFAULT_CPML_ALPHA_NORMALIZED / dt
     )
