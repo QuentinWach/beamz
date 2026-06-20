@@ -1768,7 +1768,7 @@ def test_complex_3d_source_profiles_are_forward_pure_before_real_projection():
     )
     stage_data = _source_profile_stage_snapshots(sim, source)
     power = _modal_power_3d_from_profiles(
-        stage_data["stages"]["parity_complex"],
+        stage_data["stages"]["built_complex"],
         axis=str(stage_data["axis"]),
         d_area=float(stage_data["d_area"]),
         direction_sign=float(stage_data["direction_sign"]),
@@ -1945,14 +1945,15 @@ def test_lateral_rectangular_guide_secondary_pair_is_suppressed_during_profile_b
         clearance_cells=4,
     )
     metrics = _source_profile_secondary_pair_metrics(sim, source)
+    suppressed_metrics = metrics["parity_complex"]
 
     assert (
-        metrics["built_complex"]["weak_h_norm_ratio"]
+        suppressed_metrics["weak_h_norm_ratio"]
         < 0.98 * metrics["aligned_raw"]["weak_h_norm_ratio"]
     )
     if pol == "te":
         assert (
-            metrics["built_complex"]["weak_e_norm_ratio"]
+            suppressed_metrics["weak_e_norm_ratio"]
             < 0.98 * metrics["aligned_raw"]["weak_e_norm_ratio"]
         )
 

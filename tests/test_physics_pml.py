@@ -118,10 +118,18 @@ def _homogeneous_cpml_reflection_db(
         y1=6.0 * wavelength,
         signal=signal.astype(np.float32),
     )
+    cpml_alpha_normalized = 0.2
+    cpml_alpha_max = 2.0 * EPS_0 * cpml_alpha_normalized / max(float(dt), 1e-30)
     sim = Simulation(
         design=design,
         sources=[source],
-        boundaries=[PML(thickness=pml_thickness, formulation="cpml")],
+        boundaries=[
+            PML(
+                thickness=pml_thickness,
+                formulation="cpml",
+                alpha_max=cpml_alpha_max,
+            )
+        ],
         time=time,
         resolution=dx,
     )
