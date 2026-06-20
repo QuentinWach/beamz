@@ -283,7 +283,6 @@ def build_and_run(args):
         direction="+x",
         source_time=source_time,
         polarization="te",
-        power=1.0,
     )
     mode_source.initialize(sim0.fields.permittivity, sim0.resolution, dt=sim0.dt)
     mode_solve_wall_s = time.perf_counter() - t0

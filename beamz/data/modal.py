@@ -57,7 +57,12 @@ def mode_monitor_data(simulation, monitor):
         amps[:, 0, idx] = np.asarray(plus, dtype=np.complex128)
         amps[:, 1, idx] = np.asarray(minus, dtype=np.complex128)
 
-    source_norm = _source_spectrum_normalization(simulation.sources, freqs)
+    source_norm = _source_spectrum_normalization(
+        simulation.sources,
+        freqs,
+        time=getattr(simulation, "time", None),
+        monitor=monitor,
+    )
     if source_norm is not None:
         norm = np.asarray(source_norm, dtype=np.complex128).reshape(-1)
         if norm.size == freqs.size:

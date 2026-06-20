@@ -1,7 +1,11 @@
+import inspect
+
 import numpy as np
 import pytest
 
 import beamz as bz
+from beamz.devices.sources.modesolver import ModeSolver
+from beamz.simulation.core import _source_spectrum_normalization
 
 
 def test_gaussian_pulse_spectrum_uses_tidy3d_fwidth_convention():
@@ -22,6 +26,33 @@ def test_gaussian_pulse_dft_normalization_includes_native_monitor_scale():
     np.testing.assert_allclose(abs(norm[0]), 1.0 / (2.0 * np.pi), rtol=1e-12)
 
 
+def test_source_normalization_uses_sampled_native_monitor_dft_when_time_is_available():
+    pulse = bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
+    dt = 1.0e-16
+    time = np.arange(0.0, 20.0 / pulse.fwidth, dt)
+    signal, _quadrature = pulse.sample(time)
+    source = bz.ModeSource(
+        grid=object(),
+        center=(0.0, 0.0, 0.0),
+        width=1.0,
+        height=1.0,
+        wavelength=bz.LIGHT_SPEED / pulse.freq0,
+        pol="te",
+        signal=signal,
+        source_time=pulse,
+    )
+
+    norm = _source_spectrum_normalization([source], [pulse.freq0], time=time)
+
+    expected = (
+        2.0
+        / time.size
+        * np.sum(signal * np.exp(1j * 2.0 * np.pi * pulse.freq0 * time))
+    )
+    np.testing.assert_allclose(norm, [expected], rtol=1e-12, atol=1e-15)
+    assert abs(norm[0]) < abs(pulse.dft_normalization_spectrum([pulse.freq0])[0])
+
+
 def test_mode_source_spectrum_includes_modal_power_response():
     pulse = bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
     freqs = np.asarray([0.9 * pulse.freq0, pulse.freq0, 1.1 * pulse.freq0])
@@ -40,6 +71,28 @@ def test_mode_source_spectrum_includes_modal_power_response():
 
     expected = pulse.dft_normalization_spectrum(freqs) * np.sqrt(freqs / pulse.freq0)
     np.testing.assert_allclose(norm, expected, rtol=1e-12)
+
+
+def test_mode_source_defaults_to_one_watt_launch_power():
+    source = bz.ModeSource(
+        grid=object(),
+        center=(0.0, 0.0, 0.0),
+        width=1.0,
+        height=1.0,
+        wavelength=1.55,
+        pol="te",
+        signal=np.ones(8, dtype=float),
+    )
+
+    assert source.power == 1.0
+
+
+def test_mode_solver_source_helpers_default_to_one_watt_launch_power():
+    assert inspect.signature(ModeSolver.to_source).parameters["power"].default == 1.0
+    assert (
+        inspect.signature(ModeSolver.sim_with_source).parameters["power"].default
+        == 1.0
+    )
 
 
 def test_mode_source_can_be_calibrated_to_reference_power():

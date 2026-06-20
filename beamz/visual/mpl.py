@@ -1132,7 +1132,10 @@ def plot_tidy3d_dft_field(
         from beamz.simulation.core import _source_spectrum_normalization
 
         source_norm = _source_spectrum_normalization(
-            getattr(simulation, "sources", ()), freqs
+            getattr(simulation, "sources", ()),
+            freqs,
+            time=getattr(simulation, "time", None),
+            monitor=monitor,
         )
         if source_norm is not None:
             norm = np.asarray(source_norm, dtype=np.complex128).reshape(-1)
@@ -2104,6 +2107,179 @@ def save_snapshot_video(
     return output
 
 
+def _field_video_frame_count(results, field):
+    if results.fields is None or field not in results.fields:
+        available = [] if results.fields is None else sorted(results.fields)
+        raise RuntimeError(
+            f"Field '{field}' is not stored. Available stored fields: {available}"
+        )
+    source = results.fields[field]
+    if hasattr(source, "dims") and hasattr(source, "sizes"):
+        if "t" in source.dims:
+            return int(source.sizes["t"])
+        if "frame" in source.dims:
+            return int(source.sizes["frame"])
+    arr = np.asarray(source)
+    if arr.ndim in {3, 4}:
+        return int(arr.shape[0])
+    return 1
+
+
+def _field_video_global_max_limits(
+    results,
+    *,
+    field,
+    frame_count,
+    plane,
+    index,
+    method,
+):
+    from beamz.visual.data import simulation_field_plot_data
+
+    max_abs = 0.0
+    for frame_idx in range(frame_count):
+        payload = simulation_field_plot_data(
+            results,
+            field=field,
+            frame=frame_idx,
+            plane=plane,
+            index=index,
+            method=method,
+        )
+        frame_max = float(np.nanmax(np.abs(np.asarray(payload["array"]))))
+        if np.isfinite(frame_max):
+            max_abs = max(max_abs, frame_max)
+    if max_abs <= 0.0:
+        max_abs = 1.0
+    return -max_abs, max_abs
+
+
+def save_field_video(
+    results,
+    *,
+    filename,
+    field="Ez",
+    fps=30,
+    dpi=150,
+    cmap="twilight_zero",
+    cmap_limits="dynamic",
+    clean_visualization=False,
+    interpolation="bicubic",
+    vmin=None,
+    vmax=None,
+    plane="z",
+    index=None,
+    method="nearest",
+    overlay=True,
+    overlay_color="gray",
+    overlay_alpha=0.5,
+    colorbar=True,
+):
+    """Save stored ``SimulationResults`` field frames to a video file."""
+    from beamz.visual.data import simulation_field_plot_data
+
+    frame_count = _field_video_frame_count(results, field)
+    if frame_count <= 0:
+        raise RuntimeError(f"No frames stored for field '{field}'.")
+
+    plt = _pyplot()
+    FFMpegWriter = _mpl_types()["FFMpegWriter"]
+    output = Path(filename)
+    first_payload = simulation_field_plot_data(
+        results,
+        field=field,
+        frame=0,
+        plane=plane,
+        index=index,
+        method=method,
+    )
+    figsize = _snapshot_figsize(
+        {"extent": first_payload["extent"]},
+        clean_visualization=clean_visualization,
+    )
+    if clean_visualization:
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_axes([0, 0, 1, 1])
+    else:
+        fig, ax = plt.subplots(figsize=figsize)
+    if isinstance(cmap_limits, str) and cmap_limits.lower() in {
+        "max",
+        "global",
+        "global_max",
+        "field_max",
+    }:
+        if vmin is not None or vmax is not None:
+            raise ValueError("Use either cmap_limits='max' or vmin/vmax, not both.")
+        vmin, vmax = _field_video_global_max_limits(
+            results,
+            field=field,
+            frame_count=frame_count,
+            plane=plane,
+            index=index,
+            method=method,
+        )
+    else:
+        vmin, vmax = resolve_cmap_limits(cmap_limits, vmin=vmin, vmax=vmax)
+    writer = FFMpegWriter(fps=fps, bitrate=5000)
+    with writer.saving(fig, str(output), dpi=dpi):
+        for frame_idx in range(frame_count):
+            payload = (
+                first_payload
+                if frame_idx == 0
+                else simulation_field_plot_data(
+                    results,
+                    field=field,
+                    frame=frame_idx,
+                    plane=plane,
+                    index=index,
+                    method=method,
+                )
+            )
+            ax.clear()
+            im = ax.imshow(
+                payload["array"],
+                origin="lower",
+                cmap=resolve_cmap(cmap),
+                extent=payload["extent"],
+                interpolation=interpolation,
+                vmin=vmin,
+                vmax=vmax,
+            )
+            ax.set_xlim(float(payload["extent"][0]), float(payload["extent"][1]))
+            ax.set_ylim(float(payload["extent"][2]), float(payload["extent"][3]))
+            ax.set_aspect("equal", adjustable="box")
+            ax.margins(0.0)
+            if colorbar and not clean_visualization:
+                if frame_idx == 0:
+                    fig.colorbar(im, ax=ax, label=f"{field} amplitude")
+            if overlay and payload["plane"] == "xy":
+                _draw_simulation_overlay(
+                    ax,
+                    results.simulation,
+                    scale=payload["scale_factor"],
+                    line_color=overlay_color,
+                    line_opacity=overlay_alpha,
+                )
+            ax.set_xlabel(payload["xlabel"])
+            ax.set_ylabel(payload["ylabel"])
+            ax.set_title(payload["title"])
+            if clean_visualization:
+                ax.set_axis_off()
+                fig.subplots_adjust(
+                    left=0,
+                    right=1,
+                    top=1,
+                    bottom=0,
+                    wspace=0,
+                    hspace=0,
+                )
+            else:
+                fig.tight_layout()
+            writer.grab_frame()
+    plt.close(fig)
+    return output
+
+
 def _modal_dft_x_values(frequencies, x_axis):
     freqs = np.atleast_1d(np.asarray(frequencies, dtype=float))
     axis = str(x_axis).lower()
@@ -2265,6 +2441,7 @@ __all__ = [
     "plot_tidy3d_mode_components",
     "resolve_cmap_limits",
     "resolve_cmap",
+    "save_field_video",
     "save_snapshot_video",
     "show_snapshots",
     "snapshot_figure",

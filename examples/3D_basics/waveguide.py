@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 import time
-
 import numpy as np
-
 from beamz import (
     Design,
     Material,
@@ -16,18 +13,15 @@ from beamz import (
 from beamz.const import LIGHT_SPEED, µm
 from beamz.visual.helpers import calc_optimal_fdtd_params
 
-
 WL = 1.55 * µm
 N_AIR = 1.0
 N_CLAD = 1.44
 N_CORE = 3.48
-
 DOMAIN_WIDTH = 6.5 * µm
 DOMAIN_HEIGHT = 6.5 * µm
 DOMAIN_DEPTH = 4.0 * µm
 PML_THICKNESS = 0.75 * WL
 NUM_STEPS = 600
-
 
 def build_design() -> Design:
     design = Design(

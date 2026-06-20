@@ -1646,6 +1646,10 @@ class ModeSource(RuntimeStateProxy):
 
     In 3D, injects all 6 field components (Ex, Ey, Ez, Hx, Hy, Hz) for accurate
     mode injection, accounting for proper Yee grid staggering.
+
+    By default, the solved modal profile is normalized and scaled to launch
+    ``1.0`` watt of power. Pass ``power`` to request a different non-negative
+    launch power.
     """
 
     _RUNTIME_ATTRS = {

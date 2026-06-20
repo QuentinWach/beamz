@@ -248,3 +248,148 @@ def test_simulation_animation_convenience_methods_forward_kwargs(monkeypatch):
         "save_video": "out.mp4",
         "video_field": "Ez",
     }
+
+
+def test_simulation_save_video_api_forwards_clean_video_sampling_kwargs(monkeypatch):
+    calls = []
+    sim = _make_snapshot_sim()
+
+    def fake_run(**kwargs):
+        calls.append(kwargs)
+        return "result"
+
+    monkeypatch.setattr(sim, "run", fake_run)
+
+    assert (
+        sim.save_video(
+            "dipole.mp4",
+            field="Ez",
+            animation_interval=3,
+            video_fps=30,
+            cmap="twilight_zero",
+            clean_visualization=True,
+        )
+        == "result"
+    )
+    assert calls[0] == {
+        "animation_interval": 3,
+        "video_fps": 30,
+        "cmap": "twilight_zero",
+        "clean_visualization": True,
+        "save_video": "dipole.mp4",
+        "video_field": "Ez",
+    }
+
+
+def test_results_save_video_uses_saved_field_frames(monkeypatch):
+    from beamz.visual import mpl as mpl_backend
+
+    calls = []
+
+    def fake_save_field_video(results, **kwargs):
+        calls.append((results, kwargs))
+        return Path(kwargs["filename"])
+
+    monkeypatch.setattr(mpl_backend, "save_field_video", fake_save_field_video)
+
+    sim = _make_snapshot_sim()
+    results = sim.run(save_fields=["Ez"], field_subsample=4, progress=False)
+
+    assert results.save_video("fields.mp4", field="Ez", fps=12) == Path("fields.mp4")
+    assert calls[0][0] is results
+    assert calls[0][1] == {
+        "filename": "fields.mp4",
+        "field": "Ez",
+        "fps": 12,
+    }
+
+
+def test_save_field_video_renders_each_saved_frame(monkeypatch):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from beamz.visual import mpl as mpl_backend
+
+    class FakeWriter:
+        def __init__(self, fps, bitrate):
+            self.fps = fps
+            self.bitrate = bitrate
+
+        def saving(self, fig, filename, dpi):
+            self.filename = filename
+            self.dpi = dpi
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def grab_frame(self):
+            frames.append((self.filename, self.fps, self.dpi))
+
+    frames = []
+    mpl_types = mpl_backend._mpl_types()
+    mpl_types["FFMpegWriter"] = FakeWriter
+    closed_figures = []
+
+    monkeypatch.setattr(
+        mpl_backend,
+        "_mpl_types",
+        lambda: mpl_types,
+    )
+    monkeypatch.setattr(plt, "close", closed_figures.append)
+
+    sim = _make_snapshot_sim()
+    results = sim.run(save_fields=["Ez"], field_subsample=4, progress=False)
+
+    assert mpl_backend.save_field_video(
+        results,
+        filename="fields.mp4",
+        field="Ez",
+        fps=12,
+        colorbar=False,
+        clean_visualization=True,
+    ) == Path("fields.mp4")
+    assert frames == [
+        ("fields.mp4", 12, 150),
+        ("fields.mp4", 12, 150),
+        ("fields.mp4", 12, 150),
+    ]
+    ax = closed_figures[0].axes[0]
+    assert not ax.axison
+    assert ax.get_aspect() == 1.0
+
+
+def test_field_video_global_max_limits_are_symmetric():
+    from beamz.visual import mpl as mpl_backend
+
+    sim = _make_snapshot_sim()
+    results = sim.run(save_fields=["Ez"], field_subsample=4, progress=False)
+
+    vmin, vmax = mpl_backend._field_video_global_max_limits(
+        results,
+        field="Ez",
+        frame_count=3,
+        plane="z",
+        index=None,
+        method="nearest",
+    )
+
+    values = np.asarray(results.fields["Ez"])
+    max_abs = float(np.nanmax(np.abs(values)))
+    assert vmin == -max_abs
+    assert vmax == max_abs
+
+
+def test_simulation_save_video_after_completed_run_explains_result_api():
+    sim = _make_snapshot_sim()
+    sim.run(save_fields=["Ez"], field_subsample=4, progress=False)
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="results.save_video"):
+        sim.save_video("too-late.mp4", field="Ez")

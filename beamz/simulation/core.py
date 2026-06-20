@@ -329,13 +329,96 @@ class PortSpec:
     scattered_wave: Literal["plus", "minus", "auto"] = "minus"
 
 
-def _source_spectrum_normalization(sources, freqs) -> np.ndarray | None:
-    """Return a unit-center source spectrum for source-normalized DFT outputs."""
+def _sampled_source_spectrum_normalization(source, freqs, *, time, monitor=None):
+    """Return the source waveform in BeamZ's native DFT normalization."""
+    freq_arr = np.asarray(freqs, dtype=float).reshape(-1)
+    time_arr = np.asarray(time, dtype=float).reshape(-1)
+    if freq_arr.size == 0 or time_arr.size == 0:
+        return None
+
+    dft_normalization = str(getattr(monitor, "dft_normalization", "native")).lower()
+    if dft_normalization != "native":
+        return None
+
+    dt = float(np.median(np.diff(time_arr))) if time_arr.size > 1 else 0.0
+    signal = getattr(source, "signal", None)
+    if isinstance(signal, (np.ndarray, list, tuple, jnp.ndarray)):
+        signal_arr = np.asarray(signal, dtype=float).reshape(-1)
+        n = min(signal_arr.size, time_arr.size)
+        if n <= 0:
+            return None
+        signal_arr = signal_arr[:n]
+        sample_times = time_arr[:n]
+    elif hasattr(source, "_get_signal_value") and dt > 0.0:
+        sample_times = time_arr
+        signal_arr = np.asarray(
+            [float(source._get_signal_value(t, dt)) for t in sample_times],
+            dtype=float,
+        )
+    else:
+        return None
+
+    dft_t_start = float(getattr(monitor, "dft_t_start", 0.0))
+    dft_t_end = getattr(monitor, "dft_t_end", None)
+    dft_t_end = np.inf if dft_t_end is None else float(dft_t_end)
+    record_interval = max(1, int(getattr(monitor, "dft_record_interval", 1)))
+    steps = np.arange(sample_times.size, dtype=int)
+    mask = (
+        (sample_times >= dft_t_start)
+        & (sample_times <= dft_t_end)
+        & ((steps % record_interval) == 0)
+    )
+    if not np.any(mask):
+        return None
+
+    sample_times = sample_times[mask]
+    signal_arr = signal_arr[mask]
+    if str(getattr(monitor, "dft_window", "rect")).lower() == "hann" and np.isfinite(
+        dft_t_end
+    ):
+        span = max(dft_t_end - dft_t_start, 1e-30)
+        tau = np.clip((sample_times - dft_t_start) / span, 0.0, 1.0)
+        weights = 0.5 * (1.0 - np.cos(2.0 * np.pi * tau))
+    else:
+        weights = np.ones_like(sample_times, dtype=float)
+
+    weight_sum = float(np.sum(weights))
+    if weight_sum <= 1e-30:
+        return None
+
+    phase = np.exp(1j * 2.0 * np.pi * sample_times[:, None] * freq_arr[None, :])
+    spectrum = (2.0 / weight_sum) * np.sum(
+        (weights * signal_arr)[:, None] * phase,
+        axis=0,
+    )
+    if np.any(np.abs(spectrum) > 1e-12):
+        return np.asarray(spectrum, dtype=np.complex128)
+    return None
+
+
+def _source_spectrum_normalization(
+    sources,
+    freqs,
+    *,
+    time=None,
+    monitor=None,
+) -> np.ndarray | None:
+    """Return a source spectrum for source-normalized DFT outputs."""
     freq_arr = np.asarray(freqs, dtype=float).reshape(-1)
     if freq_arr.size == 0:
         return None
     spectra = []
     for source in sources or ():
+        if time is not None:
+            spectrum = _sampled_source_spectrum_normalization(
+                source,
+                freq_arr,
+                time=time,
+                monitor=monitor,
+            )
+            if spectrum is not None:
+                spectra.append(spectrum)
+                continue
         spectrum = None
         if hasattr(source, "source_spectrum"):
             spectrum = source.source_spectrum(freq_arr, normalize=True)
@@ -678,12 +761,19 @@ class SimulationResults(Mapping[str, Any]):
         return show_snapshots(self.snapshots, **kwargs)
 
     def save_video(self, filename, **kwargs):
-        """Save stored simulation snapshots as a video with the matplotlib backend."""
-        if not self.snapshots:
-            raise RuntimeError("No snapshots available. Run with snapshot_field first.")
-        from beamz.visual.mpl import save_snapshot_video
+        """Save stored snapshots or saved field frames as a video."""
+        if self.snapshots:
+            from beamz.visual.mpl import save_snapshot_video
 
-        return save_snapshot_video(self.snapshots, filename=filename, **kwargs)
+            return save_snapshot_video(self.snapshots, filename=filename, **kwargs)
+        if self.fields is not None:
+            from beamz.visual.mpl import save_field_video
+
+            return save_field_video(self, filename=filename, **kwargs)
+        raise RuntimeError(
+            "No snapshots or saved fields available. Run with snapshot_field or "
+            "save_fields first."
+        )
 
     def to_xarray(self):
         """Return stored simulation fields as an xarray Dataset."""
@@ -715,6 +805,8 @@ class SimulationResults(Mapping[str, Any]):
                     source_norm = _source_spectrum_normalization(
                         simulation.sources,
                         monitor.get_dft_frequencies(),
+                        time=getattr(simulation, "time", None),
+                        monitor=monitor,
                     )
                 except Exception:
                     source_norm = None
@@ -5873,6 +5965,13 @@ class Simulation:
 
     def save_video(self, filename, *, field="Ez", **kwargs):
         """Run the simulation and save a snapshot video."""
+        if self.current_step >= self.num_steps:
+            raise RuntimeError(
+                "Simulation has already completed, so no video frames can be "
+                "streamed from Simulation.save_video(...). Use results.save_video(...) "
+                "from a run that stored save_fields or snapshot_field, or call "
+                "Simulation.save_video(...) before running the simulation."
+            )
         kwargs.setdefault("save_video", filename)
         kwargs.setdefault("video_field", field)
         return self.run(**kwargs)

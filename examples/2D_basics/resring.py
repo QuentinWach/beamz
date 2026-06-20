@@ -71,4 +71,3 @@ results = sim.save_video(
     save_fields=["Ez"],
     field_subsample=15,
 )
-results.show(field="Ez", cmap="RdBu")
