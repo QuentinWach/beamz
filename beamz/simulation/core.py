@@ -197,9 +197,11 @@ def _structure_to_domain(structure, offset, domain_size):
         geometry = structure
         if any(not np.isfinite(v) for v in geometry.size):
             clipped_size = tuple(
-                float(domain)
-                if not np.isfinite(size)
-                else min(float(size), float(domain))
+                (
+                    float(domain)
+                    if not np.isfinite(size)
+                    else min(float(size), float(domain))
+                )
                 for size, domain in zip(geometry.size, domain_size, strict=True)
             )
             geometry = Box(
@@ -712,6 +714,12 @@ class SimulationResults(Mapping[str, Any]):
 
     def plot_field(self, monitor_name=None, field=None, **kwargs):
         """Plot a stored field frame from this result."""
+        if monitor_name is None and "field_monitor_name" in kwargs:
+            monitor_name = kwargs.pop("field_monitor_name")
+        if field is None and "field_name" in kwargs:
+            field = kwargs.pop("field_name")
+        if "f" in kwargs and "frequency" not in kwargs:
+            kwargs["frequency"] = kwargs.pop("f")
         if monitor_name is not None:
             monitor_results = self.monitor_results or {}
             if monitor_name not in monitor_results:
@@ -1507,17 +1515,21 @@ class Simulation:
                 category = (
                     "yee_fields"
                     if name in {"Ex", "Ey", "Ez", "Hx", "Hy", "Hz"}
-                    else "material_center_grids"
-                    if name
-                    in {
-                        "permittivity",
-                        "conductivity",
-                        "permeability",
-                        "total_conductivity",
-                    }
-                    else "component_material_grids"
-                    if name.startswith(("eps_", "sig_", "sigma_m_"))
-                    else "field_masks"
+                    else (
+                        "material_center_grids"
+                        if name
+                        in {
+                            "permittivity",
+                            "conductivity",
+                            "permeability",
+                            "total_conductivity",
+                        }
+                        else (
+                            "component_material_grids"
+                            if name.startswith(("eps_", "sig_", "sigma_m_"))
+                            else "field_masks"
+                        )
+                    )
                 )
                 _add_array_entries(
                     entries,
