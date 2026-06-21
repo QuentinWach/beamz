@@ -436,6 +436,34 @@ def _tidy3d_material_cmap():
 
 
 def _plot_tidy3d_marker(ax, marker, *, vertical_coord="y"):
+    if marker.get("orientation") == "horizontal":
+        y = float(marker["y"])
+        span = marker.get("x_span", marker.get("span"))
+        if span is not None:
+            x0, x1 = (float(span[0]), float(span[1]))
+            ax.plot(
+                [x0, x1],
+                [y, y],
+                color=marker.get("color", "#f4a51c"),
+                lw=float(marker.get("linewidth", 2.0)),
+            )
+        if marker.get("arrow", False):
+            x_mid = float(marker.get("arrow_x", 0.0))
+            dy = float(marker.get("arrow_length", 0.55))
+            if str(marker.get("direction", "+y")).startswith("-"):
+                dy = -abs(dy)
+            ax.annotate(
+                "",
+                xy=(x_mid, y + dy),
+                xytext=(x_mid, y),
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color=marker.get("arrow_color", marker.get("color", "#11823b")),
+                    lw=float(marker.get("arrow_linewidth", 2.0)),
+                ),
+            )
+        return
+
     x = float(marker["x"])
     span = marker.get(f"{vertical_coord}_span", marker.get("span"))
     if span is not None:
@@ -565,35 +593,50 @@ def _tidy3d_device_markers(devices, origin, *, color, source=False):
     ox, oy, oz = (float(v) for v in origin)
     for device in devices:
         axis = _normal_axis_from_device(device)
-        if axis != "x":
+        if axis not in {"x", "y"}:
             continue
         center = _device_plane_center(device)
         if center is None or len(center) < 3:
             continue
-        y_span = _device_span_for_axis(device, axis, "y")
-        z_span = _device_span_for_axis(device, axis, "z")
-        base = {
-            "x": (float(center[0]) - ox) / µm,
-            "color": color,
-            "direction": getattr(device, "direction", "+x"),
-        }
-        if source:
-            base.update({"arrow": True, "arrow_y": (float(center[1]) - oy) / µm})
-        if y_span is not None:
-            markers_xy.append(
-                {
-                    **base,
-                    "span": ((y_span[0] - oy) / µm, (y_span[1] - oy) / µm),
-                }
-            )
-        if z_span is not None:
-            marker = {
-                **base,
-                "span": ((z_span[0] - oz) / µm, (z_span[1] - oz) / µm),
+        if axis == "x":
+            y_span = _device_span_for_axis(device, axis, "y")
+            z_span = _device_span_for_axis(device, axis, "z")
+            base = {
+                "x": (float(center[0]) - ox) / µm,
+                "color": color,
+                "direction": getattr(device, "direction", "+x"),
             }
             if source:
-                marker["arrow_y"] = (float(center[2]) - oz) / µm
-            markers_xz.append(marker)
+                base.update({"arrow": True, "arrow_y": (float(center[1]) - oy) / µm})
+            if y_span is not None:
+                markers_xy.append(
+                    {
+                        **base,
+                        "span": ((y_span[0] - oy) / µm, (y_span[1] - oy) / µm),
+                    }
+                )
+            if z_span is not None:
+                marker = {
+                    **base,
+                    "span": ((z_span[0] - oz) / µm, (z_span[1] - oz) / µm),
+                }
+                if source:
+                    marker["arrow_y"] = (float(center[2]) - oz) / µm
+                markers_xz.append(marker)
+            continue
+
+        x_span = _device_span_for_axis(device, axis, "x")
+        if x_span is not None:
+            marker = {
+                "orientation": "horizontal",
+                "y": (float(center[1]) - oy) / µm,
+                "span": ((x_span[0] - ox) / µm, (x_span[1] - ox) / µm),
+                "color": color,
+                "direction": getattr(device, "direction", "+y"),
+            }
+            if source:
+                marker.update({"arrow": True, "arrow_x": (float(center[0]) - ox) / µm})
+            markers_xy.append(marker)
     return markers_xy, markers_xz
 
 
@@ -1071,10 +1114,13 @@ def plot_tidy3d_dft_field(
     val="real",
     origin=None,
     percentile=99.5,
+    vmin=None,
+    vmax=None,
     ax=None,
     figsize=(6, 4),
     cmap="RdBu",
     overlay_core=True,
+    eps_alpha=0.2,
     core_permittivity=None,
     xlim=None,
     ylim=None,
@@ -1103,7 +1149,30 @@ def plot_tidy3d_dft_field(
         f_idx = int(np.argmin(np.abs(freqs - float(frequency))))
     f_idx = int(np.clip(f_idx, 0, freqs.size - 1))
 
-    dft = np.asarray(monitor.get_dft_component(field), dtype=np.complex128)
+    field_key = str(field)
+    vector_components = None
+    if field_key in {"E", "H"}:
+        candidates = ("Ex", "Ey", "Ez") if field_key == "E" else ("Hx", "Hy", "Hz")
+        vector_components = []
+        missing = []
+        for component in candidates:
+            try:
+                values = np.asarray(
+                    monitor.get_dft_component(component), dtype=np.complex128
+                )
+            except ValueError:
+                missing.append(component)
+                continue
+            vector_components.append((component, values))
+        if not vector_components:
+            missing_text = ", ".join(missing)
+            raise ValueError(
+                f"No DFT data recorded for derived field '{field_key}'. "
+                f"Expected at least one of: {missing_text}."
+            )
+        dft = vector_components[0][1]
+    else:
+        dft = np.asarray(monitor.get_dft_component(field_key), dtype=np.complex128)
     plane_shape = getattr(monitor, "_compiled_dft_shape_3d", None)
     if plane_shape is None:
         fields = getattr(simulation, "fields", None)
@@ -1127,7 +1196,19 @@ def plot_tidy3d_dft_field(
         target0 = np.asarray(target0, dtype=float)[: int(plane_shape[0])]
         target1 = np.asarray(target1, dtype=float)[: int(plane_shape[1])]
 
-    arr = dft[f_idx].reshape(tuple(int(v) for v in plane_shape))
+    def component_at_frequency(values):
+        return np.asarray(values[f_idx], dtype=np.complex128).reshape(
+            tuple(int(v) for v in plane_shape)
+        )
+
+    if vector_components is None:
+        arr = component_at_frequency(dft)
+        component_arrays = None
+    else:
+        component_arrays = [
+            component_at_frequency(values) for _name, values in vector_components
+        ]
+        arr = component_arrays[0]
     if source_normalize:
         from beamz.simulation.core import _source_spectrum_normalization
 
@@ -1141,23 +1222,62 @@ def plot_tidy3d_dft_field(
             norm = np.asarray(source_norm, dtype=np.complex128).reshape(-1)
             if norm.size == freqs.size and abs(norm[f_idx]) > 1e-12:
                 arr = arr / norm[f_idx]
+                if component_arrays is not None:
+                    component_arrays = [
+                        component / norm[f_idx] for component in component_arrays
+                    ]
 
     field_scale, field_units = _tidy3d_field_display_scale_and_units(field)
     arr = arr * field_scale
+    if component_arrays is not None:
+        component_arrays = [component * field_scale for component in component_arrays]
     x_coords = np.asarray(target1, dtype=float)
     y_coords = np.asarray(target0, dtype=float)
-    val_key = str(val).lower()
-    if val_key in {"real", "re"}:
+    val_key = str(val).lower().replace(" ", "")
+    is_power = val_key in {"abs^2", "abs2", "abs_sq", "abssq", "power"}
+    if component_arrays is not None and val_key not in {
+        "abs",
+        "magnitude",
+        "abs^2",
+        "abs2",
+        "abs_sq",
+        "abssq",
+        "power",
+    }:
+        raise ValueError(
+            f"Derived field '{field_key}' supports val='abs' or val='abs^2'."
+        )
+
+    if component_arrays is not None and is_power:
+        plot_arr = np.sum(
+            [np.abs(component) ** 2 for component in component_arrays], axis=0
+        )
+        label_prefix = "|"
+        label_suffix = r"$^2$"
+    elif component_arrays is not None:
+        plot_arr = np.sqrt(
+            np.sum([np.abs(component) ** 2 for component in component_arrays], axis=0)
+        )
+        label_prefix = "|"
+        label_suffix = ""
+    elif val_key in {"real", "re"}:
         plot_arr = np.real(arr)
         label_prefix = "Re"
+        label_suffix = ""
     elif val_key in {"imag", "imaginary", "im"}:
         plot_arr = np.imag(arr)
         label_prefix = "Im"
+        label_suffix = ""
     elif val_key in {"abs", "magnitude"}:
         plot_arr = np.abs(arr)
         label_prefix = "|"
+        label_suffix = ""
+    elif is_power:
+        plot_arr = np.abs(arr) ** 2
+        label_prefix = "|"
+        label_suffix = r"$^2$"
     else:
-        raise ValueError("val must be one of 'real', 'imag', or 'abs'.")
+        raise ValueError("val must be one of 'real', 'imag', 'abs', or 'abs^2'.")
 
     design = getattr(simulation, "design", None)
     if origin is None:
@@ -1180,17 +1300,17 @@ def plot_tidy3d_dft_field(
         (float(y_coords[-1]) + 0.5 * dy - oy) / µm,
     ]
 
-    vmax = np.nanpercentile(np.abs(plot_arr), float(percentile))
-    vmax = vmax if np.isfinite(vmax) and vmax > 0 else 1.0
+    auto_vmax = np.nanpercentile(np.abs(plot_arr), float(percentile))
+    auto_vmax = auto_vmax if np.isfinite(auto_vmax) and auto_vmax > 0 else 1.0
     fig, ax = _figure_axes(ax, figsize=figsize)
-    if val_key in {"abs", "magnitude"}:
+    if val_key in {"abs", "magnitude"} or is_power:
         im = ax.imshow(
             plot_arr,
             origin="lower",
             extent=extent,
             cmap=cmap,
-            vmin=0.0,
-            vmax=vmax,
+            vmin=0.0 if vmin is None else vmin,
+            vmax=auto_vmax if vmax is None else vmax,
             aspect="equal",
             interpolation="nearest",
         )
@@ -1200,8 +1320,8 @@ def plot_tidy3d_dft_field(
             origin="lower",
             extent=extent,
             cmap=cmap,
-            vmin=-vmax,
-            vmax=vmax,
+            vmin=-auto_vmax if vmin is None else vmin,
+            vmax=auto_vmax if vmax is None else vmax,
             aspect="equal",
             interpolation="nearest",
         )
@@ -1228,8 +1348,11 @@ def plot_tidy3d_dft_field(
             if core_permittivity is not None:
                 core = eps_xy >= 0.5 * float(core_permittivity)
                 if np.any(core):
+                    core_rgba = np.zeros((*core.shape, 4), dtype=float)
+                    core_rgba[core, :3] = 1.0
+                    core_rgba[core, 3] = float(eps_alpha)
                     ax.imshow(
-                        np.where(core, 1.0, np.nan),
+                        core_rgba,
                         origin="lower",
                         extent=[
                             (0.0 - ox) / µm,
@@ -1257,23 +1380,24 @@ def plot_tidy3d_dft_field(
                             )
                             / µm,
                         ],
-                        cmap="Greys",
-                        vmin=0.0,
-                        vmax=1.0,
-                        alpha=0.28,
                         aspect="equal",
                         interpolation="nearest",
                     )
 
     label = display_field or field
     if label_prefix == "|":
-        cbar_label = f"|{label}|"
+        cbar_label = f"|{label}|{label_suffix}"
     else:
         cbar_label = f"{label_prefix}({label})"
     if show_units and field_units:
+        if is_power:
+            field_units = f"({field_units})^2"
         cbar_label = f"{cbar_label} ({field_units})"
     fig.colorbar(
-        im, ax=ax, label=cbar_label, extend="both" if val_key != "abs" else "max"
+        im,
+        ax=ax,
+        label=cbar_label,
+        extend="both" if not (val_key in {"abs", "magnitude"} or is_power) else "max",
     )
     ax.set_xlabel("x (um)")
     ax.set_ylabel("y (um)")

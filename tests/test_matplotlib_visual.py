@@ -497,6 +497,70 @@ def test_tidy3d_dft_field_plot_source_normalizes_and_uses_micron_units():
         plt.close(fig)
 
 
+def test_simulation_results_plot_field_accepts_field_aliases_and_abs_squared():
+    class DftPlaneMonitor:
+        is_3d = True
+        plane_normal = "z"
+        plane_position = 0.0
+        _compiled_dft_shape_3d = (2, 2)
+
+        def get_dft_frequencies(self):
+            return np.asarray([1.0, 2.0])
+
+        def get_dft_component(self, component):
+            if component != "Ey":
+                raise ValueError(f"No DFT data recorded for component '{component}'.")
+            return np.asarray(
+                [
+                    np.full(4, 1.0e6, dtype=np.complex128),
+                    np.full(4, 2.0e6, dtype=np.complex128),
+                ]
+            )
+
+        def get_analysis_plane_coords_3d(self, **_kwargs):
+            return (
+                np.asarray([0.125 * um, 0.375 * um]),
+                np.asarray([0.125 * um, 0.375 * um]),
+            )
+
+    simulation = SimpleNamespace(
+        resolution=0.25 * um,
+        fields=SimpleNamespace(permittivity=np.ones((1, 2, 2))),
+        sources=[],
+        design=SimpleNamespace(width=0.5 * um, height=0.5 * um, depth=0.0),
+    )
+    result = MonitorResults(
+        monitor=DftPlaneMonitor(),
+        fields={},
+        power_history=np.asarray(()),
+        power_timestamps=np.asarray(()),
+        power_spectrum=np.asarray(()),
+        frequency_flux_spectrum=np.asarray(()),
+    )
+    results = SimulationResults(
+        simulation=simulation,
+        monitor_results={"field": result},
+    )
+
+    fig, ax = _close(
+        results.plot_field(
+            field_monitor_name="field",
+            field_name="E",
+            val="abs^2",
+            f=1.8,
+            vmin=0,
+            vmax=10,
+            overlay_core=False,
+            show=False,
+        )
+    )
+
+    image = ax.images[0]
+    np.testing.assert_allclose(image.get_array(), np.full((2, 2), 4.0))
+    assert image.get_clim() == pytest.approx((0.0, 10.0))
+    assert fig.axes[-1].get_ylabel() == r"|E|$^2$ ((V/um)^2)"
+
+
 def _mode_source_raw_plot_fixture():
     class DftPlaneMonitor:
         is_3d = True
@@ -619,7 +683,13 @@ def test_simulation_plot_uses_tidy3d_cross_sections_for_3d_slices():
                 size=(0.0, 1.0 * um, 0.8 * um),
                 freqs=[1.0],
                 name="m",
-            )
+            ),
+            FieldMonitor(
+                center=(0.0, 0.5 * um, 0.0),
+                size=(1.0 * um, 0.0, 0.8 * um),
+                freqs=[1.0],
+                name="m_y",
+            ),
         ],
         sources=[],
         boundary_spec=BoundarySpec.all_sides(),
@@ -633,6 +703,10 @@ def test_simulation_plot_uses_tidy3d_cross_sections_for_3d_slices():
     assert axes[0].get_title() == "cross section at z=0.00 (um)"
     assert axes[1].get_title() == "cross section at y=0.00 (um)"
     assert axes[0].lines
+    assert any(
+        len(line.get_ydata()) == 2 and line.get_ydata()[0] == line.get_ydata()[1]
+        for line in axes[0].lines
+    )
 
 
 def test_tidy3d_field_frame_uses_xarray_results():
