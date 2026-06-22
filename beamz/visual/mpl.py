@@ -1303,6 +1303,7 @@ def plot_tidy3d_dft_field(
     auto_vmax = np.nanpercentile(np.abs(plot_arr), float(percentile))
     auto_vmax = auto_vmax if np.isfinite(auto_vmax) and auto_vmax > 0 else 1.0
     fig, ax = _figure_axes(ax, figsize=figsize)
+    eps_reverse = val_key in {"abs", "magnitude"} or is_power
     if val_key in {"abs", "magnitude"} or is_power:
         im = ax.imshow(
             plot_arr,
@@ -1343,14 +1344,21 @@ def plot_tidy3d_dft_field(
             )
             eps_xy = eps[z_idx]
             if core_permittivity is None:
-                finite = eps_xy[np.isfinite(eps_xy)]
+                finite = np.real(eps_xy[np.isfinite(eps_xy)])
                 core_permittivity = float(np.nanmax(finite)) if finite.size else None
             if core_permittivity is not None:
-                core = eps_xy >= 0.5 * float(core_permittivity)
+                eps_real = np.real(eps_xy)
+                finite = eps_real[np.isfinite(eps_real)]
+                eps_min = float(np.nanmin(finite)) if finite.size else 1.0
+                eps_max = float(core_permittivity)
+                eps_span = max(eps_max - eps_min, 1e-5)
+                eps_fraction = np.clip((eps_real - eps_min) / eps_span, 0.0, 1.0)
+                eps_color = eps_fraction if eps_reverse else 1.0 - eps_fraction
+                core = eps_real >= 0.5 * eps_max
                 if np.any(core):
                     core_rgba = np.zeros((*core.shape, 4), dtype=float)
-                    core_rgba[core, :3] = 1.0
-                    core_rgba[core, 3] = float(eps_alpha)
+                    core_rgba[core, :3] = eps_color[core, None]
+                    core_rgba[core, 3] = np.clip(float(eps_alpha), 0.0, 1.0)
                     ax.imshow(
                         core_rgba,
                         origin="lower",
