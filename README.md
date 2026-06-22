@@ -1,25 +1,47 @@
-<div align="left">
-<img src="docs/assets/BEAMZ_logo.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
+<div align="center">
 
-BEAMZ is an **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method** written in Jax. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**.
-</div>
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/docs/logo_tiny_light.svg">
+  <img alt="tiny corp logo" src="/docs/logo_tiny_dark.svg" width="50%" height="50%">
+</picture>
 
-```bash
-pip install beamz
-```
+BEAMZ is a GPU-accelerated **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method**. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**. Maintained by [Quentin Wach](https://quentinwach.com).
+
+<h3>
+
+[Homepage](https://github.com/tinygrad/tinygrad) | [Documentation](https://docs.tinygrad.org/) | [Example Library](https://discord.gg/ZjZadyC7PK)
+
+</h3>
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://github.com/beamzorg/beamz/blob/main/LICENSE)
 [![Tests](https://github.com/beamzorg/beamz/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
 [![Coverage](https://raw.githubusercontent.com/beamzorg/beamz/main/.github/badges/coverage.svg)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
 
+</div>
+
+
+
+<!--
+<img src="docs/assets/BEAMZ_logo.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
+-->
+
+
+
+```bash
+pip install beamz
+```
+
+
+
 
 ## Core Features
 - **100% Python**, free (Apache-2.0 license) & open-source.
-- Modular architecture with a high-level API.
-- **GPU-accelerated** (but CPU-capable).
-- FDTD simulation in 2D and **3D**.
+- **GPU-accelerated** (but CPU-capable) to achieve high 10-100 GCUPS performance.
+- Modular architecture with a **familiar high-level API**.
+- FDTD simulation in **2D and 3D**.
+- **Native FDFD mode solver, [Micromode](https://github.com/beamzorg/micromode)**.
 - **CPML**, absorbing layers and PEC boundaries.
-- Gaussian and **mode sources** with TE and TM polarization.
+- **Mode** and other sources  with TE and TM polarization.
 - **Sub-pixel averaging** using super-sampling.
 - Custom source time profiles.
 - Built-in layout flow (GDSII import/export).
@@ -33,7 +55,7 @@ Read and try out our **[example notebooks](https://beamzorg.github.io/beamz-note
 
 
 ## About
-BEAMZ's goal is to become the **pragmatic** FDTD engine of choice for **photonic chip designers**.
+BEAMZ's mission is to be the **pragmatic** FDTD engine of choice for **photonic chip designers**.
 
 It focuses on **streamlined workflows** to produce **useful results** without tedious setup or configuration files. The project is under active development yet this is _not_ a research project with the goal to demo a novel framework we can publish, nor a costly, closed API that hides how it works and gives you no ownership. A **modular architecture** is chosen over a purely object-oriented architecture to **make the code readable and development easy** so that - if there is something that isn't working or missing - you can quickly add it yourself.
 
