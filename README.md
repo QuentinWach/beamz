@@ -1,11 +1,11 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="/docs/logo_tiny_light.svg">
-  <img alt="tiny corp logo" src="/docs/logo_tiny_dark.svg" width="50%" height="50%">
+  <source media="(prefers-color-scheme: light)" srcset="/docs/assets/beamz_logo_black.png">
+  <img alt="BEAMZ logo" src="/docs/assets/beamz_logo_white.png" width="50%" height="50%">
 </picture>
 
-BEAMZ is a GPU-accelerated **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method**. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**. Maintained by [Quentin Wach](https://quentinwach.com).
+BEAMZ is a **GPU-accelerated** **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method**. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**. Maintained by [Quentin Wach](https://quentinwach.com/about).
 
 <h3>
 
