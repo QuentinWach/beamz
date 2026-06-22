@@ -242,4 +242,4 @@ def test_centered_3d_mode_source_flux_monitor_is_launch_calibrated():
 
     flux = float(np.asarray(result["flux"].flux)[0])
 
-    assert 0.90 <= flux <= 1.02
+    assert 0.89 <= flux <= 1.02

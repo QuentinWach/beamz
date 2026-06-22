@@ -129,6 +129,7 @@ class _MonitorState:
     _dft_last_dt: float | None
     _dft_last_rot: np.ndarray | None
     _dft_base_dt: float | None
+    _dft_sample_area_3d: float | None
 
     @classmethod
     def create(
@@ -165,6 +166,7 @@ class _MonitorState:
             _dft_last_dt=None,
             _dft_last_rot=None,
             _dft_base_dt=None,
+            _dft_sample_area_3d=None,
         )
 
 
@@ -189,6 +191,7 @@ class Monitor(RuntimeStateProxy):
         "_dft_last_dt",
         "_dft_last_rot",
         "_dft_base_dt",
+        "_dft_sample_area_3d",
     }
 
     @property
@@ -748,6 +751,30 @@ class Monitor(RuntimeStateProxy):
         step = (hi - lo) / float(n)
         return lo + (np.arange(n, dtype=np.float64) + 0.5) * step
 
+    @staticmethod
+    def _axis_step_from_coords(coords: np.ndarray, fallback_step: float) -> float:
+        arr = np.asarray(coords, dtype=np.float64).reshape(-1)
+        if arr.size > 1:
+            diffs = np.diff(arr)
+            step = float(np.median(np.abs(diffs)))
+            if np.isfinite(step) and step > 0.0:
+                return step
+        return float(fallback_step)
+
+    @classmethod
+    def _sample_area_from_plane_coords(
+        cls,
+        coords0: np.ndarray,
+        coords1: np.ndarray,
+        *,
+        fallback0: float,
+        fallback1: float,
+    ) -> float:
+        return float(
+            cls._axis_step_from_coords(coords0, fallback0)
+            * cls._axis_step_from_coords(coords1, fallback1)
+        )
+
     def _analysis_plane_bounds_3d(self) -> tuple[dict[str, tuple[float, float]], float]:
         if not self.is_3d:
             raise ValueError("3D analysis-plane bounds requested on a 2D monitor.")
@@ -823,7 +850,7 @@ class Monitor(RuntimeStateProxy):
         bounds, _ = self._analysis_plane_bounds_3d()
         lo0, hi0 = bounds[axis0]
         lo1, hi1 = bounds[axis1]
-        return (
+        coords = (
             self._uniform_axis_centers(
                 lo0, hi0, int(interval0.stop) - int(interval0.start)
             ),
@@ -831,6 +858,14 @@ class Monitor(RuntimeStateProxy):
                 lo1, hi1, int(interval1.stop) - int(interval1.start)
             ),
         )
+        steps = {"x": float(dx), "y": float(dy), "z": float(dz)}
+        self._dft_sample_area_3d = self._sample_area_from_plane_coords(
+            coords[0],
+            coords[1],
+            fallback0=steps[axis0],
+            fallback1=steps[axis1],
+        )
+        return coords
 
     def _sample_component_plane_3d(
         self,
@@ -1132,6 +1167,32 @@ class Monitor(RuntimeStateProxy):
         )
         return values * phase
 
+    def _dft_flux_measure_3d(self, fallback_step: float) -> float:
+        measure = getattr(self, "_dft_sample_area_3d", None)
+        if measure is not None:
+            measure = float(measure)
+            if np.isfinite(measure) and measure > 0.0:
+                return measure
+
+        field_shape = getattr(self, "_field_shape", None)
+        if field_shape is not None:
+            try:
+                self.get_analysis_plane_coords_3d(
+                    dx=float(fallback_step),
+                    dy=float(fallback_step),
+                    dz=float(fallback_step),
+                    field_shape=tuple(int(v) for v in field_shape),
+                )
+                measure = getattr(self, "_dft_sample_area_3d", None)
+                if measure is not None:
+                    measure = float(measure)
+                    if np.isfinite(measure) and measure > 0.0:
+                        return measure
+            except Exception:
+                pass
+
+        return float(fallback_step) * float(fallback_step)
+
     def _normal_axis_and_sign(self) -> tuple[str, float]:
         if self.is_3d:
             return str(getattr(self, "plane_normal", "z")).lower(), 1.0
@@ -1164,7 +1225,7 @@ class Monitor(RuntimeStateProxy):
         dx = float(self._resolution or 1.0)
         axis, sign = self._normal_axis_and_sign()
         if self.is_3d:
-            measure = dx * dx
+            measure = self._dft_flux_measure_3d(dx)
             ex = np.asarray(self._get_dft_component_for_flux("Ex"), dtype=np.complex128)
             ey = np.asarray(self._get_dft_component_for_flux("Ey"), dtype=np.complex128)
             ez = np.asarray(self._get_dft_component_for_flux("Ez"), dtype=np.complex128)
@@ -1474,8 +1535,10 @@ class Monitor(RuntimeStateProxy):
             self._update_dft(t, vectors, step=step)
 
         if do_record and self.accumulate_power:
-            d0 = float(np.mean(np.diff(target0))) if target0.size > 1 else float(dx)
-            d1 = float(np.mean(np.diff(target1))) if target1.size > 1 else float(dy)
+            axis0, axis1 = _plane_axes_for_normal_3d(self.plane_normal)
+            steps = {"x": float(dx), "y": float(dy), "z": float(dz)}
+            d0 = self._axis_step_from_coords(target0, steps[axis0])
+            d1 = self._axis_step_from_coords(target1, steps[axis1])
             self._calculate_power_3d(
                 Ex_slice, Ey_slice, Ez_slice, Hx_slice, Hy_slice, Hz_slice, t, d0, d1
             )
