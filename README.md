@@ -1,15 +1,15 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="/docs/assets/beamz_logo_black.png">
-  <img alt="BEAMZ logo" src="/docs/assets/beamz_logo_white.png" width="50%" height="50%">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/beamz_logo_black.png">
+  <img alt="BEAMZ logo" src="docs/assets/beamz_logo_white.png" width="50%" height="50%">
 </picture>
 
-BEAMZ is a **GPU-accelerated** **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method**. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**. Maintained by [Quentin Wach](https://quentinwach.com/about).
+BEAMZ is a **GPU-accelerated** **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method**. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**. / _Maintained by [Quentin Wach](https://quentinwach.com/about)._
 
 <h3>
 
-[Homepage](https://beamz.studio) | [Documentation](https://beamz.studio/docs) | [Example Library](https://beamz.studio/examples)
+[Homepage](https://beamz.studio) / [Documentation](https://beamz.studio/docs) / [Example Library](https://beamz.studio/examples)
 
 </h3>
 
@@ -20,18 +20,14 @@ BEAMZ is a **GPU-accelerated** **[electromagnetic](https://en.wikipedia.org/wiki
 </div>
 
 
-
 <!--
 <img src="docs/assets/BEAMZ_logo.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
 -->
 
 
-
 ```bash
 pip install beamz
 ```
-
-
 
 
 ## Core Features
