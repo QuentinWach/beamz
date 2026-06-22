@@ -9,7 +9,7 @@ BEAMZ is a **GPU-accelerated** **[electromagnetic](https://en.wikipedia.org/wiki
 
 <h3>
 
-[Homepage](https://github.com/tinygrad/tinygrad) | [Documentation](https://docs.tinygrad.org/) | [Example Library](https://discord.gg/ZjZadyC7PK)
+[Homepage](https://beamz.studio) | [Documentation](https://beamz.studio/docs) | [Example Library](https://beamz.studio/examples)
 
 </h3>
 
@@ -39,7 +39,7 @@ pip install beamz
 - **GPU-accelerated** (but CPU-capable) to achieve high 10-100 GCUPS performance.
 - Modular architecture with a **familiar high-level API**.
 - FDTD simulation in **2D and 3D**.
-- **Native FDFD mode solver, [Micromode](https://github.com/beamzorg/micromode)**.
+- **Native FDFD mode solver - [Micromode](https://github.com/beamzorg/micromode)**.
 - **CPML**, absorbing layers and PEC boundaries.
 - **Mode** and other sources  with TE and TM polarization.
 - **Sub-pixel averaging** using super-sampling.
