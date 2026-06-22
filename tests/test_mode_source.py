@@ -585,6 +585,43 @@ class TestModeSourceDiscreteHelpers:
         )
         assert p == pytest.approx(9.0)
 
+    @pytest.mark.parametrize(
+        ("axis", "pol", "first_name", "second_name", "signed_flux_sign"),
+        [
+            ("x", "tm", "_jz_profile", "_my_profile", -1.0),
+            ("y", "tm", "_jz_profile", "_my_profile", 1.0),
+            ("x", "te", "_jy_profile", "_mz_profile", 1.0),
+            ("y", "te", "_jx_profile", "_mz_profile", -1.0),
+        ],
+    )
+    def test_2d_launch_power_normalization_uses_profile_power(
+        self, axis, pol, first_name, second_name, signed_flux_sign
+    ):
+        source = ModeSource(
+            grid=SimpleNamespace(),
+            center=(0.0, 0.0),
+            width=1.0,
+            wavelength=TEST_WAVELENGTH,
+            pol=pol,
+            signal=np.ones(8),
+            direction=f"+{axis}",
+            power=4.0,
+        )
+        source._initialized = True
+        source._is_3d = False
+        source._axis = axis
+        source._resolution = 0.25
+        setattr(
+            source,
+            first_name,
+            signed_flux_sign * np.ones(8, dtype=np.complex128),
+        )
+        setattr(source, second_name, 5.0 * np.ones(8, dtype=np.complex128))
+
+        power = source._launch_power_normalization_spectrum([1.0, 2.0])
+
+        np.testing.assert_allclose(power, [1.25, 1.25])
+
     def test_2d_tm_y_launch_is_transpose_of_x_launch(self):
         wavelength = TEST_WAVELENGTH
         n_core = 2.0

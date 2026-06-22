@@ -3085,15 +3085,72 @@ class ModeSource(RuntimeStateProxy):
     ) -> np.ndarray | None:
         """Return emitted-forward-power calibration for source-normalized flux."""
         freq_arr = np.asarray(freqs, dtype=float).reshape(-1)
-        if freq_arr.size == 0 or fields is None or dt is None:
+        if freq_arr.size == 0:
             return None
         if not bool(getattr(self, "_is_3d", False)):
+            ratio = self._launch_power_normalization_2d(fields=fields)
+            if ratio is None:
+                return None
+            return np.full(freq_arr.shape, float(ratio), dtype=float)
+
+        if fields is None or dt is None:
             return None
 
         ratio = self._launch_power_normalization(fields, dt=float(dt))
         if ratio is None:
             return None
         return np.full(freq_arr.shape, float(ratio), dtype=float)
+
+    def _launch_power_normalization_2d(self, *, fields=None) -> float | None:
+        """Return 2D profile power divided by requested source power."""
+        if not bool(getattr(self, "_initialized", False)) and fields is not None:
+            resolution = getattr(fields, "resolution", None)
+            if resolution is None:
+                resolution = getattr(self, "_resolution", None)
+            permittivity = getattr(fields, "permittivity", None)
+            if permittivity is not None and resolution is not None:
+                self.initialize(permittivity, float(resolution))
+        if not bool(getattr(self, "_initialized", False)):
+            return None
+
+        requested_power = float(getattr(self, "power", 1.0))
+        if (not np.isfinite(requested_power)) or requested_power <= 1e-30:
+            return None
+
+        axis = getattr(self, "_axis", None)
+        if axis is None:
+            axis = getattr(self, "_direction_axis", None)
+        if axis is None:
+            return None
+        axis = str(axis)
+        resolution = float(getattr(self, "_resolution", 1.0) or 1.0)
+        if self.pol == "tm":
+            first = getattr(self, "_jz_profile", None)
+            second = getattr(self, "_my_profile", None)
+            signed_flux_sign = -1.0 if axis == "x" else 1.0
+        else:
+            first = (
+                getattr(self, "_jy_profile", None)
+                if axis == "x"
+                else getattr(self, "_jx_profile", None)
+            )
+            second = getattr(self, "_mz_profile", None)
+            signed_flux_sign = 1.0 if axis == "x" else -1.0
+        if first is None or second is None:
+            return None
+
+        emitted_power = abs(
+            _modal_power_2d(
+                second,
+                first,
+                signed_flux_sign=signed_flux_sign,
+                dl=resolution,
+            )
+        )
+        ratio = float(emitted_power / requested_power)
+        if (not np.isfinite(ratio)) or ratio <= 1e-24:
+            return None
+        return ratio
 
     def _launch_power_normalization(self, fields, *, dt: float) -> float | None:
         """Return actual forward source power divided by requested source power."""
