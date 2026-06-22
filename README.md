@@ -20,7 +20,7 @@ pip install beamz
 - FDTD simulation in 2D and **3D**.
 - **CPML**, absorbing layers and PEC boundaries.
 - Gaussian and **mode sources** with TE and TM polarization.
-- **Sub-pixel smoothing** (using super-sampling).
+- **Sub-pixel averaging** using super-sampling.
 - Custom source time profiles.
 - Built-in layout flow (GDSII import/export).
 - **DFT monitors** and S-parameter extraction workflow for compact modeling.
