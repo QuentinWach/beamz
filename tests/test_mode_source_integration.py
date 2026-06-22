@@ -5,6 +5,7 @@ from beamz import (
     LIGHT_SPEED,
     PML,
     Design,
+    FluxMonitor,
     Material,
     ModeSource,
     Monitor,
@@ -154,3 +155,91 @@ def test_centered_3d_mode_source_raw_reflection_is_below_minus_40_db():
         f"got {reflection_db:.2f} dB "
         f"(a_plus={a_plus}, a_minus={a_minus})."
     )
+
+
+@pytest.mark.compiled
+def test_centered_3d_mode_source_flux_monitor_is_launch_calibrated():
+    """A steady straight-guide flux monitor should report unit-like transmission."""
+    wavelength = TEST_WAVELENGTH
+    n_core = 2.0
+    n_clad = 1.0
+    guide_width = 0.6 * wavelength
+    span = guide_width * 2.5
+    long_span = 7.0 * wavelength
+    transverse_span = 2.4 * wavelength
+
+    design = Design(
+        width=long_span,
+        height=transverse_span,
+        depth=transverse_span,
+        material=Material(permittivity=n_clad**2),
+    )
+    design += Rectangle(
+        position=(
+            0.0,
+            transverse_span / 2 - guide_width / 2,
+            transverse_span / 2 - guide_width / 2,
+        ),
+        width=long_span,
+        height=guide_width,
+        depth=guide_width,
+        material=Material(permittivity=n_core**2),
+    )
+
+    dx, dt = calc_optimal_fdtd_params(
+        wavelength,
+        n_core,
+        dims=3,
+        safety_factor=0.9,
+        points_per_wavelength=8,
+        width=design.width,
+        height=design.height,
+        depth=design.depth,
+    )
+    freq = LIGHT_SPEED / wavelength
+    period = 1.0 / freq
+    t_total = 20.0 * period
+    time = np.arange(0.0, t_total, dt)
+    signal = ramped_cosine(
+        time,
+        amplitude=1.0,
+        frequency=freq,
+        ramp_duration=2.0 * period,
+        t_max=2.0 * t_total,
+    )
+
+    center = (design.width / 2, design.height / 2, design.depth / 2)
+    grid = design.rasterize(resolution=dx)
+    source = ModeSource(
+        grid=grid,
+        center=(1.5 * wavelength, center[1], center[2]),
+        width=span,
+        height=span,
+        wavelength=wavelength,
+        pol="te",
+        signal=signal,
+        direction="+x",
+    )
+    monitor = FluxMonitor(
+        center=(3.5 * wavelength, center[1], center[2]),
+        size=(0.0, span, span),
+        freqs=np.array([freq]),
+        name="flux",
+        dft_window="none",
+        dft_record_every_step=True,
+        dft_t_start=8.0 * period,
+    )
+
+    sim = Simulation(
+        design=design,
+        sources=[source],
+        monitors=[monitor],
+        boundaries=[PML(thickness=0.8 * wavelength)],
+        time=time,
+        resolution=dx,
+    )
+    result = sim.run_compiled(progress=False)
+
+    flux = float(np.asarray(result["flux"].flux)[0])
+
+    assert 0.90 <= flux <= 1.02

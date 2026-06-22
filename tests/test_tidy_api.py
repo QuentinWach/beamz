@@ -353,6 +353,47 @@ def test_flux_monitor_result_is_source_spectrum_normalized(monkeypatch):
     np.testing.assert_allclose(results["flux"].flux, np.full(freqs.shape, 4.0))
 
 
+def test_flux_monitor_result_includes_mode_source_launch_calibration(monkeypatch):
+    freq0 = 2.0e14
+    fwidth = 2.0e13
+    freqs = np.array([freq0, freq0 + fwidth])
+    source_time = bz.GaussianPulse(freq0=freq0, fwidth=fwidth)
+    source_norm = source_time.dft_normalization_spectrum(freqs)
+    launch_power = np.array([1.25, 0.75])
+
+    class Source:
+        def _launch_power_normalization_spectrum(self, freqs, *, fields=None, dt=None):
+            del fields, dt
+            np.testing.assert_allclose(freqs, [freq0, freq0 + fwidth])
+            return launch_power
+
+    source = Source()
+    source.source_time = source_time
+
+    flux_monitor = bz.FluxMonitor(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 2.0, 2.0),
+        freqs=freqs,
+        name="flux",
+    )
+    monkeypatch.setattr(
+        flux_monitor,
+        "get_dft_flux",
+        lambda: 4.0 * np.abs(source_norm) ** 2 * launch_power,
+    )
+    sim = bz.Simulation(
+        size=(4.0, 4.0, 4.0),
+        sources=[source],
+        monitors=[flux_monitor],
+        resolution=1.0,
+        time=np.array([0.0, 1e-15]),
+    )
+
+    results = bz.SimulationResults.from_run(sim, monitors=sim.monitors)
+
+    np.testing.assert_allclose(results["flux"].flux, np.full(freqs.shape, 4.0))
+
+
 def test_mode_solver_can_create_source_from_source_time():
     sim = bz.Simulation(
         size=(2.0, 2.0, 2.0),
