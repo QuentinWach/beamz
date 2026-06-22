@@ -446,6 +446,74 @@ def test_simulation_results_plot_field_selects_physical_coordinate():
     assert "z=" in ax.get_title()
 
 
+def test_simulation_results_plot_field_darkens_permittivity_overlay():
+    design = Design(width=2 * um, height=1 * um, material=Material(1.0))
+    design += Rectangle(
+        position=(1 * um, 0.5 * um),
+        width=0.5 * um,
+        height=0.25 * um,
+        material=Material(12.0),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[],
+        monitors=[],
+        time=np.array([0.0, 1e-15]),
+        resolution=0.25 * um,
+    )
+    fields = {"Ez": np.ones((2, 4, 8))}
+    results = SimulationResults(simulation=sim, fields=fields)
+
+    fig, ax = _close(
+        results.plot_field(
+            field="Ez",
+            time_index=-1,
+            eps_alpha=0.3,
+            overlay=False,
+            show=False,
+        )
+    )
+
+    overlay = np.asarray(ax.images[1].get_array())
+    assert overlay[..., 3].max() == pytest.approx(0.3)
+    np.testing.assert_allclose(overlay[overlay[..., 3] > 0, :3], 0.0)
+
+
+def test_simulation_results_plot_field_lightens_permittivity_overlay_for_power():
+    design = Design(width=2 * um, height=1 * um, material=Material(1.0))
+    design += Rectangle(
+        position=(1 * um, 0.5 * um),
+        width=0.5 * um,
+        height=0.25 * um,
+        material=Material(12.0),
+    )
+    sim = Simulation(
+        design=design,
+        sources=[],
+        monitors=[],
+        time=np.array([0.0, 1e-15]),
+        resolution=0.25 * um,
+    )
+    fields = {"Ez": np.ones((2, 4, 8))}
+    results = SimulationResults(simulation=sim, fields=fields)
+
+    fig, ax = _close(
+        results.plot_field(
+            field="Ez",
+            val="abs^2",
+            cmap="magma",
+            time_index=-1,
+            eps_alpha=0.3,
+            overlay=False,
+            show=False,
+        )
+    )
+
+    overlay = np.asarray(ax.images[1].get_array())
+    assert overlay[..., 3].max() == pytest.approx(0.3)
+    np.testing.assert_allclose(overlay[overlay[..., 3] > 0, :3], 1.0)
+
+
 def test_tidy3d_dft_field_plot_source_normalizes_and_uses_micron_units():
     class Source:
         def source_spectrum(self, freqs, *, normalize=True):

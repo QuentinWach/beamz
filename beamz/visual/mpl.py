@@ -514,6 +514,70 @@ def _tidy3d_material_levels(sim):
     return core, substrate
 
 
+def _field_eps_slice(simulation, *, plane="z", index=None, plane_position=None):
+    eps = np.asarray(getattr(getattr(simulation, "fields", None), "permittivity", ()))
+    if eps.size == 0:
+        return None
+    try:
+        from beamz.visual.data import _slice_2d
+
+        if plane_position is not None and index is None:
+            plane_key = str(plane).lower()
+            axis = (
+                0 if plane_key in {"xy", "z"} else 1 if plane_key in {"xz", "y"} else 2
+            )
+            index = int(
+                np.clip(
+                    round(float(plane_position) / float(simulation.resolution)),
+                    0,
+                    eps.shape[axis] - 1,
+                )
+            )
+        eps_slice, _plane_label, _selected = _slice_2d(eps, plane=plane, index=index)
+        return np.asarray(eps_slice)
+    except Exception:
+        return None
+
+
+def _draw_field_eps_overlay(
+    ax,
+    eps_slice,
+    *,
+    extent,
+    reverse=False,
+    alpha=0.2,
+    core_permittivity=None,
+):
+    if eps_slice is None:
+        return None
+    eps_real = np.real(np.asarray(eps_slice))
+    finite = eps_real[np.isfinite(eps_real)]
+    if finite.size == 0:
+        return None
+    eps_min = float(np.nanmin(finite))
+    eps_max = (
+        float(core_permittivity)
+        if core_permittivity is not None
+        else float(np.nanmax(finite))
+    )
+    eps_span = max(eps_max - eps_min, 1e-5)
+    eps_fraction = np.clip((eps_real - eps_min) / eps_span, 0.0, 1.0)
+    eps_color = eps_fraction if reverse else 1.0 - eps_fraction
+    core = eps_real >= 0.5 * eps_max
+    if not np.any(core):
+        return None
+    rgba = np.zeros((*core.shape, 4), dtype=float)
+    rgba[core, :3] = eps_color[core, None]
+    rgba[core, 3] = np.clip(float(alpha), 0.0, 1.0)
+    return ax.imshow(
+        rgba,
+        origin="lower",
+        extent=extent,
+        aspect="equal",
+        interpolation="nearest",
+    )
+
+
 def _tidy3d_field_display_scale_and_units(field):
     """Return plot scale and units for Tidy3D-style field-monitor data."""
     component = str(field)
@@ -1046,6 +1110,9 @@ def plot_tidy3d_field_frame(
     ax=None,
     figsize=(6, 4),
     cmap="RdBu",
+    overlay_core=True,
+    eps_alpha=0.2,
+    core_permittivity=None,
     show=True,
 ):
     """Plot a centered, symmetric Tidy3D-like field frame from results."""
@@ -1089,6 +1156,21 @@ def plot_tidy3d_field_frame(
         vmax=vmax,
         aspect="equal",
     )
+    if overlay_core:
+        simulation = getattr(results, "simulation", None)
+        if simulation is not None:
+            eps_index = None
+            if plane == "z" and "z" in da.dims:
+                eps_index = idx
+            eps_slice = _field_eps_slice(simulation, plane=plane, index=eps_index)
+            _draw_field_eps_overlay(
+                ax,
+                eps_slice,
+                extent=extent,
+                reverse=False,
+                alpha=eps_alpha,
+                core_permittivity=core_permittivity,
+            )
     label = display_field or field
     fig.colorbar(im, ax=ax, label=f"Re({label})")
     ax.set_xlabel("x (um)")
@@ -1328,69 +1410,52 @@ def plot_tidy3d_dft_field(
         )
 
     if overlay_core:
-        eps = np.asarray(
-            getattr(getattr(simulation, "fields", None), "permittivity", ())
+        eps_slice = _field_eps_slice(
+            simulation,
+            plane="z",
+            plane_position=float(getattr(monitor, "plane_position", 0.0)),
         )
-        if eps.ndim == 3:
-            z_idx = int(
-                np.clip(
-                    round(
-                        float(getattr(monitor, "plane_position", 0.0))
-                        / float(simulation.resolution)
-                    ),
-                    0,
-                    eps.shape[0] - 1,
-                )
-            )
-            eps_xy = eps[z_idx]
-            if core_permittivity is None:
-                finite = np.real(eps_xy[np.isfinite(eps_xy)])
-                core_permittivity = float(np.nanmax(finite)) if finite.size else None
-            if core_permittivity is not None:
-                eps_real = np.real(eps_xy)
-                finite = eps_real[np.isfinite(eps_real)]
-                eps_min = float(np.nanmin(finite)) if finite.size else 1.0
-                eps_max = float(core_permittivity)
-                eps_span = max(eps_max - eps_min, 1e-5)
-                eps_fraction = np.clip((eps_real - eps_min) / eps_span, 0.0, 1.0)
-                eps_color = eps_fraction if eps_reverse else 1.0 - eps_fraction
-                core = eps_real >= 0.5 * eps_max
-                if np.any(core):
-                    core_rgba = np.zeros((*core.shape, 4), dtype=float)
-                    core_rgba[core, :3] = eps_color[core, None]
-                    core_rgba[core, 3] = np.clip(float(eps_alpha), 0.0, 1.0)
-                    ax.imshow(
-                        core_rgba,
-                        origin="lower",
-                        extent=[
-                            (0.0 - ox) / µm,
+        _draw_field_eps_overlay(
+            ax,
+            eps_slice,
+            extent=[
+                (0.0 - ox) / µm,
+                (
+                    float(
+                        getattr(
+                            design,
+                            "width",
                             (
-                                float(
-                                    getattr(
-                                        design,
-                                        "width",
-                                        eps_xy.shape[1] * simulation.resolution,
-                                    )
-                                )
-                                - ox
-                            )
-                            / µm,
-                            (0.0 - oy) / µm,
-                            (
-                                float(
-                                    getattr(
-                                        design,
-                                        "height",
-                                        eps_xy.shape[0] * simulation.resolution,
-                                    )
-                                )
-                                - oy
-                            )
-                            / µm,
-                        ],
-                        aspect="equal",
-                        interpolation="nearest",
+                                eps_slice.shape[1] * simulation.resolution
+                                if eps_slice is not None
+                                else 0.0
+                            ),
+                        )
                     )
+                    - ox
+                )
+                / µm,
+                (0.0 - oy) / µm,
+                (
+                    float(
+                        getattr(
+                            design,
+                            "height",
+                            (
+                                eps_slice.shape[0] * simulation.resolution
+                                if eps_slice is not None
+                                else 0.0
+                            ),
+                        )
+                    )
+                    - oy
+                )
+                / µm,
+            ],
+            reverse=eps_reverse,
+            alpha=eps_alpha,
+            core_permittivity=core_permittivity,
+        )
 
     label = display_field or field
     if label_prefix == "|":
@@ -1755,6 +1820,7 @@ def plot_simulation_field(
     results,
     *,
     field="Ez",
+    val="real",
     time_index=-1,
     t=None,
     frame=None,
@@ -1768,6 +1834,9 @@ def plot_simulation_field(
     vmin=None,
     vmax=None,
     colorbar=True,
+    overlay_eps=True,
+    eps_alpha=0.2,
+    core_permittivity=None,
     overlay=True,
     overlay_color="gray",
     overlay_alpha=0.5,
@@ -1786,10 +1855,27 @@ def plot_simulation_field(
         index=index,
         method=method,
     )
+    val_key = str(val).lower().replace(" ", "")
+    is_power = val_key in {"abs^2", "abs2", "abs_sq", "abssq", "power"}
+    arr = np.asarray(payload["array"])
+    if val_key in {"real", "re"}:
+        plot_arr = np.real(arr)
+        label = f"Re({field})"
+    elif val_key in {"imag", "imaginary", "im"}:
+        plot_arr = np.imag(arr)
+        label = f"Im({field})"
+    elif val_key in {"abs", "magnitude"}:
+        plot_arr = np.abs(arr)
+        label = f"|{field}|"
+    elif is_power:
+        plot_arr = np.abs(arr) ** 2
+        label = f"|{field}|^2"
+    else:
+        raise ValueError("val must be one of 'real', 'imag', 'abs', or 'abs^2'.")
     fig, ax = _figure_axes(ax, figsize=figsize)
     vmin, vmax = resolve_cmap_limits(cmap_limits, vmin=vmin, vmax=vmax)
     im = ax.imshow(
-        payload["array"],
+        plot_arr,
         origin="lower",
         cmap=resolve_cmap(cmap),
         extent=payload["extent"],
@@ -1798,7 +1884,22 @@ def plot_simulation_field(
         vmax=vmax,
     )
     if colorbar:
-        fig.colorbar(im, ax=ax, label=f"{field} amplitude")
+        fig.colorbar(im, ax=ax, label=label)
+    if overlay_eps:
+        plane_position = index if index is not None else None
+        eps_slice = _field_eps_slice(
+            results.simulation,
+            plane=payload["plane"],
+            plane_position=plane_position,
+        )
+        _draw_field_eps_overlay(
+            ax,
+            eps_slice,
+            extent=payload["extent"],
+            reverse=val_key in {"abs", "magnitude"} or is_power,
+            alpha=eps_alpha,
+            core_permittivity=core_permittivity,
+        )
     if overlay and payload["plane"] == "xy":
         _draw_simulation_overlay(
             ax,

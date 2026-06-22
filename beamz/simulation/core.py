@@ -724,9 +724,21 @@ class SimulationResults(Mapping[str, Any]):
             monitor_results = self.monitor_results or {}
             if monitor_name not in monitor_results:
                 raise KeyError(monitor_name)
-            monitor = monitor_results[monitor_name].monitor
+            monitor_result = monitor_results[monitor_name]
+            monitor = monitor_result.monitor
             if field is None:
                 field = kwargs.pop("field", "Ez")
+            dft_frequencies = (
+                np.asarray(monitor.get_dft_frequencies(), dtype=float)
+                if hasattr(monitor, "get_dft_frequencies")
+                else np.asarray(())
+            )
+            if dft_frequencies.size == 0:
+                if "frequency" in kwargs:
+                    raise ValueError(
+                        f"Monitor '{monitor_name}' has no frequency-domain field data."
+                    )
+                return monitor_result.plot(field=field, **kwargs)
             from beamz.visual.mpl import plot_tidy3d_dft_field
 
             kwargs.setdefault("show", False)
