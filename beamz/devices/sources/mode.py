@@ -3076,6 +3076,19 @@ class ModeSource(RuntimeStateProxy):
 
         return {**e_reconstructed, **h_reconstructed}
 
+    def _initialize_for_launch_power_normalization(self, fields, *, dt=None) -> None:
+        if bool(getattr(self, "_initialized", False)) or fields is None:
+            return
+        resolution = getattr(fields, "resolution", None)
+        if resolution is None:
+            resolution = getattr(self, "_resolution", None)
+        permittivity = getattr(fields, "permittivity", None)
+        if permittivity is None or resolution is None:
+            return
+        if np.asarray(permittivity).ndim == 3 and dt is None:
+            return
+        self.initialize(permittivity, float(resolution), dt=dt)
+
     def _launch_power_normalization_spectrum(
         self,
         freqs,
@@ -3087,6 +3100,7 @@ class ModeSource(RuntimeStateProxy):
         freq_arr = np.asarray(freqs, dtype=float).reshape(-1)
         if freq_arr.size == 0:
             return None
+        self._initialize_for_launch_power_normalization(fields, dt=dt)
         if not bool(getattr(self, "_is_3d", False)):
             ratio = self._launch_power_normalization_2d(fields=fields)
             if ratio is None:
@@ -3103,13 +3117,7 @@ class ModeSource(RuntimeStateProxy):
 
     def _launch_power_normalization_2d(self, *, fields=None) -> float | None:
         """Return 2D profile power divided by requested source power."""
-        if not bool(getattr(self, "_initialized", False)) and fields is not None:
-            resolution = getattr(fields, "resolution", None)
-            if resolution is None:
-                resolution = getattr(self, "_resolution", None)
-            permittivity = getattr(fields, "permittivity", None)
-            if permittivity is not None and resolution is not None:
-                self.initialize(permittivity, float(resolution))
+        self._initialize_for_launch_power_normalization(fields)
         if not bool(getattr(self, "_initialized", False)):
             return None
 

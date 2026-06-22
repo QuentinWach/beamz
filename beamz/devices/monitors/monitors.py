@@ -762,6 +762,16 @@ class Monitor(RuntimeStateProxy):
         return float(fallback_step)
 
     @classmethod
+    def _axis_integration_step_from_coords(
+        cls, coords: np.ndarray, fallback_step: float
+    ) -> float:
+        arr = np.asarray(coords, dtype=np.float64).reshape(-1)
+        step = cls._axis_step_from_coords(arr, fallback_step)
+        if arr.size > 1:
+            step *= float(arr.size) / float(arr.size - 1)
+        return float(step)
+
+    @classmethod
     def _sample_area_from_plane_coords(
         cls,
         coords0: np.ndarray,
@@ -771,8 +781,8 @@ class Monitor(RuntimeStateProxy):
         fallback1: float,
     ) -> float:
         return float(
-            cls._axis_step_from_coords(coords0, fallback0)
-            * cls._axis_step_from_coords(coords1, fallback1)
+            cls._axis_integration_step_from_coords(coords0, fallback0)
+            * cls._axis_integration_step_from_coords(coords1, fallback1)
         )
 
     def _analysis_plane_bounds_3d(self) -> tuple[dict[str, tuple[float, float]], float]:
@@ -1537,8 +1547,8 @@ class Monitor(RuntimeStateProxy):
         if do_record and self.accumulate_power:
             axis0, axis1 = _plane_axes_for_normal_3d(self.plane_normal)
             steps = {"x": float(dx), "y": float(dy), "z": float(dz)}
-            d0 = self._axis_step_from_coords(target0, steps[axis0])
-            d1 = self._axis_step_from_coords(target1, steps[axis1])
+            d0 = self._axis_integration_step_from_coords(target0, steps[axis0])
+            d1 = self._axis_integration_step_from_coords(target1, steps[axis1])
             self._calculate_power_3d(
                 Ex_slice, Ey_slice, Ez_slice, Hx_slice, Hy_slice, Hz_slice, t, d0, d1
             )

@@ -692,6 +692,11 @@ def test_monitor_get_dft_flux_3d_uses_analysis_plane_sample_area():
     )
     npts = int(target0.size * target1.size)
     area = mon._dft_sample_area_3d
+    center_area = float(np.median(np.diff(target0)) * np.median(np.diff(target1)))
+    expected_area = center_area
+    expected_area *= float(target0.size) / float(target0.size - 1)
+    expected_area *= float(target1.size) / float(target1.size - 1)
+    np.testing.assert_allclose(area, expected_area, rtol=1e-12, atol=1e-18)
 
     zeros = np.zeros((1, npts), dtype=np.complex128)
     mon._dft_accum["Ex"] = zeros.copy()
@@ -704,9 +709,11 @@ def test_monitor_get_dft_flux_3d_uses_analysis_plane_sample_area():
 
     expected = 0.5 * 2.0 * 3.0 * npts * area
     wrong_dx_squared = expected * (dx * dx / area)
+    wrong_center_area = expected * (center_area / area)
 
     np.testing.assert_allclose(mon.get_dft_flux(), [expected], rtol=1e-12, atol=1e-12)
-    assert abs(float(mon.get_dft_flux()[0]) - wrong_dx_squared) / expected > 0.05
+    assert abs(float(mon.get_dft_flux()[0]) - wrong_dx_squared) / expected > 0.005
+    assert abs(float(mon.get_dft_flux()[0]) - wrong_center_area) / expected > 0.05
 
 
 def test_monitor_frequency_points_aliases_are_deprecated():
