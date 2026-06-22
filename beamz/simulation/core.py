@@ -404,6 +404,8 @@ def _source_spectrum_normalization(
     *,
     time=None,
     monitor=None,
+    fields=None,
+    dt=None,
 ) -> np.ndarray | None:
     """Return a source spectrum for source-normalized DFT outputs."""
     freq_arr = np.asarray(freqs, dtype=float).reshape(-1)
@@ -419,7 +421,15 @@ def _source_spectrum_normalization(
                 monitor=monitor,
             )
             if spectrum is not None:
-                spectra.append(spectrum)
+                spectra.append(
+                    _apply_source_launch_power_normalization(
+                        source,
+                        spectrum,
+                        freq_arr,
+                        fields=fields,
+                        dt=dt,
+                    )
+                )
                 continue
         spectrum = None
         if hasattr(source, "source_spectrum"):
@@ -441,10 +451,49 @@ def _source_spectrum_normalization(
             continue
         spectrum = np.asarray(spectrum, dtype=np.complex128).reshape(-1)
         if spectrum.shape == freq_arr.shape and np.any(np.abs(spectrum) > 1e-12):
-            spectra.append(spectrum)
+            spectra.append(
+                _apply_source_launch_power_normalization(
+                    source,
+                    spectrum,
+                    freq_arr,
+                    fields=fields,
+                    dt=dt,
+                )
+            )
     if not spectra:
         return None
     return spectra[0]
+
+
+def _apply_source_launch_power_normalization(
+    source,
+    spectrum: np.ndarray,
+    freqs: np.ndarray,
+    *,
+    fields=None,
+    dt=None,
+) -> np.ndarray:
+    """Fold a source's launch-power calibration into a DFT amplitude spectrum."""
+    method = getattr(source, "_launch_power_normalization_spectrum", None)
+    if method is None:
+        return spectrum
+    try:
+        power = method(freqs, fields=fields, dt=dt)
+    except Exception:
+        return spectrum
+    if power is None:
+        return spectrum
+
+    power_arr = np.asarray(power, dtype=float).reshape(-1)
+    if power_arr.shape != np.asarray(freqs, dtype=float).reshape(-1).shape:
+        return spectrum
+    valid = np.isfinite(power_arr) & (power_arr > 1e-24)
+    if not np.any(valid):
+        return spectrum
+
+    amplitude = np.ones_like(power_arr, dtype=np.float64)
+    amplitude[valid] = np.sqrt(power_arr[valid])
+    return np.asarray(spectrum, dtype=np.complex128) * amplitude
 
 
 @dataclass(frozen=True)
@@ -827,6 +876,8 @@ class SimulationResults(Mapping[str, Any]):
                         monitor.get_dft_frequencies(),
                         time=getattr(simulation, "time", None),
                         monitor=monitor,
+                        fields=getattr(simulation, "fields", None),
+                        dt=getattr(simulation, "dt", None),
                     )
                 except Exception:
                     source_norm = None
