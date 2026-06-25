@@ -1,17 +1,13 @@
-<div align="center">
+<div align="left">
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/beamz_logo_black.png">
-  <img alt="BEAMZ logo" src="docs/assets/beamz_logo_white.png" width="50%" height="50%">
-</picture>
-
-BEAMZ is a **GPU-accelerated** **[electromagnetic](https://en.wikipedia.org/wiki/Electromagnetism) simulation** package for photonic chip designers using the **[FDTD](https://en.wikipedia.org/wiki/Finite-difference_time-domain_method) method**. It features a **high-level API** for fast prototyping with just a few lines of code, an **inverse design module** for gradient-based optimization using the adjoint method with **[autodiff](https://en.wikipedia.org/wiki/Automatic_differentiation)**. / _Maintained by [Quentin Wach](https://quentinwach.com/about)._
-
-<h3>
-
-[Homepage](https://beamz.studio) / [Documentation](https://beamz.studio/docs) / [Example Library](https://beamz.studio/examples)
-
-</h3>
+<p align="left">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/beamz_logo_black.png">
+    <img alt="BEAMZ logo" src="docs/assets/beamz_logo_white.png" width="120" align="left" hspace="15" vspace="0">
+  </picture>
+  BEAMZ is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>high-level API</strong> for fast prototyping with just a few lines of code, an <strong>inverse design module</strong> for gradient-based optimization using the adjoint method with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>. <em>Maintained by <a href="https://quentinwach.com/about">Quentin Wach</a>.</em>
+</p>
+<br clear="left">
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://github.com/beamzorg/beamz/blob/main/LICENSE)
 [![Tests](https://github.com/beamzorg/beamz/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
@@ -19,10 +15,11 @@ BEAMZ is a **GPU-accelerated** **[electromagnetic](https://en.wikipedia.org/wiki
 
 </div>
 
+<h3>
 
-<!--
-<img src="docs/assets/BEAMZ_logo.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
--->
+[Homepage](https://beamz.studio) / [Documentation](https://beamz.studio/docs) / [Example Library](https://beamz.studio/examples)
+
+</h3>
 
 
 ```bash
