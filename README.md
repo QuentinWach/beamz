@@ -5,26 +5,29 @@
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/beamz_logo_black.png">
     <img alt="BEAMZ logo" src="docs/assets/beamz_logo_white.png" width="120" align="left" hspace="15" vspace="0">
   </picture>
-  BEAMZ is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>high-level API</strong> for fast prototyping with just a few lines of code, an <strong>inverse design module</strong> for gradient-based optimization using the adjoint method with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>. <em>Maintained by <a href="https://quentinwach.com/about">Quentin Wach</a>.</em>
+  BEAMZ is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>high-level API</strong> for fast prototyping with just a few lines of code, an <strong>inverse design module</strong> for gradient-based optimization using the adjoint method with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
+  
+  <em>Maintained by <a href="https://quentinwach.com/about">Quentin Wach</a>.</em>
 </p>
-<br clear="left">
-
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://github.com/beamzorg/beamz/blob/main/LICENSE)
-[![Tests](https://github.com/beamzorg/beamz/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
-[![Coverage](https://raw.githubusercontent.com/beamzorg/beamz/main/.github/badges/coverage.svg)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
-
-</div>
 
 <h3>
 
 [Homepage](https://beamz.studio) / [Documentation](https://beamz.studio/docs) / [Example Library](https://beamz.studio/examples)
-
 </h3>
+
+</div>
+
 
 
 ```bash
 pip install beamz
 ```
+
+---
+
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://github.com/beamzorg/beamz/blob/main/LICENSE)
+[![Tests](https://github.com/beamzorg/beamz/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
+[![Coverage](https://raw.githubusercontent.com/beamzorg/beamz/main/.github/badges/coverage.svg)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
 
 
 ## Core Features
