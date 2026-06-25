@@ -1,7 +1,7 @@
 <div align="left">
-<img src="docs/assets/beamz_shield4.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
+<img src="docs/assets/beamz_shield6.png" alt="BEAMZ" width="150" align="left" hspace="15" vspace="0"/>
 
-  BEAMZ is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>high-level API</strong> for fast prototyping with just a few lines of code, an <strong>inverse design module</strong> for gradient-based optimization using the adjoint method with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
+  **BEAMZ** is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>familiar high-level API</strong> for fast prototyping with just a few lines of code and an <strong>inverse design module</strong> for gradient-based optimization using the adjoint method with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
 </div>
 
 
