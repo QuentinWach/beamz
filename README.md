@@ -3,20 +3,20 @@
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/BEAMZ%20Dark.png">
     <img alt="BEAMZ logo" src="docs/assets/BEAMZ%20Light.png" width="360">
   </picture>
-</div>
 
-<div align="left">
   <strong>BEAMZ</strong> is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>familiar high-level API</strong> for fast prototyping with just a few lines of code and an <strong>inverse design module</strong> for gradient-based optimization using the proven <strong>adjoint method</strong> with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
+
+  <h3>
+
+  [Homepage](https://beamz.studio) / [Documentation](https://beamz.studio/docs) / [Example Library](https://beamz.studio/examples)
+
+  </h3>
+
+  [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://github.com/beamzorg/beamz/blob/main/LICENSE)
+  [![Tests](https://github.com/beamzorg/beamz/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
+  [![Coverage](https://raw.githubusercontent.com/beamzorg/beamz/main/.github/badges/coverage.svg)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
 </div>
 
-
-```bash
-pip install beamz
-```
-
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://github.com/beamzorg/beamz/blob/main/LICENSE)
-[![Tests](https://github.com/beamzorg/beamz/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
-[![Coverage](https://raw.githubusercontent.com/beamzorg/beamz/main/.github/badges/coverage.svg)](https://github.com/beamzorg/beamz/actions/workflows/tests.yml)
 
 
 ## Core Features
@@ -36,7 +36,14 @@ pip install beamz
 
 
 ## Examples
-Read and try out our **[example notebooks](https://beamzorg.github.io/beamz-notebooks/)** (recommended) or download and run [`examples/` from this repository](https://github.com/beamzorg/beamz/tree/main/examples).
+Read and try out our **[example notebooks](https://beamzorg.github.io/beamz-notebooks/)**. We provide basic example scripts to get started (3D waveguide, 2D resrings, 2D dipole, ...), both simple and extended scripts to evaluate performance (raw yee-cell update performance, scale sweeps with realistic setups, ...), as well as several replications of widely known photonic device simulation notebooks (cosine taper crossing, ceviche bend topology optimization, mode source profile sweeps, ).
+
+
+## Installation
+
+```bash
+pip install beamz
+```
 
 
 ## About
