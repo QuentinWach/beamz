@@ -1,5 +1,12 @@
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/BEAMZ%20Dark.png">
+    <img alt="BEAMZ logo" src="docs/assets/BEAMZ%20Light.png" width="360">
+  </picture>
+</div>
+
 <div align="left">
-  <strong>BEAMZ</strong> is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>familiar high-level API</strong> for fast prototyping with just a few lines of code and an <strong>inverse design module</strong> for gradient-based optimization using the adjoint method with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
+  <strong>BEAMZ</strong> is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>familiar high-level API</strong> for fast prototyping with just a few lines of code and an <strong>inverse design module</strong> for gradient-based optimization using the proven <strong>adjoint method</strong> with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
 </div>
 
 
@@ -17,7 +24,7 @@ pip install beamz
 - **GPU-accelerated** (but CPU-capable) to achieve high 10-100 GCUPS performance.
 - Modular architecture with a **familiar high-level API**.
 - FDTD simulation in **2D and 3D**.
-- **Native FDFD mode solver - _[micromode](https://github.com/beamzorg/micromode)_**.
+- **Native FDFD mode solver, _[micromode](https://github.com/beamzorg/micromode)_**.
 - **CPML**, absorbing layers and PEC boundaries.
 - **Mode** and other sources  with TE and TM polarization.
 - **Sub-pixel averaging** using super-sampling.
