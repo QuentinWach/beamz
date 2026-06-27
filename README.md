@@ -1,6 +1,6 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/BEAMZ%20Dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/BEAMZ%20Dark.png" style="padding-right: 23px; padding-bottom: 7px;">
     <img alt="BEAMZ logo" src="docs/assets/BEAMZ%20Light.png" width="380" style="padding-right: 23px; padding-bottom: 7px;">
   </picture>
 
