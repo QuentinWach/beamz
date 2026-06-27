@@ -1,7 +1,7 @@
 <div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/BEAMZ%20Dark.png" style="padding-right: 23px; padding-bottom: 7px;">
-    <img alt="BEAMZ logo" src="docs/assets/BEAMZ%20Light.png" width="380" style="padding-right: 23px; padding-bottom: 7px;">
+  <picture style="padding-right: 23px; padding-bottom: 7px;">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/BEAMZ%20Dark.png">
+    <img alt="BEAMZ logo" src="docs/assets/BEAMZ%20Light.png" width="380">
   </picture>
 
   <strong>BEAMZ</strong> is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> framework for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a highly optimized engine enabling fast large-scale simulations with a <strong>familiar high-level API</strong> for fast prototyping with just a few lines of code and an <strong>inverse design module</strong> for gradient-based optimization using the proven <strong>adjoint method</strong> with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
