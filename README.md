@@ -1,10 +1,10 @@
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/BEAMZ%20Dark.png">
-    <img alt="BEAMZ logo" src="docs/assets/BEAMZ%20Light.png" width="500">
+    <img alt="BEAMZ logo" src="docs/assets/BEAMZ%20Light.png" width="380" style="padding-right: 23px;">
   </picture>
 
-  <strong>BEAMZ</strong> is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> package for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>familiar high-level API</strong> for fast prototyping with just a few lines of code and an <strong>inverse design module</strong> for gradient-based optimization using the proven <strong>adjoint method</strong> with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
+  <strong>BEAMZ</strong> is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> framework for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It features a <strong>familiar high-level API</strong> for fast prototyping with just a few lines of code and an <strong>inverse design module</strong> for gradient-based optimization using the proven <strong>adjoint method</strong> with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
 
   <h3>
 
@@ -21,9 +21,11 @@
 
 ## Core Features
 - **100% Python**, free (Apache-2.0 license) & open-source.
-- **GPU-accelerated** (but CPU-capable) to achieve high 10-100 GCUPS performance.
-- Modular architecture with a **familiar high-level API**.
 - FDTD simulation in **2D and 3D**.
+- **GPU-accelerated**, achieving extremely high GCUPS performance.
+- Handling **large-scale simulations** with billions of cells.
+- CPU-capable for **fast prototyping**, even on your laptop.
+- Modular architecture with an **intuitive and familiar, high-level API**.
 - **Native FDFD mode solver, _[micromode](https://github.com/beamzorg/micromode)_**.
 - **CPML**, absorbing layers and PEC boundaries.
 - **Mode** and other sources  with TE and TM polarization.
@@ -35,8 +37,11 @@
 - Optimization/autodiff utilities for gradient-based **inverse-design** with Jax.
 
 
+
 ## Examples
-Read and try out our **[example notebooks](https://beamzorg.github.io/beamz-notebooks/)**. We provide basic example scripts to get started (3D waveguide, 2D resrings, 2D dipole, ...), both simple and extended scripts to evaluate performance (raw yee-cell update performance, scale sweeps with realistic setups, ...), as well as several replications of widely known photonic device simulation notebooks (cosine taper crossing, ceviche bend topology optimization, mode source profile sweeps, ).
+Try out notebooks from our growing **[example library](https://beamzorg.github.io/beamz-notebooks/)**. 
+
+We provide basic example scripts to get started (3D waveguide, 2D resrings, 2D dipole, ...), both simple and extended scripts to evaluate performance (raw yee-cell update performance, scale sweeps with realistic setups, ...), as well as several replications of widely known photonic device simulation notebooks (cosine taper crossing, ceviche bend topology optimization, mode source profile sweeps, ).
 
 
 ## Installation
@@ -49,7 +54,7 @@ pip install beamz
 ## About
 BEAMZ's mission is to be the **pragmatic** FDTD engine of choice for **photonic chip designers**.
 
-It focuses on **streamlined workflows** to produce **useful results** without tedious setup or configuration files. The project is under active development yet this is _not_ a research project with the goal to demo a novel framework we can publish, nor a costly, closed API that hides how it works and gives you no ownership. A **modular architecture** is chosen over a purely object-oriented architecture to **make the code readable and development easy** so that - if there is something that isn't working or missing - you can quickly add it yourself.
+It focuses on **streamlined workflows** to produce **useful results** without tedious setup or configuration files and bringing GPU-acceleration for **maximum performance in large-scale simulations** to everyone. The project is **actively maintained** and this is _not_ a research project with the goal to demo a novel framework we can publish, nor a costly, closed API that hides how it works and gives you no ownership. A **modular architecture** is chosen over a purely object-oriented architecture to **make the code readable and development easy** so that - if there is something that isn't working or missing - you can quickly add it yourself. The engine is grounded in hundreds of tests, verifiable simulations and benchmarks, replicating known results from the established literature. Rather than just benchmarking for impressive engine stats, we aim to **reduce friction for chip designers at every step** - from installation, to setting up the sim using a familiar API, to optimizing the performance of the rasterizer, mode solver, compiler, the core engine, optimization loop, and integration into the overall chip design workflow.
 
 If any of this excites you or if have any questions, please open an issue on GitHub. Feel free to fork this project, to suggest or contribute new features, or simply support the project by **giving this repo a star.** Thank you!
 
