@@ -22,8 +22,8 @@
 ## Core Features
 - **100% Python**, free (Apache-2.0 license) & open-source.
 - FDTD simulation in **2D and 3D**.
-- **GPU-accelerated**, achieving extremely high GCUPS performance.
-- Handling **large-scale simulations** with billions of cells.
+- **GPU-accelerated**, achieving extremely high **GCUPS performance**.
+- Handling **large-scale simulations** with _billions of cells_.
 - CPU-capable for **fast prototyping**, even on your laptop.
 - Modular architecture with an **intuitive and familiar, high-level API**.
 - **Native FDFD mode solver, _[micromode](https://github.com/beamzorg/micromode)_**.
@@ -41,10 +41,10 @@
 ## Examples
 Try out notebooks from our growing **[example library](https://beamzorg.github.io/beamz-notebooks/)**. 
 
-We provide basic example scripts to get started (3D waveguide, 2D resrings, 2D dipole, ...), both simple and extended scripts to evaluate performance (raw yee-cell update performance, scale sweeps with realistic setups, ...), as well as several replications of widely known photonic device simulation notebooks (cosine taper crossing, ceviche bend topology optimization, mode source profile sweeps, ).
-
 
 ## Installation
+
+Get started with:
 
 ```bash
 pip install beamz
