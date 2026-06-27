@@ -8,7 +8,7 @@
 
   <h3>
 
-  [Homepage](https://beamzorg.github.io) / [Documentation](https://beamzorg.github.io/beamz-notebooks/docs/index) / [Example Library](https://beamzorg.github.io/beamz-notebooks/examples/)
+  [Homepage](https://beamzorg.github.io/beamz-notebooks/docs/index) / [Documentation](https://beamzorg.github.io/beamz-notebooks/docs/index) / [Example Library](https://beamzorg.github.io/beamz-notebooks/examples/)
 
   </h3>
 
