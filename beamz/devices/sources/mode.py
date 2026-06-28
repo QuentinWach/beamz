@@ -1,5 +1,6 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from types import SimpleNamespace
 
 import jax.numpy as jnp
 import numpy as np
@@ -2124,7 +2125,7 @@ class ModeSource(RuntimeStateProxy):
         if not residuals:
             return fallback
 
-        grid_shape = tuple(int(v) for v in np.asarray(fields.permittivity).shape)
+        grid_shape = tuple(int(v) for v in fields.permittivity.shape)
         lows = [int(v) for v in grid_shape]
         highs = [0, 0, 0]
         for residual in residuals:
@@ -3325,7 +3326,243 @@ class ModeSource(RuntimeStateProxy):
             residual=values[local_crop].copy(),
         )
 
-    def _compute_discrete_3d_h_phasor_residuals(
+    @staticmethod
+    def _normalize_3d_component_index(
+        index: tuple,
+        shape: tuple[int, int, int],
+    ) -> tuple[slice, slice, slice]:
+        out: list[slice] = []
+        for item, dim in zip(index, shape, strict=True):
+            if isinstance(item, slice):
+                start, stop, step = item.indices(int(dim))
+                if step != 1:
+                    raise ValueError("3D mode-source component slices must be contiguous")
+                out.append(slice(int(start), int(stop)))
+            else:
+                idx = int(item)
+                if idx < 0:
+                    idx += int(dim)
+                out.append(slice(idx, idx + 1))
+        return tuple(out)  # type: ignore[return-value]
+
+    @staticmethod
+    def _component_slices_from_cell_bounds(
+        component: str,
+        cell_bounds: tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+        field_shape: tuple[int, int, int],
+    ) -> tuple[slice, slice, slice]:
+        offsets = component_axis_offsets_3d(component)
+        out: list[slice] = []
+        for axis, (lo, hi), dim in zip(("z", "y", "x"), cell_bounds, field_shape):
+            stop = int(hi) - (1 if float(offsets[axis]) == 0.5 else 0)
+            start = max(0, min(int(lo), int(dim)))
+            stop = max(start, min(stop, int(dim)))
+            out.append(slice(start, stop))
+        return tuple(out)  # type: ignore[return-value]
+
+    @staticmethod
+    def _shift_3d_component_index_to_local(
+        index: tuple,
+        component_slice: tuple[slice, slice, slice],
+        field_shape: tuple[int, int, int],
+    ) -> tuple:
+        out: list[int | slice] = []
+        for item, parent, dim in zip(index, component_slice, field_shape, strict=True):
+            base = int(parent.start or 0)
+            if isinstance(item, slice):
+                start, stop, step = item.indices(int(dim))
+                if step != 1:
+                    raise ValueError("3D mode-source component slices must be contiguous")
+                out.append(slice(int(start) - base, int(stop) - base))
+            else:
+                idx = int(item)
+                if idx < 0:
+                    idx += int(dim)
+                out.append(idx - base)
+        return tuple(out)
+
+    @staticmethod
+    def _translate_region_to_local(
+        region: tuple[slice, slice, slice],
+        component_slice: tuple[slice, slice, slice],
+        field_shape: tuple[int, int, int],
+    ) -> tuple[slice, slice, slice]:
+        out: list[slice] = []
+        for item, parent, dim in zip(region, component_slice, field_shape, strict=True):
+            r_start, r_stop, r_step = item.indices(int(dim))
+            if r_step != 1:
+                raise ValueError("3D mode-source update regions must be contiguous")
+            base = int(parent.start or 0)
+            parent_stop = int(parent.stop or base)
+            start = max(int(r_start), base)
+            stop = min(int(r_stop), parent_stop)
+            stop = max(start, stop)
+            out.append(slice(start - base, stop - base))
+        return tuple(out)  # type: ignore[return-value]
+
+    def _local_3d_phasor_context(self, fields):
+        from beamz.simulation.boundaries import has_full_pec_3d
+
+        if has_full_pec_3d(getattr(fields, "boundaries", None)):
+            return None
+
+        profiles, indices = self._get_3d_profiles_and_indices()
+        axis = self._axis
+        if axis is None:
+            return None
+        axis_pos = {"z": 0, "y": 1, "x": 2}[axis]
+        field_shapes = {
+            component: tuple(int(v) for v in getattr(fields, component).shape)
+            for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        }
+        grid_shape = tuple(int(v) for v in fields.permittivity.shape)
+        lows = [int(v) for v in grid_shape]
+        highs = [0, 0, 0]
+        found = False
+
+        max_shift = int(max(1, self._discrete_launch_max_shift))
+        for component, profile in profiles.items():
+            index = indices.get(component)
+            if profile is None or index is None:
+                continue
+            for shift in range(-max_shift, max_shift + 1):
+                shifted = _shift_component_indices_along_axis(
+                    index,
+                    axis,
+                    shift,
+                    field_shapes[component],
+                )
+                if shifted is None:
+                    continue
+                shifted_slices = self._normalize_3d_component_index(
+                    shifted,
+                    field_shapes[component],
+                )
+                bounds = self._component_slices_to_cell_bbox(component, shifted_slices)
+                for dim, (lo, hi) in enumerate(bounds):
+                    lows[dim] = min(lows[dim], int(lo))
+                    highs[dim] = max(highs[dim], int(hi))
+                found = True
+
+        if not found:
+            return None
+
+        # Two curl half-steps plus masking can expand the residual by a small Yee
+        # stencil halo.  Keep this conservative; the result is cropped again below.
+        halo = 4
+        cell_bounds = tuple(
+            (
+                max(0, int(lo) - halo),
+                min(int(size), int(hi) + halo),
+            )
+            for lo, hi, size in zip(lows, highs, grid_shape, strict=True)
+        )
+        component_slices = {
+            component: self._component_slices_from_cell_bounds(
+                component,
+                cell_bounds,  # type: ignore[arg-type]
+                field_shapes[component],
+            )
+            for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        }
+        if any(
+            any(int(s.stop or 0) <= int(s.start or 0) for s in slices)
+            for slices in component_slices.values()
+        ):
+            return None
+
+        cell_slice = tuple(slice(int(lo), int(hi)) for lo, hi in cell_bounds)
+        cell_shape = tuple(int(s.stop or 0) - int(s.start or 0) for s in cell_slice)
+        local_fields = SimpleNamespace(
+            boundaries=getattr(fields, "boundaries", None),
+            permittivity=np.empty(cell_shape, dtype=fields.permittivity.dtype),
+        )
+
+        for component, slices in component_slices.items():
+            field = getattr(fields, component)
+            shape = tuple(int(s.stop or 0) - int(s.start or 0) for s in slices)
+            setattr(local_fields, component, np.zeros(shape, dtype=field.dtype))
+
+        for component, attr_prefix in (
+            ("Ex", "x"),
+            ("Ey", "y"),
+            ("Ez", "z"),
+        ):
+            slices = component_slices[component]
+            full_shape = field_shapes[component]
+            eps = np.asarray(getattr(fields, f"eps_{attr_prefix}")[slices])
+            sig = np.asarray(getattr(fields, f"sig_{attr_prefix}")[slices])
+            region = getattr(
+                fields,
+                f"region_{attr_prefix}",
+                (slice(None), slice(None), slice(None)),
+            )
+            setattr(local_fields, f"eps_{attr_prefix}", eps)
+            setattr(local_fields, f"sig_{attr_prefix}", sig)
+            setattr(
+                local_fields,
+                f"region_{attr_prefix}",
+                self._translate_region_to_local(region, slices, full_shape),
+            )
+
+        for component, attr in (
+            ("Hx", "sigma_m_hx"),
+            ("Hy", "sigma_m_hy"),
+            ("Hz", "sigma_m_hz"),
+        ):
+            setattr(
+                local_fields,
+                attr,
+                np.asarray(getattr(fields, attr)[component_slices[component]]),
+            )
+
+        local_source = object.__new__(type(self))
+        local_source.__dict__.update(self.__dict__)
+        if "_state" in self.__dict__:
+            object.__setattr__(local_source, "_state", replace(self._state))
+        offset = float(cell_bounds[axis_pos][0]) * float(self._resolution or 0.0)
+        local_source._phase_ref_coord = float(self._phase_ref_coord) - offset
+        local_source._phase_plane_coord = float(self._phase_plane_coord) - offset
+        for component, index in indices.items():
+            if index is None:
+                continue
+            setattr(
+                local_source,
+                f"_{component}_indices",
+                self._shift_3d_component_index_to_local(
+                    index,
+                    component_slices[component],
+                    field_shapes[component],
+                ),
+            )
+        return local_source, local_fields, component_slices
+
+    def _dense_3d_delta_residuals(
+        self,
+        delta: dict[str, np.ndarray],
+        *,
+        timing: str,
+        component_indices: dict[str, tuple[slice, slice, slice]] | None = None,
+    ) -> tuple[_ModeSource3DResidual, ...]:
+        out: list[_ModeSource3DResidual] = []
+        for component, values in delta.items():
+            arr = np.asarray(values, dtype=np.complex128)
+            full_index = (
+                component_indices[component]
+                if component_indices is not None
+                else tuple(slice(0, int(size)) for size in arr.shape)
+            )
+            residual = self._crop_local_residual(
+                component,
+                timing,
+                full_index,  # type: ignore[arg-type]
+                arr,
+            )
+            if residual is not None:
+                out.append(residual)
+        return tuple(out)
+
+    def _compute_discrete_3d_h_phasor_residuals_dense(
         self,
         fields,
         *,
@@ -3353,7 +3590,43 @@ class ModeSource(RuntimeStateProxy):
         }
         return self._dense_3d_delta_residuals(delta, timing="h")
 
-    def _compute_discrete_3d_e_phasor_residuals(
+    def _compute_discrete_3d_h_phasor_residuals(
+        self,
+        fields,
+        *,
+        dt: float,
+    ) -> tuple[_ModeSource3DResidual, ...]:
+        """Complex carrier H residuals for the launched-side TF/SF update."""
+        context = self._local_3d_phasor_context(fields)
+        if context is None:
+            return self._compute_discrete_3d_h_phasor_residuals_dense(fields, dt=dt)
+        local_source, local_fields, component_slices = context
+        full_prev = local_source._build_incident_3d_phasor_state(
+            local_fields,
+            t_e=0.0,
+            t_h=-0.5 * float(dt),
+            masked=False,
+        )
+        masked_prev = local_source._build_incident_3d_phasor_state(
+            local_fields,
+            t_e=0.0,
+            t_h=-0.5 * float(dt),
+            masked=True,
+        )
+        h_full_next = local_source._advance_incident_h_3d(local_fields, full_prev, dt)
+        h_target_next = local_source._mask_incident_3d_state_to_launched_side(h_full_next)
+        h_mask_next = local_source._advance_incident_h_3d(local_fields, masked_prev, dt)
+        delta = {
+            component: h_target_next[component] - h_mask_next[component]
+            for component in ("Hx", "Hy", "Hz")
+        }
+        return self._dense_3d_delta_residuals(
+            delta,
+            timing="h",
+            component_indices=component_slices,
+        )
+
+    def _compute_discrete_3d_e_phasor_residuals_dense(
         self,
         fields,
         *,
@@ -3388,25 +3661,53 @@ class ModeSource(RuntimeStateProxy):
         }
         return self._dense_3d_delta_residuals(delta, timing="e")
 
-    def _dense_3d_delta_residuals(
+    def _compute_discrete_3d_e_phasor_residuals(
         self,
-        delta: dict[str, np.ndarray],
+        fields,
         *,
-        timing: str,
+        dt: float,
     ) -> tuple[_ModeSource3DResidual, ...]:
-        out: list[_ModeSource3DResidual] = []
-        for component, values in delta.items():
-            arr = np.asarray(values, dtype=np.complex128)
-            full_index = tuple(slice(0, int(size)) for size in arr.shape)
-            residual = self._crop_local_residual(
-                component,
-                timing,
-                full_index,  # type: ignore[arg-type]
-                arr,
-            )
-            if residual is not None:
-                out.append(residual)
-        return tuple(out)
+        """Complex carrier E residuals for the launched-side TF/SF update."""
+        context = self._local_3d_phasor_context(fields)
+        if context is None:
+            return self._compute_discrete_3d_e_phasor_residuals_dense(fields, dt=dt)
+        local_source, local_fields, component_slices = context
+        full_prev = local_source._build_incident_3d_phasor_state(
+            local_fields,
+            t_e=0.0,
+            t_h=-0.5 * float(dt),
+            masked=False,
+        )
+        masked_prev = local_source._build_incident_3d_phasor_state(
+            local_fields,
+            t_e=0.0,
+            t_h=-0.5 * float(dt),
+            masked=True,
+        )
+        h_full_next = local_source._advance_incident_h_3d(local_fields, full_prev, dt)
+        h_target_next = local_source._mask_incident_3d_state_to_launched_side(h_full_next)
+        e_full_next = local_source._advance_incident_e_3d(
+            local_fields,
+            full_prev,
+            h_full_next,
+            dt,
+        )
+        e_target_next = local_source._mask_incident_3d_state_to_launched_side(e_full_next)
+        e_mask_next = local_source._advance_incident_e_3d(
+            local_fields,
+            masked_prev,
+            h_target_next,
+            dt,
+        )
+        delta = {
+            component: e_target_next[component] - e_mask_next[component]
+            for component in ("Ex", "Ey", "Ez")
+        }
+        return self._dense_3d_delta_residuals(
+            delta,
+            timing="e",
+            component_indices=component_slices,
+        )
 
     def _compute_discrete_3d_phasor_residuals(
         self,

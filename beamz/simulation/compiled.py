@@ -2981,6 +2981,7 @@ class CompiledSimulation:
             "loop_kind": self.config.loop_kind,
             "use_cpml_3d": bool(self.use_cpml_3d),
             "use_primitive_cpml_3d_terms": bool(self.use_primitive_cpml_3d_terms),
+            "use_cpml_3d_packed_psi": bool(self.use_cpml_3d_packed_psi),
             "sharding": {
                 "enabled": bool(self.storage_layout.enabled),
                 "axis": self.storage_layout.axis_name,
