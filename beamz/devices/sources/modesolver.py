@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -70,6 +71,23 @@ def _crop_profile_to_plane(eps_profile, *, profile_axes, center, size, resolutio
             resolution=resolution,
         )
     ]
+
+
+def _simulation_grid_view(simulation):
+    fields = getattr(simulation, "fields", None)
+    if fields is None or not hasattr(fields, "permittivity"):
+        return simulation.design.rasterize(resolution=simulation.resolution)
+    return SimpleNamespace(
+        permittivity=fields.permittivity,
+        conductivity=getattr(fields, "conductivity", None),
+        permeability=getattr(fields, "permeability", None),
+        resolution=float(simulation.resolution),
+        design=simulation.design,
+        shape=tuple(int(v) for v in fields.permittivity.shape),
+        width=float(getattr(simulation.design, "width", 0.0) or 0.0),
+        height=float(getattr(simulation.design, "height", 0.0) or 0.0),
+        depth=float(getattr(simulation.design, "depth", 0.0) or 0.0),
+    )
 
 
 def _chebyshev_frequency_nodes(freq0: float, fwidth: float, count: int) -> np.ndarray:
@@ -214,7 +232,7 @@ class ModeSolver:
         return self._modes
 
     def _plane_eps_context(self):
-        grid = self.simulation.design.rasterize(resolution=self.simulation.resolution)
+        grid = _simulation_grid_view(self.simulation)
         eps = np.asarray(grid.permittivity)
         axis, center, _spans = _plane_axis_and_spans(self.plane)
         offset = getattr(self.simulation, "coordinate_offset", (0.0, 0.0, 0.0))
@@ -288,9 +306,7 @@ class ModeSolver:
                 int(self.mode_spec.num_freqs),
             )
         return ModeSource(
-            grid=self.simulation.design.rasterize(
-                resolution=self.simulation.resolution
-            ),
+            grid=_simulation_grid_view(self.simulation),
             center=center,
             width=float(spans[0]),
             height=float(spans[1]) if len(spans) > 1 else None,
