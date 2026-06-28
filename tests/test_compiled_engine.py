@@ -505,18 +505,9 @@ def test_compiled_3d_cpml_uses_material_coefficients():
     assert program.e_conductivity_x is sim.fields.sig_x
     assert program.e_conductivity_y is sim.fields.sig_y
     assert program.e_conductivity_z is sim.fields.sig_z
-    np.testing.assert_allclose(
-        np.asarray(program.e_inv_permittivity_x),
-        np.asarray(1.0 / sim.fields.eps_x),
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.e_inv_permittivity_y),
-        np.asarray(1.0 / sim.fields.eps_y),
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.e_inv_permittivity_z),
-        np.asarray(1.0 / sim.fields.eps_z),
-    )
+    assert program.e_permittivity_x is sim.fields.eps_x
+    assert program.e_permittivity_y is sim.fields.eps_y
+    assert program.e_permittivity_z is sim.fields.eps_z
     assert program.ex_metal_mask.shape == (0, 0, 0)
     assert program.hx_metal_mask.shape == (0, 0, 0)
     assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
@@ -587,11 +578,8 @@ def test_compiled_3d_sponge_pml_uses_material_coefficients():
     assert program.e_source_lossless_x.shape == (0, 0, 0)
     assert program.h_source_lossless_x.shape == (0, 0, 0)
     assert program.e_conductivity_x is sim.fields.sig_x
+    assert program.e_permittivity_x is sim.fields.eps_x
     assert program.h_sigma_m_x is sim.fields.sigma_m_hx
-    np.testing.assert_allclose(
-        np.asarray(program.e_inv_permittivity_x),
-        np.asarray(1.0 / sim.fields.eps_x),
-    )
 
     sim.run_compiled(num_steps=1, progress=False)
 
@@ -839,7 +827,6 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
         for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
     )
     assert report["totals_by_category"]["yee_fields"] == field_bytes
-    assert report["compiled"]["totals_by_category"]["compiled_update_coefficients"] > 0
     compiled_names = {entry["name"] for entry in report["compiled"]["entries"]}
     referenced_names = {
         entry["name"] for entry in report["compiled"]["referenced_inputs"]["entries"]
@@ -848,8 +835,9 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
         key.startswith("use_") and key.endswith("_3d_e_coefficients")
         for key in report["compiled"]["config"]
     )
-    assert "e_inv_permittivity_x" in compiled_names
-    assert "e_inv_permittivity_x" not in referenced_names
+    assert "e_permittivity_x" not in compiled_names
+    assert "e_permittivity_x" in referenced_names
+    assert report["compiled"]["referenced_inputs"]["total_bytes"] > 0
     assert (
         report["total_with_compiled_bytes"]
         == report["total_bytes"] + report["compiled"]["total_bytes"]
@@ -887,10 +875,7 @@ def test_compiled_uses_material_coefficients_for_3d_loss():
     assert program.h_decay_x.shape == (0, 0, 0)
     assert program.h_source_x.shape == (0, 0, 0)
     assert program.e_conductivity_x is sim.fields.sig_x
-    np.testing.assert_allclose(
-        np.asarray(program.e_inv_permittivity_x),
-        np.asarray(1.0 / sim.fields.eps_x),
-    )
+    assert program.e_permittivity_x is sim.fields.eps_x
     assert program.h_sigma_m_x is sim.fields.sigma_m_hx
 
     sim.run_compiled(num_steps=1, progress=False)

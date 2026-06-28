@@ -432,17 +432,17 @@ class UpdateCoefficients(NamedTuple):
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
     e_conductivity_x: jnp.ndarray
-    e_inv_permittivity_x: jnp.ndarray
+    e_permittivity_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_source_lossless_y: jnp.ndarray
     e_conductivity_y: jnp.ndarray
-    e_inv_permittivity_y: jnp.ndarray
+    e_permittivity_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_source_lossless_z: jnp.ndarray
     e_conductivity_z: jnp.ndarray
-    e_inv_permittivity_z: jnp.ndarray
+    e_permittivity_z: jnp.ndarray
     tm_h_decay_x: jnp.ndarray
     tm_h_source_x: jnp.ndarray
     tm_h_decay_y: jnp.ndarray
@@ -733,6 +733,16 @@ class _StorageFieldsProxy:
         return getattr(self._base, name)
 
 
+class _ArrayShapeProxy:
+    """Array-like metadata holder for compile-time shape/dtype queries."""
+
+    def __init__(self, base, shape: tuple[int, ...]) -> None:
+        self.shape = tuple(int(v) for v in shape)
+        self.dtype = np.dtype(getattr(base, "dtype", np.float32))
+        self.ndim = len(self.shape)
+        self.size = int(np.prod(self.shape, dtype=np.int64))
+
+
 def _pad_pml_data_for_storage(fields, layout: StorageLayout):
     pml_data = getattr(fields, "pml_data", None)
     if (not layout.enabled and not layout.pec_full_storage) or not isinstance(
@@ -772,9 +782,15 @@ def _make_storage_fields_proxy(fields, layout: StorageLayout):
         return fields
     overrides: dict[str, object] = {}
     for name in _COMPONENT_NAMES:
-        overrides[name] = _pad_high_to_shape(
-            getattr(fields, name), layout.storage_shapes[name], pad_value=0.0
-        )
+        if layout.pec_full_storage:
+            overrides[name] = _pad_high_to_shape(
+                getattr(fields, name), layout.storage_shapes[name], pad_value=0.0
+            )
+        else:
+            overrides[name] = _ArrayShapeProxy(
+                getattr(fields, name),
+                layout.storage_shapes[name],
+            )
     neutral_component_arrays = {
         "eps_x": ("Ex", 1.0),
         "eps_y": ("Ey", 1.0),
@@ -855,17 +871,17 @@ class CompiledSimulation:
     e_source_x: jnp.ndarray
     e_source_lossless_x: jnp.ndarray
     e_conductivity_x: jnp.ndarray
-    e_inv_permittivity_x: jnp.ndarray
+    e_permittivity_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_source_lossless_y: jnp.ndarray
     e_conductivity_y: jnp.ndarray
-    e_inv_permittivity_y: jnp.ndarray
+    e_permittivity_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_source_lossless_z: jnp.ndarray
     e_conductivity_z: jnp.ndarray
-    e_inv_permittivity_z: jnp.ndarray
+    e_permittivity_z: jnp.ndarray
     tm_h_decay_x: jnp.ndarray
     tm_h_source_x: jnp.ndarray
     tm_h_decay_y: jnp.ndarray
@@ -2026,13 +2042,13 @@ class CompiledSimulation:
             h_sigma_m_z = coeffs.h_sigma_m_z
             e_decay_x, e_source_x = coeffs.e_decay_x, coeffs.e_source_x
             e_conductivity_x = coeffs.e_conductivity_x
-            e_inv_permittivity_x = coeffs.e_inv_permittivity_x
+            e_inv_permittivity_x = jnp.reciprocal(coeffs.e_permittivity_x)
             e_decay_y, e_source_y = coeffs.e_decay_y, coeffs.e_source_y
             e_conductivity_y = coeffs.e_conductivity_y
-            e_inv_permittivity_y = coeffs.e_inv_permittivity_y
+            e_inv_permittivity_y = jnp.reciprocal(coeffs.e_permittivity_y)
             e_decay_z, e_source_z = coeffs.e_decay_z, coeffs.e_source_z
             e_conductivity_z = coeffs.e_conductivity_z
-            e_inv_permittivity_z = coeffs.e_inv_permittivity_z
+            e_inv_permittivity_z = jnp.reciprocal(coeffs.e_permittivity_z)
             tm_h_decay_x, tm_h_source_x = coeffs.tm_h_decay_x, coeffs.tm_h_source_x
             tm_h_decay_y, tm_h_source_y = coeffs.tm_h_decay_y, coeffs.tm_h_source_y
             tm_e_decay_z, tm_e_source_z = coeffs.tm_e_decay_z, coeffs.tm_e_source_z
@@ -2825,6 +2841,9 @@ class CompiledSimulation:
             "e_conductivity_x",
             "e_conductivity_y",
             "e_conductivity_z",
+            "e_permittivity_x",
+            "e_permittivity_y",
+            "e_permittivity_z",
         }
         for name in referenced_update_names:
             _add_array_entries(
@@ -3391,9 +3410,9 @@ def compile_simulation(
         e_conductivity_x = fields.sig_x
         e_conductivity_y = fields.sig_y
         e_conductivity_z = fields.sig_z
-        e_inv_permittivity_x = 1.0 / fields.eps_x
-        e_inv_permittivity_y = 1.0 / fields.eps_y
-        e_inv_permittivity_z = 1.0 / fields.eps_z
+        e_permittivity_x = fields.eps_x
+        e_permittivity_y = fields.eps_y
+        e_permittivity_z = fields.eps_z
     else:
         (
             (e_decay_x, e_source_x, e_source_lossless_x),
@@ -3431,7 +3450,7 @@ def compile_simulation(
             ),
         )
         e_conductivity_x = e_conductivity_y = e_conductivity_z = empty3
-        e_inv_permittivity_x = e_inv_permittivity_y = e_inv_permittivity_z = empty3
+        e_permittivity_x = e_permittivity_y = e_permittivity_z = empty3
     use_physical_tm_xy = False
     use_cpml_tm_xy = False
     use_cpml_3d = False
@@ -3782,17 +3801,17 @@ def compile_simulation(
         e_source_x=e_source_x,
         e_source_lossless_x=e_source_lossless_x,
         e_conductivity_x=e_conductivity_x,
-        e_inv_permittivity_x=e_inv_permittivity_x,
+        e_permittivity_x=e_permittivity_x,
         e_decay_y=e_decay_y,
         e_source_y=e_source_y,
         e_source_lossless_y=e_source_lossless_y,
         e_conductivity_y=e_conductivity_y,
-        e_inv_permittivity_y=e_inv_permittivity_y,
+        e_permittivity_y=e_permittivity_y,
         e_decay_z=e_decay_z,
         e_source_z=e_source_z,
         e_source_lossless_z=e_source_lossless_z,
         e_conductivity_z=e_conductivity_z,
-        e_inv_permittivity_z=e_inv_permittivity_z,
+        e_permittivity_z=e_permittivity_z,
         tm_h_decay_x=tm_h_decay_x,
         tm_h_source_x=tm_h_source_x,
         tm_h_decay_y=tm_h_decay_y,
