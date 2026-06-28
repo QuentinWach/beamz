@@ -473,7 +473,7 @@ def test_compiled_3d_metallic_edge_zeroing_matches_masks():
         np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
 
 
-def test_compiled_3d_cpml_uses_dense_update_coefficients():
+def test_compiled_3d_cpml_uses_material_coefficients():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -495,25 +495,39 @@ def test_compiled_3d_cpml_uses_dense_update_coefficients():
     program = sim.compile(num_steps=1)
 
     assert program.use_cpml_3d
-    assert program.e_decay_x.shape == sim.fields.Ex.shape
-    assert program.e_source_x.shape == sim.fields.Ex.shape
-    assert program.h_decay_x.shape == sim.fields.Hx.shape
-    assert program.h_source_x.shape == sim.fields.Hx.shape
+    assert program.e_decay_x.shape == (0, 0, 0)
+    assert program.e_source_x.shape == (0, 0, 0)
+    assert program.h_decay_x.shape == (0, 0, 0)
+    assert program.h_source_x.shape == (0, 0, 0)
     assert program.e_source_lossless_x.shape == (0, 0, 0)
     assert program.e_source_lossless_y.shape == (0, 0, 0)
     assert program.e_source_lossless_z.shape == (0, 0, 0)
-    assert program.e_inv_permittivity_x.shape == (0, 0, 0)
-    assert program.e_inv_permittivity_y.shape == (0, 0, 0)
-    assert program.e_inv_permittivity_z.shape == (0, 0, 0)
+    assert program.e_conductivity_x is sim.fields.sig_x
+    assert program.e_conductivity_y is sim.fields.sig_y
+    assert program.e_conductivity_z is sim.fields.sig_z
+    np.testing.assert_allclose(
+        np.asarray(program.e_inv_permittivity_x),
+        np.asarray(1.0 / sim.fields.eps_x),
+    )
+    np.testing.assert_allclose(
+        np.asarray(program.e_inv_permittivity_y),
+        np.asarray(1.0 / sim.fields.eps_y),
+    )
+    np.testing.assert_allclose(
+        np.asarray(program.e_inv_permittivity_z),
+        np.asarray(1.0 / sim.fields.eps_z),
+    )
     assert program.ex_metal_mask.shape == (0, 0, 0)
     assert program.hx_metal_mask.shape == (0, 0, 0)
     assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
     assert program.field_shape_hx == tuple(sim.fields.Hx.shape)
-    assert program.e_conductivity_x.shape == (0, 0, 0)
-    assert program.h_sigma_m_x.shape == (0, 0, 0)
+    assert program.h_sigma_m_x is sim.fields.sigma_m_hx
+    assert program.h_sigma_m_y is sim.fields.sigma_m_hy
+    assert program.h_sigma_m_z is sim.fields.sigma_m_hz
     assert program.h_source_lossless_x.shape == (0, 0, 0)
     assert program.h_source_lossless_y.shape == (0, 0, 0)
     assert program.h_source_lossless_z.shape == (0, 0, 0)
+    sim.run_compiled(num_steps=1, progress=False)
 
 
 def test_compiled_3d_snapshot_shape_uses_field_reference():

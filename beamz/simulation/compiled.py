@@ -2219,6 +2219,10 @@ class CompiledSimulation:
                                         inv_kappa_h_terms=self.cpml3d_inv_kappa_h_terms,
                                         psi_h_terms=cpml3d_psi_h_terms,
                                         slab_specs=self.cpml3d_h_slab_specs,
+                                        dt=dt_scalar,
+                                        h_sigma_m_x=h_sigma_m_x,
+                                        h_sigma_m_y=h_sigma_m_y,
+                                        h_sigma_m_z=h_sigma_m_z,
                                     )
                                 )
                             else:
@@ -2242,6 +2246,9 @@ class CompiledSimulation:
                                         inv_kappa_h_terms=self.cpml3d_inv_kappa_h_terms,
                                         dt=dt_scalar,
                                         psi_h_terms=cpml3d_psi_h_terms,
+                                        h_sigma_m_x=h_sigma_m_x,
+                                        h_sigma_m_y=h_sigma_m_y,
+                                        h_sigma_m_z=h_sigma_m_z,
                                     )
                                 )
                         else:
@@ -2454,6 +2461,13 @@ class CompiledSimulation:
                                         psi_e_terms=cpml3d_psi_e_terms,
                                         slab_specs=self.cpml3d_e_slab_specs,
                                         metallic_edges=self.cpml3d_metallic_edges,
+                                        dt=dt_scalar,
+                                        e_conductivity_x=e_conductivity_x,
+                                        e_inv_permittivity_x=e_inv_permittivity_x,
+                                        e_conductivity_y=e_conductivity_y,
+                                        e_inv_permittivity_y=e_inv_permittivity_y,
+                                        e_conductivity_z=e_conductivity_z,
+                                        e_inv_permittivity_z=e_inv_permittivity_z,
                                     )
                                 )
                             else:
@@ -2478,6 +2492,12 @@ class CompiledSimulation:
                                         dt=dt_scalar,
                                         psi_e_terms=cpml3d_psi_e_terms,
                                         metallic_edges=self.cpml3d_metallic_edges,
+                                        e_conductivity_x=e_conductivity_x,
+                                        e_inv_permittivity_x=e_inv_permittivity_x,
+                                        e_conductivity_y=e_conductivity_y,
+                                        e_inv_permittivity_y=e_inv_permittivity_y,
+                                        e_conductivity_z=e_conductivity_z,
+                                        e_inv_permittivity_z=e_inv_permittivity_z,
                                     )
                                 )
                         else:
@@ -3335,9 +3355,7 @@ def compile_simulation(
         and getattr(fields, "has_cpml", False)
         and getattr(fields, "pml_data", None)
     )
-    use_3d_material_coefficients = bool(
-        run_cfg.is_3d and (not has_cpml_3d) and (not full_pec_3d_static)
-    )
+    use_3d_material_coefficients = bool(run_cfg.is_3d and (not full_pec_3d_static))
 
     empty3 = jnp.zeros((0, 0, 0), dtype=jnp.float32)
     if use_3d_material_coefficients:

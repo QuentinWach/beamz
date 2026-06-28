@@ -1746,6 +1746,53 @@ def cpml_curl_e_to_h_3d(
     return curl_hx, curl_hy, curl_hz, (psi0, psi1, psi2, psi3, psi4, psi5)
 
 
+def _advance_cpml_h_component(field, curl, decay, source, sigma_m, dt):
+    if sigma_m is None:
+        return decay * field - source * curl
+    if dt is None:
+        raise ValueError("dt is required when CPML H update uses material grids.")
+    one = jnp.asarray(1.0, dtype=field.dtype)
+    half = jnp.asarray(0.5, dtype=field.dtype)
+    dt_over_mu0 = jnp.asarray(dt, dtype=field.dtype) / jnp.asarray(
+        MU_0, dtype=field.dtype
+    )
+    alpha = jnp.asarray(sigma_m, dtype=field.dtype) * (half * dt_over_mu0)
+    denom = one + alpha
+    return ((one - alpha) / denom) * field - (dt_over_mu0 / denom) * curl
+
+
+def _advance_cpml_e_component(
+    field,
+    curl,
+    decay,
+    source,
+    conductivity,
+    inv_permittivity,
+    dt,
+):
+    if conductivity is None and inv_permittivity is None:
+        return decay * field + source * curl
+    if conductivity is None or inv_permittivity is None:
+        raise ValueError(
+            "conductivity and inverse permittivity must be provided together."
+        )
+    if dt is None:
+        raise ValueError("dt is required when CPML E update uses material grids.")
+    one = jnp.asarray(1.0, dtype=field.dtype)
+    half = jnp.asarray(0.5, dtype=field.dtype)
+    dt_over_eps0 = jnp.asarray(dt, dtype=field.dtype) / jnp.asarray(
+        EPS_0, dtype=field.dtype
+    )
+    inv_eps = jnp.asarray(inv_permittivity, dtype=field.dtype)
+    beta = (
+        jnp.asarray(conductivity, dtype=field.dtype)
+        * (half * dt_over_eps0)
+        * inv_eps
+    )
+    denom = one + beta
+    return ((one - beta) / denom) * field + (dt_over_eps0 * inv_eps / denom) * curl
+
+
 def cpml_update_h_from_e_3d(
     ex,
     ey,
@@ -1769,6 +1816,9 @@ def cpml_update_h_from_e_3d(
     alpha_h_terms=None,
     dt=None,
     psi_h_terms,
+    h_sigma_m_x=None,
+    h_sigma_m_y=None,
+    h_sigma_m_z=None,
 ):
     """CPML-corrected H update from E without returning full curl arrays."""
 
@@ -1793,7 +1843,14 @@ def cpml_update_h_from_e_3d(
     term1, psi1 = correct(
         1, fit_array_to_shape((ey[1:, :, :] - ey[:-1, :, :]) / resolution, hx.shape)
     )
-    hx = h_decay_x * hx - h_source_x * (term0 - term1)
+    hx = _advance_cpml_h_component(
+        hx,
+        term0 - term1,
+        h_decay_x,
+        h_source_x,
+        h_sigma_m_x,
+        dt,
+    )
 
     term2, psi2 = correct(
         2, fit_array_to_shape((ex[1:, :, :] - ex[:-1, :, :]) / resolution, hy.shape)
@@ -1801,7 +1858,14 @@ def cpml_update_h_from_e_3d(
     term3, psi3 = correct(
         3, fit_array_to_shape((ez[:, :, 1:] - ez[:, :, :-1]) / resolution, hy.shape)
     )
-    hy = h_decay_y * hy - h_source_y * (term2 - term3)
+    hy = _advance_cpml_h_component(
+        hy,
+        term2 - term3,
+        h_decay_y,
+        h_source_y,
+        h_sigma_m_y,
+        dt,
+    )
 
     term4, psi4 = correct(
         4, fit_array_to_shape((ey[:, :, 1:] - ey[:, :, :-1]) / resolution, hz.shape)
@@ -1809,7 +1873,14 @@ def cpml_update_h_from_e_3d(
     term5, psi5 = correct(
         5, fit_array_to_shape((ex[:, 1:, :] - ex[:, :-1, :]) / resolution, hz.shape)
     )
-    hz = h_decay_z * hz - h_source_z * (term4 - term5)
+    hz = _advance_cpml_h_component(
+        hz,
+        term4 - term5,
+        h_decay_z,
+        h_source_z,
+        h_sigma_m_z,
+        dt,
+    )
 
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
 
@@ -1834,6 +1905,10 @@ def cpml_update_h_from_e_3d_packed_psi(
     inv_kappa_h_terms,
     psi_h_terms,
     slab_specs,
+    dt=None,
+    h_sigma_m_x=None,
+    h_sigma_m_y=None,
+    h_sigma_m_z=None,
 ):
     """CPML-corrected H update with psi stored only in packed CPML slabs."""
 
@@ -1855,7 +1930,14 @@ def cpml_update_h_from_e_3d_packed_psi(
     term1, psi1 = correct(
         1, fit_array_to_shape((ey[1:, :, :] - ey[:-1, :, :]) / resolution, hx.shape)
     )
-    hx = h_decay_x * hx - h_source_x * (term0 - term1)
+    hx = _advance_cpml_h_component(
+        hx,
+        term0 - term1,
+        h_decay_x,
+        h_source_x,
+        h_sigma_m_x,
+        dt,
+    )
 
     term2, psi2 = correct(
         2, fit_array_to_shape((ex[1:, :, :] - ex[:-1, :, :]) / resolution, hy.shape)
@@ -1863,7 +1945,14 @@ def cpml_update_h_from_e_3d_packed_psi(
     term3, psi3 = correct(
         3, fit_array_to_shape((ez[:, :, 1:] - ez[:, :, :-1]) / resolution, hy.shape)
     )
-    hy = h_decay_y * hy - h_source_y * (term2 - term3)
+    hy = _advance_cpml_h_component(
+        hy,
+        term2 - term3,
+        h_decay_y,
+        h_source_y,
+        h_sigma_m_y,
+        dt,
+    )
 
     term4, psi4 = correct(
         4, fit_array_to_shape((ey[:, :, 1:] - ey[:, :, :-1]) / resolution, hz.shape)
@@ -1871,7 +1960,14 @@ def cpml_update_h_from_e_3d_packed_psi(
     term5, psi5 = correct(
         5, fit_array_to_shape((ex[:, 1:, :] - ex[:, :-1, :]) / resolution, hz.shape)
     )
-    hz = h_decay_z * hz - h_source_z * (term4 - term5)
+    hz = _advance_cpml_h_component(
+        hz,
+        term4 - term5,
+        h_decay_z,
+        h_source_z,
+        h_sigma_m_z,
+        dt,
+    )
 
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
 
@@ -1962,6 +2058,12 @@ def cpml_update_e_from_h_3d(
     dt=None,
     psi_e_terms,
     metallic_edges=frozenset(),
+    e_conductivity_x=None,
+    e_inv_permittivity_x=None,
+    e_conductivity_y=None,
+    e_inv_permittivity_y=None,
+    e_conductivity_z=None,
+    e_inv_permittivity_z=None,
 ):
     """CPML-corrected E update from H without returning full curl arrays."""
 
@@ -2003,7 +2105,15 @@ def cpml_update_e_from_h_3d(
             ex.shape,
         ),
     )
-    ex = e_decay_x * ex + e_source_x * (term0 - term1)
+    ex = _advance_cpml_e_component(
+        ex,
+        term0 - term1,
+        e_decay_x,
+        e_source_x,
+        e_conductivity_x,
+        e_inv_permittivity_x,
+        dt,
+    )
 
     term2, psi2 = correct(
         2,
@@ -2019,7 +2129,15 @@ def cpml_update_e_from_h_3d(
             ey.shape,
         ),
     )
-    ey = e_decay_y * ey + e_source_y * (term2 - term3)
+    ey = _advance_cpml_e_component(
+        ey,
+        term2 - term3,
+        e_decay_y,
+        e_source_y,
+        e_conductivity_y,
+        e_inv_permittivity_y,
+        dt,
+    )
 
     term4, psi4 = correct(
         4,
@@ -2035,7 +2153,15 @@ def cpml_update_e_from_h_3d(
             ez.shape,
         ),
     )
-    ez = e_decay_z * ez + e_source_z * (term4 - term5)
+    ez = _advance_cpml_e_component(
+        ez,
+        term4 - term5,
+        e_decay_z,
+        e_source_z,
+        e_conductivity_z,
+        e_inv_permittivity_z,
+        dt,
+    )
 
     return ex, ey, ez, (psi0, psi1, psi2, psi3, psi4, psi5)
 
@@ -2061,6 +2187,13 @@ def cpml_update_e_from_h_3d_packed_psi(
     psi_e_terms,
     slab_specs,
     metallic_edges=frozenset(),
+    dt=None,
+    e_conductivity_x=None,
+    e_inv_permittivity_x=None,
+    e_conductivity_y=None,
+    e_inv_permittivity_y=None,
+    e_conductivity_z=None,
+    e_inv_permittivity_z=None,
 ):
     """CPML-corrected E update with psi stored only in packed CPML slabs."""
 
@@ -2099,7 +2232,15 @@ def cpml_update_e_from_h_3d_packed_psi(
             ex.shape,
         ),
     )
-    ex = e_decay_x * ex + e_source_x * (term0 - term1)
+    ex = _advance_cpml_e_component(
+        ex,
+        term0 - term1,
+        e_decay_x,
+        e_source_x,
+        e_conductivity_x,
+        e_inv_permittivity_x,
+        dt,
+    )
 
     term2, psi2 = correct(
         2,
@@ -2115,7 +2256,15 @@ def cpml_update_e_from_h_3d_packed_psi(
             ey.shape,
         ),
     )
-    ey = e_decay_y * ey + e_source_y * (term2 - term3)
+    ey = _advance_cpml_e_component(
+        ey,
+        term2 - term3,
+        e_decay_y,
+        e_source_y,
+        e_conductivity_y,
+        e_inv_permittivity_y,
+        dt,
+    )
 
     term4, psi4 = correct(
         4,
@@ -2131,7 +2280,15 @@ def cpml_update_e_from_h_3d_packed_psi(
             ez.shape,
         ),
     )
-    ez = e_decay_z * ez + e_source_z * (term4 - term5)
+    ez = _advance_cpml_e_component(
+        ez,
+        term4 - term5,
+        e_decay_z,
+        e_source_z,
+        e_conductivity_z,
+        e_inv_permittivity_z,
+        dt,
+    )
 
     return ex, ey, ez, (psi0, psi1, psi2, psi3, psi4, psi5)
 
