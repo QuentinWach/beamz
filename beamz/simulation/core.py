@@ -554,6 +554,20 @@ def _setup_device_context(policy, *, design, resolution):
         return nullcontext(None), "default"
 
 
+def _resolved_setup_device_context(resolved_device):
+    if str(resolved_device).strip().lower() != "cpu":
+        return nullcontext(None)
+    try:
+        import jax
+
+        cpu_devices = jax.devices("cpu")
+        if not cpu_devices:
+            return nullcontext(None)
+        return jax.default_device(cpu_devices[0])
+    except Exception:
+        return nullcontext(None)
+
+
 def _setup_device_policy_label(policy) -> str:
     return os.getenv("BEAMZ_SETUP_DEVICE", "auto") if policy is None else str(policy)
 
@@ -1638,13 +1652,14 @@ class Simulation:
             snapshot_interval=snapshot_interval,
             sharding=sharding,
         )
-        program = compile_simulation(
-            design=self.design,
-            sources=self.sources,
-            monitors=self.monitors,
-            boundaries=self.boundaries,
-            run_cfg=run_cfg,
-        )
+        with _resolved_setup_device_context(self.setup_device_resolved):
+            program = compile_simulation(
+                design=self.design,
+                sources=self.sources,
+                monitors=self.monitors,
+                boundaries=self.boundaries,
+                run_cfg=run_cfg,
+            )
         self._compiled_program_cache[signature] = program
         self._compiled_program = program
         self._compiled_program_signature = signature
