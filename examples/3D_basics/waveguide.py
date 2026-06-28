@@ -23,6 +23,7 @@ DOMAIN_DEPTH = 4.0 * µm
 PML_THICKNESS = 0.75 * WL
 NUM_STEPS = 600
 
+
 def build_design() -> Design:
     design = Design(
         width=DOMAIN_WIDTH,

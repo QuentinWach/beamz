@@ -303,9 +303,7 @@ def cell_aligned_xy_padding(
     imported_span = max(float(imported_width), float(imported_height))
     snap_allowance = 0.5 * float(dx)
     min_margin = (
-        float(MONITOR_TO_PML_SPACING)
-        - float(OUTPUT_MONITOR_OFFSET)
-        + snap_allowance
+        float(MONITOR_TO_PML_SPACING) - float(OUTPUT_MONITOR_OFFSET) + snap_allowance
     )
     min_padding = float(PML_XY) + min_margin
     min_domain = imported_span + 2.0 * min_padding
@@ -335,7 +333,13 @@ def plot_simulation_overview(
 ):
     eps_grid = np.asarray(eps_grid, dtype=float)
     if eps_grid.ndim == 3:
-        z_idx = int(np.clip(round((z_focus / max(depth, 1e-30)) * (eps_grid.shape[0] - 1)), 0, eps_grid.shape[0] - 1))
+        z_idx = int(
+            np.clip(
+                round((z_focus / max(depth, 1e-30)) * (eps_grid.shape[0] - 1)),
+                0,
+                eps_grid.shape[0] - 1,
+            )
+        )
         eps_view = eps_grid[z_idx]
     else:
         eps_view = eps_grid
@@ -388,7 +392,12 @@ def plot_sparameters_db(out_path: Path, wl_um: np.ndarray, s_matrix: dict):
     fig, ax = plt.subplots(figsize=(7.5, 4.8), dpi=220)
     for (out_port, in_port), values in sorted(s_matrix.items()):
         arr = np.asarray(values, dtype=np.complex128)
-        ax.plot(wl_um, 20.0 * np.log10(np.maximum(np.abs(arr), 1e-12)), lw=2.0, label=f"S[{out_port},{in_port}]")
+        ax.plot(
+            wl_um,
+            20.0 * np.log10(np.maximum(np.abs(arr), 1e-12)),
+            lw=2.0,
+            label=f"S[{out_port},{in_port}]",
+        )
     ax.set_xlabel("Wavelength (µm)")
     ax.set_ylabel("Magnitude (dB)")
     ax.set_title("S-parameters")
@@ -399,7 +408,9 @@ def plot_sparameters_db(out_path: Path, wl_um: np.ndarray, s_matrix: dict):
     plt.close(fig)
 
 
-def wave_dominance_db(a_plus: np.ndarray, a_minus: np.ndarray, selector: str, mask: np.ndarray) -> float:
+def wave_dominance_db(
+    a_plus: np.ndarray, a_minus: np.ndarray, selector: str, mask: np.ndarray
+) -> float:
     # Report how cleanly a monitor separates the selected traveling wave from
     # the opposite-going component.
     sel = np.asarray(a_plus if selector == "plus" else a_minus, dtype=np.complex128)
@@ -489,7 +500,9 @@ world_origin = tuple(float(v) for v in prepared.get("world_origin", (0.0, 0.0, 0
 source_port, output_ports = "o1", ["o2", "o3", "o4"]
 port_names = (source_port, *output_ports)
 grid = design.rasterize(resolution=dx)
-freqs = np.linspace(LIGHT_SPEED / WL_MAX, LIGHT_SPEED / WL_MIN, NUM_FREQS, dtype=np.float32)
+freqs = np.linspace(
+    LIGHT_SPEED / WL_MAX, LIGHT_SPEED / WL_MIN, NUM_FREQS, dtype=np.float32
+)
 wl_um = LIGHT_SPEED / freqs / µm
 
 # 2. Place the source and monitors directly from the imported port metadata.
@@ -579,7 +592,9 @@ if len(y_output_ports) == 2:
 print("Plane positions relative to imported ports (um):")
 print(f"  source: {SOURCE_PORT_OFFSET / µm:.2f}")
 for port_name in port_names:
-    actual_offset = signed_port_plane_offset(monitor_planes[port_name], ports[port_name])
+    actual_offset = signed_port_plane_offset(
+        monitor_planes[port_name], ports[port_name]
+    )
     print(
         f"  {port_name}: requested={monitor_offsets[port_name] / µm:.2f}, "
         f"final={actual_offset / µm:.6f}"
@@ -604,19 +619,13 @@ for port_name in port_names:
         f"top={clearances['top'] / µm:.6f}, "
         f"bottom={clearances['bottom'] / µm:.6f}"
     )
-    if (
-        port_name in output_ports
-        and normal_clearance < MONITOR_TO_PML_SPACING - 1e-12
-    ):
+    if port_name in output_ports and normal_clearance < MONITOR_TO_PML_SPACING - 1e-12:
         raise RuntimeError(
             f"Monitor {port_name} is only {normal_clearance / µm:.3f} um from "
             f"the inner PML boundary; expected at least "
             f"{MONITOR_TO_PML_SPACING / µm:.3f} um."
         )
-    if (
-        min(clearances["top"], clearances["bottom"])
-        < MONITOR_TO_PML_SPACING - 1e-12
-    ):
+    if min(clearances["top"], clearances["bottom"]) < MONITOR_TO_PML_SPACING - 1e-12:
         raise RuntimeError(
             f"Monitor {port_name} has top/bottom PML clearance below "
             f"{MONITOR_TO_PML_SPACING / µm:.3f} um: "
@@ -739,8 +748,12 @@ sim.show()
 
 # 5. Save a compact overview plot of the rasterized structure with the source
 # and monitor planes overlaid.
-print(f"Workload: grid={grid.permittivity.shape}, voxels={int(np.prod(np.asarray(grid.permittivity).shape)):,}, updates~{int(np.prod(np.asarray(grid.permittivity).shape))*len(pulse.time):.3e}")
-estimated_updates = float(int(np.prod(np.asarray(grid.permittivity).shape)) * len(pulse.time))
+print(
+    f"Workload: grid={grid.permittivity.shape}, voxels={int(np.prod(np.asarray(grid.permittivity).shape)):,}, updates~{int(np.prod(np.asarray(grid.permittivity).shape)) * len(pulse.time):.3e}"
+)
+estimated_updates = float(
+    int(np.prod(np.asarray(grid.permittivity).shape)) * len(pulse.time)
+)
 print(
     "Estimated runtime: "
     f"100 MCUPS ~ {format_duration(estimated_updates / 100e6)}, "
@@ -831,7 +844,9 @@ for port_name in output_ports:
     )
 for port_name in port_names:
     mag = abs(s_matrix[(port_name, "o1")][i0])
-    print(f"S[{port_name},o1] @ {wl_um[i0]:.4f}um: {20.0 * np.log10(max(mag, 1e-12)):.2f} dB")
+    print(
+        f"S[{port_name},o1] @ {wl_um[i0]:.4f}um: {20.0 * np.log10(max(mag, 1e-12)):.2f} dB"
+    )
 
 # Refresh the overview after the run so the latest generated artifact matches
 # the final S-matrix extraction path.

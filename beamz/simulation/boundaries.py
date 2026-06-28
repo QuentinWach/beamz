@@ -122,12 +122,7 @@ class PML(Boundary):
             alpha_normalized = self._DEFAULT_CPML_ALPHA_NORMALIZED
             if getattr(fields.permittivity, "ndim", 0) == 3:
                 alpha_normalized = self._DEFAULT_3D_CPML_ALPHA_NORMALIZED
-            self.alpha_max = (
-                2.0
-                * EPS_0
-                * alpha_normalized
-                / max(float(dt), 1e-30)
-            )
+            self.alpha_max = 2.0 * EPS_0 * alpha_normalized / max(float(dt), 1e-30)
 
         if self.formulation == "cpml":
             if fields.permittivity.ndim == 3:
@@ -1380,9 +1375,9 @@ def _cpml_unpack_slab(base, slab, slab_spec):
         offset = low
     if high > 0:
         slab_high = slab[_axis_region(slab.ndim, axis, offset, offset + high)]
-        out = out.at[
-            _axis_region(out.ndim, axis, out.shape[axis] - high, None)
-        ].set(slab_high)
+        out = out.at[_axis_region(out.ndim, axis, out.shape[axis] - high, None)].set(
+            slab_high
+        )
     return out
 
 

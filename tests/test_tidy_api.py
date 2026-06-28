@@ -45,9 +45,7 @@ def test_source_normalization_uses_sampled_native_monitor_dft_when_time_is_avail
     norm = _source_spectrum_normalization([source], [pulse.freq0], time=time)
 
     expected = (
-        2.0
-        / time.size
-        * np.sum(signal * np.exp(1j * 2.0 * np.pi * pulse.freq0 * time))
+        2.0 / time.size * np.sum(signal * np.exp(1j * 2.0 * np.pi * pulse.freq0 * time))
     )
     np.testing.assert_allclose(norm, [expected], rtol=1e-12, atol=1e-15)
     assert abs(norm[0]) < abs(pulse.dft_normalization_spectrum([pulse.freq0])[0])
@@ -90,8 +88,7 @@ def test_mode_source_defaults_to_one_watt_launch_power():
 def test_mode_solver_source_helpers_default_to_one_watt_launch_power():
     assert inspect.signature(ModeSolver.to_source).parameters["power"].default == 1.0
     assert (
-        inspect.signature(ModeSolver.sim_with_source).parameters["power"].default
-        == 1.0
+        inspect.signature(ModeSolver.sim_with_source).parameters["power"].default == 1.0
     )
 
 
@@ -435,10 +432,13 @@ def test_mode_solver_to_source_defers_to_discrete_mode_source(monkeypatch):
         mode_spec=bz.ModeSpec(num_modes=2, target_neff=2.3),
         freqs=[2.0e14],
     )
+
     def fail_solve_modes(**_kwargs):
         raise AssertionError("to_source should let ModeSource solve the launch mode.")
 
-    monkeypatch.setattr("beamz.devices.sources.modesolver.solve_modes", fail_solve_modes)
+    monkeypatch.setattr(
+        "beamz.devices.sources.modesolver.solve_modes", fail_solve_modes
+    )
 
     source = solver.to_source(mode_index=1, direction="+")
 

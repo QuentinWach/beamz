@@ -178,7 +178,7 @@ for step in range(STEPS):
         resolution=DX,
     )
 
-    print(f"[{step+1}/{STEPS}] Forward Sim...", end="\r")
+    print(f"[{step + 1}/{STEPS}] Forward Sim...", end="\r")
     results = sim_fwd.run(save_fields=["Ez"], field_subsample=2)
 
     fwd_ds = results.fields if results is not None else None
@@ -277,7 +277,7 @@ for step in range(STEPS):
     mat_frac = np.mean(phys_density[mask])
 
     print(
-        f" Step {step+1}: Obj={total_obj:.2e} (Trans={transmission_pct:.1f}% | Fwd={transmission_fwd:.1f}% Bwd={transmission_back:.1f}%) | Mat={mat_frac:.1%} | GradScale={grad_scale:.1e} | MaxUp={max_update:.2e}",
+        f" Step {step + 1}: Obj={total_obj:.2e} (Trans={transmission_pct:.1f}% | Fwd={transmission_fwd:.1f}% Bwd={transmission_back:.1f}%) | Mat={mat_frac:.1%} | GradScale={grad_scale:.1e} | MaxUp={max_update:.2e}",
         end="\r",
     )
 
@@ -314,7 +314,7 @@ sweep_transmission = []
 time_sweep = np.arange(0, 15 * WL / LIGHT_SPEED, DT)
 
 for i, wl_val in enumerate(wavelengths):
-    print(f"Simulating Wavelength: {wl_val/µm:.3f} µm...", end="\r")
+    print(f"Simulating Wavelength: {wl_val / µm:.3f} µm...", end="\r")
 
     # Create signal for this specific wavelength
     signal_sweep = ramped_cosine(

@@ -106,12 +106,15 @@ def _cpml_boundary(bz, *, edges, thickness: float, dt: float, args, sigma_scale)
         "target_reflection": args.target_reflection,
     }
     if sigma_scale is not None:
-        kwargs["sigma_max"] = _cpml_sigma_max(
-            bz,
-            order=args.cpml_order,
-            target_reflection=args.target_reflection,
-            thickness=thickness,
-        ) * sigma_scale
+        kwargs["sigma_max"] = (
+            _cpml_sigma_max(
+                bz,
+                order=args.cpml_order,
+                target_reflection=args.target_reflection,
+                thickness=thickness,
+            )
+            * sigma_scale
+        )
     if args.alpha_normalized is not None:
         kwargs["alpha_max"] = (
             2.0 * float(bz.EPS_0) * args.alpha_normalized / max(float(dt), 1e-30)
@@ -170,9 +173,7 @@ def build_and_run(args):
         non_pml_size = interior_size
     else:
         sim_size = interior_size
-        non_pml_size = tuple(
-            float(max(v - 2.0 * pml_t, 0.0)) for v in interior_size
-        )
+        non_pml_size = tuple(float(max(v - 2.0 * pml_t, 0.0)) for v in interior_size)
     run_time = args.run_time_cycles / freq0
 
     non_pml_x_min = -0.5 * non_pml_size[0]
@@ -228,9 +229,7 @@ def build_and_run(args):
 
     provisional_dt = grid_spec.resolve_time_step(grid_resolution, dims=3)
     x_sigma_scale = (
-        args.x_sigma_scale
-        if args.x_sigma_scale is not None
-        else args.sigma_scale
+        args.x_sigma_scale if args.x_sigma_scale is not None else args.sigma_scale
     )
     transverse_sigma_scale = (
         args.transverse_sigma_scale
@@ -479,10 +478,7 @@ def main(argv: list[str] | None = None) -> int:
             "front monitor: -x wave returning from right CPML = "
             f"{center['front_monitor_minus_x_db']:.2f} dB"
         )
-        print(
-            "valid frequency bins = "
-            f"{sum(result['valid'])}/{len(result['valid'])}"
-        )
+        print(f"valid frequency bins = {sum(result['valid'])}/{len(result['valid'])}")
     print(json.dumps(result, indent=2))
     return 0
 

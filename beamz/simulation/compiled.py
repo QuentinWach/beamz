@@ -331,7 +331,7 @@ def _build_cpml_packed_slab_specs(
 
 
 def _cpml_packed_slab_shapes(
-    specs: tuple[CpmlPackedSlabSpec, ...]
+    specs: tuple[CpmlPackedSlabSpec, ...],
 ) -> tuple[tuple[int, int, int], ...]:
     return tuple(spec.shape for spec in specs)
 
@@ -1743,25 +1743,27 @@ class CompiledSimulation:
                                     )
                                 )
                             else:
-                                hx, hy, hz, cpml3d_psi_h_terms = cpml_update_h_from_e_3d(
-                                    ex,
-                                    ey,
-                                    ez,
-                                    hx,
-                                    hy,
-                                    hz,
-                                    h_decay_x,
-                                    h_source_x,
-                                    h_decay_y,
-                                    h_source_y,
-                                    h_decay_z,
-                                    h_source_z,
-                                    resolution,
-                                    a_h_terms=self.cpml3d_a_h_terms,
-                                    b_h_terms=self.cpml3d_b_h_terms,
-                                    inv_kappa_h_terms=self.cpml3d_inv_kappa_h_terms,
-                                    dt=dt_scalar,
-                                    psi_h_terms=cpml3d_psi_h_terms,
+                                hx, hy, hz, cpml3d_psi_h_terms = (
+                                    cpml_update_h_from_e_3d(
+                                        ex,
+                                        ey,
+                                        ez,
+                                        hx,
+                                        hy,
+                                        hz,
+                                        h_decay_x,
+                                        h_source_x,
+                                        h_decay_y,
+                                        h_source_y,
+                                        h_decay_z,
+                                        h_source_z,
+                                        resolution,
+                                        a_h_terms=self.cpml3d_a_h_terms,
+                                        b_h_terms=self.cpml3d_b_h_terms,
+                                        inv_kappa_h_terms=self.cpml3d_inv_kappa_h_terms,
+                                        dt=dt_scalar,
+                                        psi_h_terms=cpml3d_psi_h_terms,
+                                    )
                                 )
                         else:
                             hx, hy, hz = ops.fused_update_h_lossy_3d_material(
@@ -1968,26 +1970,28 @@ class CompiledSimulation:
                                     )
                                 )
                             else:
-                                ex, ey, ez, cpml3d_psi_e_terms = cpml_update_e_from_h_3d(
-                                    hx,
-                                    hy,
-                                    hz,
-                                    ex,
-                                    ey,
-                                    ez,
-                                    e_decay_x,
-                                    e_source_x,
-                                    e_decay_y,
-                                    e_source_y,
-                                    e_decay_z,
-                                    e_source_z,
-                                    resolution,
-                                    a_e_terms=self.cpml3d_a_e_terms,
-                                    b_e_terms=self.cpml3d_b_e_terms,
-                                    inv_kappa_e_terms=self.cpml3d_inv_kappa_e_terms,
-                                    dt=dt_scalar,
-                                    psi_e_terms=cpml3d_psi_e_terms,
-                                    metallic_edges=self.cpml3d_metallic_edges,
+                                ex, ey, ez, cpml3d_psi_e_terms = (
+                                    cpml_update_e_from_h_3d(
+                                        hx,
+                                        hy,
+                                        hz,
+                                        ex,
+                                        ey,
+                                        ez,
+                                        e_decay_x,
+                                        e_source_x,
+                                        e_decay_y,
+                                        e_source_y,
+                                        e_decay_z,
+                                        e_source_z,
+                                        resolution,
+                                        a_e_terms=self.cpml3d_a_e_terms,
+                                        b_e_terms=self.cpml3d_b_e_terms,
+                                        inv_kappa_e_terms=self.cpml3d_inv_kappa_e_terms,
+                                        dt=dt_scalar,
+                                        psi_e_terms=cpml3d_psi_e_terms,
+                                        metallic_edges=self.cpml3d_metallic_edges,
+                                    )
                                 )
                         else:
                             boundary_views = build_h_boundary_views_for_e_3d(
@@ -2887,12 +2891,10 @@ def compile_simulation(
     use_primitive_cpml_3d_terms = False
     use_cpml_3d_packed_psi = False
     cpml3d_h_slab_specs = tuple(
-        CpmlPackedSlabSpec(axis=0, low=0, high=0, shape=(0, 0, 0))
-        for _ in range(6)
+        CpmlPackedSlabSpec(axis=0, low=0, high=0, shape=(0, 0, 0)) for _ in range(6)
     )
     cpml3d_e_slab_specs = tuple(
-        CpmlPackedSlabSpec(axis=0, low=0, high=0, shape=(0, 0, 0))
-        for _ in range(6)
+        CpmlPackedSlabSpec(axis=0, low=0, high=0, shape=(0, 0, 0)) for _ in range(6)
     )
     cpml3d_h_psi_shapes = tuple((0, 0, 0) for _ in range(6))
     cpml3d_e_psi_shapes = tuple((0, 0, 0) for _ in range(6))
@@ -2933,12 +2935,8 @@ def compile_simulation(
                     cpml3d_alpha_e_terms,
                     run_cfg.dt,
                 )
-                h_full_shapes = _cpml_3d_h_term_shapes(
-                    fields.Hx, fields.Hy, fields.Hz
-                )
-                e_full_shapes = _cpml_3d_e_term_shapes(
-                    fields.Ex, fields.Ey, fields.Ez
-                )
+                h_full_shapes = _cpml_3d_h_term_shapes(fields.Hx, fields.Hy, fields.Hz)
+                e_full_shapes = _cpml_3d_e_term_shapes(fields.Ex, fields.Ey, fields.Ez)
                 cpml3d_h_slab_specs = _build_cpml_packed_slab_specs(
                     cpml3d_a_h_terms,
                     cpml3d_inv_kappa_h_terms,
@@ -2956,12 +2954,8 @@ def compile_simulation(
                     full_psi_shapes, fields.Hx.dtype
                 )
                 if use_cpml_3d_packed_psi:
-                    cpml3d_h_psi_shapes = _cpml_packed_slab_shapes(
-                        cpml3d_h_slab_specs
-                    )
-                    cpml3d_e_psi_shapes = _cpml_packed_slab_shapes(
-                        cpml3d_e_slab_specs
-                    )
+                    cpml3d_h_psi_shapes = _cpml_packed_slab_shapes(cpml3d_h_slab_specs)
+                    cpml3d_e_psi_shapes = _cpml_packed_slab_shapes(cpml3d_e_slab_specs)
                 else:
                     cpml3d_h_psi_shapes = h_full_shapes
                     cpml3d_e_psi_shapes = e_full_shapes
