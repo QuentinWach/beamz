@@ -1308,6 +1308,8 @@ def test_build_port_projection_3d_modemonitor_uses_discrete_contract(monkeypatch
             profiles=forward,
             backward_profiles=backward,
             component_indices=indices,
+            phase_reference_coord=0.25,
+            phase_plane_coord=0.5,
         )
 
     monkeypatch.setattr(core_mod, "solve_modes", fail_solve_modes)
@@ -1364,8 +1366,11 @@ def test_build_port_projection_3d_modemonitor_uses_discrete_contract(monkeypatch
     assert captured["target_neff"] == 2.25
     assert captured["aperture_pad_cells"] == 0
     assert captured["aperture_window_alpha"] == 0.0
-    assert captured["component_permittivity"]["Ey"].shape == (4, 3, 4)
-    assert captured["component_permeability"]["Hz"].shape == (4, 3, 3)
+    assert captured["scalar_permittivity"].shape == (3, 3)
+    assert captured["grid_shape"] == (3, 3, 3)
+    assert captured["component_shapes"]["Ey"] == (3, 2, 3)
+    assert "component_permittivity" not in captured
+    assert "component_permeability" not in captured
     assert projection["discrete_contract"] == "micromode.beamz.DiscreteMode/v1"
     assert projection["components"] == ("Ey", "Ez", "Hy", "Hz")
     assert np.real(projection["mode_components"]["Hz"][0]) < 0.0

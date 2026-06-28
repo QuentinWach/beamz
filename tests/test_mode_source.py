@@ -335,10 +335,10 @@ class TestModeSourceDiscreteHelpers:
             fake_solve_beamz_mode_plane,
         )
 
-        permittivity = np.ones((4, 5, 6), dtype=np.float64)
+        permittivity = np.ones((12, 13, 14), dtype=np.float64)
         source = ModeSource(
             grid=SimpleNamespace(),
-            center=(2.5, 2.5, 2.0),
+            center=(7.0, 6.0, 6.0),
             width=3.0,
             height=3.0,
             wavelength=TEST_WAVELENGTH,
@@ -354,21 +354,24 @@ class TestModeSourceDiscreteHelpers:
         assert captured["direction"] == "+y"
         assert captured["solver_direction"] == "+y"
         assert captured["transverse_axes"] == ("z", "x")
-        assert captured["scalar_permittivity"].shape == (4, 6)
-        assert captured["component_shapes"]["Ex"] == (4, 5, 5)
+        assert captured["scalar_permittivity"].shape == (8, 8)
+        assert captured["grid_shape"] == (8, 3, 8)
+        assert captured["component_shapes"]["Ex"] == (8, 3, 7)
+        assert "component_permittivity" not in captured
+        assert "component_permeability" not in captured
         assert source._initialized
         assert source._discrete_mode is not None
         assert source._profiles_are_runtime_oriented is True
         assert source._k_num_axis == 7.0
-        assert source._phase_ref_coord == 0.25
-        assert source._phase_plane_coord == 0.5
+        assert source._phase_ref_coord == 5.25
+        assert source._phase_plane_coord == 5.5
         assert source._discrete_launch_max_shift == 12
         np.testing.assert_allclose(source._Ex_profile, 2.0 * profiles["Ex"])
 
         runtime_profiles, runtime_indices = source._get_3d_profiles_and_indices()
         np.testing.assert_allclose(runtime_profiles["Ex"], 2.0 * profiles["Ex"])
         np.testing.assert_allclose(runtime_profiles["Hz"], 2.0 * profiles["Hz"])
-        assert runtime_indices["Ex"] == indices["Ex"]
+        assert runtime_indices["Ex"] == (slice(2, 4), 7, slice(3, 6))
 
     def test_injection_support_bounds_union_discrete_residual_cells(self, monkeypatch):
         source = ModeSource(

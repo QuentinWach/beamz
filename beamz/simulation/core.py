@@ -25,11 +25,13 @@ from beamz.devices.sources.compiler import (
 from beamz.devices.sources.mode import (
     _detect_transverse_symmetry_axes,
     _enforce_componentwise_parity,
+    _local_mode_plane_spec,
     _make_3d_mode_basis_profiles,
     _modal_overlap_3d_profiles,
     _normalize_3d_profiles_by_flux,
     _numeric_phase_delay,
     _select_core_confined_mode_index,  # noqa: F401 - compatibility monkeypatch hook
+    _shift_discrete_mode_to_global,
     _solve_numeric_k_axis,
 )
 from beamz.devices.sources.solve import solve_beamz_mode_plane, solve_modes
@@ -56,11 +58,7 @@ from beamz.simulation.compiled import (
 )
 from beamz.simulation.fields import Fields
 from beamz.simulation.step_sequence import run_step_sequence
-from beamz.simulation.yee import (
-    component_coordinates_3d_um,
-    sample_voxel_grid_at_component_3d,
-    sample_voxel_grid_at_e_component_3d_centered,
-)
+from beamz.simulation.yee import component_coordinates_3d_um
 from beamz.visual.helpers import _finish_inline_progress, _print_inline_progress
 
 
@@ -3507,37 +3505,38 @@ class Simulation:
         else:
             width, height = size[0], size[1]
 
-        eps_profile_full = np.take(perm, plane_index, axis=axis_index)
         transverse_axes = self._plane_axes_for_port_axis(axis)
-        component_shapes = {
-            name: tuple(int(v) for v in np.asarray(getattr(self.fields, name)).shape)
-            for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
-        }
-        permittivity_arr = np.asarray(perm)
-        permeability_arr = np.ones_like(permittivity_arr, dtype=np.float64)
-        component_permittivity = {
-            component: np.asarray(
-                sample_voxel_grid_at_e_component_3d_centered(
-                    permittivity_arr,
-                    component,
-                    stored_shape=component_shapes[component],
+        eps_profile_full = np.take(perm, plane_index, axis=axis_index)
+        snapped_region = None
+        if hasattr(monitor, "get_snapped_region"):
+            try:
+                snapped_region = monitor.get_snapped_region(
+                    dx=float(self.resolution),
+                    dy=float(self.resolution),
+                    dz=float(self.resolution),
+                    field_shape=tuple(int(v) for v in perm.shape),
                 )
-            )
-            for component in ("Ex", "Ey", "Ez")
-        }
-        component_permeability = {
-            component: np.asarray(
-                sample_voxel_grid_at_component_3d(
-                    permeability_arr,
-                    component,
-                    stored_shape=component_shapes[component],
-                )
-            )
-            for component in ("Hx", "Hy", "Hz")
-        }
+            except Exception:
+                snapped_region = None
+        local_plane = _local_mode_plane_spec(
+            eps_profile_full,
+            axis=axis,
+            grid_shape=tuple(int(v) for v in perm.shape),
+            center=center,
+            width=float(width),
+            height=float(height),
+            plane_index=int(plane_index),
+            offset_index=int(offset_index),
+            resolution=float(self.resolution),
+            snapped_region=snapped_region,
+            aperture_pad_cells=0,
+        )
         try:
             discrete_mode = solve_beamz_mode_plane(
-                scalar_permittivity=np.asarray(eps_profile_full, dtype=np.complex128),
+                scalar_permittivity=np.asarray(
+                    local_plane["scalar_permittivity"],
+                    dtype=np.complex128,
+                ),
                 frequency=float(frequency),
                 resolution=float(self.resolution),
                 dt=None if getattr(self, "dt", None) is None else float(self.dt),
@@ -3545,15 +3544,13 @@ class Simulation:
                 direction=str(spec.direction),
                 solver_direction=str(spec.direction),
                 transverse_axes=transverse_axes,
-                grid_shape=tuple(int(v) for v in perm.shape),
-                component_shapes=component_shapes,
-                component_permittivity=component_permittivity,
-                component_permeability=component_permeability,
-                center=center,
+                grid_shape=local_plane["grid_shape"],
+                component_shapes=local_plane["component_shapes"],
+                center=local_plane["center"],
                 width=float(width),
                 height=float(height),
-                plane_index=int(plane_index),
-                offset_index=int(offset_index),
+                plane_index=int(local_plane["plane_index"]),
+                offset_index=int(local_plane["offset_index"]),
                 mode_index=int(spec.mode_index),
                 polarization=str(spec.polarization).lower(),
                 target_neff=target,
@@ -3565,6 +3562,12 @@ class Simulation:
             return None
         if discrete_mode is None:
             return None
+        discrete_mode = _shift_discrete_mode_to_global(
+            discrete_mode,
+            origin_zyx=local_plane["origin_zyx"],
+            axis=axis,
+            resolution=float(self.resolution),
+        )
 
         proj_components = tuple(parts.get("projection_components_3d", ()))
         if not proj_components:
