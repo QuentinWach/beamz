@@ -491,7 +491,7 @@ class StorageLayout:
     active_shapes: dict[str, tuple[int, ...]]
     storage_shapes: dict[str, tuple[int, ...]]
     padding: dict[str, tuple[tuple[int, int], ...]]
-    valid_masks: dict[str, jnp.ndarray]
+    valid_masks: dict[str, jnp.ndarray | None]
 
 
 _COMPONENT_NAMES = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
@@ -586,7 +586,9 @@ def _pad_width(
 
 def _valid_storage_mask(
     active_shape: tuple[int, ...], storage_shape: tuple[int, ...]
-) -> jnp.ndarray:
+) -> jnp.ndarray | None:
+    if tuple(int(v) for v in active_shape) == tuple(int(v) for v in storage_shape):
+        return None
     mask = np.ones(tuple(int(v) for v in storage_shape), dtype=bool)
     active_region = tuple(slice(0, int(v)) for v in active_shape)
     mask[active_region] = False
@@ -738,18 +740,30 @@ def _pad_pml_data_for_storage(fields, layout: StorageLayout):
     ):
         return pml_data
     out = dict(pml_data)
+    axis_index = {"z": 0, "y": 1, "x": 2}
+
+    def _pad_cpml_profile(key: str, spec, *, neutral: float):
+        if key not in out:
+            return
+        arr = jnp.asarray(out[key])
+        storage_shape = layout.storage_shapes[spec.target_component]
+        axis = axis_index[spec.derivative_axis]
+        if arr.ndim == 3 and all(int(arr.shape[i]) == 1 for i in range(3) if i != axis):
+            compact_shape = tuple(
+                int(storage_shape[i]) if i == axis else 1 for i in range(3)
+            )
+            out[key] = _pad_high_to_shape(arr, compact_shape, pad_value=neutral)
+        else:
+            out[key] = _pad_high_to_shape(arr, storage_shape, pad_value=neutral)
+
     for spec in CPML_3D_H_DERIVATIVES:
-        shape = layout.storage_shapes[spec.target_component]
         for suffix, neutral in (("sigma", 0.0), ("kappa", 1.0), ("alpha", 0.0)):
             key = f"cpml3d_{spec.name}_{suffix}"
-            if key in out:
-                out[key] = _pad_high_to_shape(out[key], shape, pad_value=neutral)
+            _pad_cpml_profile(key, spec, neutral=neutral)
     for spec in CPML_3D_E_DERIVATIVES:
-        shape = layout.storage_shapes[spec.target_component]
         for suffix, neutral in (("sigma", 0.0), ("kappa", 1.0), ("alpha", 0.0)):
             key = f"cpml3d_{spec.name}_{suffix}"
-            if key in out:
-                out[key] = _pad_high_to_shape(out[key], shape, pad_value=neutral)
+            _pad_cpml_profile(key, spec, neutral=neutral)
     return out
 
 
@@ -918,12 +932,12 @@ class CompiledSimulation:
     hx_metal_mask: jnp.ndarray
     hy_metal_mask: jnp.ndarray
     hz_metal_mask: jnp.ndarray
-    ex_storage_mask: jnp.ndarray
-    ey_storage_mask: jnp.ndarray
-    ez_storage_mask: jnp.ndarray
-    hx_storage_mask: jnp.ndarray
-    hy_storage_mask: jnp.ndarray
-    hz_storage_mask: jnp.ndarray
+    ex_storage_mask: jnp.ndarray | None
+    ey_storage_mask: jnp.ndarray | None
+    ez_storage_mask: jnp.ndarray | None
+    hx_storage_mask: jnp.ndarray | None
+    hy_storage_mask: jnp.ndarray | None
+    hz_storage_mask: jnp.ndarray | None
 
     _compiled_scan: callable | None = None
     _compile_count: int = 0
@@ -3482,10 +3496,8 @@ def compile_simulation(
                     CPML_3D_E_DERIVATIVES,
                 )
                 full_psi_shapes = (*h_full_shapes, *e_full_shapes)
-                use_cpml_3d_packed_psi = (
-                    False
-                    if storage_layout.enabled
-                    else _should_pack_cpml_3d_psi(full_psi_shapes, fields.Hx.dtype)
+                use_cpml_3d_packed_psi = _should_pack_cpml_3d_psi(
+                    full_psi_shapes, fields.Hx.dtype
                 )
                 if use_cpml_3d_packed_psi:
                     cpml3d_h_psi_shapes = _cpml_packed_slab_shapes(cpml3d_h_slab_specs)

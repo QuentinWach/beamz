@@ -195,3 +195,85 @@ for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
         cwd=os.getcwd(),
         timeout=90,
     )
+
+
+def test_cpu_fake_device_sharded_cpml_supports_packed_psi():
+    code = r"""
+import os
+import numpy as np
+import jax
+
+from beamz import Design, Material, PML, ShardingConfig, Simulation
+
+
+def make_sim():
+    return Simulation(
+        design=Design(
+            width=13.0,
+            height=15.0,
+            depth=17.0,
+            material=Material(permittivity=1.0),
+        ),
+        sources=[],
+        monitors=[],
+        boundaries=[PML(thickness=1.0, formulation="cpml")],
+        time=np.arange(3, dtype=float) * 1e-18,
+        resolution=1.0,
+    )
+
+
+def seed_fields(sim, seed):
+    rng = np.random.default_rng(seed)
+    payload = {}
+    for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+        arr = np.asarray(getattr(sim.fields, name))
+        payload[name] = rng.normal(0.0, 1e-3, size=arr.shape).astype(np.float32)
+    for name, arr in payload.items():
+        setattr(sim.fields, name, arr)
+    return payload
+
+
+def apply_payload(sim, payload):
+    for name, arr in payload.items():
+        setattr(sim.fields, name, arr.copy())
+
+
+os.environ["BEAMZ_CPML_PACKED_PSI"] = "true"
+assert jax.local_device_count("cpu") >= 2
+cfg = ShardingConfig(enabled=True, axis="z", num_devices=2, backend="cpu")
+reference = make_sim()
+sharded = make_sim()
+payload = seed_fields(reference, 9012)
+apply_payload(sharded, payload)
+
+program = sharded.compile(num_steps=2, sharding=cfg)
+assert program.storage_layout.enabled
+assert program.use_cpml_3d
+assert program.use_cpml_3d_packed_psi
+assert program.cpml3d_h_psi_shapes == tuple(
+    spec.shape for spec in program.cpml3d_h_slab_specs
+)
+assert program.cpml3d_e_psi_shapes == tuple(
+    spec.shape for spec in program.cpml3d_e_slab_specs
+)
+
+reference.run_compiled(num_steps=2, progress=False)
+sharded.run_compiled(num_steps=2, progress=False, sharding=cfg)
+
+for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+    ref = np.asarray(getattr(reference.fields, name))
+    got = np.asarray(getattr(sharded.fields, name))
+    assert got.shape == ref.shape, (name, got.shape, ref.shape)
+    np.testing.assert_allclose(got, ref, atol=2e-6, rtol=2e-6)
+"""
+    env = os.environ.copy()
+    env["XLA_FLAGS"] = "--xla_force_host_platform_device_count=2"
+    env["BEAMZ_CPML_PACKED_PSI"] = "true"
+    env.setdefault("JAX_PLATFORMS", "cpu")
+    subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        check=True,
+        env=env,
+        cwd=os.getcwd(),
+        timeout=120,
+    )
