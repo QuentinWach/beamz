@@ -1,10 +1,5 @@
 # Development Guide
 
-This guide covers the development workflow for BEAMZ using modern Python tooling with **uv**.
-
-BEAMZ is very young and in a very crowded space - but it is **quickly growing**.
-
-[![Star History Chart](https://api.star-history.com/svg?repos=QuentinWach/beamz,ymahlau/fdtdx,NanoComp/meep,facebookresearch/Khronos.jl,flaport/fdtd,zer011b/fdtd3d,thliebig/openEMS-Project,flexcompute/tidy3d&type=timeline&logscale&legend=bottom-right)](https://www.star-history.com/#QuentinWach/beamz&ymahlau/fdtdx&NanoComp/meep&facebookresearch/Khronos.jl&flaport/fdtd&zer011b/fdtd3d&thliebig/openEMS-Project&flexcompute/tidy3d&type=timeline&logscale&legend=bottom-right)
 
 ## AI-Assisted Contributions
 
