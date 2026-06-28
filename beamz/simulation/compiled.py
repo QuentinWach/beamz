@@ -3256,6 +3256,15 @@ def _has_positive_conductivity(conductivity_region: jnp.ndarray) -> bool:
     )
 
 
+def _elide_zero_conductivity_grid(value):
+    """Return a scalar zero when a conductivity-like grid is identically zero."""
+
+    arr_np = np.asarray(value)
+    if arr_np.size and not bool(np.any(arr_np != 0.0)):
+        return jnp.asarray(0.0, dtype=getattr(value, "dtype", jnp.float32))
+    return value
+
+
 def _precompute_e_lossless_source_coefficient(
     *,
     shape: tuple[int, int, int],
@@ -3385,9 +3394,9 @@ def compile_simulation(
         h_decay_x = h_source_x = h_decay_y = h_source_y = empty3
         h_decay_z = h_source_z = empty3
         h_source_lossless_x = h_source_lossless_y = h_source_lossless_z = empty3
-        h_sigma_m_x = fields.sigma_m_hx
-        h_sigma_m_y = fields.sigma_m_hy
-        h_sigma_m_z = fields.sigma_m_hz
+        h_sigma_m_x = _elide_zero_conductivity_grid(fields.sigma_m_hx)
+        h_sigma_m_y = _elide_zero_conductivity_grid(fields.sigma_m_hy)
+        h_sigma_m_z = _elide_zero_conductivity_grid(fields.sigma_m_hz)
     else:
         (
             (h_decay_x, h_source_x, h_source_lossless_x),
@@ -3408,9 +3417,9 @@ def compile_simulation(
         e_decay_x = e_source_x = e_decay_y = e_source_y = empty3
         e_decay_z = e_source_z = empty3
         e_source_lossless_x = e_source_lossless_y = e_source_lossless_z = empty3
-        e_conductivity_x = fields.sig_x
-        e_conductivity_y = fields.sig_y
-        e_conductivity_z = fields.sig_z
+        e_conductivity_x = _elide_zero_conductivity_grid(fields.sig_x)
+        e_conductivity_y = _elide_zero_conductivity_grid(fields.sig_y)
+        e_conductivity_z = _elide_zero_conductivity_grid(fields.sig_z)
         e_permittivity_x = fields.eps_x
         e_permittivity_y = fields.eps_y
         e_permittivity_z = fields.eps_z

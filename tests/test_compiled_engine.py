@@ -502,9 +502,12 @@ def test_compiled_3d_cpml_uses_material_coefficients():
     assert program.e_source_lossless_x.shape == (0, 0, 0)
     assert program.e_source_lossless_y.shape == (0, 0, 0)
     assert program.e_source_lossless_z.shape == (0, 0, 0)
-    assert program.e_conductivity_x is sim.fields.sig_x
-    assert program.e_conductivity_y is sim.fields.sig_y
-    assert program.e_conductivity_z is sim.fields.sig_z
+    assert program.e_conductivity_x.shape == ()
+    assert program.e_conductivity_y.shape == ()
+    assert program.e_conductivity_z.shape == ()
+    assert float(program.e_conductivity_x) == 0.0
+    assert float(program.e_conductivity_y) == 0.0
+    assert float(program.e_conductivity_z) == 0.0
     assert program.e_permittivity_x is sim.fields.eps_x
     assert program.e_permittivity_y is sim.fields.eps_y
     assert program.e_permittivity_z is sim.fields.eps_z
@@ -512,9 +515,12 @@ def test_compiled_3d_cpml_uses_material_coefficients():
     assert program.hx_metal_mask.shape == (0, 0, 0)
     assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
     assert program.field_shape_hx == tuple(sim.fields.Hx.shape)
-    assert program.h_sigma_m_x is sim.fields.sigma_m_hx
-    assert program.h_sigma_m_y is sim.fields.sigma_m_hy
-    assert program.h_sigma_m_z is sim.fields.sigma_m_hz
+    assert program.h_sigma_m_x.shape == ()
+    assert program.h_sigma_m_y.shape == ()
+    assert program.h_sigma_m_z.shape == ()
+    assert float(program.h_sigma_m_x) == 0.0
+    assert float(program.h_sigma_m_y) == 0.0
+    assert float(program.h_sigma_m_z) == 0.0
     assert program.h_source_lossless_x.shape == (0, 0, 0)
     assert program.h_source_lossless_y.shape == (0, 0, 0)
     assert program.h_source_lossless_z.shape == (0, 0, 0)
