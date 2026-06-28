@@ -6,6 +6,17 @@ BEAMZ is very young and in a very crowded space - but it is **quickly growing**.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=QuentinWach/beamz,ymahlau/fdtdx,NanoComp/meep,facebookresearch/Khronos.jl,flaport/fdtd,zer011b/fdtd3d,thliebig/openEMS-Project,flexcompute/tidy3d&type=timeline&logscale&legend=bottom-right)](https://www.star-history.com/#QuentinWach/beamz&ymahlau/fdtdx&NanoComp/meep&facebookresearch/Khronos.jl&flaport/fdtd&zer011b/fdtd3d&thliebig/openEMS-Project&flexcompute/tidy3d&type=timeline&logscale&legend=bottom-right)
 
+## AI-Assisted Contributions
+
+AI-assisted coding workflows are allowed, but AI tools are only tools. The human
+author owns the change and is responsible for reviewing, understanding, testing,
+and defending everything they submit.
+
+Contributors must be transparent when a meaningful part of a change was created
+or rewritten with AI assistance. Mention the tool or model used in the pull
+request description or commit notes, and describe which parts of the change it
+affected. Maintainers may ask for extra explanation, review, or testing for
+AI-assisted changes.
 
 ## Prerequisites
 
