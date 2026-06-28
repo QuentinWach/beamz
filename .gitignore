@@ -37,6 +37,7 @@ ENV/
 .becnhmarks
 
 # IDE
+.DS_Store
 .idea/
 .vscode/
 *.swp
