@@ -1,11 +1,14 @@
 from __future__ import annotations
+
 import time
+
 import numpy as np
+
 from beamz import (
+    PML,
     Design,
     Material,
     ModeSource,
-    PML,
     Rectangle,
     Simulation,
     ramped_cosine,

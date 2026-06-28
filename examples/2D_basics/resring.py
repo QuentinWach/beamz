@@ -1,31 +1,29 @@
-import sys
-from pathlib import Path
-
-from beamz import *
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import beamz as bz
+
+um = bz.um
 
 # Parameters
-WL = 1.55 * µm
-TIME = 120 * WL / LIGHT_SPEED
-X, Y = 20 * µm, 19 * µm
+WL = 1.55 * um
+TIME = 120 * WL / bz.LIGHT_SPEED
+X, Y = 20 * um, 19 * um
 N_CORE, N_CLAD = 2.04, 1.444  # Si3N4, SiO2
-DX, DT = calc_optimal_fdtd_params(
+DX, DT = bz.calc_optimal_fdtd_params(
     WL, max(N_CORE, N_CLAD), dims=2, safety_factor=0.999, points_per_wavelength=20
 )
-RING_RADIUS, WG_WIDTH = 6 * µm, 0.5 * µm  # 0.565*µm
+RING_RADIUS, WG_WIDTH = 6 * um, 0.5 * um  # 0.565 um
 
 # Create the design
-design = Design(width=X, height=Y, material=Material(N_CLAD**2))
-design += Rectangle(
-    position=(0, WL * 2), width=X, height=WG_WIDTH, material=Material(N_CORE**2)
+design = bz.Design(width=X, height=Y, material=bz.Material(N_CLAD**2))
+design += bz.Rectangle(
+    position=(0, WL * 2), width=X, height=WG_WIDTH, material=bz.Material(N_CORE**2)
 )
-design += Ring(
+design += bz.Ring(
     position=(X / 2, WL * 2 + WG_WIDTH + RING_RADIUS + WG_WIDTH / 2 + 0.2 * WG_WIDTH),
     inner_radius=RING_RADIUS - WG_WIDTH / 2,
     outer_radius=RING_RADIUS + WG_WIDTH / 2,
-    material=Material(N_CORE**2),
+    material=bz.Material(N_CORE**2),
 )
 design.show()
 
@@ -35,15 +33,15 @@ grid.show(field="permittivity")
 
 # Define the signal & source
 time_steps = np.arange(0, TIME, DT)
-signal = ramped_cosine(
+signal = bz.ramped_cosine(
     time_steps,
     amplitude=1.0,
-    frequency=LIGHT_SPEED / WL,
+    frequency=bz.LIGHT_SPEED / WL,
     phase=0,
-    ramp_duration=WL * 6 / LIGHT_SPEED,
+    ramp_duration=WL * 6 / bz.LIGHT_SPEED,
     t_max=TIME / 2.5,
 )
-source = ModeSource(
+source = bz.ModeSource(
     grid=grid,
     center=(WL * 2, WL * 2 + WG_WIDTH / 2),
     width=WG_WIDTH * 3.5,  # Slightly wider than waveguide to capture mode tails
@@ -55,10 +53,10 @@ source = ModeSource(
 source.show_signal(t=time_steps)
 
 # Run the simulation
-sim = Simulation(
+sim = bz.Simulation(
     design=design,
     sources=[source],
-    boundaries=[PML(edges="all", thickness=1.2 * WL)],
+    boundaries=[bz.PML(edges="all", thickness=1.2 * WL)],
     time=time_steps,
     resolution=DX,
 )

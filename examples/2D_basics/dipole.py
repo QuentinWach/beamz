@@ -1,5 +1,6 @@
-import beamz as bz
 import numpy as np
+
+import beamz as bz
 
 um = bz.um
 

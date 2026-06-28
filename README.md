@@ -40,6 +40,8 @@
 
 ## Examples
 Try out notebooks from our growing **[example library](https://beamzorg.github.io/beamz-notebooks/)**. 
+The repository examples include an [index](examples/README.md) that separates
+good first reads from advanced or experimental workflows.
 
 
 ## Installation

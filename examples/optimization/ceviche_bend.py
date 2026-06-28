@@ -1,11 +1,25 @@
+import matplotlib.pyplot as plt
 import numpy as np
-from beamz import *
+
+from beamz import (
+    LIGHT_SPEED,
+    PML,
+    Design,
+    Material,
+    ModeSource,
+    Monitor,
+    Rectangle,
+    Simulation,
+    calc_optimal_fdtd_params,
+    plot_signal,
+    ramped_cosine,
+    µm,
+)
 from beamz.optimization.topology import (
     TopologyManager,
     compute_overlap_gradient,
     create_optimization_mask,
 )
-import matplotlib.pyplot as plt
 
 # --- 1. Simulation Setup ---
 W = H = 7 * µm
@@ -277,7 +291,10 @@ for step in range(STEPS):
     mat_frac = np.mean(phys_density[mask])
 
     print(
-        f" Step {step + 1}: Obj={total_obj:.2e} (Trans={transmission_pct:.1f}% | Fwd={transmission_fwd:.1f}% Bwd={transmission_back:.1f}%) | Mat={mat_frac:.1%} | GradScale={grad_scale:.1e} | MaxUp={max_update:.2e}",
+        f" Step {step + 1}: Obj={total_obj:.2e} "
+        f"(Trans={transmission_pct:.1f}% | Fwd={transmission_fwd:.1f}% "
+        f"Bwd={transmission_back:.1f}%) | Mat={mat_frac:.1%} | "
+        f"GradScale={grad_scale:.1e} | MaxUp={max_update:.2e}",
         end="\r",
     )
 
@@ -300,7 +317,7 @@ plt.ylim(0, 100)
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.savefig("transmission_vs_step.png", dpi=150, bbox_inches="tight")
-print(f"Transmission plot saved to transmission_vs_step.png")
+print("Transmission plot saved to transmission_vs_step.png")
 plt.close()
 
 # --- 4. Final Verification & Visualization ---
@@ -313,7 +330,7 @@ sweep_transmission = []
 # Use extended time to ensure full pulse transmission for all runs
 time_sweep = np.arange(0, 15 * WL / LIGHT_SPEED, DT)
 
-for i, wl_val in enumerate(wavelengths):
+for wl_val in wavelengths:
     print(f"Simulating Wavelength: {wl_val / µm:.3f} µm...", end="\r")
 
     # Create signal for this specific wavelength
@@ -368,7 +385,7 @@ for i, wl_val in enumerate(wavelengths):
     trans = transmission_percent(mon_in, mon_out, DT)
     sweep_transmission.append(trans)
 
-print(f"\nSweep Complete.")
+print("\nSweep Complete.")
 
 # Plot Frequency Sweep
 plt.figure(figsize=(10, 6))
@@ -380,7 +397,7 @@ plt.grid(True, alpha=0.3)
 plt.ylim(0, 100)
 plt.tight_layout()
 plt.savefig("transmission_spectrum.png", dpi=150)
-print(f"Spectrum plot saved to transmission_spectrum.png")
+print("Spectrum plot saved to transmission_spectrum.png")
 
 # --- 5. Final Visualization (Center Wavelength) ---
 # Re-run simulation at center wavelength (1.55) to generate field plot

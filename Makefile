@@ -19,7 +19,7 @@ test-single:  ## Run a single test file (usage: make test-single FILE=test_physi
 	uv run python -m pytest tests/$(FILE) -v --tb=short
 
 lint:  ## Run linting checks
-	uv run --extra lint ruff check beamz/
+	uv run --extra lint ruff check beamz/ examples/
 
 dead-code:  ## Run high-confidence dead code checks
 	uv run --extra lint vulture beamz/ --min-confidence 80
@@ -27,12 +27,12 @@ dead-code:  ## Run high-confidence dead code checks
 audit: lint dead-code test  ## Run core code quality audit
 
 format:  ## Format code and fix package lint issues
-	uv run --extra lint ruff format beamz/ tests/
-	uv run --extra lint ruff check --fix beamz/
+	uv run --extra lint ruff format beamz/ examples/ tests/
+	uv run --extra lint ruff check --fix beamz/ examples/
 
 format-check:  ## Check if code is formatted correctly
-	uv run --extra lint ruff format --check beamz/ tests/
-	uv run --extra lint ruff check beamz/
+	uv run --extra lint ruff format --check beamz/ examples/ tests/
+	uv run --extra lint ruff check beamz/ examples/
 
 clean:  ## Clean build artifacts
 	rm -rf build/ dist/ *.egg-info/ .pytest_cache/ .coverage htmlcov/

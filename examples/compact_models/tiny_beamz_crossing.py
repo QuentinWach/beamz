@@ -11,23 +11,26 @@ Workflow:
 """
 
 from __future__ import annotations
-import importlib.util
+
 import importlib.metadata
+import importlib.util
 import math
 import shutil
 import subprocess
 import sys
 import time as pytime
 from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
+
 import beamz.simulation.core as simulation_core
 from beamz import (
     LIGHT_SPEED,
+    PML,
     ModeMonitor,
     ModeSource,
     Monitor,
-    PML,
     PortSpec,
     Simulation,
     dxdt,
