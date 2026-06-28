@@ -9,11 +9,11 @@ dynamic = []
 authors = [
     { name = "Quentin Wach", email = "quentin.wach+beamz@gmail.com" },
 ]
-description = "EM package to create inverse / generative designs for your photonic devices with ease and efficiency."
+description = "Open GPU-accelerated FDTD for photonic chip designers."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-keywords = ["electromagnetics", "photonics", "inverse design", "generative design", "simulation"]
+keywords = ["computational physics", "electromagnetics", "photonics", "inverse design", "simulation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -43,8 +43,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/QuentinWach/beamz"
-Repository = "https://github.com/QuentinWach/beamz"
+Homepage = "https://github.com/beamzorg/beamz"
+Repository = "https://github.com/beamzorg/beamz"
 # Bug Tracker, Documentation etc. can be added here
 
 [project.optional-dependencies]
