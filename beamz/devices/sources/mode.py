@@ -1,5 +1,6 @@
 import logging
-from dataclasses import dataclass, replace
+from copy import copy
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import jax.numpy as jnp
@@ -3519,7 +3520,7 @@ class ModeSource(RuntimeStateProxy):
         local_source = object.__new__(type(self))
         local_source.__dict__.update(self.__dict__)
         if "_state" in self.__dict__:
-            object.__setattr__(local_source, "_state", replace(self._state))
+            object.__setattr__(local_source, "_state", copy(self._state))
         offset = float(cell_bounds[axis_pos][0]) * float(self._resolution or 0.0)
         local_source._phase_ref_coord = float(self._phase_ref_coord) - offset
         local_source._phase_plane_coord = float(self._phase_plane_coord) - offset
