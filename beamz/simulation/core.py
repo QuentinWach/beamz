@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import warnings
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -464,6 +465,97 @@ def _source_spectrum_normalization(
     if not spectra:
         return None
     return spectra[0]
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _design_grid_shape_estimate(design, resolution) -> tuple[int, ...]:
+    size = _design_domain(design) if design is not None else None
+    if size is None:
+        return ()
+    res = float(resolution)
+    if (not np.isfinite(res)) or res <= 0.0:
+        return ()
+    dims = tuple(float(value) for value in size)
+    if len(dims) < 3 or dims[2] <= 0.0:
+        return tuple(max(1, int(round(float(dim) / res))) for dim in dims[:2])
+    # BeamZ stores 3D material arrays in z/y/x order.
+    return (
+        max(1, int(round(dims[2] / res))),
+        max(1, int(round(dims[1] / res))),
+        max(1, int(round(dims[0] / res))),
+    )
+
+
+def _setup_device_auto_threshold_bytes() -> int:
+    raw = os.getenv("BEAMZ_SETUP_CPU_MIN_GIB", "1.0").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 1.0
+    return max(0, int(value * 1024**3))
+
+
+def _has_accelerator_backend() -> bool:
+    try:
+        import jax
+
+        return any(device.platform != "cpu" for device in jax.devices())
+    except Exception:
+        return False
+
+
+def _should_setup_on_cpu(policy, *, design, resolution) -> bool:
+    raw = os.getenv("BEAMZ_SETUP_DEVICE", "auto") if policy is None else policy
+    if raw is None:
+        raw = "auto"
+    if not isinstance(raw, str):
+        return False
+    normalized = raw.strip().lower()
+    if normalized in {"cpu", "host"}:
+        return True
+    if normalized in {"default", "device", "gpu", "accelerator"}:
+        return False
+    if normalized != "auto":
+        raise ValueError(
+            "setup_device must be one of 'auto', 'cpu', or 'default', "
+            f"got {raw!r}."
+        )
+    if _env_bool("BEAMZ_SETUP_CPU", False):
+        return True
+    if not _has_accelerator_backend():
+        return False
+    shape = _design_grid_shape_estimate(design, resolution)
+    if not shape:
+        return False
+    scalar_bytes = int(np.prod(shape, dtype=np.int64)) * np.dtype(np.float32).itemsize
+    return scalar_bytes >= _setup_device_auto_threshold_bytes()
+
+
+def _setup_device_context(policy, *, design, resolution):
+    resolved_policy = (
+        os.getenv("BEAMZ_SETUP_DEVICE", "auto") if policy is None else str(policy)
+    )
+    if not _should_setup_on_cpu(resolved_policy, design=design, resolution=resolution):
+        return nullcontext(None), "default"
+    try:
+        import jax
+
+        cpu_devices = jax.devices("cpu")
+        if not cpu_devices:
+            return nullcontext(None), "default"
+        return jax.default_device(cpu_devices[0]), "cpu"
+    except Exception:
+        return nullcontext(None), "default"
+
+
+def _setup_device_policy_label(policy) -> str:
+    return os.getenv("BEAMZ_SETUP_DEVICE", "auto") if policy is None else str(policy)
 
 
 def _apply_source_launch_power_normalization(
@@ -936,6 +1028,7 @@ class Simulation:
         boundary_spec=None,
         grid_spec=None,
         run_time: float | None = None,
+        setup_device: Literal["auto", "cpu", "default"] | None = None,
     ):
         coordinate_offset = (0.0, 0.0, 0.0)
         if domain is not None and size is not None:
@@ -1074,6 +1167,7 @@ class Simulation:
         self.coordinate_offset = coordinate_offset
         self.grid_spec = grid_spec
         self.run_time = run_time
+        self.setup_device_policy = _setup_device_policy_label(setup_device)
         sources = sources or []
         monitors = monitors or []
         boundaries = normalize_boundaries(boundaries, is_3d=_design_is_3d(design))
@@ -1088,57 +1182,69 @@ class Simulation:
             monitors=monitors,
         )
 
-        # Get material grids from design (design owns the material grids, we reference them)
-        permittivity, conductivity, permeability = design.get_material_grids(resolution)
-
         # Initialize time stepping first
         if time is None or len(time) < 2:
             raise ValueError("FDTD requires a time array with at least two entries")
         self.time, self.dt, self.num_steps = time, float(time[1] - time[0]), len(time)
         self.t, self.current_step = float(time[0]), 0
 
-        # Check for PML boundaries before creating fields (to avoid double material init)
-        pml_boundaries = [b for b in boundaries if isinstance(b, PML)]
-
-        # Create field storage (fields owns the E/H field arrays, references material grids)
-        self.fields = Fields(
-            permittivity,
-            conductivity,
-            permeability,
-            resolution,
-            plane_2d=self.plane_2d,
-            _init_materials=not pml_boundaries,
+        setup_context, resolved_setup_device = _setup_device_context(
+            setup_device,
+            design=design,
+            resolution=resolution,
         )
-
-        # Initialize PML regions if present
-        if pml_boundaries:
-            # Create PML regions (do this once, not every timestep)
-            pml_data = {}
-            for pml in pml_boundaries:
-                new_data = pml.create_pml_regions(
-                    self.fields, design, resolution, self.dt, plane_2d=self.plane_2d
-                )
-                if not pml_data:
-                    pml_data = dict(new_data)
-                    continue
-                pml_data = _merge_pml_payload(pml_data, new_data)
-            self.pml_data = pml_data
-
-            # Set effective conductivity for PML
-            self.fields.set_pml_conductivity(pml_data)
-        else:
-            self.pml_data = None
-
-        # Store boundary references (no duplication)
-        self.boundaries = boundaries
-        self.fields.set_metallic_masks(
-            create_metallic_boundary_masks(
-                self.fields,
-                self.boundaries,
-                is_3d=self.is_3d,
-                plane_2d=self.plane_2d,
+        self.setup_device_resolved = resolved_setup_device
+        with setup_context:
+            # Get material grids from design (design owns the material grids, we reference them)
+            permittivity, conductivity, permeability = design.get_material_grids(
+                resolution
             )
-        )
+            # Check for PML boundaries before creating fields (to avoid double material init)
+            pml_boundaries = [b for b in boundaries if isinstance(b, PML)]
+
+            # Create field storage (fields owns the E/H field arrays, references material grids)
+            self.fields = Fields(
+                permittivity,
+                conductivity,
+                permeability,
+                resolution,
+                plane_2d=self.plane_2d,
+                _init_materials=not pml_boundaries,
+            )
+
+            # Initialize PML regions if present
+            if pml_boundaries:
+                # Create PML regions (do this once, not every timestep)
+                pml_data = {}
+                for pml in pml_boundaries:
+                    new_data = pml.create_pml_regions(
+                        self.fields,
+                        design,
+                        resolution,
+                        self.dt,
+                        plane_2d=self.plane_2d,
+                    )
+                    if not pml_data:
+                        pml_data = dict(new_data)
+                        continue
+                    pml_data = _merge_pml_payload(pml_data, new_data)
+                self.pml_data = pml_data
+
+                # Set effective conductivity for PML
+                self.fields.set_pml_conductivity(pml_data)
+            else:
+                self.pml_data = None
+
+            # Store boundary references (no duplication)
+            self.boundaries = boundaries
+            self.fields.set_metallic_masks(
+                create_metallic_boundary_masks(
+                    self.fields,
+                    self.boundaries,
+                    is_3d=self.is_3d,
+                    plane_2d=self.plane_2d,
+                )
+            )
         self.fields.boundaries = self.boundaries
 
         # Optional thermal coupling

@@ -1009,6 +1009,14 @@ class CompiledSimulation:
             return None
         return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
+    def _single_device(self):
+        try:
+            backend = jax.default_backend()
+            devices = jax.devices(backend)
+        except Exception:
+            devices = jax.devices()
+        return devices[0] if devices else None
+
     def _axis_sharding(self, arr: jnp.ndarray):
         mesh = self._device_mesh()
         if mesh is None:
@@ -1026,17 +1034,16 @@ class CompiledSimulation:
         return self._replicated_sharding()
 
     def _place_array(self, arr, *, shard_arrays: bool = True):
-        if not self.storage_layout.enabled:
-            return arr
         arr = jnp.asarray(arr)
+        if not self.storage_layout.enabled:
+            device = self._single_device()
+            return jax.device_put(arr, device) if device is not None else arr
         sharding = (
             self._axis_sharding(arr) if shard_arrays else self._replicated_sharding()
         )
         return jax.device_put(arr, sharding)
 
     def _place_pytree(self, tree, *, shard_arrays: bool = True):
-        if not self.storage_layout.enabled:
-            return tree
         return jax.tree_util.tree_map(
             lambda arr: self._place_array(arr, shard_arrays=shard_arrays),
             tree,
@@ -1053,8 +1060,6 @@ class CompiledSimulation:
             hy=self._pad_component("Hy", engine_state.hy),
             hz=self._pad_component("Hz", engine_state.hz),
         )
-        if not self.storage_layout.enabled:
-            return engine_state
         return self._place_pytree(engine_state, shard_arrays=True)
 
     def crop_engine_state(self, engine_state: EngineState) -> EngineState:
@@ -1074,8 +1079,6 @@ class CompiledSimulation:
     def _place_update_coefficients(
         self, coeffs: UpdateCoefficients
     ) -> UpdateCoefficients:
-        if not self.storage_layout.enabled:
-            return coeffs
         return self._place_pytree(coeffs, shard_arrays=True)
 
     def _sources_for(

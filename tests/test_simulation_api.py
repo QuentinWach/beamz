@@ -71,6 +71,39 @@ def test_simulation_rejects_duplicate_named_monitors():
         )
 
 
+def test_simulation_setup_device_cpu_runs_compiled():
+    design = Design(width=2 * um, height=2 * um, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(1 * um, 1 * um), width=0.2 * um, signal=[1.0, 0.0, 0.0]
+    )
+    sim = Simulation(
+        design=design,
+        sources=[source],
+        monitors=[],
+        time=np.array([0.0, 1e-16, 2e-16, 3e-16], dtype=float),
+        resolution=0.5 * um,
+        setup_device="cpu",
+    )
+
+    assert sim.setup_device_policy == "cpu"
+    assert sim.setup_device_resolved in {"cpu", "default"}
+    sim.run_compiled(num_steps=1, progress=False)
+
+
+def test_simulation_rejects_invalid_setup_device():
+    design = Design(width=2 * um, height=2 * um, material=Material(permittivity=1.0))
+
+    with pytest.raises(ValueError, match="setup_device"):
+        Simulation(
+            design=design,
+            sources=[],
+            monitors=[],
+            time=_time_axis(),
+            resolution=0.5 * um,
+            setup_device="quantum",
+        )
+
+
 def test_design_rejects_device_objects():
     design = Design(width=4 * um, height=4 * um, material=Material(permittivity=1.0))
     source = GaussianSource(
