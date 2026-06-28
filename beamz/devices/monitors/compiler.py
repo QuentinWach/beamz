@@ -755,8 +755,10 @@ def compile_monitor_specs(
                 "Hy": tuple(fields.Hy.shape),
                 "Hz": tuple(fields.Hz.shape),
             }
+            logical_shapes_3d = getattr(fields, "_logical_component_shapes", shape_3d)
             base_shape_3d = tuple(
-                max(shape[axis] for shape in shape_3d.values()) for axis in range(3)
+                max(int(shape[axis]) for shape in logical_shapes_3d.values())
+                for axis in range(3)
             )
             idx_map, _slice_dim0, _slice_dim1 = _compile_monitor_3d_indices(
                 monitor,

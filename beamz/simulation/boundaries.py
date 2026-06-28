@@ -5,7 +5,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0, MU_0, µm
-from beamz.shared_kernels import CPML_3D_E_DERIVATIVES, CPML_3D_H_DERIVATIVES
+from beamz.shared_kernels import (
+    CPML_3D_E_DERIVATIVES,
+    CPML_3D_H_DERIVATIVES,
+    fit_array_to_shape,
+)
 from beamz.simulation.yee import (
     component_axis_offsets_3d,
     sample_voxel_grid_at_component_3d,
@@ -1783,16 +1787,28 @@ def cpml_update_h_from_e_3d(
             dt,
         )
 
-    term0, psi0 = correct(0, (ez[:, 1:, :] - ez[:, :-1, :]) / resolution)
-    term1, psi1 = correct(1, (ey[1:, :, :] - ey[:-1, :, :]) / resolution)
+    term0, psi0 = correct(
+        0, fit_array_to_shape((ez[:, 1:, :] - ez[:, :-1, :]) / resolution, hx.shape)
+    )
+    term1, psi1 = correct(
+        1, fit_array_to_shape((ey[1:, :, :] - ey[:-1, :, :]) / resolution, hx.shape)
+    )
     hx = h_decay_x * hx - h_source_x * (term0 - term1)
 
-    term2, psi2 = correct(2, (ex[1:, :, :] - ex[:-1, :, :]) / resolution)
-    term3, psi3 = correct(3, (ez[:, :, 1:] - ez[:, :, :-1]) / resolution)
+    term2, psi2 = correct(
+        2, fit_array_to_shape((ex[1:, :, :] - ex[:-1, :, :]) / resolution, hy.shape)
+    )
+    term3, psi3 = correct(
+        3, fit_array_to_shape((ez[:, :, 1:] - ez[:, :, :-1]) / resolution, hy.shape)
+    )
     hy = h_decay_y * hy - h_source_y * (term2 - term3)
 
-    term4, psi4 = correct(4, (ey[:, :, 1:] - ey[:, :, :-1]) / resolution)
-    term5, psi5 = correct(5, (ex[:, 1:, :] - ex[:, :-1, :]) / resolution)
+    term4, psi4 = correct(
+        4, fit_array_to_shape((ey[:, :, 1:] - ey[:, :, :-1]) / resolution, hz.shape)
+    )
+    term5, psi5 = correct(
+        5, fit_array_to_shape((ex[:, 1:, :] - ex[:, :-1, :]) / resolution, hz.shape)
+    )
     hz = h_decay_z * hz - h_source_z * (term4 - term5)
 
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
@@ -1833,16 +1849,28 @@ def cpml_update_h_from_e_3d_packed_psi(
             slab_specs[idx],
         )
 
-    term0, psi0 = correct(0, (ez[:, 1:, :] - ez[:, :-1, :]) / resolution)
-    term1, psi1 = correct(1, (ey[1:, :, :] - ey[:-1, :, :]) / resolution)
+    term0, psi0 = correct(
+        0, fit_array_to_shape((ez[:, 1:, :] - ez[:, :-1, :]) / resolution, hx.shape)
+    )
+    term1, psi1 = correct(
+        1, fit_array_to_shape((ey[1:, :, :] - ey[:-1, :, :]) / resolution, hx.shape)
+    )
     hx = h_decay_x * hx - h_source_x * (term0 - term1)
 
-    term2, psi2 = correct(2, (ex[1:, :, :] - ex[:-1, :, :]) / resolution)
-    term3, psi3 = correct(3, (ez[:, :, 1:] - ez[:, :, :-1]) / resolution)
+    term2, psi2 = correct(
+        2, fit_array_to_shape((ex[1:, :, :] - ex[:-1, :, :]) / resolution, hy.shape)
+    )
+    term3, psi3 = correct(
+        3, fit_array_to_shape((ez[:, :, 1:] - ez[:, :, :-1]) / resolution, hy.shape)
+    )
     hy = h_decay_y * hy - h_source_y * (term2 - term3)
 
-    term4, psi4 = correct(4, (ey[:, :, 1:] - ey[:, :, :-1]) / resolution)
-    term5, psi5 = correct(5, (ex[:, 1:, :] - ex[:, :-1, :]) / resolution)
+    term4, psi4 = correct(
+        4, fit_array_to_shape((ey[:, :, 1:] - ey[:, :, :-1]) / resolution, hz.shape)
+    )
+    term5, psi5 = correct(
+        5, fit_array_to_shape((ex[:, 1:, :] - ex[:, :-1, :]) / resolution, hz.shape)
+    )
     hz = h_decay_z * hz - h_source_z * (term4 - term5)
 
     return hx, hy, hz, (psi0, psi1, psi2, psi3, psi4, psi5)
@@ -1963,31 +1991,49 @@ def cpml_update_e_from_h_3d(
 
     term0, psi0 = correct(
         0,
-        _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
+            ex.shape,
+        ),
     )
     term1, psi1 = correct(
         1,
-        _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
+            ex.shape,
+        ),
     )
     ex = e_decay_x * ex + e_source_x * (term0 - term1)
 
     term2, psi2 = correct(
         2,
-        _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution),
+            ey.shape,
+        ),
     )
     term3, psi3 = correct(
         3,
-        _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
+            ey.shape,
+        ),
     )
     ey = e_decay_y * ey + e_source_y * (term2 - term3)
 
     term4, psi4 = correct(
         4,
-        _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution),
+            ez.shape,
+        ),
     )
     term5, psi5 = correct(
         5,
-        _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
+            ez.shape,
+        ),
     )
     ez = e_decay_z * ez + e_source_z * (term4 - term5)
 
@@ -2041,31 +2087,49 @@ def cpml_update_e_from_h_3d_packed_psi(
 
     term0, psi0 = correct(
         0,
-        _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hz, axis=1), axis=1, resolution=resolution),
+            ex.shape,
+        ),
     )
     term1, psi1 = correct(
         1,
-        _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hy, axis=0), axis=0, resolution=resolution),
+            ex.shape,
+        ),
     )
     ex = e_decay_x * ex + e_source_x * (term0 - term1)
 
     term2, psi2 = correct(
         2,
-        _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hx, axis=0), axis=0, resolution=resolution),
+            ey.shape,
+        ),
     )
     term3, psi3 = correct(
         3,
-        _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hz, axis=2), axis=2, resolution=resolution),
+            ey.shape,
+        ),
     )
     ey = e_decay_y * ey + e_source_y * (term2 - term3)
 
     term4, psi4 = correct(
         4,
-        _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hy, axis=2), axis=2, resolution=resolution),
+            ez.shape,
+        ),
     )
     term5, psi5 = correct(
         5,
-        _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
+        fit_array_to_shape(
+            _adjacent_difference(pad(hx, axis=1), axis=1, resolution=resolution),
+            ez.shape,
+        ),
     )
     ez = e_decay_z * ez + e_source_z * (term4 - term5)
 

@@ -11,6 +11,7 @@ from beamz.simulation.compiled import (
     EngineState,
     MonitorState,
     RunState,
+    ShardingConfig,
     compile_simulation,
 )
 from beamz.simulation.core import (
@@ -44,6 +45,7 @@ __all__ = [
     "EngineState",
     "MonitorState",
     "RunState",
+    "ShardingConfig",
     "compile_simulation",
     "Boundary",
     "PML",

@@ -51,6 +51,7 @@ from beamz.simulation.compiled import (
     monitor_dft_point_size,
     monitor_frequency_size,
     monitor_state_size,
+    sharding_cache_token,
 )
 from beamz.simulation.fields import Fields
 from beamz.simulation.step_sequence import run_step_sequence
@@ -1466,7 +1467,13 @@ class Simulation:
             "`run_compiled()` engines."
         )
 
-    def compile(self, num_steps=None, snapshot_field=None, snapshot_interval=None):
+    def compile(
+        self,
+        num_steps=None,
+        snapshot_field=None,
+        snapshot_interval=None,
+        sharding=None,
+    ):
         """Compile the v0.3 packed-data simulation program."""
         if num_steps is None:
             num_steps = self.num_steps - self.current_step
@@ -1498,6 +1505,7 @@ class Simulation:
             source_single_slab_dense,
             snapshot_field,
             snapshot_interval,
+            sharding_cache_token(sharding),
             _compiled_cache_sequence_token(self.sources),
             _compiled_cache_sequence_token(self.monitors),
             _compiled_cache_sequence_token(self.boundaries),
@@ -1522,6 +1530,7 @@ class Simulation:
             source_single_slab_dense=source_single_slab_dense,
             snapshot_field=snapshot_field,
             snapshot_interval=snapshot_interval,
+            sharding=sharding,
         )
         program = compile_simulation(
             design=self.design,
@@ -1540,6 +1549,7 @@ class Simulation:
         *,
         include_compiled: bool = True,
         num_steps: int | None = None,
+        sharding=None,
     ) -> dict:
         """Return a JSON-friendly estimate of simulation and compiled memory."""
         entries: list[dict] = []
@@ -1618,7 +1628,8 @@ class Simulation:
         report["is_3d"] = bool(self.is_3d)
         if include_compiled:
             program = self.compile(
-                num_steps=num_steps if num_steps is not None else None
+                num_steps=num_steps if num_steps is not None else None,
+                sharding=sharding,
             )
             compiled_report = program.memory_estimate(include_runtime=True)
             report["compiled"] = compiled_report
@@ -1760,16 +1771,23 @@ class Simulation:
             )
         return engine_state, monitor_state
 
-    def compiled_xla_memory_analysis(self, *, num_steps: int | None = None) -> dict:
+    def compiled_xla_memory_analysis(
+        self, *, num_steps: int | None = None, sharding=None
+    ) -> dict:
         """Compile the packed loop and return JAX/XLA memory analysis if available."""
-        program = self.compile(num_steps=num_steps)
+        program = self.compile(num_steps=num_steps, sharding=sharding)
         engine_state, monitor_state = self._compiled_runtime_inputs(program)
+        engine_state = program.prepare_engine_state(engine_state)
+        monitor_state = program._place_pytree(monitor_state, shard_arrays=False)
+        coeffs = program._place_update_coefficients(program._update_coefficients())
         if program._compiled_scan is None:
             program._build_scan()
         snapshot_state = program._empty_snapshot_state()
-        args = (engine_state, monitor_state, program._update_coefficients())
         if snapshot_state is not None:
-            args = (*args, snapshot_state)
+            snapshot_state = program._place_pytree(snapshot_state, shard_arrays=False)
+            args = (engine_state, monitor_state, coeffs, snapshot_state)
+        else:
+            args = (engine_state, monitor_state, coeffs)
         compiled = program._compiled_scan.lower(*args).compile()
         analysis = getattr(compiled, "memory_analysis", lambda: None)()
         if analysis is None:
@@ -1793,6 +1811,7 @@ class Simulation:
         snapshot_interval=10,
         snapshot_callback=None,
         store_snapshots=True,
+        sharding=None,
     ):
         """Run simulation using the v0.3 single-program compiled scan engine.
 
@@ -1849,6 +1868,7 @@ class Simulation:
                 num_steps=this_chunk,
                 snapshot_field=snapshot_field,
                 snapshot_interval=snapshot_interval,
+                sharding=sharding,
             )
 
             if progress and steps_done == 0 and program.compile_count == 0:
@@ -2024,6 +2044,7 @@ class Simulation:
             )
             engine_state.ez.block_until_ready()
             self._compiled_monitor_state = monitor_state
+            engine_state = program.crop_engine_state(engine_state)
 
             if progress and steps_done == 0:
                 print("done!")

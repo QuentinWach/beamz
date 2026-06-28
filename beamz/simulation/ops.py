@@ -3,6 +3,7 @@
 import jax.numpy as jnp
 
 from beamz.const import EPS_0, MU_0
+from beamz.shared_kernels import fit_array_to_shape
 from beamz.simulation.yee import (
     sample_voxel_grid_at_component_2d,
     sample_voxel_grid_at_component_3d,
@@ -411,17 +412,17 @@ def fused_update_h_lossy_3d(
 ):
     """H_new = decay * H_old - source * curl_E (no intermediate curl arrays)."""
     inv_res = jnp.asarray(1.0, dtype=hx.dtype) / jnp.asarray(resolution, dtype=hx.dtype)
-    curl_ex = (
-        (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
-    ) * inv_res
+    term0 = fit_array_to_shape(ez[:, 1:, :] - ez[:, :-1, :], hx.shape)
+    term1 = fit_array_to_shape(ey[1:, :, :] - ey[:-1, :, :], hx.shape)
+    curl_ex = (term0 - term1) * inv_res
     hx = h_decay_x * hx - h_src_x * curl_ex
-    curl_ey = (
-        (ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])
-    ) * inv_res
+    term2 = fit_array_to_shape(ex[1:, :, :] - ex[:-1, :, :], hy.shape)
+    term3 = fit_array_to_shape(ez[:, :, 1:] - ez[:, :, :-1], hy.shape)
+    curl_ey = (term2 - term3) * inv_res
     hy = h_decay_y * hy - h_src_y * curl_ey
-    curl_ez = (
-        (ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])
-    ) * inv_res
+    term4 = fit_array_to_shape(ey[:, :, 1:] - ey[:, :, :-1], hz.shape)
+    term5 = fit_array_to_shape(ex[:, 1:, :] - ex[:, :-1, :], hz.shape)
+    curl_ez = (term4 - term5) * inv_res
     hz = h_decay_z * hz - h_src_z * curl_ez
     return hx, hy, hz
 
@@ -448,20 +449,26 @@ def fused_update_h_lossy_3d_material(
 
     alpha_x = h_sigma_m_x * half_dt_over_mu0
     denom_x = one + alpha_x
+    term0 = fit_array_to_shape(ez[:, 1:, :] - ez[:, :-1, :], hx.shape)
+    term1 = fit_array_to_shape(ey[1:, :, :] - ey[:-1, :, :], hx.shape)
     hx = (one - alpha_x) / denom_x * hx - (dt_over_mu0 / denom_x) * (
-        (ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :])
+        term0 - term1
     ) * inv_res
 
     alpha_y = h_sigma_m_y * half_dt_over_mu0
     denom_y = one + alpha_y
+    term2 = fit_array_to_shape(ex[1:, :, :] - ex[:-1, :, :], hy.shape)
+    term3 = fit_array_to_shape(ez[:, :, 1:] - ez[:, :, :-1], hy.shape)
     hy = (one - alpha_y) / denom_y * hy - (dt_over_mu0 / denom_y) * (
-        (ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1])
+        term2 - term3
     ) * inv_res
 
     alpha_z = h_sigma_m_z * half_dt_over_mu0
     denom_z = one + alpha_z
+    term4 = fit_array_to_shape(ey[:, :, 1:] - ey[:, :, :-1], hz.shape)
+    term5 = fit_array_to_shape(ex[:, 1:, :] - ex[:, :-1, :], hz.shape)
     hz = (one - alpha_z) / denom_z * hz - (dt_over_mu0 / denom_z) * (
-        (ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :])
+        term4 - term5
     ) * inv_res
 
     return hx, hy, hz
@@ -482,18 +489,33 @@ def fused_update_e_lossless_3d(
     boundary_views,
 ):
     """E_new = E_old + source_lossless * curl_H (inline pad, no named curl arrays)."""
-    ex = ex + e_src_ll_x * (
-        _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution)
-        - _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution)
+    term0 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution),
+        ex.shape,
     )
-    ey = ey + e_src_ll_y * (
-        _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution)
-        - _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution)
+    term1 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution),
+        ex.shape,
     )
-    ez = ez + e_src_ll_z * (
-        _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution)
-        - _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution)
+    ex = ex + e_src_ll_x * (term0 - term1)
+    term2 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution),
+        ey.shape,
     )
+    term3 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution),
+        ey.shape,
+    )
+    ey = ey + e_src_ll_y * (term2 - term3)
+    term4 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution),
+        ez.shape,
+    )
+    term5 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution),
+        ez.shape,
+    )
+    ez = ez + e_src_ll_z * (term4 - term5)
     return ex, ey, ez
 
 
@@ -523,27 +545,45 @@ def fused_update_e_lossy_3d_material(
 
     beta_x = e_conductivity_x * half_dt_over_eps0 * e_inv_permittivity_x
     denom_x = one + beta_x
-    curl_hx = _adjacent_difference(
-        boundary_views["hz_y"], axis=1, resolution=resolution
-    ) - (_adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution))
+    term0 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution),
+        ex.shape,
+    )
+    term1 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution),
+        ex.shape,
+    )
+    curl_hx = term0 - term1
     ex = (one - beta_x) / denom_x * ex + (
         dt_over_eps0 * e_inv_permittivity_x
     ) / denom_x * curl_hx
 
     beta_y = e_conductivity_y * half_dt_over_eps0 * e_inv_permittivity_y
     denom_y = one + beta_y
-    curl_hy = _adjacent_difference(
-        boundary_views["hx_z"], axis=0, resolution=resolution
-    ) - (_adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution))
+    term2 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution),
+        ey.shape,
+    )
+    term3 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution),
+        ey.shape,
+    )
+    curl_hy = term2 - term3
     ey = (one - beta_y) / denom_y * ey + (
         dt_over_eps0 * e_inv_permittivity_y
     ) / denom_y * curl_hy
 
     beta_z = e_conductivity_z * half_dt_over_eps0 * e_inv_permittivity_z
     denom_z = one + beta_z
-    curl_hz = _adjacent_difference(
-        boundary_views["hy_x"], axis=2, resolution=resolution
-    ) - (_adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution))
+    term4 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution),
+        ez.shape,
+    )
+    term5 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution),
+        ez.shape,
+    )
+    curl_hz = term4 - term5
     ez = (one - beta_z) / denom_z * ez + (
         dt_over_eps0 * e_inv_permittivity_z
     ) / denom_z * curl_hz
@@ -568,18 +608,33 @@ def fused_update_e_lossless_3d_inv_permittivity(
 ):
     """E_new = E_old + dt/(eps0*eps_r) * curl_H without dense source grids."""
     dt_over_eps0 = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
-    ex = ex + dt_over_eps0 * e_inv_permittivity_x * (
-        _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution)
-        - _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution)
+    term0 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution),
+        ex.shape,
     )
-    ey = ey + dt_over_eps0 * e_inv_permittivity_y * (
-        _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution)
-        - _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution)
+    term1 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution),
+        ex.shape,
     )
-    ez = ez + dt_over_eps0 * e_inv_permittivity_z * (
-        _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution)
-        - _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution)
+    ex = ex + dt_over_eps0 * e_inv_permittivity_x * (term0 - term1)
+    term2 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution),
+        ey.shape,
     )
+    term3 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution),
+        ey.shape,
+    )
+    ey = ey + dt_over_eps0 * e_inv_permittivity_y * (term2 - term3)
+    term4 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution),
+        ez.shape,
+    )
+    term5 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution),
+        ez.shape,
+    )
+    ez = ez + dt_over_eps0 * e_inv_permittivity_z * (term4 - term5)
 
     return ex, ey, ez
 
@@ -602,17 +657,35 @@ def fused_update_e_lossy_3d(
     boundary_views,
 ):
     """E_new = decay * E_old + source * curl_H (inline pad, no named curl arrays)."""
-    curl_hx = _adjacent_difference(
-        boundary_views["hz_y"], axis=1, resolution=resolution
-    ) - (_adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution))
+    term0 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hz_y"], axis=1, resolution=resolution),
+        ex.shape,
+    )
+    term1 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hy_z"], axis=0, resolution=resolution),
+        ex.shape,
+    )
+    curl_hx = term0 - term1
     ex = e_decay_x * ex + e_src_x * curl_hx
-    curl_hy = _adjacent_difference(
-        boundary_views["hx_z"], axis=0, resolution=resolution
-    ) - (_adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution))
+    term2 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hx_z"], axis=0, resolution=resolution),
+        ey.shape,
+    )
+    term3 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hz_x"], axis=2, resolution=resolution),
+        ey.shape,
+    )
+    curl_hy = term2 - term3
     ey = e_decay_y * ey + e_src_y * curl_hy
-    curl_hz = _adjacent_difference(
-        boundary_views["hy_x"], axis=2, resolution=resolution
-    ) - (_adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution))
+    term4 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hy_x"], axis=2, resolution=resolution),
+        ez.shape,
+    )
+    term5 = fit_array_to_shape(
+        _adjacent_difference(boundary_views["hx_y"], axis=1, resolution=resolution),
+        ez.shape,
+    )
+    curl_hz = term4 - term5
     ez = e_decay_z * ez + e_src_z * curl_hz
     return ex, ey, ez
 

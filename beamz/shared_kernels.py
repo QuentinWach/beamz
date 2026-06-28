@@ -110,6 +110,40 @@ def is_full_tm_xy_lattice(ez, hx, hy) -> bool:
     )
 
 
+def fit_array_to_shape(
+    arr: jnp.ndarray,
+    target_shape: tuple[int, ...],
+    *,
+    pad_value=0.0,
+) -> jnp.ndarray:
+    """Crop or high-pad an array to a static target shape."""
+
+    arr = jnp.asarray(arr)
+    target_shape = tuple(int(v) for v in target_shape)
+    if tuple(arr.shape) == target_shape:
+        return arr
+    if arr.ndim != len(target_shape):
+        raise ValueError(
+            f"Cannot fit rank-{arr.ndim} array to rank-{len(target_shape)} shape"
+        )
+
+    slices = tuple(
+        slice(0, min(int(arr.shape[i]), target_shape[i])) for i in range(arr.ndim)
+    )
+    out = arr[slices]
+    pad_width = tuple(
+        (0, max(0, target_shape[i] - int(out.shape[i]))) for i in range(out.ndim)
+    )
+    if any(high > 0 for _low, high in pad_width):
+        out = jnp.pad(
+            out,
+            pad_width,
+            mode="constant",
+            constant_values=jnp.asarray(pad_value, dtype=arr.dtype),
+        )
+    return out
+
+
 def embed_tm_xy_h_terms(
     term0: jnp.ndarray, term1: jnp.ndarray, ez_shape: tuple[int, int]
 ) -> jnp.ndarray:

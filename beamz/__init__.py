@@ -53,6 +53,7 @@ from beamz.simulation.compiled import (
     EngineState,
     MonitorState,
     RunState,
+    ShardingConfig,
     compile_simulation,
 )
 from beamz.simulation.core import (
@@ -158,6 +159,7 @@ _exports = {
     "EngineState": EngineState,
     "MonitorState": MonitorState,
     "RunState": RunState,
+    "ShardingConfig": ShardingConfig,
     "compile_simulation": compile_simulation,
     # Boundaries
     "Boundary": Boundary,

@@ -14,7 +14,7 @@ import sys
 import warnings
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -43,6 +43,7 @@ from beamz.shared_kernels import (
     build_cpml_3d_terms,
     build_tm_xy_cpml_terms,
     cpml_precompute_native_terms,
+    fit_array_to_shape,
     full_tm_xy_component_to_centered_grid,
     monitor_dft_sample_scale,
     monitor_dft_should_accumulate,
@@ -466,6 +467,297 @@ class CpmlPackedSlabSpec(NamedTuple):
 
 
 @dataclass(frozen=True)
+class ShardingConfig:
+    """Optional single-host JAX sharding configuration for compiled 3D runs."""
+
+    enabled: bool = False
+    axis: Literal["auto", "z", "y", "x"] = "auto"
+    num_devices: int | None = None
+    backend: Literal["cpu", "gpu"] | None = None
+
+
+@dataclass(frozen=True)
+class StorageLayout:
+    """Logical-to-storage layout for padded compiled component arrays."""
+
+    enabled: bool
+    logical_base_shape: tuple[int, int, int]
+    axis_name: str
+    axis: int
+    num_devices: int
+    backend: str | None
+    logical_shapes: dict[str, tuple[int, ...]]
+    storage_shapes: dict[str, tuple[int, ...]]
+    padding: dict[str, tuple[tuple[int, int], ...]]
+    valid_masks: dict[str, jnp.ndarray]
+
+
+_COMPONENT_NAMES = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+_AXIS_TO_INDEX = {"z": 0, "y": 1, "x": 2}
+_INDEX_TO_AXIS = ("z", "y", "x")
+_MESH_AXIS = "fdtd"
+
+
+def _disabled_sharding_config() -> ShardingConfig:
+    return ShardingConfig(enabled=False)
+
+
+def normalize_sharding_config(value) -> ShardingConfig:
+    """Normalize public sharding input into a stable config object."""
+
+    if value is None or value is False:
+        return _disabled_sharding_config()
+    if isinstance(value, ShardingConfig):
+        return value
+    if value is True:
+        return ShardingConfig(enabled=True)
+    if isinstance(value, dict):
+        raw = dict(value)
+        enabled = bool(raw.pop("enabled", True))
+        return ShardingConfig(enabled=enabled, **raw)
+    raise TypeError(
+        "sharding must be None, bool, dict, or beamz.simulation.ShardingConfig"
+    )
+
+
+def sharding_cache_token(value) -> tuple:
+    cfg = normalize_sharding_config(value)
+    return (bool(cfg.enabled), cfg.axis, cfg.num_devices, cfg.backend)
+
+
+def _select_sharding_axis(axis: str, grid_shape: tuple[int, int, int]) -> str:
+    axis = str(axis).lower()
+    if axis != "auto":
+        if axis not in _AXIS_TO_INDEX:
+            raise ValueError("sharding axis must be one of: 'auto', 'z', 'y', 'x'")
+        return axis
+    lengths = tuple(int(v) for v in grid_shape)
+    best = max(range(3), key=lambda idx: (lengths[idx], -idx))
+    return _INDEX_TO_AXIS[best]
+
+
+def _jax_devices_for_config(cfg: ShardingConfig) -> tuple[jax.Device, ...]:
+    if not cfg.enabled:
+        return ()
+    try:
+        devices = (
+            tuple(jax.devices(cfg.backend)) if cfg.backend else tuple(jax.devices())
+        )
+    except Exception as exc:
+        backend = cfg.backend or "default"
+        raise ValueError(
+            f"No JAX devices are available for backend {backend!r}"
+        ) from exc
+    if not devices:
+        backend = cfg.backend or "default"
+        raise ValueError(f"No JAX devices are available for backend {backend!r}")
+    num_devices = len(devices) if cfg.num_devices is None else int(cfg.num_devices)
+    if num_devices <= 1:
+        return ()
+    if num_devices > len(devices):
+        raise ValueError(
+            f"Requested {num_devices} sharding devices, but only {len(devices)} "
+            f"are available for backend {cfg.backend or 'default'}"
+        )
+    return devices[:num_devices]
+
+
+def _pad_shape_for_devices(
+    shape: tuple[int, ...], axis: int, num_devices: int
+) -> tuple[int, ...]:
+    out = list(int(v) for v in shape)
+    size = out[int(axis)]
+    remainder = size % int(num_devices)
+    if remainder:
+        out[int(axis)] = size + (int(num_devices) - remainder)
+    return tuple(out)
+
+
+def _pad_width(
+    logical_shape: tuple[int, ...], storage_shape: tuple[int, ...]
+) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        (0, max(0, int(storage_shape[i]) - int(logical_shape[i])))
+        for i in range(len(logical_shape))
+    )
+
+
+def _valid_storage_mask(
+    logical_shape: tuple[int, ...], storage_shape: tuple[int, ...]
+) -> jnp.ndarray:
+    mask = np.ones(tuple(int(v) for v in storage_shape), dtype=bool)
+    logical_region = tuple(slice(0, int(v)) for v in logical_shape)
+    mask[logical_region] = False
+    return jnp.asarray(mask)
+
+
+def _build_storage_layout(
+    fields,
+    cfg: ShardingConfig,
+    *,
+    is_3d: bool,
+) -> tuple[StorageLayout, tuple[jax.Device, ...]]:
+    logical_base_shape = tuple(int(v) for v in getattr(fields, "permittivity").shape)
+    if not cfg.enabled:
+        logical_shapes = {
+            name: tuple(int(v) for v in getattr(fields, name).shape)
+            for name in _COMPONENT_NAMES
+        }
+        masks = {
+            name: jnp.zeros(logical_shapes[name], dtype=bool)
+            for name in _COMPONENT_NAMES
+        }
+        padding = {
+            name: tuple((0, 0) for _ in logical_shapes[name])
+            for name in _COMPONENT_NAMES
+        }
+        return (
+            StorageLayout(
+                enabled=False,
+                logical_base_shape=logical_base_shape,
+                axis_name="z",
+                axis=0,
+                num_devices=1,
+                backend=cfg.backend,
+                logical_shapes=logical_shapes,
+                storage_shapes=dict(logical_shapes),
+                padding=padding,
+                valid_masks=masks,
+            ),
+            (),
+        )
+    if not is_3d:
+        raise NotImplementedError("compiled sharding currently supports 3D runs only")
+    if len(logical_base_shape) != 3:
+        raise ValueError(
+            f"3D sharding requires a 3-axis grid, got {logical_base_shape}"
+        )
+
+    devices = _jax_devices_for_config(cfg)
+    if not devices:
+        return _build_storage_layout(
+            fields,
+            ShardingConfig(enabled=False, backend=cfg.backend),
+            is_3d=is_3d,
+        )
+    axis_name = _select_sharding_axis(cfg.axis, logical_base_shape)
+    axis = _AXIS_TO_INDEX[axis_name]
+    num_devices = len(devices)
+    logical_shapes = {
+        name: tuple(int(v) for v in getattr(fields, name).shape)
+        for name in _COMPONENT_NAMES
+    }
+    storage_shapes = {
+        name: _pad_shape_for_devices(shape, axis, num_devices)
+        for name, shape in logical_shapes.items()
+    }
+    padding = {
+        name: _pad_width(logical_shapes[name], storage_shapes[name])
+        for name in _COMPONENT_NAMES
+    }
+    masks = {
+        name: _valid_storage_mask(logical_shapes[name], storage_shapes[name])
+        for name in _COMPONENT_NAMES
+    }
+    return (
+        StorageLayout(
+            enabled=True,
+            logical_base_shape=logical_base_shape,
+            axis_name=axis_name,
+            axis=axis,
+            num_devices=num_devices,
+            backend=cfg.backend,
+            logical_shapes=logical_shapes,
+            storage_shapes=storage_shapes,
+            padding=padding,
+            valid_masks=masks,
+        ),
+        devices,
+    )
+
+
+def _pad_high_to_shape(arr, shape: tuple[int, ...], *, pad_value=0.0) -> jnp.ndarray:
+    return fit_array_to_shape(jnp.asarray(arr), shape, pad_value=pad_value)
+
+
+def _crop_high_to_shape(arr, shape: tuple[int, ...]) -> jnp.ndarray:
+    slices = tuple(slice(0, int(v)) for v in shape)
+    return jnp.asarray(arr)[slices]
+
+
+class _StorageFieldsProxy:
+    """Shallow fields proxy with padded component storage arrays."""
+
+    def __init__(
+        self,
+        base,
+        overrides: dict[str, object],
+        layout: StorageLayout,
+    ) -> None:
+        self._base = base
+        self._overrides = dict(overrides)
+        self._logical_component_shapes = dict(layout.logical_shapes)
+        self._storage_component_shapes = dict(layout.storage_shapes)
+        self._logical_base_shape_3d = tuple(layout.logical_base_shape)
+        self._storage_layout = layout
+
+    def __getattr__(self, name):
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._base, name)
+
+
+def _pad_pml_data_for_storage(fields, layout: StorageLayout):
+    pml_data = getattr(fields, "pml_data", None)
+    if not layout.enabled or not isinstance(pml_data, dict):
+        return pml_data
+    out = dict(pml_data)
+    for spec in CPML_3D_H_DERIVATIVES:
+        shape = layout.storage_shapes[spec.target_component]
+        for suffix, neutral in (("sigma", 0.0), ("kappa", 1.0), ("alpha", 0.0)):
+            key = f"cpml3d_{spec.name}_{suffix}"
+            if key in out:
+                out[key] = _pad_high_to_shape(out[key], shape, pad_value=neutral)
+    for spec in CPML_3D_E_DERIVATIVES:
+        shape = layout.storage_shapes[spec.target_component]
+        for suffix, neutral in (("sigma", 0.0), ("kappa", 1.0), ("alpha", 0.0)):
+            key = f"cpml3d_{spec.name}_{suffix}"
+            if key in out:
+                out[key] = _pad_high_to_shape(out[key], shape, pad_value=neutral)
+    return out
+
+
+def _make_storage_fields_proxy(fields, layout: StorageLayout):
+    if not layout.enabled:
+        return fields
+    overrides: dict[str, object] = {}
+    for name in _COMPONENT_NAMES:
+        overrides[name] = _pad_high_to_shape(
+            getattr(fields, name), layout.storage_shapes[name], pad_value=0.0
+        )
+    neutral_component_arrays = {
+        "eps_x": ("Ex", 1.0),
+        "eps_y": ("Ey", 1.0),
+        "eps_z": ("Ez", 1.0),
+        "sig_x": ("Ex", 0.0),
+        "sig_y": ("Ey", 0.0),
+        "sig_z": ("Ez", 0.0),
+        "sigma_m_hx": ("Hx", 0.0),
+        "sigma_m_hy": ("Hy", 0.0),
+        "sigma_m_hz": ("Hz", 0.0),
+    }
+    for name, (component, neutral) in neutral_component_arrays.items():
+        if hasattr(fields, name):
+            overrides[name] = _pad_high_to_shape(
+                getattr(fields, name),
+                layout.storage_shapes[component],
+                pad_value=neutral,
+            )
+    overrides["pml_data"] = _pad_pml_data_for_storage(fields, layout)
+    return _StorageFieldsProxy(fields, overrides, layout)
+
+
+@dataclass(frozen=True)
 class CompiledRunConfig:
     """Static compiled run configuration."""
 
@@ -479,6 +771,7 @@ class CompiledRunConfig:
     source_single_slab_dense: bool = False
     snapshot_field: str | None = None
     snapshot_interval: int = 0
+    sharding: ShardingConfig = ShardingConfig()
 
 
 @dataclass
@@ -496,6 +789,14 @@ class CompiledSimulation:
     field_shape_hx: tuple[int, ...]
     field_shape_hy: tuple[int, ...]
     field_shape_hz: tuple[int, ...]
+    storage_layout: StorageLayout
+    sharding_devices: tuple[jax.Device, ...]
+    storage_shape_ex: tuple[int, ...]
+    storage_shape_ey: tuple[int, ...]
+    storage_shape_ez: tuple[int, ...]
+    storage_shape_hx: tuple[int, ...]
+    storage_shape_hy: tuple[int, ...]
+    storage_shape_hz: tuple[int, ...]
 
     # Static update coefficients (full-grid, dense updates; no per-step scatters)
     h_decay_x: jnp.ndarray
@@ -591,15 +892,119 @@ class CompiledSimulation:
     hx_metal_mask: jnp.ndarray
     hy_metal_mask: jnp.ndarray
     hz_metal_mask: jnp.ndarray
+    ex_storage_mask: jnp.ndarray
+    ey_storage_mask: jnp.ndarray
+    ez_storage_mask: jnp.ndarray
+    hx_storage_mask: jnp.ndarray
+    hy_storage_mask: jnp.ndarray
+    hz_storage_mask: jnp.ndarray
 
     _compiled_scan: callable | None = None
     _compile_count: int = 0
+    _sharding_mesh: object | None = None
 
     def _update_coefficients(self) -> UpdateCoefficients:
         """Build runtime coefficient container for jitted scan entrypoint."""
         return UpdateCoefficients(
             **{name: getattr(self, name) for name in UpdateCoefficients._fields}
         )
+
+    def _component_logical_shape(self, component: str) -> tuple[int, ...]:
+        return self.storage_layout.logical_shapes[component]
+
+    def _component_storage_shape(self, component: str) -> tuple[int, ...]:
+        return self.storage_layout.storage_shapes[component]
+
+    def _pad_component(self, component: str, arr: jnp.ndarray) -> jnp.ndarray:
+        return _pad_high_to_shape(
+            arr, self._component_storage_shape(component), pad_value=0.0
+        )
+
+    def _crop_component(self, component: str, arr: jnp.ndarray) -> jnp.ndarray:
+        return _crop_high_to_shape(arr, self._component_logical_shape(component))
+
+    def _device_mesh(self):
+        if not self.storage_layout.enabled:
+            return None
+        if self._sharding_mesh is None:
+            devices = np.asarray(self.sharding_devices, dtype=object)
+            self._sharding_mesh = jax.sharding.Mesh(devices, (_MESH_AXIS,))
+        return self._sharding_mesh
+
+    def _replicated_sharding(self):
+        mesh = self._device_mesh()
+        if mesh is None:
+            return None
+        return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+
+    def _axis_sharding(self, arr: jnp.ndarray):
+        mesh = self._device_mesh()
+        if mesh is None:
+            return None
+        arr = jnp.asarray(arr)
+        axis = int(self.storage_layout.axis)
+        if (
+            arr.ndim > axis
+            and int(arr.shape[axis]) > 0
+            and int(arr.shape[axis]) % int(self.storage_layout.num_devices) == 0
+        ):
+            spec = [None] * arr.ndim
+            spec[axis] = _MESH_AXIS
+            return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(*spec))
+        return self._replicated_sharding()
+
+    def _place_array(self, arr, *, shard_arrays: bool = True):
+        if not self.storage_layout.enabled:
+            return arr
+        arr = jnp.asarray(arr)
+        sharding = (
+            self._axis_sharding(arr) if shard_arrays else self._replicated_sharding()
+        )
+        return jax.device_put(arr, sharding)
+
+    def _place_pytree(self, tree, *, shard_arrays: bool = True):
+        if not self.storage_layout.enabled:
+            return tree
+        return jax.tree_util.tree_map(
+            lambda arr: self._place_array(arr, shard_arrays=shard_arrays),
+            tree,
+        )
+
+    def prepare_engine_state(self, engine_state: EngineState) -> EngineState:
+        """Pad logical component fields and place runtime state for execution."""
+
+        if not self.storage_layout.enabled:
+            return engine_state
+        engine_state = engine_state._replace(
+            ex=self._pad_component("Ex", engine_state.ex),
+            ey=self._pad_component("Ey", engine_state.ey),
+            ez=self._pad_component("Ez", engine_state.ez),
+            hx=self._pad_component("Hx", engine_state.hx),
+            hy=self._pad_component("Hy", engine_state.hy),
+            hz=self._pad_component("Hz", engine_state.hz),
+        )
+        return self._place_pytree(engine_state, shard_arrays=True)
+
+    def crop_engine_state(self, engine_state: EngineState) -> EngineState:
+        """Return an EngineState with public component fields cropped to logical shape."""
+
+        if not self.storage_layout.enabled:
+            return engine_state
+        return engine_state._replace(
+            ex=self._crop_component("Ex", engine_state.ex),
+            ey=self._crop_component("Ey", engine_state.ey),
+            ez=self._crop_component("Ez", engine_state.ez),
+            hx=self._crop_component("Hx", engine_state.hx),
+            hy=self._crop_component("Hy", engine_state.hy),
+            hz=self._crop_component("Hz", engine_state.hz),
+        )
+
+    def _place_update_coefficients(
+        self, coeffs: UpdateCoefficients
+    ) -> UpdateCoefficients:
+        if not self.storage_layout.enabled:
+            return coeffs
+        return self._place_pytree(coeffs, shard_arrays=True)
 
     def _sources_for(
         self, timing: str, component: str
@@ -1488,12 +1893,12 @@ class CompiledSimulation:
                 if s.is_3d and not bool(getattr(s, "dft_enabled", False))
             )
             field_shapes = {
-                "Ex": self.field_shape_ex,
-                "Ey": self.field_shape_ey,
-                "Ez": self.field_shape_ez,
-                "Hx": self.field_shape_hx,
-                "Hy": self.field_shape_hy,
-                "Hz": self.field_shape_hz,
+                "Ex": self.storage_shape_ex,
+                "Ey": self.storage_shape_ey,
+                "Ez": self.storage_shape_ez,
+                "Hx": self.storage_shape_hx,
+                "Hy": self.storage_shape_hy,
+                "Hz": self.storage_shape_hz,
             }
             batched_mon = compile_batched_monitor_data(batchable_3d, field_shapes)
             # Keep DFT monitors unbatched for deterministic per-component modal
@@ -1519,17 +1924,17 @@ class CompiledSimulation:
             tm_hy: jnp.ndarray | None = None,
         ) -> jnp.ndarray:
             if snapshot_field == "Ex":
-                return ex
+                return self._crop_component("Ex", ex)
             if snapshot_field == "Ey":
-                return ey
+                return self._crop_component("Ey", ey)
             if snapshot_field == "Ez":
-                return ez if tm_ez is None else tm_ez
+                return self._crop_component("Ez", ez) if tm_ez is None else tm_ez
             if snapshot_field == "Hx":
-                return hx if tm_hx is None else tm_hx
+                return self._crop_component("Hx", hx) if tm_hx is None else tm_hx
             if snapshot_field == "Hy":
-                return hy if tm_hy is None else tm_hy
+                return self._crop_component("Hy", hy) if tm_hy is None else tm_hy
             if snapshot_field == "Hz":
-                return hz
+                return self._crop_component("Hz", hz)
             raise ValueError(f"Unsupported snapshot field: {snapshot_field}")
 
         def run_scan(
@@ -1562,6 +1967,12 @@ class CompiledSimulation:
             hx_metal_mask = self.hx_metal_mask
             hy_metal_mask = self.hy_metal_mask
             hz_metal_mask = self.hz_metal_mask
+            ex_storage_mask = self.ex_storage_mask
+            ey_storage_mask = self.ey_storage_mask
+            ez_storage_mask = self.ez_storage_mask
+            hx_storage_mask = self.hx_storage_mask
+            hy_storage_mask = self.hy_storage_mask
+            hz_storage_mask = self.hz_storage_mask
             use_physical_tm_xy = self.use_physical_tm_xy
             use_cpml_tm_xy = self.use_cpml_tm_xy
             use_cpml_3d = self.use_cpml_3d
@@ -1893,6 +2304,9 @@ class CompiledSimulation:
                             hy_post, "Hy", metallic_edges_3d
                         )
                         hz = self._apply_metal_edges_3d(hz, "Hz", metallic_edges_3d)
+                        hx = apply_zero_mask(hx, hx_storage_mask)
+                        hy = apply_zero_mask(hy, hy_storage_mask)
+                        hz = apply_zero_mask(hz, hz_storage_mask)
                     else:
                         hx = self._apply_metal_mask(hx_post, hx_metal_mask)
                         hy = self._apply_metal_mask(hy_post, hy_metal_mask)
@@ -2106,6 +2520,9 @@ class CompiledSimulation:
                         ex = self._apply_metal_edges_3d(ex, "Ex", metallic_edges_3d)
                         ey = self._apply_metal_edges_3d(ey, "Ey", metallic_edges_3d)
                         ez = self._apply_metal_edges_3d(ez, "Ez", metallic_edges_3d)
+                        ex = apply_zero_mask(ex, ex_storage_mask)
+                        ey = apply_zero_mask(ey, ey_storage_mask)
+                        ez = apply_zero_mask(ez, ez_storage_mask)
                     else:
                         ex = self._apply_metal_mask(ex, ex_metal_mask)
                         ey = self._apply_metal_mask(ey, ey_metal_mask)
@@ -2378,6 +2795,12 @@ class CompiledSimulation:
             "hx_metal_mask",
             "hy_metal_mask",
             "hz_metal_mask",
+            "ex_storage_mask",
+            "ey_storage_mask",
+            "ez_storage_mask",
+            "hx_storage_mask",
+            "hy_storage_mask",
+            "hz_storage_mask",
         ):
             _add_array_entries(
                 entries,
@@ -2484,7 +2907,26 @@ class CompiledSimulation:
             "loop_kind": self.config.loop_kind,
             "use_cpml_3d": bool(self.use_cpml_3d),
             "use_primitive_cpml_3d_terms": bool(self.use_primitive_cpml_3d_terms),
+            "sharding": {
+                "enabled": bool(self.storage_layout.enabled),
+                "axis": self.storage_layout.axis_name,
+                "num_devices": int(self.storage_layout.num_devices),
+                "backend": self.storage_layout.backend,
+                "logical_shapes": {
+                    name: [int(v) for v in shape]
+                    for name, shape in self.storage_layout.logical_shapes.items()
+                },
+                "storage_shapes": {
+                    name: [int(v) for v in shape]
+                    for name, shape in self.storage_layout.storage_shapes.items()
+                },
+            },
         }
+        if self.storage_layout.enabled:
+            report["per_device_total_bytes"] = int(
+                np.ceil(report["total_bytes"] / self.storage_layout.num_devices)
+            )
+            report["per_device_total_gib"] = report["per_device_total_bytes"] / 1024**3
         return report
 
     def run(
@@ -2553,24 +2995,30 @@ class CompiledSimulation:
                     dft_weight_sum=jnp.zeros((0, 0), dtype=dft_dtype),
                 )
 
+        engine_state = self.prepare_engine_state(engine_state)
+        monitor_state = self._place_pytree(monitor_state, shard_arrays=False)
+        coeffs = self._place_update_coefficients(self._update_coefficients())
+
         if self._compiled_scan is None:
             self._build_scan()
 
         snapshot_state = self._empty_snapshot_state()
+        if snapshot_state is not None:
+            snapshot_state = self._place_pytree(snapshot_state, shard_arrays=False)
         if snapshot_state is None:
             eng, mon, mat, snapshots = self._compiled_scan(
                 engine_state,
                 monitor_state,
-                self._update_coefficients(),
+                coeffs,
             )
         else:
             eng, mon, mat, snapshots = self._compiled_scan(
                 engine_state,
                 monitor_state,
-                self._update_coefficients(),
+                coeffs,
                 snapshot_state,
             )
-        return eng, mon, mat, snapshots
+        return self.crop_engine_state(eng), mon, mat, snapshots
 
     def apply_monitor_state(self, monitor_state: MonitorState):
         """Push monitor-state buffers back to Monitor objects."""
@@ -2720,16 +3168,43 @@ def compile_simulation(
     """
     del design
 
-    fields = run_cfg.fields
+    logical_fields = run_cfg.fields
     resolution = float(run_cfg.resolution)
     dt = float(run_cfg.dt)
     num_steps = int(run_cfg.num_steps)
     total_steps = int(getattr(run_cfg, "total_steps", num_steps))
     t0 = float(getattr(run_cfg, "t0", 0.0))
+    sharding_cfg = normalize_sharding_config(getattr(run_cfg, "sharding", None))
+    storage_layout, sharding_devices = _build_storage_layout(
+        logical_fields,
+        sharding_cfg,
+        is_3d=bool(run_cfg.is_3d),
+    )
+    if bool(run_cfg.is_3d) and storage_layout.enabled and has_full_pec_3d(boundaries):
+        raise NotImplementedError(
+            "compiled sharding currently supports compact 3D fields only; "
+            "full-PEC expanded-state 3D runs must use sharding=None"
+        )
+    fields = _make_storage_fields_proxy(logical_fields, storage_layout)
+    effective_sharding = (
+        ShardingConfig(
+            enabled=True,
+            axis=storage_layout.axis_name,
+            num_devices=storage_layout.num_devices,
+            backend=sharding_cfg.backend,
+        )
+        if storage_layout.enabled
+        else ShardingConfig(
+            enabled=False,
+            axis=sharding_cfg.axis,
+            num_devices=sharding_cfg.num_devices,
+            backend=sharding_cfg.backend,
+        )
+    )
 
     source_specs = compile_source_specs(
         sources=sources,
-        fields=fields,
+        fields=logical_fields,
         dt=dt,
         resolution=resolution,
         num_steps=num_steps,
@@ -2780,6 +3255,7 @@ def compile_simulation(
         source_single_slab_dense=source_single_slab_dense,
         snapshot_field=getattr(run_cfg, "snapshot_field", None),
         snapshot_interval=int(getattr(run_cfg, "snapshot_interval", 0) or 0),
+        sharding=effective_sharding,
     )
 
     has_cpml_3d = bool(
@@ -2950,8 +3426,10 @@ def compile_simulation(
                     CPML_3D_E_DERIVATIVES,
                 )
                 full_psi_shapes = (*h_full_shapes, *e_full_shapes)
-                use_cpml_3d_packed_psi = _should_pack_cpml_3d_psi(
-                    full_psi_shapes, fields.Hx.dtype
+                use_cpml_3d_packed_psi = (
+                    False
+                    if storage_layout.enabled
+                    else _should_pack_cpml_3d_psi(full_psi_shapes, fields.Hx.dtype)
                 )
                 if use_cpml_3d_packed_psi:
                     cpml3d_h_psi_shapes = _cpml_packed_slab_shapes(cpml3d_h_slab_specs)
@@ -3160,12 +3638,20 @@ def compile_simulation(
         source_specs=source_specs,
         monitor_specs=monitor_specs,
         monitor_devices=monitor_devices,
-        field_shape_ex=tuple(int(v) for v in fields.Ex.shape),
-        field_shape_ey=tuple(int(v) for v in fields.Ey.shape),
-        field_shape_ez=tuple(int(v) for v in fields.Ez.shape),
-        field_shape_hx=tuple(int(v) for v in fields.Hx.shape),
-        field_shape_hy=tuple(int(v) for v in fields.Hy.shape),
-        field_shape_hz=tuple(int(v) for v in fields.Hz.shape),
+        field_shape_ex=tuple(int(v) for v in logical_fields.Ex.shape),
+        field_shape_ey=tuple(int(v) for v in logical_fields.Ey.shape),
+        field_shape_ez=tuple(int(v) for v in logical_fields.Ez.shape),
+        field_shape_hx=tuple(int(v) for v in logical_fields.Hx.shape),
+        field_shape_hy=tuple(int(v) for v in logical_fields.Hy.shape),
+        field_shape_hz=tuple(int(v) for v in logical_fields.Hz.shape),
+        storage_layout=storage_layout,
+        sharding_devices=sharding_devices,
+        storage_shape_ex=storage_layout.storage_shapes["Ex"],
+        storage_shape_ey=storage_layout.storage_shapes["Ey"],
+        storage_shape_ez=storage_layout.storage_shapes["Ez"],
+        storage_shape_hx=storage_layout.storage_shapes["Hx"],
+        storage_shape_hy=storage_layout.storage_shapes["Hy"],
+        storage_shape_hz=storage_layout.storage_shapes["Hz"],
         h_decay_x=h_decay_x,
         h_source_x=h_source_x,
         h_source_lossless_x=h_source_lossless_x,
@@ -3257,4 +3743,10 @@ def compile_simulation(
         hx_metal_mask=metallic_masks["Hx"],
         hy_metal_mask=metallic_masks["Hy"],
         hz_metal_mask=metallic_masks["Hz"],
+        ex_storage_mask=storage_layout.valid_masks["Ex"],
+        ey_storage_mask=storage_layout.valid_masks["Ey"],
+        ez_storage_mask=storage_layout.valid_masks["Ez"],
+        hx_storage_mask=storage_layout.valid_masks["Hx"],
+        hy_storage_mask=storage_layout.valid_masks["Hy"],
+        hz_storage_mask=storage_layout.valid_masks["Hz"],
     )
