@@ -10,10 +10,11 @@ Modules that orchestrate how the EM fields evolve depending on the design and de
 ## Compiled Multi-Device Runs
 
 `Simulation.run_compiled(..., sharding=ShardingConfig(...))` enables single-host
-JAX sharding for compact 3D compiled simulations. The compiled engine keeps the
-same six Yee component arrays and pads only the selected physical storage axis
-so every component can be evenly split across devices. Public field arrays and
-snapshots are cropped back to logical simulation shapes.
+JAX sharding for 3D compiled simulations. The compiled engine keeps the same six
+Yee component arrays and pads only the selected physical storage axis so every
+component can be evenly split across devices. Full-PEC 3D runs use the same
+execution path with active high-side Yee planes in storage. Public field arrays
+and snapshots are cropped back to logical simulation shapes.
 
 CPU-only structural testing can use fake host devices by setting this before the
 Python process imports JAX:

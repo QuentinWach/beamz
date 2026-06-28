@@ -1656,23 +1656,26 @@ class Simulation:
                     self.fields
                 )
             fp_state = self.fields.full_pec_3d_state
-            fp_ex, fp_ey, fp_ez = fp_state.Ex, fp_state.Ey, fp_state.Ez
-            fp_hx, fp_hy, fp_hz = fp_state.Hx, fp_state.Hy, fp_state.Hz
+            ex, ey, ez = fp_state.Ex, fp_state.Ey, fp_state.Ez
+            hx, hy, hz = fp_state.Hx, fp_state.Hy, fp_state.Hz
         else:
-            fp_ex = jnp.zeros((0, 0, 0), dtype=self.fields.Ex.dtype)
-            fp_ey = jnp.zeros((0, 0, 0), dtype=self.fields.Ey.dtype)
-            fp_ez = jnp.zeros((0, 0, 0), dtype=self.fields.Ez.dtype)
-            fp_hx = jnp.zeros((0, 0, 0), dtype=self.fields.Hx.dtype)
-            fp_hy = jnp.zeros((0, 0, 0), dtype=self.fields.Hy.dtype)
-            fp_hz = jnp.zeros((0, 0, 0), dtype=self.fields.Hz.dtype)
+            ex, ey, ez = self.fields.Ex, self.fields.Ey, self.fields.Ez
+            hx, hy, hz = self.fields.Hx, self.fields.Hy, self.fields.Hz
+
+        fp_ex = jnp.zeros((0, 0, 0), dtype=self.fields.Ex.dtype)
+        fp_ey = jnp.zeros((0, 0, 0), dtype=self.fields.Ey.dtype)
+        fp_ez = jnp.zeros((0, 0, 0), dtype=self.fields.Ez.dtype)
+        fp_hx = jnp.zeros((0, 0, 0), dtype=self.fields.Hx.dtype)
+        fp_hy = jnp.zeros((0, 0, 0), dtype=self.fields.Hy.dtype)
+        fp_hz = jnp.zeros((0, 0, 0), dtype=self.fields.Hz.dtype)
 
         engine_state = EngineState(
-            ex=self.fields.Ex,
-            ey=self.fields.Ey,
-            ez=self.fields.Ez,
-            hx=self.fields.Hx,
-            hy=self.fields.Hy,
-            hz=self.fields.Hz,
+            ex=ex,
+            ey=ey,
+            ez=ez,
+            hx=hx,
+            hy=hy,
+            hz=hz,
             tm_ez=tm_ez,
             tm_hx=tm_hx,
             tm_hy=tm_hy,
@@ -1908,19 +1911,19 @@ class Simulation:
                         self.fields
                     )
                 fp_state = self.fields.full_pec_3d_state
-                fp_ex = jnp.asarray(fp_state.Ex, dtype=compiled_dtype)
-                fp_ey = jnp.asarray(fp_state.Ey, dtype=compiled_dtype)
-                fp_ez = jnp.asarray(fp_state.Ez, dtype=compiled_dtype)
-                fp_hx = jnp.asarray(fp_state.Hx, dtype=compiled_dtype)
-                fp_hy = jnp.asarray(fp_state.Hy, dtype=compiled_dtype)
-                fp_hz = jnp.asarray(fp_state.Hz, dtype=compiled_dtype)
-            else:
-                fp_ex = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
-                fp_ey = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
-                fp_ez = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
-                fp_hx = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
-                fp_hy = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
-                fp_hz = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+                ex = jnp.asarray(fp_state.Ex, dtype=compiled_dtype)
+                ey = jnp.asarray(fp_state.Ey, dtype=compiled_dtype)
+                ez = jnp.asarray(fp_state.Ez, dtype=compiled_dtype)
+                hx = jnp.asarray(fp_state.Hx, dtype=compiled_dtype)
+                hy = jnp.asarray(fp_state.Hy, dtype=compiled_dtype)
+                hz = jnp.asarray(fp_state.Hz, dtype=compiled_dtype)
+
+            fp_ex = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+            fp_ey = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+            fp_ez = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+            fp_hx = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+            fp_hy = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
+            fp_hz = jnp.zeros((0, 0, 0), dtype=compiled_dtype)
 
             engine_state = EngineState(
                 ex=ex,
@@ -2044,7 +2047,8 @@ class Simulation:
             )
             engine_state.ez.block_until_ready()
             self._compiled_monitor_state = monitor_state
-            engine_state = program.crop_engine_state(engine_state)
+            storage_engine_state = engine_state
+            engine_state = program.crop_engine_state(storage_engine_state)
 
             if progress and steps_done == 0:
                 print("done!")
@@ -2060,12 +2064,24 @@ class Simulation:
                     self.fields.full_pec_3d_state = initialize_full_pec_3d_state(
                         self.fields
                     )
-                self.fields.full_pec_3d_state.Ex = engine_state.fp_ex
-                self.fields.full_pec_3d_state.Ey = engine_state.fp_ey
-                self.fields.full_pec_3d_state.Ez = engine_state.fp_ez
-                self.fields.full_pec_3d_state.Hx = engine_state.fp_hx
-                self.fields.full_pec_3d_state.Hy = engine_state.fp_hy
-                self.fields.full_pec_3d_state.Hz = engine_state.fp_hz
+                self.fields.full_pec_3d_state.Ex = program._crop_active_component(
+                    "Ex", storage_engine_state.ex
+                )
+                self.fields.full_pec_3d_state.Ey = program._crop_active_component(
+                    "Ey", storage_engine_state.ey
+                )
+                self.fields.full_pec_3d_state.Ez = program._crop_active_component(
+                    "Ez", storage_engine_state.ez
+                )
+                self.fields.full_pec_3d_state.Hx = program._crop_active_component(
+                    "Hx", storage_engine_state.hx
+                )
+                self.fields.full_pec_3d_state.Hy = program._crop_active_component(
+                    "Hy", storage_engine_state.hy
+                )
+                self.fields.full_pec_3d_state.Hz = program._crop_active_component(
+                    "Hz", storage_engine_state.hz
+                )
             if (
                 (not self.is_3d)
                 and self.plane_2d == "xy"

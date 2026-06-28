@@ -481,12 +481,14 @@ class StorageLayout:
     """Logical-to-storage layout for padded compiled component arrays."""
 
     enabled: bool
+    pec_full_storage: bool
     logical_base_shape: tuple[int, int, int]
     axis_name: str
     axis: int
     num_devices: int
     backend: str | None
     logical_shapes: dict[str, tuple[int, ...]]
+    active_shapes: dict[str, tuple[int, ...]]
     storage_shapes: dict[str, tuple[int, ...]]
     padding: dict[str, tuple[tuple[int, int], ...]]
     valid_masks: dict[str, jnp.ndarray]
@@ -574,20 +576,20 @@ def _pad_shape_for_devices(
 
 
 def _pad_width(
-    logical_shape: tuple[int, ...], storage_shape: tuple[int, ...]
+    base_shape: tuple[int, ...], storage_shape: tuple[int, ...]
 ) -> tuple[tuple[int, int], ...]:
     return tuple(
-        (0, max(0, int(storage_shape[i]) - int(logical_shape[i])))
-        for i in range(len(logical_shape))
+        (0, max(0, int(storage_shape[i]) - int(base_shape[i])))
+        for i in range(len(base_shape))
     )
 
 
 def _valid_storage_mask(
-    logical_shape: tuple[int, ...], storage_shape: tuple[int, ...]
+    active_shape: tuple[int, ...], storage_shape: tuple[int, ...]
 ) -> jnp.ndarray:
     mask = np.ones(tuple(int(v) for v in storage_shape), dtype=bool)
-    logical_region = tuple(slice(0, int(v)) for v in logical_shape)
-    mask[logical_region] = False
+    active_region = tuple(slice(0, int(v)) for v in active_shape)
+    mask[active_region] = False
     return jnp.asarray(mask)
 
 
@@ -596,6 +598,7 @@ def _build_storage_layout(
     cfg: ShardingConfig,
     *,
     is_3d: bool,
+    full_pec_3d: bool = False,
 ) -> tuple[StorageLayout, tuple[jax.Device, ...]]:
     logical_base_shape = tuple(int(v) for v in getattr(fields, "permittivity").shape)
     if not cfg.enabled:
@@ -603,24 +606,30 @@ def _build_storage_layout(
             name: tuple(int(v) for v in getattr(fields, name).shape)
             for name in _COMPONENT_NAMES
         }
+        active_shapes = {
+            name: tuple(int(v) + 1 for v in shape) if full_pec_3d else shape
+            for name, shape in logical_shapes.items()
+        }
         masks = {
-            name: jnp.zeros(logical_shapes[name], dtype=bool)
+            name: _valid_storage_mask(active_shapes[name], active_shapes[name])
             for name in _COMPONENT_NAMES
         }
         padding = {
-            name: tuple((0, 0) for _ in logical_shapes[name])
+            name: tuple((0, 0) for _ in active_shapes[name])
             for name in _COMPONENT_NAMES
         }
         return (
             StorageLayout(
                 enabled=False,
+                pec_full_storage=bool(full_pec_3d),
                 logical_base_shape=logical_base_shape,
                 axis_name="z",
                 axis=0,
                 num_devices=1,
                 backend=cfg.backend,
                 logical_shapes=logical_shapes,
-                storage_shapes=dict(logical_shapes),
+                active_shapes=active_shapes,
+                storage_shapes=dict(active_shapes),
                 padding=padding,
                 valid_masks=masks,
             ),
@@ -639,6 +648,7 @@ def _build_storage_layout(
             fields,
             ShardingConfig(enabled=False, backend=cfg.backend),
             is_3d=is_3d,
+            full_pec_3d=full_pec_3d,
         )
     axis_name = _select_sharding_axis(cfg.axis, logical_base_shape)
     axis = _AXIS_TO_INDEX[axis_name]
@@ -647,27 +657,33 @@ def _build_storage_layout(
         name: tuple(int(v) for v in getattr(fields, name).shape)
         for name in _COMPONENT_NAMES
     }
-    storage_shapes = {
-        name: _pad_shape_for_devices(shape, axis, num_devices)
+    active_shapes = {
+        name: tuple(int(v) + 1 for v in shape) if full_pec_3d else shape
         for name, shape in logical_shapes.items()
     }
+    storage_shapes = {
+        name: _pad_shape_for_devices(shape, axis, num_devices)
+        for name, shape in active_shapes.items()
+    }
     padding = {
-        name: _pad_width(logical_shapes[name], storage_shapes[name])
+        name: _pad_width(active_shapes[name], storage_shapes[name])
         for name in _COMPONENT_NAMES
     }
     masks = {
-        name: _valid_storage_mask(logical_shapes[name], storage_shapes[name])
+        name: _valid_storage_mask(active_shapes[name], storage_shapes[name])
         for name in _COMPONENT_NAMES
     }
     return (
         StorageLayout(
             enabled=True,
+            pec_full_storage=bool(full_pec_3d),
             logical_base_shape=logical_base_shape,
             axis_name=axis_name,
             axis=axis,
             num_devices=num_devices,
             backend=cfg.backend,
             logical_shapes=logical_shapes,
+            active_shapes=active_shapes,
             storage_shapes=storage_shapes,
             padding=padding,
             valid_masks=masks,
@@ -683,6 +699,14 @@ def _pad_high_to_shape(arr, shape: tuple[int, ...], *, pad_value=0.0) -> jnp.nda
 def _crop_high_to_shape(arr, shape: tuple[int, ...]) -> jnp.ndarray:
     slices = tuple(slice(0, int(v)) for v in shape)
     return jnp.asarray(arr)[slices]
+
+
+def _pad_all_high_planes_3d(arr: jnp.ndarray) -> jnp.ndarray:
+    out = jnp.asarray(arr)
+    for axis in range(3):
+        tail = jnp.take(out, indices=jnp.array([out.shape[axis] - 1]), axis=axis)
+        out = jnp.concatenate([out, tail], axis=axis)
+    return out
 
 
 class _StorageFieldsProxy:
@@ -709,7 +733,9 @@ class _StorageFieldsProxy:
 
 def _pad_pml_data_for_storage(fields, layout: StorageLayout):
     pml_data = getattr(fields, "pml_data", None)
-    if not layout.enabled or not isinstance(pml_data, dict):
+    if (not layout.enabled and not layout.pec_full_storage) or not isinstance(
+        pml_data, dict
+    ):
         return pml_data
     out = dict(pml_data)
     for spec in CPML_3D_H_DERIVATIVES:
@@ -728,7 +754,7 @@ def _pad_pml_data_for_storage(fields, layout: StorageLayout):
 
 
 def _make_storage_fields_proxy(fields, layout: StorageLayout):
-    if not layout.enabled:
+    if not layout.enabled and not layout.pec_full_storage:
         return fields
     overrides: dict[str, object] = {}
     for name in _COMPONENT_NAMES:
@@ -912,13 +938,45 @@ class CompiledSimulation:
     def _component_logical_shape(self, component: str) -> tuple[int, ...]:
         return self.storage_layout.logical_shapes[component]
 
+    def _component_active_shape(self, component: str) -> tuple[int, ...]:
+        return self.storage_layout.active_shapes[component]
+
     def _component_storage_shape(self, component: str) -> tuple[int, ...]:
         return self.storage_layout.storage_shapes[component]
 
+    def _component_pec_mask(self, component: str) -> jnp.ndarray:
+        return {
+            "Ex": self.fp_ex_mask,
+            "Ey": self.fp_ey_mask,
+            "Ez": self.fp_ez_mask,
+            "Hx": self.fp_hx_mask,
+            "Hy": self.fp_hy_mask,
+            "Hz": self.fp_hz_mask,
+        }[component]
+
     def _pad_component(self, component: str, arr: jnp.ndarray) -> jnp.ndarray:
+        arr = jnp.asarray(arr)
+        if self.storage_layout.pec_full_storage:
+            if tuple(arr.shape) == self._component_logical_shape(component):
+                arr = _pad_all_high_planes_3d(arr)
+            arr = _pad_high_to_shape(
+                arr, self._component_storage_shape(component), pad_value=0.0
+            )
+            return apply_zero_mask(arr, self._component_pec_mask(component))
         return _pad_high_to_shape(
             arr, self._component_storage_shape(component), pad_value=0.0
         )
+
+    def _crop_active_component(self, component: str, arr: jnp.ndarray) -> jnp.ndarray:
+        return _crop_high_to_shape(arr, self._component_active_shape(component))
+
+    def _pad_active_component(self, component: str, arr: jnp.ndarray) -> jnp.ndarray:
+        out = _pad_high_to_shape(
+            arr, self._component_storage_shape(component), pad_value=0.0
+        )
+        if self.storage_layout.pec_full_storage:
+            return apply_zero_mask(out, self._component_pec_mask(component))
+        return out
 
     def _crop_component(self, component: str, arr: jnp.ndarray) -> jnp.ndarray:
         return _crop_high_to_shape(arr, self._component_logical_shape(component))
@@ -973,8 +1031,6 @@ class CompiledSimulation:
     def prepare_engine_state(self, engine_state: EngineState) -> EngineState:
         """Pad logical component fields and place runtime state for execution."""
 
-        if not self.storage_layout.enabled:
-            return engine_state
         engine_state = engine_state._replace(
             ex=self._pad_component("Ex", engine_state.ex),
             ey=self._pad_component("Ey", engine_state.ey),
@@ -983,12 +1039,14 @@ class CompiledSimulation:
             hy=self._pad_component("Hy", engine_state.hy),
             hz=self._pad_component("Hz", engine_state.hz),
         )
+        if not self.storage_layout.enabled:
+            return engine_state
         return self._place_pytree(engine_state, shard_arrays=True)
 
     def crop_engine_state(self, engine_state: EngineState) -> EngineState:
         """Return an EngineState with public component fields cropped to logical shape."""
 
-        if not self.storage_layout.enabled:
+        if not self.storage_layout.enabled and not self.storage_layout.pec_full_storage:
             return engine_state
         return engine_state._replace(
             ex=self._crop_component("Ex", engine_state.ex),
@@ -2056,18 +2114,10 @@ class CompiledSimulation:
                     ez = self._apply_source_group(
                         eng.ez, abs_step, pre_e_ez_batch, pre_e_ez_rest
                     )
-                    fp_ex, fp_ey, fp_ez = eng.fp_ex, eng.fp_ey, eng.fp_ez
-                    if is_3d and full_pec_3d:
-                        fp_ex = fp_ex.at[:-1, :-1, :-1].set(ex)
-                        fp_ey = fp_ey.at[:-1, :-1, :-1].set(ey)
-                        fp_ez = fp_ez.at[:-1, :-1, :-1].set(ez)
                     eng = eng._replace(
                         ex=ex.astype(eng.ex.dtype),
                         ey=ey.astype(eng.ey.dtype),
                         ez=ez.astype(eng.ez.dtype),
-                        fp_ex=fp_ex.astype(eng.fp_ex.dtype),
-                        fp_ey=fp_ey.astype(eng.fp_ey.dtype),
-                        fp_ez=fp_ez.astype(eng.fp_ez.dtype),
                     )
                     return _merge_carry(
                         eng, mon, mat, snap_fields, snap_steps, snap_times, snap_count
@@ -2105,29 +2155,33 @@ class CompiledSimulation:
                             )
 
                     if is_3d and full_pec_3d:
-                        fp_hx, fp_hy, fp_hz = full_pec_update_h_from_e_3d(
-                            eng.fp_ex,
-                            eng.fp_ey,
-                            eng.fp_ez,
-                            fp_hx,
-                            fp_hy,
-                            fp_hz,
+                        hx_active, hy_active, hz_active = full_pec_update_h_from_e_3d(
+                            self._crop_active_component("Ex", ex),
+                            self._crop_active_component("Ey", ey),
+                            self._crop_active_component("Ez", ez),
+                            self._crop_active_component("Hx", hx),
+                            self._crop_active_component("Hy", hy),
+                            self._crop_active_component("Hz", hz),
                             resolution,
                             h_decay=(
-                                self.fp_h_decay_x,
-                                self.fp_h_decay_y,
-                                self.fp_h_decay_z,
+                                h_decay_x,
+                                h_decay_y,
+                                h_decay_z,
                             ),
                             h_source=(
-                                self.fp_h_source_x,
-                                self.fp_h_source_y,
-                                self.fp_h_source_z,
+                                h_source_x,
+                                h_source_y,
+                                h_source_z,
                             ),
-                            h_mask=(self.fp_hx_mask, self.fp_hy_mask, self.fp_hz_mask),
+                            h_mask=(
+                                self._crop_active_component("Hx", self.fp_hx_mask),
+                                self._crop_active_component("Hy", self.fp_hy_mask),
+                                self._crop_active_component("Hz", self.fp_hz_mask),
+                            ),
                         )
-                        hx = fp_hx[:-1, :-1, :-1]
-                        hy = fp_hy[:-1, :-1, :-1]
-                        hz = fp_hz[:-1, :-1, :-1]
+                        hx = self._pad_active_component("Hx", hx_active)
+                        hy = self._pad_active_component("Hy", hy_active)
+                        hz = self._pad_active_component("Hz", hz_active)
                     elif is_3d:
                         if self.use_cpml_3d:
                             if self.use_cpml_3d_packed_psi:
@@ -2292,21 +2346,22 @@ class CompiledSimulation:
                     )
                     hz = self._apply_source_group(eng.hz, abs_step, h_batch_z, h_rest_z)
                     fp_hx, fp_hy, fp_hz = eng.fp_hx, eng.fp_hy, eng.fp_hz
-                    if is_3d and full_pec_3d:
-                        fp_hx = fp_hx.at[:-1, :-1, :-1].set(hx_post)
-                        fp_hy = fp_hy.at[:-1, :-1, :-1].set(hy_post)
-                        fp_hz = fp_hz.at[:-1, :-1, :-1].set(hz)
                     if is_3d:
-                        hx = self._apply_metal_edges_3d(
-                            hx_post, "Hx", metallic_edges_3d
-                        )
-                        hy = self._apply_metal_edges_3d(
-                            hy_post, "Hy", metallic_edges_3d
-                        )
-                        hz = self._apply_metal_edges_3d(hz, "Hz", metallic_edges_3d)
-                        hx = apply_zero_mask(hx, hx_storage_mask)
-                        hy = apply_zero_mask(hy, hy_storage_mask)
-                        hz = apply_zero_mask(hz, hz_storage_mask)
+                        if full_pec_3d:
+                            hx = apply_zero_mask(hx_post, self.fp_hx_mask)
+                            hy = apply_zero_mask(hy_post, self.fp_hy_mask)
+                            hz = apply_zero_mask(hz, self.fp_hz_mask)
+                        else:
+                            hx = self._apply_metal_edges_3d(
+                                hx_post, "Hx", metallic_edges_3d
+                            )
+                            hy = self._apply_metal_edges_3d(
+                                hy_post, "Hy", metallic_edges_3d
+                            )
+                            hz = self._apply_metal_edges_3d(hz, "Hz", metallic_edges_3d)
+                            hx = apply_zero_mask(hx, hx_storage_mask)
+                            hy = apply_zero_mask(hy, hy_storage_mask)
+                            hz = apply_zero_mask(hz, hz_storage_mask)
                     else:
                         hx = self._apply_metal_mask(hx_post, hx_metal_mask)
                         hy = self._apply_metal_mask(hy_post, hy_metal_mask)
@@ -2334,29 +2389,33 @@ class CompiledSimulation:
                     cpml3d_psi_e_terms = eng.cpml3d_psi_e_terms
 
                     if is_3d and full_pec_3d:
-                        fp_ex, fp_ey, fp_ez = full_pec_update_e_from_h_3d(
-                            eng.fp_hx,
-                            eng.fp_hy,
-                            eng.fp_hz,
-                            fp_ex,
-                            fp_ey,
-                            fp_ez,
+                        ex_active, ey_active, ez_active = full_pec_update_e_from_h_3d(
+                            self._crop_active_component("Hx", hx),
+                            self._crop_active_component("Hy", hy),
+                            self._crop_active_component("Hz", hz),
+                            self._crop_active_component("Ex", ex),
+                            self._crop_active_component("Ey", ey),
+                            self._crop_active_component("Ez", ez),
                             resolution,
                             e_decay=(
-                                self.fp_e_decay_x,
-                                self.fp_e_decay_y,
-                                self.fp_e_decay_z,
+                                e_decay_x,
+                                e_decay_y,
+                                e_decay_z,
                             ),
                             e_source=(
-                                self.fp_e_source_x,
-                                self.fp_e_source_y,
-                                self.fp_e_source_z,
+                                e_source_x,
+                                e_source_y,
+                                e_source_z,
                             ),
-                            e_mask=(self.fp_ex_mask, self.fp_ey_mask, self.fp_ez_mask),
+                            e_mask=(
+                                self._crop_active_component("Ex", self.fp_ex_mask),
+                                self._crop_active_component("Ey", self.fp_ey_mask),
+                                self._crop_active_component("Ez", self.fp_ez_mask),
+                            ),
                         )
-                        ex = fp_ex[:-1, :-1, :-1]
-                        ey = fp_ey[:-1, :-1, :-1]
-                        ez = fp_ez[:-1, :-1, :-1]
+                        ex = self._pad_active_component("Ex", ex_active)
+                        ey = self._pad_active_component("Ey", ey_active)
+                        ez = self._pad_active_component("Ez", ez_active)
                     elif is_3d:
                         if self.use_cpml_3d:
                             if self.use_cpml_3d_packed_psi:
@@ -2512,17 +2571,18 @@ class CompiledSimulation:
                     ey = self._apply_source_group(eng.ey, abs_step, e_batch_y, e_rest_y)
                     ez = self._apply_source_group(eng.ez, abs_step, e_batch_z, e_rest_z)
                     fp_ex, fp_ey, fp_ez = eng.fp_ex, eng.fp_ey, eng.fp_ez
-                    if is_3d and full_pec_3d:
-                        fp_ex = fp_ex.at[:-1, :-1, :-1].set(ex)
-                        fp_ey = fp_ey.at[:-1, :-1, :-1].set(ey)
-                        fp_ez = fp_ez.at[:-1, :-1, :-1].set(ez)
                     if is_3d:
-                        ex = self._apply_metal_edges_3d(ex, "Ex", metallic_edges_3d)
-                        ey = self._apply_metal_edges_3d(ey, "Ey", metallic_edges_3d)
-                        ez = self._apply_metal_edges_3d(ez, "Ez", metallic_edges_3d)
-                        ex = apply_zero_mask(ex, ex_storage_mask)
-                        ey = apply_zero_mask(ey, ey_storage_mask)
-                        ez = apply_zero_mask(ez, ez_storage_mask)
+                        if full_pec_3d:
+                            ex = apply_zero_mask(ex, self.fp_ex_mask)
+                            ey = apply_zero_mask(ey, self.fp_ey_mask)
+                            ez = apply_zero_mask(ez, self.fp_ez_mask)
+                        else:
+                            ex = self._apply_metal_edges_3d(ex, "Ex", metallic_edges_3d)
+                            ey = self._apply_metal_edges_3d(ey, "Ey", metallic_edges_3d)
+                            ez = self._apply_metal_edges_3d(ez, "Ez", metallic_edges_3d)
+                            ex = apply_zero_mask(ex, ex_storage_mask)
+                            ey = apply_zero_mask(ey, ey_storage_mask)
+                            ez = apply_zero_mask(ez, ez_storage_mask)
                     else:
                         ex = self._apply_metal_mask(ex, ex_metal_mask)
                         ey = self._apply_metal_mask(ey, ey_metal_mask)
@@ -3018,7 +3078,7 @@ class CompiledSimulation:
                 coeffs,
                 snapshot_state,
             )
-        return self.crop_engine_state(eng), mon, mat, snapshots
+        return eng, mon, mat, snapshots
 
     def apply_monitor_state(self, monitor_state: MonitorState):
         """Push monitor-state buffers back to Monitor objects."""
@@ -3175,16 +3235,13 @@ def compile_simulation(
     total_steps = int(getattr(run_cfg, "total_steps", num_steps))
     t0 = float(getattr(run_cfg, "t0", 0.0))
     sharding_cfg = normalize_sharding_config(getattr(run_cfg, "sharding", None))
+    full_pec_3d_static = bool(run_cfg.is_3d and has_full_pec_3d(boundaries))
     storage_layout, sharding_devices = _build_storage_layout(
         logical_fields,
         sharding_cfg,
         is_3d=bool(run_cfg.is_3d),
+        full_pec_3d=full_pec_3d_static,
     )
-    if bool(run_cfg.is_3d) and storage_layout.enabled and has_full_pec_3d(boundaries):
-        raise NotImplementedError(
-            "compiled sharding currently supports compact 3D fields only; "
-            "full-PEC expanded-state 3D runs must use sharding=None"
-        )
     fields = _make_storage_fields_proxy(logical_fields, storage_layout)
     effective_sharding = (
         ShardingConfig(
@@ -3263,7 +3320,6 @@ def compile_simulation(
         and getattr(fields, "has_cpml", False)
         and getattr(fields, "pml_data", None)
     )
-    full_pec_3d_static = bool(run_cfg.is_3d and has_full_pec_3d(boundaries))
     use_3d_material_coefficients = bool(
         run_cfg.is_3d and (not has_cpml_3d) and (not full_pec_3d_static)
     )
@@ -3526,7 +3582,7 @@ def compile_simulation(
         metallic_edges_2d = frozenset()
     full_pec_3d = bool(has_full_pec_3d(boundaries))
     if bool(run_cfg.is_3d) and full_pec_3d:
-        fp_state = initialize_full_pec_3d_state(fields)
+        fp_state = initialize_full_pec_3d_state(logical_fields)
         fp_has_loss = any(
             _has_positive_conductivity(arr)
             for arr in (
@@ -3537,6 +3593,24 @@ def compile_simulation(
                 fp_state.sig_y_region,
                 fp_state.sig_z_region,
             )
+        )
+        fp_ex_mask = _pad_high_to_shape(
+            fp_state.masks["Ex"], storage_layout.storage_shapes["Ex"], pad_value=True
+        )
+        fp_ey_mask = _pad_high_to_shape(
+            fp_state.masks["Ey"], storage_layout.storage_shapes["Ey"], pad_value=True
+        )
+        fp_ez_mask = _pad_high_to_shape(
+            fp_state.masks["Ez"], storage_layout.storage_shapes["Ez"], pad_value=True
+        )
+        fp_hx_mask = _pad_high_to_shape(
+            fp_state.masks["Hx"], storage_layout.storage_shapes["Hx"], pad_value=True
+        )
+        fp_hy_mask = _pad_high_to_shape(
+            fp_state.masks["Hy"], storage_layout.storage_shapes["Hy"], pad_value=True
+        )
+        fp_hz_mask = _pad_high_to_shape(
+            fp_state.masks["Hz"], storage_layout.storage_shapes["Hz"], pad_value=True
         )
         if fp_has_loss:
             (
@@ -3583,12 +3657,18 @@ def compile_simulation(
                 dt=dt,
                 region=(slice(None), slice(1, -1), slice(1, -1)),
             )
-        fp_ex_mask = fp_state.masks["Ex"]
-        fp_ey_mask = fp_state.masks["Ey"]
-        fp_ez_mask = fp_state.masks["Ez"]
-        fp_hx_mask = fp_state.masks["Hx"]
-        fp_hy_mask = fp_state.masks["Hy"]
-        fp_hz_mask = fp_state.masks["Hz"]
+        h_decay_x = fp_h_decay_x
+        h_source_x = fp_h_source_x
+        h_decay_y = fp_h_decay_y
+        h_source_y = fp_h_source_y
+        h_decay_z = fp_h_decay_z
+        h_source_z = fp_h_source_z
+        e_decay_x = fp_e_decay_x
+        e_source_x = fp_e_source_x
+        e_decay_y = fp_e_decay_y
+        e_source_y = fp_e_source_y
+        e_decay_z = fp_e_decay_z
+        e_source_z = fp_e_source_z
     else:
         fp_h_decay_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
         fp_h_source_x = jnp.zeros((0, 0, 0), dtype=jnp.float32)
