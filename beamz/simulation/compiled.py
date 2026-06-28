@@ -584,15 +584,19 @@ def _pad_width(
     )
 
 
-def _valid_storage_mask(
-    active_shape: tuple[int, ...], storage_shape: tuple[int, ...]
-) -> jnp.ndarray | None:
-    if tuple(int(v) for v in active_shape) == tuple(int(v) for v in storage_shape):
-        return None
-    mask = np.ones(tuple(int(v) for v in storage_shape), dtype=bool)
-    active_region = tuple(slice(0, int(v)) for v in active_shape)
-    mask[active_region] = False
-    return jnp.asarray(mask)
+def _zero_high_padding(
+    arr: jnp.ndarray,
+    padding: tuple[tuple[int, int], ...],
+) -> jnp.ndarray:
+    out = arr
+    for axis, (_low, high) in enumerate(padding):
+        high = int(high)
+        if high <= 0:
+            continue
+        index = [slice(None)] * out.ndim
+        index[axis] = slice(int(out.shape[axis]) - high, None)
+        out = out.at[tuple(index)].set(jnp.asarray(0.0, dtype=out.dtype))
+    return out
 
 
 def _build_storage_layout(
@@ -612,10 +616,7 @@ def _build_storage_layout(
             name: tuple(int(v) + 1 for v in shape) if full_pec_3d else shape
             for name, shape in logical_shapes.items()
         }
-        masks = {
-            name: _valid_storage_mask(active_shapes[name], active_shapes[name])
-            for name in _COMPONENT_NAMES
-        }
+        masks = {name: None for name in _COMPONENT_NAMES}
         padding = {
             name: tuple((0, 0) for _ in active_shapes[name])
             for name in _COMPONENT_NAMES
@@ -671,10 +672,7 @@ def _build_storage_layout(
         name: _pad_width(active_shapes[name], storage_shapes[name])
         for name in _COMPONENT_NAMES
     }
-    masks = {
-        name: _valid_storage_mask(active_shapes[name], storage_shapes[name])
-        for name in _COMPONENT_NAMES
-    }
+    masks = {name: None for name in _COMPONENT_NAMES}
     return (
         StorageLayout(
             enabled=True,
@@ -1007,6 +1005,15 @@ class CompiledSimulation:
         if self.storage_layout.pec_full_storage:
             return apply_zero_mask(out, self._component_pec_mask(component))
         return out
+
+    def _zero_component_storage_padding(
+        self,
+        component: str,
+        arr: jnp.ndarray,
+    ) -> jnp.ndarray:
+        if not self.storage_layout.enabled:
+            return arr
+        return _zero_high_padding(arr, self.storage_layout.padding[component])
 
     def _crop_component(self, component: str, arr: jnp.ndarray) -> jnp.ndarray:
         return _crop_high_to_shape(arr, self._component_logical_shape(component))
@@ -2058,12 +2065,6 @@ class CompiledSimulation:
             hx_metal_mask = self.hx_metal_mask
             hy_metal_mask = self.hy_metal_mask
             hz_metal_mask = self.hz_metal_mask
-            ex_storage_mask = self.ex_storage_mask
-            ey_storage_mask = self.ey_storage_mask
-            ez_storage_mask = self.ez_storage_mask
-            hx_storage_mask = self.hx_storage_mask
-            hy_storage_mask = self.hy_storage_mask
-            hz_storage_mask = self.hz_storage_mask
             use_physical_tm_xy = self.use_physical_tm_xy
             use_cpml_tm_xy = self.use_cpml_tm_xy
             use_cpml_3d = self.use_cpml_3d
@@ -2399,9 +2400,9 @@ class CompiledSimulation:
                                 hy_post, "Hy", metallic_edges_3d
                             )
                             hz = self._apply_metal_edges_3d(hz, "Hz", metallic_edges_3d)
-                            hx = apply_zero_mask(hx, hx_storage_mask)
-                            hy = apply_zero_mask(hy, hy_storage_mask)
-                            hz = apply_zero_mask(hz, hz_storage_mask)
+                            hx = self._zero_component_storage_padding("Hx", hx)
+                            hy = self._zero_component_storage_padding("Hy", hy)
+                            hz = self._zero_component_storage_padding("Hz", hz)
                     else:
                         hx = self._apply_metal_mask(hx_post, hx_metal_mask)
                         hy = self._apply_metal_mask(hy_post, hy_metal_mask)
@@ -2633,9 +2634,9 @@ class CompiledSimulation:
                             ex = self._apply_metal_edges_3d(ex, "Ex", metallic_edges_3d)
                             ey = self._apply_metal_edges_3d(ey, "Ey", metallic_edges_3d)
                             ez = self._apply_metal_edges_3d(ez, "Ez", metallic_edges_3d)
-                            ex = apply_zero_mask(ex, ex_storage_mask)
-                            ey = apply_zero_mask(ey, ey_storage_mask)
-                            ez = apply_zero_mask(ez, ez_storage_mask)
+                            ex = self._zero_component_storage_padding("Ex", ex)
+                            ey = self._zero_component_storage_padding("Ey", ey)
+                            ez = self._zero_component_storage_padding("Ez", ez)
                     else:
                         ex = self._apply_metal_mask(ex, ex_metal_mask)
                         ey = self._apply_metal_mask(ey, ey_metal_mask)
