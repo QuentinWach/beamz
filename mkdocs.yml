@@ -1,0 +1,35 @@
+site_name: BEAMZ Docs
+site_description: Open GPU-accelerated FDTD for photonic chip designers.
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: mkdocs
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths:
+            - .
+          options:
+            docstring_style: auto
+            docstring_options:
+              per_style_options:
+                google:
+                  warnings: false
+                numpy:
+                  warnings: false
+                sphinx:
+                  warnings: false
+            members_order: __all__
+            show_root_heading: false
+            show_root_toc_entry: false
+            show_source: true
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true

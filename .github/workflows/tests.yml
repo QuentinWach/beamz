@@ -43,6 +43,24 @@ jobs:
           --cov-report=xml
           --cov-fail-under=75
 
+      - name: Check generated docs
+        run: |
+          uv run --no-active --python 3.11 python scripts/update_api_docs.py --check
+          uv run --no-active --python 3.11 mkdocs build --strict
+
+      - name: Generate API reference JSON
+        run: >
+          uv run --no-active --python 3.11 python scripts/update_api_docs.py
+          --output-dir "${RUNNER_TEMP}/api-reference"
+
+      - name: Upload API reference JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-reference-json
+          path: ${{ runner.temp }}/api-reference/api-reference.json
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Upload coverage report
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4

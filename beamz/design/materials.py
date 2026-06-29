@@ -2,6 +2,19 @@ import warnings
 
 
 class Material:
+    """Homogeneous electromagnetic and thermal material properties.
+
+    Args:
+        permittivity: Relative electric permittivity used by the FDTD update.
+        permeability: Relative magnetic permeability.
+        conductivity: Electric conductivity in simulation units.
+        k: Thermal conductivity coefficient.
+        rho: Material density for thermal calculations.
+        cp: Specific heat capacity for thermal calculations.
+        dn_dT: Thermo-optic coefficient.
+        T0: Reference temperature for thermo-optic calculations.
+    """
+
     def __init__(
         self,
         permittivity=1.0,

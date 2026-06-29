@@ -1,0 +1,75 @@
+{
+  "title": "BEAMZ Docs",
+  "description": "Documentation content for BEAMZ. This directory is intended to be rendered by an external website, not deployed from this repository.",
+  "version": 2,
+  "pages": [
+    {
+      "title": "Getting Started",
+      "path": "getting-started.md"
+    },
+    {
+      "title": "API Reference",
+      "path": "api/reference/index.md"
+    },
+    {
+      "title": "beamz",
+      "path": "api/reference/beamz.md"
+    },
+    {
+      "title": "beamz.data",
+      "path": "api/reference/beamz.data.md"
+    },
+    {
+      "title": "beamz.design",
+      "path": "api/reference/beamz.design.md"
+    },
+    {
+      "title": "beamz.devices",
+      "path": "api/reference/beamz.devices.md"
+    },
+    {
+      "title": "beamz.optimization",
+      "path": "api/reference/beamz.optimization.md"
+    },
+    {
+      "title": "beamz.simulation",
+      "path": "api/reference/beamz.simulation.md"
+    },
+    {
+      "title": "beamz.visual",
+      "path": "api/reference/beamz.visual.md"
+    },
+    {
+      "title": "beamz.data.xarray",
+      "path": "api/reference/beamz.data.xarray.md"
+    },
+    {
+      "title": "beamz.design.library",
+      "path": "api/reference/beamz.design.library.md"
+    },
+    {
+      "title": "beamz.devices.monitors",
+      "path": "api/reference/beamz.devices.monitors.md"
+    },
+    {
+      "title": "beamz.devices.sources",
+      "path": "api/reference/beamz.devices.sources.md"
+    },
+    {
+      "title": "beamz.visual.data",
+      "path": "api/reference/beamz.visual.data.md"
+    },
+    {
+      "title": "beamz.visual.mpl",
+      "path": "api/reference/beamz.visual.mpl.md"
+    },
+    {
+      "title": "beamz.visual.overlays",
+      "path": "api/reference/beamz.visual.overlays.md"
+    },
+    {
+      "title": "beamz.visual.scene",
+      "path": "api/reference/beamz.visual.scene.md"
+    }
+  ]
+}

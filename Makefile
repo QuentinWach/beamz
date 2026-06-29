@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test lint dead-code audit format clean build publish
+.PHONY: help install install-dev test lint dead-code audit docs-api docs-check format clean build publish
 
 help:  ## Show this help message
 	@echo "Usage: make [target]"
@@ -25,6 +25,14 @@ dead-code:  ## Run high-confidence dead code checks
 	uv run --extra lint vulture beamz/ --min-confidence 80
 
 audit: lint dead-code test  ## Run core code quality audit
+
+docs-api:  ## Regenerate committed Markdown API reference docs
+	uv run --extra docs python scripts/update_api_docs.py
+	uv run --extra docs mkdocs build --strict
+
+docs-check:  ## Check generated Markdown API reference docs are current
+	uv run --extra docs python scripts/update_api_docs.py --check
+	uv run --extra docs mkdocs build --strict
 
 format:  ## Format code and fix package lint issues
 	uv run --extra lint ruff format beamz/ examples/ tests/

@@ -52,6 +52,20 @@ def _normalize_position(position, z=None):
 
 
 class Polygon:
+    """Planar polygon geometry with optional holes and extrusion metadata.
+
+    Args:
+        vertices: Exterior polygon vertices as 2D or 3D coordinate tuples.
+        material: Material assigned to the polygon during meshing.
+        color: Display color used by plotting helpers.
+        optimize: Whether this polygon participates in optimization workflows.
+        interiors: Optional interior paths that define holes.
+        depth: Extrusion depth along z.
+        z: Lower z coordinate for the extruded polygon.
+        sidewall_angle: Sidewall taper angle in degrees.
+        width_to_z: Fractional depth used as the sidewall width reference.
+    """
+
     def __init__(
         self,
         vertices=None,
@@ -362,6 +376,22 @@ class Polygon:
 
 
 class Rectangle(Polygon):
+    """Axis-aligned rectangular geometry.
+
+    Args:
+        position: Lower-left coordinate as ``(x, y)`` or ``(x, y, z)``.
+        width: Rectangle width along x.
+        height: Rectangle height along y.
+        depth: Extrusion depth along z.
+        material: Material assigned to the rectangle during meshing.
+        color: Display color used by plotting helpers.
+        is_pml: Whether the rectangle represents a PML helper region.
+        optimize: Whether this rectangle participates in optimization workflows.
+        z: Optional z coordinate overriding ``position``.
+        sidewall_angle: Sidewall taper angle in degrees.
+        width_to_z: Fractional depth used as the sidewall width reference.
+    """
+
     def __init__(
         self,
         position=(0, 0, 0),
@@ -462,6 +492,11 @@ class Box:
     This is a centered-geometry companion to :class:`Rectangle`. It is intended
     for simulation construction APIs where coordinates are expressed relative to
     the simulation center.
+
+    Args:
+        center: Box center as a 2D or 3D coordinate tuple.
+        size: Full box size along each axis.
+        material: Material assigned when the box is converted to a rectangle.
     """
 
     def __init__(self, center=(0, 0, 0), size=(1, 1, 1), material=None):
@@ -592,6 +627,19 @@ class Structure:
 
 
 class Circle(Polygon):
+    """Circular planar geometry approximated by polygon vertices.
+
+    Args:
+        position: Circle center as ``(x, y)`` or ``(x, y, z)``.
+        radius: Circle radius.
+        points: Number of polygon vertices used for the approximation.
+        material: Material assigned to the circle during meshing.
+        color: Display color used by plotting helpers.
+        optimize: Whether this circle participates in optimization workflows.
+        depth: Extrusion depth along z.
+        z: Lower z coordinate for the extruded circle.
+    """
+
     def __init__(
         self,
         position=(0, 0),
@@ -662,6 +710,20 @@ class Circle(Polygon):
 
 
 class Ring(Polygon):
+    """Annular planar geometry with inner and outer radii.
+
+    Args:
+        position: Ring center as ``(x, y)`` or ``(x, y, z)``.
+        inner_radius: Inner radius of the annulus.
+        outer_radius: Outer radius of the annulus.
+        material: Material assigned to the ring during meshing.
+        color: Display color used by plotting helpers.
+        optimize: Whether this ring participates in optimization workflows.
+        points: Number of polygon vertices used per circular boundary.
+        depth: Extrusion depth along z.
+        z: Optional z coordinate overriding ``position``.
+    """
+
     def __init__(
         self,
         position=(0, 0),
@@ -775,6 +837,22 @@ class Ring(Polygon):
 
 
 class CircularBend(Polygon):
+    """Curved annular waveguide bend geometry.
+
+    Args:
+        position: Bend center as ``(x, y)`` or ``(x, y, z)``.
+        inner_radius: Inner radius of the bend.
+        outer_radius: Outer radius of the bend.
+        angle: Bend sweep angle in degrees.
+        rotation: Rotation angle in degrees.
+        material: Material assigned to the bend during meshing.
+        facecolor: Display fill color used by plotting helpers.
+        optimize: Whether this bend participates in optimization workflows.
+        points: Number of polygon vertices used along each arc.
+        depth: Extrusion depth along z.
+        z: Lower z coordinate for the extruded bend.
+    """
+
     def __init__(
         self,
         position=(0, 0),
@@ -891,6 +969,20 @@ class CircularBend(Polygon):
 
 
 class Taper(Polygon):
+    """Linear taper between an input and output width.
+
+    Args:
+        position: Input-center coordinate as ``(x, y)`` or ``(x, y, z)``.
+        input_width: Width at the taper input.
+        output_width: Width at the taper output.
+        length: Taper length along x before rotation.
+        material: Material assigned to the taper during meshing.
+        color: Display color used by plotting helpers.
+        optimize: Whether this taper participates in optimization workflows.
+        depth: Extrusion depth along z.
+        z: Lower z coordinate for the extruded taper.
+    """
+
     def __init__(
         self,
         position=(0, 0),

@@ -96,4 +96,7 @@ notes/
 .python_cache/
 .venv/
 reference/
+!docs/api/reference/
+docs/api/reference/api-reference.json
+site/
 .beamz_cache/
