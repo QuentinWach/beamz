@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from beamz import Design, Material
 from beamz.design.core import _build_grid_from_cached_arrays, _save_grid_to_cache
 from beamz.design.meshing import MaterialGrids
 from beamz.simulation.boundaries import initialize_tm_2d_xy_state
@@ -99,6 +100,18 @@ def test_raster_cache_load_preserves_compact_default_channels(tmp_path):
     assert not hasattr(grid, "cp")
     assert not hasattr(grid, "dn_dT")
     assert not hasattr(grid, "T0")
+
+
+def test_raster_cache_is_disabled_by_default(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BEAMZ_RASTER_CACHE", raising=False)
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+
+    design = Design(width=1.0, height=1.0, material=Material(permittivity=1.0))
+
+    design.rasterize(resolution=1.0, force_recompute=True)
+
+    assert not (tmp_path / ".beamz_cache" / "raster").exists()
 
 
 def test_tm_xy_state_accepts_scalar_zero_conductivity():

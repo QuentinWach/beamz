@@ -556,7 +556,7 @@ class Design:
         from beamz.visual.helpers import display_status
 
         timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
-        disk_cache_enabled = _env_bool("BEAMZ_RASTER_CACHE", True)
+        disk_cache_enabled = _env_bool("BEAMZ_RASTER_CACHE", False)
         t_total_start = time.perf_counter()
         grid_kind = _grid_kind_for_request(self, grid_type, kwargs)
         requested_resolution_z_raw = kwargs.get("resolution_z", resolution)
