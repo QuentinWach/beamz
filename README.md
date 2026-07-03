@@ -4,7 +4,7 @@
     <img alt="BEAMZ logo" src="docs/assets/beamz_logo_white.png" width="130">
   </picture>
 
-  <strong>BEAMZ</strong> is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> framework for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It enables fast, large-scale simulations and offers a <strong>familiar, high-level API</strong> for fast prototyping with just a few lines of code as well as an <strong>inverse design module</strong> for gradient-based optimization using the <strong>adjoint method</strong> with <strong><a href="https://en.wikipedia.org/wiki/Automatic_differentiation">autodiff</a></strong>.
+  <strong>BEAMZ</strong> is a <strong>GPU-accelerated</strong> <strong><a href="https://en.wikipedia.org/wiki/Electromagnetism">electromagnetic</a> simulation</strong> framework for photonic chip designers using the <strong><a href="https://en.wikipedia.org/wiki/Finite-difference_time-domain_method">FDTD</a> method</strong>. It enables fast, large-scale simulations and offers a <strong>familiar, high-level API</strong> for fast prototyping with just a few lines of code as well as an <strong>inverse design module</strong> for gradient-based optimization using the <strong>adjoint method</strong>.
 
   <h3>
 
@@ -22,13 +22,14 @@
 ## Core Features
 - **100% Python**, free (Apache-2.0 license) & open-source.
 - FDTD simulation in **2D and 3D**.
-- **GPU-accelerated**, achieving extremely high **GCUPS performance**.
-- Handling **large-scale simulations** with _billions of cells_.
+- **GPU-accelerated**, achieving high **GCUPS performance**.
+- **Multi-GPU** runs, handling **large-scale simulations** with _billions of cells_.
 - CPU-capable for **fast prototyping**, even on your laptop.
 - Modular architecture with an **intuitive and familiar, high-level API**.
 - **Native FDFD mode solver, _[micromode](https://github.com/beamzorg/micromode)_**.
 - **CPML**, absorbing layers and PEC boundaries.
 - **Mode** and other sources  with TE and TM polarization.
+- Integrated **rasterization module**.
 - **Sub-pixel averaging** using super-sampling.
 - Custom source time profiles.
 - Built-in layout flow (GDSII import/export).
