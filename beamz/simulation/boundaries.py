@@ -922,6 +922,24 @@ def initialize_full_pec_3d_state(fields) -> FullPec3DState:
         getattr(fields, "total_conductivity", fields.conductivity)
     )
     sigma_base = total_sigma * jnp.asarray(fields.permeability) * MU_0 / EPS_0
+    if getattr(sigma_base, "ndim", None) == 0:
+        sigma_m_hx = sigma_m_hy = sigma_m_hz = sigma_base
+    else:
+        sigma_m_hx = sample_voxel_grid_at_component_3d(
+            sigma_base,
+            "Hx",
+            stored_shape=full_shapes["Hx"],
+        )
+        sigma_m_hy = sample_voxel_grid_at_component_3d(
+            sigma_base,
+            "Hy",
+            stored_shape=full_shapes["Hy"],
+        )
+        sigma_m_hz = sample_voxel_grid_at_component_3d(
+            sigma_base,
+            "Hz",
+            stored_shape=full_shapes["Hz"],
+        )
 
     state = FullPec3DState(
         Ex=_full("Ex"),
@@ -966,21 +984,9 @@ def initialize_full_pec_3d_state(fields) -> FullPec3DState:
             stored_shape=full_shapes["Ez"],
             region=region_z,
         ),
-        sigma_m_hx=sample_voxel_grid_at_component_3d(
-            sigma_base,
-            "Hx",
-            stored_shape=full_shapes["Hx"],
-        ),
-        sigma_m_hy=sample_voxel_grid_at_component_3d(
-            sigma_base,
-            "Hy",
-            stored_shape=full_shapes["Hy"],
-        ),
-        sigma_m_hz=sample_voxel_grid_at_component_3d(
-            sigma_base,
-            "Hz",
-            stored_shape=full_shapes["Hz"],
-        ),
+        sigma_m_hx=sigma_m_hx,
+        sigma_m_hy=sigma_m_hy,
+        sigma_m_hz=sigma_m_hz,
         masks=full_masks,
     )
 
