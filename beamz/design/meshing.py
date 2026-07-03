@@ -1321,6 +1321,18 @@ class RegularGrid3D(BaseMeshGrid):
         if i0 >= i1 or j0 >= j1 or k0 >= k1:
             return
 
+        aligned_tol = 1e-12
+        if (
+            abs(x0 - j0 * cell_size_xy) <= aligned_tol
+            and abs(y0 - i0 * cell_size_xy) <= aligned_tol
+            and abs(z0 - k0 * cell_size_z) <= aligned_tol
+            and abs(x1 - j1 * cell_size_xy) <= aligned_tol
+            and abs(y1 - i1 * cell_size_xy) <= aligned_tol
+            and abs(z1 - k1 * cell_size_z) <= aligned_tol
+        ):
+            grids.set_region((slice(k0, k1), slice(i0, i1), slice(j0, j1)), props)
+            return
+
         # Compute exact axis-aligned overlap fractions per voxel to preserve
         # anti-aliased boundaries without expensive per-sample point checks.
         x_edges0 = np.arange(j0, j1, dtype=float) * cell_size_xy
@@ -1542,6 +1554,7 @@ class RegularGrid3D(BaseMeshGrid):
         sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
         n_samples_xy = float(sample_dx.size)
         inside_count = np.zeros(xx.shape, dtype=float)
+        polygon_for_contains = polygon.buffer(1e-15)
 
         shift_x_map = None
         shift_y_map = None
@@ -1587,7 +1600,7 @@ class RegularGrid3D(BaseMeshGrid):
                     ((xx + sample_dx[sidx]).ravel(), (yy + sample_dy[sidx]).ravel())
                 )
             inside = contains_xy(
-                polygon.buffer(1e-15), points[:, 0], points[:, 1]
+                polygon_for_contains, points[:, 0], points[:, 1]
             ).reshape(xx.shape)
             inside_count += inside.astype(float)
         frac_xy = inside_count / n_samples_xy

@@ -2,7 +2,12 @@ import numpy as np
 
 from beamz import Circle, Design, Material, Polygon, Rectangle
 from beamz.design.core import _normalize_aa_config
-from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
+from beamz.design.meshing import (
+    MaterialGrids,
+    RegularGrid,
+    RegularGrid3D,
+    create_mesh,
+)
 
 
 def _build_circle_design():
@@ -197,6 +202,43 @@ def test_sidewalled_rectangle_rasterizes_narrower_at_top(monkeypatch):
     filled_bottom = np.count_nonzero(grid.permittivity[1] > 2.0)
     filled_top = np.count_nonzero(grid.permittivity[-2] > 2.0)
     assert filled_top < filled_bottom
+
+
+def test_aligned_3d_rectangle_uses_direct_region_fill(monkeypatch):
+    monkeypatch.setenv("BEAMZ_RASTER_CACHE", "0")
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+    monkeypatch.setenv("BEAMZ_RASTER_FAST_3D", "1")
+
+    def fail_masked_region(*args, **kwargs):
+        raise AssertionError("aligned rectangles should not allocate masked regions")
+
+    monkeypatch.setattr(MaterialGrids, "set_masked_region", fail_masked_region)
+    monkeypatch.setattr(MaterialGrids, "blend_masked_region", fail_masked_region)
+
+    design = Design(
+        width=2.0,
+        height=2.0,
+        depth=2.0,
+        material=Material(permittivity=1.0),
+    )
+    design += Rectangle(
+        position=(0.5, 0.5, 0.5),
+        width=1.0,
+        height=1.0,
+        depth=1.0,
+        material=Material(permittivity=9.0),
+    )
+
+    grid = design.rasterize(
+        resolution=0.5,
+        force_recompute=True,
+        aa_mode="legacy_grid",
+        aa_samples=1,
+    )
+
+    expected = np.ones((4, 4, 4), dtype=np.float32)
+    expected[1:3, 1:3, 1:3] = 9.0
+    np.testing.assert_allclose(grid.permittivity, expected)
 
 
 def test_create_mesh_ignores_resolution_z_for_2d_design():
