@@ -215,7 +215,10 @@ class PML(Boundary):
 
         for attr in ("permittivity", "conductivity", "permeability"):
             source = getattr(fields, attr)
-            material = np.array(source, copy=True)
+            source_arr = np.asarray(source)
+            if source_arr.ndim == 0:
+                continue
+            material = np.array(source_arr, copy=True)
             for _edge, axis, side, count in self._pml_material_edge_counts(
                 material, pml_data, plane_2d
             ):
@@ -234,7 +237,7 @@ class PML(Boundary):
                 material[tuple(dst_sel)] = np.expand_dims(
                     material[tuple(ref_sel)], axis=axis
                 )
-            setattr(fields, attr, jnp.asarray(material, dtype=source.dtype))
+            setattr(fields, attr, jnp.asarray(material, dtype=source_arr.dtype))
 
     @staticmethod
     def _pml_edge_material_varies(material, axis: int, side: str, count: int) -> bool:
@@ -1063,7 +1066,19 @@ def initialize_tm_2d_xy_state(fields) -> Tm2DXYState:
     total_sigma = jnp.asarray(
         getattr(fields, "total_conductivity", fields.conductivity)
     )
-    sigma_base = total_sigma * jnp.asarray(fields.permeability) * MU_0 / EPS_0
+    total_sigma_arr = np.asarray(total_sigma)
+    if total_sigma_arr.shape == () and float(total_sigma_arr) == 0.0:
+        sig_z_region = total_sigma
+        sigma_m_hx = total_sigma
+        sigma_m_hy = total_sigma
+    else:
+        sigma_base = total_sigma * jnp.asarray(fields.permeability) * MU_0 / EPS_0
+        sig_z_region = sample_voxel_grid_at_tm_xy_full_component_2d(
+            total_sigma,
+            "Ez",
+        )
+        sigma_m_hx = sample_voxel_grid_at_tm_xy_full_component_2d(sigma_base, "Hx")
+        sigma_m_hy = sample_voxel_grid_at_tm_xy_full_component_2d(sigma_base, "Hy")
     metallic_edges = frozenset(
         resolve_metallic_edges(getattr(fields, "boundaries", None), is_3d=False)
     )
@@ -1081,12 +1096,9 @@ def initialize_tm_2d_xy_state(fields) -> Tm2DXYState:
             fields.permittivity,
             "Ez",
         ),
-        sig_z_region=sample_voxel_grid_at_tm_xy_full_component_2d(
-            total_sigma,
-            "Ez",
-        ),
-        sigma_m_hx=sample_voxel_grid_at_tm_xy_full_component_2d(sigma_base, "Hx"),
-        sigma_m_hy=sample_voxel_grid_at_tm_xy_full_component_2d(sigma_base, "Hy"),
+        sig_z_region=sig_z_region,
+        sigma_m_hx=sigma_m_hx,
+        sigma_m_hy=sigma_m_hy,
         metallic_edges=metallic_edges,
         ez_mask=masks["Ez"],
         hx_mask=masks["Hx"],

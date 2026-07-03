@@ -3603,15 +3603,25 @@ def compile_simulation(
         total_sigma = jnp.asarray(
             getattr(fields, "total_conductivity", fields.conductivity)
         )
-        sigma_base = (
-            total_sigma * jnp.asarray(fields.permeability) * ops.MU_0 / ops.EPS_0
-        )
-        tm_sigma_m_hx = sample_voxel_grid_at_tm_xy_full_component_2d(sigma_base, "Hx")
-        tm_sigma_m_hy = sample_voxel_grid_at_tm_xy_full_component_2d(sigma_base, "Hy")
+        total_sigma_arr = np.asarray(total_sigma)
+        if total_sigma_arr.shape == () and float(total_sigma_arr) == 0.0:
+            tm_sigma_m_hx = total_sigma
+            tm_sigma_m_hy = total_sigma
+            tm_sig_z = total_sigma
+        else:
+            sigma_base = (
+                total_sigma * jnp.asarray(fields.permeability) * ops.MU_0 / ops.EPS_0
+            )
+            tm_sigma_m_hx = sample_voxel_grid_at_tm_xy_full_component_2d(
+                sigma_base, "Hx"
+            )
+            tm_sigma_m_hy = sample_voxel_grid_at_tm_xy_full_component_2d(
+                sigma_base, "Hy"
+            )
+            tm_sig_z = sample_voxel_grid_at_tm_xy_full_component_2d(total_sigma, "Ez")
         tm_eps_z = sample_voxel_grid_at_tm_xy_full_component_2d(
             fields.permittivity, "Ez"
         )
-        tm_sig_z = sample_voxel_grid_at_tm_xy_full_component_2d(total_sigma, "Ez")
         tm_h_decay_x, tm_h_source_x, _ = ops.precompute_h_update_coefficients(
             tm_sigma_m_hx, dt
         )

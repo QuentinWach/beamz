@@ -22,7 +22,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 class MaterialGrids:
-    """Bundles the 8 material property arrays with bulk operations."""
+    """Bundles material property grids with compact default-valued channels."""
 
     NAMES = (
         "permittivity",
@@ -35,36 +35,101 @@ class MaterialGrids:
         "T0",
     )
     DEFAULTS = (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 300.0)
+    DENSE_NAMES = frozenset(("permittivity", "permeability"))
 
     def __init__(self, shape):
+        self.shape = tuple(int(v) for v in shape)
+        self._values = {}
         for name, default in zip(self.NAMES, self.DEFAULTS):
-            setattr(self, name, np.full(shape, default))
+            self._values[name] = (
+                np.full(self.shape, default) if name in self.DENSE_NAMES else float(default)
+            )
+
+    def __getattr__(self, name):
+        if name in self.NAMES:
+            return self._values[name]
+        raise AttributeError(name)
+
+    @staticmethod
+    def _same_scalar(left, right):
+        left_arr = np.asarray(left)
+        right_arr = np.asarray(right)
+        if left_arr.shape != () or right_arr.shape != ():
+            return False
+        return bool(np.isclose(float(left_arr), float(right_arr), rtol=0.0, atol=0.0))
+
+    def _materialize(self, name):
+        value = self._values[name]
+        if np.asarray(value).shape == ():
+            value = np.full(self.shape, float(value))
+            self._values[name] = value
+        return value
 
     def fill_all(self, props):
         """Fill all grids with material property tuple."""
         for name, val in zip(self.NAMES, props):
-            getattr(self, name).fill(val)
+            if name in self.DENSE_NAMES:
+                self._materialize(name).fill(val)
+            else:
+                self._values[name] = float(val)
 
     def set_at(self, idx, props):
         """Set all properties at index (i,j) or (k,i,j)."""
         for name, val in zip(self.NAMES, props):
-            getattr(self, name)[idx] = val
+            self.set_channel_at(name, idx, val)
+
+    def set_channel_at(self, name, idx, val):
+        current = self._values[name]
+        if self._same_scalar(current, val):
+            return
+        self._materialize(name)[idx] = val
 
     def blend_at(self, idx, props, factor):
         """Blend properties at index with given factor."""
         for name, val in zip(self.NAMES, props):
-            arr = getattr(self, name)
-            arr[idx] = arr[idx] * (1 - factor) + val * factor
+            self.blend_channel_at(name, idx, val, factor)
+
+    def blend_channel_at(self, name, idx, val, factor):
+        current = self._values[name]
+        if self._same_scalar(current, val):
+            return
+        arr = self._materialize(name)
+        arr[idx] = arr[idx] * (1 - factor) + val * factor
 
     def set_region(self, slices, props):
         """Set all properties for a slice/index-array region."""
         for name, val in zip(self.NAMES, props):
-            getattr(self, name)[slices] = val
+            self.set_channel_region(name, slices, val)
+
+    def set_channel_region(self, name, slices, val):
+        current = self._values[name]
+        if self._same_scalar(current, val):
+            return
+        self._materialize(name)[slices] = val
+
+    def set_masked_region(self, name, region, mask, val):
+        if not np.any(mask):
+            return
+        current = self._values[name]
+        if self._same_scalar(current, val):
+            return
+        view = self._materialize(name)[region]
+        view[mask] = val
+
+    def blend_masked_region(self, name, region, mask, val, factors):
+        if not np.any(mask):
+            return
+        current = self._values[name]
+        if self._same_scalar(current, val):
+            return
+        view = self._materialize(name)[region]
+        f = np.asarray(factors)
+        view[mask] = view[mask] * (1.0 - f) + val * f
 
     def assign_to(self, target):
         """Copy all grids as attributes onto target object."""
         for name in self.NAMES:
-            setattr(target, name, getattr(self, name))
+            setattr(target, name, self._values[name])
 
 
 class BaseMeshGrid:
@@ -1123,9 +1188,7 @@ class RegularGrid3D(BaseMeshGrid):
         # Process 3D PML boundaries
         t_pml_start = time.perf_counter()
         self._process_3d_pml(
-            grids.permittivity,
-            grids.permeability,
-            grids.conductivity,
+            grids,
             x_centers,
             y_centers,
             z_centers,
@@ -1160,9 +1223,7 @@ class RegularGrid3D(BaseMeshGrid):
 
     def _process_3d_pml(
         self,
-        permittivity,
-        permeability,
-        conductivity,
+        grids,
         x_centers,
         y_centers,
         z_centers,
@@ -1189,12 +1250,13 @@ class RegularGrid3D(BaseMeshGrid):
                                 z,
                                 dx=self.resolution_xy,
                                 dt=dt_estimate,
-                                eps_avg=permittivity[k, i, j],
+                                eps_avg=grids.permittivity[k, i, j],
                                 width=self.design.width,
                                 height=self.design.height,
                                 depth=self.design.depth,
                             )
                             if pml_conductivity > 0:
+                                conductivity = grids._materialize("conductivity")
                                 conductivity[k, i, j] += pml_conductivity
 
                 progress.update(task, advance=1)
@@ -1316,15 +1378,14 @@ class RegularGrid3D(BaseMeshGrid):
         blend_mask = (frac > 0.0) & ~full_mask
 
         if np.any(full_mask):
+            region = (slice(k0, k1), slice(i0, i1), slice(j0, j1))
             for name, val in zip(MaterialGrids.NAMES, props):
-                arr = getattr(grids, name)[k0:k1, i0:i1, j0:j1]
-                arr[full_mask] = val
+                grids.set_masked_region(name, region, full_mask, val)
 
         if np.any(blend_mask):
+            region = (slice(k0, k1), slice(i0, i1), slice(j0, j1))
             for name, val in zip(MaterialGrids.NAMES, props):
-                arr = getattr(grids, name)[k0:k1, i0:i1, j0:j1]
-                f = frac[blend_mask]
-                arr[blend_mask] = arr[blend_mask] * (1.0 - f) + val * f
+                grids.blend_masked_region(name, region, blend_mask, val, frac[blend_mask])
 
     def _rasterize_polygon_3d_fast(
         self,
@@ -1483,15 +1544,20 @@ class RegularGrid3D(BaseMeshGrid):
             blend_mask = (frac > 0.0) & ~full_mask
 
             if np.any(full_mask):
+                region = (slice(min_k, max_k), slice(min_i, max_i), slice(min_j, max_j))
                 for name, val in zip(MaterialGrids.NAMES, props):
-                    arr = getattr(grids, name)[min_k:max_k, min_i:max_i, min_j:max_j]
-                    arr[full_mask] = val
+                    grids.set_masked_region(name, region, full_mask, val)
 
             if np.any(blend_mask):
+                region = (slice(min_k, max_k), slice(min_i, max_i), slice(min_j, max_j))
                 for name, val in zip(MaterialGrids.NAMES, props):
-                    arr = getattr(grids, name)[min_k:max_k, min_i:max_i, min_j:max_j]
-                    f = frac[blend_mask]
-                    arr[blend_mask] = arr[blend_mask] * (1.0 - f) + val * f
+                    grids.blend_masked_region(
+                        name,
+                        region,
+                        blend_mask,
+                        val,
+                        frac[blend_mask],
+                    )
             return True
 
         sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
@@ -1564,15 +1630,14 @@ class RegularGrid3D(BaseMeshGrid):
         blend_mask = (frac > 0.0) & ~full_mask
 
         if np.any(full_mask):
+            region = (slice(min_k, max_k), slice(min_i, max_i), slice(min_j, max_j))
             for name, val in zip(MaterialGrids.NAMES, props):
-                arr = getattr(grids, name)[min_k:max_k, min_i:max_i, min_j:max_j]
-                arr[full_mask] = val
+                grids.set_masked_region(name, region, full_mask, val)
 
         if np.any(blend_mask):
+            region = (slice(min_k, max_k), slice(min_i, max_i), slice(min_j, max_j))
             for name, val in zip(MaterialGrids.NAMES, props):
-                arr = getattr(grids, name)[min_k:max_k, min_i:max_i, min_j:max_j]
-                f = frac[blend_mask]
-                arr[blend_mask] = arr[blend_mask] * (1.0 - f) + val * f
+                grids.blend_masked_region(name, region, blend_mask, val, frac[blend_mask])
 
         return True
 

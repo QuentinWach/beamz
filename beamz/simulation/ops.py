@@ -217,7 +217,6 @@ def material_slice_for_e_2d_component(permittivity, conductivity, component, pla
 
     if plane == "xy" and field_component == "Ez":
         eps = sample_voxel_grid_at_tm_xy_full_component_2d(permittivity, "Ez")[region]
-        sig = sample_voxel_grid_at_tm_xy_full_component_2d(conductivity, "Ez")[region]
     else:
         eps = sample_voxel_grid_at_component_2d(
             permittivity,
@@ -226,6 +225,12 @@ def material_slice_for_e_2d_component(permittivity, conductivity, component, pla
             stored_shape=field_shape,
             region=region,
         )
+
+    if jnp.asarray(conductivity).ndim == 0:
+        sig = jnp.asarray(conductivity)
+    elif plane == "xy" and field_component == "Ez":
+        sig = sample_voxel_grid_at_tm_xy_full_component_2d(conductivity, "Ez")[region]
+    else:
         sig = sample_voxel_grid_at_component_2d(
             conductivity,
             field_component,
@@ -241,8 +246,12 @@ def magnetic_conductivity_terms_2d_full(
     conductivity, permeability, hx_shape, hy_shape, hz_shape, plane
 ):
     """Compute magnetic conductivity for all H-components in 2D."""
+    conductivity_arr = jnp.asarray(conductivity)
+    if conductivity_arr.ndim == 0 and float(conductivity_arr) == 0.0:
+        return (jnp.zeros(hx_shape), jnp.zeros(hy_shape), jnp.zeros(hz_shape))
+
     # sigma_m = sigma * mu * MU_0 / EPS_0
-    base_term = conductivity * permeability * MU_0 / EPS_0
+    base_term = conductivity_arr * permeability * MU_0 / EPS_0
 
     if plane not in {"xy", "yz", "xz"}:
         raise ValueError(f"Invalid plane: {plane}")
@@ -694,9 +703,10 @@ def magnetic_conductivity_terms_3d(
     conductivity, permeability, hx_shape, hy_shape, hz_shape
 ):
     """Compute magnetic conductivity σ_m = σ * μ₀μᵣ/ε₀ for H-field PML absorption in 3D."""
-    if conductivity.ndim < 3:
+    conductivity_arr = jnp.asarray(conductivity)
+    if conductivity_arr.ndim == 0 and float(conductivity_arr) == 0.0:
         return (jnp.zeros(hx_shape), jnp.zeros(hy_shape), jnp.zeros(hz_shape))
-    sigma_base = conductivity * permeability * MU_0 / EPS_0
+    sigma_base = conductivity_arr * permeability * MU_0 / EPS_0
     sigma_m_hx = sample_voxel_grid_at_component_3d(
         sigma_base, "Hx", stored_shape=hx_shape
     )
@@ -786,5 +796,8 @@ def material_slice_for_e_3d(permittivity, conductivity, orientation):
     component = {"x": "Ex", "y": "Ey", "z": "Ez"}[orientation]
     f_region = (slice(None), slice(None), slice(None))
     eps = sample_voxel_grid_at_e_component_3d_centered(permittivity, component)
-    sig = sample_voxel_grid_at_e_component_3d_centered(conductivity, component)
+    if jnp.asarray(conductivity).ndim == 0:
+        sig = jnp.asarray(conductivity)
+    else:
+        sig = sample_voxel_grid_at_e_component_3d_centered(conductivity, component)
     return eps, sig, f_region
