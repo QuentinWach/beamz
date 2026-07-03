@@ -18,7 +18,9 @@ def test_material_grids_keep_default_conductivity_scalar():
     grids.set_region((slice(None), slice(None), slice(None)), default_props)
 
     assert grids.permittivity.shape == shape
-    assert grids.permeability.shape == shape
+    assert grids.permittivity.dtype == np.float32
+    assert np.asarray(grids.permeability).shape == ()
+    assert np.asarray(grids.permeability).dtype == np.float32
     assert np.asarray(grids.conductivity).shape == ()
     assert not hasattr(grids, "k")
     assert not hasattr(grids, "rho")
@@ -35,14 +37,27 @@ def test_material_grids_materialize_nondefault_conductivity_channel():
     grids.set_at((1, 2, 3), conductive_props)
 
     assert grids.conductivity.shape == shape
+    assert grids.conductivity.dtype == np.float32
     assert grids.conductivity[1, 2, 3] == 2.5
+
+
+def test_material_grids_materialize_nondefault_permeability_channel():
+    shape = (2, 3, 4)
+    grids = MaterialGrids(shape)
+    magnetic_props = (12.0, 1.5, 0.0)
+
+    grids.set_at((1, 2, 3), magnetic_props)
+
+    assert grids.permeability.shape == shape
+    assert grids.permeability.dtype == np.float32
+    assert grids.permeability[1, 2, 3] == 1.5
 
 
 def test_raster_cache_stores_compact_default_channels(tmp_path):
     shape = (1, 2, 3)
     grid = SimpleNamespace(
         permittivity=np.ones(shape),
-        permeability=np.ones(shape),
+        permeability=np.asarray(1.0, dtype=np.float32),
         conductivity=np.asarray(0.0),
     )
     cache_path = tmp_path / "grid.npz"
@@ -51,7 +66,7 @@ def test_raster_cache_stores_compact_default_channels(tmp_path):
 
     with np.load(cache_path) as arrays:
         assert arrays["permittivity"].shape == shape
-        assert arrays["permeability"].shape == shape
+        assert arrays["permeability"].shape == ()
         assert arrays["conductivity"].shape == ()
         assert set(arrays.files) == {"permittivity", "permeability", "conductivity"}
 
@@ -62,7 +77,7 @@ def test_raster_cache_load_preserves_compact_default_channels(tmp_path):
     np.savez_compressed(
         cache_path,
         permittivity=np.ones(shape),
-        permeability=np.ones(shape),
+        permeability=np.asarray(1.0, dtype=np.float32),
         conductivity=np.asarray(0.0),
     )
 
@@ -77,7 +92,7 @@ def test_raster_cache_load_preserves_compact_default_channels(tmp_path):
 
     assert grid.shape == shape
     assert grid.permittivity.shape == shape
-    assert grid.permeability.shape == shape
+    assert np.asarray(grid.permeability).shape == ()
     assert np.asarray(grid.conductivity).shape == ()
     assert not hasattr(grid, "k")
     assert not hasattr(grid, "rho")
@@ -91,7 +106,7 @@ def test_tm_xy_state_accepts_scalar_zero_conductivity():
     fields = Fields(
         permittivity=np.ones(shape, dtype=np.float32),
         conductivity=np.asarray(0.0, dtype=np.float32),
-        permeability=np.ones(shape, dtype=np.float32),
+        permeability=np.asarray(1.0, dtype=np.float32),
         resolution=0.1,
         plane_2d="xy",
     )
@@ -99,6 +114,9 @@ def test_tm_xy_state_accepts_scalar_zero_conductivity():
     state = initialize_tm_2d_xy_state(fields)
 
     assert np.asarray(fields.conductivity).shape == ()
+    assert np.asarray(fields.permeability).shape == ()
+    assert np.asarray(fields.mu_hx).shape == ()
+    assert np.asarray(fields.mu_tm_hx).shape == ()
     assert np.asarray(fields.total_conductivity).shape == ()
     assert np.asarray(state.sig_z_region).shape == ()
     assert np.asarray(state.sigma_m_hx).shape == ()

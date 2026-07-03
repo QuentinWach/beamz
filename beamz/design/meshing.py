@@ -30,14 +30,17 @@ class MaterialGrids:
         "conductivity",
     )
     DEFAULTS = (1.0, 1.0, 0.0)
-    DENSE_NAMES = frozenset(("permittivity", "permeability"))
+    DENSE_NAMES = frozenset(("permittivity",))
+    DTYPE = np.float32
 
     def __init__(self, shape):
         self.shape = tuple(int(v) for v in shape)
         self._values = {}
         for name, default in zip(self.NAMES, self.DEFAULTS):
             self._values[name] = (
-                np.full(self.shape, default) if name in self.DENSE_NAMES else float(default)
+                np.full(self.shape, default, dtype=self.DTYPE)
+                if name in self.DENSE_NAMES
+                else self.DTYPE(default)
             )
 
     def __getattr__(self, name):
@@ -56,7 +59,7 @@ class MaterialGrids:
     def _materialize(self, name):
         value = self._values[name]
         if np.asarray(value).shape == ():
-            value = np.full(self.shape, float(value))
+            value = np.full(self.shape, float(value), dtype=self.DTYPE)
             self._values[name] = value
         return value
 
@@ -66,7 +69,7 @@ class MaterialGrids:
             if name in self.DENSE_NAMES:
                 self._materialize(name).fill(val)
             else:
-                self._values[name] = float(val)
+                self._values[name] = self.DTYPE(val)
 
     def set_at(self, idx, props):
         """Set all properties at index (i,j) or (k,i,j)."""

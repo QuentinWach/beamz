@@ -177,21 +177,24 @@ class Fields:
                     self.Hz.shape,
                 )
             )
-            self.mu_hx = sample_voxel_grid_at_component_3d(
-                self.permeability,
-                "Hx",
-                stored_shape=tuple(self.Hx.shape),
-            )
-            self.mu_hy = sample_voxel_grid_at_component_3d(
-                self.permeability,
-                "Hy",
-                stored_shape=tuple(self.Hy.shape),
-            )
-            self.mu_hz = sample_voxel_grid_at_component_3d(
-                self.permeability,
-                "Hz",
-                stored_shape=tuple(self.Hz.shape),
-            )
+            if self.permeability.ndim == 0:
+                self.mu_hx = self.mu_hy = self.mu_hz = self.permeability
+            else:
+                self.mu_hx = sample_voxel_grid_at_component_3d(
+                    self.permeability,
+                    "Hx",
+                    stored_shape=tuple(self.Hx.shape),
+                )
+                self.mu_hy = sample_voxel_grid_at_component_3d(
+                    self.permeability,
+                    "Hy",
+                    stored_shape=tuple(self.Hy.shape),
+                )
+                self.mu_hz = sample_voxel_grid_at_component_3d(
+                    self.permeability,
+                    "Hz",
+                    stored_shape=tuple(self.Hz.shape),
+                )
         else:
             for comp in ("x", "y", "z"):
                 eps, sig, region = ops.material_slice_for_e_2d_component(
@@ -214,22 +217,28 @@ class Fields:
                     self.plane_2d,
                 )
             )
-            self.mu_hx = self._sample_h_material_2d("Hx")
-            self.mu_hy = self._sample_h_material_2d("Hy")
-            self.mu_hz = self._sample_h_material_2d("Hz")
+            if self.permeability.ndim == 0:
+                self.mu_hx = self.mu_hy = self.mu_hz = self.permeability
+            else:
+                self.mu_hx = self._sample_h_material_2d("Hx")
+                self.mu_hy = self._sample_h_material_2d("Hy")
+                self.mu_hz = self._sample_h_material_2d("Hz")
             if self.plane_2d == "xy":
                 self.eps_tm_ez = sample_voxel_grid_at_tm_xy_full_component_2d(
                     self.permittivity,
                     "Ez",
                 )
-                self.mu_tm_hx = sample_voxel_grid_at_tm_xy_full_component_2d(
-                    self.permeability,
-                    "Hx",
-                )
-                self.mu_tm_hy = sample_voxel_grid_at_tm_xy_full_component_2d(
-                    self.permeability,
-                    "Hy",
-                )
+                if self.permeability.ndim == 0:
+                    self.mu_tm_hx = self.mu_tm_hy = self.permeability
+                else:
+                    self.mu_tm_hx = sample_voxel_grid_at_tm_xy_full_component_2d(
+                        self.permeability,
+                        "Hx",
+                    )
+                    self.mu_tm_hy = sample_voxel_grid_at_tm_xy_full_component_2d(
+                        self.permeability,
+                        "Hy",
+                    )
 
     def _sample_e_material_2d(self, component: str):
         if self.plane_2d == "xy" and component == "Ez":
@@ -283,7 +292,10 @@ class Fields:
 
     def material_at_component(self, component: str, index):
         """Return material values collocated with a component support/index."""
-        return self.material_for_component(component)[index]
+        material = self.material_for_component(component)
+        if jnp.asarray(material).ndim == 0:
+            return material
+        return material[index]
 
     def _initialize_cpml_tm_xy_state(self) -> CpmlTm2DxyState | None:
         if not (self.has_cpml and self.plane_2d == "xy" and self.pml_data):
