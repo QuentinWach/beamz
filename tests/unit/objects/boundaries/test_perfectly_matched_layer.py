@@ -246,6 +246,36 @@ def test_cpml_extends_material_changes_along_absorber_normal():
     np.testing.assert_allclose(np.asarray(fields.permeability)[:, :2], 1.0)
 
 
+def test_cpml_3d_compact_profiles_extend_material_changes():
+    eps = np.ones((5, 6, 7), dtype=np.float32)
+    eps[:, :, :2] = 3.0
+    sigma = np.zeros_like(eps)
+    sigma[:, :, :2] = 0.7
+    mu = np.ones_like(eps)
+    mu[:, :, :2] = 1.5
+    fields = Fields(
+        permittivity=eps,
+        conductivity=sigma,
+        permeability=mu,
+        resolution=0.1,
+    )
+    design = _make_design_3d(shape=eps.shape)
+    pml = PML(
+        edges=["left"],
+        thickness=0.2,
+        sigma_max=5.0,
+        alpha_max=0.5,
+        formulation="cpml",
+    )
+
+    payload = pml.create_pml_regions(fields, design, resolution=0.1, dt=1e-15)
+
+    assert payload["sigma_x"].shape == (1, 1, eps.shape[2])
+    np.testing.assert_allclose(np.asarray(fields.permittivity)[:, :, :2], 1.0)
+    np.testing.assert_allclose(np.asarray(fields.conductivity)[:, :, :2], 0.0)
+    np.testing.assert_allclose(np.asarray(fields.permeability)[:, :, :2], 1.0)
+
+
 def test_pml_allows_material_extruded_through_absorber():
     eps = np.ones((6, 8), dtype=np.float32)
     eps[:, :3] = 2.0
@@ -274,7 +304,7 @@ def test_pml_allows_material_extruded_through_absorber():
     ]
 
 
-def test_profile_shapes_match_3d_field_grid():
+def test_cpml_3d_base_profiles_stay_axis_compact():
     fields = _make_fields_3d(shape=(5, 6, 7))
     design = _make_design_3d(shape=(5, 6, 7))
     pml = PML(
@@ -287,19 +317,16 @@ def test_profile_shapes_match_3d_field_grid():
 
     payload = pml.create_pml_regions(fields, design, resolution=0.1, dt=1e-15)
 
-    for key in (
-        "mask",
-        "sigma_x",
-        "sigma_y",
-        "sigma_z",
-        "kappa_x",
-        "kappa_y",
-        "kappa_z",
-        "alpha_x",
-        "alpha_y",
-        "alpha_z",
-    ):
-        assert payload[key].shape == fields.permittivity.shape
+    assert "mask" not in payload
+    assert payload["sigma_x"].shape == (1, 1, fields.permittivity.shape[2])
+    assert payload["sigma_y"].shape == (1, fields.permittivity.shape[1], 1)
+    assert payload["sigma_z"].shape == (fields.permittivity.shape[0], 1, 1)
+    assert payload["kappa_x"].shape == payload["sigma_x"].shape
+    assert payload["kappa_y"].shape == payload["sigma_y"].shape
+    assert payload["kappa_z"].shape == payload["sigma_z"].shape
+    assert payload["alpha_x"].shape == payload["sigma_x"].shape
+    assert payload["alpha_y"].shape == payload["sigma_y"].shape
+    assert payload["alpha_z"].shape == payload["sigma_z"].shape
 
     assert payload["cpml3d_Hxy_sigma"].shape == (1, fields.Hx.shape[1], 1)
     assert payload["cpml3d_Hyz_sigma"].shape == (fields.Hy.shape[0], 1, 1)

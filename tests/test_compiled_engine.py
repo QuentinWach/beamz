@@ -408,17 +408,16 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
 
     assert program.use_primitive_cpml_3d_terms
 
-    cz = sim.fields.permittivity.shape[0] // 2
     cy = sim.fields.permittivity.shape[1] // 2
     cx = sim.fields.permittivity.shape[2] // 2
     cx_e = program.cpml3d_kappa_e_terms[4].shape[2] // 2
     cx_h = program.cpml3d_kappa_h_terms[3].shape[2] // 2
 
     assert np.asarray(sim.pml_data["kappa_x"], dtype=np.float64)[
-        cz, cy, cx
+        0, 0, cx
     ] == pytest.approx(1.0)
     assert np.asarray(sim.pml_data["kappa_y"], dtype=np.float64)[
-        cz, cy, cx
+        0, cy, 0
     ] == pytest.approx(1.0)
     assert np.asarray(program.cpml3d_kappa_e_terms[4], dtype=np.float64)[
         0, 0, cx_e

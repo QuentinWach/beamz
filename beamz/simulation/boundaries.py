@@ -672,29 +672,17 @@ class PML(Boundary):
             coords_z, depth, "front" in edges, "back" in edges
         )
 
-        sigma_x = jnp.broadcast_to(sigma_x_1d[None, None, :], shape)
-        sigma_y = jnp.broadcast_to(sigma_y_1d[None, :, None], shape)
-        sigma_z = jnp.broadcast_to(sigma_z_1d[:, None, None], shape)
-        kappa_x = jnp.broadcast_to(kappa_x_1d[None, None, :], shape)
-        kappa_y = jnp.broadcast_to(kappa_y_1d[None, :, None], shape)
-        kappa_z = jnp.broadcast_to(kappa_z_1d[:, None, None], shape)
-        alpha_x = jnp.broadcast_to(alpha_x_1d[None, None, :], shape)
-        alpha_y = jnp.broadcast_to(alpha_y_1d[None, :, None], shape)
-        alpha_z = jnp.broadcast_to(alpha_z_1d[:, None, None], shape)
-
-        pml_mask = (sigma_x > 0) | (sigma_y > 0) | (sigma_z > 0)
         out = {
             "formulation": "cpml",
-            "mask": pml_mask,
-            "sigma_x": sigma_x,
-            "sigma_y": sigma_y,
-            "sigma_z": sigma_z,
-            "kappa_x": kappa_x,
-            "kappa_y": kappa_y,
-            "kappa_z": kappa_z,
-            "alpha_x": alpha_x,
-            "alpha_y": alpha_y,
-            "alpha_z": alpha_z,
+            "sigma_x": jnp.reshape(sigma_x_1d, (1, 1, nx)),
+            "sigma_y": jnp.reshape(sigma_y_1d, (1, ny, 1)),
+            "sigma_z": jnp.reshape(sigma_z_1d, (nz, 1, 1)),
+            "kappa_x": jnp.reshape(kappa_x_1d, (1, 1, nx)),
+            "kappa_y": jnp.reshape(kappa_y_1d, (1, ny, 1)),
+            "kappa_z": jnp.reshape(kappa_z_1d, (nz, 1, 1)),
+            "alpha_x": jnp.reshape(alpha_x_1d, (1, 1, nx)),
+            "alpha_y": jnp.reshape(alpha_y_1d, (1, ny, 1)),
+            "alpha_z": jnp.reshape(alpha_z_1d, (nz, 1, 1)),
         }
 
         dz = float(depth) / max(nz, 1)
