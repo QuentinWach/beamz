@@ -22,19 +22,14 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 class MaterialGrids:
-    """Bundles material property grids with compact default-valued channels."""
+    """Bundles electromagnetic material grids with compact default-valued channels."""
 
     NAMES = (
         "permittivity",
         "permeability",
         "conductivity",
-        "k",
-        "rho",
-        "cp",
-        "dn_dT",
-        "T0",
     )
-    DEFAULTS = (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 300.0)
+    DEFAULTS = (1.0, 1.0, 0.0)
     DENSE_NAMES = frozenset(("permittivity", "permeability"))
 
     def __init__(self, shape):
@@ -334,28 +329,9 @@ class BaseMeshGrid:
             )
             return 1.0, 1.0, 0.0
 
-    def _get_thermal_properties_safe(self, material, x=0, y=0, z=0):
-        """Safely get thermal properties from material objects."""
-        if material is None:
-            return 0.0, 0.0, 0.0, 0.0, 300.0
-
-        # CustomMaterial or Material: thermal params are constants
-        k = getattr(material, "k", 0.0)
-        rho = getattr(material, "rho", 0.0)
-        cp = getattr(material, "cp", 0.0)
-        dn_dT = getattr(material, "dn_dT", 0.0)
-        T0 = getattr(material, "T0", 300.0)
-        return k, rho, cp, dn_dT, T0
-
-    def _get_all_material_props(self, material, x=0, y=0, z=0):
-        """Get all 8 material properties as a single tuple matching MaterialGrids.NAMES order."""
-        perm, permb, cond = self._get_material_properties_safe(material, x, y, z)
-        k, rho, cp, dn_dT, T0 = self._get_thermal_properties_safe(material, x, y, z)
-        return (perm, permb, cond, k, rho, cp, dn_dT, T0)
-
-    def get_thermal_grids(self):
-        """Get thermal property grids."""
-        return self.k, self.rho, self.cp, self.dn_dT, self.T0
+    def _get_material_props(self, material, x=0, y=0, z=0):
+        """Get material properties as a tuple matching MaterialGrids.NAMES order."""
+        return self._get_material_properties_safe(material, x, y, z)
 
     def get_material_grids(self, resolution=None):
         """Get the material property grids."""
@@ -398,7 +374,7 @@ class RegularGrid(BaseMeshGrid):
         # Determine is_3d property for compatibility with Simulation class
         self.is_3d = design.is_3d and design.depth > 0
 
-        # Rasterize the design (assigns all 8 material grids via MaterialGrids)
+        # Rasterize the design (assigns electromagnetic material grids)
         self.__rasterize__()
 
         # Set grid properties
@@ -438,7 +414,7 @@ class RegularGrid(BaseMeshGrid):
         if len(self.design.structures) > 0:
             background = self.design.structures[0]
             if hasattr(background, "material") and background.material is not None:
-                grids.fill_all(self._get_all_material_props(background.material))
+                grids.fill_all(self._get_material_props(background.material))
 
         # Process remaining structures
         with create_plain_progress() as progress:
@@ -461,7 +437,7 @@ class RegularGrid(BaseMeshGrid):
                 props = (
                     None
                     if is_custom_material
-                    else self._get_all_material_props(structure.material)
+                    else self._get_material_props(structure.material)
                 )
 
                 try:
@@ -666,7 +642,7 @@ class RegularGrid(BaseMeshGrid):
             j = local_j[idx] + rect_min_j
             rect_props = props
             if is_custom_material:
-                rect_props = self._get_all_material_props(
+                rect_props = self._get_material_props(
                     structure.material, x_centers[j], y_centers[i]
                 )
             grids.set_at((i, j), rect_props)
@@ -677,7 +653,7 @@ class RegularGrid(BaseMeshGrid):
             j = boundary_j[idx] + rect_min_j
             rect_props = props
             if is_custom_material:
-                rect_props = self._get_all_material_props(
+                rect_props = self._get_material_props(
                     structure.material, x_centers[j], y_centers[i]
                 )
             grids.blend_at(
@@ -835,7 +811,7 @@ class RegularGrid(BaseMeshGrid):
                     if prepared_polygon.contains(cell):
                         cell_props = props
                         if is_custom_material:
-                            cell_props = self._get_all_material_props(
+                            cell_props = self._get_material_props(
                                 structure.material, cx, cy
                             )
                         grids.set_at((i, j), cell_props)
@@ -848,7 +824,7 @@ class RegularGrid(BaseMeshGrid):
                         continue
                     cell_props = props
                     if is_custom_material:
-                        cell_props = self._get_all_material_props(
+                        cell_props = self._get_material_props(
                             structure.material, cx, cy
                         )
                     grids.blend_at((i, j), cell_props, float(blend_factor))
@@ -1007,7 +983,7 @@ class RegularGrid3D(BaseMeshGrid):
         self.resolution_xy = resolution_xy
         self.resolution_z = resolution_z
 
-        # Rasterize the design (assigns all 8 material grids via MaterialGrids)
+        # Rasterize the design (assigns electromagnetic material grids)
         self.__rasterize_3d__()
 
         # Calculate grid dimensions for status message
@@ -1064,7 +1040,7 @@ class RegularGrid3D(BaseMeshGrid):
         if len(self.design.structures) > 0:
             background = self.design.structures[0]
             if hasattr(background, "material") and background.material is not None:
-                grids.fill_all(self._get_all_material_props(background.material))
+                grids.fill_all(self._get_material_props(background.material))
 
         timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
         voxel_count = int(grid_width) * int(grid_height) * int(grid_depth)
@@ -1097,7 +1073,7 @@ class RegularGrid3D(BaseMeshGrid):
                     progress.update(task, advance=1)
                     continue
 
-                props = self._get_all_material_props(structure.material)
+                props = self._get_material_props(structure.material)
 
                 try:
                     bbox = self._get_bbox_indices_3d(
@@ -1727,10 +1703,16 @@ class RegularGrid3D(BaseMeshGrid):
             z_index = int(z_position / self.resolution_z)
             z_index = max(0, min(self.shape[0] - 1, z_index))
 
+        def slice_channel(value):
+            arr = np.asarray(value)
+            if arr.shape == ():
+                return arr
+            return arr[z_index, :, :]
+
         return {
-            "permittivity": self.permittivity[z_index, :, :],
-            "permeability": self.permeability[z_index, :, :],
-            "conductivity": self.conductivity[z_index, :, :],
+            "permittivity": slice_channel(self.permittivity),
+            "permeability": slice_channel(self.permeability),
+            "conductivity": slice_channel(self.conductivity),
         }
 
     def to_plot_data(self, field="permittivity", z_index=None, z_position=None):

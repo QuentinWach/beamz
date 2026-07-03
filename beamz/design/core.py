@@ -196,7 +196,7 @@ def _rebuild_structure_list(
     return rebuilt
 
 
-RASTER_CACHE_VERSION = "v5"
+RASTER_CACHE_VERSION = "v6"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -240,11 +240,6 @@ def _material_signature(material):
         "permittivity",
         "permeability",
         "conductivity",
-        "k",
-        "rho",
-        "cp",
-        "dn_dT",
-        "T0",
     )
     return {k: _to_jsonable(getattr(material, k, None)) for k in keys}
 
@@ -380,11 +375,6 @@ def _save_grid_to_cache(grid, cache_path: Path):
         permittivity=np.asarray(grid.permittivity),
         permeability=np.asarray(grid.permeability),
         conductivity=np.asarray(grid.conductivity),
-        k=np.asarray(grid.k),
-        rho=np.asarray(grid.rho),
-        cp=np.asarray(grid.cp),
-        dn_dT=np.asarray(grid.dn_dT),
-        T0=np.asarray(grid.T0),
     )
 
 
@@ -425,11 +415,6 @@ def _build_grid_from_cached_arrays(
         "permittivity",
         "permeability",
         "conductivity",
-        "k",
-        "rho",
-        "cp",
-        "dn_dT",
-        "T0",
     ):
         setattr(grid, name, np.asarray(arrays[name]))
     grid.shape = grid.permittivity.shape

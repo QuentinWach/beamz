@@ -1026,7 +1026,6 @@ class Simulation:
         sources: list = None,
         monitors: list[Monitor] = None,
         boundaries: list[Boundary] = None,
-        thermal=None,
         resolution: float = 0.02 * µm,
         time: np.ndarray = None,
         plane_2d: str = "xy",
@@ -1259,11 +1258,6 @@ class Simulation:
             )
         self.fields.boundaries = self.boundaries
 
-        # Optional thermal coupling
-        self.thermal = thermal
-        if self.thermal is not None and getattr(self.thermal, "enabled", True):
-            self.thermal.initialize(self)
-
         # Compiled program cache for v0.3 packed-source/monitor execution.
         self._compiled_program = None
         self._compiled_program_signature = None
@@ -1368,8 +1362,6 @@ class Simulation:
 
         def _finalize(sim):
             sim._record_monitors()
-            if sim.thermal is not None and getattr(sim.thermal, "enabled", True):
-                sim.thermal.step(sim)
             sim.t += sim.dt
             sim.current_step += 1
             return sim
@@ -1944,11 +1936,6 @@ class Simulation:
         - Snapshot extraction stays inside the compiled loop and is materialized
           on the host after each compiled chunk completes.
         """
-        if self.thermal is not None and getattr(self.thermal, "enabled", True):
-            raise NotImplementedError(
-                "run_compiled currently does not support thermal coupling."
-            )
-
         if num_steps is None:
             num_steps = self.num_steps - self.current_step
         num_steps = int(num_steps)
