@@ -248,7 +248,8 @@ def magnetic_conductivity_terms_2d_full(
     """Compute magnetic conductivity for all H-components in 2D."""
     conductivity_arr = jnp.asarray(conductivity)
     if conductivity_arr.ndim == 0 and float(conductivity_arr) == 0.0:
-        return (jnp.zeros(hx_shape), jnp.zeros(hy_shape), jnp.zeros(hz_shape))
+        zero = jnp.zeros((), dtype=conductivity_arr.dtype)
+        return (zero, zero, zero)
 
     # sigma_m = sigma * mu * MU_0 / EPS_0
     base_term = conductivity_arr * permeability * MU_0 / EPS_0
@@ -705,7 +706,8 @@ def magnetic_conductivity_terms_3d(
     """Compute magnetic conductivity σ_m = σ * μ₀μᵣ/ε₀ for H-field PML absorption in 3D."""
     conductivity_arr = jnp.asarray(conductivity)
     if conductivity_arr.ndim == 0 and float(conductivity_arr) == 0.0:
-        return (jnp.zeros(hx_shape), jnp.zeros(hy_shape), jnp.zeros(hz_shape))
+        zero = jnp.zeros((), dtype=conductivity_arr.dtype)
+        return (zero, zero, zero)
     sigma_base = conductivity_arr * permeability * MU_0 / EPS_0
     sigma_m_hx = sample_voxel_grid_at_component_3d(
         sigma_base, "Hx", stored_shape=hx_shape
