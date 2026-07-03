@@ -549,7 +549,8 @@ def test_compiled_3d_snapshot_shape_uses_field_reference():
     snapshot_state = program._empty_snapshot_state()
 
     assert program.e_source_lossless_z.shape == (0, 0, 0)
-    assert program.e_source_z.shape == sim.fields.Ez.shape
+    assert program.e_source_z.shape == (0, 0, 0)
+    assert program.field_shape_ez == tuple(sim.fields.Ez.shape)
     assert program._snapshot_field_shape() == tuple(sim.fields.Ez.shape)
     assert snapshot_state is not None
     assert snapshot_state[0].shape == (2, *sim.fields.Ez.shape)

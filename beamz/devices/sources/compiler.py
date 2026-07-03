@@ -90,6 +90,140 @@ def source_supports_compiled_specs(device) -> bool:
     )
 
 
+class _IndexableScalar:
+    """Scalar material value exposed as an indexable array-shaped object."""
+
+    __array_priority__ = 1000
+
+    def __init__(self, value, shape: tuple[int, ...]):
+        self._value = jnp.asarray(value)
+        if self._value.ndim != 0:
+            raise ValueError("_IndexableScalar requires a scalar value")
+        self.shape = tuple(int(v) for v in shape)
+        self.ndim = len(self.shape)
+        self.dtype = self._value.dtype
+
+    @property
+    def size(self) -> int:
+        return int(np.prod(self.shape, dtype=np.int64))
+
+    def __array__(self, dtype=None):
+        value = np.asarray(self._value)
+        if dtype is not None:
+            value = value.astype(dtype, copy=False)
+        return np.broadcast_to(value, self.shape)
+
+    def __jax_array__(self):
+        return jnp.broadcast_to(self._value, self.shape)
+
+    def __getitem__(self, index):
+        return jnp.broadcast_to(self._value, self.shape)[index]
+
+    def astype(self, dtype):
+        return jnp.broadcast_to(self._value, self.shape).astype(dtype)
+
+
+_SOURCE_FIELD_MATERIAL_SHAPES = {
+    "eps_x": "Ex",
+    "eps_y": "Ey",
+    "eps_z": "Ez",
+    "sig_x": "Ex",
+    "sig_y": "Ey",
+    "sig_z": "Ez",
+    "eps_ex": "Ex",
+    "eps_ey": "Ey",
+    "eps_ez": "Ez",
+    "mu_hx": "Hx",
+    "mu_hy": "Hy",
+    "mu_hz": "Hz",
+    "sigma_m_hx": "Hx",
+    "sigma_m_hy": "Hy",
+    "sigma_m_hz": "Hz",
+    "eps_tm_ez": "Ez",
+    "mu_tm_hx": "Hx",
+    "mu_tm_hy": "Hy",
+}
+
+_SOURCE_CELL_MATERIAL_ATTRS = {
+    "conductivity",
+    "permeability",
+    "total_conductivity",
+}
+
+
+def _is_scalar_like(value) -> bool:
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        return tuple(shape) == ()
+    try:
+        return np.asarray(value).ndim == 0
+    except (TypeError, ValueError):
+        return False
+
+
+class _SourceCompileFieldsProxy:
+    """Fields view for custom source compilation.
+
+    Compact scalar material channels stay scalar in the runtime fields object, but
+    custom source compilers often index ``fields.sig_z`` directly.  This proxy
+    makes those scalar channels indexable for compile-time metadata extraction
+    without changing the actual simulation storage layout.
+    """
+
+    def __init__(self, fields):
+        self._fields = fields
+
+    def __getattr__(self, name: str):
+        value = getattr(self._fields, name)
+        shape = self._indexable_shape_for_attr(name)
+        if shape is not None and _is_scalar_like(value):
+            return _IndexableScalar(value, shape)
+        return value
+
+    def _indexable_shape_for_attr(self, name: str) -> tuple[int, ...] | None:
+        component = _SOURCE_FIELD_MATERIAL_SHAPES.get(name)
+        if component is not None and hasattr(self._fields, component):
+            return tuple(int(v) for v in getattr(self._fields, component).shape)
+        if name in _SOURCE_CELL_MATERIAL_ATTRS and hasattr(self._fields, "permittivity"):
+            return tuple(int(v) for v in self._fields.permittivity.shape)
+        return None
+
+    def permittivity_for_component(self, component: str):
+        mapping = {"Ex": "eps_ex", "Ey": "eps_ey", "Ez": "eps_ez"}
+        try:
+            return getattr(self, mapping[component])
+        except KeyError as exc:
+            raise ValueError(f"Unsupported E component {component!r}") from exc
+
+    def permeability_for_component(self, component: str):
+        mapping = {"Hx": "mu_hx", "Hy": "mu_hy", "Hz": "mu_hz"}
+        try:
+            return getattr(self, mapping[component])
+        except KeyError as exc:
+            raise ValueError(f"Unsupported H component {component!r}") from exc
+
+    def material_for_component(self, component: str):
+        if component in {"Ex", "Ey", "Ez"}:
+            return self.permittivity_for_component(component)
+        if component in {"Hx", "Hy", "Hz"}:
+            return self.permeability_for_component(component)
+        raise ValueError(f"Unsupported field component {component!r}")
+
+    def material_at_component(self, component: str, index):
+        material = self.material_for_component(component)
+        if isinstance(material, _IndexableScalar):
+            return material[index]
+        if _is_scalar_like(material):
+            return material
+        return material[index]
+
+
+def _source_compile_fields(fields):
+    if isinstance(fields, _SourceCompileFieldsProxy):
+        return fields
+    return _SourceCompileFieldsProxy(fields)
+
+
 def apply_compiled_source_specs(
     field: jnp.ndarray,
     abs_step: int,
@@ -321,6 +455,7 @@ def compile_source_specs(
     v0.3 first-class support: GaussianSource and ModeSource.
     """
     specs: list[CompiledSourceSpec] = []
+    custom_fields = None
 
     for device in sources:
         if isinstance(device, GaussianSource):
@@ -348,10 +483,12 @@ def compile_source_specs(
                 )
             )
         elif hasattr(device, "compile_source_specs"):
+            if custom_fields is None:
+                custom_fields = _source_compile_fields(fields)
             specs.extend(
                 tuple(
                     device.compile_source_specs(
-                        fields=fields,
+                        fields=custom_fields,
                         dt=dt,
                         num_steps=num_steps,
                         t0=t0,
