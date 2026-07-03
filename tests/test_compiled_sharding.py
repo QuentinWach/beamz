@@ -95,6 +95,57 @@ def test_storage_proxy_preserves_scalar_loss_terms():
     assert jnp.asarray(proxy.sigma_m_hz).shape == ()
 
 
+def test_storage_proxy_keeps_numpy_material_padding_on_host():
+    component_shapes = {
+        "Ex": (3, 4, 5),
+        "Ey": (3, 3, 6),
+        "Ez": (2, 4, 6),
+        "Hx": (2, 3, 6),
+        "Hy": (2, 4, 5),
+        "Hz": (3, 3, 5),
+    }
+    storage_shapes = {
+        name: (4, *shape[1:]) for name, shape in component_shapes.items()
+    }
+    fields = SimpleNamespace(
+        permittivity=np.ones((3, 4, 6), dtype=np.float32),
+        pml_data={},
+        sig_x=np.asarray(0.0, dtype=np.float32),
+        sig_y=np.asarray(0.0, dtype=np.float32),
+        sig_z=np.asarray(0.0, dtype=np.float32),
+        sigma_m_hx=np.asarray(0.0, dtype=np.float32),
+        sigma_m_hy=np.asarray(0.0, dtype=np.float32),
+        sigma_m_hz=np.asarray(0.0, dtype=np.float32),
+        eps_x=np.ones(component_shapes["Ex"], dtype=np.float32),
+        eps_y=np.ones(component_shapes["Ey"], dtype=np.float32),
+        eps_z=np.ones(component_shapes["Ez"], dtype=np.float32),
+    )
+    for name, shape in component_shapes.items():
+        setattr(fields, name, np.zeros(shape, dtype=np.float32))
+    layout = StorageLayout(
+        enabled=True,
+        pec_full_storage=False,
+        logical_base_shape=fields.permittivity.shape,
+        axis_name="z",
+        axis=0,
+        num_devices=2,
+        backend="cpu",
+        logical_shapes=component_shapes,
+        active_shapes=component_shapes,
+        storage_shapes=storage_shapes,
+        padding={name: ((0, 1), (0, 0), (0, 0)) for name in component_shapes},
+        valid_masks={name: None for name in component_shapes},
+    )
+
+    proxy = _make_storage_fields_proxy(fields, layout)
+
+    assert isinstance(proxy.eps_x, np.ndarray)
+    assert proxy.eps_x.shape == storage_shapes["Ex"]
+    np.testing.assert_array_equal(proxy.eps_x[-1], 1.0)
+    assert isinstance(proxy.sig_x, np.ndarray)
+    assert proxy.sig_x.shape == ()
+
+
 def test_cpu_fake_device_sharding_matches_unsharded_compiled_run():
     code = r"""
 import numpy as np
@@ -314,6 +365,9 @@ assert program.cpml3d_h_psi_shapes == tuple(
 assert program.cpml3d_e_psi_shapes == tuple(
     spec.shape for spec in program.cpml3d_e_slab_specs
 )
+engine_state, _monitor_state = sharded._compiled_runtime_inputs(program)
+assert isinstance(engine_state.cpml3d_psi_h_terms[0], np.ndarray)
+assert isinstance(engine_state.cpml3d_psi_e_terms[0], np.ndarray)
 
 reference.run_compiled(num_steps=2, progress=False)
 sharded.run_compiled(num_steps=2, progress=False, sharding=cfg)

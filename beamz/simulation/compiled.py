@@ -692,8 +692,39 @@ def _build_storage_layout(
     )
 
 
-def _pad_high_to_shape(arr, shape: tuple[int, ...], *, pad_value=0.0) -> jnp.ndarray:
-    return fit_array_to_shape(jnp.asarray(arr), shape, pad_value=pad_value)
+def _array_shape(arr) -> tuple[int, ...]:
+    return tuple(int(v) for v in getattr(arr, "shape", np.shape(arr)))
+
+
+def _array_ndim(arr) -> int:
+    ndim = getattr(arr, "ndim", None)
+    if ndim is not None:
+        return int(ndim)
+    return len(_array_shape(arr))
+
+
+def _pad_high_to_shape(arr, shape: tuple[int, ...], *, pad_value=0.0):
+    target_shape = tuple(int(v) for v in shape)
+    if isinstance(arr, np.ndarray):
+        if tuple(arr.shape) == target_shape:
+            return arr
+        if arr.ndim != len(target_shape):
+            raise ValueError(
+                f"Cannot fit rank-{arr.ndim} array to rank-{len(target_shape)} shape"
+            )
+        slices = tuple(
+            slice(0, min(int(arr.shape[i]), target_shape[i]))
+            for i in range(arr.ndim)
+        )
+        out = arr[slices]
+        pad_width = tuple(
+            (0, max(0, target_shape[i] - int(out.shape[i])))
+            for i in range(out.ndim)
+        )
+        if any(high > 0 for _low, high in pad_width):
+            out = np.pad(out, pad_width, mode="constant", constant_values=pad_value)
+        return out
+    return fit_array_to_shape(jnp.asarray(arr), target_shape, pad_value=pad_value)
 
 
 def _crop_high_to_shape(arr, shape: tuple[int, ...]) -> jnp.ndarray:
@@ -702,6 +733,12 @@ def _crop_high_to_shape(arr, shape: tuple[int, ...]) -> jnp.ndarray:
 
 
 def _pad_all_high_planes_3d(arr: jnp.ndarray) -> jnp.ndarray:
+    if isinstance(arr, np.ndarray):
+        out = arr
+        for axis in range(3):
+            tail = np.take(out, indices=[out.shape[axis] - 1], axis=axis)
+            out = np.concatenate([out, tail], axis=axis)
+        return out
     out = jnp.asarray(arr)
     for axis in range(3):
         tail = jnp.take(out, indices=jnp.array([out.shape[axis] - 1]), axis=axis)
@@ -753,10 +790,13 @@ def _pad_pml_data_for_storage(fields, layout: StorageLayout):
     def _pad_cpml_profile(key: str, spec, *, neutral: float):
         if key not in out:
             return
-        arr = jnp.asarray(out[key])
+        arr = out[key]
         storage_shape = layout.storage_shapes[spec.target_component]
         axis = axis_index[spec.derivative_axis]
-        if arr.ndim == 3 and all(int(arr.shape[i]) == 1 for i in range(3) if i != axis):
+        arr_shape = _array_shape(arr)
+        if len(arr_shape) == 3 and all(
+            int(arr_shape[i]) == 1 for i in range(3) if i != axis
+        ):
             compact_shape = tuple(
                 int(storage_shape[i]) if i == axis else 1 for i in range(3)
             )
@@ -803,7 +843,7 @@ def _make_storage_fields_proxy(fields, layout: StorageLayout):
     for name, (component, neutral) in neutral_component_arrays.items():
         if hasattr(fields, name):
             value = getattr(fields, name)
-            if jnp.asarray(value).ndim == 0:
+            if _array_ndim(value) == 0:
                 overrides[name] = value
             else:
                 overrides[name] = _pad_high_to_shape(
@@ -987,9 +1027,8 @@ class CompiledSimulation:
         }[component]
 
     def _pad_component(self, component: str, arr: jnp.ndarray) -> jnp.ndarray:
-        arr = jnp.asarray(arr)
         if self.storage_layout.pec_full_storage:
-            if tuple(arr.shape) == self._component_logical_shape(component):
+            if _array_shape(arr) == self._component_logical_shape(component):
                 arr = _pad_all_high_planes_3d(arr)
             arr = _pad_high_to_shape(
                 arr, self._component_storage_shape(component), pad_value=0.0
@@ -1048,21 +1087,22 @@ class CompiledSimulation:
         mesh = self._device_mesh()
         if mesh is None:
             return None
-        arr = jnp.asarray(arr)
+        shape = _array_shape(arr)
+        ndim = len(shape)
         axis = int(self.storage_layout.axis)
         if (
-            arr.ndim > axis
-            and int(arr.shape[axis]) > 0
-            and int(arr.shape[axis]) % int(self.storage_layout.num_devices) == 0
+            ndim > axis
+            and int(shape[axis]) > 0
+            and int(shape[axis]) % int(self.storage_layout.num_devices) == 0
         ):
-            spec = [None] * arr.ndim
+            spec = [None] * ndim
             spec[axis] = _MESH_AXIS
             return jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(*spec))
         return self._replicated_sharding()
 
     def _place_array(self, arr, *, shard_arrays: bool = True):
-        arr = jnp.asarray(arr)
         if not self.storage_layout.enabled:
+            arr = jnp.asarray(arr)
             device = self._single_device()
             return jax.device_put(arr, device) if device is not None else arr
         sharding = (
