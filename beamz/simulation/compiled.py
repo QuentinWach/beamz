@@ -802,11 +802,15 @@ def _make_storage_fields_proxy(fields, layout: StorageLayout):
     }
     for name, (component, neutral) in neutral_component_arrays.items():
         if hasattr(fields, name):
-            overrides[name] = _pad_high_to_shape(
-                getattr(fields, name),
-                layout.storage_shapes[component],
-                pad_value=neutral,
-            )
+            value = getattr(fields, name)
+            if jnp.asarray(value).ndim == 0:
+                overrides[name] = value
+            else:
+                overrides[name] = _pad_high_to_shape(
+                    value,
+                    layout.storage_shapes[component],
+                    pad_value=neutral,
+                )
     overrides["pml_data"] = _pad_pml_data_for_storage(fields, layout)
     return _StorageFieldsProxy(fields, overrides, layout)
 

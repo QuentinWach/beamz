@@ -4,10 +4,13 @@ import os
 import subprocess
 import sys
 import textwrap
+from types import SimpleNamespace
 
+import jax.numpy as jnp
 import numpy as np
 
 from beamz import PML, Design, Material, ShardingConfig, Simulation
+from beamz.simulation.compiled import StorageLayout, _make_storage_fields_proxy
 
 
 def _awkward_3d_sim(steps: int = 2) -> Simulation:
@@ -35,6 +38,61 @@ def test_sharding_config_export_and_disabled_layout_is_shape_preserving():
     assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
     assert program.storage_shape_ex == tuple(sim.fields.Ex.shape)
     assert program.config.sharding == ShardingConfig(enabled=False)
+
+
+def test_storage_proxy_preserves_scalar_loss_terms():
+    component_shapes = {
+        "Ex": (3, 4, 5),
+        "Ey": (3, 3, 6),
+        "Ez": (2, 4, 6),
+        "Hx": (2, 3, 6),
+        "Hy": (2, 4, 5),
+        "Hz": (3, 3, 5),
+    }
+    storage_shapes = {
+        name: (4, *shape[1:]) for name, shape in component_shapes.items()
+    }
+    fields = SimpleNamespace(
+        permittivity=jnp.ones((3, 4, 6), dtype=jnp.float32),
+        pml_data={},
+        sig_x=jnp.asarray(0.0, dtype=jnp.float32),
+        sig_y=jnp.asarray(0.0, dtype=jnp.float32),
+        sig_z=jnp.asarray(0.0, dtype=jnp.float32),
+        sigma_m_hx=jnp.asarray(0.0, dtype=jnp.float32),
+        sigma_m_hy=jnp.asarray(0.0, dtype=jnp.float32),
+        sigma_m_hz=jnp.asarray(0.0, dtype=jnp.float32),
+        eps_x=jnp.ones(component_shapes["Ex"], dtype=jnp.float32),
+        eps_y=jnp.ones(component_shapes["Ey"], dtype=jnp.float32),
+        eps_z=jnp.ones(component_shapes["Ez"], dtype=jnp.float32),
+    )
+    for name, shape in component_shapes.items():
+        setattr(fields, name, jnp.zeros(shape, dtype=jnp.float32))
+    layout = StorageLayout(
+        enabled=True,
+        pec_full_storage=False,
+        logical_base_shape=fields.permittivity.shape,
+        axis_name="z",
+        axis=0,
+        num_devices=2,
+        backend="cpu",
+        logical_shapes=component_shapes,
+        active_shapes=component_shapes,
+        storage_shapes=storage_shapes,
+        padding={name: ((0, 1), (0, 0), (0, 0)) for name in component_shapes},
+        valid_masks={name: None for name in component_shapes},
+    )
+
+    proxy = _make_storage_fields_proxy(fields, layout)
+
+    assert proxy.eps_x.shape == storage_shapes["Ex"]
+    assert proxy.eps_y.shape == storage_shapes["Ey"]
+    assert proxy.eps_z.shape == storage_shapes["Ez"]
+    assert jnp.asarray(proxy.sig_x).shape == ()
+    assert jnp.asarray(proxy.sig_y).shape == ()
+    assert jnp.asarray(proxy.sig_z).shape == ()
+    assert jnp.asarray(proxy.sigma_m_hx).shape == ()
+    assert jnp.asarray(proxy.sigma_m_hy).shape == ()
+    assert jnp.asarray(proxy.sigma_m_hz).shape == ()
 
 
 def test_cpu_fake_device_sharding_matches_unsharded_compiled_run():
