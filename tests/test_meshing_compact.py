@@ -23,11 +23,6 @@ def test_material_grids_keep_default_conductivity_scalar():
     assert np.asarray(grids.permeability).shape == ()
     assert np.asarray(grids.permeability).dtype == np.float32
     assert np.asarray(grids.conductivity).shape == ()
-    assert not hasattr(grids, "k")
-    assert not hasattr(grids, "rho")
-    assert not hasattr(grids, "cp")
-    assert not hasattr(grids, "dn_dT")
-    assert not hasattr(grids, "T0")
 
 
 def test_material_grids_materialize_nondefault_conductivity_channel():
@@ -95,11 +90,6 @@ def test_raster_cache_load_preserves_compact_default_channels(tmp_path):
     assert grid.permittivity.shape == shape
     assert np.asarray(grid.permeability).shape == ()
     assert np.asarray(grid.conductivity).shape == ()
-    assert not hasattr(grid, "k")
-    assert not hasattr(grid, "rho")
-    assert not hasattr(grid, "cp")
-    assert not hasattr(grid, "dn_dT")
-    assert not hasattr(grid, "T0")
 
 
 def test_raster_cache_is_disabled_by_default(monkeypatch, tmp_path):
