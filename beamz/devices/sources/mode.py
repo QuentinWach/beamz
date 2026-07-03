@@ -3639,6 +3639,20 @@ class ModeSource(RuntimeStateProxy):
             permittivity=np.empty(cell_shape, dtype=fields.permittivity.dtype),
         )
 
+        def local_material_attr(
+            attr: str,
+            slices: tuple[slice, slice, slice],
+        ) -> np.ndarray:
+            value = getattr(fields, attr)
+            arr = np.asarray(value)
+            local_shape = tuple(
+                int(s.stop or 0) - int(s.start or 0)
+                for s in slices
+            )
+            if arr.ndim == 0:
+                return np.full(local_shape, arr.item(), dtype=arr.dtype)
+            return np.asarray(value[slices])
+
         for component, slices in component_slices.items():
             field = getattr(fields, component)
             shape = tuple(int(s.stop or 0) - int(s.start or 0) for s in slices)
@@ -3651,8 +3665,8 @@ class ModeSource(RuntimeStateProxy):
         ):
             slices = component_slices[component]
             full_shape = field_shapes[component]
-            eps = np.asarray(getattr(fields, f"eps_{attr_prefix}")[slices])
-            sig = np.asarray(getattr(fields, f"sig_{attr_prefix}")[slices])
+            eps = local_material_attr(f"eps_{attr_prefix}", slices)
+            sig = local_material_attr(f"sig_{attr_prefix}", slices)
             region = getattr(
                 fields,
                 f"region_{attr_prefix}",
@@ -3674,7 +3688,7 @@ class ModeSource(RuntimeStateProxy):
             setattr(
                 local_fields,
                 attr,
-                np.asarray(getattr(fields, attr)[component_slices[component]]),
+                local_material_attr(attr, component_slices[component]),
             )
 
         local_source = object.__new__(type(self))
