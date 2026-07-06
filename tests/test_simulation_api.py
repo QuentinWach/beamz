@@ -6,6 +6,7 @@ import pytest
 import beamz.simulation.core as simulation_core
 from beamz import (
     Design,
+    GaussianBeamSource,
     GaussianSource,
     Material,
     Monitor,
@@ -148,14 +149,20 @@ def test_design_rejects_device_objects():
     source = GaussianSource(
         position=(2 * um, 2 * um), width=0.2 * um, signal=[1.0, 0.0]
     )
+    beam = GaussianBeamSource(
+        center=(0.0, 0.0, 0.0),
+        size=(1.0 * um, 1.0 * um),
+        source_time=np.ones(2),
+        direction="-z",
+        waist_radius=0.4 * um,
+        wavelength=1.55 * um,
+    )
+    source_like = type("SourceLike", (), {"compile_source_specs": lambda self: ()})()
     monitor = Monitor(start=(1 * um, 1 * um), end=(1 * um, 3 * um), name="m1")
 
-    try:
-        design += source
-    except TypeError as exc:
-        assert "Simulation(sources=[...])" in str(exc)
-    else:
-        raise AssertionError("Expected Design to reject source objects")
+    for item in (source, beam, source_like):
+        with pytest.raises(TypeError, match=r"Simulation\(sources=\[\.\.\.\]\)"):
+            design += item
 
     try:
         design += monitor

@@ -14,6 +14,7 @@ from beamz import (
     Box,
     Design,
     FieldMonitor,
+    GaussianBeamSource,
     GaussianSource,
     GridSpec,
     Material,
@@ -216,6 +217,31 @@ def test_simulation_plot_is_standard_non_showing_api():
 
     assert fig is ax.figure
     assert ax.get_title() == "Simulation Layout"
+
+
+def test_simulation_plot_accepts_gaussian_beam_source():
+    source = GaussianBeamSource(
+        center=(0.0, 0.0, 0.0),
+        size=(1.0 * um, 0.6 * um),
+        source_time=np.ones(2),
+        direction="-z",
+        waist_radius=0.4 * um,
+        wavelength=1.55 * um,
+    )
+    sim = Simulation(
+        domain=(2 * um, 2 * um, 2 * um),
+        material=Material(1.0),
+        sources=[source],
+        monitors=[],
+        time=np.array([0.0, 1e-15]),
+        resolution=0.5 * um,
+    )
+
+    payload = sim.to_plot_data()
+    fig, ax = _close(sim.plot(show=False))
+
+    assert payload["design"]["sources"][0]["width"] == pytest.approx(1.0 * um)
+    assert fig is ax.figure
 
 
 def test_simulation_plot_eps_overlays_layout():
@@ -565,6 +591,52 @@ def test_tidy3d_dft_field_plot_source_normalizes_and_uses_micron_units():
         plt.close(fig)
 
 
+def test_tidy3d_dft_field_plot_supports_y_normal_xz_monitor():
+    class DftPlaneMonitor:
+        is_3d = True
+        plane_normal = "y"
+        plane_position = 0.25 * um
+        _compiled_dft_shape_3d = (2, 3)
+
+        def get_dft_frequencies(self):
+            return np.asarray([1.0])
+
+        def get_dft_component(self, component):
+            assert component == "Ey"
+            return np.arange(6, dtype=np.complex128).reshape(1, 6)
+
+        def get_analysis_plane_coords_3d(self, **_kwargs):
+            return (
+                np.asarray([0.125 * um, 0.375 * um]),
+                np.asarray([0.125 * um, 0.375 * um, 0.625 * um]),
+            )
+
+    simulation = SimpleNamespace(
+        resolution=0.25 * um,
+        fields=SimpleNamespace(permittivity=np.ones((2, 2, 3))),
+        sources=[],
+        design=SimpleNamespace(width=0.75 * um, height=0.5 * um, depth=0.5 * um),
+    )
+
+    fig, ax = _close(
+        plot_tidy3d_dft_field(
+            simulation,
+            DftPlaneMonitor(),
+            field="Ey",
+            source_normalize=False,
+            overlay_core=False,
+            percentile=100,
+            show=False,
+        )
+    )
+
+    image = ax.images[0]
+    np.testing.assert_allclose(image.get_array(), np.arange(6).reshape(2, 3) * um)
+    assert ax.get_xlabel() == "x (um)"
+    assert ax.get_ylabel() == "z (um)"
+    assert ax.get_title() == "cross section at y=0.00 (um)"
+
+
 def test_simulation_results_plot_field_accepts_field_aliases_and_abs_squared():
     class DftPlaneMonitor:
         is_3d = True
@@ -815,6 +887,38 @@ def test_tidy3d_cross_sections_plot_grid_slices():
     assert axes[1].get_title() == "cross section at y=0.00 (um)"
     xy = np.asarray(axes[0].images[0].get_array())
     assert np.count_nonzero(xy == 1) > np.count_nonzero(xy == 0)
+
+
+def test_tidy3d_source_markers_show_z_normal_source_plane():
+    from beamz.visual.mpl import _tidy3d_device_markers
+
+    source = SimpleNamespace(
+        center=(1.0 * um, 0.5 * um, 1.5 * um),
+        size=(2.0 * um, 1.0 * um),
+        direction="-z",
+    )
+
+    xy_markers, xz_markers = _tidy3d_device_markers(
+        [source],
+        (1.0 * um, 0.5 * um, 0.0),
+        color="#66bb6a",
+        source=True,
+    )
+
+    assert any(marker.get("orientation") == "horizontal" for marker in xy_markers)
+    assert any(
+        "x" in marker and marker.get("span") == pytest.approx((-0.5, 0.5))
+        for marker in xy_markers
+    )
+    assert len(xz_markers) == 1
+    marker = xz_markers[0]
+    assert marker["orientation"] == "horizontal"
+    assert marker["y"] == pytest.approx(1.5)
+    assert marker["span"] == pytest.approx((-1.0, 1.0))
+    assert marker["color"] == "#66bb6a"
+    assert marker["direction"] == "-z"
+    assert marker["arrow"] is True
+    assert marker["arrow_x"] == pytest.approx(0.0)
 
 
 def test_simulation_plot_uses_tidy3d_cross_sections_for_3d_slices():

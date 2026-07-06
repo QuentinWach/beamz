@@ -164,6 +164,25 @@ def gaussian_source_plot_data(
     }
 
 
+def _source_width_height(source):
+    size = getattr(source, "size", None)
+    if size is not None and not callable(size):
+        values = np.asarray(size, dtype=float).reshape(-1)
+        if values.size == 3:
+            axes = {"+x": (1, 2), "-x": (1, 2), "+y": (0, 2), "-y": (0, 2)}
+            values = values[
+                list(axes.get(str(getattr(source, "direction", "")), (0, 1)))
+            ]
+        if values.size:
+            return float(values[0]), float(values[min(1, values.size - 1)])
+    width = getattr(source, "width", None)
+    height = getattr(source, "height", None)
+    return (
+        float(width) if width is not None else None,
+        float(height) if height is not None else None,
+    )
+
+
 def mode_source_plot_data(
     source,
     *,
@@ -204,12 +223,7 @@ def mode_source_plot_data(
             else (source.center, 0.0)
         )
         center = _shift_point(center, origin)
-        width = float(source.width) if source.width is not None else None
-        height = (
-            float(source.height)
-            if getattr(source, "height", None) is not None
-            else None
-        )
+        width, height = _source_width_height(source)
     return {
         "kind": "source",
         "shape": "mode",

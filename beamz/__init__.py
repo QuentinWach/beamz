@@ -37,7 +37,13 @@ from beamz.design.structures import (
 )
 from beamz.devices.monitors import FieldMonitor, FluxMonitor, ModeMonitor, Monitor
 from beamz.devices.ports import Port
-from beamz.devices.sources import GaussianSource, ModeData, ModeSolver, ModeSource
+from beamz.devices.sources import (
+    GaussianBeamSource,
+    GaussianSource,
+    ModeData,
+    ModeSolver,
+    ModeSource,
+)
 from beamz.devices.sources.mode import solve_modes
 from beamz.devices.sources.signals import plot_signal, ramped_cosine, signal_plot_data
 from beamz.optimization.autodiff import transform_density
@@ -118,6 +124,7 @@ _exports = {
     "ModeSolver": ModeSolver,
     "ModeData": ModeData,
     "GaussianSource": GaussianSource,
+    "GaussianBeamSource": GaussianBeamSource,
     # Monitors
     "Monitor": Monitor,
     "FieldMonitor": FieldMonitor,

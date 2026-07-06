@@ -639,6 +639,19 @@ def _device_span_for_axis(device, axis, transverse_axis):
 
     center = _device_plane_center(device)
     size = getattr(device, "size_spec", None)
+    if size is None:
+        raw_size = getattr(device, "size", None)
+        if raw_size is not None and not callable(raw_size):
+            raw_size = tuple(float(v) for v in raw_size)
+            if len(raw_size) == 3:
+                size = raw_size
+            elif len(raw_size) == 2 and axis in {"x", "y", "z"}:
+                if axis == "x":
+                    size = (0.0, raw_size[0], raw_size[1])
+                elif axis == "y":
+                    size = (raw_size[0], 0.0, raw_size[1])
+                else:
+                    size = (raw_size[0], raw_size[1], 0.0)
     if size is None and axis == "x":
         size = (
             0.0,
@@ -657,7 +670,7 @@ def _tidy3d_device_markers(devices, origin, *, color, source=False):
     ox, oy, oz = (float(v) for v in origin)
     for device in devices:
         axis = _normal_axis_from_device(device)
-        if axis not in {"x", "y"}:
+        if axis not in {"x", "y", "z"}:
             continue
         center = _device_plane_center(device)
         if center is None or len(center) < 3:
@@ -687,6 +700,43 @@ def _tidy3d_device_markers(devices, origin, *, color, source=False):
                 if source:
                     marker["arrow_y"] = (float(center[2]) - oz) / µm
                 markers_xz.append(marker)
+            continue
+
+        if axis == "z":
+            x_span = _device_span_for_axis(device, axis, "x")
+            y_span = _device_span_for_axis(device, axis, "y")
+            if x_span is not None:
+                markers_xy.append(
+                    {
+                        "orientation": "horizontal",
+                        "y": (float(center[1]) - oy) / µm,
+                        "span": ((x_span[0] - ox) / µm, (x_span[1] - ox) / µm),
+                        "color": color,
+                    }
+                )
+                marker = {
+                    "orientation": "horizontal",
+                    "y": (float(center[2]) - oz) / µm,
+                    "span": ((x_span[0] - ox) / µm, (x_span[1] - ox) / µm),
+                    "color": color,
+                    "direction": getattr(device, "direction", "-z"),
+                }
+                if source:
+                    marker.update(
+                        {
+                            "arrow": True,
+                            "arrow_x": (float(center[0]) - ox) / µm,
+                        }
+                    )
+                markers_xz.append(marker)
+            if y_span is not None:
+                markers_xy.append(
+                    {
+                        "x": (float(center[0]) - ox) / µm,
+                        "span": ((y_span[0] - oy) / µm, (y_span[1] - oy) / µm),
+                        "color": color,
+                    }
+                )
             continue
 
         x_span = _device_span_for_axis(device, axis, "x")
@@ -1215,10 +1265,14 @@ def plot_tidy3d_dft_field(
     if not getattr(monitor, "is_3d", False):
         raise ValueError("plot_tidy3d_dft_field expects a 3D plane monitor.")
     axis = str(getattr(monitor, "plane_normal", "z")).lower()
-    if axis != "z":
-        raise ValueError(
-            "Only z-normal in-plane DFT field plots are currently supported."
-        )
+    plane_axes = {
+        "x": ("z", "y"),
+        "y": ("z", "x"),
+        "z": ("y", "x"),
+    }
+    if axis not in plane_axes:
+        raise ValueError("DFT field monitor plane_normal must be one of x, y, or z.")
+    axis0, axis1 = plane_axes[axis]
 
     freqs = np.asarray(monitor.get_dft_frequencies(), dtype=float)
     if freqs.size == 0:
@@ -1365,6 +1419,7 @@ def plot_tidy3d_dft_field(
     if origin is None:
         origin = _tidy3d_origin_for_simulation(simulation)
     ox, oy, oz = (float(v) for v in origin)
+    origin_by_axis = {"x": ox, "y": oy, "z": oz}
     dx = (
         float(np.mean(np.diff(x_coords)))
         if x_coords.size > 1
@@ -1376,10 +1431,10 @@ def plot_tidy3d_dft_field(
         else float(simulation.resolution)
     )
     extent = [
-        (float(x_coords[0]) - 0.5 * dx - ox) / µm,
-        (float(x_coords[-1]) + 0.5 * dx - ox) / µm,
-        (float(y_coords[0]) - 0.5 * dy - oy) / µm,
-        (float(y_coords[-1]) + 0.5 * dy - oy) / µm,
+        (float(x_coords[0]) - 0.5 * dx - origin_by_axis[axis1]) / µm,
+        (float(x_coords[-1]) + 0.5 * dx - origin_by_axis[axis1]) / µm,
+        (float(y_coords[0]) - 0.5 * dy - origin_by_axis[axis0]) / µm,
+        (float(y_coords[-1]) + 0.5 * dy - origin_by_axis[axis0]) / µm,
     ]
 
     auto_vmax = np.nanpercentile(np.abs(plot_arr), float(percentile))
@@ -1412,45 +1467,36 @@ def plot_tidy3d_dft_field(
     if overlay_core:
         eps_slice = _field_eps_slice(
             simulation,
-            plane="z",
+            plane=axis,
             plane_position=float(getattr(monitor, "plane_position", 0.0)),
         )
+        slice_shape = (
+            tuple(np.asarray(eps_slice).shape) if eps_slice is not None else ()
+        )
+        fallback_extents = {
+            axis0: (slice_shape[0] * simulation.resolution if slice_shape else 0.0),
+            axis1: (
+                slice_shape[1] * simulation.resolution
+                if len(slice_shape) > 1
+                else 0.0
+            ),
+        }
+        design_attrs = {"x": "width", "y": "height", "z": "depth"}
+
+        def design_extent(axis_name):
+            fallback = float(fallback_extents.get(axis_name, 0.0))
+            return float(
+                getattr(design, design_attrs[axis_name], fallback) or fallback
+            )
+
         _draw_field_eps_overlay(
             ax,
             eps_slice,
             extent=[
-                (0.0 - ox) / µm,
-                (
-                    float(
-                        getattr(
-                            design,
-                            "width",
-                            (
-                                eps_slice.shape[1] * simulation.resolution
-                                if eps_slice is not None
-                                else 0.0
-                            ),
-                        )
-                    )
-                    - ox
-                )
-                / µm,
-                (0.0 - oy) / µm,
-                (
-                    float(
-                        getattr(
-                            design,
-                            "height",
-                            (
-                                eps_slice.shape[0] * simulation.resolution
-                                if eps_slice is not None
-                                else 0.0
-                            ),
-                        )
-                    )
-                    - oy
-                )
-                / µm,
+                (0.0 - origin_by_axis[axis1]) / µm,
+                (design_extent(axis1) - origin_by_axis[axis1]) / µm,
+                (0.0 - origin_by_axis[axis0]) / µm,
+                (design_extent(axis0) - origin_by_axis[axis0]) / µm,
             ],
             reverse=eps_reverse,
             alpha=eps_alpha,
@@ -1472,10 +1518,12 @@ def plot_tidy3d_dft_field(
         label=cbar_label,
         extend="both" if not (val_key in {"abs", "magnitude"} or is_power) else "max",
     )
-    ax.set_xlabel("x (um)")
-    ax.set_ylabel("y (um)")
-    z_value = float(getattr(monitor, "plane_position", 0.0)) - oz
-    ax.set_title(f"cross section at z={z_value / µm:.2f} (um)")
+    ax.set_xlabel(f"{axis1} (um)")
+    ax.set_ylabel(f"{axis0} (um)")
+    plane_value = (
+        float(getattr(monitor, "plane_position", 0.0)) - origin_by_axis[axis]
+    )
+    ax.set_title(f"cross section at {axis}={plane_value / µm:.2f} (um)")
     if xlim is not None:
         ax.set_xlim(*xlim)
     if ylim is not None:

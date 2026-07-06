@@ -496,14 +496,14 @@ class Design:
     def add(self, structure: type[Polygon]):
         """Add a geometric structure to the design and update 3D state."""
         from beamz.devices.monitors import Monitor
-        from beamz.devices.sources import GaussianSource, ModeSource
+        from beamz.devices.sources.compiler import source_supports_compiled_specs
 
         if isinstance(structure, Monitor):
             raise TypeError(
                 "Design only accepts geometry. Pass monitors to "
                 "Simulation(monitors=[...]) instead."
             )
-        if isinstance(structure, (ModeSource, GaussianSource)):
+        if source_supports_compiled_specs(structure):
             raise TypeError(
                 "Design only accepts geometry. Pass sources to "
                 "Simulation(sources=[...]) instead."
