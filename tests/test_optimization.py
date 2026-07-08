@@ -163,6 +163,63 @@ class TestDensityTransformationPipeline:
                 f"{filter_type}: transform exceeded 1.0"
             )
 
+    def test_transform_density_ssp_conic_pipeline(self):
+        """SSP projection should work after the conic filter path."""
+        np.random.seed(42)
+        density = jnp.array(np.random.rand(10, 10))
+        mask = jnp.ones((10, 10), dtype=bool)
+
+        physical = transform_density(
+            density,
+            mask,
+            beta=jnp.inf,
+            eta=0.5,
+            radius=1,
+            filter_type="conic",
+            projection_type="ssp",
+        )
+
+        assert physical.shape == density.shape
+        assert jnp.all(jnp.isfinite(physical))
+        assert jnp.min(physical) >= -1e-6
+        assert jnp.max(physical) <= 1.0 + 1e-6
+
+    def test_transform_density_ssp_morphological_pipeline(self):
+        """SSP projection should be accepted after morphological filters."""
+        np.random.seed(42)
+        density = jnp.array(np.random.rand(8, 8))
+        mask = jnp.ones((8, 8), dtype=bool)
+
+        physical = transform_density(
+            density,
+            mask,
+            beta=4.0,
+            eta=0.5,
+            radius=1,
+            filter_type="morphological",
+            morphology_operation="opening",
+            projection_type="ssp",
+        )
+
+        assert physical.shape == density.shape
+        assert jnp.all(jnp.isfinite(physical))
+        assert jnp.min(physical) >= -1e-6
+        assert jnp.max(physical) <= 1.0 + 1e-6
+
+    def test_transform_density_rejects_unknown_projection_type(self):
+        density = jnp.ones((4, 4)) * 0.5
+        mask = jnp.ones((4, 4), dtype=bool)
+
+        with pytest.raises(ValueError, match="Unknown projection_type"):
+            transform_density(
+                density,
+                mask,
+                beta=1.0,
+                eta=0.5,
+                radius=0,
+                projection_type="tanh",
+            )
+
 
 @pytest.mark.optimization
 class TestGradientComputation:
@@ -339,6 +396,27 @@ class TestGradientComputation:
             "Morphological VJP gradient contains inf/nan"
         )
 
+    def test_vjp_gradient_ssp_projection(self):
+        """VJP should work with SSP projection."""
+        density = jnp.tile(jnp.linspace(0.0, 1.0, 8), (8, 1))
+        mask = jnp.ones((8, 8), dtype=bool)
+        grad_physical = jnp.ones((8, 8))
+
+        grad_vjp = compute_parameter_gradient_vjp(
+            density,
+            grad_physical,
+            mask,
+            beta=jnp.inf,
+            eta=0.5,
+            radius=1,
+            filter_type="conic",
+            projection_type="ssp",
+        )
+
+        assert grad_vjp.shape == density.shape
+        assert jnp.all(jnp.isfinite(grad_vjp))
+        assert jnp.max(jnp.abs(grad_vjp)) > 1e-6
+
 
 @pytest.mark.optimization
 class TestMaterialPenalty:
@@ -489,3 +567,45 @@ class TestTopologyManagerResolution:
 
         manager = TopologyManager(design=design, region_mask=mask, resolution=None)
         assert np.isclose(manager.resolution, 1.0e-6)
+
+
+@pytest.mark.optimization
+class TestTopologyManagerProjection:
+    """Projection settings should be explicit and consistently threaded."""
+
+    def test_rejects_unknown_projection_type_at_construction(self):
+        design = Design(
+            width=2.0e-6, height=2.0e-6, material=Material(permittivity=1.0)
+        )
+        mask = np.ones((2, 2), dtype=bool)
+
+        with pytest.raises(ValueError, match="Unknown projection_type"):
+            TopologyManager(
+                design=design,
+                region_mask=mask,
+                resolution=1.0e-6,
+                projection_type="tanh",
+            )
+
+    def test_ssp_projection_settings_are_used_for_density(self):
+        design = Design(
+            width=4.0e-6, height=4.0e-6, material=Material(permittivity=1.0)
+        )
+        mask = np.ones((4, 4), dtype=bool)
+        manager = TopologyManager(
+            design=design,
+            region_mask=mask,
+            resolution=1.0e-6,
+            filter_radius=1.0e-6,
+            projection_type="ssp",
+            ssp_smoothing_radius=0.55,
+        )
+        manager.design_density = np.tile(np.linspace(0.0, 1.0, 4), (4, 1))
+
+        physical = manager.get_physical_density(beta=np.inf)
+
+        assert manager.projection_type == "ssp"
+        assert np.all(np.isfinite(physical))
+        assert physical.shape == manager.design_density.shape
+        assert np.min(physical) >= -1e-6
+        assert np.max(physical) <= 1.0 + 1e-6

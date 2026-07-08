@@ -28,8 +28,14 @@ A library of JAX-based differentiable operations used for density filtering and 
   - `masked_box_blur`: Standard box blur implementation.
 - **Projection**:
   - `smoothed_heaviside`: A differentiable step function (using `tanh`) to binarize the density field.
+  - `transform_density`: Applies the selected filter and projection method.
 - **Backpropagation**:
   - `compute_parameter_gradient_vjp`: Uses JAX's vector-Jacobian product (VJP) to automatically compute gradients through the entire filter-project pipeline.
+
+### `projections.py`
+Projection methods for filtered topology-optimization densities.
+- `smoothed_heaviside`: The default tanh-based projection method.
+- `subpixel_smoothed_projection`: Hammond SSP1 for smooth 2D density fields.
 
 ## Key Features
 
@@ -37,7 +43,43 @@ A library of JAX-based differentiable operations used for density filtering and 
 2.  **Geometric Constraints**: The **conic filter** option provides a method to enforce minimum length scales (linewidth and spacing) by using a cone-shaped kernel, as described in topology optimization literature.
 3.  **Connectivity Preservation**: The filtering pipeline includes a mechanism to "pad" the design region with information from fixed structures (like input/output waveguides). This prevents the optimization from creating gaps or disconnecting the device from the external circuit.
 4.  **Beta-Continuation**: Supports a beta-schedule for the Heaviside projection, gradually increasing the sharpness of the binarization to avoid getting stuck in local minima while ensuring a final binary design.
-5.  **JAX Integration**: All heavy lifting for density transformation and gradient chain-rule calculation is handled efficiently by JAX. Uses `optax` for JAX-native optimizer implementations (Adam, SGD).
+5.  **Projection Selection**: Supports `projection_type="heaviside"` for the default tanh projection and `projection_type="ssp"` for Hammond subpixel-smoothed projection.
+6.  **JAX Integration**: All heavy lifting for density transformation and gradient chain-rule calculation is handled efficiently by JAX. Uses `optax` for JAX-native optimizer implementations (Adam, SGD).
+
+## Projection Methods
+
+The density transform follows:
+
+```text
+design density -> filter -> projection -> physical density
+```
+
+Available projection methods:
+
+- `projection_type="heaviside"`: the default tanh smoothed Heaviside projection.
+- `projection_type="ssp"`: Hammond SSP1, applied to the already-filtered 2D density field.
+
+SSP is intended for smooth or filtered 2D density inputs. It supports `beta=jnp.inf`
+without adding any runtime, optional, or test dependency. The smoothing radius is in
+density-grid cell units and defaults to `ssp_smoothing_radius=0.55`.
+
+Example:
+
+```python
+import jax.numpy as jnp
+
+from beamz.optimization.autodiff import transform_density
+
+physical_density = transform_density(
+    density,
+    mask,
+    beta=jnp.inf,
+    eta=0.5,
+    radius=2,
+    filter_type="conic",
+    projection_type="ssp",
+)
+```
 
 ## Usage Example
 
@@ -52,9 +94,10 @@ opt = TopologyManager(
     design=design,
     region_mask=mask,
     resolution=DX,
-    filter_type='conic', # Options: 'morphological', 'conic', 'blur'
+    filter_type='conic', # Options: 'morphological', 'conic'
+    projection_type='ssp',
     filter_radius=0.15*µm,       # Physical units (e.g. microns)
-    simple_smooth_radius=0.03*µm # Optional smoothing (physical units)
+    ssp_smoothing_radius=0.55    # Density-grid cell units
 )
 
 # 3. Optimization Loop

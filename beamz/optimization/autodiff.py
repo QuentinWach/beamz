@@ -6,6 +6,8 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.signal import convolve2d
 
+from .projections import project_density, smoothed_heaviside  # noqa: F401
+
 
 @partial(jax.jit, static_argnames=["radius"])
 def generate_conic_kernel(radius: int):
@@ -65,18 +67,6 @@ def masked_conic_filter(values, mask, radius: int, fixed_structure_mask=None):
     filtered = jnp.where(mask, filtered, 0.0)
 
     return filtered, jnp.ones_like(mask)
-
-
-@jax.jit
-def smoothed_heaviside(value, beta, eta):
-    """
-    Smoothed Heaviside projection using tanh.
-    """
-    beta = jnp.maximum(beta, 1e-6)
-    # Use tanh projection: (tanh(beta*eta) + tanh(beta*(x-eta))) / (tanh(beta*eta) + tanh(beta*(1-eta)))
-    num = jnp.tanh(beta * eta) + jnp.tanh(beta * (value - eta))
-    den = jnp.tanh(beta * eta) + jnp.tanh(beta * (1.0 - eta))
-    return num / den
 
 
 @partial(jax.jit, static_argnames=["axis"])
@@ -223,6 +213,8 @@ def masked_morphological_filter(
         "radius",
         "filter_type",
         "morphology_operation",
+        "projection_type",
+        "ssp_smoothing_radius",
     ],
 )
 def transform_density(
@@ -235,6 +227,8 @@ def transform_density(
     morphology_operation="openclose",
     morphology_tau=0.05,
     fixed_structure_mask=None,
+    projection_type="heaviside",
+    ssp_smoothing_radius=0.55,
 ):
     """
     Full density transform: Filter -> Project (literature-standard).
@@ -244,6 +238,8 @@ def transform_density(
         filter_type: 'morphological' or 'conic' (recommended)
         morphology_operation: 'opening', 'closing', 'openclose'
         fixed_structure_mask: Optional mask for fixed structures
+        projection_type: 'heaviside' (default) or 'ssp'
+        ssp_smoothing_radius: SSP smoothing radius in grid-cell units
     """
     # Apply filter (returns hard-masked result)
     if filter_type == "morphological":
@@ -265,7 +261,13 @@ def transform_density(
 
     # Project
     # Note: Filters already apply hard masking, so no additional masking needed
-    projected = smoothed_heaviside(filtered, beta, eta)
+    projected = project_density(
+        filtered,
+        beta,
+        eta,
+        projection_type=projection_type,
+        ssp_smoothing_radius=ssp_smoothing_radius,
+    )
 
     return projected
 
@@ -276,6 +278,8 @@ def transform_density(
         "radius",
         "filter_type",
         "morphology_operation",
+        "projection_type",
+        "ssp_smoothing_radius",
     ],
 )
 def compute_parameter_gradient_vjp(
@@ -289,6 +293,8 @@ def compute_parameter_gradient_vjp(
     morphology_operation="openclose",
     morphology_tau=0.05,
     fixed_structure_mask=None,
+    projection_type="heaviside",
+    ssp_smoothing_radius=0.55,
 ):
     """
     Compute gradient w.r.t. design density using VJP.
@@ -307,6 +313,8 @@ def compute_parameter_gradient_vjp(
             morphology_operation,
             morphology_tau,
             fixed_structure_mask,
+            projection_type,
+            ssp_smoothing_radius,
         )
 
     # Compute VJP

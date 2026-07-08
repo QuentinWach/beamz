@@ -11,6 +11,7 @@ from beamz.design.materials import Material
 from beamz.design.meshing import RegularGrid
 
 from .autodiff import compute_parameter_gradient_vjp, transform_density
+from .projections import validate_projection_options
 
 
 class TopologyManager:
@@ -33,6 +34,8 @@ class TopologyManager:
         learning_rate: float = 0.1,
         filter_radius: float = 0.0,
         projection_eta: float = 0.5,
+        projection_type: str = "heaviside",
+        ssp_smoothing_radius: float = 0.55,
         beta_schedule: tuple[float, float] = (1.0, 20.0),
         eps_min: float = 1.0,
         eps_max: float = 12.0,
@@ -46,11 +49,14 @@ class TopologyManager:
             filter_radius: Filter radius in physical units (e.g. microns).
                            Controls minimum feature size AND boundary smoothness.
                            Recommended: 0.25-0.35 µm for smooth, rounded structures.
+            projection_type: 'heaviside' (default) or 'ssp'.
+            ssp_smoothing_radius: SSP smoothing radius in density-grid cell units.
             filter_type: 'conic' (recommended, geometric constraints) or 'morphological'.
             morphology_operation: 'opening', 'closing', or 'openclose' (for morphological filter).
         """
         self.design = design
         self.mask = region_mask.astype(bool)
+        validate_projection_options(projection_type, ssp_smoothing_radius)
 
         # Setup optimizer using optax (JAX-native)
         try:
@@ -75,6 +81,8 @@ class TopologyManager:
         # Parameters
         self.filter_radius = filter_radius
         self.projection_eta = projection_eta
+        self.projection_type = projection_type
+        self.ssp_smoothing_radius = ssp_smoothing_radius
         self.beta_start, self.beta_end = beta_schedule
         self.eps_min = eps_min
         self.eps_max = eps_max
@@ -159,6 +167,8 @@ class TopologyManager:
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
             fixed_structure_mask=fixed_jax,
+            projection_type=self.projection_type,
+            ssp_smoothing_radius=self.ssp_smoothing_radius,
         )
         return np.array(p_jax)
 
@@ -204,6 +214,8 @@ class TopologyManager:
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
             fixed_structure_mask=fixed_jax,
+            projection_type=self.projection_type,
+            ssp_smoothing_radius=self.ssp_smoothing_radius,
         )
         grad_param = np.array(grad_param_jax)
 
