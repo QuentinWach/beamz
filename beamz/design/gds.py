@@ -77,7 +77,7 @@ class _VerticalProfile:
 
 def _gdsfactory():
     try:
-        import gdsfactory as gf
+        import gdsfactory as gf  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
         raise ImportError(
             "GDS support requires BeamZ's optional layout dependency. "
