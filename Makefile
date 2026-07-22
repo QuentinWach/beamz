@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test lint typecheck dead-code audit format clean build publish
+.PHONY: help install install-dev test lint typecheck dead-code audit docs-api docs-check format clean build publish
 
 help:  ## Show this help message
 	@echo "Usage: make [target]"
@@ -29,6 +29,14 @@ dead-code:  ## Run dead code checks with intentional dynamic API allowlist
 	uv run --extra lint vulture beamz/ vulture_allowlist.py --min-confidence 60
 
 audit: lint typecheck dead-code test  ## Run core code quality audit
+
+docs-api:  ## Regenerate committed Markdown API reference docs
+	uv run --extra docs python scripts/update_api_docs.py
+	uv run --extra docs zensical build --clean
+
+docs-check:  ## Check generated API docs and build the Zensical site
+	uv run --extra docs python scripts/update_api_docs.py --check
+	uv run --extra docs zensical build --clean
 
 format:  ## Format code and fix package lint issues
 	uv run --extra lint ruff format beamz/ examples/ tests/

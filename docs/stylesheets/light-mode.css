@@ -1,0 +1,85 @@
+/* BEAMZ design system — light color tokens. */
+:root,
+[data-theme="light"],
+html[data-theme="light"] body,
+[data-md-color-scheme="default"] {
+  color-scheme: light;
+
+  --beamz-background: #fff;
+  --beamz-foreground: #18181b;
+  --beamz-card: #fdfdfe;
+  --beamz-card-foreground: #18181b;
+  --beamz-popover: #fff;
+  --beamz-popover-foreground: #18181b;
+  --beamz-primary: #27272a;
+  --beamz-primary-foreground: #fafafa;
+  --beamz-secondary: #f4f4f5;
+  --beamz-secondary-foreground: #27272a;
+  --beamz-muted: #f4f4f5;
+  --beamz-muted-translucent: rgb(244 244 245 / 70%);
+  --beamz-muted-foreground: #71717a;
+  --beamz-accent: #f4f4f5;
+  --beamz-accent-foreground: #27272a;
+  --beamz-border: #e4e4e7;
+  --beamz-border-strong: #cbd5e1;
+  --beamz-border-translucent: rgb(228 228 231 / 70%);
+  --beamz-input: #e4e4e7;
+  --beamz-ring: #a1a1aa;
+  --beamz-code-background: #f4f4f5;
+  --beamz-link: #1d4ed8;
+  --beamz-link-hover: #2563eb;
+  --beamz-shadow: rgb(24 24 27 / 8%);
+  --beamz-header-background: rgb(255 255 255 / 95%);
+  --beamz-inset-highlight: rgb(255 255 255 / 45%);
+  --beamz-logo-filter: invert(1);
+  --beamz-theme-moon-display: block;
+  --beamz-theme-sun-display: none;
+
+  --beamz-destructive: oklch(0.577 0.245 27.325);
+  --beamz-destructive-foreground: #fff;
+  --beamz-chart-1: oklch(0.646 0.222 41.116);
+  --beamz-chart-2: oklch(0.6 0.118 184.704);
+  --beamz-chart-3: oklch(0.398 0.07 227.392);
+  --beamz-chart-4: oklch(0.828 0.189 84.429);
+  --beamz-chart-5: oklch(0.769 0.188 70.08);
+
+  --beamz-sidebar: #f7f7f8;
+  --beamz-sidebar-foreground: #18181b;
+  --beamz-sidebar-primary: #27272a;
+  --beamz-sidebar-primary-foreground: #fafafa;
+  --beamz-sidebar-accent: #f0f0f1;
+  --beamz-sidebar-accent-foreground: #27272a;
+  --beamz-sidebar-border: #e4e4e7;
+  --beamz-sidebar-ring: #a1a1aa;
+
+  --beamz-api-border: var(--beamz-border);
+  --beamz-api-frame: var(--beamz-border-strong);
+  --beamz-api-code: var(--beamz-code-background);
+  --beamz-api-row: var(--beamz-background);
+  --beamz-api-row-alt: #fafafa;
+  --beamz-api-row-hover: var(--beamz-muted);
+  --beamz-api-source: #fafafa;
+  --beamz-api-source-summary: #f4f4f5;
+  --beamz-api-muted: var(--beamz-muted-foreground);
+  --beamz-api-kind-bg: #e8f3ff;
+  --beamz-api-kind-border: #a7c9e8;
+  --beamz-api-kind-fg: #16446d;
+  --beamz-api-control-bg: #f8fbff;
+  --beamz-api-control-border: #a7c9e8;
+  --beamz-api-control-fg: #1d4e78;
+  --beamz-api-control-hover: #e1f0ff;
+
+  /* Zensical theme adapter. */
+  --md-primary-fg-color: var(--beamz-brand-950);
+  --md-primary-fg-color--light: var(--beamz-brand-800);
+  --md-primary-fg-color--dark: #000308;
+  --md-accent-fg-color: var(--beamz-link-hover);
+  --md-typeset-a-color: var(--beamz-link);
+  --md-default-bg-color: var(--beamz-background);
+  --md-default-fg-color: var(--beamz-foreground);
+  --md-default-fg-color--light: var(--beamz-muted-foreground);
+  --md-default-fg-color--lighter: var(--beamz-ring);
+  --md-default-fg-color--lightest: var(--beamz-border);
+  --md-code-bg-color: var(--beamz-code-background);
+  --md-code-fg-color: var(--beamz-foreground);
+}

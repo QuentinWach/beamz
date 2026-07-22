@@ -1,0 +1,1549 @@
+.beamz-site-header {
+  backdrop-filter: none;
+  background: transparent;
+  border-bottom: 1px solid transparent;
+  box-shadow: none;
+  box-sizing: border-box;
+  color: var(--beamz-foreground);
+  font-family: var(--beamz-font-body);
+  font-size: 16px;
+  font-weight: 400;
+  height: calc(var(--beamz-header-height) + 1px);
+  line-height: 24px;
+  transition: background-color 200ms, border-color 200ms;
+}
+
+.beamz-site-header.beamz-site-header--scrolled {
+  backdrop-filter: blur(12px);
+  background: var(--beamz-header-background);
+  border-bottom-color: var(--beamz-border);
+}
+
+.beamz-site-header__inner {
+  align-items: center;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  height: var(--beamz-header-height);
+  margin: 0 auto;
+  max-width: var(--beamz-site-max-width);
+  padding: 0 16px;
+}
+
+.beamz-site-header__brand {
+  align-items: center;
+  color: var(--beamz-foreground);
+  display: flex;
+  font-family: var(--beamz-font-body);
+  font-size: 18px;
+  font-weight: 700;
+  gap: 4px;
+  letter-spacing: -0.45px;
+  line-height: 28px;
+  text-decoration: none;
+  transition: opacity 150ms ease;
+}
+
+.beamz-site-header__brand:is(:focus, :hover) {
+  opacity: 0.8;
+}
+
+.beamz-site-header__brand img {
+  display: block;
+  filter: var(--beamz-logo-filter);
+  height: 28px;
+  width: auto;
+}
+
+.beamz-site-header__nav {
+  align-items: center;
+  display: none;
+  font-size: 16px;
+  gap: 40px;
+  justify-content: center;
+  line-height: 24px;
+}
+
+.beamz-site-header__nav a {
+  align-items: center;
+  color: var(--beamz-muted-foreground);
+  display: inline-flex;
+  font-size: 16px;
+  font-weight: 500;
+  gap: 8px;
+  line-height: 24px;
+  min-width: 0;
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+.beamz-site-header__nav a:is(:focus, :hover) {
+  color: var(--beamz-foreground);
+}
+
+.beamz-site-header svg {
+  fill: none;
+  flex-shrink: 0;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 16px;
+}
+
+.beamz-site-header__actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.beamz-site-header__menu {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--beamz-border);
+  border-radius: var(--beamz-radius-sm);
+  box-sizing: border-box;
+  color: var(--beamz-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  transition: background-color 150ms ease;
+  width: 36px;
+}
+
+.beamz-site-header__theme {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--beamz-border);
+  border-radius: var(--beamz-radius-sm);
+  box-sizing: border-box;
+  color: var(--beamz-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  transition: background-color 150ms ease;
+  width: 36px;
+}
+
+.beamz-site-header__theme-sun {
+  display: var(--beamz-theme-sun-display);
+}
+
+.beamz-site-header__theme-moon {
+  display: var(--beamz-theme-moon-display);
+}
+
+.beamz-site-header__menu:is(:focus, :hover),
+.beamz-site-header__theme:is(:focus, :hover),
+.beamz-site-header__github:is(:focus, :hover) {
+  background: var(--beamz-muted);
+}
+
+.beamz-site-header__github {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--beamz-border);
+  border-radius: var(--beamz-radius-sm);
+  box-sizing: border-box;
+  color: var(--beamz-foreground);
+  display: inline-flex;
+  font-family: var(--beamz-font-body);
+  font-size: 14px;
+  font-weight: 500;
+  gap: 8px;
+  height: 36px;
+  justify-content: center;
+  line-height: 20px;
+  padding: 0;
+  text-decoration: none;
+  transition: background-color 150ms ease;
+  width: 36px;
+}
+
+.beamz-site-header__github-label,
+.beamz-site-header__github-meta {
+  display: none;
+}
+
+.beamz-site-header__github-meta {
+  color: var(--beamz-muted-foreground);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.beamz-site-header__stars {
+  align-items: center;
+  gap: 2px;
+}
+
+.beamz-site-header__stars svg {
+  fill: currentColor;
+  height: 12px;
+  width: 12px;
+}
+
+@media (min-width: 640px) {
+  .beamz-site-header__inner {
+    padding: 0 16px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .beamz-site-header__inner {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .beamz-site-header__nav {
+    display: flex;
+  }
+
+  .beamz-site-header__actions {
+    gap: 16px;
+  }
+
+  .beamz-site-header__menu {
+    display: none;
+  }
+
+  .beamz-site-header__github {
+    height: 34px;
+    padding: 6px 12px;
+    width: auto;
+  }
+
+  .beamz-site-header__github-label,
+  .beamz-site-header__github-meta {
+    display: inline;
+  }
+
+  .beamz-site-header__stars {
+    display: flex;
+  }
+}
+
+@media (max-width: 639px) {
+  .beamz-site-header__inner {
+    padding: 0 12px;
+  }
+}
+
+/* Shared content system: mirrors the React guide and notebook pages. */
+.md-main {
+  color: var(--beamz-foreground);
+  font-family: var(--beamz-font-body);
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.md-main__inner.md-grid {
+  align-items: flex-start;
+  column-gap: 8px;
+  margin: 23px auto 0;
+  max-width: var(--beamz-docs-max-width);
+  width: calc(100% - 32px);
+}
+
+.md-sidebar {
+  padding: 0;
+  width: 224px;
+}
+
+.md-sidebar__scrollwrap {
+  margin: 0;
+}
+
+.md-sidebar__inner {
+  padding: 0;
+}
+
+.md-content {
+  min-width: 0;
+}
+
+.md-content__inner.md-typeset {
+  box-sizing: border-box;
+  color: var(--beamz-foreground);
+  font-family: var(--beamz-font-body);
+  font-size: 16px;
+  letter-spacing: 0;
+  line-height: 1.35;
+  margin: 0 !important;
+  padding: 4px 28px 56px;
+}
+
+.md-path {
+  box-sizing: border-box;
+  color: var(--beamz-muted-foreground);
+  font-size: 14px;
+  line-height: 20px;
+  margin: 0;
+  padding: 0 28px;
+}
+
+.md-path {
+  display: none;
+}
+
+.md-path__link {
+  color: inherit;
+  transition: color 150ms ease;
+}
+
+.md-path__link:is(:focus, :hover) {
+  color: var(--beamz-foreground);
+}
+
+/* Left documentation navigation. */
+.md-sidebar--primary > .md-sidebar__scrollwrap > .md-sidebar__inner > .md-nav > .md-nav__title,
+.md-sidebar--primary .md-nav__source {
+  display: none;
+}
+
+.beamz-docs-nav-label {
+  color: var(--beamz-muted-foreground);
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  margin: 0 0 5px;
+}
+
+.md-sidebar--primary .md-nav {
+  color: var(--beamz-muted-foreground);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.beamz-docs-nav-search {
+  margin: 0 0 8px;
+}
+
+#__search:not(:checked) ~ .md-container .beamz-docs-nav-search .md-search {
+  display: block;
+  margin: 0;
+  padding: 0;
+  position: static;
+  width: 100%;
+}
+
+#__search:not(:checked) ~ .md-container .beamz-docs-nav-search .md-search__button {
+  align-items: center;
+  background: var(--beamz-background);
+  border: 1px solid var(--beamz-border);
+  border-radius: var(--beamz-radius-sm);
+  box-sizing: border-box;
+  color: var(--beamz-muted-foreground);
+  display: flex;
+  font-family: var(--beamz-font-body);
+  font-size: 13px;
+  height: 34px;
+  justify-content: flex-start;
+  padding: 0 10px;
+  position: relative;
+  text-align: left;
+  width: 100%;
+}
+
+#__search:not(:checked) ~ .md-container .beamz-docs-nav-search .md-search__button::before {
+  background: currentColor;
+  content: "";
+  flex: 0 0 15px;
+  height: 15px;
+  margin-right: 8px;
+  position: static;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='11' cy='11' r='8' fill='none' stroke='black' stroke-width='2'/%3E%3Cpath d='m21 21-4.3-4.3' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='11' cy='11' r='8' fill='none' stroke='black' stroke-width='2'/%3E%3Cpath d='m21 21-4.3-4.3' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  width: 15px;
+}
+
+#__search:not(:checked) ~ .md-container .beamz-docs-nav-search .md-search__button:is(:focus, :hover) {
+  background: var(--beamz-muted);
+  color: var(--beamz-foreground);
+}
+
+.md-sidebar--primary .md-nav__list {
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+}
+
+.md-sidebar--primary .md-nav__item {
+  padding: 0;
+}
+
+.md-sidebar--primary .md-nav__item--section > .md-nav__link,
+.md-sidebar--primary .md-nav__item--section > .md-nav > .md-nav__title {
+  color: color-mix(in oklab, var(--beamz-foreground) 62%, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 15px;
+  margin: 10px 0 3px;
+  padding: 1px 7px;
+  text-transform: uppercase;
+}
+
+.md-sidebar--primary .md-nav__item--section:first-child > .md-nav__link {
+  margin-top: 0;
+}
+
+.md-sidebar--primary .md-nav__link {
+  align-items: center;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  color: color-mix(in oklab, var(--beamz-foreground) 75%, transparent);
+  font-size: 13px;
+  gap: 6px;
+  line-height: 18px;
+  margin: 0;
+  min-height: 0;
+  padding: 3px 7px;
+  transition: background-color 150ms ease, border-color 150ms ease,
+    color 150ms ease;
+}
+
+.md-sidebar--primary .md-nav__link::before {
+  background: currentColor;
+  content: "";
+  flex: 0 0 13px;
+  height: 13px;
+  opacity: 0.62;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3C/svg%3E") center / contain no-repeat;
+  width: 13px;
+}
+
+.md-sidebar--primary .md-nav__item--section > .md-nav__link::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href$="/docs/"]::before,
+.md-sidebar--primary .md-nav__link[href="/"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 11 9-9 9 9'/%3E%3Cpath d='M5 10v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10'/%3E%3Cpath d='M9 22V12h6v10'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 11 9-9 9 9'/%3E%3Cpath d='M5 10v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10'/%3E%3Cpath d='M9 22V12h6v10'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="/api/reference/"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7.5 4.27 9 5.15'/%3E%3Cpath d='M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z'/%3E%3Cpath d='m3.3 7 8.7 5 8.7-5'/%3E%3Cpath d='M12 22V12'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7.5 4.27 9 5.15'/%3E%3Cpath d='M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z'/%3E%3Cpath d='m3.3 7 8.7 5 8.7-5'/%3E%3Cpath d='M12 22V12'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="#"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m18 16 4-4-4-4'/%3E%3Cpath d='m6 8-4 4 4 4'/%3E%3Cpath d='m14.5 4-5 16'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m18 16 4-4-4-4'/%3E%3Cpath d='m6 8-4 4 4 4'/%3E%3Cpath d='m14.5 4-5 16'/%3E%3C/svg%3E");
+}
+
+/* Give each top-level destination a distinct, semantic outline icon. */
+.md-sidebar--primary .md-nav__link::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href]::before,
+.md-sidebar--primary .md-nav__item--section > .md-nav__link::before {
+  -webkit-mask: var(--beamz-nav-icon) center / contain no-repeat;
+  mask: var(--beamz-nav-icon) center / contain no-repeat;
+}
+
+.md-sidebar--primary > .md-sidebar__scrollwrap > .md-sidebar__inner > .md-nav > .md-nav__list > .md-nav__item:nth-child(2) > .md-nav__link::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z'/%3E%3Cpath d='M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary > .md-sidebar__scrollwrap > .md-sidebar__inner > .md-nav > .md-nav__list > .md-nav__item:nth-child(3) > .md-nav__link::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m12.83 2.18 8 4.66a2 2 0 0 1 1 1.73v6.86a2 2 0 0 1-1 1.73l-8 4.66a2 2 0 0 1-2 0l-8-4.66a2 2 0 0 1-1-1.73V8.57a2 2 0 0 1 1-1.73l8-4.66a2 2 0 0 1 2 0Z'/%3E%3Cpath d='m2.32 7.37 9.68 5.63 9.68-5.63'/%3E%3Cpath d='M12 22.76V13'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href$="/docs/"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 11 9-9 9 9'/%3E%3Cpath d='M5 10v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10'/%3E%3Cpath d='M9 22V12h6v10'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="/getting-started/"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 16.5c-1.5 1.26-2 5.5-2 5.5s4.24-.5 5.5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09Z'/%3E%3Cpath d='m9 15-3-3a10.5 10.5 0 0 1 3.5-8.5c3.3-1 6.9-1 8-1 .1 1.1 0 4.7-1 8A10.5 10.5 0 0 1 9 15Z'/%3E%3Cpath d='M9 15H4s.55-3.03 2-4.5'/%3E%3Cpath d='M9 15v5s3.03-.55 4.5-2'/%3E%3Ccircle cx='15' cy='9' r='1'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="/mission/"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Ccircle cx='12' cy='12' r='6'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="/philosophy/"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 18h6'/%3E%3Cpath d='M10 22h4'/%3E%3Cpath d='M15.09 14c.18-.65.68-1.2 1.23-1.7A6 6 0 1 0 7.7 12.3c.55.5 1.05 1.05 1.23 1.7'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="/perf-and-conv/"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-4l-3 9L9 3l-3 9H2'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href$="/beamz/"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m13 2-3 7h4l-3 13 6-9h-4l3-11Z'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="beamz.analysis"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 3v18h18'/%3E%3Cpath d='m7 16 4-5 3 3 5-7'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="beamz.design"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="beamz.optimization"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 21v-7'/%3E%3Cpath d='M4 10V3'/%3E%3Cpath d='M12 21v-9'/%3E%3Cpath d='M12 8V3'/%3E%3Cpath d='M20 21v-5'/%3E%3Cpath d='M20 12V3'/%3E%3Cpath d='M2 14h4'/%3E%3Cpath d='M10 8h4'/%3E%3Cpath d='M18 16h4'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="beamz.simulation"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='16' height='16' x='4' y='4' rx='2'/%3E%3Crect width='6' height='6' x='9' y='9' rx='1'/%3E%3Cpath d='M9 2v2M15 2v2M9 20v2M15 20v2M20 9h2M20 15h2M2 9h2M2 15h2'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="beamz.devices.monitors"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.06 12.35a1 1 0 0 1 0-.7C3.45 8.37 7.48 6 12 6c4.52 0 8.55 2.37 9.94 5.65a1 1 0 0 1 0 .7C20.55 15.63 16.52 18 12 18c-4.52 0-8.55-2.37-9.94-5.65Z'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="beamz.devices.sources"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 2v20'/%3E%3Cpath d='M19 2v20'/%3E%3Cpath d='M2 5h20'/%3E%3Cpath d='M2 19h20'/%3E%3Cpath d='m9 9 6 3-6 3Z'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href*="/examples/"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 3h6'/%3E%3Cpath d='M10 9V3'/%3E%3Cpath d='M14 9V3'/%3E%3Cpath d='M8 22h8a4 4 0 0 0 4-4c0-2-1.33-3.35-2.67-4.69A5 5 0 0 1 16 9H8a5 5 0 0 1-1.33 4.31C5.33 14.65 4 16 4 18a4 4 0 0 0 4 4Z'/%3E%3Cpath d='M8.5 16h7'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav__link[href="/"]::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M2 12h20'/%3E%3Cpath d='M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary > .md-sidebar__scrollwrap > .md-sidebar__inner > .md-nav > .md-nav__list > .md-nav__item:nth-child(5) > .md-nav__link::before {
+  --beamz-nav-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M2 12h20'/%3E%3Cpath d='M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z'/%3E%3C/svg%3E");
+}
+
+.md-sidebar--primary .md-nav .md-nav {
+  border-left: 1px solid var(--beamz-border-translucent);
+  margin: 1px 0 2px 8px;
+  padding-left: 6px;
+}
+
+.md-sidebar--primary .md-nav__link:is(:focus, :hover) {
+  background: var(--beamz-muted-translucent);
+  border-left-color: transparent;
+  border-radius: var(--beamz-radius-sm);
+  color: var(--beamz-foreground);
+}
+
+.md-sidebar--primary .md-nav__link--active,
+.md-sidebar--primary .md-nav__item--active > .md-nav__link {
+  background: var(--beamz-muted-translucent);
+  border-left-color: transparent;
+  border-radius: var(--beamz-radius-sm);
+  color: var(--beamz-foreground);
+  font-weight: 500;
+}
+
+/* Right table of contents. */
+.md-sidebar--secondary .md-nav__title {
+  background: transparent;
+  box-shadow: none;
+  color: var(--beamz-foreground);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  margin: 0 0 4px;
+  padding: 0;
+}
+
+.md-sidebar--secondary .md-nav__list {
+  border-left: 1px solid var(--beamz-border);
+  gap: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.md-sidebar--secondary .md-nav__link {
+  border-left: 2px solid transparent;
+  color: var(--beamz-muted-foreground);
+  font-size: 12px;
+  line-height: 14px;
+  margin-left: -1px;
+  padding: 2px 8px 2px 9px;
+  transition: background-color 150ms ease, border-color 150ms ease,
+    color 150ms ease;
+}
+
+.md-sidebar--secondary .md-nav__link .md-typeset {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.md-sidebar--secondary .md-nav__link:is(:focus, :hover),
+.md-sidebar--secondary .md-nav__link--active {
+  background: color-mix(in oklab, var(--beamz-muted) 55%, transparent);
+  border-left-color: var(--beamz-foreground);
+  color: var(--beamz-foreground);
+}
+
+.md-sidebar--secondary .md-nav .md-nav {
+  margin: 0;
+}
+
+.md-sidebar--secondary .md-nav .md-nav .md-nav__link {
+  padding-left: 15px;
+}
+
+/* API outlines stop at public classes and functions, not their members. */
+.md-sidebar--secondary .md-nav__item:has(> .md-nav__link[href*="#beamz."]) > .md-nav {
+  display: none;
+}
+
+/* Keep both desktop navigation rails stationary below the fixed header. */
+@media (min-width: 1220px) {
+  .md-sidebar--primary,
+  .md-sidebar--secondary {
+    top: 80px !important;
+  }
+
+  .md-sidebar--primary .md-sidebar__scrollwrap,
+  .md-sidebar--secondary .md-sidebar__scrollwrap {
+    max-height: calc(100vh - 80px);
+  }
+}
+
+/* Prose typography. */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+  color: var(--beamz-foreground);
+  font-family: var(--beamz-font-heading);
+  letter-spacing: 0;
+}
+
+.md-typeset h1 {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 36px;
+  margin: 24px 0 12px;
+}
+
+.md-typeset h2 {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+  margin: 20px 0 8px;
+}
+
+.md-typeset h3 {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  margin: 16px 0 8px;
+}
+
+.md-typeset h4 {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  margin: 12px 0 6px;
+}
+
+.md-typeset h5,
+.md-typeset h6 {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  margin: 12px 0 6px;
+}
+
+.md-typeset .headerlink {
+  color: var(--beamz-muted-foreground);
+  font-family: var(--beamz-font-body);
+  font-size: 0.55em;
+  margin-left: 6px;
+  opacity: 0;
+  text-decoration: none;
+  transition: opacity 150ms ease;
+}
+
+.md-typeset :is(h1, h2, h3, h4, h5, h6):is(:focus, :hover) .headerlink {
+  opacity: 0.65;
+}
+
+.md-typeset p {
+  font-size: 16px;
+  line-height: 1.35;
+  margin: 0 0 12px;
+}
+
+.md-typeset :is(ul, ol) {
+  margin: 0 0 12px !important;
+  padding-left: 20px;
+}
+
+.md-typeset ul {
+  list-style: disc;
+}
+
+.md-typeset ol {
+  list-style: decimal;
+}
+
+.md-typeset li {
+  margin: 0 0 2px;
+}
+
+.md-typeset a {
+  color: var(--beamz-link);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
+.md-typeset a:is(:focus, :hover) {
+  color: var(--beamz-link-hover);
+}
+
+.md-typeset strong {
+  font-weight: 700;
+}
+
+.md-typeset blockquote {
+  border-left: 4px solid var(--beamz-muted);
+  color: color-mix(in oklab, var(--beamz-foreground) 78%, transparent);
+  font-style: italic;
+  margin: 12px 0;
+  padding: 0 0 0 12px;
+}
+
+.md-typeset hr {
+  border-bottom: 1px solid var(--beamz-border);
+  margin: 20px 0;
+}
+
+.md-typeset img {
+  border-radius: var(--beamz-radius-sm);
+  display: block;
+  height: auto;
+  max-width: 100%;
+}
+
+.md-typeset .arithmatex {
+  overflow-x: auto;
+}
+
+/* Inline and fenced code. */
+.md-typeset code {
+  background: var(--beamz-muted);
+  border-radius: var(--beamz-radius-sm);
+  color: var(--beamz-foreground);
+  font-family: var(--beamz-font-code);
+  font-size: 12px;
+  line-height: 16px;
+  padding: 2px 6px;
+}
+
+.md-typeset .highlight {
+  background: var(--beamz-code-background);
+  border: 1px solid var(--beamz-border);
+  border-radius: var(--beamz-radius-md);
+  box-shadow: inset 0 1px 0 var(--beamz-inset-highlight);
+  margin: 6px 0 !important;
+  overflow: hidden;
+  position: relative;
+}
+
+.md-typeset .highlight pre,
+.md-typeset pre {
+  background: var(--beamz-code-background);
+  border-radius: 0;
+  font-family: var(--beamz-font-code);
+  margin: 0;
+  overflow-x: auto;
+  padding: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.md-typeset .highlight pre > code,
+.md-typeset pre > code {
+  background: transparent;
+  border-radius: 0;
+  box-sizing: border-box;
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+  min-width: 100%;
+  padding: 12px 16px 12px 20px;
+  white-space: inherit;
+}
+
+.md-typeset .highlight a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.md-typeset .md-clipboard {
+  background: var(--beamz-api-control-bg);
+  border: 1px solid var(--beamz-api-control-border);
+  border-radius: var(--beamz-radius-md);
+  color: var(--beamz-api-control-fg) !important;
+  height: 28px;
+  margin: 0;
+  opacity: 0;
+  padding: 6px;
+  right: 6px;
+  top: 6px;
+  transition: background-color 150ms ease, border-color 150ms ease,
+    color 150ms ease, opacity 150ms ease;
+  width: 28px;
+}
+
+.md-typeset .highlight:is(:focus-within, :hover) .md-clipboard {
+  opacity: 1;
+}
+
+.md-typeset .md-clipboard:is(:focus, :hover) {
+  background: var(--beamz-api-control-hover);
+  border-color: var(--beamz-api-control-border);
+  color: var(--beamz-api-control-fg) !important;
+}
+
+.md-typeset .highlighttable {
+  border: 0;
+  border-collapse: collapse;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  table-layout: auto;
+}
+
+.md-typeset .highlighttable td {
+  border: 0;
+  padding: 0;
+}
+
+.md-typeset .highlighttable .linenos {
+  background: var(--beamz-muted);
+  border-right: 1px solid var(--beamz-border);
+  color: var(--beamz-muted-foreground);
+  width: 1px;
+}
+
+/* Tables use the same compact notebook treatment. */
+.md-typeset__table {
+  display: block;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+
+.md-typeset .md-typeset__scrollwrap {
+  margin: 12px 0 !important;
+  overflow-x: auto;
+}
+
+.md-typeset table:not([class]),
+.md-typeset .doc table:not(.highlighttable) {
+  border: 1px solid var(--beamz-api-border);
+  border-radius: var(--beamz-radius-md);
+  border-collapse: collapse;
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 12px 0;
+  max-width: 100%;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.md-typeset table:not([class]) :is(th, td),
+.md-typeset .doc table:not(.highlighttable) :is(th, td) {
+  border: 1px solid var(--beamz-api-border);
+  overflow-wrap: anywhere;
+  padding: 7px 10px;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.md-typeset table:not([class]) th,
+.md-typeset .doc table:not(.highlighttable) th {
+  background: var(--beamz-api-source-summary);
+  font-weight: 600;
+  text-align: left;
+}
+
+.md-typeset .doc table:not(.highlighttable) tbody tr {
+  background: var(--beamz-api-row);
+  transition: background-color 150ms ease;
+}
+
+.md-typeset .doc table:not(.highlighttable) tbody tr:nth-child(even) {
+  background: var(--beamz-api-row-alt);
+}
+
+.md-typeset .doc table:not(.highlighttable) tbody tr:is(:focus-within, :hover) {
+  background: var(--beamz-api-row-hover);
+}
+
+.md-typeset .doc-contents table:not(.highlighttable) :is(th, td):nth-child(1) {
+  width: 22%;
+}
+
+.md-typeset .doc-contents table:not(.highlighttable) :is(th, td):nth-child(2) {
+  width: 16%;
+}
+
+.md-typeset .doc-contents table:not(.highlighttable) :is(th, td):nth-child(3) {
+  width: 50%;
+}
+
+.md-typeset .doc-contents table:not(.highlighttable) :is(th, td):nth-child(4) {
+  width: 12%;
+}
+
+.md-typeset .doc-contents table:not(.highlighttable) {
+  table-layout: auto !important;
+}
+
+.md-typeset .doc-contents > :is(.md-typeset__scrollwrap, .md-typeset__table) {
+  margin: 6px 0 12px !important;
+  padding: 0 !important;
+}
+
+/* Keep parameter tables identical before and after instant navigation wraps them. */
+.md-typeset .doc-contents > table:not(.highlighttable),
+.md-typeset .doc-contents > .md-typeset__scrollwrap {
+  background: var(--beamz-api-row);
+  border: 1px solid var(--beamz-api-frame);
+  border-radius: var(--beamz-radius-lg);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.md-typeset .doc-contents > table:not(.highlighttable) {
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 6px 0 12px;
+}
+
+.md-typeset .doc-contents > .md-typeset__scrollwrap > .md-typeset__table {
+  margin: 0;
+  overflow: visible;
+}
+
+.md-typeset .doc-contents > .md-typeset__scrollwrap table:not(.highlighttable) {
+  border: 0;
+  border-collapse: separate;
+  border-radius: 0;
+  border-spacing: 0;
+  margin: 0;
+}
+
+.md-typeset .doc-contents > table:not(.highlighttable) tr > :first-child,
+.md-typeset .doc-contents > .md-typeset__scrollwrap table:not(.highlighttable) tr > :first-child {
+  border-left: 0;
+}
+
+.md-typeset .doc-contents > table:not(.highlighttable) thead th,
+.md-typeset .doc-contents > .md-typeset__scrollwrap table:not(.highlighttable) thead th {
+  border-top: 0;
+}
+
+.md-typeset .doc-contents > table:not(.highlighttable) tr > :last-child,
+.md-typeset .doc-contents > .md-typeset__scrollwrap table:not(.highlighttable) tr > :last-child {
+  border-right: 0;
+}
+
+.md-typeset .doc-contents > table:not(.highlighttable) tbody tr:last-child td,
+.md-typeset .doc-contents > .md-typeset__scrollwrap table:not(.highlighttable) tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* API reference: compact sections rather than Material-style indented trees. */
+.md-typeset .doc-contents {
+  border-left: 0;
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+}
+
+.md-typeset .md-typeset__table {
+  display: block !important;
+  overflow-x: auto;
+  padding: 0 !important;
+  width: 100% !important;
+}
+
+.md-typeset details.mkdocstrings-source {
+  background: var(--beamz-api-source);
+  border: 1px solid var(--beamz-api-border) !important;
+  border-radius: var(--beamz-radius-md);
+  margin: 12px 0;
+  overflow: hidden;
+  padding: 0 !important;
+}
+
+.md-typeset details.mkdocstrings-source > summary {
+  align-items: center;
+  background: var(--beamz-api-source-summary);
+  color: var(--beamz-api-muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  line-height: 16px;
+  list-style: none;
+  margin: 0;
+  min-height: 36px;
+  padding: 8px 12px;
+}
+
+.md-typeset details.mkdocstrings-source > summary::-webkit-details-marker {
+  display: none;
+}
+
+.md-typeset details.mkdocstrings-source > summary::marker {
+  content: "";
+  font-size: 0;
+}
+
+.md-typeset details.mkdocstrings-source > summary::before {
+  background: none;
+  content: none;
+  display: none;
+  mask: none;
+}
+
+.md-typeset details.mkdocstrings-source > summary::after {
+  background: none;
+  border-bottom: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  content: "";
+  height: 7px;
+  mask: none;
+  margin-left: auto;
+  position: static;
+  top: auto;
+  transform: rotate(-45deg);
+  transition: transform 150ms ease;
+  width: 7px;
+}
+
+.md-typeset details.mkdocstrings-source[open] > summary::after {
+  transform: rotate(45deg);
+}
+
+.md-typeset details.mkdocstrings-source > summary code {
+  background: var(--beamz-api-code);
+  border: 0;
+  border-radius: var(--beamz-radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  margin-left: 4px;
+  padding: 2px 6px;
+}
+
+.md-typeset details.mkdocstrings-source[open] > summary {
+  border-bottom: 1px solid var(--beamz-api-border);
+}
+
+.md-typeset .mkdocstrings-source > .highlight {
+  background: var(--beamz-api-code);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0 !important;
+}
+
+.md-typeset details.mkdocstrings-source > .highlight pre {
+  background: var(--beamz-api-code);
+}
+
+.md-typeset details.mkdocstrings-source .highlighttable .linenos {
+  background: var(--beamz-api-source-summary);
+  border-right-color: var(--beamz-api-border);
+  color: var(--beamz-api-muted);
+}
+
+.md-typeset .doc-object.doc-class,
+.md-typeset .doc-object.doc-function {
+  border-top: 1px solid var(--beamz-border);
+  margin-top: 12px;
+  padding-top: 16px;
+}
+
+.md-typeset .doc-object.doc-module > .doc-contents,
+.md-typeset .doc-object:first-child {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.md-typeset .doc-heading {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.md-typeset h2.doc-heading {
+  font-size: 20px;
+  line-height: 28px;
+}
+
+.md-typeset h3.doc-heading {
+  font-size: 16px;
+  line-height: 24px;
+  padding-top: 4px;
+}
+
+.md-typeset .doc-heading > code {
+  background: transparent;
+  color: var(--beamz-foreground);
+  font-family: var(--beamz-font-heading);
+  font-size: inherit;
+  font-weight: 600;
+  line-height: inherit;
+  overflow-wrap: anywhere;
+  padding: 0;
+  white-space: normal;
+}
+
+.md-typeset .doc-heading > code.highlight {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0;
+  box-shadow: none !important;
+  display: inline;
+  margin: 0 !important;
+  overflow: visible;
+  padding: 0 !important;
+  position: static;
+}
+
+.md-typeset .doc-class > h2.doc-heading::before,
+.md-typeset .doc-function > h2.doc-heading::before,
+.md-typeset .doc-function > h3.doc-heading::before,
+.md-typeset .doc-attribute > h3.doc-heading::before {
+  background: var(--beamz-api-kind-bg);
+  border: 1px solid var(--beamz-api-kind-border);
+  border-radius: var(--beamz-radius-sm);
+  color: var(--beamz-api-kind-fg);
+  font-family: var(--beamz-font-body);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  padding: 2px 7px;
+}
+
+.md-typeset .doc-class > h2.doc-heading::before {
+  content: "class";
+}
+
+.md-typeset .doc-function > :is(h2, h3).doc-heading::before {
+  content: "function";
+}
+
+.md-typeset .doc-class .doc-function > h3.doc-heading::before {
+  content: "method";
+}
+
+.md-typeset .doc-attribute > h3.doc-heading::before {
+  content: "attribute";
+}
+
+.md-typeset .doc-labels {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.md-typeset .doc-label {
+  background: var(--beamz-muted);
+  border: 1px solid var(--beamz-border);
+  border-radius: var(--beamz-radius-sm);
+  color: var(--beamz-muted-foreground);
+  font-size: 10px;
+  line-height: 14px;
+  padding: 1px 5px;
+}
+
+.md-typeset .doc-label code {
+  background: transparent;
+  font-size: inherit;
+  line-height: inherit;
+  padding: 0;
+}
+
+.md-typeset .doc-section-title {
+  color: var(--beamz-foreground);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.md-typeset .doc-contents :is(p, li) {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.md-typeset .doc-class > .doc-contents > p:not(:has(.doc-section-title)) {
+  max-width: 50rem;
+}
+
+.md-typeset .doc-contents > p:has(.doc-section-title) {
+  margin: 16px 0 6px;
+}
+
+.md-typeset .doc-contents > p:has(.doc-section-title) + :is(.md-typeset__scrollwrap, .md-typeset__table) {
+  margin-top: 6px;
+}
+
+.md-typeset .doc-contents p {
+  margin-bottom: 8px;
+}
+
+.md-typeset .doc-source-link {
+  color: var(--beamz-muted-foreground);
+  font-size: 12px;
+}
+
+/* Page and content actions. */
+.md-content__button {
+  align-items: center;
+  background: var(--beamz-api-control-bg);
+  border: 1px solid var(--beamz-api-control-border);
+  border-radius: var(--beamz-radius-md);
+  box-sizing: border-box;
+  color: var(--beamz-api-control-fg) !important;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  margin: 4px 0 0 8px;
+  padding: 6px;
+  text-decoration: none;
+  transition: background-color 150ms ease, border-color 150ms ease,
+    color 150ms ease;
+  width: 28px;
+}
+
+.md-content__button:is(:focus, :hover) {
+  background: var(--beamz-api-control-hover);
+  border-color: var(--beamz-api-control-border);
+  color: var(--beamz-api-control-fg) !important;
+}
+
+.md-typeset .md-button,
+.beamz-doc-button {
+  align-items: center;
+  border: 1px solid var(--beamz-border);
+  border-radius: var(--beamz-radius-sm);
+  color: var(--beamz-foreground) !important;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  padding: 6px 12px;
+  text-decoration: none;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.md-typeset .md-button:is(:focus, :hover),
+.beamz-doc-button:is(:focus, :hover) {
+  background: var(--beamz-muted);
+}
+
+.md-typeset .md-button--primary,
+.beamz-doc-button--primary {
+  background: var(--beamz-primary);
+  border-color: var(--beamz-primary);
+  color: var(--beamz-primary-foreground) !important;
+}
+
+.md-typeset .md-button--primary:is(:focus, :hover),
+.beamz-doc-button--primary:is(:focus, :hover) {
+  background: var(--beamz-primary);
+  border-color: var(--beamz-primary);
+}
+
+.beamz-doc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 32px !important;
+}
+
+.beamz-doc-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 12px 0 32px;
+}
+
+.beamz-doc-card {
+  border: 1px solid var(--beamz-border);
+  border-radius: var(--beamz-radius-md);
+  color: color-mix(in oklab, var(--beamz-foreground) 82%, transparent) !important;
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+  gap: 10px;
+  line-height: 20px;
+  padding: 16px;
+  text-decoration: none !important;
+  transition: border-color 150ms ease, box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+.beamz-doc-card:is(:focus, :hover) {
+  border-color: var(--beamz-ring);
+  box-shadow: 0 8px 24px var(--beamz-shadow);
+  transform: translateY(-1px);
+}
+
+.beamz-doc-card strong {
+  color: var(--beamz-foreground);
+  font-family: var(--beamz-font-heading);
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.beamz-doc-card__action {
+  color: var(--beamz-primary);
+  font-weight: 600;
+  margin-top: auto;
+}
+
+/* Shared site footer: matches the React notebook pages exactly. */
+.beamz-site-footer {
+  color: var(--beamz-foreground);
+  font-family: var(--beamz-font-body);
+  font-size: 16px;
+  line-height: 24px;
+  margin-top: 160px;
+  position: relative;
+}
+
+.beamz-site-footer__surface {
+  --footer-curve-height: 80px;
+  background: var(--beamz-footer-background);
+  bottom: 0;
+  inset-inline: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  top: calc(-1 * var(--footer-curve-height));
+  -webkit-mask-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 96' preserveAspectRatio='none'%3E%3Cpath d='M0 18C220 18 324 72 720 72S1220 18 1440 18V96H0Z'/%3E%3C/svg%3E"),
+    linear-gradient(var(--beamz-footer-background), var(--beamz-footer-background));
+  mask-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 96' preserveAspectRatio='none'%3E%3Cpath d='M0 18C220 18 324 72 720 72S1220 18 1440 18V96H0Z'/%3E%3C/svg%3E"),
+    linear-gradient(var(--beamz-footer-background), var(--beamz-footer-background));
+  -webkit-mask-position: center top, center bottom;
+  mask-position: center top, center bottom;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size:
+    100% var(--footer-curve-height),
+    100% calc(100% - var(--footer-curve-height));
+  mask-size:
+    100% var(--footer-curve-height),
+    100% calc(100% - var(--footer-curve-height));
+}
+
+.beamz-site-footer__grid {
+  background-image:
+    linear-gradient(var(--beamz-on-dark-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--beamz-on-dark-grid) 1px, transparent 1px);
+  background-size: 42px 42px;
+  inset: -100% -30%;
+  opacity: 0.8;
+  position: absolute;
+  transform: perspective(850px) rotateX(58deg) rotateZ(-7deg) skewX(-12deg);
+  transform-origin: center;
+}
+
+.beamz-site-footer__content {
+  color: var(--beamz-on-dark);
+  padding: 32px 0;
+  position: relative;
+}
+
+.beamz-site-footer__inner {
+  align-items: flex-start;
+  color: var(--beamz-on-dark-muted);
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+  gap: 12px;
+  line-height: 20px;
+  margin: 0 auto;
+  max-width: var(--beamz-site-max-width);
+  padding: 0 16px;
+  position: relative;
+  text-align: left;
+}
+
+.beamz-site-footer__nav {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+}
+
+.beamz-site-footer a {
+  color: inherit;
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+.beamz-site-footer a:is(:focus, :hover) {
+  color: var(--beamz-on-dark);
+}
+
+.beamz-site-footer__github {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.beamz-site-footer__github svg {
+  fill: none;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 16px;
+}
+
+.beamz-site-footer__separator {
+  color: var(--beamz-on-dark-subtle);
+}
+
+.beamz-site-footer p {
+  margin: 0;
+}
+
+.beamz-site-footer__credit-link {
+  text-decoration: underline !important;
+}
+
+/* Stable first paint and page transitions for the generated documentation. */
+html.beamz-docs-loading {
+  overflow: hidden;
+}
+
+html.beamz-docs-loading body {
+  opacity: 0;
+}
+
+html.beamz-docs-loading::before {
+  background: var(--beamz-background);
+  content: "";
+  inset: 0;
+  opacity: 1;
+  position: fixed;
+  transition: opacity var(--beamz-motion-page) ease-out;
+  z-index: 9998;
+}
+
+html.beamz-docs-loading::after {
+  animation: beamz-docs-spin 700ms linear infinite;
+  border: 2px solid var(--beamz-border);
+  border-radius: 50%;
+  border-top-color: var(--beamz-foreground);
+  content: "";
+  height: 24px;
+  left: calc(50% - 12px);
+  opacity: 1;
+  position: fixed;
+  top: calc(50% - 12px);
+  transition: opacity var(--beamz-motion-fast) ease-out;
+  width: 24px;
+  z-index: 9999;
+}
+
+html.beamz-docs-loading.beamz-docs-ready body {
+  opacity: 1;
+  transition: opacity var(--beamz-motion-page) ease-out;
+}
+
+html.beamz-docs-loading.beamz-docs-ready::before,
+html.beamz-docs-loading.beamz-docs-ready::after {
+  opacity: 0;
+}
+
+.md-content {
+  transition:
+    opacity var(--beamz-motion-page) ease-out,
+    transform var(--beamz-motion-page) ease-out;
+}
+
+html.beamz-docs-navigating .md-content {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(2px);
+}
+
+html.beamz-docs-navigating .md-main::after {
+  animation: beamz-docs-spin 700ms linear infinite;
+  border: 2px solid var(--beamz-border);
+  border-radius: 50%;
+  border-top-color: var(--beamz-foreground);
+  content: "";
+  height: 20px;
+  left: calc(50% - 10px);
+  position: fixed;
+  top: calc(50% - 10px);
+  width: 20px;
+  z-index: 20;
+}
+
+@keyframes beamz-docs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.beamz-docs-loading::before,
+  html.beamz-docs-loading::after,
+  html.beamz-docs-loading.beamz-docs-ready body,
+  .md-content {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 639px) {
+  .beamz-site-footer {
+    margin-top: 112px;
+  }
+
+  .beamz-site-footer__surface {
+    --footer-curve-height: 56px;
+  }
+}
+
+@media (max-width: 1219px) {
+  .md-main__inner.md-grid {
+    max-width: 800px;
+  }
+
+  .md-content__inner.md-typeset {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .md-path {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+@media (max-width: 767px) {
+  .md-main__inner.md-grid {
+    margin-top: 16px;
+    width: calc(100% - 24px);
+  }
+
+  .beamz-doc-grid {
+    grid-template-columns: 1fr;
+  }
+}

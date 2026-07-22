@@ -39,6 +39,11 @@
 - Optimization/autodiff utilities for gradient-based **inverse-design** with Jax.
 
 
+See [architecture and comparison](docs/architecture-comparison.md) for how BeamZ's
+design differs from Meep, FDTDX, Tidy3D, and Ansys Lumerical FDTD.
+
+
+
 ## Examples
 Try out notebooks from our growing **[example library](https://beamz.tech/examples/)**. It includes:
 

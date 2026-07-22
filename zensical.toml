@@ -1,0 +1,88 @@
+[project]
+site_name = "BEAMZ Documentation"
+site_description = "Open GPU-accelerated FDTD for photonic chip designers."
+site_author = "BEAMZ contributors"
+site_url = "https://www.beamz.tech/docs/"
+docs_dir = "docs"
+site_dir = "site"
+repo_url = "https://github.com/quentinwach/beamz"
+repo_name = "quentinwach/beamz"
+edit_uri = "edit/main/docs/"
+copyright = "Copyright &copy; 2026 BEAMZ contributors"
+extra_css = [
+  "stylesheets/fonts.css",
+  "stylesheets/design-shared.css",
+  "stylesheets/extra.css",
+  "stylesheets/light-mode.css",
+  "stylesheets/dark-mode.css",
+]
+extra_javascript = [
+  "javascripts/mathjax-config.js",
+  { path = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js", defer = true },
+  "javascripts/header.js",
+  { path = "javascripts/mathjax-navigation.js", defer = true },
+]
+nav = [
+  { "Guides" = [
+    { "Getting started" = "getting-started.md" },
+    { "Mission" = "mission.md" },
+    { "Architecture and comparison" = "architecture-comparison.md" },
+    { "Philosophy" = "philosophy.md" },
+    { "Performance and convergence" = "perf-and-conv.md" },
+  ] },
+  { "API Reference" = [
+    { "beamz" = "api/reference/beamz.md" },
+    { "Analysis" = "api/reference/beamz.analysis.md" },
+    { "Design" = "api/reference/beamz.design.md" },
+    { "Optimization" = "api/reference/beamz.optimization.md" },
+    { "Simulation" = "api/reference/beamz.simulation.md" },
+    { "Monitors" = "api/reference/beamz.devices.monitors.md" },
+    { "Sources" = "api/reference/beamz.devices.sources.md" },
+  ] },
+]
+
+[project.extra]
+homepage = "/"
+
+[project.theme]
+variant = "modern"
+custom_dir = "overrides"
+logo = "assets/beamz_logo_black.png"
+favicon = "assets/beamz_shield6.png"
+font = false
+features = [
+  "content.action.view",
+  "content.code.copy",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.instant.progress",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "custom"
+accent = "custom"
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["."]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "numpy"
+members_order = "__all__"
+show_root_heading = false
+show_root_toc_entry = false
+show_source = true

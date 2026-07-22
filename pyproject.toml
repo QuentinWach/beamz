@@ -53,8 +53,9 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "myst-parser>=2.0.0",
-    "mkdocs>=1.5.0",
-    "mkdocs-material>=9.0.0",
+    "zensical>=0.0.15",
+    "griffe>=1.0",
+    "mkdocstrings[python]>=0.26.0",
     "pyright>=1.1.400",
     "ruff>=0.14.0",
     "vulture>=2.14",
@@ -73,6 +74,11 @@ test = [ # Adding a 'test' extra that includes pytest and pytest-cov for conveni
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "pytest-randomly>=3.0.0",
+]
+docs = [
+    "griffe>=1.0",
+    "zensical>=0.0.15",
+    "mkdocstrings[python]>=0.26.0",
 ]
 
 

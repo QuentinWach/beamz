@@ -1,0 +1,85 @@
+/* BEAMZ design system — dark color tokens. */
+.dark,
+[data-theme="dark"],
+html[data-theme="dark"] body,
+[data-md-color-scheme="slate"] {
+  color-scheme: dark;
+
+  --beamz-background: #0b1020;
+  --beamz-foreground: #f4f4f5;
+  --beamz-card: #0e1523;
+  --beamz-card-foreground: #f4f4f5;
+  --beamz-popover: #0e1523;
+  --beamz-popover-foreground: #f4f4f5;
+  --beamz-primary: #f4f4f5;
+  --beamz-primary-foreground: #0b1020;
+  --beamz-secondary: #151f2e;
+  --beamz-secondary-foreground: #f4f4f5;
+  --beamz-muted: #172033;
+  --beamz-muted-translucent: rgb(23 32 51 / 78%);
+  --beamz-muted-foreground: #aeb8c8;
+  --beamz-accent: #172033;
+  --beamz-accent-foreground: #f4f4f5;
+  --beamz-border: #273244;
+  --beamz-border-strong: #44536a;
+  --beamz-border-translucent: rgb(39 50 68 / 75%);
+  --beamz-input: #273244;
+  --beamz-ring: #64748b;
+  --beamz-code-background: #151b28;
+  --beamz-link: #93c5fd;
+  --beamz-link-hover: #bddfff;
+  --beamz-shadow: rgb(0 0 0 / 28%);
+  --beamz-header-background: rgb(11 16 32 / 95%);
+  --beamz-inset-highlight: rgb(255 255 255 / 8%);
+  --beamz-logo-filter: none;
+  --beamz-theme-moon-display: none;
+  --beamz-theme-sun-display: block;
+
+  --beamz-destructive: oklch(0.704 0.191 22.216);
+  --beamz-destructive-foreground: #fff;
+  --beamz-chart-1: oklch(0.488 0.243 264.376);
+  --beamz-chart-2: oklch(0.696 0.17 162.48);
+  --beamz-chart-3: oklch(0.769 0.188 70.08);
+  --beamz-chart-4: oklch(0.627 0.265 303.9);
+  --beamz-chart-5: oklch(0.645 0.246 16.439);
+
+  --beamz-sidebar: #0e1523;
+  --beamz-sidebar-foreground: #f4f4f5;
+  --beamz-sidebar-primary: #f4f4f5;
+  --beamz-sidebar-primary-foreground: #0b1020;
+  --beamz-sidebar-accent: #172033;
+  --beamz-sidebar-accent-foreground: #f4f4f5;
+  --beamz-sidebar-border: #273244;
+  --beamz-sidebar-ring: #64748b;
+
+  --beamz-api-border: var(--beamz-border);
+  --beamz-api-frame: var(--beamz-border-strong);
+  --beamz-api-code: var(--beamz-code-background);
+  --beamz-api-row: var(--beamz-background);
+  --beamz-api-row-alt: #0e1523;
+  --beamz-api-row-hover: #172033;
+  --beamz-api-source: #0e1523;
+  --beamz-api-source-summary: #151f2e;
+  --beamz-api-muted: var(--beamz-muted-foreground);
+  --beamz-api-kind-bg: #143a5b;
+  --beamz-api-kind-border: #2c6a96;
+  --beamz-api-kind-fg: #bddfff;
+  --beamz-api-control-bg: #151f2e;
+  --beamz-api-control-border: #2c6a96;
+  --beamz-api-control-fg: #bddfff;
+  --beamz-api-control-hover: #1b456a;
+
+  /* Zensical theme adapter. */
+  --md-primary-fg-color: var(--beamz-background);
+  --md-primary-fg-color--light: var(--beamz-muted);
+  --md-primary-fg-color--dark: #070b14;
+  --md-accent-fg-color: var(--beamz-link-hover);
+  --md-typeset-a-color: var(--beamz-link);
+  --md-default-bg-color: var(--beamz-background);
+  --md-default-fg-color: var(--beamz-foreground);
+  --md-default-fg-color--light: var(--beamz-muted-foreground);
+  --md-default-fg-color--lighter: #52525b;
+  --md-default-fg-color--lightest: var(--beamz-border);
+  --md-code-bg-color: var(--beamz-code-background);
+  --md-code-fg-color: #e4e4e7;
+}

@@ -32,6 +32,28 @@ jobs:
       - name: Vulture
         run: uv run --no-active --python 3.11 vulture beamz vulture_allowlist.py --min-confidence 60
 
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install 3.11
+      - name: Install documentation dependencies
+        run: uv sync --python 3.11 --extra docs
+      - name: Check generated API reference
+        run: uv run --no-active --python 3.11 python scripts/update_api_docs.py --check
+      - name: Build documentation strictly
+        run: uv run --no-active --python 3.11 zensical build --clean
+      - uses: actions/upload-artifact@v4
+        with:
+          name: documentation-site
+          path: site/
+
   tests:
     name: Tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
@@ -106,15 +128,17 @@ jobs:
   refactor-gate:
     name: required / refactor-gate
     if: always()
-    needs: [quality, tests, package]
+    needs: [quality, docs, tests, package]
     runs-on: ubuntu-latest
     steps:
       - name: Require every refactor check
         env:
           QUALITY: ${{ needs.quality.result }}
+          DOCS: ${{ needs.docs.result }}
           TESTS: ${{ needs.tests.result }}
           PACKAGE: ${{ needs.package.result }}
         run: |
           test "$QUALITY" = success
+          test "$DOCS" = success
           test "$TESTS" = success
           test "$PACKAGE" = success

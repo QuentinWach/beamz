@@ -44,7 +44,8 @@ use the environment described in [`docker/runpod/README.md`](docker/runpod/READM
 ## Make a change
 
 Keep changes focused and include tests for new behavior or regressions. Update
-the relevant package README and examples when behavior or interfaces change.
+the relevant package README, examples, and API documentation when behavior or
+interfaces change.
 
 Manage dependencies with uv so `pyproject.toml` and `uv.lock` stay synchronized:
 
@@ -78,21 +79,23 @@ Before opening a pull request, run:
 ```bash
 make format       # Apply Ruff formatting and safe lint fixes
 make audit        # Lint, type-check, find dead code, and run tests
+make docs-check   # Verify generated API docs and strict MkDocs output
 make build        # Build the wheel and source distribution
 ```
 
-Use `make help` to see individual checks. CI repeats the quality checks, builds
-the package, and runs the test suite on every supported Python version.
+Use `make help` to see individual checks. CI repeats the quality and
+documentation checks, builds the package, and runs the test suite on every
+supported Python version.
 
 ## Respect the architecture and public API
 
 Do not add, remove, rename, or relocate a public export or top-level package without an
 approved architecture change.
 
-An approved public API change must update the existing API freeze, architecture
-contract tests, compatibility paths, and the relevant package README in the same
-pull request. Internal refactors must preserve existing import paths through a
-compatibility facade.
+An approved public API change must update the existing API freeze, generated API docs,
+architecture contract tests, compatibility paths, and the relevant package
+README in the same pull request. Internal refactors must preserve existing
+import paths through a compatibility facade.
 
 ## Open a pull request
 
@@ -100,7 +103,7 @@ Before submitting, confirm that:
 
 - The change is focused and its behavior is explained.
 - New behavior and bug fixes have tests.
-- Formatting, audit, and build checks pass.
+- Formatting, audit, documentation, and build checks pass.
 - Dependency changes include the updated `uv.lock`.
 - Public API changes have prior approval and the required compatibility work.
 - Material AI assistance is disclosed as described above.
@@ -119,7 +122,7 @@ beamz/          Main package
   optimization/ Topology and inverse-design tools
 tests/          Test suite and architecture contracts
 examples/       Scripts and notebooks
-docs/           Documentation work area
+docs/           Documentation sources and generated API references
 ```
 
 For project usage and design context, start with the [project README](README.md)

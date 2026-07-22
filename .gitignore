@@ -70,6 +70,7 @@ htmlcov/
 /tmp/
 /wip/
 /benchmarks/results/
+/site/
 
 # Local scratch files
 NOTES.md
@@ -86,3 +87,4 @@ MARKETING_2.md
 
 # Generated reference data
 /beamz/devices/reference/
+/docs/api/reference/api-reference.json

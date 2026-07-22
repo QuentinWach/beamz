@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+  <script>
+    (() => {
+      const root = document.documentElement;
+      let savedTheme = null;
+
+      try {
+        savedTheme = localStorage.getItem("beamz-theme");
+      } catch (_) {
+        // Storage can be unavailable in privacy-restricted contexts.
+      }
+
+      root.dataset.theme = savedTheme === "dark" ? "dark" : "light";
+      root.classList.add("beamz-docs-loading");
+
+      let revealed = false;
+      const reveal = () => {
+        if (revealed) return;
+        revealed = true;
+        root.classList.add("beamz-docs-ready");
+        window.setTimeout(() => {
+          root.classList.remove("beamz-docs-loading", "beamz-docs-ready");
+        }, 280);
+      };
+
+      const revealWhenReady = async () => {
+        try {
+          if (document.fonts?.ready) await document.fonts.ready;
+        } catch (_) {
+          // A failed font should not block the documentation.
+        }
+
+        requestAnimationFrame(() => requestAnimationFrame(reveal));
+      };
+
+      if (document.readyState === "complete") {
+        revealWhenReady();
+      } else {
+        window.addEventListener("load", revealWhenReady, { once: true });
+      }
+
+      // Never leave the page hidden because of a slow or unavailable asset.
+      window.setTimeout(reveal, 3000);
+    })();
+  </script>
+{% endblock %}
