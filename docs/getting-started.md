@@ -75,24 +75,3 @@ simulation = bz.Simulation(
 results = simulation.run()
 ez_frames = results.monitor("field_frames").fields["Ez"]
 ```
-
-`run()` is the normal execution method: it covers the complete time grid and
-returns detached, immutable `SimulationResults`. Compilation happens lazily, so
-there is no separate compilation step for ordinary use.
-
-Use `advance()` only when you need the runtime state for chunking, checkpointing,
-or branching:
-
-```python
-first = simulation.advance(num_steps=100)
-second = simulation.advance(state=first.state, num_steps=100)
-
-# first.results and second.results are durable analysis values.
-# first.state remains reusable because continuation preserves inputs by default.
-alternative = simulation.advance(state=first.state, num_steps=50)
-```
-
-For the lower-memory continuation path, `donate_state=True` explicitly transfers
-the input buffers to JAX. Never access that input state after the call. `step()` is
-the state-only, one-timestep primitive for debugging; it is not needed for normal
-simulations.
