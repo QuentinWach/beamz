@@ -11,7 +11,7 @@ authors = [
 ]
 description = "Open GPU-accelerated FDTD for photonic chip designers."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 license = { file = "LICENSE" }
 keywords = ["computational physics", "electromagnetics", "photonics", "inverse design", "simulation"]
 classifiers = [
@@ -23,20 +23,17 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
     "numpy>=1.24.4",
-    "anywidget>=0.9.18",
-    "gdspy>=1.6.0",
     "scipy>=1.10.1",
     "shapely>=2.0.6",
     "jax>=0.4.0",
-    "gdsfactory",
-    "jaxlib>=0.4.0",
     "optax>=0.1.0",
-    "micromode>=0.1.0a5",
-    "traitlets>=5.14.0",
+    "micromode>=0.1.0a6",
     "matplotlib>=3.8.0",
     "scikit-image>=0.21.0",
     "xarray>=2024.0.0",
@@ -48,24 +45,29 @@ Repository = "https://github.com/beamzorg/beamz"
 # Bug Tracker, Documentation etc. can be added here
 
 [project.optional-dependencies]
+gds = [
+    "gdsfactory>=8.0; python_version < '3.14'",
+    "gdsfactory>=9.0; python_version >= '3.14'",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "myst-parser>=2.0.0",
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.0.0",
+    "pyright>=1.1.400",
     "ruff>=0.14.0",
     "vulture>=2.14",
 ]
 lint = [
+    "pyright>=1.1.400",
     "ruff>=0.14.0",
     "vulture>=2.14",
 ]
-gpu = [
-    "torch>=2.6.0",
-]
 ubc = [
-    "ubcpdk==2.7.0",
+    "gdsfactory>=8.0; python_version < '3.14'",
+    "gdsfactory>=9.0; python_version >= '3.14'",
+    "ubcpdk==2.7.0; python_version < '3.14'",
 ]
 test = [ # Adding a 'test' extra that includes pytest and pytest-cov for convenience
     "pytest>=7.0.0",
@@ -80,13 +82,54 @@ target-version = "py310"
 extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I"]
+select = ["E4", "E7", "E9", "F", "I", "B", "C90", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
 "beamz/**/__init__.py" = ["F401"]
+"vulture_allowlist.py" = ["B018", "F821"]
+
+[tool.pyright]
+include = ["beamz"]
+typeCheckingMode = "basic"
+pythonVersion = "3.10"
+reportMissingTypeStubs = false
+strict = [
+    "beamz/devices/ports.py",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 35
+
+[tool.hatch.build]
+ignore-vcs = true
+exclude = [
+    "**/.cache",
+    "**/.beamz_cache",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "**/.mypy_cache",
+    "**/.ipynb_checkpoints",
+    "**/.tox",
+    "**/.venv",
+    "**/*.egg-info",
+    "**/*.py[cod]",
+    "**/.coverage*",
+    "**/.DS_Store",
+    "**/coverage.xml",
+    "**/htmlcov",
+    "**/site",
+    "**/build",
+    "**/dist",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["beamz"]
 include = [
-    "beamz/visual/scene/static/*",
+    "beamz/py.typed",
+]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "beamz",
 ]

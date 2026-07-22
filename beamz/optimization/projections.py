@@ -1,6 +1,7 @@
 """Projection methods for topology optimization densities."""
 
 from functools import partial
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -20,8 +21,7 @@ def validate_projection_options(
 
     if ssp_smoothing_radius <= 0:
         raise ValueError(
-            "ssp_smoothing_radius must be positive, "
-            f"got {ssp_smoothing_radius!r}."
+            f"ssp_smoothing_radius must be positive, got {ssp_smoothing_radius!r}."
         )
 
 
@@ -40,9 +40,7 @@ def smoothed_heaviside(value, beta, eta):
     return jnp.where(beta_is_inf, hard_threshold, projected)
 
 
-def subpixel_smoothed_projection(
-    value, beta, eta, ssp_smoothing_radius: float = 0.55
-):
+def subpixel_smoothed_projection(value, beta, eta, ssp_smoothing_radius: float = 0.55):
     """Apply Hammond SSP1 projection to a smooth 2D density field.
 
     The input should already be smooth or filtered. The smoothing radius is in
@@ -51,8 +49,7 @@ def subpixel_smoothed_projection(
     value = jnp.asarray(value)
     if value.ndim != 2:
         raise ValueError(
-            "subpixel_smoothed_projection expects a 2D array, "
-            f"got shape {value.shape}."
+            f"subpixel_smoothed_projection expects a 2D array, got shape {value.shape}."
         )
     validate_projection_options("ssp", ssp_smoothing_radius)
     return _subpixel_smoothed_projection_jit(
@@ -61,12 +58,10 @@ def subpixel_smoothed_projection(
 
 
 @partial(jax.jit, static_argnames=["ssp_smoothing_radius"])
-def _subpixel_smoothed_projection_jit(
-    value, beta, eta, ssp_smoothing_radius: float
-):
+def _subpixel_smoothed_projection_jit(value, beta, eta, ssp_smoothing_radius: float):
     projected = smoothed_heaviside(value, beta, eta)
 
-    grad_y, grad_x = jnp.gradient(value)
+    grad_y, grad_x = cast(tuple[jax.Array, jax.Array], jnp.gradient(value))
     grad_norm_squared = grad_y**2 + grad_x**2
     nonzero_norm = jnp.abs(grad_norm_squared) > 1e-12
 
@@ -76,8 +71,9 @@ def _subpixel_smoothed_projection_jit(
     distance = (eta - value) / grad_norm_eff
     needs_smoothing = nonzero_norm & (jnp.abs(distance) < ssp_smoothing_radius)
 
-    relative_distance = jnp.where(
-        needs_smoothing, distance / ssp_smoothing_radius, 0.0
+    relative_distance = cast(
+        jax.Array,
+        jnp.where(needs_smoothing, distance / ssp_smoothing_radius, 0.0),
     )
     fill_fraction = jnp.where(
         needs_smoothing,

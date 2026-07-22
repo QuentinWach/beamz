@@ -15,16 +15,13 @@ import numpy as np
 import pytest
 
 from beamz import (
-    EPS_0,
     LIGHT_SPEED,
-    MU_0,
     PML,
     Circle,
     Design,
+    FieldRecorder,
     GaussianSource,
     Material,
-    ModeSource,
-    Monitor,
     Rectangle,
     Simulation,
     calc_optimal_fdtd_params,
@@ -33,10 +30,7 @@ from beamz import (
 )
 from tests.utils import (
     TEST_WAVELENGTH,
-    analytical_fresnel_r,
-    analytical_fresnel_t,
     compute_field_energy,
-    compute_field_error_L2,
     fit_exponential_decay,
     slab_waveguide_neff_te,
 )
@@ -70,134 +64,6 @@ class TestFresnelQuantitative:
         # Integrate over y and x
         total_flux = np.sum(Sx) * dx * dx
         return total_flux
-
-    @pytest.mark.parametrize("n2", [1.5, 2.0])
-    def test_fresnel_transmission_quantitative(self, n2):
-        """Measure transmission coefficient T and compare to analytical.
-
-        Target: <15% relative error
-
-        Method:
-        1. Run simulation with interface - measure transmitted power
-        2. Run reference simulation without interface - measure total power
-        3. Compute T = P_trans / P_ref
-        4. Compare to analytical T
-        """
-        wavelength = TEST_WAVELENGTH
-        n1 = 1.0
-
-        domain_width = 25 * wavelength
-        domain_height = 10 * wavelength
-        interface_x = domain_width * 0.5
-
-        dx, dt = calc_optimal_fdtd_params(
-            wavelength, n2, dims=2, safety_factor=0.95, points_per_wavelength=12
-        )
-
-        frequency = LIGHT_SPEED / wavelength
-        t_total = 30 / frequency
-        time = np.arange(0, t_total, dt)
-
-        signal = ramped_cosine(
-            time,
-            amplitude=1.0,
-            frequency=frequency,
-            ramp_duration=2 / frequency,
-            t_max=t_total * 0.2,
-        )
-
-        # --- Reference simulation: no interface (all vacuum) ---
-        design_ref = Design(
-            width=domain_width,
-            height=domain_height,
-            material=Material(permittivity=n1**2),
-        )
-
-        source_ref = GaussianSource(
-            position=(domain_width * 0.15, domain_height / 2),
-            width=wavelength * 1.5,
-            signal=signal.copy(),
-        )
-
-        # Monitor at same position where we'll measure transmission
-        trans_x = domain_width * 0.7
-        mon_ref = Monitor(
-            start=(trans_x, wavelength),
-            end=(trans_x, domain_height - wavelength),
-            accumulate_power=True,
-        )
-
-        sim_ref = Simulation(
-            design=design_ref,
-            sources=[source_ref],
-            monitors=[mon_ref],
-            boundaries=[PML(thickness=1.5 * wavelength)],
-            time=time,
-            resolution=dx,
-        )
-
-        sim_ref.run()
-        P_ref_peak = max(mon_ref.power_history) if mon_ref.power_history else 1e-30
-
-        # --- Simulation with interface ---
-        design_full = Design(
-            width=domain_width,
-            height=domain_height,
-            material=Material(permittivity=n1**2),
-        )
-        design_full += Rectangle(
-            position=(interface_x + domain_width / 4, domain_height / 2),
-            width=domain_width / 2,
-            height=domain_height,
-            material=Material(permittivity=n2**2),
-        )
-
-        source_full = GaussianSource(
-            position=(domain_width * 0.15, domain_height / 2),
-            width=wavelength * 1.5,
-            signal=signal.copy(),
-        )
-
-        mon_trans = Monitor(
-            start=(trans_x, wavelength),
-            end=(trans_x, domain_height - wavelength),
-            accumulate_power=True,
-        )
-
-        sim_full = Simulation(
-            design=design_full,
-            sources=[source_full],
-            monitors=[mon_trans],
-            boundaries=[PML(thickness=1.5 * wavelength)],
-            time=time,
-            resolution=dx,
-        )
-
-        sim_full.run()
-        P_trans_peak = max(mon_trans.power_history) if mon_trans.power_history else 0
-
-        # Compute transmission coefficient
-        T_measured = P_trans_peak / P_ref_peak if P_ref_peak > 1e-30 else 0
-
-        # Analytical transmission
-        T_analytical = analytical_fresnel_t(n1, n2)
-
-        # Relative error
-        T_error = (
-            abs(T_measured - T_analytical) / T_analytical
-            if T_analytical > 0
-            else abs(T_measured)
-        )
-
-        # Checks
-        assert T_measured > 0.5, f"T={T_measured:.3f} too low for n2={n2}"
-        assert T_measured < 1.1, f"T={T_measured:.3f} > 1 (energy not conserved)"
-
-        # Quantitative: within 15% relative error
-        assert T_error < 0.15, (
-            f"T_measured={T_measured:.4f} vs T_analytical={T_analytical:.4f}, "
-            f"relative error={T_error * 100:.1f}% > 15% for n2={n2}"
-        )
 
     def test_fresnel_energy_decreases_after_interface(self):
         """Verify field energy in transmitted region is less than incident.
@@ -254,10 +120,11 @@ class TestFresnelQuantitative:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
         # Get field snapshot after wave has passed through interface
-        final_field = result["fields"]["Ez"][-1]
+        final_field = result.monitor("fields").fields["Ez"][-1]
         ny, nx = final_field.shape
 
         # Compute energy in vacuum region (left) vs dielectric region (right)
@@ -312,10 +179,6 @@ class TestModeSourceAccuracy:
             assert n_clad < neff < n_core, (
                 f"neff={neff:.4f} outside valid range ({n_clad}, {n_core})"
             )
-
-            # V-number determines approximate number of modes
-            # V = (pi * d / lambda) * sqrt(n_core^2 - n_clad^2)
-            V = (np.pi * core_width / wavelength) * np.sqrt(n_core**2 - n_clad**2)
 
             # Note: V < pi/2 is single-mode for symmetric waveguide (TE0 always exists)
             # We just verify the fundamental mode is guided
@@ -407,10 +270,11 @@ class TestModeSourceAccuracy:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=25)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 25)))
+        result = sim.run()
 
         # Check field propagates through waveguide
-        final_field = result["fields"]["Ez"][-1]
+        final_field = result.monitor("fields").fields["Ez"][-1]
         ny, nx = final_field.shape
 
         # Core region should have significant field
@@ -489,12 +353,19 @@ class TestGridConvergenceQuantitative:
                 resolution=dx,
             )
 
-            result = sim.run(
-                save_fields=["Ez"], field_subsample=max(1, len(time) // 20)
+            sim = sim.updated_copy(
+                monitors=(
+                    *sim.monitors,
+                    FieldRecorder(("Ez",), max(1, len(time) // 20)),
+                )
             )
+            result = sim.run()
 
             # Compute peak field energy across all snapshots
-            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+            energies = [
+                compute_field_energy(Ez, dx)
+                for Ez in result.monitor("fields").fields["Ez"]
+            ]
             return max(energies), dx
 
         # Run at different resolutions
@@ -604,9 +475,13 @@ class TestGridConvergenceQuantitative:
                 resolution=dx,
             )
 
-            result = sim.run(save_fields=["Ez"], field_subsample=20)
+            sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+            result = sim.run()
 
-            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+            energies = [
+                compute_field_energy(Ez, dx)
+                for Ez in result.monitor("fields").fields["Ez"]
+            ]
             peak_energies.append(max(energies))
 
         # All simulations should give stable, finite results
@@ -691,10 +566,11 @@ class TestMieScattering2D:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
         # Check for scattering: field should exist in shadow region
-        final_field = result["fields"]["Ez"][-1]
+        final_field = result.monitor("fields").fields["Ez"][-1]
         ny, nx = final_field.shape
 
         # Shadow region: behind the cylinder
@@ -702,10 +578,6 @@ class TestMieScattering2D:
 
         # Should have some field due to diffraction around cylinder
         shadow_max = np.max(np.abs(shadow_region))
-
-        # Forward region: in front of cylinder
-        forward_region = final_field[ny // 2 - 10 : ny // 2 + 10, : nx // 4]
-        forward_max = np.max(np.abs(forward_region))
 
         # Scattering creates field redistribution
         assert shadow_max > 0, "Should have field in shadow region from diffraction"
@@ -781,7 +653,10 @@ class TestMieScattering2D:
             time=time,
             resolution=dx,
         )
-        result_ref = sim_ref.run(save_fields=["Ez"], field_subsample=30)
+        sim_ref = sim_ref.updated_copy(
+            monitors=(*sim_ref.monitors, FieldRecorder(("Ez",), 30))
+        )
+        result_ref = sim_ref.run()
 
         # Run with scatterer
         sim_full = Simulation(
@@ -791,7 +666,10 @@ class TestMieScattering2D:
             time=time,
             resolution=dx,
         )
-        result_full = sim_full.run(save_fields=["Ez"], field_subsample=30)
+        sim_full = sim_full.updated_copy(
+            monitors=(*sim_full.monitors, FieldRecorder(("Ez",), 30))
+        )
+        result_full = sim_full.run()
 
         # Compute scattered field = total - incident
         Ez_total = result_full["fields"]["Ez"][-1]
@@ -883,26 +761,21 @@ class TestFabryPerotQuantitative:
             signal=signal,
         )
 
-        # Monitor at center to track field
-        mon_center = Monitor(
-            start=(domain_width / 2, domain_height / 2 - wavelength / 4),
-            end=(domain_width / 2, domain_height / 2 + wavelength / 4),
-            accumulate_power=True,
-        )
-
         sim = Simulation(
             design=design,
             sources=[source],
-            monitors=[mon_center],
             boundaries=[PML(thickness=1.5 * wavelength)],
             time=time,
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=5)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 5)))
+        result = sim.run()
 
         # Get field energy over time
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         # Find peak (after ramp-up)
         peak_idx = np.argmax(energies)
@@ -971,11 +844,15 @@ class TestFabryPerotQuantitative:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=3)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 3)))
+        result = sim.run()
 
         # Compute energy envelope
         energies = np.array(
-            [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+            [
+                compute_field_energy(Ez, dx)
+                for Ez in result.monitor("fields").fields["Ez"]
+            ]
         )
 
         # Time array for energy samples
@@ -1058,9 +935,12 @@ class TestEnergyConservationQuantitative:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=10)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+        result = sim.run()
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         # After source stops (~25% of simulation), energy should only decay
         source_stop_idx = int(len(energies) * 0.3)
@@ -1116,9 +996,12 @@ class TestEnergyConservationQuantitative:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=15)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 15)))
+        result = sim.run()
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         peak_energy = max(energies)
         final_energy = energies[-1]
@@ -1150,7 +1033,6 @@ class TestPhysics3D:
 
         Physics: Wave should propagate without numerical blow-up.
         """
-        from beamz import Sphere
 
         wavelength = TEST_WAVELENGTH
         n_medium = 1.0
@@ -1197,16 +1079,19 @@ class TestPhysics3D:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=30)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 30)))
+        result = sim.run()
 
         # Check for stability: all values should be finite
-        for field_snapshot in result["fields"]["Ez"]:
+        for field_snapshot in result.monitor("fields").fields["Ez"]:
             assert np.all(np.isfinite(field_snapshot)), (
                 "3D simulation produced NaN/Inf - numerical instability"
             )
 
         # Check field has reasonable magnitude
-        max_field = max(np.max(np.abs(Ez)) for Ez in result["fields"]["Ez"])
+        max_field = max(
+            np.max(np.abs(Ez)) for Ez in result.monitor("fields").fields["Ez"]
+        )
         assert max_field > 0, "Should have non-zero field"
         assert max_field < 1e6, f"Max field {max_field:.2e} is unreasonably large"
 
@@ -1282,7 +1167,10 @@ class TestPhysics3D:
             time=time,
             resolution=dx,
         )
-        result_ref = sim_ref.run(save_fields=["Ez"], field_subsample=40)
+        sim_ref = sim_ref.updated_copy(
+            monitors=(*sim_ref.monitors, FieldRecorder(("Ez",), 40))
+        )
+        result_ref = sim_ref.run()
 
         # Run with sphere
         sim_full = Simulation(
@@ -1292,14 +1180,19 @@ class TestPhysics3D:
             time=time,
             resolution=dx,
         )
-        result_full = sim_full.run(save_fields=["Ez"], field_subsample=40)
+        sim_full = sim_full.updated_copy(
+            monitors=(*sim_full.monitors, FieldRecorder(("Ez",), 40))
+        )
+        result_full = sim_full.run()
 
         # Compare final snapshots
         Ez_ref = result_ref["fields"]["Ez"][-1]
         Ez_full = result_full["fields"]["Ez"][-1]
 
         # Scattered field (total - incident)
-        min_shape = tuple(min(a, b) for a, b in zip(Ez_ref.shape, Ez_full.shape))
+        min_shape = tuple(
+            min(a, b) for a, b in zip(Ez_ref.shape, Ez_full.shape, strict=True)
+        )
         Ez_scat = (
             Ez_full[: min_shape[0], : min_shape[1]]
             - Ez_ref[: min_shape[0], : min_shape[1]]

@@ -9,12 +9,14 @@ from beamz import (
     Design,
     Material,
     ModeSource,
+    ModeSpec,
     Rectangle,
+    SampledSignal,
     Simulation,
+    calc_optimal_fdtd_params,
     ramped_cosine,
 )
 from beamz.const import LIGHT_SPEED, µm
-from beamz.visual.helpers import calc_optimal_fdtd_params
 
 WL = 1.55 * µm
 N_AIR = 1.0
@@ -77,21 +79,13 @@ def main() -> None:
     raster_s = time.perf_counter() - t0
 
     source = ModeSource(
-        grid=grid,
         center=(3.25 * µm, 3.25 * µm, 2.11 * µm),
-        width=3.5 * µm,
-        height=0.8 * µm,
-        wavelength=WL,
-        pol="tm",
-        signal=signal,
-        direction="+x",
+        size=(0.0, 3.5 * µm, 0.8 * µm),
+        source_time=SampledSignal(signal, dt=dt, freq0=LIGHT_SPEED / WL),
+        direction="+",
+        mode_spec=ModeSpec(polarization="tm"),
     )
 
-    t0 = time.perf_counter()
-    source.initialize(grid.permittivity, dx)
-    source_s = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
     sim = Simulation(
         design=design,
         sources=[source],
@@ -100,20 +94,19 @@ def main() -> None:
         time=time_steps,
         resolution=dx,
     )
-    setup_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    sim.run_compiled(
-        num_steps=NUM_STEPS,
-        progress=False,
-        record_fields=[],
-        store_snapshots=False,
-    )
+    source = sim.sources[0]
+    modes = source.solve_modes(sim, freqs=[LIGHT_SPEED / WL])
+    preview_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    sim.run(progress=False)
     run_s = max(time.perf_counter() - t0, 1e-12)
 
     shape = tuple(int(v) for v in np.asarray(grid.permittivity).shape)
     cells = int(np.prod(shape))
-    neff = float(np.real(np.asarray(source._neff)))
+    neff = float(np.real(np.asarray(modes.neffs[0, source.mode_spec.mode_index])))
     sim_time_fs = float((NUM_STEPS - 1) * dt * 1e15)
 
     print("3D waveguide ModeSource benchmark")
@@ -122,8 +115,8 @@ def main() -> None:
     print(f"mode_neff={neff:.6f}, simulated_time={sim_time_fs:.2f} fs")
     print(
         "timing: "
-        f"raster={raster_s:.3f}s, mode_source={source_s:.3f}s, "
-        f"setup={setup_s:.3f}s, run={run_s:.3f}s"
+        f"raster={raster_s:.3f}s, mode_preview={preview_s:.3f}s, "
+        f"run={run_s:.3f}s"
     )
     print(
         "throughput: "

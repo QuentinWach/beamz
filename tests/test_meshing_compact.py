@@ -5,8 +5,7 @@ import numpy as np
 from beamz import Design, Material
 from beamz.design.core import _build_grid_from_cached_arrays, _save_grid_to_cache
 from beamz.design.meshing import MaterialGrids
-from beamz.simulation.boundaries import initialize_tm_2d_xy_state
-from beamz.simulation.fields import Fields
+from tests.utils import compiled_grid
 
 
 def test_material_grids_keep_default_conductivity_scalar():
@@ -15,7 +14,7 @@ def test_material_grids_keep_default_conductivity_scalar():
     default_props = (12.0, 1.0, 0.0)
 
     grids.fill_all(default_props)
-    grids.set_at((0, 0, 0), default_props)
+    grids.set_region((0, 0, 0), default_props)
     grids.set_region((slice(None), slice(None), slice(None)), default_props)
 
     assert grids.permittivity.shape == shape
@@ -30,7 +29,7 @@ def test_material_grids_materialize_nondefault_conductivity_channel():
     grids = MaterialGrids(shape)
     conductive_props = (12.0, 1.0, 2.5)
 
-    grids.set_at((1, 2, 3), conductive_props)
+    grids.set_region((1, 2, 3), conductive_props)
 
     assert grids.conductivity.shape == shape
     assert grids.conductivity.dtype == np.float32
@@ -42,7 +41,7 @@ def test_material_grids_materialize_nondefault_permeability_channel():
     grids = MaterialGrids(shape)
     magnetic_props = (12.0, 1.5, 0.0)
 
-    grids.set_at((1, 2, 3), magnetic_props)
+    grids.set_region((1, 2, 3), magnetic_props)
 
     assert grids.permeability.shape == shape
     assert grids.permeability.dtype == np.float32
@@ -104,9 +103,9 @@ def test_raster_cache_is_disabled_by_default(monkeypatch, tmp_path):
     assert not (tmp_path / ".beamz_cache" / "raster").exists()
 
 
-def test_tm_xy_state_accepts_scalar_zero_conductivity():
+def test_canonical_2d_materials_accept_scalar_zero_conductivity():
     shape = (3, 4)
-    fields = Fields(
+    fields = compiled_grid(
         permittivity=np.ones(shape, dtype=np.float32),
         conductivity=np.asarray(0.0, dtype=np.float32),
         permeability=np.asarray(1.0, dtype=np.float32),
@@ -114,16 +113,10 @@ def test_tm_xy_state_accepts_scalar_zero_conductivity():
         plane_2d="xy",
     )
 
-    state = initialize_tm_2d_xy_state(fields)
-
     assert np.asarray(fields.conductivity).shape == ()
     assert np.asarray(fields.permeability).shape == ()
     assert np.asarray(fields.mu_hx).shape == ()
-    assert np.asarray(fields.mu_tm_hx).shape == ()
     assert np.asarray(fields.total_conductivity).shape == ()
     assert np.asarray(fields.sigma_m_hx).shape == ()
     assert np.asarray(fields.sigma_m_hy).shape == ()
     assert np.asarray(fields.sigma_m_hz).shape == ()
-    assert np.asarray(state.sig_z_region).shape == ()
-    assert np.asarray(state.sigma_m_hx).shape == ()
-    assert np.asarray(state.sigma_m_hy).shape == ()

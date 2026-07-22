@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 
 import beamz as bz
@@ -28,17 +30,22 @@ source = bz.GaussianSource(position=(4 * um, 5 * um), width=WL / 6, signal=signa
 sim = bz.Simulation(
     design=design,
     sources=[source],
+    monitors=[bz.FieldRecorder(("Ez",), interval=3, name="fields")],
     boundaries=[bz.PML(edges="all", thickness=2 * WL)],
     time=t,
     resolution=DX,
 )
 
-# Run the simulation and export a clean $E_z$ movie
-sim.save_video(
-    "dipole.mp4",
+# Run the simulation and store electric-field snapshots.
+results = sim.run()
+
+# Save the recorded field using one fixed color scale across all frames.
+bz.analysis.save_field_video(
+    results,
+    Path(__file__).with_suffix(".mp4"),
     field="Ez",
-    animation_interval=3,
-    video_fps=30,
-    cmap="twilight_zero",
-    clean_visualization=True,
+    fps=30,
+    cmap="RdBu",
+    cmap_limits="global",
+    interpolation="nearest",
 )

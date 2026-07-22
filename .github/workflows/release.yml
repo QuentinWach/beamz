@@ -20,6 +20,8 @@ jobs:
           pip install build
       - name: Build package
         run: python -m build
+      - name: Inspect distribution contents
+        run: python scripts/check_distributions.py
       - name: Store distributions
         uses: actions/upload-artifact@v4
         with:
@@ -58,4 +60,3 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
-

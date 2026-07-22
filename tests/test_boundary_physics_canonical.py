@@ -26,9 +26,10 @@ from beamz import (
     PEC,
     PML,
     Design,
+    FieldMonitor,
+    FieldRecorder,
     GaussianSource,
     Material,
-    Monitor,
     Simulation,
     calc_optimal_fdtd_params,
     ramped_cosine,
@@ -39,20 +40,17 @@ from tests.utils import estimate_phase_velocity
 pytestmark = [pytest.mark.simulation, pytest.mark.integration]
 
 
-def _point_dft_monitor(name: str, x: float, y: float, frequency: float) -> Monitor:
-    return Monitor(
-        start=(x, y),
-        end=(x, y),
+def _point_dft_monitor(name: str, x: float, y: float, frequency: float) -> FieldMonitor:
+    return FieldMonitor(
+        center=(x, y, 0.0),
+        size=(0.0, 0.0, 0.0),
         name=name,
-        dft_enabled=True,
-        dft_frequencies=np.array([frequency], dtype=float),
-        dft_components=("Ez",),
-        dft_record_every_step=True,
-        dft_window="rect",
+        freqs=np.array([frequency], dtype=float),
+        fields=("Ez",),
     )
 
 
-def _dft_point_amplitude(monitor: Monitor, component: str = "Ez") -> float:
+def _dft_point_amplitude(monitor, component: str = "Ez") -> float:
     arr = np.asarray(monitor.get_dft_component(component), dtype=np.complex128)
     return float(abs(complex(arr[0, 0])))
 
@@ -188,10 +186,11 @@ def test_pec_pml_channel_propagates_close_to_vacuum_speed():
     """
 
     sim, dx, dt = _build_pec_pml_channel_case(with_monitors=False)
-    result = sim.run(save_fields=["Ez"], field_subsample=10, progress=False)
+    sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+    result = sim.run(progress=False)
 
     measured = estimate_phase_velocity(
-        result["fields"]["Ez"],
+        result.monitor("fields").fields["Ez"],
         dx,
         dt * 10,
         threshold=0.2,

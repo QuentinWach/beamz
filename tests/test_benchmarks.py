@@ -10,13 +10,12 @@ import numpy as np
 import pytest
 
 from beamz import (
-    EPS_0,
     LIGHT_SPEED,
     PML,
     Design,
+    FieldRecorder,
     GaussianSource,
     Material,
-    Monitor,
     Rectangle,
     Simulation,
     calc_optimal_fdtd_params,
@@ -26,7 +25,6 @@ from beamz import (
 from tests.utils import (
     TEST_WAVELENGTH,
     analytical_cavity_frequency,
-    analytical_dipole_power_2d,
     compute_field_energy,
 )
 
@@ -78,11 +76,12 @@ class TestDipoleRadiation:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
         # Get snapshot during active emission
-        mid_idx = len(result["fields"]["Ez"]) // 2
-        field = result["fields"]["Ez"][mid_idx]
+        mid_idx = len(result.monitor("fields").fields["Ez"]) // 2
+        field = result.monitor("fields").fields["Ez"][mid_idx]
 
         ny, nx = field.shape
         center_y, center_x = ny // 2, nx // 2
@@ -150,9 +149,13 @@ class TestDipoleRadiation:
                 resolution=dx,
             )
 
-            result = sim.run(save_fields=["Ez"], field_subsample=15)
+            sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 15)))
+            result = sim.run()
 
-            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+            energies = [
+                compute_field_energy(Ez, dx)
+                for Ez in result.monitor("fields").fields["Ez"]
+            ]
             peak_energies.append(max(energies))
 
         # Energy should scale as amplitude^2
@@ -218,10 +221,13 @@ class TestCavityResonance:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=25)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 25)))
+        result = sim.run()
 
         # Check that field energy exists
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
         peak_energy = max(energies)
         assert peak_energy > 0, "Should have field energy in cavity"
 
@@ -263,7 +269,6 @@ class TestGridConvergence:
         domain_size = 5 * wavelength
 
         # Two resolutions: coarse and fine
-        resolutions = [wavelength / 8, wavelength / 12]
         peak_energies = []
 
         for ppw in [8, 12]:
@@ -302,9 +307,13 @@ class TestGridConvergence:
                 resolution=dx,
             )
 
-            result = sim.run(save_fields=["Ez"], field_subsample=20)
+            sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+            result = sim.run()
 
-            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+            energies = [
+                compute_field_energy(Ez, dx)
+                for Ez in result.monitor("fields").fields["Ez"]
+            ]
             peak_energies.append(max(energies))
 
         # Both should give reasonable results (no numerical instability)
@@ -361,14 +370,17 @@ class TestGridConvergence:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=30)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 30)))
+        result = sim.run()
 
         # Check for stability: no NaN or Inf values
-        for Ez in result["fields"]["Ez"]:
+        for Ez in result.monitor("fields").fields["Ez"]:
             assert np.all(np.isfinite(Ez)), "Field contains NaN or Inf (instability)"
 
         # Check energy doesn't explode compared to peak
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
         peak_energy = max(energies)
         final_energy = energies[-1]
 
@@ -384,7 +396,9 @@ class TestGridConvergence:
         )
 
         # Peak field amplitude should be bounded
-        max_field = max(np.max(np.abs(Ez)) for Ez in result["fields"]["Ez"])
+        max_field = max(
+            np.max(np.abs(Ez)) for Ez in result.monitor("fields").fields["Ez"]
+        )
         assert max_field < 1e6, f"Max field {max_field:.2e} is unreasonably large"
 
 
@@ -448,11 +462,13 @@ class TestWaveguideGroupVelocity:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=25)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 25)))
+        result = sim.run()
 
         # Check that field propagates rightward
-        mid_field = result["fields"]["Ez"][len(result["fields"]["Ez"]) // 2]
-        late_field = result["fields"]["Ez"][-1]
+        mid_field = result.monitor("fields").fields["Ez"][
+            len(result.monitor("fields").fields["Ez"]) // 2
+        ]
 
         ny, nx = mid_field.shape
         source_x = int(wavelength * 2 / dx)

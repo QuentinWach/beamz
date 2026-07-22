@@ -1,155 +1,298 @@
+"""Canonical modal ports."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Sequence
 
-PortDirection = Literal["+x", "-x", "+y", "-y", "+z", "-z"]
-PortPolarization = Literal["tm", "te"]
-WaveSelector = Literal["plus", "minus"]
+import numpy as np
 
+from beamz.devices._immutable import immutable_snapshot
+from beamz.devices.sources.specs import ModeSpec
 
-def _normalize_direction(direction: str) -> PortDirection:
-    value = str(direction).lower()
-    if value not in {"+x", "-x", "+y", "-y", "+z", "-z"}:
-        raise ValueError(f"Unsupported port direction {direction!r}.")
-    return value  # type: ignore[return-value]
+if TYPE_CHECKING:
+    from beamz.devices.monitors import ModeMonitor
+    from beamz.devices.sources import ModeSource
 
-
-def _normalize_polarization(polarization: str) -> PortPolarization:
-    value = str(polarization).lower()
-    if value not in {"tm", "te"}:
-        raise ValueError(f"Unsupported port polarization {polarization!r}.")
-    return value  # type: ignore[return-value]
-
-
-def positive_axis_direction(direction: str) -> PortDirection:
-    direction = _normalize_direction(direction)
-    return "+" + direction[1]  # type: ignore[return-value]
-
-
-def opposite_direction(direction: str) -> PortDirection:
-    direction = _normalize_direction(direction)
-    return ("-" if direction.startswith("+") else "+") + direction[1]  # type: ignore[return-value]
-
-
-def _wave_for_direction(direction: str, projection_direction: str) -> WaveSelector:
-    direction = _normalize_direction(direction)
-    projection_direction = _normalize_direction(projection_direction)
-    if direction[1] != projection_direction[1]:
-        raise ValueError(
-            "Port direction and projection_direction must use the same axis: "
-            f"{direction!r} vs {projection_direction!r}."
-        )
-    same_direction = direction[0] == projection_direction[0]
-    if direction[1] in {"x", "y"}:
-        # BeamZ's 3D x/y modal projection follows the ModeSource local-mode
-        # branch convention: the wave propagating along the PortSpec direction
-        # is returned as the "minus" coefficient, and the opposite-going wave
-        # as "plus".
-        return "minus" if same_direction else "plus"
-    return "plus" if same_direction else "minus"
-
-
-def _opposite_wave(selector: str) -> WaveSelector:
-    selector = str(selector).lower()
-    if selector == "plus":
-        return "minus"
-    if selector == "minus":
-        return "plus"
-    raise ValueError(f"Unsupported wave selector {selector!r}.")
-
-
-def _object_name(value: Any, *, field: str) -> str:
-    if value is None:
-        raise ValueError(f"{field} cannot be None.")
-    if isinstance(value, str):
-        name = value
-    else:
-        name = getattr(value, "name", None)
-    if not name:
-        raise ValueError(f"{field} must be a monitor name or object with a name.")
-    return str(name)
-
-
-def _optional_object_name(value: Any, *, field: str) -> str | None:
-    if value is None:
-        return None
-    return _object_name(value, field=field)
+PortDirection = Literal["+", "-"]
 
 
 @dataclass(frozen=True)
 class Port:
-    """First-class modal port metadata.
+    """Define a modal S-parameter port on a finite plane.
 
-    `direction` is the direction of the wave entering the simulated device at
-    this port. The outgoing/scattered wave is the opposite modal wave. This
-    avoids manually spelling out `incident_wave` and `scattered_wave`.
+    A port owns geometry and mode-solver settings, then creates matching
+    :class:`ModeSource` and :class:`ModeMonitor` objects as needed. The zero
+    extent in ``size`` selects the port axis and ``direction`` points into the
+    simulated device.
+
+    Parameters
+    ----------
+    center, size : tuple of float
+        Plane center and extents in public ``(x, y, z)`` order, in metres.
+        Exactly one size component must be zero.
+    name : str
+        Stable port identifier used by analysis.
+    direction : {"+", "-"}
+        Inward propagation direction along the plane-normal axis.
+    mode_spec : ModeSpec, optional
+        Modal selection and eigensolver settings.
+    monitor_name : str, optional
+        Name of the matching mode monitor. Defaults to ``name``.
+
+    Examples
+    --------
+    >>> port = Port(
+    ...     center=(0.0, 1e-6, 0.0),
+    ...     size=(0.0, 2e-6, 1e-6),
+    ...     name="input",
+    ...     direction="+",
+    ... )
+
+    Notes
+    -----
+    ``Port`` is an analysis specification, not a runtime object. Use
+    :meth:`to_source` and :meth:`to_monitor` to create matching simulation devices.
     """
 
+    center: tuple[float, float, float]
+    size: tuple[float, float, float]
     name: str
     direction: PortDirection
-    polarization: PortPolarization
-    monitor: str | Any | None = None
-    mode_index: int = 0
-    reference_monitor: str | Any | None = None
-    projection_direction: PortDirection | None = None
+    mode_spec: ModeSpec = field(default_factory=ModeSpec)
+    monitor_name: str | None = None
 
-    @classmethod
-    def from_mapping(cls, data: dict[str, Any]) -> "Port":
-        return cls(
-            name=str(data["name"]),
-            monitor=data.get("monitor", data.get("monitor_name")),
-            direction=_normalize_direction(data["direction"]),
-            polarization=_normalize_polarization(data["polarization"]),
-            mode_index=int(data.get("mode_index", 0)),
-            reference_monitor=data.get("reference_monitor"),
-            projection_direction=(
-                None
-                if data.get("projection_direction") is None
-                else _normalize_direction(data["projection_direction"])
+    def __post_init__(self) -> None:
+        center = tuple(float(value) for value in self.center)
+        size = tuple(float(value) for value in self.size)
+        if len(center) != 3 or len(size) != 3:
+            raise ValueError("Port center and size must contain three values.")
+        if any(not np.isfinite(value) for value in center):
+            raise ValueError("Port center must be finite.")
+        if any(value < 0.0 or np.isnan(value) for value in size):
+            raise ValueError("Port size must contain non-negative extents.")
+        zero_axes = np.flatnonzero(np.isclose(size, 0.0, rtol=0.0, atol=1e-15))
+        if zero_axes.size != 1:
+            raise ValueError("Port size must contain exactly one zero extent.")
+        name = str(self.name)
+        if not name:
+            raise ValueError("Port name cannot be empty.")
+        direction = str(self.direction)
+        if direction not in {"+", "-"}:
+            raise ValueError("Port direction must be '+' or '-'.")
+        object.__setattr__(self, "center", center)
+        object.__setattr__(self, "size", size)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "direction", direction)
+        monitor_name = name if self.monitor_name is None else str(self.monitor_name)
+        if not monitor_name:
+            raise ValueError("Port monitor_name cannot be empty.")
+        object.__setattr__(self, "monitor_name", monitor_name)
+        mode_spec = immutable_snapshot(self.mode_spec)
+        if not isinstance(mode_spec, ModeSpec):
+            raise TypeError("Port mode_spec must be a ModeSpec.")
+        object.__setattr__(self, "mode_spec", mode_spec)
+
+    @property
+    def axis(self) -> str:
+        """Return the plane-normal axis.
+
+        Returns
+        -------
+        {"x", "y", "z"}
+            Axis selected by the zero extent in :attr:`size`.
+        """
+        index = int(np.argmin(np.abs(np.asarray(self.size, dtype=float))))
+        return ("x", "y", "z")[index]
+
+    @property
+    def signed_direction(self) -> str:
+        """Return the signed input propagation direction.
+
+        Returns
+        -------
+        str
+            Direction such as ``"+x"`` or ``"-z"``.
+        """
+        return f"{self.direction}{self.axis}"
+
+    @property
+    def num_modes(self) -> int:
+        """Return the number of candidate modes represented by this port.
+
+        Returns
+        -------
+        int
+            Positive mode count from :attr:`mode_spec`.
+        """
+        return int(self.mode_spec.num_modes)
+
+    @property
+    def mode_index(self) -> int:
+        """Return the zero-based mode selected for modal projection.
+
+        Returns
+        -------
+        int
+            Selected index from :attr:`mode_spec`.
+        """
+        return int(self.mode_spec.mode_index)
+
+    @property
+    def polarization(self) -> str:
+        """Return the modal polarization used by analysis.
+
+        Returns
+        -------
+        {"te", "tm"}
+            Configured polarization, defaulting to ``"te"`` when unspecified.
+        """
+        return str(self.mode_spec.polarization or "te").lower()
+
+    @property
+    def projection_direction(self) -> str:
+        """Return the positive-axis basis used for modal projection.
+
+        Returns
+        -------
+        str
+            Positive signed axis such as ``"+x"``.
+
+        Notes
+        -----
+        Incoming and outgoing waves are interpreted relative to this fixed modal
+        basis and the port's :attr:`direction`.
+        """
+        return f"+{self.axis}"
+
+    def updated_copy(self, **changes: Any) -> Port:
+        """Return a validated port with selected fields replaced.
+
+        Parameters
+        ----------
+        **changes : object
+            Dataclass fields to replace.
+
+        Returns
+        -------
+        Port
+            New immutable port; the original is unchanged.
+
+        Raises
+        ------
+        TypeError or ValueError
+            If a field is unknown or the new geometry is invalid.
+        """
+        return replace(self, **changes)
+
+    def shifted(self, offset: Iterable[float]) -> Port:
+        """Return a translated copy of this port.
+
+        Parameters
+        ----------
+        offset : iterable of float
+            Three-coordinate ``(dx, dy, dz)`` translation in metres.
+
+        Returns
+        -------
+        Port
+            Port with translated center and unchanged size and modal settings.
+
+        Raises
+        ------
+        ValueError
+            If ``offset`` does not contain exactly three values.
+        """
+        delta = tuple(float(value) for value in offset)
+        if len(delta) != 3:
+            raise ValueError("Port offsets must contain three values.")
+        return replace(
+            self,
+            center=tuple(
+                value + shift for value, shift in zip(self.center, delta, strict=True)
             ),
         )
 
-    @property
-    def monitor_name(self) -> str:
-        return _object_name(
-            self.name if self.monitor is None else self.monitor,
-            field="monitor",
+    def to_monitor(self, freqs: Sequence[float] | np.ndarray) -> ModeMonitor:
+        """Create a mode monitor matching this port.
+
+        Parameters
+        ----------
+        freqs : sequence of float
+            Frequencies to acquire, in hertz.
+
+        Returns
+        -------
+        ModeMonitor
+            Monitor with matching geometry, name, and mode specification.
+
+        Examples
+        --------
+        >>> monitor = port.to_monitor([193.5e12])
+        """
+        from beamz.devices.monitors import ModeMonitor
+
+        return ModeMonitor(
+            center=self.center,
+            size=self.size,
+            freqs=np.asarray(freqs, dtype=float),
+            mode_spec=self.mode_spec,
+            name=self.monitor_name,
         )
 
-    @property
-    def reference_monitor_name(self) -> str | None:
-        return _optional_object_name(self.reference_monitor, field="reference_monitor")
+    def to_source(
+        self,
+        freq0: float,
+        fwidth: float,
+        mode_index: int = 0,
+        num_freqs: int = 1,
+        *,
+        source_time: Any | None = None,
+        power: float = 1.0,
+    ) -> ModeSource:
+        """Create a mode source matching this port.
 
-    @property
-    def solver_direction(self) -> PortDirection:
-        if self.projection_direction is not None:
-            direction = _normalize_direction(self.projection_direction)
-            incoming = _normalize_direction(self.direction)
-            if direction[1] != incoming[1]:
-                raise ValueError(
-                    "projection_direction must use the same axis as direction: "
-                    f"{direction!r} vs {incoming!r}."
-                )
-            return direction
-        return _normalize_direction(self.direction)
+        Parameters
+        ----------
+        freq0 : float
+            Carrier frequency in hertz.
+        fwidth : float
+            Gaussian frequency width in hertz when ``source_time`` is omitted.
+        mode_index : int, default=0
+            Zero-based mode to launch.
+        num_freqs : int, default=1
+            Frequency samples used for broadband modal reconstruction.
+        source_time : source-time specification, optional
+            Custom temporal waveform. A ``GaussianPulse`` is created by default.
+        power : float, default=1.0
+            Requested launched power in watts.
 
-    @property
-    def incident_wave(self) -> WaveSelector:
-        return _wave_for_direction(self.direction, self.solver_direction)
+        Returns
+        -------
+        ModeSource
+            Source with matching geometry, inward direction, and modal settings.
 
-    @property
-    def scattered_wave(self) -> WaveSelector:
-        return _opposite_wave(self.incident_wave)
+        Examples
+        --------
+        >>> source = port.to_source(freq0=193.5e12, fwidth=20e12)
+        """
+        from beamz.devices.sources import GaussianPulse, ModeSource
 
-    def to_portspec_dict(self) -> dict[str, Any]:
-        return {
-            "name": str(self.name),
-            "monitor_name": self.monitor_name,
-            "direction": self.solver_direction,
-            "polarization": _normalize_polarization(self.polarization),
-            "mode_index": int(self.mode_index),
-            "reference_monitor": self.reference_monitor_name,
-            "incident_wave": self.incident_wave,
-            "scattered_wave": self.scattered_wave,
-        }
+        if source_time is None:
+            source_time = GaussianPulse(freq0=float(freq0), fwidth=float(fwidth))
+        mode_spec = replace(
+            self.mode_spec,
+            mode_index=int(mode_index),
+            num_freqs=max(1, int(num_freqs)),
+        )
+        return ModeSource(
+            center=self.center,
+            size=self.size,
+            source_time=source_time,
+            direction=self.direction,
+            mode_spec=mode_spec,
+            power=power,
+        )
+
+
+__all__ = ["Port"]

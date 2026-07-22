@@ -1,16 +1,65 @@
 """Shared utility functions for BeamZ FDTD physics validation tests."""
 
+from dataclasses import fields as dataclass_fields
+from types import SimpleNamespace
+
 import numpy as np
 from scipy.optimize import brentq
 from scipy.special import jv, yv
 
 from beamz import EPS_0, LIGHT_SPEED, um
+from beamz.design.discretization import MaterialGrid
+from beamz.devices._boundary_compile import lower_boundaries
+from beamz.lattice import component_shapes
+from beamz.simulation.compile import _compile_grid
+from beamz.simulation.model import DomainSpec, RunSpec, SimulationRequest
 
 # =============================================================================
 # Constants
 # =============================================================================
 TEST_WAVELENGTH = 1.0 * um  # Standard test wavelength (1 micron)
 TEST_FREQUENCY = LIGHT_SPEED / TEST_WAVELENGTH
+
+
+def compiled_grid(
+    permittivity,
+    conductivity,
+    permeability,
+    resolution,
+    plane_2d="xy",
+):
+    """Build a compiled lattice directly from test material arrays."""
+    material_grid = MaterialGrid(
+        permittivity,
+        conductivity,
+        permeability,
+        resolution,
+        np.asarray(permittivity).shape,
+    )
+    shape = material_grid.shape
+    is_3d = len(shape) == 3
+    size = (
+        float(shape[-1]) * resolution,
+        float(shape[-2]) * resolution,
+        float(shape[0]) * resolution if is_3d else 0.0,
+    )
+    request = SimulationRequest(
+        RunSpec(1.0, 1, 1, 0.0, "scan", False, (False, "auto", None, None)),
+        DomainSpec(size, is_3d, plane_2d, (0.0, 0.0, 0.0)),
+        material_grid,
+        (),
+        (),
+        (),
+    )
+    boundary_data = lower_boundaries(
+        material_grid, component_shapes(shape), (), size, 1.0
+    )
+    grid = _compile_grid(request, boundary_data)
+    # Boundary-lowering unit tests need a mutable setup object; production compilation
+    # publishes the frozen CompiledGrid only after this setup phase is complete.
+    return SimpleNamespace(
+        **{field.name: getattr(grid, field.name) for field in dataclass_fields(grid)}
+    )
 
 
 # =============================================================================
@@ -115,79 +164,9 @@ def analytical_fresnel_t(n1, n2):
 # =============================================================================
 # Poynting Vector / Energy Functions
 # =============================================================================
-def compute_poynting_flux_2d(Ez, Hx, Hy, dx):
-    """Compute total Poynting flux (power) in 2D domain.
-
-    S = E x H, integrated over the domain.
-
-    Args:
-        Ez: Electric field z-component (2D array)
-        Hx: Magnetic field x-component (2D array)
-        Hy: Magnetic field y-component (2D array)
-        dx: Grid spacing
-
-    Returns:
-        Total power (integrated |S|)
-    """
-    # Handle shape mismatches from Yee grid staggering
-    ny, nx = Ez.shape
-    # Interpolate H to E locations if needed
-    if Hx.shape != Ez.shape:
-        # Hx is staggered, average to Ez locations
-        Hx_interp = np.zeros_like(Ez)
-        Hx_interp[:, :-1] = 0.5 * (Hx[:, :-1] + Hx[:, 1:]) if Hx.shape[1] > 1 else Hx
-        Hx = Hx_interp
-    if Hy.shape != Ez.shape:
-        Hy_interp = np.zeros_like(Ez)
-        Hy_interp[:-1, :] = 0.5 * (Hy[:-1, :] + Hy[1:, :]) if Hy.shape[0] > 1 else Hy
-        Hy = Hy_interp
-
-    Sx = -Ez * Hy
-    Sy = Ez * Hx
-    power_density = np.sqrt(Sx**2 + Sy**2)
-    return np.sum(power_density) * dx * dx
-
-
-def compute_directional_flux_2d(Ez, Hx, Hy, dx, direction="x"):
-    """Compute directional Poynting flux along a line.
-
-    Args:
-        Ez, Hx, Hy: Field components
-        dx: Grid spacing
-        direction: 'x' for Sx, 'y' for Sy
-
-    Returns:
-        Directional flux (can be positive or negative)
-    """
-    if direction == "x":
-        # Sx = -Ez * Hy (power flowing in +x direction)
-        return -np.sum(Ez * Hy) * dx
-    else:
-        # Sy = Ez * Hx (power flowing in +y direction)
-        return np.sum(Ez * Hx) * dx
-
-
 # =============================================================================
 # Analytical Formulas
 # =============================================================================
-def analytical_dipole_power_2d(omega, I0):
-    """Analytical radiated power from 2D dipole (line source).
-
-    For a 2D line source, the radiated power per unit length scales as:
-    P ~ omega^2 * I0^2 / (4 * pi * eps0 * c^3)
-
-    This is an approximation - exact 2D formula involves Hankel functions.
-
-    Args:
-        omega: Angular frequency (rad/s)
-        I0: Current amplitude (integrated over source)
-
-    Returns:
-        Approximate radiated power
-    """
-    return (omega**2 * I0**2) / (4 * np.pi * EPS_0 * LIGHT_SPEED**3)
-
-
 def analytical_cavity_frequency(m, L, n=1.0):
     """Analytical resonance frequency for 1D cavity.
 
@@ -356,10 +335,7 @@ def mie_coefficients_2d(x, m, n_max):
         # Hankel function H_n^(1) = J_n + i*Y_n
         hn_x = jn_x + 1j * yv(n, x)
         yn_x = yv(n, x)
-        if n == 0:
-            yn_x_prime = -yv(1, x)
-        else:
-            yn_x_prime = yv(n - 1, x) - n / x * yn_x
+        yn_x_prime = -yv(1, x) if n == 0 else yv(n - 1, x) - n / x * yn_x
         hn_x_prime = jn_x_prime + 1j * yn_x_prime
 
         num = m * jn_mx * jn_x_prime - jn_x * jn_mx_prime
@@ -458,7 +434,7 @@ def slab_waveguide_neff_te(n_core, n_clad, width, wavelength, mode=0):
     V = k0 * d / 2 * np.sqrt(n_core**2 - n_clad**2)
 
     # Mode cutoff: V must be large enough
-    if V < mode * np.pi / 2:
+    if mode * np.pi / 2 > V:
         return None
 
     def dispersion_eq(neff):
@@ -474,10 +450,6 @@ def slab_waveguide_neff_te(n_core, n_clad, width, wavelength, mode=0):
     # Search in valid range
     n_min = n_clad + 1e-10
     n_max = n_core - 1e-10
-
-    # For mode m, solution is near a particular branch
-    # Estimate starting point
-    neff_guess = np.sqrt((n_core**2 + n_clad**2) / 2)
 
     # Use bisection with careful bracketing
     try:
@@ -524,7 +496,7 @@ def slab_waveguide_neff_tm(n_core, n_clad, width, wavelength, mode=0):
     d = width
 
     V = k0 * d / 2 * np.sqrt(n_core**2 - n_clad**2)
-    if V < mode * np.pi / 2:
+    if mode * np.pi / 2 > V:
         return None
 
     def dispersion_eq(neff):
@@ -579,21 +551,6 @@ def fabry_perot_fsr(L, n=1.0):
     return LIGHT_SPEED / (2 * n * L)
 
 
-def fabry_perot_finesse(R1, R2):
-    """Finesse of Fabry-Pérot cavity from mirror reflectivities.
-
-    F = π * sqrt(R1*R2) / (1 - sqrt(R1*R2))
-
-    Args:
-        R1, R2: Power reflectivity of mirrors
-
-    Returns:
-        Finesse (dimensionless)
-    """
-    r = np.sqrt(R1 * R2)
-    return np.pi * r / (1 - r)
-
-
 def fabry_perot_q_factor(L, n, R1, R2):
     """Q-factor of Fabry-Pérot cavity.
 
@@ -608,7 +565,6 @@ def fabry_perot_q_factor(L, n, R1, R2):
     Returns:
         Q-factor for fundamental mode
     """
-    F = fabry_perot_finesse(R1, R2)
     # At resonance, m ~ 2nL/λ, so Q ~ F * 2nL/λ
     # But we can estimate Q directly from photon lifetime
     r = np.sqrt(R1 * R2)
@@ -625,124 +581,6 @@ def fabry_perot_q_factor(L, n, R1, R2):
 # =============================================================================
 # DFT and Measurement Helpers
 # =============================================================================
-def compute_dft_field(field_history, time_array, frequency):
-    """Compute single-frequency DFT of time-domain field data.
-
-    Extracts the complex phasor at the target frequency using DFT.
-
-    Args:
-        field_history: Array of field snapshots, shape (n_times, ...) or list
-        time_array: 1D array of time values
-        frequency: Target frequency (Hz)
-
-    Returns:
-        Complex phasor array with shape (...), same as field spatial shape
-    """
-    field_arr = np.asarray(field_history)
-    time_arr = np.asarray(time_array)
-
-    # Reshape time array for broadcasting
-    # field_arr: (n_times, ny, nx) or (n_times, nz, ny, nx)
-    n_times = field_arr.shape[0]
-    time_shape = [n_times] + [1] * (field_arr.ndim - 1)
-    time_broadcast = time_arr.reshape(time_shape)
-
-    # DFT at single frequency
-    dt = time_arr[1] - time_arr[0] if len(time_arr) > 1 else 1.0
-    phasor = (
-        np.sum(field_arr * np.exp(-2j * np.pi * frequency * time_broadcast), axis=0)
-        * dt
-    )
-
-    return phasor
-
-
-def compute_poynting_flux_phasor_2d(Ez_phasor, Hy_phasor, dx, direction="x"):
-    """Compute time-averaged Poynting flux from frequency-domain phasors.
-
-    S_avg = 0.5 * Re(E × H*)
-
-    For 2D TM (Ez, Hx, Hy):
-    - Sx = -0.5 * Re(Ez * Hy*)  (power in +x)
-    - Sy = 0.5 * Re(Ez * Hx*)   (power in +y)
-
-    Args:
-        Ez_phasor: Complex Ez field phasor (2D array)
-        Hy_phasor: Complex Hy field phasor (2D array)
-        dx: Grid spacing
-        direction: 'x' for x-directed flux
-
-    Returns:
-        Time-averaged power flux (integrated over line)
-    """
-    if direction == "x":
-        # Sx = -0.5 * Re(Ez * Hy*)
-        flux_density = -0.5 * np.real(Ez_phasor * np.conj(Hy_phasor))
-    else:
-        raise ValueError("Only 'x' direction implemented for 2D")
-
-    return np.sum(flux_density) * dx
-
-
-def measure_ringdown_q_factor(field_history, time_array, center_freq):
-    """Extract Q-factor from cavity ringdown measurement.
-
-    Fits exponential decay to field envelope after source stops.
-    Q = ω * τ / 2 where τ is the energy decay time constant.
-
-    Args:
-        field_history: List/array of field values at a point over time
-        time_array: Time values
-        center_freq: Approximate resonance frequency
-
-    Returns:
-        Tuple (Q_factor, decay_time) or (None, None) if fit fails
-    """
-    field_arr = np.asarray(field_history).flatten()
-    time_arr = np.asarray(time_array)
-
-    # Compute envelope using Hilbert transform
-    from scipy.signal import hilbert
-
-    analytic = hilbert(np.real(field_arr))
-    envelope = np.abs(analytic)
-
-    # Find peak and fit decay after it
-    peak_idx = np.argmax(envelope)
-    if peak_idx >= len(envelope) - 10:
-        return None, None
-
-    # Use data after peak
-    t_decay = time_arr[peak_idx:] - time_arr[peak_idx]
-    env_decay = envelope[peak_idx:]
-
-    # Filter to significant values
-    threshold = 0.01 * envelope[peak_idx]
-    valid = env_decay > threshold
-    if np.sum(valid) < 5:
-        return None, None
-
-    t_fit = t_decay[valid]
-    env_fit = env_decay[valid]
-
-    # Linear fit to log(envelope) for exponential decay
-    try:
-        log_env = np.log(env_fit)
-        coeffs = np.polyfit(t_fit, log_env, 1)
-        decay_rate = -coeffs[0]  # Amplitude decay rate
-        tau = 1 / decay_rate  # Amplitude decay time
-
-        # Q = ω * τ_energy / 2 = ω * (τ_amplitude / 2) / 2 = ω * τ_amplitude / 4
-        # Actually: energy ~ |E|² ~ envelope², so τ_energy = τ_amplitude / 2
-        # Q = ω * τ_energy / 2 = ω * τ_amplitude / 4
-        omega = 2 * np.pi * center_freq
-        Q = omega * tau / 2  # Since we measure amplitude, not energy
-
-        return Q, tau
-    except (ValueError, np.linalg.LinAlgError):
-        return None, None
-
-
 def measure_resonance_frequency(field_history, time_array, freq_range=None):
     """Find resonance frequency from FFT of field time series.
 
@@ -783,41 +621,6 @@ def measure_resonance_frequency(field_history, time_array, freq_range=None):
 # =============================================================================
 # Quantitative Validation Helpers
 # =============================================================================
-def compute_field_error_L2(field1, field2, dx):
-    """Compute L2 error between two field arrays.
-
-    L2_error = sqrt(integral((f1 - f2)^2 dA)) / sqrt(integral(f2^2 dA))
-
-    Handles different array shapes by interpolating to common grid.
-
-    Args:
-        field1: First field array (2D)
-        field2: Second field array (2D, reference)
-        dx: Grid spacing for field1
-
-    Returns:
-        Relative L2 error (dimensionless)
-    """
-    from scipy.ndimage import zoom
-
-    f1 = np.asarray(field1)
-    f2 = np.asarray(field2)
-
-    # If shapes differ, interpolate f1 to f2's grid
-    if f1.shape != f2.shape:
-        zoom_factors = [f2.shape[i] / f1.shape[i] for i in range(f1.ndim)]
-        f1 = zoom(f1, zoom_factors, order=1)
-
-    # Compute L2 norm of difference
-    diff_norm = np.sqrt(np.sum((f1 - f2) ** 2))
-    ref_norm = np.sqrt(np.sum(f2**2))
-
-    if ref_norm < 1e-30:
-        return 0.0 if diff_norm < 1e-30 else np.inf
-
-    return diff_norm / ref_norm
-
-
 def fit_exponential_decay(data, time, start_fraction=0.0, end_fraction=0.8):
     """Fit exponential decay A * exp(-t/tau) to data.
 
@@ -870,95 +673,3 @@ def fit_exponential_decay(data, time, start_fraction=0.0, end_fraction=0.8):
         return tau, amplitude, r_squared
     except (ValueError, np.linalg.LinAlgError):
         return None, None, None
-
-
-def compute_box_flux_2d_from_fields(
-    Ez_phasors, Hy_phasors, Hx_phasors, dx, box_indices
-):
-    """Compute net Poynting flux through a 2D rectangular box from phasor fields.
-
-    For 2D TM polarization, S = -Re(Ez × H*):
-    - Sx = -Re(Ez * Hy*) for x-directed flux
-    - Sy = Re(Ez * Hx*) for y-directed flux
-
-    Args:
-        Ez_phasors: Complex Ez field phasor (ny, nx)
-        Hy_phasors: Complex Hy field phasor (ny, nx)
-        Hx_phasors: Complex Hx field phasor (ny, nx)
-        dx: Grid spacing
-        box_indices: Dict with 'x_min', 'x_max', 'y_min', 'y_max' grid indices
-
-    Returns:
-        Net outward power flux through box (positive = power leaving box)
-    """
-    x_min = box_indices["x_min"]
-    x_max = box_indices["x_max"]
-    y_min = box_indices["y_min"]
-    y_max = box_indices["y_max"]
-
-    # Right face (+x): integrate -Re(Ez * Hy*) over y
-    flux_right = (
-        -0.5
-        * np.sum(
-            np.real(
-                Ez_phasors[y_min:y_max, x_max] * np.conj(Hy_phasors[y_min:y_max, x_max])
-            )
-        )
-        * dx
-    )
-
-    # Left face (-x): integrate +Re(Ez * Hy*) over y (outward normal is -x)
-    flux_left = (
-        0.5
-        * np.sum(
-            np.real(
-                Ez_phasors[y_min:y_max, x_min] * np.conj(Hy_phasors[y_min:y_max, x_min])
-            )
-        )
-        * dx
-    )
-
-    # Top face (+y): integrate Re(Ez * Hx*) over x
-    flux_top = (
-        0.5
-        * np.sum(
-            np.real(
-                Ez_phasors[y_max, x_min:x_max] * np.conj(Hx_phasors[y_max, x_min:x_max])
-            )
-        )
-        * dx
-    )
-
-    # Bottom face (-y): integrate -Re(Ez * Hx*) over x (outward normal is -y)
-    flux_bottom = (
-        -0.5
-        * np.sum(
-            np.real(
-                Ez_phasors[y_min, x_min:x_max] * np.conj(Hx_phasors[y_min, x_min:x_max])
-            )
-        )
-        * dx
-    )
-
-    return flux_right + flux_left + flux_top + flux_bottom
-
-
-def interpolate_field_to_grid(field, source_shape, target_shape):
-    """Interpolate field array to different grid resolution.
-
-    Args:
-        field: Source field array
-        source_shape: Original shape tuple
-        target_shape: Desired shape tuple
-
-    Returns:
-        Interpolated field array
-    """
-    from scipy.ndimage import zoom
-
-    field = np.asarray(field)
-    if field.shape == target_shape:
-        return field
-
-    zoom_factors = [target_shape[i] / field.shape[i] for i in range(field.ndim)]
-    return zoom(field, zoom_factors, order=3)

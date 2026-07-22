@@ -9,17 +9,20 @@ import numpy as np
 
 from beamz import (
     LIGHT_SPEED,
+    PML,
     Design,
     Material,
+    ModeMonitor,
     ModeSource,
-    Monitor,
-    PML,
-    PortSpec,
+    ModeSpec,
+    Port,
     Rectangle,
+    SampledSignal,
     Simulation,
     calc_optimal_fdtd_params,
     µm,
 )
+from beamz.analysis import s_parameters
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,7 @@ class StraightWaveguideSParamConfig:
     settle_transit_multiples: float = 6.0
     decay_ratio: float = 1e-3
     lookback_records: int = 12
-    pml_formulation: str = "sigma"
+    pml_formulation: str = "sponge"
     cpml_kappa_max: float = 8.0
     cpml_alpha_max: float | None = None
 
@@ -105,13 +108,6 @@ class StraightWaveguideSParamResult:
     condition_numbers: dict[str, np.ndarray]
 
 
-def _monitor_line(x_m: float, y_center_m: float, span_m: float):
-    return (
-        (float(x_m), float(y_center_m - 0.5 * span_m)),
-        (float(x_m), float(y_center_m + 0.5 * span_m)),
-    )
-
-
 def _build_case(cfg: StraightWaveguideSParamConfig, *, resolution_ppw: int):
     pml_m = cfg.pml_m
     width_m = cfg.guide_length_m + 2.0 * pml_m
@@ -133,8 +129,6 @@ def _build_case(cfg: StraightWaveguideSParamConfig, *, resolution_ppw: int):
         height=cfg.waveguide_width_m,
         material=Material(cfg.n_core**2),
     )
-    grid = design.rasterize(resolution=dx)
-
     freqs = np.asarray(cfg.dft_frequencies_hz, dtype=float)
     period = 1.0 / cfg.frequency_hz
     sigma_t = float(cfg.pulse_sigma_periods) * period
@@ -161,35 +155,25 @@ def _build_case(cfg: StraightWaveguideSParamConfig, *, resolution_ppw: int):
         3.0 * cfg.waveguide_width_m,
     )
     source = ModeSource(
-        grid=grid,
-        center=(pml_m + float(cfg.source_offset_um) * µm, y_center),
-        width=source_span,
-        wavelength=cfg.wavelength_m,
-        pol="tm",
-        signal=pulse.signal,
-        direction="+x",
+        center=(pml_m + float(cfg.source_offset_um) * µm, y_center, 0.0),
+        size=(0.0, source_span, cfg.waveguide_width_m),
+        source_time=SampledSignal(pulse.signal, dt=dt, freq0=cfg.frequency_hz),
+        direction="+",
+        mode_spec=ModeSpec(polarization="tm"),
     )
-    source.initialize(grid.permittivity, dx)
 
-    monitor_cfg = dict(
-        record_fields=False,
-        dft_enabled=True,
-        dft_frequencies=freqs,
-        dft_components=("Ez", "Hx", "Hy"),
-        dft_window="none",
-        dft_record_every_step=True,
-    )
     monitor_x = {
         "o1": pml_m + float(cfg.input_monitor_offset_um) * µm,
         "mid": width_m - pml_m - float(cfg.output_monitor_offsets_um[0]) * µm,
         "far": width_m - pml_m - float(cfg.output_monitor_offsets_um[1]) * µm,
     }
     monitors = {
-        name: Monitor(
-            start=_monitor_line(x_m, y_center, source_span)[0],
-            end=_monitor_line(x_m, y_center, source_span)[1],
+        name: ModeMonitor(
+            center=(x_m, y_center, 0.0),
+            size=(0.0, source_span, cfg.waveguide_width_m),
+            freqs=freqs,
             name=name,
-            **monitor_cfg,
+            mode_spec=ModeSpec(polarization="tm"),
         )
         for name, x_m in monitor_x.items()
     }
@@ -235,50 +219,41 @@ def run_straight_waveguide_sparam_case(
         cfg, resolution_ppw=int(resolution_ppw)
     )
     t0 = time.perf_counter()
-    steps = sim.run_compiled_until_decay(
-        list(monitors.values()),
-        min_time_s=pulse.source_end_time + pulse.tail_time,
-        lookback_records=cfg.lookback_records,
-        decay_ratio=cfg.decay_ratio,
-        progress=False,
-    )
+    run_results = sim.advance(progress=False)
+    steps = run_results.state.current_step
     runtime_s = max(time.perf_counter() - t0, 1e-12)
 
-    result = sim.get_S_matrix_modal_dft(
+    result = s_parameters(
+        run_results.results,
         source_port="o1",
         ports=[
-            PortSpec(
+            Port(
+                center=monitors["o1"].center,
+                size=monitors["o1"].size,
                 name="o1",
-                monitor_name="o1",
-                direction="+x",
-                polarization="tm",
-                incident_wave="plus",
-                scattered_wave="minus",
+                direction="+",
+                mode_spec=ModeSpec(polarization="tm"),
             ),
-            PortSpec(
+            Port(
+                center=monitors["mid"].center,
+                size=monitors["mid"].size,
                 name="mid",
-                monitor_name="mid",
-                direction="+x",
-                polarization="tm",
-                incident_wave="minus",
-                scattered_wave="plus",
+                direction="-",
+                mode_spec=ModeSpec(polarization="tm"),
             ),
-            PortSpec(
+            Port(
+                center=monitors["far"].center,
+                size=monitors["far"].size,
                 name="far",
-                monitor_name="far",
-                direction="+x",
-                polarization="tm",
-                incident_wave="minus",
-                scattered_wave="plus",
+                direction="-",
+                mode_spec=ModeSpec(polarization="tm"),
             ),
         ],
         output_ports=["o1", "mid", "far"],
         frequencies=freqs,
-        as_sax=False,
-        return_diagnostics=True,
         min_incident_db=-60.0,
     )
-    s_matrix = result["s_matrix"]
+    s_matrix = result.s_matrix
     s11 = np.asarray(s_matrix[("o1", "o1")], dtype=np.complex128)
     s21_by_monitor = {
         name: np.asarray(s_matrix[(name, "o1")], dtype=np.complex128)
@@ -299,7 +274,7 @@ def run_straight_waveguide_sparam_case(
         phase_residual[name] = residual
         phase_slope[name] = slope
 
-    diagnostics = result["diagnostics"]
+    diagnostics = result.diagnostics
     cond = {
         name: np.asarray(
             diagnostics["condition_numbers"][name]["monitor"],

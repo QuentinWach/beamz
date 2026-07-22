@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+beamz
+benchmarks
+dist
+docs
+examples
+scripts
+tests
+*.egg-info
+**/__pycache__
+**/*.pyc
+**/.DS_Store

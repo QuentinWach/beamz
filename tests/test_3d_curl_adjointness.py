@@ -1,133 +1,64 @@
+"""Adjointness check for the canonical complete 3D Yee representation."""
+
 from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.simulation import ops
-from beamz.simulation.boundaries import (
-    build_h_boundary_views_for_e_3d,
-    create_metallic_boundary_masks,
-    pec_curl_e_to_h_3d,
-    pec_curl_h_to_e_3d,
-)
-from beamz.simulation.fields import Fields
+import beamz.lattice as lattice
+from beamz.devices._boundary_compile import compile_metallic_masks
+from beamz.devices.boundaries import PEC
+from beamz.lattice import build_h_boundary_views_for_e_3d
+from beamz.simulation.kernels import apply_zero_mask
+from tests.utils import compiled_grid
 
 
-def _pairing_defect(
-    ex,
-    ey,
-    ez,
-    hx,
-    hy,
-    hz,
-    curl_hx,
-    curl_hy,
-    curl_hz,
-    curl_ex,
-    curl_ey,
-    curl_ez,
-) -> float:
-    lhs = float(jnp.vdot(ex, curl_hx) + jnp.vdot(ey, curl_hy) + jnp.vdot(ez, curl_hz))
-    rhs = float(jnp.vdot(hx, curl_ex) + jnp.vdot(hy, curl_ey) + jnp.vdot(hz, curl_ez))
-    denom = abs(lhs) + abs(rhs) + 1e-30
-    return abs(lhs - rhs) / denom
-
-
-def test_compact_3d_pec_curl_pair_is_skew_adjoint_after_compact_fix():
-    nz, ny, nx = 6, 8, 18
-    fields = Fields(
-        np.ones((nz, ny, nx), dtype=np.float32),
-        np.zeros((nz, ny, nx), dtype=np.float32),
-        np.ones((nz, ny, nx), dtype=np.float32),
+def test_complete_3d_pec_curl_pair_is_skew_adjoint():
+    fields = compiled_grid(
+        np.ones((6, 8, 18), dtype=np.float32),
+        np.zeros((6, 8, 18), dtype=np.float32),
+        np.ones((6, 8, 18), dtype=np.float32),
         resolution=1.0,
     )
-    fields.set_metallic_masks(
-        create_metallic_boundary_masks(
-            fields,
-            ["left", "right", "top", "bottom", "front", "back"],
-            is_3d=True,
+    fields.metallic_masks = compile_metallic_masks(
+        fields.component_shapes, fields.material_grid.shape, [PEC()]
+    )
+    rng = np.random.default_rng(0)
+    values = {
+        component: apply_zero_mask(
+            jnp.asarray(
+                rng.standard_normal(getattr(fields, component).shape, dtype=np.float32)
+            ),
+            fields.metallic_masks[component],
         )
-    )
-    rng = np.random.default_rng(0)
+        for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+    }
 
-    ex = fields._apply_metallic_mask(
-        "Ex", jnp.asarray(rng.standard_normal(fields.Ex.shape, dtype=np.float32))
+    curl_h = lattice.curl_e_to_h_3d(values["Ex"], values["Ey"], values["Ez"], 1.0)
+    views = build_h_boundary_views_for_e_3d(
+        values["Hx"],
+        values["Hy"],
+        values["Hz"],
+        frozenset({"front", "back", "bottom", "top", "left", "right"}),
     )
-    ey = fields._apply_metallic_mask(
-        "Ey", jnp.asarray(rng.standard_normal(fields.Ey.shape, dtype=np.float32))
-    )
-    ez = fields._apply_metallic_mask(
-        "Ez", jnp.asarray(rng.standard_normal(fields.Ez.shape, dtype=np.float32))
-    )
-    hx = fields._apply_metallic_mask(
-        "Hx", jnp.asarray(rng.standard_normal(fields.Hx.shape, dtype=np.float32))
-    )
-    hy = fields._apply_metallic_mask(
-        "Hy", jnp.asarray(rng.standard_normal(fields.Hy.shape, dtype=np.float32))
-    )
-    hz = fields._apply_metallic_mask(
-        "Hz", jnp.asarray(rng.standard_normal(fields.Hz.shape, dtype=np.float32))
-    )
-
-    curl_ex, curl_ey, curl_ez = pec_curl_e_to_h_3d(
-        ex, ey, ez, 1.0, hx.shape, hy.shape, hz.shape
-    )
-    curl_hx, curl_hy, curl_hz = pec_curl_h_to_e_3d(
-        hx, hy, hz, 1.0, ex.shape, ey.shape, ez.shape
-    )
-
-    defect = _pairing_defect(
-        ex,
-        ey,
-        ez,
-        hx,
-        hy,
-        hz,
-        curl_hx,
-        curl_hy,
-        curl_hz,
-        curl_ex,
-        curl_ey,
-        curl_ez,
-    )
-    assert defect < 1e-6
-
-
-def test_compact_3d_default_curl_pair_is_skew_adjoint_after_compact_fix():
-    rng = np.random.default_rng(0)
-    nz, ny, nx = 6, 8, 18
-    ex = jnp.asarray(rng.standard_normal((nz, ny, nx - 1), dtype=np.float32))
-    ey = jnp.asarray(rng.standard_normal((nz, ny - 1, nx), dtype=np.float32))
-    ez = jnp.asarray(rng.standard_normal((nz - 1, ny, nx), dtype=np.float32))
-    hx = jnp.asarray(rng.standard_normal((nz - 1, ny - 1, nx), dtype=np.float32))
-    hy = jnp.asarray(rng.standard_normal((nz - 1, ny, nx - 1), dtype=np.float32))
-    hz = jnp.asarray(rng.standard_normal((nz, ny - 1, nx - 1), dtype=np.float32))
-
-    curl_ex, curl_ey, curl_ez = ops.curl_e_to_h_3d(ex, ey, ez, 1.0)
-    views = build_h_boundary_views_for_e_3d(hx, hy, hz, boundaries=None)
-    curl_hx, curl_hy, curl_hz = ops.curl_h_to_e_3d(
-        hx,
-        hy,
-        hz,
+    curl_e = lattice.curl_h_to_e_3d(
+        values["Hx"],
+        values["Hy"],
+        values["Hz"],
         1.0,
-        ex_shape=ex.shape,
-        ey_shape=ey.shape,
-        ez_shape=ez.shape,
+        ex_shape=values["Ex"].shape,
+        ey_shape=values["Ey"].shape,
+        ez_shape=values["Ez"].shape,
         boundary_views=views,
     )
 
-    defect = _pairing_defect(
-        ex,
-        ey,
-        ez,
-        hx,
-        hy,
-        hz,
-        curl_hx,
-        curl_hy,
-        curl_hz,
-        curl_ex,
-        curl_ey,
-        curl_ez,
+    lhs = sum(
+        jnp.vdot(values[name], curl)
+        for name, curl in zip(("Ex", "Ey", "Ez"), curl_e, strict=True)
     )
-    assert defect < 1e-6
+    rhs = sum(
+        jnp.vdot(values[name], curl)
+        for name, curl in zip(("Hx", "Hy", "Hz"), curl_h, strict=True)
+    )
+    scale = abs(float(lhs)) + abs(float(rhs)) + 1e-30
+    assert abs(float(lhs - rhs)) / scale < 1e-6

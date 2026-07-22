@@ -1,11 +1,26 @@
 # Devices
 
-Modules that interact with the EM fields of the simulation. This includes injecting (sources), detecting (monitors), and other kinds of regional field manipulation (boundaries) that don't stem from the design or its materials themselves.
+Simulation devices define how fields enter, leave, and are sampled from a
+simulation.
 
-+ core.py       / Main module that defines ...
-+ boundaries/
-    + pml.py
-+ monitors/
-    + ...
-+ sources/
-    + ...
+- `sources/specs.py`: immutable public source and mode-data values.
+- `sources/time.py`: sampled and analytic temporal waveforms.
+- `sources/solve.py`: the optional micromode adapter and mode-plane solving.
+- `sources/mode_profiles.py`: mode-profile geometry, interpolation, and power scaling.
+- `sources/mode_launch.py`: 2D/3D launch planning from solved profiles.
+- `sources/planar_tfsf.py`: discrete 3D total-field/scattered-field residuals.
+- `sources/compiler.py`: the single lowering boundary into executable source plans.
+- `monitors/monitors.py`: immutable public monitor specifications.
+- `monitors/compiler.py`: grid placement and packed acquisition plans. Runtime
+  accumulation belongs to `simulation.observe`, not to device specifications.
+- `ports.py`: named modal port metadata used by S-parameter analysis.
+- `boundaries.py`: immutable PEC, sponge `Absorber`, and PML specifications.
+- `_placement.py`: shared grid-snapping rules for sources and monitors.
+- `_boundary_compile.py`: grid-aware PEC/PML/absorber lowering kept separate from
+  the public boundary values for the same reason as source and monitor compilation.
+- `_immutable.py`: array freezing and canonicalization shared by every device spec.
+- `visualization.py`: data-only visual descriptions consumed by analysis plotting.
+
+These files separate public values, numerical planning, and runtime execution. Avoid
+adding per-device facade modules; a new file should own a distinct numerical stage or
+be folded into the nearest existing owner.

@@ -1,12 +1,18 @@
-from collections import namedtuple
-from typing import Literal, Tuple, Union
+from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
+import importlib
+import sys
+from collections import namedtuple
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, Literal, Tuple, Union, cast, overload
+
 import numpy as np
 
+from .specs import ModeData, ModeSpec, plane_axis_and_spans
+
 # Lazy import of micromode to allow package to work without it
-micromode = None
+micromode: Any | None = None
 
 
 def _ensure_micromode():
@@ -17,24 +23,47 @@ def _ensure_micromode():
             import micromode as _micromode
 
             micromode = _micromode
-        except ImportError:
+        except ImportError as exc:
             raise ImportError(
                 "micromode is required for mode solving. "
                 "Install it with: pip install micromode"
-            )
+            ) from exc
+    return micromode
+
+
+def _micromode_beamz_namespace():
+    _ensure_micromode()
+    beamz_api = getattr(micromode, "beamz", None)
+    if beamz_api is not None:
+        return beamz_api
+    try:
+        return importlib.import_module("micromode.beamz")
+    except ModuleNotFoundError as exc:
+        if exc.name != "micromode.beamz":
+            raise
+        return None
 
 
 def solve_beamz_mode_plane(**spec_kwargs):
-    """Solve a BEAMZ ModePlaneSpec when the installed micromode exposes it.
-
-    Returns ``None`` for older micromode releases so callers can preserve the
-    legacy scalar-array path without version checks.
-    """
+    """Solve a BEAMZ ModePlaneSpec using micromode's discrete launch contract."""
     _ensure_micromode()
-    mode_plane_spec = getattr(micromode, "ModePlaneSpec", None)
-    solve_beamz_mode = getattr(micromode, "solve_beamz_mode", None)
+    beamz_api = _micromode_beamz_namespace()
+    mode_plane_spec = getattr(micromode, "ModePlaneSpec", None) or getattr(
+        beamz_api, "ModePlaneSpec", None
+    )
+    solve_beamz_mode = getattr(micromode, "solve_beamz_mode", None) or getattr(
+        beamz_api, "solve_beamz_mode", None
+    )
     if mode_plane_spec is None or solve_beamz_mode is None:
-        return None
+        version = getattr(micromode, "__version__", "unknown")
+        location = getattr(micromode, "__file__", "unknown location")
+        raise RuntimeError(
+            "BEAMZ 3D ModeSource requires micromode.beamz.ModePlaneSpec and "
+            "micromode.beamz.solve_beamz_mode, or equivalent top-level aliases. "
+            "Upgrade micromode to >=0.1.0a6 with the DiscreteMode/v1 BEAMZ "
+            "contract. Imported micromode "
+            f"{version!r} from {location!r} in {sys.executable!r}."
+        )
     return solve_beamz_mode(mode_plane_spec(**spec_kwargs))
 
 
@@ -91,8 +120,14 @@ def _remap_mode_tuple_to_global(
             )
         return out
 
-    Ex, Ey, Ez = _remap_components((mode.Ex, mode.Ey, mode.Ez))
-    Hx, Hy, Hz = _remap_components((mode.Hx, mode.Hy, mode.Hz))
+    Ex, Ey, Ez = cast(
+        tuple[np.ndarray, np.ndarray, np.ndarray],
+        tuple(_remap_components((mode.Ex, mode.Ey, mode.Ez))),
+    )
+    Hx, Hy, Hz = cast(
+        tuple[np.ndarray, np.ndarray, np.ndarray],
+        tuple(_remap_components((mode.Hx, mode.Hy, mode.Hz))),
+    )
     transform = np.zeros((3, 3), dtype=float)
     for local_axis, global_axis in enumerate(local_axis_to_global):
         transform[int(global_axis), int(local_axis)] = 1.0
@@ -143,8 +178,8 @@ def compute_mode(
     filter_pol: Union[Literal["te", "tm"], None] = None,
     target_neff: Union[float, None] = None,
     local_axis_to_global: tuple[int, int, int] = (0, 1, 2),
-) -> tuple[np.ndarray, np.ndarray, complex, int]:
-    _ensure_micromode()  # Lazy import micromode
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    micromode_module = _ensure_micromode()
     inv_permittivities = np.asarray(inv_permittivities, dtype=np.complex128)
     if inv_permittivities.ndim == 1:
         inv_permittivities = inv_permittivities[np.newaxis, :, np.newaxis]
@@ -204,7 +239,7 @@ def compute_mode(
     else:
         mu_xx = np.asarray(permeability_squeezed, dtype=np.complex128)
 
-    result = micromode.solve_grid(
+    result = micromode_module.solve_grid(
         eps_xx=permittivity_squeezed,
         mu_xx=mu_xx,
         x_edges=coords[0],
@@ -213,7 +248,7 @@ def compute_mode(
         direction=direction,
         num_modes=2 * (mode_index + 1) + 5,
         target_neff=target_neff,
-        normal_axis=propagation_axis,
+        normal_axis=cast(Literal[0, 1, 2], propagation_axis),
     )
     modes = []
     for idx in range(result.n_complex.shape[1]):
@@ -227,7 +262,8 @@ def compute_mode(
             Hz=_field_plane(result.field_components["Hz"], propagation_axis, idx),
         )
         modes.append(_remap_mode_tuple_to_global(local_mode, local_axis_to_global))
-    tangential_axes = tuple(ax for ax in range(3) if ax != propagation_axis)
+    tangential_values = tuple(ax for ax in range(3) if ax != propagation_axis)
+    tangential_axes = (tangential_values[0], tangential_values[1])
     modes = sort_modes(modes, filter_pol, tangential_axes)
     if mode_index >= len(modes):
         raise ValueError(
@@ -246,6 +282,36 @@ def compute_mode(
 
     E_norm, H_norm = _normalize_by_poynting_flux(E, H, axis=propagation_axis)
     return E_norm, H_norm, np.asarray(mode.neff, dtype=np.complex128), propagation_axis
+
+
+@overload
+def solve_modes(
+    eps: np.ndarray,
+    omega: float,
+    dL: float,
+    npml: int = 0,
+    m: int = 1,
+    direction: Literal["+x", "-x", "+y", "-y", "+z", "-z"] = "+x",
+    filter_pol: Literal["te", "tm"] | None = None,
+    return_fields: Literal[True] = True,
+    propagation_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z"] | None = None,
+    target_neff: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]: ...
+
+
+@overload
+def solve_modes(
+    eps: np.ndarray,
+    omega: float,
+    dL: float,
+    npml: int = 0,
+    m: int = 1,
+    direction: Literal["+x", "-x", "+y", "-y", "+z", "-z"] = "+x",
+    filter_pol: Literal["te", "tm"] | None = None,
+    return_fields: Literal[False] = False,
+    propagation_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z"] | None = None,
+    target_neff: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]: ...
 
 
 def solve_modes(
@@ -324,7 +390,7 @@ def solve_modes(
             local_axis_to_global=local_axis_to_global,
         )
 
-        neffs.append(neff)
+        neffs.append(complex(np.asarray(neff).item()))
         if return_fields:
             e_fields.append(E_full)
             h_fields.append(H_full)
@@ -382,136 +448,191 @@ def _normalize_by_poynting_flux(
     return E_norm, H_norm
 
 
-# ============================================================================
-# JAX-Compatible Differentiable Mode Solver Wrapper
-# ============================================================================
+DISCRETE_MODE_CONTRACT = "micromode.beamz.DiscreteMode/v1"
 
 
-def solve_modes_differentiable(
-    eps: jnp.ndarray,
-    omega: float,
-    dL: float,
-    direction: str = "+x",
-    filter_pol: str = None,
-    m: int = 1,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """JAX-compatible wrapper for mode solving with custom gradients.
+def solve_discrete_mode_plane(**spec_kwargs: Any):
+    """Return a micromode BEAMZ DiscreteMode or fail with a BEAMZ-facing error."""
 
-    This function wraps the micromode-based mode solver to enable gradient computation
-    via finite differences. The forward pass calls the numpy-based solve_modes,
-    and the backward pass computes gradients for omega (wavelength) using finite differences.
+    discrete_mode = solve_beamz_mode_plane(**spec_kwargs)
+    if discrete_mode is None:
+        raise RuntimeError(
+            "micromode.solve_beamz_mode returned None for the required "
+            f"{DISCRETE_MODE_CONTRACT} contract."
+        )
+    missing = [
+        name
+        for name in (
+            "neff",
+            "profiles",
+            "backward_profiles",
+            "component_indices",
+            "phase_reference_coord",
+            "phase_plane_coord",
+            "k_num_axis",
+            "power_scale",
+        )
+        if not hasattr(discrete_mode, name)
+    ]
+    if missing:
+        raise RuntimeError(
+            "micromode returned an incompatible BEAMZ DiscreteMode object; "
+            f"missing {', '.join(missing)}."
+        )
+    return discrete_mode
 
-    Args:
-        eps: Permittivity profile as JAX array
-        omega: Angular frequency (2*pi*c/wavelength)
-        dL: Grid resolution
-        direction: Propagation direction ("+x", "-x", etc.)
-        filter_pol: Polarization filter ("te" or "tm")
-        m: Number of modes to compute
 
-    Returns:
-        Tuple of (neff_array, E_fields, H_fields) as JAX arrays
-    """
-    # Convert JAX array to numpy for micromode
-    eps_np = np.asarray(eps)
+def _profile_crop_slices(eps_profile, *, profile_axes, center, size, resolution):
+    grid_axis_to_coord_index = {0: 2, 1: 1, 2: 0}
+    slices = []
+    for dim, grid_axis in enumerate(profile_axes):
+        coord_index = grid_axis_to_coord_index[int(grid_axis)]
+        span = float(size[coord_index])
+        if span <= 0.0 or not np.isfinite(span):
+            slices.append(slice(None))
+            continue
+        midpoint = float(center[coord_index])
+        start = int(np.floor((midpoint - 0.5 * span) / resolution))
+        stop = int(np.ceil((midpoint + 0.5 * span) / resolution))
+        start = int(np.clip(start, 0, eps_profile.shape[dim] - 1))
+        stop = int(np.clip(stop, start + 1, eps_profile.shape[dim]))
+        slices.append(slice(start, stop))
+    return tuple(slices)
 
-    # Call the numpy-based solver
-    neff_array, E_fields, H_fields, _ = solve_modes(
-        eps=eps_np,
-        omega=float(omega),
-        dL=float(dL),
-        direction=direction,
-        filter_pol=filter_pol,
-        m=m,
-        return_fields=True,
+
+def _simulation_grid_view(simulation):
+    fields = getattr(simulation, "fields", None)
+    if fields is None or not hasattr(fields, "permittivity"):
+        return simulation.design.rasterize(resolution=simulation.resolution)
+    return SimpleNamespace(
+        permittivity=fields.permittivity,
+        conductivity=getattr(fields, "conductivity", None),
+        permeability=getattr(fields, "permeability", None),
+        resolution=float(simulation.resolution),
+        design=simulation.design,
+        shape=tuple(int(v) for v in fields.permittivity.shape),
+        width=float(getattr(simulation.design, "width", 0.0) or 0.0),
+        height=float(getattr(simulation.design, "height", 0.0) or 0.0),
+        depth=float(getattr(simulation.design, "depth", 0.0) or 0.0),
     )
 
-    # Convert results to JAX arrays
-    return (
-        jnp.asarray(neff_array),
-        jnp.asarray(E_fields),
-        jnp.asarray(H_fields),
+
+def _resolve_solver_direction(axis: str, direction=None) -> str:
+    axis = str(axis).lower()
+    if direction is None:
+        return f"-{axis}"
+    direction_str = str(direction).lower()
+    if direction_str in {"+", "-"}:
+        return f"{direction_str}{axis}"
+    if direction_str not in {"+x", "-x", "+y", "-y", "+z", "-z"}:
+        raise ValueError(
+            "mode solve direction must be one of '+', '-', '+x', '-x', '+y', "
+            f"'-y', '+z', or '-z', got {direction!r}."
+        )
+    if direction_str[-1] != axis:
+        raise ValueError(
+            f"mode solve direction {direction_str!r} does not match {axis!r}-normal plane."
+        )
+    return direction_str
+
+
+@dataclass(frozen=True)
+class ModePlaneContext:
+    eps: np.ndarray
+    axis: str
+    center: tuple[float, float, float]
+    axis_index: int
+    grid_index: int
+    eps_profile_full: np.ndarray
+    crop_slices: tuple[slice, ...]
+
+
+def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
+    grid = _simulation_grid_view(simulation)
+    eps = np.asarray(grid.permittivity)
+    axis, center, _spans = plane_axis_and_spans(plane)
+    offset = getattr(simulation, "coordinate_offset", (0.0, 0.0, 0.0))
+    center = tuple(c + o for c, o in zip(center, offset, strict=True))
+    axis_index = {"z": 0, "y": 1, "x": 2}[axis]
+    grid_index = int(
+        np.clip(
+            round(center[{"z": 2, "y": 1, "x": 0}[axis]] / simulation.resolution),
+            0,
+            eps.shape[axis_index] - 1,
+        )
+    )
+    eps_profile_full = np.take(eps, grid_index, axis=axis_index)
+    plane_size = tuple(float(value) for value in plane.size)
+    profile_axes = tuple(idx for idx in range(eps.ndim) if idx != axis_index)
+    crop_slices = _profile_crop_slices(
+        eps_profile_full,
+        profile_axes=profile_axes,
+        center=center,
+        size=plane_size,
+        resolution=float(simulation.resolution),
+    )
+    if len(center) != 3:
+        raise ValueError(f"Mode-plane centers require three coordinates: {center!r}")
+    center_3d = (center[0], center[1], center[2])
+    return ModePlaneContext(
+        eps=eps,
+        axis=axis,
+        center=center_3d,
+        axis_index=axis_index,
+        grid_index=grid_index,
+        eps_profile_full=eps_profile_full,
+        crop_slices=crop_slices,
     )
 
 
-@jax.custom_vjp
-def solve_modes_jax(
-    omega: float,
-    eps: jnp.ndarray,
-    dL: float,
-    direction: str,
-    filter_pol: str,
-) -> jnp.ndarray:
-    """Differentiable mode solver that returns effective index.
+def solve_mode_plane(
+    *, simulation, plane, mode_spec: ModeSpec | None, freqs, direction=None
+) -> ModeData:
+    """Solve modal fields on a finite simulation plane using micromode."""
 
-    This function enables gradient computation through the mode solver
-    with respect to omega (and thus wavelength). Uses finite differences
-    for the backward pass since micromode is not JAX-compatible.
+    spec = mode_spec if mode_spec is not None else ModeSpec()
+    freq_arr = np.asarray(freqs, dtype=float).reshape(-1)
+    if freq_arr.size == 0:
+        raise ValueError("Mode solving requires at least one frequency.")
 
-    Args:
-        omega: Angular frequency (differentiable parameter)
-        eps: Permittivity profile (not differentiable through this function)
-        dL: Grid resolution
-        direction: Propagation direction
-        filter_pol: Polarization filter
+    ctx = mode_plane_context(simulation=simulation, plane=plane)
+    eps_profile = ctx.eps_profile_full[ctx.crop_slices]
+    solver_direction = _resolve_solver_direction(ctx.axis, direction)
+    neffs_by_freq = []
+    e_by_freq = []
+    h_by_freq = []
+    eps_by_freq = []
+    eps_full_by_freq = []
+    for freq in freq_arr:
+        neffs, e_fields, h_fields, _ = solve_modes(
+            eps=eps_profile,
+            omega=2.0 * np.pi * float(freq),
+            dL=simulation.resolution,
+            m=int(spec.num_modes),
+            direction=cast(
+                Literal["+x", "-x", "+y", "-y", "+z", "-z"], solver_direction
+            ),
+            filter_pol=cast(Literal["te", "tm"] | None, spec.polarization),
+            target_neff=spec.target_neff,
+            return_fields=True,
+        )
+        neffs_by_freq.append(np.asarray(neffs))
+        e_by_freq.append(np.asarray(e_fields))
+        h_by_freq.append(np.asarray(h_fields))
+        eps_by_freq.append(np.asarray(eps_profile))
+        eps_full_by_freq.append(np.asarray(ctx.eps_profile_full))
 
-    Returns:
-        Complex effective index of the fundamental mode
-    """
-    eps_np = np.asarray(eps)
-    neff_array, _, _, _ = solve_modes(
-        eps=eps_np,
-        omega=float(omega),
-        dL=float(dL),
-        direction=direction,
-        filter_pol=filter_pol,
-        m=1,
-        return_fields=True,
+    return ModeData(
+        frequencies=freq_arr,
+        neffs=np.asarray(neffs_by_freq),
+        e_fields=np.asarray(e_by_freq),
+        h_fields=np.asarray(h_by_freq),
+        eps_profiles=np.asarray(eps_by_freq),
+        eps_profile_fulls=np.asarray(eps_full_by_freq),
+        resolution=float(simulation.resolution),
+        solver_direction=solver_direction,
+        axis=ctx.axis,
+        center=ctx.center,
+        plane=plane,
+        crop_slices=ctx.crop_slices,
     )
-    return jnp.asarray(neff_array[0])
-
-
-def solve_modes_jax_fwd(omega, eps, dL, direction, filter_pol):
-    """Forward pass for custom VJP."""
-    neff = solve_modes_jax(omega, eps, dL, direction, filter_pol)
-    # Store residuals for backward pass
-    return neff, (omega, eps, dL, direction, filter_pol)
-
-
-def solve_modes_jax_bwd(res, g):
-    """Backward pass using finite differences for omega gradient."""
-    omega, eps, dL, direction, filter_pol = res
-
-    # Finite difference step (relative to omega)
-    h = 1e-6 * omega
-
-    # Compute neff at omega + h and omega - h
-    neff_plus = solve_modes_jax(omega + h, eps, dL, direction, filter_pol)
-    neff_minus = solve_modes_jax(omega - h, eps, dL, direction, filter_pol)
-
-    # Central difference for d(neff)/d(omega)
-    dneff_domega = (neff_plus - neff_minus) / (2 * h)
-
-    # Chain rule: gradient w.r.t. omega
-    # g is the gradient of the loss w.r.t. neff (complex)
-    # We take real part since loss is typically real
-    grad_omega = jnp.real(jnp.conj(g) * dneff_domega + g * jnp.conj(dneff_domega)) / 2
-
-    # eps gradient not implemented (would require many solver calls)
-    grad_eps = jnp.zeros_like(eps)
-
-    return (grad_omega, grad_eps, None, None, None)
-
-
-# Register custom VJP
-solve_modes_jax.defvjp(solve_modes_jax_fwd, solve_modes_jax_bwd)
-
-
-def wavelength_to_omega(wavelength: float, c: float = 299792458.0) -> float:
-    """Convert wavelength to angular frequency."""
-    return 2 * np.pi * c / wavelength
-
-
-def omega_to_wavelength(omega: float, c: float = 299792458.0) -> float:
-    """Convert angular frequency to wavelength."""
-    return 2 * np.pi * c / omega

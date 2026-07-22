@@ -98,7 +98,7 @@ def test_density_to_polygons_rerasterizes_with_preserved_voids():
         min_area=1.0,
     ):
         design += polygon
-    design.unify_polygons()
+    design = design.unified_polygons()
 
     grid = design.rasterize(
         1.0,

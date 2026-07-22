@@ -15,14 +15,13 @@ import numpy as np
 import pytest
 
 from beamz import (
-    EPS_0,
     LIGHT_SPEED,
     PML,
     Circle,
     Design,
+    FieldRecorder,
     GaussianSource,
     Material,
-    Monitor,
     Rectangle,
     Simulation,
     calc_optimal_fdtd_params,
@@ -30,18 +29,14 @@ from beamz import (
     um,
 )
 from tests.utils import (
-    TEST_FREQUENCY,
     TEST_WAVELENGTH,
     analytical_cavity_frequency,
     analytical_fresnel_r,
     analytical_fresnel_t,
-    compute_dft_field,
     compute_field_energy,
-    compute_poynting_flux_phasor_2d,
     fabry_perot_fsr,
     fabry_perot_q_factor,
     measure_resonance_frequency,
-    measure_ringdown_q_factor,
     mie_qext_2d,
     mie_qext_3d,
     mie_qsca_2d,
@@ -54,8 +49,6 @@ from tests.utils import (
 # Test Configuration
 # =============================================================================
 TOLERANCE_TIGHT = 0.05  # 5% for most tests
-TOLERANCE_MODERATE = 0.10  # 10% for Q-factor (harder to measure)
-TOLERANCE_CONVERGENCE = 0.2  # 20% for convergence order (1.8-2.2 acceptable)
 
 
 # =============================================================================
@@ -142,10 +135,13 @@ class TestFresnelCoefficients:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=10)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+        result = sim.run()
 
         # Track total energy over time
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
         peak_energy = max(energies)
 
         # Check that energy exists and decays (absorbed by PML)
@@ -156,7 +152,7 @@ class TestFresnelCoefficients:
 
         # At late times, check that field exists on both sides of interface
         # (demonstrating both reflection and transmission occurred)
-        late_field = result["fields"]["Ez"][-1]
+        late_field = result.monitor("fields").fields["Ez"][-1]
 
         # Energy on each side
         E_left = compute_field_energy(late_field[:, :interface_idx], dx, eps=n1**2)
@@ -250,10 +246,14 @@ class TestGridConvergenceOrder:
                 resolution=dx,
             )
 
-            result = sim.run(save_fields=["Ez"], field_subsample=15)
+            sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 15)))
+            result = sim.run()
 
             # Use peak energy as metric
-            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+            energies = [
+                compute_field_energy(Ez, dx)
+                for Ez in result.monitor("fields").fields["Ez"]
+            ]
             peak_energies.append(max(energies))
             dx_values.append(dx)
 
@@ -328,10 +328,14 @@ class TestGridConvergenceOrder:
                 resolution=dx,
             )
 
-            result = sim.run(save_fields=["Ez"], field_subsample=10)
+            sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+            result = sim.run()
 
             # Compute energy after source stops
-            energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+            energies = [
+                compute_field_energy(Ez, dx)
+                for Ez in result.monitor("fields").fields["Ez"]
+            ]
 
             # Find energy fluctuation in decay phase
             start_idx = len(energies) // 3
@@ -433,10 +437,11 @@ class TestMieScattering:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=10)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+        result = sim.run()
 
         # Verify simulation produced valid fields
-        final_Ez = result["fields"]["Ez"][-1]
+        final_Ez = result.monitor("fields").fields["Ez"][-1]
         assert np.all(np.isfinite(final_Ez)), "Fields should be finite"
 
         peak_field = np.max(np.abs(final_Ez))
@@ -492,7 +497,7 @@ class TestMieScattering:
         # For moderate index contrast, typically Q_ext < 10
         assert 0 < Q_ext < 15, f"Q_ext={Q_ext:.3f} should be positive and bounded"
         # Q_sca should be close to Q_ext for dielectric (no absorption)
-        assert 0 < Q_sca <= Q_ext * 1.001, f"Q_sca should be <= Q_ext"
+        assert 0 < Q_sca <= Q_ext * 1.001, "Q_sca should be <= Q_ext"
 
         # Test larger particle (x=5, geometric regime)
         radius_large = 5 * wavelength / (2 * np.pi)
@@ -592,12 +597,14 @@ class TestFabryPerot:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=1)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 1)))
+        result = sim.run()
 
         # Extract field at cavity center
         center_idx = int(source_x / dx)
         field_at_center = [
-            Ez[Ez.shape[0] // 2, center_idx] for Ez in result["fields"]["Ez"]
+            Ez[Ez.shape[0] // 2, center_idx]
+            for Ez in result.monitor("fields").fields["Ez"]
         ]
 
         # Find resonance frequency via FFT
@@ -756,10 +763,11 @@ class TestWaveguideEffectiveIndex:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
         # Check field confinement at late time
-        late_field = result["fields"]["Ez"][-1]
+        late_field = result.monitor("fields").fields["Ez"][-1]
         ny, nx = late_field.shape
 
         # Energy in core region vs total

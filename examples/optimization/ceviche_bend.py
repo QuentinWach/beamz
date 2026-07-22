@@ -4,19 +4,22 @@ import numpy as np
 from beamz import (
     LIGHT_SPEED,
     PML,
+    CustomMaterial,
     Design,
+    FieldRecorder,
+    FluxMonitor,
     Material,
     ModeSource,
-    Monitor,
+    ModeSpec,
     Rectangle,
+    SampledSignal,
     Simulation,
     calc_optimal_fdtd_params,
-    plot_signal,
     ramped_cosine,
     µm,
 )
 from beamz.optimization.topology import (
-    TopologyManager,
+    TopologySpec,
     compute_overlap_gradient,
     create_optimization_mask,
 )
@@ -26,9 +29,7 @@ W = H = 7 * µm
 WG_W = 0.55 * µm
 WL = 1.55 * µm
 N_CORE, N_CLAD = 2.25, 1.444  # Si3N4, SiO2
-DX, DT = calc_optimal_fdtd_params(
-    WL, 2.25, points_per_wavelength=20
-)  # reduce to 9 for faster simulation
+DX, DT = calc_optimal_fdtd_params(WL, 2.25, points_per_wavelength=8)
 STEPS = 50  # reduce to 40 for faster optimization
 MAT_PENALTY = 0.3  # Target core material fraction (0.0 to 1.0)
 PENALTY_STRENGTH = 1  # Scaling factor for the penalty gradient
@@ -39,13 +40,41 @@ PML_FORMULATION_2D = "sponge"
 def monitor_energy(monitor, dt):
     """Return integrated flux magnitude from a signed monitor trace."""
 
-    monitor_ds = monitor.to_xarray()
-    trace = (
-        np.real_if_close(np.asarray(monitor_ds["power"].values, dtype=np.complex128))
-        if "power" in monitor_ds
-        else np.zeros(0, dtype=np.complex128)
-    )
-    return abs(float(np.real(np.sum(trace))) * dt)
+    del dt
+    return abs(float(np.real(np.asarray(monitor.flux).reshape(-1)[0])))
+
+
+def monitor_result(results, name):
+    """Return a monitor snapshot from a SimulationResults object."""
+
+    monitor_results = None if results is None else results.monitors
+    if not monitor_results:
+        raise RuntimeError("Simulation returned no monitor results.")
+    if name not in monitor_results:
+        available = ", ".join(sorted(monitor_results))
+        raise KeyError(f"Monitor result {name!r} not found. Available: {available}")
+    return monitor_results[name]
+
+
+def saved_field_history(results, name):
+    """Return saved field frames from a SimulationResults object."""
+
+    fields = None if results is None else results.monitor("fields").fields
+    if not fields or name not in fields:
+        return []
+    data = np.asarray(fields[name])
+    if data.ndim == 0:
+        return [data]
+    return [np.asarray(frame) for frame in data]
+
+
+def saved_field_array(results, name):
+    """Return a saved field array, or an empty array when absent."""
+
+    fields = None if results is None else results.monitor("fields").fields
+    if not fields or name not in fields:
+        return np.zeros((0,), dtype=float)
+    return np.asarray(fields[name])
 
 
 def transmission_percent(input_monitor, output_monitor, dt):
@@ -53,6 +82,14 @@ def transmission_percent(input_monitor, output_monitor, dt):
     if input_energy <= 0.0:
         return 0.0
     return monitor_energy(output_monitor, dt) / input_energy * 100.0
+
+
+def transmission_percent_from_results(results, input_name, output_name, dt):
+    """Return transmission using compiled-run monitor snapshots."""
+
+    input_result = monitor_result(results, input_name)
+    output_result = monitor_result(results, output_name)
+    return transmission_percent(input_result, output_result, dt)
 
 
 def normalize_gradient_in_mask(grad, region_mask, percentile=95.0):
@@ -70,6 +107,31 @@ def normalize_gradient_in_mask(grad, region_mask, percentile=95.0):
         return grad, 1.0
 
     return grad / scale, scale
+
+
+def canonical_design_from_grid(grid):
+    """Wrap an updated topology grid in the canonical geometry API."""
+
+    material = CustomMaterial(
+        permittivity_grid=grid.permittivity,
+        bounds=((DX / 2, W - DX / 2), (DX / 2, H - DX / 2)),
+        interpolation="nearest",
+        default_permittivity=N_CLAD**2,
+        default_permeability=float(grid.permeability),
+        default_conductivity=float(grid.conductivity),
+    )
+    return Design(
+        width=W,
+        height=H,
+        material=Material(permittivity=N_CLAD**2),
+    ).with_structure(
+        Rectangle(
+            position=(0.0, 0.0),
+            width=W,
+            height=H,
+            material=material,
+        )
+    )
 
 
 # Design & Materials
@@ -96,32 +158,25 @@ opt_region = Rectangle(
 )
 design += opt_region
 
-design.show()
-
 # Sources
 time = np.arange(0, 15 * WL / LIGHT_SPEED, DT)
 signal = ramped_cosine(
     time, 1, LIGHT_SPEED / WL, ramp_duration=3.5 * WL / LIGHT_SPEED, t_max=time[-1] / 2
 )
 
-plot_signal(signal, time, save_path="signal.png")
 src_fwd = ModeSource(
-    None,
-    center=(1.0 * µm, H / 2),
-    width=WG_W * 4,
-    wavelength=WL,
-    pol="tm",
-    signal=signal,
-    direction="+x",
+    center=(1.0 * µm, H / 2, 0.0),
+    size=(0.0, WG_W * 4, WG_W),
+    source_time=SampledSignal(signal, dt=DT, freq0=LIGHT_SPEED / WL),
+    direction="+",
+    mode_spec=ModeSpec(polarization="tm"),
 )
 src_adj = ModeSource(
-    None,
-    center=(W / 2, 1.0 * µm),
-    width=WG_W * 4,
-    wavelength=WL,
-    pol="tm",
-    signal=signal,
-    direction="+y",
+    center=(W / 2, 1.0 * µm, 0.0),
+    size=(WG_W * 4, 0.0, WG_W),
+    source_time=SampledSignal(signal, dt=DT, freq0=LIGHT_SPEED / WL),
+    direction="+",
+    mode_spec=ModeSpec(polarization="tm"),
 )
 
 # --- 2. Optimization Manager ---
@@ -129,7 +184,7 @@ src_adj = ModeSource(
 grid = design.rasterize(DX)
 mask = create_optimization_mask(grid, opt_region)
 
-opt = TopologyManager(
+opt = TopologySpec(
     design=design,
     region_mask=mask,
     resolution=DX,
@@ -141,6 +196,7 @@ opt = TopologyManager(
     beta_schedule=(1.0, 20.0),
     filter_type="conic",  # Use conic filter for geometric constraints
 )
+opt_state = opt.initial_state()
 
 print(f"Starting Topology Optimization ({STEPS} steps)...")
 base_eps = grid.permittivity.copy()  # Store background (cladding)
@@ -151,102 +207,96 @@ transmission_history = []
 # --- 3. Optimization Loop ---
 for step in range(STEPS):
     # Update Design
-    beta, phys_density = opt.update_design(step, STEPS)
+    beta, phys_density = opt.density_for_step(opt_state, step, STEPS)
 
     # Mix Density into Permittivity (Linear Interpolation)
-    grid.permittivity[:] = base_eps
-    grid.permittivity[mask] = opt.eps_min + phys_density[mask] * (
-        opt.eps_max - opt.eps_min
-    )
+    permittivity = np.array(base_eps, copy=True)
+    permittivity[mask] = opt.eps_min + phys_density[mask] * (opt.eps_max - opt.eps_min)
+    grid = grid.updated_copy(permittivity=permittivity)
+    simulation_design = canonical_design_from_grid(grid)
 
     # Forward Simulation (only output monitor)
-    src_fwd.grid = grid  # Update grid ref
-
     # Setup monitors for input and output power measurement
     # Place monitor immediately after source to measure actual injected power
     # This accounts for soft source loading and back-reflection
-    monitor_input_flux = Monitor(
-        design=grid,
-        start=(1.5 * µm, H / 2 - WG_W * 2),
-        end=(1.5 * µm, H / 2 + WG_W * 2),
-        accumulate_power=True,
-        record_fields=False,
+    monitor_input_flux = FluxMonitor(
+        center=(1.5 * µm, H / 2, 0.0),
+        size=(0.0, WG_W * 4, WG_W),
+        freqs=(LIGHT_SPEED / WL,),
+        name="input_flux",
     )
 
     # Output monitor at output waveguide (bottom)
-    output_monitor_fwd = Monitor(
-        design=grid,
-        start=(W / 2 - WG_W * 2, 1.5 * µm),
-        end=(W / 2 + WG_W * 2, 1.5 * µm),
-        accumulate_power=True,
-        record_fields=False,
+    output_monitor_fwd = FluxMonitor(
+        center=(W / 2, 1.5 * µm, 0.0),
+        size=(WG_W * 4, 0.0, WG_W),
+        freqs=(LIGHT_SPEED / WL,),
+        name="output_flux",
     )
 
     # Run forward simulation with output monitor
     sim_fwd = Simulation(
-        design=grid,
+        design=simulation_design,
         sources=[src_fwd],
-        monitors=[monitor_input_flux, output_monitor_fwd],
+        monitors=[
+            monitor_input_flux,
+            output_monitor_fwd,
+            FieldRecorder(("Ez",), interval=2, name="fields"),
+        ],
         boundaries=[PML(edges="all", thickness=1 * µm, formulation=PML_FORMULATION_2D)],
         time=time,
         resolution=DX,
     )
 
     print(f"[{step + 1}/{STEPS}] Forward Sim...", end="\r")
-    results = sim_fwd.run(save_fields=["Ez"], field_subsample=2)
+    results = sim_fwd.run()
 
-    fwd_ds = results.fields if results is not None else None
-    fwd_ez_history = (
-        [np.asarray(frame) for frame in fwd_ds["Ez"].values]
-        if fwd_ds is not None and "Ez" in fwd_ds
-        else []
+    fwd_ez_history = saved_field_history(results, "Ez")
+    transmission_fwd = transmission_percent_from_results(
+        results, "input_flux", "output_flux", DT
     )
-    transmission_fwd = transmission_percent(monitor_input_flux, output_monitor_fwd, DT)
 
     # Backward Simulation (with backward monitor at input location)
-    src_adj.grid = grid
-
     # Backward source monitor (just downstream of source)
-    monitor_back_flux = Monitor(
-        design=grid,
-        start=(W / 2 + WG_W * 2, 1.5 * µm),
-        end=(W / 2 - WG_W * 2, 1.5 * µm),
-        accumulate_power=True,
-        record_fields=False,
+    monitor_back_flux = FluxMonitor(
+        center=(W / 2, 1.5 * µm, 0.0),
+        size=(WG_W * 4, 0.0, WG_W),
+        freqs=(LIGHT_SPEED / WL,),
+        name="backward_source_flux",
     )
 
     # Backward monitor at original input location (left waveguide)
-    backward_monitor = Monitor(
-        design=grid,
-        start=(1.5 * µm, H / 2 + WG_W * 2),
-        end=(1.5 * µm, H / 2 - WG_W * 2),
-        accumulate_power=True,
-        record_fields=False,
+    backward_monitor = FluxMonitor(
+        center=(1.5 * µm, H / 2, 0.0),
+        size=(0.0, WG_W * 4, WG_W),
+        freqs=(LIGHT_SPEED / WL,),
+        name="backward_output_flux",
     )
 
     sim_adj = Simulation(
-        design=grid,
+        design=simulation_design,
         sources=[src_adj],
-        monitors=[monitor_back_flux, backward_monitor],
+        monitors=[
+            monitor_back_flux,
+            backward_monitor,
+            FieldRecorder(("Ez",), interval=2, name="fields"),
+        ],
         boundaries=[PML(edges="all", thickness=1 * µm, formulation=PML_FORMULATION_2D)],
         time=time,
         resolution=DX,
     )
 
-    adj_results = sim_adj.run(save_fields=["Ez"], field_subsample=2)
-    adj_ds = adj_results.fields if adj_results is not None else None
-    adj_ez_history = (
-        [np.asarray(field) for field in adj_ds["Ez"].values]
-        if adj_ds is not None and "Ez" in adj_ds
-        else []
+    adj_results = sim_adj.run()
+    adj_ez_history = saved_field_history(adj_results, "Ez")
+    transmission_back = transmission_percent_from_results(
+        adj_results, "backward_source_flux", "backward_output_flux", DT
     )
-    transmission_back = transmission_percent(monitor_back_flux, backward_monitor, DT)
 
     # Average bidirectional transmission
     transmission_pct = (transmission_fwd + transmission_back) / 2.0
     obj_val = transmission_pct
 
-    opt.objective_history.append(obj_val)
+    opt_state = opt_state.with_objective(obj_val)
     transmission_history.append(transmission_pct)
 
     # Compute Gradient (overlap of fwd and adj fields)
@@ -285,7 +335,7 @@ for step in range(STEPS):
     total_obj = obj_val - penalty_val
 
     # Step Optimizer
-    max_update = opt.apply_gradient(grad_eps, beta)
+    opt_state, max_update = opt.apply_gradient(opt_state, grad_eps, beta)
 
     # Calculate fraction for display
     mat_frac = np.mean(phys_density[mask])
@@ -344,35 +394,29 @@ for wl_val in wavelengths:
 
     # Create source
     src_sweep = ModeSource(
-        grid,
-        center=(1.0 * µm, H / 2),
-        width=WG_W * 4,
-        wavelength=wl_val,
-        pol="tm",
-        signal=signal_sweep,
-        direction="+x",
+        center=(1.0 * µm, H / 2, 0.0),
+        size=(0.0, WG_W * 4, WG_W),
+        source_time=SampledSignal(signal_sweep, dt=DT, freq0=LIGHT_SPEED / wl_val),
+        direction="+",
+        mode_spec=ModeSpec(polarization="tm"),
     )
-    # Force re-initialization of mode profile for new wavelength
-    src_sweep._jz_profile = None
-    src_sweep.initialize(grid.permittivity, DX)
-
     # Monitors
-    mon_in = Monitor(
-        design=grid,
-        start=(1.5 * µm, H / 2 - WG_W * 2),
-        end=(1.5 * µm, H / 2 + WG_W * 2),
-        accumulate_power=True,
+    mon_in = FluxMonitor(
+        center=(1.5 * µm, H / 2, 0.0),
+        size=(0.0, WG_W * 4, WG_W),
+        freqs=(LIGHT_SPEED / wl_val,),
+        name="input_flux",
     )
-    mon_out = Monitor(
-        design=grid,
-        start=(W / 2 - WG_W * 2, 1.5 * µm),
-        end=(W / 2 + WG_W * 2, 1.5 * µm),
-        accumulate_power=True,
+    mon_out = FluxMonitor(
+        center=(W / 2, 1.5 * µm, 0.0),
+        size=(WG_W * 4, 0.0, WG_W),
+        freqs=(LIGHT_SPEED / wl_val,),
+        name="output_flux",
     )
 
     # Simulation
     sim_sweep = Simulation(
-        design=grid,
+        design=simulation_design,
         sources=[src_sweep],
         monitors=[mon_in, mon_out],
         boundaries=[PML(edges="all", thickness=1 * µm, formulation=PML_FORMULATION_2D)],
@@ -381,8 +425,10 @@ for wl_val in wavelengths:
     )
 
     # Run (no field saving needed for sweep, faster)
-    sim_sweep.run(save_fields=[], field_subsample=10)
-    trans = transmission_percent(mon_in, mon_out, DT)
+    sweep_results = sim_sweep.run()
+    trans = transmission_percent_from_results(
+        sweep_results, "input_flux", "output_flux", DT
+    )
     sweep_transmission.append(trans)
 
 print("\nSweep Complete.")
@@ -410,46 +456,48 @@ signal_final = ramped_cosine(
     t_max=time_sweep[-1] / 2,
 )
 src_final = ModeSource(
-    grid,
-    center=(1.0 * µm, H / 2),
-    width=WG_W * 4,
-    wavelength=WL,
-    pol="tm",
-    signal=signal_final,
-    direction="+x",
+    center=(1.0 * µm, H / 2, 0.0),
+    size=(0.0, WG_W * 4, WG_W),
+    source_time=SampledSignal(signal_final, dt=DT, freq0=LIGHT_SPEED / WL),
+    direction="+",
+    mode_spec=ModeSpec(polarization="tm"),
 )
-src_final.initialize(grid.permittivity, DX)
 
-mon_in_final = Monitor(
-    design=grid,
-    start=(1.5 * µm, H / 2 - WG_W * 2),
-    end=(1.5 * µm, H / 2 + WG_W * 2),
-    accumulate_power=True,
+mon_in_final = FluxMonitor(
+    center=(1.5 * µm, H / 2, 0.0),
+    size=(0.0, WG_W * 4, WG_W),
+    freqs=(LIGHT_SPEED / WL,),
+    name="input_flux",
 )
-mon_out_final = Monitor(
-    design=grid,
-    start=(W / 2 - WG_W * 2, 1.5 * µm),
-    end=(W / 2 + WG_W * 2, 1.5 * µm),
-    accumulate_power=True,
+mon_out_final = FluxMonitor(
+    center=(W / 2, 1.5 * µm, 0.0),
+    size=(WG_W * 4, 0.0, WG_W),
+    freqs=(LIGHT_SPEED / WL,),
+    name="output_flux",
 )
 
 sim_final = Simulation(
-    design=grid,
+    design=simulation_design,
     sources=[src_final],
-    monitors=[mon_in_final, mon_out_final],
+    monitors=[
+        mon_in_final,
+        mon_out_final,
+        FieldRecorder(("Ez", "Hx", "Hy"), interval=1, name="fields"),
+    ],
     boundaries=[PML(edges="all", thickness=1 * µm, formulation=PML_FORMULATION_2D)],
     time=time_sweep,
     resolution=DX,
 )
-results_final = sim_final.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=1)
+results_final = sim_final.run()
 
-trans_final = transmission_percent(mon_in_final, mon_out_final, DT)
+trans_final = transmission_percent_from_results(
+    results_final, "input_flux", "output_flux", DT
+)
 
 print("Calculating energy flow...")
-final_ds = results_final.fields
-Ez_t = final_ds["Ez"].values
-Hx_t = final_ds["Hx"].values
-Hy_t = final_ds["Hy"].values
+Ez_t = saved_field_array(results_final, "Ez")
+Hx_t = saved_field_array(results_final, "Hx")
+Hy_t = saved_field_array(results_final, "Hy")
 
 min_x = min(Ez_t.shape[1], Hx_t.shape[1], Hy_t.shape[1])
 min_y = min(Ez_t.shape[2], Hx_t.shape[2], Hy_t.shape[2])

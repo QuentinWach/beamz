@@ -1,6 +1,7 @@
 import numpy as np
+import pytest
 
-from beamz import Circle, Design, Material, Polygon, Rectangle
+from beamz import Circle, CustomMaterial, Design, Material, Polygon, Rectangle
 from beamz.design.core import _normalize_aa_config
 from beamz.design.meshing import (
     MaterialGrids,
@@ -18,6 +19,61 @@ def _build_circle_design():
         material=Material(permittivity=12.0),
     )
     return design
+
+
+@pytest.mark.parametrize(
+    "grid_name",
+    ("permittivity_grid", "permeability_grid", "conductivity_grid"),
+)
+def test_grid_backed_custom_material_requires_bounds(grid_name):
+    with pytest.raises(ValueError, match="requires bounds"):
+        CustomMaterial(**{grid_name: np.full((2, 2), 12.0)})
+
+
+def test_custom_material_maximum_covers_sampled_permittivity():
+    with pytest.raises(ValueError, match="must include sampled"):
+        CustomMaterial(
+            permittivity_grid=np.full((2, 2), 12.0),
+            bounds=((0.0, 1.0), (0.0, 1.0)),
+            max_permittivity=11.0,
+        )
+
+
+def test_custom_material_evaluation_failure_aborts_rasterization(monkeypatch):
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+
+    def broken_permittivity(x, y):
+        raise RuntimeError("material model failed")
+
+    material = CustomMaterial(
+        permittivity_func=broken_permittivity,
+        cache_key="broken",
+        max_permittivity=12.0,
+    )
+    design = Design(width=1.0, height=1.0).with_structure(
+        Rectangle(
+            position=(0.0, 0.0),
+            width=1.0,
+            height=1.0,
+            material=material,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="material model failed"):
+        design.rasterize(resolution=0.5, force_recompute=True)
+
+
+def test_raster_progress_is_opt_in(capsys):
+    _build_circle_design().rasterize(resolution=0.5, progress=True)
+
+    assert "Rasterizing structures" in capsys.readouterr().out
+
+
+def test_2d_grid_for_3d_design_uses_runtime_warning():
+    design = Design(width=1.0, height=1.0, depth=1.0, material=Material(1.0))
+
+    with pytest.warns(RuntimeWarning, match="RegularGrid3D"):
+        RegularGrid(design, resolution=0.5)
 
 
 def test_default_antialias_matches_legacy_grid_64(monkeypatch):
@@ -116,6 +172,16 @@ def test_legacy_grid_single_sample_is_centered(monkeypatch):
     sample_dx, sample_dy = grid._build_supersample_offsets_xy(cell_size=0.5)
     np.testing.assert_allclose(sample_dx, np.array([0.0]))
     np.testing.assert_allclose(sample_dy, np.array([0.0]))
+    assert not grid.permittivity.flags.writeable
+    with pytest.raises(AttributeError, match="grids are immutable"):
+        grid.resolution = 1.0
+    with pytest.raises(ValueError):
+        grid.permittivity[0, 0] = 1.0
+    original = np.array(grid.permittivity, copy=True)
+    changed = grid.updated_copy(permittivity=np.full(grid.shape, 2.0))
+    np.testing.assert_allclose(changed.permittivity, 2.0)
+    assert not changed.permittivity.flags.writeable
+    np.testing.assert_array_equal(grid.permittivity, original)
 
 
 def test_axis_aligned_rectangle_uses_exact_area_fraction(monkeypatch):
@@ -156,6 +222,62 @@ def test_polygon_uses_exact_area_fraction(monkeypatch):
     )
 
     np.testing.assert_allclose(grid.permittivity, np.array([[3.0]]))
+
+
+def test_polygon_shift_keeps_z_field_and_vertices_consistent():
+    poly = Polygon(
+        vertices=[(0.0, 0.0, 0.2), (1.0, 0.0, 0.2), (0.0, 1.0, 0.2)],
+        depth=0.3,
+        z=0.2,
+        material=Material(permittivity=5.0),
+    )
+
+    shifted = poly.shift(2.0, 3.0, 4.0)
+
+    assert shifted.z == 4.2
+    np.testing.assert_allclose([vertex[2] for vertex in shifted.vertices], 4.2)
+
+
+def test_polygon_2d_vertices_inherit_explicit_z_and_bounding_box():
+    poly = Polygon(
+        vertices=[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
+        depth=0.3,
+        z=2.2,
+        material=Material(permittivity=5.0),
+    )
+
+    assert poly.z == 2.2
+    np.testing.assert_allclose([vertex[2] for vertex in poly.vertices], 2.2)
+    np.testing.assert_allclose(poly.get_bounding_box(), (0.0, 0.0, 2.2, 1.0, 1.0, 2.5))
+
+
+def test_polygon_with_explicit_z_rasterizes_in_requested_3d_layer(monkeypatch):
+    monkeypatch.setenv("BEAMZ_RASTER_CACHE", "0")
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+    design = Design(
+        width=1.0,
+        height=1.0,
+        depth=3.0,
+        material=Material(permittivity=1.0),
+    )
+    design += Polygon(
+        vertices=[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+        z=2.0,
+        depth=0.5,
+        material=Material(permittivity=5.0),
+    )
+
+    grid = RegularGrid3D(
+        design,
+        resolution_xy=0.5,
+        resolution_z=0.5,
+        aa_mode="legacy_grid",
+        aa_samples=1,
+    )
+
+    np.testing.assert_allclose(grid.permittivity[:4], 1.0)
+    np.testing.assert_allclose(grid.permittivity[4], 5.0)
+    np.testing.assert_allclose(grid.permittivity[5], 1.0)
 
 
 def test_sidewalled_rectangle_point_membership_varies_with_z():
@@ -207,7 +329,7 @@ def test_sidewalled_rectangle_rasterizes_narrower_at_top(monkeypatch):
 def test_aligned_3d_rectangle_uses_direct_region_fill(monkeypatch):
     monkeypatch.setenv("BEAMZ_RASTER_CACHE", "0")
     monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
-    monkeypatch.setenv("BEAMZ_RASTER_FAST_3D", "1")
+    monkeypatch.setenv("BEAMZ_RASTER_EXACT_3D", "1")
 
     def fail_masked_region(*args, **kwargs):
         raise AssertionError("aligned rectangles should not allocate masked regions")
@@ -239,6 +361,29 @@ def test_aligned_3d_rectangle_uses_direct_region_fill(monkeypatch):
     expected = np.ones((4, 4, 4), dtype=np.float32)
     expected[1:3, 1:3, 1:3] = 9.0
     np.testing.assert_allclose(grid.permittivity, expected)
+
+
+def test_exact_3d_coverage_samples_custom_material_at_voxel_centers(monkeypatch):
+    monkeypatch.setenv("BEAMZ_RASTER_TIMING", "0")
+    material = CustomMaterial(
+        permittivity_func=lambda x, y, z: 2.0 + x + y + z,
+        cache_key="xyz-gradient",
+        max_permittivity=5.0,
+    )
+    design = Design(width=1.0, height=1.0, depth=1.0).with_structure(
+        Rectangle(
+            position=(0.0, 0.0, 0.0),
+            width=1.0,
+            height=1.0,
+            depth=1.0,
+            material=material,
+        )
+    )
+
+    grid = RegularGrid3D(design, resolution_xy=0.5, resolution_z=0.5)
+
+    z, y, x = np.meshgrid(*([np.array([0.25, 0.75])] * 3), indexing="ij")
+    np.testing.assert_allclose(grid.permittivity, 2.0 + x + y + z)
 
 
 def test_create_mesh_ignores_resolution_z_for_2d_design():

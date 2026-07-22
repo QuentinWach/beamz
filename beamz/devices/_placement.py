@@ -213,12 +213,16 @@ def snap_mode_source_region(
 
 
 def snap_axis_aligned_line_region(
-    start: tuple[float, float],
-    end: tuple[float, float],
+    start: tuple[float, ...],
+    end: tuple[float, ...],
     dx: float,
     dy: float,
-    shape: tuple[int, int],
+    shape: tuple[int, ...],
 ) -> SnappedRegion | None:
+    if len(start) < 2 or len(end) < 2 or len(shape) != 2:
+        raise ValueError(
+            "A 2D line region requires two coordinates and a rank-2 shape."
+        )
     ny, nx = shape
     x0, y0 = float(start[0]), float(start[1])
     x1, y1 = float(end[0]), float(end[1])
@@ -247,15 +251,19 @@ def snap_axis_aligned_line_region(
 
 def snap_plane_region(
     *,
-    start: tuple[float, float, float],
-    end: tuple[float, float, float] | None,
+    start: tuple[float, ...],
+    end: tuple[float, ...] | None,
     plane_normal: str,
-    size: tuple[float, float] | None,
+    size: tuple[float, ...] | None,
     dx: float,
     dy: float,
     dz: float,
-    shape: tuple[int, int, int],
+    shape: tuple[int, ...],
 ) -> SnappedRegion:
+    if len(start) != 3 or (end is not None and len(end) != 3) or len(shape) != 3:
+        raise ValueError("A 3D plane region requires rank-3 coordinates and shape.")
+    if size is not None and len(size) != 2:
+        raise ValueError("A 3D plane size requires two tangential extents.")
     nz, ny, nx = shape
     counts = {"x": nx, "y": ny, "z": nz}
     steps = {"x": float(dx), "y": float(dy), "z": float(dz)}
@@ -309,67 +317,6 @@ def snap_plane_region(
         plane_coord=float(plane_coord),
         intervals=intervals,
     )
-
-
-def mirror_lock_plane_pair_regions(
-    *,
-    start_a: tuple[float, float, float],
-    end_a: tuple[float, float, float] | None,
-    start_b: tuple[float, float, float],
-    end_b: tuple[float, float, float] | None,
-    plane_normal: str,
-    size_a: tuple[float, float] | None,
-    size_b: tuple[float, float] | None,
-    dx: float,
-    dy: float,
-    dz: float,
-    shape: tuple[int, int, int],
-) -> tuple[SnappedRegion, SnappedRegion]:
-    """Snap one plane and force its sibling onto the mirrored Yee slice.
-
-    This keeps the tangential extents of each plane independent while ensuring
-    the normal-axis slice indices satisfy `i_a + i_b = count - 1`.
-    """
-    region_a = snap_plane_region(
-        start=start_a,
-        end=end_a,
-        plane_normal=plane_normal,
-        size=size_a,
-        dx=dx,
-        dy=dy,
-        dz=dz,
-        shape=shape,
-    )
-    region_b = snap_plane_region(
-        start=start_b,
-        end=end_b,
-        plane_normal=plane_normal,
-        size=size_b,
-        dx=dx,
-        dy=dy,
-        dz=dz,
-        shape=shape,
-    )
-    if region_a.normal_axis != region_b.normal_axis:
-        raise ValueError(
-            f"Cannot mirror-lock planes with different normals: "
-            f"{region_a.normal_axis!r} vs {region_b.normal_axis!r}"
-        )
-
-    nz, ny, nx = shape
-    counts = {"x": nx, "y": ny, "z": nz}
-    steps = {"x": float(dx), "y": float(dy), "z": float(dz)}
-    axis = region_a.normal_axis
-    mirrored_index = int(counts[axis] - 1 - region_a.plane_index)
-    mirrored_coord = (float(mirrored_index) + 0.5) * float(steps[axis])
-    region_b_locked = SnappedRegion(
-        ndim=region_b.ndim,
-        normal_axis=region_b.normal_axis,
-        plane_index=mirrored_index,
-        plane_coord=float(mirrored_coord),
-        intervals=region_b.intervals,
-    )
-    return region_a, region_b_locked
 
 
 def line_region_points(region: SnappedRegion) -> list[tuple[int, int]]:

@@ -6,11 +6,11 @@ This module provides tools for gradient-based optimization of electromagnetic de
 
 ### `topology.py`
 The high-level interface for topology optimization.
-- **`TopologyManager` Class**: Manages the optimization lifecycle.
-  - **Initialization**: Sets up the design, mask, optimizer (using `optax`), and filter parameters.
-  - **`update_design(step)`**: Updates the physical material distribution based on the current optimization step (handling beta-continuation).
-  - **`apply_gradient(grad_eps, beta)`**: Backpropagates the gradient from the epsilon (permittivity) domain to the design parameter domain and performs an optimizer step using `optax`.
-  - **`get_physical_density(beta)`**: Transforms the latent design parameters into a physical density (0 to 1) using filtering and projection.
+- **`TopologySpec`**: Immutable design mask, optimizer, filter, and projection configuration.
+- **`TopologyState`**: Immutable density, optimizer buffers, and objective history.
+  - **`density_for_step(state, step, total_steps)`**: Returns the continuation beta and physical density.
+  - **`apply_gradient(state, grad_eps, beta)`**: Returns updated state and the maximum parameter update.
+  - **`physical_density(state, beta)`**: Transforms latent parameters into physical density (0 to 1).
 - **Helper Functions**:
   - `compute_overlap_gradient`: Calculates the gradient of the overlap integral (mode matching) using forward and adjoint fields.
   - `create_optimization_mask`: Generates a boolean mask defining the design region.
@@ -84,26 +84,27 @@ physical_density = transform_density(
 ## Usage Example
 
 ```python
-from beamz.optimization.topology import TopologyManager, create_optimization_mask
+from beamz.optimization.topology import TopologySpec, create_optimization_mask
 
 # 1. Setup Design and Mask
 mask = create_optimization_mask(grid, opt_region)
 
-# 2. Initialize Manager
-opt = TopologyManager(
+# 2. Initialize immutable configuration and explicit state
+opt = TopologySpec(
     design=design,
     region_mask=mask,
     resolution=DX,
-    filter_type='conic', # Options: 'morphological', 'conic'
+    filter_type='conic',  # Options: 'morphological', 'conic'
     projection_type='ssp',
-    filter_radius=0.15*µm,       # Physical units (e.g. microns)
-    ssp_smoothing_radius=0.55    # Density-grid cell units
+    filter_radius=0.15*µm,  # Physical units (e.g. microns)
+    ssp_smoothing_radius=0.55,  # Density-grid cell units
 )
+state = opt.initial_state()
 
 # 3. Optimization Loop
 for step in range(STEPS):
     # Get current physical density
-    beta, phys_density = opt.update_design(step, STEPS)
+    beta, phys_density = opt.density_for_step(state, step, STEPS)
     
     # Update grid permittivity
     grid.permittivity[mask] = EPS_MIN + phys_density[mask] * (EPS_MAX - EPS_MIN)
@@ -111,5 +112,5 @@ for step in range(STEPS):
     # ... Run FDTD & Compute Gradient (grad_eps) ...
     
     # Update Parameters
-    opt.apply_gradient(grad_eps, beta)
+    state, max_update = opt.apply_gradient(state, grad_eps, beta)
 ```

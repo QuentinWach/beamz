@@ -1,193 +1,120 @@
-from types import SimpleNamespace
-
 import numpy as np
+import pytest
 
-from beamz import PortSpec, Simulation
+from beamz import (
+    Design,
+    FieldMonitor,
+    FieldRecorder,
+    FluxMonitor,
+    Material,
+    ModeMonitor,
+    ModeSpec,
+    Port,
+    Simulation,
+)
+from beamz.analysis import s_parameters
+from beamz.analysis import sparameters as sp
+from beamz.analysis.data import AnalysisData
+from beamz.simulation.results import (
+    FieldMetadata,
+    MonitorResults,
+    SimulationMetadata,
+    SimulationResults,
+)
 
 
-def _run_modal_cw_column(waves, ports, frequency, output_ports):
-    sim = Simulation.__new__(Simulation)
-    sim.sources = []
-    sim.monitors = []
-    sim.is_3d = False
-    sim.plane_2d = "xy"
-
-    def fake_extract(
-        self,
-        ports,
-        frequency,
-        steady_start_time=None,
-        avg_cycles=12,
-        window="hann",
-        mode_strategy="per_frequency",
-        return_power=True,
-    ):
-        return waves
-
-    sim.extract_port_waves_cw = fake_extract.__get__(sim, Simulation)
-    return sim.get_S_matrix_modal_cw(
-        source_port="o1",
-        ports=ports,
-        output_ports=output_ports,
-        frequency=frequency,
-        as_sax=False,
-        return_diagnostics=True,
+def _simulation(*, width=2.0, height=2.0, depth=0.0, monitors=(), sources=()):
+    return Simulation(
+        design=Design(
+            width=width,
+            height=height,
+            depth=depth,
+            background=Material(1.0),
+        ),
+        monitors=monitors,
+        sources=sources,
+        resolution=1.0,
+        time=np.array([0.0, 0.25]),
     )
 
 
-def _run_modal_dft_column(
-    waves, ports, frequencies, output_ports, min_incident_db=-40.0
+def _analysis_contract(*, is_3d=False):
+    shape = (1, 1, 1) if is_3d else (1, 1)
+    metadata = SimulationMetadata(
+        dt=0.25,
+        resolution=1.0,
+        is_3d=is_3d,
+        plane_2d="xy",
+        coordinate_offset=(0.0, 0.0, 0.0),
+        time=np.array([0.0, 0.25]),
+        width=1.0,
+        height=1.0,
+        depth=float(is_3d),
+        fields=FieldMetadata(shape, {}),
+    )
+    return AnalysisData(metadata, {}, None, (), None)
+
+
+def _empty_monitor_result(monitor):
+    return MonitorResults(
+        monitor=monitor,
+        fields={},
+        power_history=np.empty(0),
+        power_timestamps=np.empty(0),
+        power_spectrum=np.empty(0, dtype=np.complex64),
+    )
+
+
+def _port(
+    *,
+    name,
+    monitor_name=None,
+    direction="+x",
+    polarization="tm",
+    mode_index=0,
 ):
-    sim = Simulation.__new__(Simulation)
-    sim.sources = []
-    sim.monitors = []
-    sim.is_3d = False
-    sim.plane_2d = "xy"
+    axis = str(direction)[-1]
+    size = tuple(0.0 if value == axis else 1.0 for value in "xyz")
+    return Port(
+        center=(0.0, 0.0, 0.0),
+        size=size,
+        name=name,
+        monitor_name=monitor_name,
+        direction=str(direction)[0],
+        mode_spec=ModeSpec(mode_index=mode_index, polarization=polarization),
+    )
+
+
+def _run_sparameters(waves, ports, frequencies, output_ports, monkeypatch, **kwargs):
+    inputs = {"analysis": _analysis_contract()}
 
     def fake_extract(
-        self,
+        sim_arg,
         ports,
         frequencies,
         min_incident_db=-40.0,
         return_power=True,
         mode_strategy="per_frequency",
     ):
+        del sim_arg, ports, min_incident_db, return_power, mode_strategy
         return waves
 
-    sim.extract_port_waves_dft = fake_extract.__get__(sim, Simulation)
-    return sim.get_S_matrix_modal_dft(
-        source_port="o1",
+    monkeypatch.setattr(sp, "_extract_port_waves_dft", fake_extract)
+    return s_parameters(
+        inputs,
+        source_port=kwargs.pop("source_port", "o1"),
         ports=ports,
         output_ports=output_ports,
         frequencies=frequencies,
-        as_sax=False,
-        return_diagnostics=True,
-        min_incident_db=min_incident_db,
+        **kwargs,
     )
 
 
-def test_cw_straight_waveguide_tm_power_bound():
-    ports = [
-        PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
-        PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
-    ]
-    waves = {
-        "o1": {
-            "a_plus": 1.0 + 0.0j,
-            "a_minus": 0.01 + 0.0j,
-            "a_incident": 1.0 + 0.0j,
-        },
-        "o2": {
-            "a_plus": 0.0 + 0.0j,
-            "a_minus": 0.99 * np.exp(1j * 0.1),
-        },
-    }
-    result = _run_modal_cw_column(
-        waves, ports, frequency=193e12, output_ports=["o1", "o2"]
-    )
-    s = result["s_matrix"]
-    assert abs(s[("o2", "o1")]) > 0.95
-    assert abs(s[("o1", "o1")]) < 0.05
-    assert result["diagnostics"]["power_sum"] <= 1.02
-
-
-def test_cw_straight_waveguide_te_power_bound():
-    ports = [
-        PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="te"),
-        PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="te"),
-    ]
-    waves = {
-        "o1": {
-            "a_plus": 1.0 + 0.0j,
-            "a_minus": 0.02 + 0.0j,
-            "a_incident": 1.0 + 0.0j,
-        },
-        "o2": {
-            "a_plus": 0.0 + 0.0j,
-            "a_minus": 0.97 * np.exp(-1j * 0.05),
-        },
-    }
-    result = _run_modal_cw_column(
-        waves, ports, frequency=193e12, output_ports=["o1", "o2"]
-    )
-    s = result["s_matrix"]
-    assert abs(s[("o2", "o1")]) > 0.9
-    assert abs(s[("o1", "o1")]) < 0.08
-    assert result["diagnostics"]["power_sum"] <= 1.02
-
-
-def test_cw_mmi_split_balance_tm():
-    ports = [
-        PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
-        PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
-        PortSpec(name="o3", monitor_name="o3", direction="+x", polarization="tm"),
-    ]
-    waves = {
-        "o1": {
-            "a_plus": 1.0 + 0.0j,
-            "a_minus": 0.06 + 0.0j,
-            "a_incident": 1.0 + 0.0j,
-        },
-        "o2": {
-            "a_plus": 0.0 + 0.0j,
-            "a_minus": 0.70 + 0.0j,
-        },
-        "o3": {
-            "a_plus": 0.0 + 0.0j,
-            "a_minus": 0.69 + 0.0j,
-        },
-    }
-    result = _run_modal_cw_column(
-        waves, ports, frequency=193e12, output_ports=["o1", "o2", "o3"]
-    )
-    s = result["s_matrix"]
-    s21_db = 20 * np.log10(max(abs(s[("o2", "o1")]), 1e-12))
-    s31_db = 20 * np.log10(max(abs(s[("o3", "o1")]), 1e-12))
-    assert abs(s21_db - s31_db) < 0.5
-
-
-def test_cw_loss_visibility_with_absorption():
-    ports = [
-        PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
-        PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
-    ]
-    waves_low_loss = {
-        "o1": {
-            "a_plus": 1.0 + 0.0j,
-            "a_minus": 0.05 + 0.0j,
-            "a_incident": 1.0 + 0.0j,
-        },
-        "o2": {
-            "a_plus": 0.0 + 0.0j,
-            "a_minus": 0.92 + 0.0j,
-        },
-    }
-    waves_high_loss = {
-        "o1": {
-            "a_plus": 1.0 + 0.0j,
-            "a_minus": 0.05 + 0.0j,
-            "a_incident": 1.0 + 0.0j,
-        },
-        "o2": {
-            "a_plus": 0.0 + 0.0j,
-            "a_minus": 0.72 + 0.0j,
-        },
-    }
-    low = _run_modal_cw_column(
-        waves_low_loss, ports, frequency=193e12, output_ports=["o1", "o2"]
-    )
-    high = _run_modal_cw_column(
-        waves_high_loss, ports, frequency=193e12, output_ports=["o1", "o2"]
-    )
-    assert high["diagnostics"]["power_sum"] < low["diagnostics"]["power_sum"]
-    assert high["diagnostics"]["loss_est"] > low["diagnostics"]["loss_est"]
-
-
-def test_dft_matches_cw_on_straight_waveguide_subset():
+def test_s_parameters_returns_typed_result_and_matrix(monkeypatch):
     freqs = np.array([191e12, 193e12, 195e12], dtype=float)
     ports = [
-        PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
-        PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
+        _port(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+        _port(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
     ]
     waves = {
         "o1": {
@@ -197,185 +124,247 @@ def test_dft_matches_cw_on_straight_waveguide_subset():
         },
         "o2": {
             "a_plus": np.zeros(3, dtype=np.complex128),
-            "a_minus": np.array(
-                [
-                    0.98 * np.exp(1j * 0.02),
-                    0.975 * np.exp(1j * 0.04),
-                    0.97 * np.exp(1j * 0.06),
-                ],
-                dtype=np.complex128,
-            ),
+            "a_minus": np.array([0.98, 0.975, 0.97], dtype=np.complex128),
         },
     }
-    dft = _run_modal_dft_column(waves, ports, freqs, output_ports=["o1", "o2"])
-    for i, f in enumerate(freqs):
-        waves_i = {
-            "o1": {
-                "a_plus": waves["o1"]["a_plus"][i],
-                "a_minus": waves["o1"]["a_minus"][i],
-                "a_incident": waves["o1"]["a_incident"][i],
-            },
-            "o2": {
-                "a_plus": waves["o2"]["a_plus"][i],
-                "a_minus": waves["o2"]["a_minus"][i],
-            },
-        }
-        cw = _run_modal_cw_column(
-            waves_i, ports, frequency=float(f), output_ports=["o1", "o2"]
-        )
-        assert np.isclose(
-            dft["s_matrix"][("o1", "o1")][i],
-            cw["s_matrix"][("o1", "o1")],
-            rtol=1e-12,
-            atol=1e-12,
-        )
-        assert np.isclose(
-            dft["s_matrix"][("o2", "o1")][i],
-            cw["s_matrix"][("o2", "o1")],
-            rtol=1e-12,
-            atol=1e-12,
-        )
+
+    result = _run_sparameters(waves, ports, freqs, ["o1", "o2"], monkeypatch)
+
+    assert isinstance(result, sp.SParameterResult)
+    assert set(result.s_matrix) == {("o1", "o1"), ("o2", "o1")}
+    np.testing.assert_allclose(result.frequencies, freqs)
+    np.testing.assert_allclose(result.s_matrix[("o2", "o1")], waves["o2"]["a_minus"])
+    assert np.nanmax(result.diagnostics["power_sum"]) <= 1.02
 
 
-def test_dft_mmi_balance_tm():
+def test_s_parameters_mmi_balance_and_loss_visibility(monkeypatch):
     freqs = np.array([192e12, 193.5e12, 195e12], dtype=float)
     ports = [
-        PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
-        PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
-        PortSpec(name="o3", monitor_name="o3", direction="+x", polarization="tm"),
+        _port(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
+        _port(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
+        _port(name="o3", monitor_name="o3", direction="+x", polarization="tm"),
     ]
-    waves = {
+    low_loss = {
         "o1": {
-            "a_plus": np.ones(3, dtype=np.complex128),
-            "a_minus": 0.05 * np.ones(3, dtype=np.complex128),
-            "a_incident": np.ones(3, dtype=np.complex128),
-        },
-        "o2": {
-            "a_plus": np.zeros(3, dtype=np.complex128),
-            "a_minus": np.array([0.69, 0.705, 0.695], dtype=np.complex128),
-        },
-        "o3": {
-            "a_plus": np.zeros(3, dtype=np.complex128),
-            "a_minus": np.array([0.695, 0.700, 0.692], dtype=np.complex128),
-        },
+            "a_plus": np.ones(3),
+            "a_minus": 0.05 * np.ones(3),
+            "a_incident": np.ones(3),
+        },  # fmt: skip
+        "o2": {"a_plus": np.zeros(3), "a_minus": np.array([0.69, 0.705, 0.695])},
+        "o3": {"a_plus": np.zeros(3), "a_minus": np.array([0.695, 0.700, 0.692])},
     }
-    result = _run_modal_dft_column(waves, ports, freqs, output_ports=["o1", "o2", "o3"])
-    s = result["s_matrix"]
+    high_loss = {
+        "o1": {
+            "a_plus": np.ones(3),
+            "a_minus": 0.05 * np.ones(3),
+            "a_incident": np.ones(3),
+        },  # fmt: skip
+        "o2": {"a_plus": np.zeros(3), "a_minus": np.array([0.52, 0.50, 0.49])},
+        "o3": {"a_plus": np.zeros(3), "a_minus": np.array([0.50, 0.49, 0.48])},
+    }
+
+    low = _run_sparameters(low_loss, ports, freqs, ["o1", "o2", "o3"], monkeypatch)
+    high = _run_sparameters(high_loss, ports, freqs, ["o1", "o2", "o3"], monkeypatch)
+
     idx = 1
-    s21_db = 20 * np.log10(max(abs(s[("o2", "o1")][idx]), 1e-12))
-    s31_db = 20 * np.log10(max(abs(s[("o3", "o1")][idx]), 1e-12))
+    s21_db = 20 * np.log10(max(abs(low.s_matrix[("o2", "o1")][idx]), 1e-12))
+    s31_db = 20 * np.log10(max(abs(low.s_matrix[("o3", "o1")][idx]), 1e-12))
     assert abs(s21_db - s31_db) < 0.5
+    assert np.nanmean(high.diagnostics["power_sum"]) < np.nanmean(low.diagnostics["power_sum"])  # fmt: skip
+    assert np.nanmean(high.diagnostics["loss_est"]) > np.nanmean(low.diagnostics["loss_est"])  # fmt: skip
 
 
-def test_dft_loss_visibility_with_absorption():
-    freqs = np.array([193e12, 194e12], dtype=float)
-    ports = [
-        PortSpec(name="o1", monitor_name="o1", direction="+x", polarization="tm"),
-        PortSpec(name="o2", monitor_name="o2", direction="+x", polarization="tm"),
-    ]
-    low = {
-        "o1": {
-            "a_plus": np.ones(2, dtype=np.complex128),
-            "a_minus": 0.05 * np.ones(2, dtype=np.complex128),
-            "a_incident": np.ones(2, dtype=np.complex128),
-        },
-        "o2": {
-            "a_plus": np.zeros(2, dtype=np.complex128),
-            "a_minus": np.array([0.92, 0.91], dtype=np.complex128),
-        },
-    }
-    high = {
-        "o1": {
-            "a_plus": np.ones(2, dtype=np.complex128),
-            "a_minus": 0.05 * np.ones(2, dtype=np.complex128),
-            "a_incident": np.ones(2, dtype=np.complex128),
-        },
-        "o2": {
-            "a_plus": np.zeros(2, dtype=np.complex128),
-            "a_minus": np.array([0.72, 0.70], dtype=np.complex128),
-        },
-    }
-    low_result = _run_modal_dft_column(low, ports, freqs, output_ports=["o1", "o2"])
-    high_result = _run_modal_dft_column(high, ports, freqs, output_ports=["o1", "o2"])
-    assert np.nanmean(high_result["diagnostics"]["power_sum"]) < np.nanmean(
-        low_result["diagnostics"]["power_sum"]
-    )
-    assert np.nanmean(high_result["diagnostics"]["loss_est"]) > np.nanmean(
-        low_result["diagnostics"]["loss_est"]
-    )
-
-
-def test_dft_reference_monitor_normalizes_but_does_not_subtract_source_scatter():
+def test_s_parameters_results_ignore_live_simulation_and_monitor_mutation(monkeypatch):
     freqs = np.array([1.0], dtype=float)
-    sim = Simulation.__new__(Simulation)
-    sim.sources = []
-    sim.monitors = [
-        SimpleNamespace(name="src_m", start=(1.0, 0.0), end=(1.0, 1.0)),
-        SimpleNamespace(name="src_ref", start=(0.0, 0.0), end=(0.0, 1.0)),
-    ]
-    sim.is_3d = False
-    sim.plane_2d = "xy"
-    waves = {
-        "src": {
-            "a_plus": np.array([0.25], dtype=np.complex128),
-            "a_minus": np.array([1.0], dtype=np.complex128),
-            "a_incident_plus": np.array([0.20], dtype=np.complex128),
-            "a_incident_minus": np.array([2.0], dtype=np.complex128),
-            "mode_neff": np.array([1.0], dtype=float),
-            "reference_mode_neff": np.array([1.0], dtype=float),
-        },
-    }
+    sim = _simulation(width=1.0, height=1.0)
 
-    def fake_extract(
-        self,
-        ports,
-        frequencies,
-        min_incident_db=-40.0,
-        return_power=True,
-        mode_strategy="per_frequency",
-    ):
-        del self, ports, min_incident_db, return_power, mode_strategy
+    monitor = FieldMonitor(
+        center=(0.5, 0.0, 0.0),
+        size=(1.0, 0.0, 0.0),
+        name="o1",
+        freqs=freqs,
+        fields=("Ez",),
+    )
+    monitor_result = MonitorResults(
+        monitor=monitor,
+        fields={},
+        power_history=np.asarray([], dtype=float),
+        power_timestamps=np.asarray([], dtype=float),
+        power_spectrum=np.asarray([], dtype=np.complex64),
+        dft_fields={"Ez": np.array([[2.0 + 0.0j]])},
+        dft_frequencies=freqs,
+        dft_weight_sum=np.array([2.0]),
+        dft_base_dt=sim.dt,
+        resolution=1.0,
+    )
+    results = SimulationResults.from_run(
+        sim,
+        runtime_fields=sim.compile().grid,
+        monitor_results={"o1": monitor_result},
+    )
+
+    monitor = monitor.updated_copy(freqs=np.array([9.0]))
+
+    def fake_extract(sim_arg, ports, frequencies, **kwargs):
+        del ports, kwargs
+        data = sp.analysis_inputs(sim_arg)["o1"]
+        assert data.dt == 0.25
         np.testing.assert_allclose(frequencies, freqs)
-        return waves
+        np.testing.assert_allclose(data.field("Ez"), [[2.0 + 0.0j]])
+        return {
+            "o1": {
+                "a_plus": np.ones(1, dtype=np.complex128),
+                "a_minus": np.array([0.25], dtype=np.complex128),
+                "a_incident": np.ones(1, dtype=np.complex128),
+            },
+        }
 
-    sim.extract_port_waves_dft = fake_extract.__get__(sim, Simulation)
-    result = sim.get_S_matrix_modal_dft(
-        source_port="src",
-        ports=[
-            PortSpec(
-                name="src",
-                monitor_name="src_m",
-                reference_monitor="src_ref",
-                direction="+x",
-                polarization="tm",
-                incident_wave="minus",
-                scattered_wave="plus",
-            )
-        ],
-        output_ports=["src"],
-        frequencies=freqs,
-        as_sax=False,
-        return_diagnostics=True,
-        min_incident_db=-80.0,
+    monkeypatch.setattr(sp, "_extract_port_waves_dft", fake_extract)
+    result = s_parameters(
+        results,
+        source_port="o1",
+        ports=[_port(name="o1", monitor_name="o1", direction="+x", polarization="tm")],
+        output_ports=["o1"],
     )
 
-    np.testing.assert_allclose(
-        result["s_matrix"][("src", "src")],
-        np.array([0.125], dtype=np.complex128),
-        rtol=1e-12,
-        atol=1e-12,
+    np.testing.assert_allclose(result.s_matrix[("o1", "o1")], [0.25])
+
+
+def test_results_analysis_snapshot_keeps_compact_field_shapes():
+    sim = _simulation(width=4.0, height=3.0)
+    monitor = FieldMonitor(
+        center=(0.5, 0.0, 0.0),
+        size=(1.0, 0.0, 0.0),
+        name="o1",
+        freqs=np.array([1.0]),
     )
-    assert "source_scattered_correction" not in result["diagnostics"]
-    assert "corrected_scattered" not in result["diagnostics"]
-    assert result["diagnostics"]["source_reference_normalization"] == {
-        "enabled": True,
-        "monitor": "src_ref",
-        "incident_wave": "minus",
-        "scattered_wave": "plus",
-    }
-    np.testing.assert_allclose(
-        result["diagnostics"]["scattered_waves"]["src"],
-        np.array([0.25], dtype=np.complex128),
-        rtol=1e-12,
-        atol=1e-12,
+
+    grid = sim.compile().grid
+    results = SimulationResults.from_run(
+        sim,
+        runtime_fields=grid,
+        monitor_results={"o1": _empty_monitor_result(monitor)},
     )
+    fields = results.metadata.fields
+
+    assert fields.grid_shape == (3, 4)
+    assert fields.component_shapes["Ex"] == grid.Ex.shape
+    assert fields.component_shapes["Hz"] == grid.Hz.shape
+    assert fields.materials is None
+
+    full_results = SimulationResults.from_run(
+        sim,
+        runtime_fields=grid,
+        monitor_results={"o1": _empty_monitor_result(monitor)},
+        store_full_materials=True,
+    )
+    np.testing.assert_allclose(
+        full_results.metadata.fields.materials.permittivity,
+        grid.permittivity,
+    )
+    assert not full_results.metadata.fields.materials.permittivity.flags.writeable
+
+
+def test_3d_mode_results_store_a_thin_material_region_by_default():
+    shape = (12, 14, 16)
+    sim = _simulation(width=16.0, height=14.0, depth=12.0)
+    monitor = ModeMonitor(
+        center=(8.0, 7.0, 6.0),
+        size=(0.0, 6.0, 6.0),
+        freqs=[1.0],
+        mode_spec=ModeSpec(polarization="te"),
+        name="mode",
+    )
+
+    results = SimulationResults.from_run(
+        sim,
+        runtime_fields=sim.compile().grid,
+        monitor_results={"mode": _empty_monitor_result(monitor)},
+    )
+    region = results.monitors["mode"].material_region
+
+    assert region.full_shape == shape
+    assert region.permittivity.shape[:2] == shape[:2]
+    assert region.permittivity.shape[2] <= 5
+    assert region.permittivity.size < np.prod(shape)
+    assert not region.permittivity.flags.writeable
+
+
+def test_monitor_results_snapshot_copies_power_arrays():
+    monitor = FluxMonitor(
+        center=(0.5, 0.0, 0.0),
+        size=(1.0, 0.0, 1.0),
+        name="o1",
+        freqs=np.array([1.0]),
+    )
+    power_history = np.array([1.0, 2.0])
+    power_timestamps = np.array([0.0, 0.25])
+    power_spectrum = np.array([3.0 + 0.0j], dtype=np.complex64)
+
+    result = MonitorResults(
+        monitor=monitor,
+        fields={},
+        power_history=power_history,
+        power_timestamps=power_timestamps,
+        power_spectrum=power_spectrum,
+    )
+    power_history[0] = 9.0
+    power_timestamps[0] = 9.0
+    power_spectrum[0] = 9.0 + 0.0j
+
+    np.testing.assert_allclose(result.power_history, [1.0, 2.0])
+    np.testing.assert_allclose(result.power_timestamps, [0.0, 0.25])
+    np.testing.assert_allclose(result.power_spectrum, [3.0 + 0.0j])
+
+
+def test_results_from_run_copies_saved_fields_and_times():
+    sim = _simulation(width=1.0, height=1.0)
+    field = np.ones((1, 2, 2), dtype=np.float32)
+    times = np.array([0.0])
+    steps = np.array([1])
+
+    recorder = MonitorResults(
+        monitor=FieldRecorder(("Ez",), 1),
+        fields={"Ez": field},
+        field_times=times,
+        field_steps=steps,
+        power_history=np.empty(0),
+        power_timestamps=np.empty(0),
+        power_spectrum=np.empty(0, dtype=np.complex64),
+    )
+    results = SimulationResults.from_run(
+        sim,
+        runtime_fields=sim.compile().grid,
+        monitor_results={"fields": recorder},
+    )
+    field[0, 0, 0] = 9.0
+    times[0] = 9.0
+    steps[0] = 9
+
+    np.testing.assert_allclose(
+        results.monitor("fields").fields["Ez"], np.ones((1, 2, 2))
+    )
+    np.testing.assert_allclose(results.monitor("fields").field_times, [0.0])
+    np.testing.assert_allclose(results.monitor("fields").field_steps, [1])
+    with pytest.raises(TypeError):
+        results.monitor("fields").fields["new"] = np.zeros((1, 2, 2))
+    with pytest.raises(ValueError, match="read-only"):
+        results.monitor("fields").fields["Ez"].flat[0] = 0.0
+
+
+def test_results_metadata_does_not_copy_unneeded_live_state():
+    sim = _simulation()
+    monitor = FieldMonitor(
+        center=(0.5, 0.0, 0.0),
+        size=(1.0, 0.0, 0.0),
+        name="o1",
+        freqs=np.array([1.0]),
+    )
+
+    results = SimulationResults.from_run(
+        sim,
+        runtime_fields=sim.compile().grid,
+        monitor_results={"o1": _empty_monitor_result(monitor)},
+    )
+    assert not hasattr(results.metadata, "sources")
+    assert not hasattr(results.metadata, "monitors")

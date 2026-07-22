@@ -58,7 +58,7 @@ def masked_conic_filter(values, mask, radius: int, fixed_structure_mask=None):
     kernel = generate_conic_kernel(radius)
 
     # Pad for convolution
-    padded_values = jnp.pad(filter_input, radius, mode="edge")
+    padded_values = jnp.pad(jnp.asarray(filter_input), radius, mode="edge")
 
     # Convolve
     filtered = convolve2d(padded_values, kernel, mode="valid")
@@ -204,7 +204,7 @@ def masked_morphological_filter(
         )
 
     # Apply hard mask - no soft blending (literature standard)
-    return jnp.where(mask, filtered, 0.0)
+    return jnp.where(mask, jnp.asarray(filtered), 0.0)
 
 
 @partial(

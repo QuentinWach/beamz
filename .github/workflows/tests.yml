@@ -1,87 +1,120 @@
-name: Tests
+name: Refactor Gate
 
 on:
   push:
-    branches: [main, master]
-    paths-ignore:
-      - ".github/badges/coverage.svg"
+    branches: [main, master, refactor]
   pull_request:
-    branches: [main, master]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  quality:
+    name: Quality (Ruff + Pyright)
     runs-on: ubuntu-latest
-    timeout-minutes: 75
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
           enable-cache: true
+      - run: uv python install 3.11
+      - name: Install quality dependencies
+        run: uv sync --python 3.11 --extra lint
+      - name: Ruff lint
+        run: uv run --no-active --python 3.11 ruff check beamz tests examples scripts release_version.py vulture_allowlist.py
+      - name: Ruff format
+        run: uv run --no-active --python 3.11 ruff format --check beamz tests examples scripts release_version.py vulture_allowlist.py
+      - name: Pyright
+        run: uv run --no-active --python 3.11 pyright
+      - name: Vulture
+        run: uv run --no-active --python 3.11 vulture beamz vulture_allowlist.py --min-confidence 60
 
-      - name: Set up Python 3.11
-        run: uv python install 3.11
-
-      - name: Install dependencies
-        run: uv sync --python 3.11 --all-extras
-
+  tests:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install ${{ matrix.python }}
+      - name: Install test dependencies
+        run: |
+          if [[ "${{ matrix.python }}" == "3.11" ]]; then
+            uv sync --python "${{ matrix.python }}" --extra test --extra gds
+          else
+            uv sync --python "${{ matrix.python }}" --extra test
+          fi
       - name: Run test suite
-        run: >
+        if: matrix.python != '3.11'
+        run: >-
+          uv run --no-active --python ${{ matrix.python }} python -m pytest tests/
+          -v --tb=short --durations=50
+      - name: Run test suite with coverage
+        if: matrix.python == '3.11'
+        run: >-
           uv run --no-active --python 3.11 python -m pytest tests/
-          -v
-          --tb=short
-          --durations=50
-          --cov=beamz
-          --cov-report=term-missing
-          --cov-report=xml
-          --cov-fail-under=75
-
+          -v --tb=short --durations=50
+          --cov=beamz --cov-report=term-missing --cov-report=xml --cov-fail-under=75
       - name: Upload coverage report
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: matrix.python == '3.11'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
           path: coverage.xml
 
-  coverage-badge:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
+  package:
+    name: Package build and smoke test
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - name: Download coverage report
-        uses: actions/download-artifact@v4
+      - uses: astral-sh/setup-uv@v5
         with:
-          name: coverage-xml
-
-      - name: Generate coverage badge
-        run: python scripts/update_coverage_badge.py coverage.xml .github/badges/coverage.svg
-
-      - name: Commit coverage badge
+          version: "latest"
+          enable-cache: true
+      - run: uv python install 3.11
+      - name: Seed excluded workspace artifacts
         run: |
-          if git diff --quiet -- .github/badges/coverage.svg; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/badges/coverage.svg
-          git commit -m "ci: update coverage badge"
-          for attempt in 1 2 3; do
-            if git push origin HEAD:"${GITHUB_REF_NAME}"; then
-              exit 0
-            fi
-            git fetch origin "${GITHUB_REF_NAME}"
-            git rebase "origin/${GITHUB_REF_NAME}"
-          done
-          exit 1
+          mkdir -p beamz/.cache beamz/.beamz_cache beamz/__pycache__ beamz/site
+          touch beamz/.cache/probe beamz/.beamz_cache/probe
+          touch beamz/__pycache__/probe.pyc beamz/site/probe
+      - name: Build wheel and source distribution
+        run: uv build --clear
+      - name: Inspect distribution contents
+        run: uv run --no-project --python 3.11 python scripts/check_distributions.py
+      - name: Install wheel into an isolated environment
+        run: |
+          uv venv /tmp/beamz-smoke --python 3.11
+          uv pip install --python /tmp/beamz-smoke/bin/python dist/*.whl
+      - name: Import installed package
+        run: /tmp/beamz-smoke/bin/python -c "import beamz; print(beamz.__version__)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  refactor-gate:
+    name: required / refactor-gate
+    if: always()
+    needs: [quality, tests, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every refactor check
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          TESTS: ${{ needs.tests.result }}
+          PACKAGE: ${{ needs.package.result }}
+        run: |
+          test "$QUALITY" = success
+          test "$TESTS" = success
+          test "$PACKAGE" = success

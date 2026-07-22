@@ -1,26 +1,50 @@
-"""Compile high-level source objects into static packed source specs."""
+"""Compile source specs into static packed source update specs."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from functools import singledispatch
+from typing import Any, Literal, cast
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
-from beamz.devices.sources._materials import (
-    component_permeability_at,
-    component_permittivity_at,
+from beamz.lattice import (
+    canonical_component_2d,
+    component_axis_offsets_3d,
+    component_material_at,
 )
-from beamz.devices.sources._time import (
-    _analytic_subband_waveforms,
-    _analytic_waveform_samples,
-    _sample_waveform,
+
+from .mode_launch import (
+    Mode2DLaunchPlan,
+    Mode3DLaunchPlan,
+    ModeLaunchPlan,
+    plan_mode_source_launch,
 )
-from beamz.devices.sources.gaussian import GaussianSource
-from beamz.devices.sources.mode import ModeSource
+from .planar_tfsf import (
+    compute_discrete_3d_e_phasor_residuals,
+    compute_discrete_3d_h_phasor_residuals,
+)
+from .specs import (
+    CustomSource,
+    FieldAxis3D,
+    FieldIndex3D,
+    FieldProfile3D,
+    GaussianBeamSource,
+    GaussianSource,
+    ModeSource,
+)
+from .time import (
+    analytic_subband_waveforms,
+    interpolate_time_signal,
+    sample_source_waveforms,
+    sample_waveform,
+)
+
+_analytic_subband_waveforms = analytic_subband_waveforms
+_sample_waveform = sample_waveform
 
 
 @dataclass(frozen=True)
@@ -43,11 +67,14 @@ def batch_slab_specs(
     specs: tuple[CompiledSourceSpec, ...],
 ) -> tuple[BatchedSlabGroup | None, tuple[CompiledSourceSpec, ...]]:
     """Split specs into a batched slab group and remaining non-slab specs."""
-    slab = [
-        s
-        for s in specs
-        if s.is_slab and s.slab_starts is not None and s.slab_sizes is not None
-    ]
+    slab: list[tuple[CompiledSourceSpec, tuple[int, ...], tuple[int, ...]]] = []
+    for spec in specs:
+        if (
+            spec.is_slab
+            and spec.slab_starts is not None
+            and spec.slab_sizes is not None
+        ):
+            slab.append((spec, spec.slab_starts, spec.slab_sizes))
     rest = tuple(
         s
         for s in specs
@@ -55,18 +82,22 @@ def batch_slab_specs(
     )
     if not slab:
         return None, specs
-    ndim = len(slab[0].slab_sizes)
-    max_sizes = tuple(max(s.slab_sizes[d] for s in slab) for d in range(ndim))
+    ndim = len(slab[0][2])
+    max_sizes = tuple(max(sizes[d] for _s, _starts, sizes in slab) for d in range(ndim))
     padded = []
-    for s in slab:
-        pad_width = tuple((0, max_sizes[d] - s.slab_sizes[d]) for d in range(ndim))
-        padded.append(jnp.pad(s.coeff, pad_width))
+    for spec, _starts, sizes in slab:
+        pad_width = tuple((0, max_sizes[d] - sizes[d]) for d in range(ndim))
+        padded.append(jnp.pad(spec.coeff, pad_width))
     return (
         BatchedSlabGroup(
-            waveforms=jnp.stack([s.waveform for s in slab]),
+            waveforms=jnp.stack([spec.waveform for spec, _starts, _sizes in slab]),
             coeffs=jnp.stack(padded),
-            starts=jnp.array([list(s.slab_starts) for s in slab], dtype=jnp.int32),
-            starts_tuple=tuple(tuple(int(v) for v in s.slab_starts) for s in slab),
+            starts=jnp.array(
+                [list(starts) for _s, starts, _sizes in slab], dtype=jnp.int32
+            ),
+            starts_tuple=tuple(
+                tuple(int(v) for v in starts) for _s, starts, _sizes in slab
+            ),
             max_sizes=max_sizes,
             n=len(slab),
         ),
@@ -86,180 +117,108 @@ class CompiledSourceSpec:
     is_slab: bool = False
     slab_starts: tuple[int, ...] | None = None
     slab_sizes: tuple[int, ...] | None = None
+    source_index: int = -1
+    launched_power: float | None = None
 
 
-def source_supports_compiled_specs(device) -> bool:
-    """Return True when a source can emit packed compiled-step source specs."""
-    return isinstance(device, (GaussianSource, ModeSource)) or hasattr(
-        device, "compile_source_specs"
+@dataclass(frozen=True, slots=True)
+class SpatialFieldProfile:
+    """One component of a lowered source, in field-update units."""
+
+    component: str
+    timing: str
+    values: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class TemporalWaveform:
+    """Sampled real drive and its optional analytic quadrature."""
+
+    values: jnp.ndarray
+    quadrature: jnp.ndarray | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSupport:
+    """Target cells for a spatial field profile."""
+
+    index: tuple[Any, ...]
+    target_shape: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InjectionPlanEntry:
+    """Normalized profile, waveform, and support for one field component."""
+
+    profile: SpatialFieldProfile
+    waveform: TemporalWaveform
+    support: SourceSupport
+    launched_power: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledInjectionPlan:
+    """Source-independent injection plan produced by every source lowerer."""
+
+    entries: tuple[InjectionPlanEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLoweringContext:
+    fields: Any
+    resolution: float
+    dt: float
+    t0: float
+    num_steps: int
+    total_steps: int
+    domain: Any | None = None
+
+
+@singledispatch
+def lower_source(
+    source: object,
+    ctx: SourceLoweringContext,
+) -> CompiledInjectionPlan:
+    del ctx
+    raise TypeError(
+        f"Unsupported source object {type(source).__name__!s}. "
+        "Pass a built-in source or CustomSource."
     )
 
 
-class _IndexableScalar:
-    """Scalar material value exposed as an indexable array-shaped object."""
-
-    __array_priority__ = 1000
-
-    def __init__(self, value, shape: tuple[int, ...]):
-        self._value = jnp.asarray(value)
-        if self._value.ndim != 0:
-            raise ValueError("_IndexableScalar requires a scalar value")
-        self.shape = tuple(int(v) for v in shape)
-        self.ndim = len(self.shape)
-        self.dtype = self._value.dtype
-
-    @property
-    def size(self) -> int:
-        return int(np.prod(self.shape, dtype=np.int64))
-
-    def __array__(self, dtype=None):
-        value = np.asarray(self._value)
-        if dtype is not None:
-            value = value.astype(dtype, copy=False)
-        return np.broadcast_to(value, self.shape)
-
-    def __jax_array__(self):
-        return jnp.broadcast_to(self._value, self.shape)
-
-    def __getitem__(self, index):
-        return jnp.broadcast_to(self._value, self.shape)[index]
-
-    def astype(self, dtype):
-        return jnp.broadcast_to(self._value, self.shape).astype(dtype)
-
-
-_SOURCE_FIELD_MATERIAL_SHAPES = {
-    "eps_x": "Ex",
-    "eps_y": "Ey",
-    "eps_z": "Ez",
-    "sig_x": "Ex",
-    "sig_y": "Ey",
-    "sig_z": "Ez",
-    "eps_ex": "Ex",
-    "eps_ey": "Ey",
-    "eps_ez": "Ez",
-    "mu_hx": "Hx",
-    "mu_hy": "Hy",
-    "mu_hz": "Hz",
-    "sigma_m_hx": "Hx",
-    "sigma_m_hy": "Hy",
-    "sigma_m_hz": "Hz",
-    "eps_tm_ez": "Ez",
-    "mu_tm_hx": "Hx",
-    "mu_tm_hy": "Hy",
-}
-
-_SOURCE_CELL_MATERIAL_ATTRS = {
-    "conductivity",
-    "permeability",
-    "total_conductivity",
-}
-
-
-def _is_scalar_like(value) -> bool:
-    shape = getattr(value, "shape", None)
-    if shape is not None:
-        return tuple(shape) == ()
-    try:
-        return np.asarray(value).ndim == 0
-    except (TypeError, ValueError):
-        return False
-
-
-class _SourceCompileFieldsProxy:
-    """Fields view for custom source compilation.
-
-    Compact scalar material channels stay scalar in the runtime fields object, but
-    custom source compilers often index ``fields.sig_z`` directly.  This proxy
-    makes those scalar channels indexable for compile-time metadata extraction
-    without changing the actual simulation storage layout.
-    """
-
-    def __init__(self, fields):
-        self._fields = fields
-
-    def __getattr__(self, name: str):
-        value = getattr(self._fields, name)
-        shape = self._indexable_shape_for_attr(name)
-        if shape is not None and _is_scalar_like(value):
-            return _IndexableScalar(value, shape)
-        return value
-
-    def _indexable_shape_for_attr(self, name: str) -> tuple[int, ...] | None:
-        component = _SOURCE_FIELD_MATERIAL_SHAPES.get(name)
-        if component is not None and hasattr(self._fields, component):
-            return tuple(int(v) for v in getattr(self._fields, component).shape)
-        if name in _SOURCE_CELL_MATERIAL_ATTRS and hasattr(
-            self._fields, "permittivity"
-        ):
-            return tuple(int(v) for v in self._fields.permittivity.shape)
-        return None
-
-    def permittivity_for_component(self, component: str):
-        mapping = {"Ex": "eps_ex", "Ey": "eps_ey", "Ez": "eps_ez"}
-        try:
-            return getattr(self, mapping[component])
-        except KeyError as exc:
-            raise ValueError(f"Unsupported E component {component!r}") from exc
-
-    def permeability_for_component(self, component: str):
-        mapping = {"Hx": "mu_hx", "Hy": "mu_hy", "Hz": "mu_hz"}
-        try:
-            return getattr(self, mapping[component])
-        except KeyError as exc:
-            raise ValueError(f"Unsupported H component {component!r}") from exc
-
-    def material_for_component(self, component: str):
-        if component in {"Ex", "Ey", "Ez"}:
-            return self.permittivity_for_component(component)
-        if component in {"Hx", "Hy", "Hz"}:
-            return self.permeability_for_component(component)
-        raise ValueError(f"Unsupported field component {component!r}")
-
-    def material_at_component(self, component: str, index):
-        material = self.material_for_component(component)
-        if isinstance(material, _IndexableScalar):
-            return material[index]
-        if _is_scalar_like(material):
-            return material
-        return material[index]
-
-
-def _source_compile_fields(fields):
-    if isinstance(fields, _SourceCompileFieldsProxy):
-        return fields
-    return _SourceCompileFieldsProxy(fields)
-
-
-def apply_compiled_source_specs(
-    field: jnp.ndarray,
-    abs_step: int,
-    specs: tuple[CompiledSourceSpec, ...],
-) -> jnp.ndarray:
-    """Apply packed source specs to one field component for a single step."""
-    out = field
-    step_idx = jnp.asarray(abs_step, dtype=jnp.int32)
-    for spec in specs:
-        if spec.waveform.size == 0:
-            continue
-        safe_idx = jnp.clip(step_idx, 0, spec.waveform.shape[0] - 1)
-        patch = spec.coeff * spec.waveform[safe_idx]
-        if (
-            spec.is_slab
-            and spec.slab_starts is not None
-            and spec.slab_sizes is not None
-        ):
-            cur = jax.lax.dynamic_slice(out, spec.slab_starts, spec.slab_sizes)
-            out = jax.lax.dynamic_update_slice(out, cur + patch, spec.slab_starts)
-            continue
-        target = out[spec.index]
-        if patch.shape != target.shape:
-            if patch.size == target.size:
-                patch = jnp.reshape(patch, target.shape)
-            else:
-                patch = jnp.broadcast_to(patch, target.shape)
-        out = out.at[spec.index].add(patch)
-    return out
+@lower_source.register
+def _lower_custom_source(
+    source: CustomSource,
+    ctx: SourceLoweringContext,
+) -> CompiledInjectionPlan:
+    component = source.component
+    coeff = source.coeff
+    target_shape = source.target_shape
+    if ctx.domain is not None and not bool(ctx.domain.is_3d):
+        canonical = canonical_component_2d(component, ctx.domain.plane_2d)
+        if canonical is None:
+            raise ValueError(
+                f"2D plane {ctx.domain.plane_2d!r} does not support {component!r}; "
+                "only the out-of-plane electric polarization is active."
+            )
+        sign = -1.0 if ctx.domain.plane_2d == "xz" and component == "Ey" else 1.0
+        component = canonical
+        coeff = sign * np.asarray(coeff)
+        target_shape = tuple(getattr(ctx.fields, canonical).shape)
+    return CompiledInjectionPlan(
+        (
+            _injection_entry(
+                component=component,
+                timing=source.timing,
+                index=source.index,
+                values=coeff,
+                waveform=TemporalWaveform(
+                    jnp.asarray(source.waveform, dtype=jnp.float32)
+                ),
+                target_shape=target_shape,
+            ),
+        )
+    )
 
 
 def _as_slab_spec(
@@ -319,6 +278,64 @@ def _as_slab_spec(
     )
 
 
+def _injection_entry(
+    *,
+    component: str,
+    timing: str,
+    index: tuple[Any, ...],
+    values,
+    waveform: TemporalWaveform,
+    target_shape: tuple[int, ...],
+    launched_power: float | None = None,
+) -> InjectionPlanEntry:
+    return InjectionPlanEntry(
+        profile=SpatialFieldProfile(
+            component=component,
+            timing=timing,
+            values=np.asarray(values),
+        ),
+        waveform=waveform,
+        support=SourceSupport(index=index, target_shape=target_shape),
+        launched_power=launched_power,
+    )
+
+
+def _compile_injection_plan(
+    plan: CompiledInjectionPlan,
+    *,
+    source_index: int = -1,
+    imag_tol: float = 1e-30,
+) -> tuple[CompiledSourceSpec, ...]:
+    """Emit runtime specs through the single source scheduling path."""
+    specs: list[CompiledSourceSpec] = []
+    for entry in plan.entries:
+        profile = entry.profile
+        support = entry.support
+        values = np.asarray(profile.values, dtype=np.complex128)
+        parts = [(np.real(values), entry.waveform.values)]
+        imag_peak = float(np.max(np.abs(np.imag(values)))) if values.size else 0.0
+        if entry.waveform.quadrature is not None and imag_peak > float(imag_tol):
+            parts.append((-np.imag(values), entry.waveform.quadrature))
+
+        for coeff, waveform in parts:
+            spec = _as_slab_spec(
+                component=profile.component,
+                timing=profile.timing,
+                index=support.index,
+                coeff=coeff,
+                waveform=waveform,
+                target_shape=support.target_shape,
+            )
+            specs.append(
+                replace(
+                    spec,
+                    source_index=source_index,
+                    launched_power=entry.launched_power,
+                )
+            )
+    return tuple(specs)
+
+
 def _match_shape(profile: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarray:
     profile = np.asarray(profile)
     if profile.shape == target_shape:
@@ -337,509 +354,850 @@ def _match_shape(profile: np.ndarray, target_shape: tuple[int, ...]) -> np.ndarr
 
 
 def compile_source_specs(
-    sources: list,
+    source_specs: tuple[object, ...],
     fields,
     dt: float,
     resolution: float,
     num_steps: int,
     t0: float,
-    total_steps: int | None = None,
+    total_steps: int,
+    domain=None,
 ) -> tuple[CompiledSourceSpec, ...]:
-    """Compile source devices into packed source specs.
-
-    v0.3 first-class support: GaussianSource and ModeSource.
-    """
+    """Compile immutable source request objects into packed update specs."""
+    ctx = SourceLoweringContext(
+        fields=fields,
+        resolution=resolution,
+        dt=dt,
+        t0=t0,
+        num_steps=num_steps,
+        total_steps=total_steps,
+        domain=domain,
+    )
     specs: list[CompiledSourceSpec] = []
-    custom_fields = None
-
-    for device in sources:
-        if isinstance(device, GaussianSource):
-            specs.extend(
-                _compile_gaussian_source(
-                    device=device,
-                    fields=fields,
-                    dt=dt,
-                    num_steps=num_steps,
-                    t0=t0,
-                    resolution=resolution,
-                    total_steps=total_steps,
-                )
+    for source_index, source in enumerate(source_specs):
+        specs.extend(
+            _compile_injection_plan(
+                lower_source(source, ctx), source_index=source_index
             )
-        elif isinstance(device, ModeSource):
-            specs.extend(
-                _compile_mode_source(
-                    device=device,
-                    fields=fields,
-                    dt=dt,
-                    num_steps=num_steps,
-                    t0=t0,
-                    resolution=resolution,
-                    total_steps=total_steps,
-                )
-            )
-        elif hasattr(device, "compile_source_specs"):
-            if custom_fields is None:
-                custom_fields = _source_compile_fields(fields)
-            specs.extend(
-                tuple(
-                    device.compile_source_specs(
-                        fields=custom_fields,
-                        dt=dt,
-                        num_steps=num_steps,
-                        t0=t0,
-                        resolution=resolution,
-                        total_steps=total_steps,
-                    )
-                )
-            )
+        )
 
     return tuple(specs)
 
 
-def _compile_gaussian_source(
-    device: GaussianSource,
-    fields,
-    dt: float,
-    num_steps: int,
-    t0: float,
-    resolution: float,
-    total_steps: int | None = None,
-) -> tuple[CompiledSourceSpec, ...]:
-    # Initialize spatial profile once.
-    is_3d = len(device.position) >= 3 if hasattr(device.position, "__len__") else False
-    if device._spatial_profile_ez is None:
-        device._init_spatial_profile(
-            fields.Ez.shape,
-            resolution,
-            is_3d,
-            plane_2d=getattr(fields, "plane_2d", None),
-        )
-
-    idx = device._grid_indices
-    eps_region = np.asarray(component_permittivity_at(fields, "Ez", idx))
-    profile = np.asarray(device._spatial_profile_ez)
-
-    coeff = -profile * dt / (EPS_0 * eps_region)
-    waveform = _sample_waveform(
-        device._get_signal_value,
-        t0=t0,
-        dt=dt,
-        num_steps=num_steps,
-        offset_fn=lambda t, dt_: t + 0.5 * dt_,
-        total_steps=total_steps,
+@lower_source.register
+def _lower_gaussian_beam_source(
+    source: GaussianBeamSource,
+    ctx: SourceLoweringContext,
+) -> CompiledInjectionPlan:
+    waveform = _sample_temporal_waveform(source.source_time, ctx)
+    return _field_profile_injection_plan(
+        gaussian_beam_field_profile(source, ctx.fields, resolution=ctx.resolution),
+        waveform,
+        ctx,
+        max_shift=source.max_shift,
     )
 
-    return (
-        _as_slab_spec(
-            component="Ez",
-            timing="pre_e",
-            index=idx,
-            coeff=coeff,
-            waveform=waveform,
-            target_shape=tuple(fields.Ez.shape),
+
+@lower_source.register
+def _lower_gaussian_source(
+    source: GaussianSource,
+    ctx: SourceLoweringContext,
+) -> CompiledInjectionPlan:
+    try:
+        is_3d = len(source.position) >= 3
+    except TypeError:
+        is_3d = False
+    index, profile = gaussian_spatial_profile(
+        source,
+        ez_shape=ctx.fields.Ez.shape,
+        resolution=ctx.resolution,
+        is_3d=is_3d,
+        plane_2d=getattr(ctx.fields, "plane_2d", None),
+    )
+    eps_region = np.asarray(component_material_at(ctx.fields, "Ez", index))
+    values = -np.asarray(profile) * ctx.dt / (EPS_0 * eps_region)
+    waveform = TemporalWaveform(
+        sample_waveform(
+            lambda time, step: _signal_value(source.signal, time, step),
+            t0=ctx.t0,
+            dt=ctx.dt,
+            num_steps=ctx.num_steps,
+            offset_fn=lambda t, dt: t + 0.5 * dt,
+            total_steps=ctx.total_steps,
+        )
+    )
+    return CompiledInjectionPlan(
+        (
+            _injection_entry(
+                component="Ez",
+                timing="pre_e",
+                index=index,
+                values=values,
+                waveform=waveform,
+                target_shape=tuple(ctx.fields.Ez.shape),
+            ),
+        )
+    )
+
+
+@lower_source.register
+def _lower_mode_source(
+    source: ModeSource,
+    ctx: SourceLoweringContext,
+) -> CompiledInjectionPlan:
+    if (
+        np.asarray(ctx.fields.permittivity).ndim == 3
+        and source.profile_frequencies().size > 1
+    ):
+        return _lower_broadband_mode_source(source, ctx)
+
+    launch_plan = plan_mode_source_launch(
+        source,
+        ctx.fields,
+        resolution=ctx.resolution,
+        dt=ctx.dt,
+    )
+    is_3d = isinstance(launch_plan, Mode3DLaunchPlan) or hasattr(
+        launch_plan, "residuals"
+    )
+    waveform = _sample_temporal_waveform(
+        source.source_time,
+        ctx,
+        offset_half_step=not is_3d,
+        include_quadrature=is_3d,
+    )
+    return _mode_launch_injection_plan(launch_plan, waveform, ctx)
+
+
+def _signal_value(signal, time, dt):
+    if signal is None:
+        return 0.0
+    return interpolate_time_signal(signal, time, dt)
+
+
+def _sample_temporal_waveform(
+    signal,
+    ctx: SourceLoweringContext,
+    *,
+    offset_half_step: bool = False,
+    include_quadrature: bool = True,
+) -> TemporalWaveform:
+    values, quadrature = sample_source_waveforms(
+        signal,
+        t0=ctx.t0,
+        dt=ctx.dt,
+        num_steps=ctx.num_steps,
+        total_steps=ctx.total_steps,
+        offset_fn=(lambda t, dt: t + 0.5 * dt)
+        if offset_half_step
+        else (lambda t, dt: t),
+    )
+    return TemporalWaveform(
+        values=jnp.asarray(values, dtype=jnp.float32),
+        quadrature=(
+            jnp.asarray(quadrature, dtype=jnp.float32) if include_quadrature else None
         ),
     )
 
 
-def _compile_mode_source(
-    device: ModeSource,
-    fields,
-    dt: float,
-    num_steps: int,
-    t0: float,
-    resolution: float,
-    total_steps: int | None = None,
-) -> tuple[CompiledSourceSpec, ...]:
-    needs_initialize = (
-        (not getattr(device, "_initialized", False))
-        or (getattr(device, "_grid_shape", None) != fields.permittivity.shape)
-        or (getattr(device, "_resolution", None) is None)
-        or (not np.isclose(getattr(device, "_resolution", 0.0), resolution))
+def _lower_broadband_mode_source(
+    src: ModeSource,
+    ctx: SourceLoweringContext,
+) -> CompiledInjectionPlan:
+    """Lower a broadband mode into frequency-partitioned injection entries."""
+    sampled = _sample_temporal_waveform(src.source_time, ctx)
+    analytic = np.asarray(sampled.values, dtype=np.float64) + 1j * np.asarray(
+        sampled.quadrature, dtype=np.float64
     )
-    if not needs_initialize and bool(getattr(device, "_is_3d", False)):
-        launch_dt = getattr(device, "_launch_dt", None)
-        needs_initialize = (
-            launch_dt is None
-            or (not np.isclose(float(launch_dt), float(dt)))
-            or (getattr(device, "_k_num_axis", None) is None)
-            or (getattr(device, "_omega_launch", None) is None)
+    nodes, subbands = analytic_subband_waveforms(
+        analytic,
+        dt=ctx.dt,
+        profile_frequencies=src.profile_frequencies(),
+    )
+    plans = []
+    for freq in nodes:
+        profile_source_time = replace(src.source_time, freq0=float(freq))
+        profile_src = src.updated_copy(
+            source_time=profile_source_time,
+            mode_spec=replace(src.mode_spec, num_freqs=1),
         )
-    if needs_initialize:
-        device.initialize(fields.permittivity, resolution, dt=dt)
+        plan = plan_mode_source_launch(
+            profile_src,
+            ctx.fields,
+            resolution=ctx.resolution,
+            dt=ctx.dt,
+        )
+        plans.append(plan)
 
-    is_3d = bool(getattr(device, "_is_3d", False))
+    scales = _broadband_launch_amplitude_scales(nodes, plans)
+    plans = [
+        replace(plan, launch_amplitude_scale=float(scale))
+        if isinstance(plan, Mode3DLaunchPlan)
+        else plan
+        for plan, scale in zip(plans, scales, strict=True)
+    ]
 
-    h_waveform = _sample_waveform(
-        device._get_signal_value,
-        t0=t0,
-        dt=dt,
-        num_steps=num_steps,
-        offset_fn=lambda t, dt_: t + 0.5 * dt_,
-        total_steps=total_steps,
+    entries: list[InjectionPlanEntry] = []
+    for plan, waveform in zip(plans, subbands, strict=True):
+        temporal = TemporalWaveform(
+            values=jnp.asarray(np.real(waveform), dtype=jnp.float32),
+            quadrature=jnp.asarray(np.imag(waveform), dtype=jnp.float32),
+        )
+        entries.extend(_mode_launch_injection_plan(plan, temporal, ctx).entries)
+    return CompiledInjectionPlan(tuple(entries))
+
+
+def _broadband_launch_amplitude_scales(nodes, plans) -> np.ndarray:
+    """Return the monitor-power correction for every profile-frequency node."""
+    node_arr = np.asarray(nodes, dtype=float).reshape(-1)
+    fallback = np.asarray(
+        [float(getattr(plan, "launch_amplitude_scale", 1.0) or 1.0) for plan in plans],
+        dtype=float,
+    )
+    if node_arr.size == 0 or fallback.size != node_arr.size:
+        return fallback
+
+    ratios = np.asarray(
+        [getattr(plan, "launch_power_ratio", np.nan) for plan in plans],
+        dtype=float,
+    )
+    valid = np.isfinite(ratios) & (ratios > 1e-24)
+    scales = fallback.copy()
+    scales[valid] = 1.0 / np.sqrt(ratios[valid])
+    return scales
+
+
+def _mode_launch_injection_plan(
+    plan: ModeLaunchPlan,
+    waveform: TemporalWaveform,
+    ctx: SourceLoweringContext,
+) -> CompiledInjectionPlan:
+    if isinstance(plan, Mode2DLaunchPlan):
+        entries = []
+        for entry in plan.entries:
+            component = entry.component
+            material_scale = MU_0 if component.startswith("H") else EPS_0
+            denominator = (
+                material_scale
+                * np.asarray(component_material_at(ctx.fields, component, entry.index))
+                * ctx.resolution
+            )
+            target = np.asarray(getattr(ctx.fields, component)[entry.index])
+            values = (
+                _match_shape(np.asarray(entry.profile), target.shape)
+                * ctx.dt
+                / denominator
+            )
+            entries.append(
+                _injection_entry(
+                    component=component,
+                    timing=entry.timing,
+                    index=entry.index,
+                    values=values,
+                    waveform=waveform,
+                    target_shape=tuple(getattr(ctx.fields, component).shape),
+                )
+            )
+        return CompiledInjectionPlan(tuple(entries))
+
+    if not (isinstance(plan, Mode3DLaunchPlan) or hasattr(plan, "residuals")):
+        raise TypeError(f"Unsupported mode launch plan {type(plan).__name__}.")
+    launch_scale = float(getattr(plan, "launch_amplitude_scale", 1.0) or 1.0)
+    launched_power = getattr(plan, "launched_power", None)
+    return CompiledInjectionPlan(
+        tuple(
+            _injection_entry(
+                component=residual.component,
+                timing=residual.timing,
+                index=residual.index,
+                values=np.asarray(residual.residual, dtype=np.complex128)
+                * launch_scale,
+                waveform=waveform,
+                target_shape=tuple(getattr(ctx.fields, residual.component).shape),
+                launched_power=(
+                    None if launched_power is None else float(launched_power)
+                ),
+            )
+            for residual in plan.residuals
+        )
     )
 
-    dt_physical = float(getattr(device, "_dt_physical", 0.0))
-    # E injection is applied after the E update within each Yee step; use the
-    # same half-step base time as H plus physical plane delay to keep the 3D
-    # Huygens pair phase-consistent with the 2D implementation.
-    e_waveform = _sample_waveform(
-        device._get_signal_value,
-        t0=t0,
-        dt=dt,
-        num_steps=num_steps,
-        offset_fn=lambda t, dt_: t + 0.5 * dt_ + dt_physical,
-        total_steps=total_steps,
-    )
+
+def gaussian_spatial_profile(
+    source,
+    *,
+    ez_shape,
+    resolution: float,
+    is_3d: bool,
+    plane_2d=None,
+):
+    """Compute a Gaussian source profile from semantic source data."""
+    sigma_grid = source.width / resolution
+    radius_grid = int(np.ceil(4 * sigma_grid))
 
     if is_3d:
-        profile_frequencies = getattr(device, "profile_frequencies", None)
-        if profile_frequencies is None and getattr(device, "num_freqs", None):
-            source_time = getattr(device, "source_time", None)
-            freq0 = float(
-                getattr(source_time, "freq0", LIGHT_SPEED / float(device.wavelength))
-            )
-            fwidth = float(getattr(source_time, "fwidth", freq0 / 10.0))
-            count = int(getattr(device, "num_freqs"))
-            if count > 1:
-                k = np.arange(count, dtype=float)
-                profile_frequencies = np.sort(
-                    freq0
-                    + 1.5 * fwidth * np.cos((2.0 * k + 1.0) * np.pi / (2.0 * count))
-                )
-        if profile_frequencies is not None:
-            profile_frequencies = np.asarray(profile_frequencies, dtype=float).reshape(
-                -1
-            )
-            if profile_frequencies.size > 1:
-                return _compile_mode_source_3d_multifrequency(
-                    device,
-                    fields,
-                    dt,
-                    resolution,
-                    num_steps=num_steps,
-                    t0=t0,
-                    total_steps=total_steps,
-                    profile_frequencies=profile_frequencies,
-                )
-        phasor_waveform = _sample_waveform(
-            device._get_signal_value,
-            t0=t0,
-            dt=dt,
-            num_steps=num_steps,
-            offset_fn=lambda t, dt_: t,
-            total_steps=total_steps,
+        x0, y0, z0 = source.position
+        nz, ny, nx = ez_shape
+        cx, cy, cz = (int(round(c / resolution)) for c in (x0, y0, z0))
+        x0i, x1i = max(0, cx - radius_grid), min(nx, cx + radius_grid + 1)
+        y0i, y1i = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
+        z0i, z1i = max(0, cz - radius_grid), min(nz, cz + radius_grid + 1)
+        idx = (slice(z0i, z1i), slice(y0i, y1i), slice(x0i, x1i))
+        z, y, x = jnp.meshgrid(
+            (jnp.arange(z0i, z1i) + 0.5) * resolution,
+            (jnp.arange(y0i, y1i) + 0.5) * resolution,
+            (jnp.arange(x0i, x1i) + 0.5) * resolution,
+            indexing="ij",
         )
-        phasor_quadrature_waveform = _sample_waveform(
-            device._get_signal_quadrature_value,
-            t0=t0,
-            dt=dt,
-            num_steps=num_steps,
-            offset_fn=lambda t, dt_: t,
-            total_steps=total_steps,
-        )
-        return _compile_mode_source_3d(
-            device,
-            fields,
-            dt,
-            resolution,
-            phasor_waveform,
-            phasor_waveform,
-            phasor_quadrature_waveform,
-            phasor_quadrature_waveform,
-            t0=t0,
-        )
-    return _compile_mode_source_2d(
-        device,
-        fields,
-        dt,
-        resolution,
-        h_waveform,
-        e_waveform,
-    )
-
-
-def _compile_mode_source_3d_multifrequency(
-    src: ModeSource,
-    fields,
-    dt: float,
-    resolution: float,
-    *,
-    num_steps: int,
-    t0: float,
-    total_steps: int | None,
-    profile_frequencies: np.ndarray,
-) -> tuple[CompiledSourceSpec, ...]:
-    """Compile a broadband 3D ModeSource as a profile-frequency filter bank."""
-    analytic = _analytic_waveform_samples(
-        src,
-        t0=t0,
-        dt=dt,
-        num_steps=num_steps,
-        total_steps=total_steps,
-    )
-    nodes, subbands = _analytic_subband_waveforms(
-        analytic,
-        dt=dt,
-        profile_frequencies=profile_frequencies,
-    )
-    specs: list[CompiledSourceSpec] = []
-    common_kwargs = dict(
-        grid=src.grid,
-        center=src.center,
-        width=src.width,
-        pol=src.pol,
-        signal=src.signal,
-        direction=src.direction,
-        height=src.height,
-        signal_quadrature=getattr(src, "signal_quadrature", None),
-        source_time=getattr(src, "source_time", None),
-        num_freqs=None,
-        power=getattr(src, "power", 1.0),
-        mode_index=getattr(src, "mode_index", 0),
-        mode_target_neff=getattr(src, "mode_target_neff", None),
-        mode_num_modes=getattr(src, "mode_num_modes", None),
-        mode_eps_profile_full=getattr(src, "mode_eps_profile_full", None),
-        mode_crop_slices=getattr(src, "mode_crop_slices", None),
-    )
-    for freq, waveform in zip(nodes, subbands, strict=True):
-        profile_src = ModeSource(
-            wavelength=LIGHT_SPEED / float(freq),
-            profile_frequencies=None,
-            **common_kwargs,
-        )
-        profile_src.initialize(fields.permittivity, resolution, dt=dt)
-        real_waveform = jnp.asarray(np.real(waveform), dtype=jnp.float32)
-        quadrature_waveform = jnp.asarray(np.imag(waveform), dtype=jnp.float32)
-        specs.extend(
-            _compile_mode_source_3d(
-                profile_src,
-                fields,
-                dt,
-                resolution,
-                real_waveform,
-                real_waveform,
-                quadrature_waveform,
-                quadrature_waveform,
-                t0=t0,
-            )
-        )
-    return tuple(specs)
-
-
-def _build_coeff(
-    profile: np.ndarray,
-    target: np.ndarray,
-    dt: float,
-    scale_denom: np.ndarray,
-) -> jnp.ndarray:
-    profile = _match_shape(np.asarray(profile), target.shape)
-    coeff = profile * dt / scale_denom
-    return jnp.asarray(coeff, dtype=jnp.float32)
-
-
-def _append_phasor_source_specs(
-    specs: list[CompiledSourceSpec],
-    *,
-    component: str,
-    timing: str,
-    index: tuple[Any, ...],
-    profile: np.ndarray,
-    target: np.ndarray,
-    dt: float,
-    scale_denom: np.ndarray,
-    waveform: jnp.ndarray,
-    quadrature_waveform: jnp.ndarray | None,
-    target_shape: tuple[int, ...],
-    imag_tol: float = 1e-30,
-) -> None:
-    """Append real compiled specs for Re(profile * analytic_waveform)."""
-    profile_c = np.asarray(profile, dtype=np.complex128)
-    real_coeff = _build_coeff(
-        profile=np.real(profile_c),
-        target=target,
-        dt=dt,
-        scale_denom=scale_denom,
-    )
-    specs.append(
-        _as_slab_spec(
-            component=component,
-            timing=timing,
-            index=index,
-            coeff=real_coeff,
-            waveform=waveform,
-            target_shape=target_shape,
-        )
-    )
-
-    if quadrature_waveform is None:
-        return
-    imag_peak = float(np.max(np.abs(np.imag(profile_c)))) if profile_c.size else 0.0
-    if imag_peak <= float(imag_tol):
-        return
-
-    imag_coeff = _build_coeff(
-        profile=-np.imag(profile_c),
-        target=target,
-        dt=dt,
-        scale_denom=scale_denom,
-    )
-    specs.append(
-        _as_slab_spec(
-            component=component,
-            timing=timing,
-            index=index,
-            coeff=imag_coeff,
-            waveform=quadrature_waveform,
-            target_shape=target_shape,
-        )
-    )
-
-
-def _nonzero_bbox(arr: np.ndarray, *, atol: float = 0.0):
-    values = np.asarray(arr)
-    if values.size == 0:
-        return None
-    mask = np.abs(values) > float(atol)
-    if not np.any(mask):
-        return None
-    coords = np.argwhere(mask)
-    lo = coords.min(axis=0)
-    hi = coords.max(axis=0) + 1
-    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
-
-
-def _compile_mode_source_2d(
-    src: ModeSource,
-    fields,
-    dt: float,
-    resolution: float,
-    h_waveform: jnp.ndarray,
-    e_waveform: jnp.ndarray,
-) -> tuple[CompiledSourceSpec, ...]:
-    specs: list[CompiledSourceSpec] = []
-
-    if src.pol == "tm":
-        if src._h_indices is not None and src._my_profile is not None:
-            comp = src._h_component
-            idx = src._h_indices
-            target = np.asarray(getattr(fields, comp)[idx])
-            mu = np.asarray(component_permeability_at(fields, comp, idx))
-            coeff = _build_coeff(
-                profile=-np.asarray(src._my_profile),
-                target=target,
-                dt=dt,
-                scale_denom=MU_0 * mu * resolution,
-            )
-            specs.append(
-                _as_slab_spec(
-                    component=comp,
-                    timing="h",
-                    index=idx,
-                    coeff=coeff,
-                    waveform=h_waveform,
-                    target_shape=tuple(getattr(fields, comp).shape),
-                )
-            )
-
-        if src._ez_indices is not None and src._jz_profile is not None:
-            idx = src._ez_indices
-            target = np.asarray(fields.Ez[idx])
-            eps = np.asarray(component_permittivity_at(fields, "Ez", idx))
-            coeff = _build_coeff(
-                profile=np.asarray(src._jz_profile),
-                target=target,
-                dt=dt,
-                scale_denom=EPS_0 * eps * resolution,
-            )
-            specs.append(
-                _as_slab_spec(
-                    component="Ez",
-                    timing="e",
-                    index=idx,
-                    coeff=coeff,
-                    waveform=e_waveform,
-                    target_shape=tuple(fields.Ez.shape),
-                )
-            )
+        distance_sq = (x - x0) ** 2 + (y - y0) ** 2 + (z - z0) ** 2
     else:
-        if src._hz_indices is not None and src._mz_profile is not None:
-            idx = src._hz_indices
-            target = np.asarray(fields.Hz[idx])
-            mu = np.asarray(component_permeability_at(fields, "Hz", idx))
-            coeff = _build_coeff(
-                profile=np.asarray(src._mz_profile),
-                target=target,
-                dt=dt,
-                scale_denom=MU_0 * mu * resolution,
-            )
-            specs.append(
-                _as_slab_spec(
-                    component="Hz",
-                    timing="h",
-                    index=idx,
-                    coeff=coeff,
-                    waveform=h_waveform,
-                    target_shape=tuple(fields.Hz.shape),
-                )
-            )
+        x0, y0 = source.position[:2]
+        ny, nx = ez_shape
+        cx, cy = int(round(x0 / resolution)), int(round(y0 / resolution))
+        x0i, x1i = max(0, cx - radius_grid), min(nx, cx + radius_grid + 1)
+        y0i, y1i = max(0, cy - radius_grid), min(ny, cy + radius_grid + 1)
+        idx = (slice(y0i, y1i), slice(x0i, x1i))
+        offset = 0.0 if plane_2d == "xy" else 0.5
+        x, y = jnp.meshgrid(
+            (jnp.arange(x0i, x1i) + offset) * resolution,
+            (jnp.arange(y0i, y1i) + offset) * resolution,
+            indexing="xy",
+        )
+        distance_sq = (x - x0) ** 2 + (y - y0) ** 2
 
-        if src._e_indices is not None:
-            comp = src._e_component
-            prof = src._jx_profile if comp == "Ex" else src._jy_profile
-            if prof is not None:
-                idx = src._e_indices
-                target = np.asarray(getattr(fields, comp)[idx])
-                eps = np.asarray(component_permittivity_at(fields, comp, idx))
-                coeff = _build_coeff(
-                    profile=-np.asarray(prof),
-                    target=target,
-                    dt=dt,
-                    scale_denom=EPS_0 * eps * resolution,
-                )
-                specs.append(
-                    _as_slab_spec(
-                        component=comp,
-                        timing="e",
-                        index=idx,
-                        coeff=coeff,
-                        waveform=e_waveform,
-                        target_shape=tuple(getattr(fields, comp).shape),
+    return idx, jnp.exp(-distance_sq / (2 * source.width**2))
+
+
+Direction3D = Literal["+x", "-x", "+y", "-y", "+z", "-z"]
+
+
+_AXES: tuple[FieldAxis3D, FieldAxis3D, FieldAxis3D] = ("x", "y", "z")
+
+
+_INDEX_AXES: tuple[FieldAxis3D, FieldAxis3D, FieldAxis3D] = ("z", "y", "x")
+
+
+_AXIS_TO_VECTOR: dict[FieldAxis3D, np.ndarray] = {
+    "x": np.asarray([1.0, 0.0, 0.0], dtype=np.float64),
+    "y": np.asarray([0.0, 1.0, 0.0], dtype=np.float64),
+    "z": np.asarray([0.0, 0.0, 1.0], dtype=np.float64),
+}
+
+
+_TRANSVERSE_AXES: dict[FieldAxis3D, tuple[FieldAxis3D, FieldAxis3D]] = {
+    "x": ("y", "z"),
+    "y": ("z", "x"),
+    "z": ("x", "y"),
+}
+
+
+_FIELD_COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+
+
+def gaussian_beam_wavelength(source) -> float:
+    if source.wavelength is not None:
+        return float(source.wavelength)
+    freq0 = getattr(source.source_time, "freq0", None)
+    if freq0 is None or not np.isfinite(float(freq0)) or float(freq0) <= 0.0:
+        raise ValueError(
+            "GaussianBeamSource requires wavelength=... or a positive source_time.freq0."
+        )
+    return float(LIGHT_SPEED / float(freq0))
+
+
+def gaussian_beam_waist_radius(source) -> float:
+    if source.waist_radius is not None:
+        return float(source.waist_radius)
+    values = np.asarray(source.size, dtype=np.float64).reshape(-1)
+    if values.size == 0:
+        raise ValueError("GaussianBeamSource size must not be empty.")
+    return 0.25 * float(np.min(values))
+
+
+def gaussian_beam_field_profile(source, fields, *, resolution: float) -> FieldProfile3D:
+    permittivity = np.asarray(fields.permittivity)
+    if permittivity.ndim != 3:
+        raise ValueError("GaussianBeamSource currently supports 3D simulations only.")
+    return GaussianBeamProfile(
+        center=source.center,
+        size=source.size,
+        direction=source.direction,
+        angle_theta=source.angle_theta,
+        angle_phi=source.angle_phi,
+        pol_angle=source.pol_angle,
+        waist_radius=gaussian_beam_waist_radius(source),
+        waist_distance=source.waist_distance,
+        wavelength=gaussian_beam_wavelength(source),
+        background_index=source.background_index,
+        power=source.power,
+    ).field_profile(
+        resolution=float(resolution),
+        grid_shape=tuple(map(int, permittivity.shape)),
+    )
+
+
+def _parse_direction(direction: str) -> tuple[FieldAxis3D, float]:
+    if direction not in {"+x", "-x", "+y", "-y", "+z", "-z"}:
+        raise ValueError(f"Unsupported Gaussian beam direction {direction!r}.")
+    return cast(FieldAxis3D, direction[1]), (1.0 if direction[0] == "+" else -1.0)
+
+
+def _unit_vector(axis: FieldAxis3D) -> np.ndarray:
+    return _AXIS_TO_VECTOR[axis].copy()
+
+
+def _normalize(vector: np.ndarray, *, name: str) -> np.ndarray:
+    arr = np.asarray(vector, dtype=np.float64)
+    norm = float(np.linalg.norm(arr))
+    if not np.isfinite(norm) or norm <= 1e-30:
+        raise ValueError(f"{name} must have non-zero finite norm.")
+    return arr / norm
+
+
+def _as_xyz(value, *, name: str) -> tuple[float, float, float]:
+    arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    if arr.size != 3:
+        raise ValueError(f"{name} must contain exactly three values.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} must contain finite values.")
+    return (float(arr[0]), float(arr[1]), float(arr[2]))
+
+
+def _component_field_shape(
+    component: str,
+    grid_shape: tuple[int, int, int],
+) -> tuple[int, int, int]:
+    offsets = component_axis_offsets_3d(component)
+    dims = {"z": int(grid_shape[0]), "y": int(grid_shape[1]), "x": int(grid_shape[2])}
+    return (
+        max(0, dims["z"] - (1 if float(offsets["z"]) == 0.5 else 0)),
+        max(0, dims["y"] - (1 if float(offsets["y"]) == 0.5 else 0)),
+        max(0, dims["x"] - (1 if float(offsets["x"]) == 0.5 else 0)),
+    )
+
+
+@dataclass(frozen=True)
+class GaussianBeamProfile:
+    """Generate a Gaussian beam as a prepared planar ``FieldProfile3D``."""
+
+    center: tuple[float, float, float]
+    size: float | tuple[float, float] | tuple[float, float, float]
+    direction: Direction3D
+    angle_theta: float
+    angle_phi: float
+    pol_angle: float
+    waist_radius: float
+    waist_distance: float
+    wavelength: float
+    background_index: float = 1.0
+    power: float = 1.0
+
+    def __post_init__(self):
+        _as_xyz(self.center, name="center")
+        for name in (
+            "angle_theta",
+            "angle_phi",
+            "pol_angle",
+            "waist_radius",
+            "waist_distance",
+            "wavelength",
+            "background_index",
+            "power",
+        ):
+            value = float(getattr(self, name))
+            if not np.isfinite(value):
+                raise ValueError(f"{name} must be finite.")
+        if float(self.waist_radius) <= 0.0:
+            raise ValueError("waist_radius must be positive.")
+        if float(self.wavelength) <= 0.0:
+            raise ValueError("wavelength must be positive.")
+        if float(self.background_index) <= 0.0:
+            raise ValueError("background_index must be positive.")
+        if float(self.power) < 0.0:
+            raise ValueError("power must be non-negative.")
+        _parse_direction(self.direction)
+        self._transverse_extents()
+
+    @property
+    def axis(self) -> FieldAxis3D:
+        axis, _sign = _parse_direction(self.direction)
+        return axis
+
+    @property
+    def direction_sign(self) -> float:
+        _axis, sign = _parse_direction(self.direction)
+        return sign
+
+    @property
+    def omega(self) -> float:
+        return float(2.0 * np.pi * LIGHT_SPEED / float(self.wavelength))
+
+    @property
+    def medium_wavenumber(self) -> float:
+        return float(2.0 * np.pi * float(self.background_index) / self.wavelength)
+
+    def propagation_unit_vector(self) -> np.ndarray:
+        axis = self.axis
+        normal = self.direction_sign * _unit_vector(axis)
+        t1_axis, t2_axis = _TRANSVERSE_AXES[axis]
+        t1 = _unit_vector(t1_axis)
+        t2 = _unit_vector(t2_axis)
+        theta = float(self.angle_theta)
+        phi = float(self.angle_phi)
+        return _normalize(
+            np.cos(theta) * normal
+            + np.sin(theta) * (np.cos(phi) * t1 + np.sin(phi) * t2),
+            name="propagation direction",
+        )
+
+    def propagation_vector(self) -> np.ndarray:
+        return self.medium_wavenumber * self.propagation_unit_vector()
+
+    def electric_unit_vector(self) -> np.ndarray:
+        axis = self.axis
+        t1_axis, t2_axis = _TRANSVERSE_AXES[axis]
+        t1 = _unit_vector(t1_axis)
+        t2 = _unit_vector(t2_axis)
+        seed = np.cos(float(self.pol_angle)) * t1 + np.sin(float(self.pol_angle)) * t2
+        k_hat = self.propagation_unit_vector()
+        projected = seed - float(np.dot(seed, k_hat)) * k_hat
+        if float(np.linalg.norm(projected)) <= 1e-12:
+            projected = np.cross(k_hat, t1)
+        return _normalize(projected, name="electric polarization")
+
+    def magnetic_unit_vector(self) -> np.ndarray:
+        return _normalize(
+            np.cross(self.propagation_unit_vector(), self.electric_unit_vector()),
+            name="magnetic polarization",
+        )
+
+    def field_profile(
+        self,
+        *,
+        resolution: float,
+        grid_shape: tuple[int, ...],
+    ) -> FieldProfile3D:
+        """Sample the Gaussian beam on a Yee source plane."""
+        resolution = float(resolution)
+        if not np.isfinite(resolution) or resolution <= 0.0:
+            raise ValueError("resolution must be positive and finite.")
+        if len(tuple(grid_shape)) != 3:
+            raise ValueError("grid_shape must be a 3D cell shape in (z, y, x) order.")
+        grid_shape = (int(grid_shape[0]), int(grid_shape[1]), int(grid_shape[2]))
+        if any(v <= 1 for v in grid_shape):
+            raise ValueError("grid_shape dimensions must be greater than one.")
+
+        axis = self.axis
+        direction_sign = self.direction_sign
+        center_xyz: dict[FieldAxis3D, float] = dict(
+            zip(_AXES, _as_xyz(self.center, name="center"), strict=True)
+        )
+        transverse_slices = self._transverse_slices(resolution, grid_shape)
+        phase_ref_coord = float(center_xyz[axis])
+        phase_plane_coord = float(center_xyz[axis])
+        k_vector = self.propagation_vector()
+        k_axis = float(k_vector[_AXES.index(axis)])
+        e_hat = self.electric_unit_vector()
+        h_hat = (
+            float(self.background_index)
+            / float(np.sqrt(MU_0 / EPS_0))
+            * np.cross(self.propagation_unit_vector(), e_hat)
+        )
+        amplitude = self._power_amplitude_scale(
+            resolution,
+            transverse_slices,
+            k_normal_abs=abs(
+                float(np.dot(self.propagation_unit_vector(), _unit_vector(axis)))
+            ),
+        )
+
+        components: dict[str, np.ndarray] = {}
+        indices: dict[str, FieldIndex3D] = {}
+        for component in _FIELD_COMPONENTS:
+            index = self._component_index(
+                component,
+                resolution=resolution,
+                grid_shape=grid_shape,
+                transverse_slices=transverse_slices,
+            )
+            coords = self._component_coordinate_arrays(
+                component,
+                index,
+                resolution=resolution,
+            )
+            scalar = amplitude * self._scalar_profile(
+                coords,
+                center_xyz=center_xyz,
+                phase_ref_coord=phase_ref_coord,
+                k_vector=k_vector,
+                k_axis=k_axis,
+            )
+            vector = e_hat if component.startswith("E") else h_hat
+            component_axis = cast(FieldAxis3D, component[1].lower())
+            components[component] = (
+                scalar * float(vector[_AXES.index(component_axis)])
+            ).astype(np.complex128, copy=False)
+            indices[component] = index
+
+        return FieldProfile3D(
+            components=components,
+            indices=indices,
+            axis=axis,
+            direction_sign=direction_sign,
+            omega=self.omega,
+            k_axis=k_axis,
+            phase_ref_coord=phase_ref_coord,
+            phase_plane_coord=phase_plane_coord,
+        )
+
+    def _transverse_extents(self) -> tuple[float, float]:
+        values = np.asarray(self.size, dtype=np.float64).reshape(-1)
+        if values.size == 1:
+            out = (float(values[0]), float(values[0]))
+        elif values.size == 2:
+            out = (float(values[0]), float(values[1]))
+        elif values.size == 3:
+            extents: dict[FieldAxis3D, float] = dict(zip(_AXES, values, strict=True))
+            t1_axis, t2_axis = _TRANSVERSE_AXES[self.axis]
+            out = (float(extents[t1_axis]), float(extents[t2_axis]))
+        else:
+            raise ValueError("size must be a scalar, 2-tuple, or 3-tuple.")
+        if any((not np.isfinite(v)) or v <= 0.0 for v in out):
+            raise ValueError("size extents must be positive finite values.")
+        return out
+
+    def _transverse_slices(
+        self,
+        resolution: float,
+        grid_shape: tuple[int, int, int],
+    ) -> dict[FieldAxis3D, slice]:
+        center_xyz: dict[FieldAxis3D, float] = dict(
+            zip(_AXES, _as_xyz(self.center, name="center"), strict=True)
+        )
+        extents = self._transverse_extents()
+        out: dict[FieldAxis3D, slice] = {}
+        dims = {"z": grid_shape[0], "y": grid_shape[1], "x": grid_shape[2]}
+        for axis_name, extent in zip(_TRANSVERSE_AXES[self.axis], extents, strict=True):
+            center = float(center_xyz[axis_name])
+            start = int(np.floor((center - 0.5 * extent) / resolution))
+            stop = int(np.ceil((center + 0.5 * extent) / resolution))
+            start = max(0, min(start, int(dims[axis_name]) - 1))
+            stop = max(start + 1, min(stop, int(dims[axis_name])))
+            out[axis_name] = slice(start, stop)
+        return out
+
+    def _component_index(
+        self,
+        component: str,
+        *,
+        resolution: float,
+        grid_shape: tuple[int, int, int],
+        transverse_slices: dict[FieldAxis3D, slice],
+    ) -> tuple[slice, slice, slice]:
+        center_xyz = dict(zip(_AXES, _as_xyz(self.center, name="center"), strict=True))
+        offsets = component_axis_offsets_3d(component)
+        field_shape = _component_field_shape(component, grid_shape)
+        items: list[int | slice] = []
+        for dim, axis_name in enumerate(_INDEX_AXES):
+            if axis_name == self.axis:
+                raw = int(
+                    round(
+                        float(center_xyz[axis_name]) / resolution - offsets[axis_name]
                     )
                 )
+                items.append(max(0, min(raw, int(field_shape[dim]) - 1)))
+                continue
+            source_slice = transverse_slices[axis_name]
+            start = max(0, min(int(source_slice.start or 0), int(field_shape[dim]) - 1))
+            stop = max(
+                start + 1,
+                min(int(source_slice.stop or start + 1), int(field_shape[dim])),
+            )
+            items.append(slice(start, stop))
+        return tuple(items)  # type: ignore[return-value]
 
-    return tuple(specs)
+    def _component_coordinate_arrays(
+        self,
+        component: str,
+        index: tuple[slice, slice, slice],
+        *,
+        resolution: float,
+    ) -> dict[FieldAxis3D, np.ndarray]:
+        offsets = component_axis_offsets_3d(component)
+        axis_values: dict[FieldAxis3D, np.ndarray | float] = {}
+        mesh_axes: list[FieldAxis3D] = []
+        mesh_values: list[np.ndarray] = []
+        for axis_name, item in zip(_INDEX_AXES, index, strict=True):
+            if isinstance(item, slice):
+                values = (
+                    np.arange(
+                        int(item.start or 0), int(item.stop or 0), dtype=np.float64
+                    )
+                    + float(offsets[axis_name])
+                ) * resolution
+                axis_values[axis_name] = values
+                mesh_axes.append(axis_name)
+                mesh_values.append(values)
+            else:
+                axis_values[axis_name] = (
+                    int(item) + float(offsets[axis_name])
+                ) * resolution
+
+        meshes = np.meshgrid(*mesh_values, indexing="ij")
+        coords: dict[FieldAxis3D, np.ndarray] = {}
+        shape = meshes[0].shape if meshes else ()
+        for axis_name, axis_value in axis_values.items():
+            if axis_name in mesh_axes:
+                coords[axis_name] = meshes[mesh_axes.index(axis_name)]
+            else:
+                coords[axis_name] = np.full(shape, float(axis_value), dtype=np.float64)
+        return coords
+
+    def _scalar_profile(
+        self,
+        coords: Mapping[FieldAxis3D, np.ndarray],
+        *,
+        center_xyz: Mapping[FieldAxis3D, float],
+        phase_ref_coord: float,
+        k_vector: np.ndarray,
+        k_axis: float,
+    ) -> np.ndarray:
+        r = np.stack(
+            [coords[axis] - float(center_xyz[axis]) for axis in _AXES],
+            axis=0,
+        )
+        e_hat = self.electric_unit_vector()
+        v_hat = self.magnetic_unit_vector()
+        u_coord = np.tensordot(e_hat, r, axes=(0, 0))
+        v_coord = np.tensordot(v_hat, r, axes=(0, 0))
+        rho2 = u_coord**2 + v_coord**2
+        radius, curvature, gouy = self._beam_radius_curvature_gouy()
+        envelope = np.exp(-rho2 / max(radius**2, 1e-300))
+        phase = -np.tensordot(k_vector, r, axes=(0, 0))
+        phase += float(k_axis) * (coords[self.axis] - float(phase_ref_coord))
+        if np.isfinite(curvature):
+            phase += -self.medium_wavenumber * rho2 / (2.0 * curvature)
+        phase += gouy
+        return envelope * np.exp(1j * phase)
+
+    def _beam_radius_curvature_gouy(self) -> tuple[float, float, float]:
+        waist = float(self.waist_radius)
+        wavelength_medium = float(self.wavelength) / float(self.background_index)
+        rayleigh = np.pi * waist**2 / wavelength_medium
+        z = float(self.waist_distance)
+        radius = waist * np.sqrt(1.0 + (z / rayleigh) ** 2)
+        curvature = np.inf if abs(z) <= 1e-30 else z * (1.0 + (rayleigh / z) ** 2)
+        gouy = float(np.arctan2(z, rayleigh))
+        return float(radius), float(curvature), gouy
+
+    def _power_amplitude_scale(
+        self,
+        resolution: float,
+        transverse_slices: Mapping[FieldAxis3D, slice],
+        *,
+        k_normal_abs: float,
+    ) -> float:
+        if float(self.power) == 0.0:
+            return 0.0
+        center_xyz: dict[FieldAxis3D, float] = dict(
+            zip(_AXES, _as_xyz(self.center, name="center"), strict=True)
+        )
+        t_axes = _TRANSVERSE_AXES[self.axis]
+        coords = []
+        for axis_name in t_axes:
+            item = transverse_slices[axis_name]
+            coords.append(
+                (np.arange(int(item.start or 0), int(item.stop or 0)) + 0.5)
+                * resolution
+                - float(center_xyz[axis_name])
+            )
+        a, b = np.meshgrid(coords[0], coords[1], indexing="ij")
+        radius, _curvature, _gouy = self._beam_radius_curvature_gouy()
+        envelope2 = np.exp(-2.0 * (a**2 + b**2) / max(radius**2, 1e-300))
+        eta = float(np.sqrt(MU_0 / EPS_0)) / float(self.background_index)
+        flux = (
+            0.5
+            * max(float(k_normal_abs), 1e-30)
+            / eta
+            * float(np.sum(envelope2))
+            * float(resolution) ** 2
+        )
+        if (not np.isfinite(flux)) or flux <= 1e-300:
+            return 0.0
+        return float(np.sqrt(float(self.power) / flux))
 
 
-def _compile_mode_source_3d(
-    src: ModeSource,
+def scale_field_profile(profile: FieldProfile3D, power: float) -> FieldProfile3D:
+    if not isinstance(profile, FieldProfile3D):
+        raise TypeError("profile must be a FieldProfile3D instance")
+    power = float(power)
+    if not np.isfinite(power) or power < 0.0:
+        raise ValueError(
+            f"Custom field profile source power must be non-negative, got {power!r}."
+        )
+    if power == 1.0:
+        return profile
+    scale = float(np.sqrt(power))
+    return replace(
+        profile,
+        components={
+            name: np.asarray(value, dtype=np.complex128) * scale
+            for name, value in profile.components.items()
+        },
+    )
+
+
+def field_profile_phasor_residuals(
+    profile: FieldProfile3D,
     fields,
+    *,
     dt: float,
     resolution: float,
-    h_waveform: jnp.ndarray,
-    e_waveform: jnp.ndarray,
-    h_quadrature_waveform: jnp.ndarray | None = None,
-    e_quadrature_waveform: jnp.ndarray | None = None,
-    t0: float = 0.0,
-) -> tuple[CompiledSourceSpec, ...]:
-    specs: list[CompiledSourceSpec] = []
-    del resolution, e_waveform, e_quadrature_waveform, t0
+    max_shift: int = 1,
+):
+    return (
+        *compute_discrete_3d_h_phasor_residuals(
+            profile,
+            fields,
+            resolution=float(resolution),
+            max_shift=int(max(1, max_shift)),
+            dt=float(dt),
+        ),
+        *compute_discrete_3d_e_phasor_residuals(
+            profile,
+            fields,
+            resolution=float(resolution),
+            max_shift=int(max(1, max_shift)),
+            dt=float(dt),
+        ),
+    )
 
-    for residual in src._compute_discrete_3d_phasor_residuals(fields, dt=float(dt)):
-        component = residual.component
-        index = residual.index
-        target = np.asarray(getattr(fields, component)[index])
-        _append_phasor_source_specs(
-            specs,
-            component=component,
-            timing=residual.timing,
-            index=index,
-            profile=np.asarray(residual.residual, dtype=np.complex128),
-            target=target,
-            dt=1.0,
-            scale_denom=np.asarray(1.0, dtype=np.float64),
-            waveform=h_waveform,
-            quadrature_waveform=h_quadrature_waveform,
-            target_shape=tuple(getattr(fields, component).shape),
+
+def _field_profile_injection_plan(
+    profile: FieldProfile3D,
+    waveform: TemporalWaveform,
+    ctx: SourceLoweringContext,
+    *,
+    max_shift: int = 1,
+    power: float = 1.0,
+) -> CompiledInjectionPlan:
+    profile = scale_field_profile(profile, power)
+    return CompiledInjectionPlan(
+        tuple(
+            _injection_entry(
+                component=residual.component,
+                timing=residual.timing,
+                index=residual.index,
+                values=np.asarray(residual.residual, dtype=np.complex128),
+                waveform=waveform,
+                target_shape=tuple(getattr(ctx.fields, residual.component).shape),
+            )
+            for residual in field_profile_phasor_residuals(
+                profile,
+                ctx.fields,
+                dt=ctx.dt,
+                resolution=ctx.resolution,
+                max_shift=max_shift,
+            )
         )
-
-    return tuple(specs)
+    )

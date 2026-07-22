@@ -9,6 +9,8 @@ Tests verify:
 6. Integration test with small optimization problem
 """
 
+from dataclasses import FrozenInstanceError
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -23,7 +25,8 @@ from beamz.optimization.autodiff import (
     transform_density,
 )
 from beamz.optimization.topology import (
-    TopologyManager,
+    TopologySpec,
+    TopologyState,
     compute_overlap_gradient,
     fold_high_side_yee_padding_to_shape,
 )
@@ -546,7 +549,7 @@ class TestMaskHandling:
 
 
 @pytest.mark.optimization
-class TestTopologyManagerResolution:
+class TestTopologySpec:
     """Resolution handling should be explicit and deterministic."""
 
     def test_requires_explicit_resolution_without_cached_grid(self):
@@ -556,21 +559,59 @@ class TestTopologyManagerResolution:
         mask = np.ones((2, 2), dtype=bool)
 
         with pytest.raises(ValueError, match="requires explicit `resolution`"):
-            TopologyManager(design=design, region_mask=mask)
+            TopologySpec(design=design, region_mask=mask)
 
-    def test_uses_cached_design_resolution_when_available(self):
+    def test_rasterization_does_not_attach_resolution_state_to_design(self):
         design = Design(
             width=2.0e-6, height=2.0e-6, material=Material(permittivity=1.0)
         )
         grid = design.rasterize(resolution=1.0e-6)
         mask = np.ones_like(np.asarray(grid.permittivity), dtype=bool)
 
-        manager = TopologyManager(design=design, region_mask=mask, resolution=None)
-        assert np.isclose(manager.resolution, 1.0e-6)
+        assert not hasattr(design, "_grid")
+        assert not hasattr(design, "_grid_resolution")
+        with pytest.raises(ValueError, match="requires explicit `resolution`"):
+            TopologySpec(design=design, region_mask=mask, resolution=None)
+
+    def test_configuration_and_state_are_immutable(self):
+        design = Design(
+            width=2.0e-6, height=2.0e-6, material=Material(permittivity=1.0)
+        )
+        spec = TopologySpec(
+            design=design,
+            region_mask=np.ones((2, 2), dtype=bool),
+            resolution=1.0e-6,
+        )
+        state = spec.initial_state()
+        advanced = state.with_objective(0.75)
+        stepped, max_update = spec.apply_gradient(
+            state, np.ones((2, 2), dtype=float), spec.beta(0, 2)
+        )
+
+        with pytest.raises(FrozenInstanceError):
+            spec.learning_rate = 1.0
+        with pytest.raises(FrozenInstanceError):
+            state.objective_history = (1.0,)
+        with pytest.raises(ValueError):
+            state.density[0, 0] = 0.0
+        assert state.objective_history == ()
+        assert advanced.objective_history == (0.75,)
+        np.testing.assert_allclose(state.density, 0.5)
+        assert max_update > 0.0
+        assert not np.allclose(stepped.density, state.density)
+
+    def test_state_has_array_aware_value_equality(self):
+        first = TopologyState(np.full((2, 2), 0.5), objective_history=[1.0])
+        equivalent = TopologyState(np.full((2, 2), 0.5), objective_history=(1.0,))
+        changed = TopologyState(np.full((2, 2), 0.75), objective_history=(1.0,))
+
+        assert first == equivalent
+        assert hash(first) == hash(equivalent)
+        assert first != changed
 
 
 @pytest.mark.optimization
-class TestTopologyManagerProjection:
+class TestTopologySpecProjection:
     """Projection settings should be explicit and consistently threaded."""
 
     def test_rejects_unknown_projection_type_at_construction(self):
@@ -580,7 +621,7 @@ class TestTopologyManagerProjection:
         mask = np.ones((2, 2), dtype=bool)
 
         with pytest.raises(ValueError, match="Unknown projection_type"):
-            TopologyManager(
+            TopologySpec(
                 design=design,
                 region_mask=mask,
                 resolution=1.0e-6,
@@ -592,7 +633,7 @@ class TestTopologyManagerProjection:
             width=4.0e-6, height=4.0e-6, material=Material(permittivity=1.0)
         )
         mask = np.ones((4, 4), dtype=bool)
-        manager = TopologyManager(
+        spec = TopologySpec(
             design=design,
             region_mask=mask,
             resolution=1.0e-6,
@@ -600,12 +641,12 @@ class TestTopologyManagerProjection:
             projection_type="ssp",
             ssp_smoothing_radius=0.55,
         )
-        manager.design_density = np.tile(np.linspace(0.0, 1.0, 4), (4, 1))
+        state = spec.initial_state(np.tile(np.linspace(0.0, 1.0, 4), (4, 1)))
 
-        physical = manager.get_physical_density(beta=np.inf)
+        physical = spec.physical_density(state, beta=np.inf)
 
-        assert manager.projection_type == "ssp"
+        assert spec.projection_type == "ssp"
         assert np.all(np.isfinite(physical))
-        assert physical.shape == manager.design_density.shape
+        assert physical.shape == state.density.shape
         assert np.min(physical) >= -1e-6
         assert np.max(physical) <= 1.0 + 1e-6

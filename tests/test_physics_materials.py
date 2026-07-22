@@ -9,10 +9,10 @@ import numpy as np
 import pytest
 
 from beamz import (
-    EPS_0,
     LIGHT_SPEED,
     PML,
     Design,
+    FieldRecorder,
     GaussianSource,
     Material,
     Simulation,
@@ -80,11 +80,14 @@ class TestWaveInMaterial:
         )
 
         subsample = 10
-        result = sim.run(save_fields=["Ez"], field_subsample=subsample)
+        sim = sim.updated_copy(
+            monitors=(*sim.monitors, FieldRecorder(("Ez",), subsample))
+        )
+        result = sim.run()
 
         dt_snapshot = dt * subsample
         v_measured = estimate_phase_velocity(
-            result["fields"]["Ez"], dx, dt_snapshot, threshold=0.2
+            result.monitor("fields").fields["Ez"], dx, dt_snapshot, threshold=0.2
         )
 
         expected_velocity = LIGHT_SPEED / n_material
@@ -142,12 +145,13 @@ class TestWaveInMaterial:
         )
 
         # Run until wave establishes
-        result = sim.run(save_fields=["Ez"], field_subsample=50)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 50)))
+        result = sim.run()
 
         # Take a snapshot after wave has propagated
         # Use one from middle of simulation
-        mid_idx = len(result["fields"]["Ez"]) // 2
-        Ez = result["fields"]["Ez"][mid_idx]
+        mid_idx = len(result.monitor("fields").fields["Ez"]) // 2
+        Ez = result.monitor("fields").fields["Ez"][mid_idx]
 
         # Get 1D profile through center
         center_row = Ez.shape[0] // 2
@@ -224,10 +228,13 @@ class TestWaveInMaterial:
             )
 
             subsample = 10
-            result = sim.run(save_fields=["Ez"], field_subsample=subsample)
+            sim = sim.updated_copy(
+                monitors=(*sim.monitors, FieldRecorder(("Ez",), subsample))
+            )
+            result = sim.run()
 
             v = estimate_phase_velocity(
-                result["fields"]["Ez"], dx, dt * subsample, threshold=0.2
+                result.monitor("fields").fields["Ez"], dx, dt * subsample, threshold=0.2
             )
             if v is not None:
                 velocities.append(v)

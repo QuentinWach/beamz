@@ -9,20 +9,16 @@ import numpy as np
 import pytest
 
 from beamz import (
-    EPS_0,
     LIGHT_SPEED,
     PML,
-    Design,
+    FieldRecorder,
     GaussianSource,
-    Material,
     Simulation,
-    calc_optimal_fdtd_params,
     ramped_cosine,
-    um,
 )
 
 # Import utilities
-from tests.utils import TEST_WAVELENGTH, compute_field_energy, estimate_phase_velocity
+from tests.utils import compute_field_energy, estimate_phase_velocity
 
 
 @pytest.mark.simulation
@@ -73,12 +69,15 @@ class TestFreeSpacePropagation:
 
         # Save field snapshots for velocity measurement
         subsample = 10
-        result = sim.run(save_fields=["Ez"], field_subsample=subsample)
+        sim = sim.updated_copy(
+            monitors=(*sim.monitors, FieldRecorder(("Ez",), subsample))
+        )
+        result = sim.run()
 
         # Estimate phase velocity from wavefront tracking
         dt_snapshot = dt * subsample
         v_measured = estimate_phase_velocity(
-            result["fields"]["Ez"], dx, dt_snapshot, threshold=0.2
+            result.monitor("fields").fields["Ez"], dx, dt_snapshot, threshold=0.2
         )
 
         assert v_measured is not None, (
@@ -139,10 +138,15 @@ class TestFreeSpacePropagation:
 
         # Save snapshots to track energy
         subsample = 20
-        result = sim.run(save_fields=["Ez"], field_subsample=subsample)
+        sim = sim.updated_copy(
+            monitors=(*sim.monitors, FieldRecorder(("Ez",), subsample))
+        )
+        result = sim.run()
 
         # Compute energy at each snapshot
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         # After source stops (~40% mark with ramp), check for growth
         source_stop_idx = int(len(energies) * 0.45)
@@ -197,14 +201,15 @@ class TestFreeSpacePropagation:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=50)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 50)))
+        result = sim.run()
 
         # Max field should not exceed some reasonable bound
         # The injected current creates E-field proportional to J*dt/eps
         # We allow up to 1000x as field builds up, but this catches explosive growth
         max_reasonable_field = 1e10  # Absolute bound to catch blowup
 
-        for i, Ez in enumerate(result["fields"]["Ez"]):
+        for i, Ez in enumerate(result.monitor("fields").fields["Ez"]):
             max_field = np.max(np.abs(Ez))
             assert max_field < max_reasonable_field, (
                 f"Field exploded at snapshot {i}: max = {max_field:.2e}. "

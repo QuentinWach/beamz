@@ -1,11 +1,14 @@
-import inspect
+from dataclasses import fields
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
 import beamz as bz
-from beamz.devices.sources.modesolver import ModeSolver
-from beamz.simulation.core import _source_spectrum_normalization
+from beamz.devices.sources.time import sample_source_waveforms
+from beamz.simulation.observe import SourceNormalization
+from beamz.simulation.observe import source_normalization as _source_normalization
+from beamz.simulation.results import FieldMetadata, SimulationMetadata
 
 
 def test_gaussian_pulse_spectrum_uses_tidy3d_fwidth_convention():
@@ -32,17 +35,16 @@ def test_source_normalization_uses_sampled_native_monitor_dft_when_time_is_avail
     time = np.arange(0.0, 20.0 / pulse.fwidth, dt)
     signal, _quadrature = pulse.sample(time)
     source = bz.ModeSource(
-        grid=object(),
         center=(0.0, 0.0, 0.0),
-        width=1.0,
-        height=1.0,
-        wavelength=bz.LIGHT_SPEED / pulse.freq0,
-        pol="te",
-        signal=signal,
+        size=(0.0, 1.0, 1.0),
         source_time=pulse,
+        direction="+",
+        mode_spec=bz.ModeSpec(polarization="te"),
     )
 
-    norm = _source_spectrum_normalization([source], [pulse.freq0], time=time)
+    normalization = _source_normalization([source], [pulse.freq0], time=time)
+    assert normalization is not None
+    norm = normalization.field_amplitude_norm
 
     expected = (
         2.0 / time.size * np.sum(signal * np.exp(1j * 2.0 * np.pi * pulse.freq0 * time))
@@ -55,14 +57,11 @@ def test_mode_source_spectrum_includes_modal_power_response():
     pulse = bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
     freqs = np.asarray([0.9 * pulse.freq0, pulse.freq0, 1.1 * pulse.freq0])
     source = bz.ModeSource(
-        grid=object(),
         center=(0.0, 0.0, 0.0),
-        width=1.0,
-        height=1.0,
-        wavelength=bz.LIGHT_SPEED / pulse.freq0,
-        pol="te",
-        signal=np.ones(8, dtype=float),
+        size=(0.0, 1.0, 1.0),
         source_time=pulse,
+        direction="+",
+        mode_spec=bz.ModeSpec(polarization="te"),
     )
 
     norm = source.source_spectrum(freqs, normalize=True)
@@ -73,41 +72,275 @@ def test_mode_source_spectrum_includes_modal_power_response():
 
 def test_mode_source_defaults_to_one_watt_launch_power():
     source = bz.ModeSource(
-        grid=object(),
         center=(0.0, 0.0, 0.0),
-        width=1.0,
-        height=1.0,
-        wavelength=1.55,
-        pol="te",
-        signal=np.ones(8, dtype=float),
+        size=(0.0, 1.0, 1.0),
+        source_time=bz.SampledSignal(np.ones(8, dtype=float), dt=1e-16, freq0=2e14),
+        direction="+",
     )
 
     assert source.power == 1.0
-
-
-def test_mode_solver_source_helpers_default_to_one_watt_launch_power():
-    assert inspect.signature(ModeSolver.to_source).parameters["power"].default == 1.0
-    assert (
-        inspect.signature(ModeSolver.sim_with_source).parameters["power"].default == 1.0
+    assert tuple(field.name for field in fields(bz.ModeSource)) == (
+        "center",
+        "size",
+        "source_time",
+        "direction",
+        "mode_spec",
+        "power",
     )
 
 
-def test_mode_source_can_be_calibrated_to_reference_power():
-    source = bz.ModeSource(
-        grid=object(),
+def test_port_creates_matching_canonical_monitor_and_source():
+    port = bz.Port(
+        center=(0.0, 1.0, 2.0),
+        size=(0.0, 2.0, 3.0),
+        name="input",
+        direction="+",
+        mode_spec=bz.ModeSpec(num_modes=2, polarization="te"),
+    )
+
+    monitor = port.to_monitor([1.9e14, 2.0e14])
+    source = port.to_source(2.0e14, 2.0e13, mode_index=1, num_freqs=3)
+
+    assert isinstance(monitor, bz.ModeMonitor)
+    assert monitor.center == port.center and monitor.size == port.size
+    assert monitor.mode_spec == port.mode_spec
+    assert isinstance(source, bz.ModeSource)
+    assert source.signed_direction == "+x"
+    assert source.mode_spec.mode_index == 1
+    assert source.mode_spec.num_freqs == 3
+    assert tuple(field.name for field in fields(bz.Port)) == (
+        "center",
+        "size",
+        "name",
+        "direction",
+        "mode_spec",
+        "monitor_name",
+    )
+
+
+@pytest.mark.parametrize(
+    "monitor_type", [bz.FieldMonitor, bz.FluxMonitor, bz.ModeMonitor]
+)
+def test_frequency_domain_monitors_require_positive_frequencies(monitor_type):
+    kwargs = {
+        "center": (0.0, 0.0, 0.0),
+        "size": (0.0, 1.0, 1.0),
+        "freqs": [],
+    }
+
+    with pytest.raises(ValueError, match="at least one frequency"):
+        monitor_type(**kwargs)
+    with pytest.raises(ValueError, match="positive"):
+        monitor_type(**(kwargs | {"freqs": [0.0]}))
+
+
+def test_legacy_generic_monitor_and_portspec_are_not_exported():
+    assert not hasattr(bz, "Monitor")
+    assert not hasattr(bz, "PortSpec")
+
+
+def test_source_normalization_separates_waveform_and_launch_power():
+    normalization = SourceNormalization(
+        waveform_spectrum=np.array([2.0 + 0.0j, 0.0 + 3.0j]),
+        launch_power_ratio=np.array([4.0, 0.25]),
+    )
+
+    np.testing.assert_allclose(normalization.field_amplitude_norm, [4.0, 1.5j])
+    np.testing.assert_allclose(normalization.power_norm, [16.0, 2.25])
+
+
+def test_monitor_results_apply_distinct_flux_and_mode_normalization(monkeypatch):
+    freq = 2.0e14
+    normalization = SourceNormalization(
+        waveform_spectrum=np.array([2.0 + 0.0j]),
+        launch_power_ratio=np.array([9.0]),
+    )
+    monkeypatch.setattr(
+        "beamz.simulation.observe.normalization_from_result",
+        lambda results, monitor: normalization,
+    )
+    flux_monitor = bz.FluxMonitor(
         center=(0.0, 0.0, 0.0),
-        width=1.0,
-        height=1.0,
-        wavelength=1.55,
-        pol="te",
-        signal=np.ones(8, dtype=float),
-        power=2.0,
+        size=(0.0, 1.0, 1.0),
+        freqs=[freq],
+        name="flux",
+    )
+    flux_result = bz.MonitorResults(
+        monitor=flux_monitor,
+        fields={},
+        power_history=np.asarray([], dtype=float),
+        power_timestamps=np.asarray([], dtype=float),
+        power_spectrum=np.asarray([36.0]),
+        dft_frequencies=np.asarray([freq]),
+    )
+    np.testing.assert_allclose(flux_result.flux, [36.0])
+
+    mode_monitor = bz.ModeMonitor(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 1.0, 1.0),
+        freqs=[freq],
+        mode_spec=bz.ModeSpec(num_modes=1),
+        name="mode",
+    )
+    mode_result = bz.MonitorResults(
+        monitor=mode_monitor,
+        fields={},
+        power_history=np.asarray([], dtype=float),
+        power_timestamps=np.asarray([], dtype=float),
+        power_spectrum=np.asarray([], dtype=np.complex64),
     )
 
-    calibrated = source.calibrated_to_measured_power(1.6, target_power=1.0)
+    def fake_extract(*args, **kwargs):
+        return {
+            "mode_m0": {
+                "a_minus": np.array([0.0 + 0.0j]),
+                "a_plus": np.array([6.0 + 0.0j]),
+                "projected_signed_power": np.array([36.0]),
+                "projection_residual": np.array([0.02]),
+                "condition_number": np.array([1.5]),
+            }
+        }
 
-    assert source.power == 2.0
-    assert calibrated.power == 1.25
+    from beamz.analysis import sparameters as sp
+
+    monkeypatch.setattr(sp, "_extract_port_waves_dft", fake_extract)
+    results = bz.SimulationResults(
+        metadata=SimulationMetadata(
+            dt=1.0,
+            resolution=1.0,
+            is_3d=False,
+            plane_2d="xy",
+            coordinate_offset=(0.0, 0.0, 0.0),
+            time=np.array([0.0]),
+            width=1.0,
+            height=1.0,
+            depth=0.0,
+            fields=FieldMetadata(grid_shape=(1, 1), component_shapes={}),
+        ),
+        monitors={"mode": mode_result},
+    )
+    assert results["mode"] is mode_result
+    data = results.mode("mode")
+
+    np.testing.assert_allclose(data.amps.sel(direction="+").values[:, 0], [6.0])
+    np.testing.assert_allclose(data.modal_flux, [36.0])
+    np.testing.assert_allclose(data.projection_residual, [0.02])
+    np.testing.assert_allclose(data.condition_number, [1.5])
+
+
+def test_3d_mode_monitor_labels_positive_axis_power_as_forward(monkeypatch):
+    freq = 2.0e14
+    monitor = bz.ModeMonitor(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 1.0, 1.0),
+        freqs=[freq],
+        mode_spec=bz.ModeSpec(num_modes=1),
+        name="mode",
+    )
+    result = bz.MonitorResults(
+        monitor=monitor,
+        fields={},
+        power_history=np.asarray([], dtype=float),
+        power_timestamps=np.asarray([], dtype=float),
+        power_spectrum=np.asarray([], dtype=np.complex64),
+    )
+
+    def fake_extract(*args, **kwargs):
+        return {
+            "mode_m0": {
+                # The 3D x-normal discrete contract uses the raw minus branch
+                # for physical +x propagation.
+                "a_minus": np.array([2.0 + 0.0j]),
+                "a_plus": np.array([0.25 + 0.0j]),
+                "projected_signed_power": np.array([3.9375]),
+                "projection_residual": np.array([0.0]),
+                "condition_number": np.array([1.0]),
+            }
+        }
+
+    from beamz.analysis import sparameters as sp
+
+    monkeypatch.setattr(sp, "_extract_port_waves_dft", fake_extract)
+    results = bz.SimulationResults(
+        metadata=SimulationMetadata(
+            dt=1.0,
+            resolution=1.0,
+            is_3d=True,
+            plane_2d="xy",
+            coordinate_offset=(0.0, 0.0, 0.0),
+            time=np.array([0.0]),
+            width=1.0,
+            height=1.0,
+            depth=1.0,
+            fields=FieldMetadata(grid_shape=(1, 1, 1), component_shapes={}),
+        ),
+        monitors={"mode": result},
+    )
+
+    data = results.mode("mode")
+
+    np.testing.assert_allclose(data.amps.sel(direction="+").values[:, 0], [2.0])
+    np.testing.assert_allclose(data.amps.sel(direction="-").values[:, 0], [0.25])
+
+
+def test_mode_monitor_analysis_exposes_flux_computed_from_dft_fields():
+    freq = 2.0e14
+    monitor = bz.ModeMonitor(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 1.0, 1.0),
+        freqs=[freq],
+        mode_spec=bz.ModeSpec(num_modes=1),
+        name="mode",
+    )
+    zeros = np.zeros((1, 2), dtype=np.complex128)
+    result = bz.MonitorResults(
+        monitor=monitor,
+        fields={},
+        power_history=np.asarray([], dtype=float),
+        power_timestamps=np.asarray([], dtype=float),
+        power_spectrum=np.asarray([], dtype=np.complex64),
+        dft_fields={
+            "Ex": zeros,
+            "Ey": np.ones((1, 2), dtype=np.complex128),
+            "Ez": zeros,
+            "Hx": zeros,
+            "Hy": zeros,
+            "Hz": 0.25 * np.ones((1, 2), dtype=np.complex128),
+        },
+        dft_frequencies=np.asarray([freq]),
+        dft_weight_sum=np.asarray([2.0]),
+        resolution=1.0,
+        power_scale=0.5,
+    )
+    results = bz.SimulationResults(
+        metadata=SimulationMetadata(
+            dt=1.0,
+            resolution=1.0,
+            is_3d=True,
+            plane_2d="xy",
+            coordinate_offset=(0.0, 0.0, 0.0),
+            time=np.array([0.0]),
+            width=1.0,
+            height=1.0,
+            depth=1.0,
+            fields=FieldMetadata(grid_shape=(1, 1, 1), component_shapes={}),
+        ),
+        monitors={"mode": result},
+    )
+
+    from beamz.analysis.data import analysis_data
+
+    lowered = analysis_data(results, "mode")
+
+    np.testing.assert_allclose(lowered.fields["flux"], result.get_dft_flux())
+    assert np.all(np.isfinite(lowered.fields["flux"]))
+
+
+def test_legacy_mode_solver_public_api_is_removed():
+    assert not hasattr(bz, "ModeSolver")
+    assert not hasattr(bz, "solve_modes")
+    with pytest.raises(ModuleNotFoundError):
+        __import__("beamz.devices.sources.modesolver", fromlist=["ModeSolver"])
 
 
 def test_design_background_and_material_geometry_builds_design_and_time():
@@ -154,20 +387,14 @@ def test_simulation_rejects_conflicting_domain_and_size():
         )
 
 
-def test_tidy3d_structure_medium_api_warns_but_still_builds():
-    si = bz.Material(permittivity=12.0)
+def test_nonempty_simulation_structures_api_is_removed():
     sio2 = bz.Material(permittivity=2.0)
+    core = bz.Box(center=(0.0, 0.0, 0.0), size=(1.0, 0.5, 0.2))
 
-    with pytest.warns(DeprecationWarning, match="Structure"):
-        core = bz.Structure(
-            geometry=bz.Box(center=(0.0, 0.0, 0.0), size=(1.0, 0.5, 0.2)),
-            medium=si,
-        )
-
-    with pytest.warns(DeprecationWarning) as warnings:
-        sim = bz.Simulation(
+    with pytest.raises(TypeError, match="structures"):
+        bz.Simulation(
             size=(2.0, 2.0, 1.0),
-            medium=sio2,
+            background=sio2,
             structures=[core],
             sources=[],
             monitors=[],
@@ -175,10 +402,8 @@ def test_tidy3d_structure_medium_api_warns_but_still_builds():
             time=np.array([0.0, 1e-15]),
         )
 
-    messages = [str(w.message) for w in warnings]
-    assert any("medium" in message for message in messages)
-    assert any("structures" in message for message in messages)
-    assert sim.design.structures[-1].material is si
+    assert not hasattr(bz, "Structure")
+    assert not hasattr(bz, "Medium")
 
 
 def test_semantic_monitor_wrappers_create_dft_planes_and_shift_with_simulation():
@@ -192,7 +417,6 @@ def test_semantic_monitor_wrappers_create_dft_planes_and_shift_with_simulation()
 
     sim = bz.Simulation(
         size=(10.0, 8.0, 6.0),
-        structures=[],
         sources=[],
         monitors=[monitor],
         resolution=1.0,
@@ -201,123 +425,28 @@ def test_semantic_monitor_wrappers_create_dft_planes_and_shift_with_simulation()
 
     shifted = sim.monitors[0]
     assert shifted.name == "flux"
-    assert shifted.dft_enabled
+    assert shifted.freqs.size > 0
     np.testing.assert_allclose(shifted.get_dft_frequencies(), freqs)
     assert shifted.start[0] == 6.0
     assert shifted.end[0] == 6.0
 
 
-def test_simulation_copy_update_is_reset_configuration_copy():
-    sim = bz.Simulation(
-        size=(2.0, 1.0),
-        structures=[],
-        sources=[],
-        monitors=[],
-        resolution=0.5,
-        time=np.array([0.0, 1e-15]),
-    )
-    sim.current_step = 1
-
-    copied = sim.copy(update={"sources": []})
-
-    assert copied is not sim
-    assert copied.current_step == 0
-    assert copied.sources == []
-
-
-def test_mode_monitor_result_exposes_labeled_amplitudes(monkeypatch):
-    freqs = np.array([1.0, 2.0])
-    mode_monitor = bz.ModeMonitor(
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    (
+        ((0.0, 2.0, 3.0), {"Ey", "Ez", "Hy", "Hz"}),
+        ((2.0, 0.0, 3.0), {"Ex", "Ez", "Hx", "Hz"}),
+        ((2.0, 3.0, 0.0), {"Ex", "Ey", "Hx", "Hy"}),
+    ),
+)
+def test_flux_monitor_records_only_tangential_poynting_components(size, expected):
+    monitor = bz.FluxMonitor(
         center=(0.0, 0.0, 0.0),
-        size=(0.0, 2.0, 2.0),
-        freqs=freqs,
-        mode_spec=bz.ModeSpec(num_modes=2),
-        name="mode",
-        direction="+x",
-        polarization="te",
-        record_fields=False,
-    )
-    sim = bz.Simulation(
-        size=(4.0, 4.0, 4.0),
-        sources=[],
-        monitors=[mode_monitor],
-        resolution=1.0,
-        time=np.array([0.0, 1e-15]),
+        size=size,
+        freqs=(2.0e14,),
     )
 
-    def fake_extract(self, ports, frequencies, **kwargs):
-        del self, kwargs
-        np.testing.assert_allclose(frequencies, freqs)
-        return {
-            port.name: {
-                "a_plus": np.full(freqs.shape, port.mode_index + 1.0j),
-                "a_minus": np.full(freqs.shape, port.mode_index + 2.0j),
-            }
-            for port in ports
-        }
-
-    monkeypatch.setattr(bz.Simulation, "extract_port_waves_dft", fake_extract)
-
-    results = bz.SimulationResults.from_run(sim, monitors=sim.monitors)
-    mode_data = results["mode"]
-
-    assert mode_data.amps.dims == ("f", "direction", "mode_index")
-    np.testing.assert_allclose(
-        mode_data.amps.sel(direction="+", mode_index=1),
-        np.full(freqs.shape, 1.0 + 2.0j),
-    )
-
-
-def test_mode_monitor_data_is_source_spectrum_normalized(monkeypatch):
-    freq0 = 2.0e14
-    fwidth = 2.0e13
-    freqs = np.array([freq0, freq0 + fwidth])
-    source_time = bz.GaussianPulse(freq0=freq0, fwidth=fwidth)
-    source_norm = source_time.dft_normalization_spectrum(freqs)
-    mode_monitor = bz.ModeMonitor(
-        center=(0.0, 0.0, 0.0),
-        size=(0.0, 2.0, 2.0),
-        freqs=freqs,
-        mode_spec=bz.ModeSpec(num_modes=1),
-        name="mode",
-        direction="+x",
-        polarization="te",
-        record_fields=False,
-    )
-    monkeypatch.setattr(
-        mode_monitor,
-        "get_dft_flux",
-        lambda: 3.0 * np.abs(source_norm) ** 2,
-    )
-    sim = bz.Simulation(
-        size=(4.0, 4.0, 4.0),
-        sources=[type("Source", (), {"source_time": source_time})()],
-        monitors=[mode_monitor],
-        resolution=1.0,
-        time=np.array([0.0, 1e-15]),
-    )
-
-    def fake_extract(self, ports, frequencies, **kwargs):
-        del self, kwargs
-        np.testing.assert_allclose(frequencies, freqs)
-        return {
-            port.name: {
-                "a_plus": np.zeros(freqs.shape, dtype=np.complex128),
-                "a_minus": 2.0 * source_norm,
-            }
-            for port in ports
-        }
-
-    monkeypatch.setattr(bz.Simulation, "extract_port_waves_dft", fake_extract)
-
-    results = bz.SimulationResults.from_run(sim, monitors=sim.monitors)
-    mode_data = results["mode"]
-
-    np.testing.assert_allclose(
-        mode_data.amps.sel(direction="+", mode_index=0),
-        np.full(freqs.shape, 2.0 + 0.0j),
-    )
-    np.testing.assert_allclose(mode_data.flux, np.full(freqs.shape, 3.0))
+    assert set(monitor.dft_components) == expected
 
 
 def test_flux_monitor_result_is_source_spectrum_normalized(monkeypatch):
@@ -333,21 +462,55 @@ def test_flux_monitor_result_is_source_spectrum_normalized(monkeypatch):
         name="flux",
     )
     monkeypatch.setattr(
-        flux_monitor,
+        type(flux_monitor),
         "get_dft_flux",
-        lambda: 4.0 * np.abs(source_norm) ** 2,
+        lambda self: 4.0 * np.abs(source_norm) ** 2,
+        raising=False,
     )
     sim = bz.Simulation(
         size=(4.0, 4.0, 4.0),
-        sources=[type("Source", (), {"source_time": source_time})()],
+        sources=[],
         monitors=[flux_monitor],
         resolution=1.0,
         time=np.array([0.0, 1e-15]),
     )
+    source = bz.GaussianBeamSource(
+        center=(0.0, 0.0, 0.0),
+        size=(1.0, 1.0),
+        source_time=source_time,
+        wavelength=bz.LIGHT_SPEED / freq0,
+        waist_radius=0.5,
+    )
 
-    results = bz.SimulationResults.from_run(sim, monitors=sim.monitors)
+    monitor_result = bz.MonitorResults(
+        monitor=flux_monitor,
+        fields={},
+        power_history=np.empty(0),
+        power_timestamps=np.empty(0),
+        power_spectrum=4.0 * np.abs(source_norm) ** 2,
+        dft_frequencies=freqs,
+    )
+    grid = sim.compile().grid
+    sim = sim.updated_copy(sources=[source])
+    results = bz.SimulationResults.from_run(
+        sim,
+        runtime_fields=grid,
+        monitor_results={"flux": monitor_result},
+    )
 
-    np.testing.assert_allclose(results["flux"].flux, np.full(freqs.shape, 4.0))
+    np.testing.assert_allclose(
+        results.monitors["flux"].flux,
+        np.full(freqs.shape, 4.0),
+    )
+    raw = results.renormalize(None)
+    np.testing.assert_allclose(
+        raw.monitors["flux"].flux,
+        4.0 * np.abs(source_norm) ** 2,
+    )
+    np.testing.assert_allclose(
+        raw.renormalize(0).monitors["flux"].flux,
+        np.full(freqs.shape, 4.0),
+    )
 
 
 def test_flux_monitor_result_includes_mode_source_launch_calibration(monkeypatch):
@@ -355,17 +518,28 @@ def test_flux_monitor_result_includes_mode_source_launch_calibration(monkeypatch
     fwidth = 2.0e13
     freqs = np.array([freq0, freq0 + fwidth])
     source_time = bz.GaussianPulse(freq0=freq0, fwidth=fwidth)
-    source_norm = source_time.dft_normalization_spectrum(freqs)
     launch_power = np.array([1.25, 0.75])
+    source = bz.ModeSource(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 1.0, 1.0),
+        source_time=source_time,
+        direction="+",
+        mode_spec=bz.ModeSpec(polarization="te"),
+    )
+    source_norm = source.source_spectrum(freqs, normalize=True)
 
-    class Source:
-        def _launch_power_normalization_spectrum(self, freqs, *, fields=None, dt=None):
-            del fields, dt
-            np.testing.assert_allclose(freqs, [freq0, freq0 + fwidth])
-            return launch_power
+    def launch_power_spectrum(source_arg, values, **kwargs):
+        del source_arg, kwargs
+        values = np.asarray(values, dtype=float)
+        if values.shape != freqs.shape or not np.allclose(values, freqs):
+            return None
+        return launch_power
 
-    source = Source()
-    source.source_time = source_time
+    monkeypatch.setattr(
+        bz.ModeSource,
+        "launch_power_normalization_spectrum",
+        launch_power_spectrum,
+    )
 
     flux_monitor = bz.FluxMonitor(
         center=(0.0, 0.0, 0.0),
@@ -374,27 +548,44 @@ def test_flux_monitor_result_includes_mode_source_launch_calibration(monkeypatch
         name="flux",
     )
     monkeypatch.setattr(
-        flux_monitor,
+        type(flux_monitor),
         "get_dft_flux",
-        lambda: 4.0 * np.abs(source_norm) ** 2 * launch_power,
+        lambda self: 4.0 * np.abs(source_norm) ** 2 * launch_power,
+        raising=False,
     )
     sim = bz.Simulation(
         size=(4.0, 4.0, 4.0),
-        sources=[source],
+        sources=[],
         monitors=[flux_monitor],
         resolution=1.0,
         time=np.array([0.0, 1e-15]),
     )
 
-    results = bz.SimulationResults.from_run(sim, monitors=sim.monitors)
+    monitor_result = bz.MonitorResults(
+        monitor=flux_monitor,
+        fields={},
+        power_history=np.empty(0),
+        power_timestamps=np.empty(0),
+        power_spectrum=4.0 * np.abs(source_norm) ** 2 * launch_power,
+        dft_frequencies=freqs,
+    )
+    grid = sim.compile().grid
+    sim = sim.updated_copy(sources=[source])
+    results = bz.SimulationResults.from_run(
+        sim,
+        runtime_fields=grid,
+        monitor_results={"flux": monitor_result},
+    )
 
-    np.testing.assert_allclose(results["flux"].flux, np.full(freqs.shape, 4.0))
+    np.testing.assert_allclose(
+        results.monitors["flux"].flux,
+        np.full(freqs.shape, 4.0),
+    )
 
 
-def test_mode_solver_can_create_source_from_source_time():
+def test_mode_source_can_create_config_from_source_time_plane():
     sim = bz.Simulation(
         size=(2.0, 2.0, 2.0),
-        structures=[],
         sources=[],
         monitors=[],
         resolution=1.0,
@@ -402,180 +593,165 @@ def test_mode_solver_can_create_source_from_source_time():
     )
     plane = bz.Box(center=(-0.5, 0.0, 0.0), size=(0.0, 1.0, 1.0))
     source_time = bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
-    solver = bz.ModeSolver(
-        simulation=sim,
-        plane=plane,
-        mode_spec=bz.ModeSpec(num_modes=1, polarization="te"),
-        freqs=[2.0e14],
-    )
 
-    source = solver.to_source(direction="+", source_time=source_time)
-
-    assert source.direction == "+x"
-    assert source.signal.shape == sim.time.shape
-    assert source.source_time is source_time
-
-
-def test_mode_solver_to_source_defers_to_discrete_mode_source(monkeypatch):
-    sim = bz.Simulation(
-        size=(6.0, 6.0, 6.0),
-        structures=[],
-        sources=[],
-        monitors=[],
-        resolution=1.0,
-        time=np.linspace(0.0, 3e-15, 4),
-    )
-    plane = bz.Box(center=(0.0, 0.0, 0.0), size=(0.0, 2.0, 4.0))
-    solver = bz.ModeSolver(
-        simulation=sim,
-        plane=plane,
-        mode_spec=bz.ModeSpec(num_modes=2, target_neff=2.3),
-        freqs=[2.0e14],
-    )
-
-    def fail_solve_modes(**_kwargs):
-        raise AssertionError("to_source should let ModeSource solve the launch mode.")
-
-    monkeypatch.setattr(
-        "beamz.devices.sources.modesolver.solve_modes", fail_solve_modes
-    )
-
-    source = solver.to_source(mode_index=1, direction="+")
-
-    assert source.direction == "+x"
-    assert source.mode_neff is None
-    assert source.mode_e_field is None
-    assert source.mode_h_field is None
-    assert source.mode_eps_profile_full.shape == (6, 6)
-    assert source.mode_crop_slices == (slice(1, 5), slice(2, 4))
-    assert source.mode_index == 1
-    assert source.mode_target_neff == 2.3
-    assert source.mode_num_modes == 2
-
-
-def test_mode_source_uses_precomputed_mode_without_resolving(monkeypatch):
-    sim = bz.Simulation(
-        size=(3.0, 3.0, 3.0),
-        structures=[],
-        sources=[],
-        monitors=[],
-        resolution=1.0,
-        time=np.linspace(0.0, 3e-15, 4),
-    )
     source = bz.ModeSource(
-        grid=sim.design.rasterize(resolution=sim.resolution),
-        center=(1.0, 1.0, 1.0),
-        width=2.0,
-        height=2.0,
-        wavelength=1.5,
-        pol="te",
-        signal=np.ones(sim.time.shape),
-        direction="+x",
-        mode_neff=2.25 + 0.0j,
-        mode_e_field=np.ones((3, 3, 3), dtype=np.complex128),
-        mode_h_field=np.ones((3, 3, 3), dtype=np.complex128),
+        center=plane.center,
+        size=plane.size,
+        direction="+",
+        source_time=source_time,
+        mode_spec=bz.ModeSpec(num_modes=1, polarization="te"),
     )
 
-    def fail_solve_modes(**_kwargs):
-        raise AssertionError("ModeSource should use the precomputed mode fields.")
-
-    monkeypatch.setattr("beamz.devices.sources.mode.solve_modes", fail_solve_modes)
-
-    source.initialize(sim.fields.permittivity, sim.resolution, dt=sim.dt)
-
-    assert source._neff == 2.25 + 0.0j
+    assert source.direction == "+"
+    assert source.signed_direction == "+x"
+    assert source.source_time == source_time
+    expected, _quadrature = source_time.sample(np.asarray([sim.time[0]]))
+    sampled, _quadrature = source.source_time.sample(np.asarray([sim.time[0]]))
+    np.testing.assert_allclose(sampled, expected)
 
 
-def test_mode_solver_source_polarization_can_be_set_independently():
-    sim = bz.Simulation(
-        size=(2.0, 2.0, 2.0),
-        structures=[],
-        sources=[],
-        monitors=[],
-        resolution=1.0,
-        time=np.linspace(0.0, 3e-15, 4),
-    )
-    plane = bz.Box(center=(-0.5, 0.0, 0.0), size=(0.0, 1.0, 1.0))
-    solver = bz.ModeSolver(
-        simulation=sim,
-        plane=plane,
-        mode_spec=bz.ModeSpec(num_modes=1),
-        freqs=[2.0e14],
-    )
-
-    source = solver.to_source(direction="+", polarization="tm")
-
-    assert source.pol == "tm"
-
-
-def test_mode_solver_solves_only_finite_plane_size(monkeypatch):
+def test_mode_source_solves_modes_and_analysis_plots(monkeypatch):
     sim = bz.Simulation(
         size=(6.0, 6.0, 6.0),
-        structures=[],
         sources=[],
         monitors=[],
         resolution=1.0,
         time=np.linspace(0.0, 3e-15, 4),
     )
     plane = bz.Box(center=(0.0, 0.0, 0.0), size=(0.0, 2.0, 4.0))
-    solver = bz.ModeSolver(
-        simulation=sim,
-        plane=plane,
-        mode_spec=bz.ModeSpec(num_modes=1),
-        freqs=[2.0e14],
+    source_time = bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
+    source = bz.ModeSource(
+        center=plane.center,
+        size=plane.size,
+        direction="+",
+        source_time=source_time,
+        mode_spec=bz.ModeSpec(num_modes=2, polarization="te", target_neff=2.3),
     )
     seen = {}
 
     def fake_solve_modes(**kwargs):
         eps = np.asarray(kwargs["eps"])
         seen["eps_shape"] = eps.shape
-        fields = np.ones((1, 3, *eps.shape), dtype=np.complex128)
-        return np.array([2.0 + 0.0j]), fields, fields, 0
+        seen["direction"] = kwargs["direction"]
+        fields = np.ones((2, 3, *eps.shape), dtype=np.complex128)
+        return np.array([2.4 + 0.0j, 1.8 + 0.0j]), fields, fields, 0
 
-    monkeypatch.setattr(
-        "beamz.devices.sources.modesolver.solve_modes", fake_solve_modes
+    monkeypatch.setattr("beamz.devices.sources.solve.solve_modes", fake_solve_modes)
+
+    modes = source.solve_modes(sim, freqs=[source_time.freq0])
+    from beamz.analysis.plotting import plot_mode_field_components
+
+    fig, axes, neffs = plot_mode_field_components(
+        modes,
+        field_names=("Ey", "Ez"),
+        mode_indices=(0, 1),
+        show=False,
     )
 
-    modes = solver.solve()
-
+    assert source.direction == "+"
+    assert source.signed_direction == "+x"
+    assert not hasattr(source, "with_modes")
+    assert not hasattr(source, "mode_e_field")
+    assert not hasattr(modes, "plot_field_components")
     assert seen["eps_shape"] == (4, 2)
-    assert modes.eps_profiles.shape == (1, 4, 2)
+    assert seen["direction"] == "+x"
+    assert axes.shape == (2, 2)
+    np.testing.assert_allclose(neffs, [2.4 + 0.0j, 1.8 + 0.0j])
+    np.testing.assert_allclose(modes.neffs[0], [2.4 + 0.0j, 1.8 + 0.0j])
+    plt.close(fig)
 
 
-def test_mode_solver_plot_forwards_target_neff(monkeypatch):
-    sim = bz.Simulation(
+def test_mode_source_samples_source_time_without_precomputed_signal():
+    pulse = bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
+    source = bz.ModeSource(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 1.0, 1.0),
+        direction="+",
+        source_time=pulse,
+        mode_spec=bz.ModeSpec(num_modes=1, polarization="te"),
+    )
+
+    signal, quadrature = pulse.sample(np.asarray([1.25e-14]))
+    sampled_signal, sampled_quadrature = source.source_time.sample(
+        np.asarray([1.25e-14])
+    )
+
+    assert not hasattr(source, "signal")
+    np.testing.assert_allclose(sampled_signal, signal)
+    np.testing.assert_allclose(sampled_quadrature, quadrature)
+
+
+def test_mode_source_compiler_samples_source_time_as_full_waveform():
+    pulse = bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
+    source = bz.ModeSource(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 1.0, 1.0),
+        direction="+",
+        source_time=pulse,
+        mode_spec=bz.ModeSpec(num_modes=1, polarization="te"),
+    )
+
+    signal, quadrature = sample_source_waveforms(
+        source.source_time,
+        t0=0.0,
+        dt=5.0e-16,
+        num_steps=1024,
+        offset_fn=lambda t, step: t + 0.5 * step,
+    )
+    analytic_real, analytic_quadrature = sample_source_waveforms(
+        source.source_time,
+        t0=0.0,
+        dt=5.0e-16,
+        num_steps=1024,
+    )
+    analytic = np.asarray(analytic_real) + 1j * np.asarray(analytic_quadrature)
+
+    assert np.max(np.abs(np.asarray(signal))) > 0.1
+    assert np.max(np.abs(np.asarray(quadrature))) > 0.1
+    assert np.max(np.abs(np.real(analytic))) > 0.1
+    assert np.max(np.abs(np.imag(analytic))) > 0.1
+
+
+def test_simulation_copy_update_normalizes_replaced_sources_once():
+    source = bz.ModeSource(
+        center=(-0.5, 0.0, 0.0),
+        size=(0.0, 1.0, 1.0),
+        direction="+",
+        source_time=bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13),
+        mode_spec=bz.ModeSpec(num_modes=1),
+    )
+    sim0 = bz.Simulation(
         size=(2.0, 2.0, 2.0),
-        structures=[],
         sources=[],
         monitors=[],
         resolution=1.0,
         time=np.linspace(0.0, 3e-15, 4),
     )
-    plane = bz.Box(center=(-0.5, 0.0, 0.0), size=(0.0, 1.0, 1.0))
-    solver = bz.ModeSolver(
-        simulation=sim,
-        plane=plane,
-        mode_spec=bz.ModeSpec(num_modes=1, target_neff=2.5),
-        freqs=[2.0e14],
-    )
-    seen = {}
 
-    def fake_plot_mode_fields(*args, **kwargs):
-        del args
-        seen.update(kwargs)
-        return None, None, np.array([2.5])
+    sim = sim0.updated_copy(sources=[source])
 
-    monkeypatch.setattr("beamz.visual.mpl.plot_mode_fields", fake_plot_mode_fields)
-
-    solver.plot_field_components(show=False)
-
-    assert seen["target_neff"] == 2.5
-    assert seen["polarization"] is None
-    assert "normalize" not in seen
-    assert "vmax" not in seen
+    assert sim is not sim0
+    assert sim.sources != [source]
+    assert sim.sources[0].center == pytest.approx((0.5, 1.0, 1.0))
+    assert source.center == pytest.approx((-0.5, 0.0, 0.0))
+    assert sim0.sources == ()
+    assert sim.coordinate_offset == sim0.coordinate_offset
+    assert sim.initial_state().current_step == 0
 
 
-def test_mode_data_dataframe_matches_tidy3d_columns():
+def test_mode_source_rejects_precomputed_runtime_launch_fields():
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        bz.ModeSource(
+            center=(1.0, 1.0, 1.0),
+            size=(0.0, 2.0, 2.0),
+            source_time=bz.SampledSignal(np.ones(4), dt=1e-16, freq0=2e14),
+            direction="+",
+            mode_neff=2.25 + 0.0j,
+            mode_e_field=np.ones((3, 3, 3), dtype=np.complex128),
+        )
+
+
+def test_mode_data_dataframe_exposes_lightweight_inspection_columns():
     data = bz.ModeData(
         frequencies=np.array([2.0e14]),
         neffs=np.array([[2.4 + 0.0j, 1.5 + 0.0j]]),
@@ -585,16 +761,16 @@ def test_mode_data_dataframe_matches_tidy3d_columns():
         resolution=0.1 * bz.um,
     )
 
-    df = data.to_dataframe()
+    from beamz.analysis import mode_data_to_dataframe
 
+    df = mode_data_to_dataframe(data)
+
+    assert not hasattr(data, "to_dataframe")
     assert list(df.columns) == [
         "wavelength",
         "n eff",
         "k eff",
         "loss (dB/cm)",
-        "TE (Ey) fraction",
-        "wg TE fraction",
-        "wg TM fraction",
         "mode area",
     ]
     assert df.index.names == ["f", "mode_index"]

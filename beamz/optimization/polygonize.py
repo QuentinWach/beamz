@@ -29,7 +29,7 @@ def _iter_shapely_polygons(geometry):
 
 
 def _build_parent_map(polygons):
-    parents = [None] * len(polygons)
+    parents: list[int | None] = [None] * len(polygons)
     for idx, polygon in enumerate(polygons):
         point = polygon.representative_point()
         best_parent = None
@@ -69,6 +69,35 @@ def density_to_shapely_geometry(
     dy=None,
     min_area=0.0,
 ):
+    """Convert a 2D density field into thresholded Shapely geometry.
+
+    Parameters
+    ----------
+    density : array-like
+        Two-dimensional scalar density in ``(y, x)`` array order.
+    level : float, default=0.5
+        Isocontour threshold separating occupied and empty regions.
+    x0 : float, default=0
+        x coordinate of the density-grid origin in metres.
+    y0 : float, default=0
+        y coordinate of the density-grid origin in metres.
+    dx : float, default=1
+        x sample spacing in metres.
+    dy : float, optional
+        y sample spacing in metres; defaults to ``dx``.
+    min_area : float, default=0
+        Minimum retained polygon and hole area in square metres.
+
+    Returns
+    -------
+    shapely.Geometry
+        Valid polygonal geometry preserving nested holes.
+
+    Raises
+    ------
+    ValueError
+        If ``density`` is not two-dimensional.
+    """
     array = np.asarray(density, dtype=float)
     if array.ndim != 2:
         raise ValueError("density_to_shapely_geometry expects a 2D array")
@@ -129,6 +158,22 @@ def density_to_shapely_geometry(
 
 
 def shapely_geometry_to_polygons(geometry, *, material, min_area=0.0):
+    """Convert Shapely geometry into BEAMZ polygon structures.
+
+    Parameters
+    ----------
+    geometry : shapely.Geometry
+        Polygon, multipolygon, or geometry collection to convert.
+    material : Material
+        Material assigned to every returned structure.
+    min_area : float, default=0
+        Minimum retained exterior and hole area in square metres.
+
+    Returns
+    -------
+    list of Polygon
+        Immutable BEAMZ polygons with interior rings represented as holes.
+    """
     polygons = []
     min_area = float(max(0.0, min_area))
     for polygon in _iter_shapely_polygons(geometry):
@@ -160,6 +205,32 @@ def density_to_polygons(
     dy=None,
     min_area=0.0,
 ):
+    """Convert a 2D topology density directly into BEAMZ polygons.
+
+    Parameters
+    ----------
+    density : array-like
+        Two-dimensional scalar density in ``(y, x)`` order.
+    material : Material
+        Material assigned to each generated polygon.
+    level : float, default=0.5
+        Isocontour threshold.
+    x0 : float, default=0
+        x origin in metres.
+    y0 : float, default=0
+        y origin in metres.
+    dx : float, default=1
+        x sample spacing in metres.
+    dy : float, optional
+        y sample spacing in metres; defaults to ``dx``.
+    min_area : float, default=0
+        Minimum retained area in square metres.
+
+    Returns
+    -------
+    list of Polygon
+        Thresholded immutable geometry suitable for adding to a design.
+    """
     geometry = density_to_shapely_geometry(
         density,
         level=level,

@@ -1,487 +1,636 @@
-import colorsys
-import random
-import warnings
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from typing import Any, ClassVar
 
 import numpy as np
 
+from beamz.design.materials import MaterialProtocol
 
-def _rotate_vertices(vertices, angle_rad, axis, center):
-    """Rotate a list of 3D vertices around center by angle_rad on the given axis."""
-    cx, cy, cz = center
-    cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-    if axis == "z":
-        return [
-            (
-                cx + (v[0] - cx) * cos_a - (v[1] - cy) * sin_a,
-                cy + (v[0] - cx) * sin_a + (v[1] - cy) * cos_a,
-                v[2],
-            )
-            for v in vertices
-        ]
-    elif axis == "x":
-        return [
-            (
-                v[0],
-                cy + (v[1] - cy) * cos_a - (v[2] - cz) * sin_a,
-                cz + (v[1] - cy) * sin_a + (v[2] - cz) * cos_a,
-            )
-            for v in vertices
-        ]
-    elif axis == "y":
-        return [
-            (
-                cx + (v[0] - cx) * cos_a + (v[2] - cz) * sin_a,
-                v[1],
-                cz - (v[0] - cx) * sin_a + (v[2] - cz) * cos_a,
-            )
-            for v in vertices
-        ]
-    else:
-        raise ValueError(f"Invalid rotation axis '{axis}'. Must be 'x', 'y', or 'z'.")
+DEFAULT_COLOR = "#6699cc"
 
 
-def _normalize_position(position, z=None):
-    """Ensure position is a 3-tuple, optionally overriding z."""
-    if len(position) == 2:
-        position = (position[0], position[1], 0.0)
-    elif len(position) != 3:
+def _position(value, z=None):
+    values = tuple(value)
+    if len(values) == 2:
+        values = (*values, 0.0)
+    if len(values) != 3:
         raise ValueError("Position must be (x,y) or (x,y,z)")
     if z is not None:
-        position = (position[0], position[1], z)
-    return position
+        values = (values[0], values[1], z)
+    result = tuple(float(v) for v in values)
+    if not all(np.isfinite(result)):
+        raise ValueError(f"Position must be finite, got {value!r}")
+    return result
 
 
-class Polygon:
-    def __init__(
-        self,
-        vertices=None,
-        material=None,
-        color=None,
-        optimize=False,
-        interiors=None,
-        depth=0,
-        z=0,
-        sidewall_angle=0.0,
-        width_to_z=0.0,
-    ):
-        self.vertices = self._process_vertices(
-            vertices if vertices is not None else [], z
+def _vertices(values, z=0.0, *, ccw=True):
+    result = []
+    for vertex in values or ():
+        if len(vertex) == 2:
+            result.append((float(vertex[0]), float(vertex[1]), float(z)))
+        elif len(vertex) == 3:
+            result.append(tuple(float(v) for v in vertex))
+        else:
+            raise ValueError(f"Vertex must have 2 or 3 coordinates, got {len(vertex)}")
+    if ccw and len(result) >= 3:
+        area = sum(
+            result[i][0] * result[(i + 1) % len(result)][1]
+            - result[(i + 1) % len(result)][0] * result[i][1]
+            for i in range(len(result))
         )
-        self.interiors = [
-            self._process_vertices(interior, z, ensure_ccw=False)
-            for interior in (interiors if interiors is not None else [])
-        ]
-        self.material = material
-        self.optimize = optimize
-        self.color = color if color is not None else self.get_random_color_consistent()
-        self.depth = depth if depth is not None else 0
-        self.z = z if z is not None else 0
-        self.sidewall_angle = float(sidewall_angle or 0.0)
-        self.width_to_z = float(width_to_z or 0.0)
-
-    def _process_vertices(self, vertices, z=0, ensure_ccw=True):
-        if not vertices:
-            return []
-        vertices_3d = self._ensure_3d_vertices(vertices)
-        if ensure_ccw and len(vertices_3d) >= 3:
-            vertices_2d = [(v[0], v[1]) for v in vertices_3d]
-            vertices_2d = self._ensure_ccw_vertices(vertices_2d)
-            vertices_3d = [
-                (x, y, vertices_3d[i][2] if len(vertices_3d[i]) > 2 else z)
-                for i, (x, y) in enumerate(vertices_2d)
-            ]
-        return vertices_3d
-
-    def _ensure_ccw_vertices(self, vertices_2d):
-        if len(vertices_2d) < 3:
-            return vertices_2d
-        area = 0
-        for i in range(len(vertices_2d)):
-            j = (i + 1) % len(vertices_2d)
-            area += vertices_2d[i][0] * vertices_2d[j][1]
-            area -= vertices_2d[j][0] * vertices_2d[i][1]
         if area < 0:
-            return vertices_2d[::-1]
-        return vertices_2d
+            result.reverse()
+    return tuple(result)
 
-    def _ensure_3d_vertices(self, vertices):
-        if not vertices:
-            return []
-        result = []
-        for v in vertices:
-            if len(v) == 2:
-                result.append((v[0], v[1], 0.0))
-            elif len(v) == 3:
-                result.append(v)
-            else:
-                raise ValueError(f"Vertex must have 2 or 3 coordinates, got {len(v)}")
-        return result
 
-    def _vertices_2d(self, vertices=None):
-        if vertices is None:
-            vertices = self.vertices
-        return [(v[0], v[1]) for v in vertices]
-
-    def get_random_color_consistent(self, saturation=0.6, value=0.7):
-        hue = random.random()
-        r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
-        return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
-
-    def shift(self, x, y, z=0):
-        if hasattr(self, "position") and self.position is not None:
-            self.position = (
-                self.position[0] + x,
-                self.position[1] + y,
-                self.position[2] + z,
+def _rotate(path, angle, axis, center):
+    cx, cy, cz = center
+    cos_a, sin_a = np.cos(angle), np.sin(angle)
+    if axis == "z":
+        return tuple(
+            (
+                cx + (x - cx) * cos_a - (y - cy) * sin_a,
+                cy + (x - cx) * sin_a + (y - cy) * cos_a,
+                z,
             )
-        if self.vertices:
-            self.vertices = [(v[0] + x, v[1] + y, v[2] + z) for v in self.vertices]
-        self.interiors = [
-            [(v[0] + x, v[1] + y, v[2] + z) for v in path]
-            for path in self.interiors
-            if path
-        ]
-        return self
-
-    def scale(self, s_x, s_y=None, s_z=None):
-        if s_y is None:
-            s_y = s_x
-        if s_z is None:
-            s_z = 1.0 if s_y != s_x else s_x
-        if self.vertices:
-            x_center = sum(v[0] for v in self.vertices) / len(self.vertices)
-            y_center = sum(v[1] for v in self.vertices) / len(self.vertices)
-            z_center = sum(v[2] for v in self.vertices) / len(self.vertices)
-            self.vertices = [
-                (
-                    x_center + (v[0] - x_center) * s_x,
-                    y_center + (v[1] - y_center) * s_y,
-                    z_center + (v[2] - z_center) * s_z,
-                )
-                for v in self.vertices
-            ]
-            new_interiors_paths = []
-            for interior_path in self.interiors:
-                if interior_path:
-                    new_interiors_paths.append(
-                        [
-                            (
-                                x_center + (v[0] - x_center) * s_x,
-                                y_center + (v[1] - y_center) * s_y,
-                                z_center + (v[2] - z_center) * s_z,
-                            )
-                            for v in interior_path
-                        ]
-                    )
-            self.interiors = new_interiors_paths
-        return self
-
-    def rotate(self, angle, axis="z", point=None):
-        if self.vertices:
-            angle_rad = np.radians(angle)
-            if point is None:
-                center = (
-                    sum(v[0] for v in self.vertices) / len(self.vertices),
-                    sum(v[1] for v in self.vertices) / len(self.vertices),
-                    sum(v[2] for v in self.vertices) / len(self.vertices),
-                )
-            else:
-                center = (point[0], point[1], point[2] if len(point) > 2 else 0)
-
-            self.vertices = _rotate_vertices(self.vertices, angle_rad, axis, center)
-            self.interiors = [
-                _rotate_vertices(path, angle_rad, axis, center)
-                for path in self.interiors
-                if path
-            ]
-        return self
-
-    def to_plot_data(
-        self, *, facecolor=None, edgecolor="black", alpha=None, linestyle=None
-    ):
-        from beamz.visual.data import structure_plot_data
-
-        return structure_plot_data(
-            self,
-            facecolor=facecolor,
-            edgecolor=edgecolor,
-            alpha=1.0 if alpha is None else alpha,
-            linestyle="-" if linestyle is None else linestyle,
+            for x, y, z in path
         )
+    if axis == "x":
+        return tuple(
+            (
+                x,
+                cy + (y - cy) * cos_a - (z - cz) * sin_a,
+                cz + (y - cy) * sin_a + (z - cz) * cos_a,
+            )
+            for x, y, z in path
+        )
+    if axis == "y":
+        return tuple(
+            (
+                cx + (x - cx) * cos_a + (z - cz) * sin_a,
+                y,
+                cz - (x - cx) * sin_a + (z - cz) * cos_a,
+            )
+            for x, y, z in path
+        )
+    raise ValueError(f"Invalid rotation axis {axis!r}; expected 'x', 'y', or 'z'.")
+
+
+def _path_center(path):
+    return tuple(sum(vertex[i] for vertex in path) / len(path) for i in range(3))
+
+
+def _positive(name, value, *, allow_zero=False):
+    value = float(value)
+    valid = np.isfinite(value) and (value >= 0.0 if allow_zero else value > 0.0)
+    if not valid:
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"{name} must be finite and {qualifier}, got {value}")
+    return value
+
+
+def _normalize_common(structure):
+    """Normalize fields shared by public immutable structure specs."""
+    field_names = structure.__dataclass_fields__
+    if (
+        "material" in field_names
+        and structure.material is not None
+        and not isinstance(structure.material, MaterialProtocol)
+    ):
+        raise TypeError(
+            f"{type(structure).__name__}.material must satisfy MaterialProtocol."
+        )
+    if "color" in field_names:
+        object.__setattr__(
+            structure,
+            "color",
+            DEFAULT_COLOR if structure.color is None else str(structure.color),
+        )
+    if "facecolor" in field_names and structure.facecolor is not None:
+        object.__setattr__(structure, "facecolor", str(structure.facecolor))
+    for name in ("optimize", "sidewall_angle", "width_to_z"):
+        if name in field_names:
+            value = (
+                bool(getattr(structure, name))
+                if name == "optimize"
+                else float(getattr(structure, name) or 0.0)
+            )
+            object.__setattr__(structure, name, value)
+
+
+class Structure:
+    """Shared functional operations for immutable geometry specifications."""
+
+    __slots__ = ()
+    raster_kind: ClassVar[str] = "volume"
+
+    def updated_copy(self, **changes):
+        try:
+            return replace(self, **changes)  # type: ignore[arg-type]
+        except TypeError as exc:
+            fields = getattr(self, "__dataclass_fields__", {})
+            unknown = sorted(set(changes) - fields.keys())
+            if unknown:
+                raise TypeError(
+                    f"Unexpected update fields: {', '.join(unknown)}"
+                ) from None
+            raise exc
+
+    def with_material(self, material):
+        return self.updated_copy(material=material)
 
     def copy(self):
-        copied_interiors = (
-            [list(path) for path in self.interiors if path] if self.interiors else []
-        )
+        return self
+
+
+class PlanarStructure(Structure):
+    """Geometry operations shared by polygon-backed structures."""
+
+    __slots__ = ()
+    vertices: tuple[tuple[float, float, float], ...]
+    interiors: tuple[tuple[tuple[float, float, float], ...], ...]
+    depth: float
+    z: float
+    sidewall_angle: float
+    width_to_z: float
+    material: Any
+    color: str
+    optimize: bool
+    position: tuple[float, float, float]
+
+    def _as_polygon(self, *, vertices=None, interiors=None, z=None, depth=None):
         return Polygon(
-            vertices=list(self.vertices) if self.vertices else [],
-            interiors=copied_interiors,
+            vertices=self.vertices if vertices is None else vertices,
+            interiors=self.interiors if interiors is None else interiors,
             material=self.material,
             color=self.color,
             optimize=self.optimize,
-            depth=self.depth,
-            z=self.z,
+            depth=self.depth if depth is None else depth,
+            z=self.z if z is None else z,
             sidewall_angle=self.sidewall_angle,
             width_to_z=self.width_to_z,
         )
 
-    def get_bounding_box(self):
-        if not self.vertices or len(self.vertices) == 0:
-            return (0, 0, 0, 0, 0, 0)
-        x_coords = [v[0] for v in self.vertices]
-        y_coords = [v[1] for v in self.vertices]
-        z_coords = [v[2] for v in self.vertices]
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-        min_z, max_z = min(z_coords), max(z_coords)
-
-        # Expand Z-range by depth if present
-        max_z = max(max_z, min_z + getattr(self, "depth", 0))
-
-        expand_xy = self._max_taper_expansion()
-        min_x -= expand_xy
-        max_x += expand_xy
-        min_y -= expand_xy
-        max_y += expand_xy
-
-        return (min_x, min_y, min_z, max_x, max_y, max_z)
-
-    def has_tapered_sidewalls(self):
-        return (
-            abs(float(getattr(self, "sidewall_angle", 0.0))) > 1e-12
-            and float(getattr(self, "depth", 0.0)) > 0.0
+    def shift(self, x, y, z=0):
+        dx, dy, dz = float(x), float(y), float(z)
+        if hasattr(self, "position") and not isinstance(self, Polygon):
+            px, py, pz = self.position
+            return self.updated_copy(position=(px + dx, py + dy, pz + dz), z=pz + dz)
+        return self.updated_copy(
+            vertices=tuple((vx + dx, vy + dy, vz + dz) for vx, vy, vz in self.vertices),
+            interiors=tuple(
+                tuple((vx + dx, vy + dy, vz + dz) for vx, vy, vz in path)
+                for path in self.interiors
+            ),
+            z=self.z + dz,
         )
 
-    def _sidewall_reference_z(self):
-        return float(self.z) + float(self.width_to_z) * float(self.depth)
+    def scale(self, s_x, s_y=None, s_z=None):
+        s_x = float(s_x)
+        s_y = s_x if s_y is None else float(s_y)
+        s_z = (1.0 if s_y != s_x else s_x) if s_z is None else float(s_z)
+        if not self.vertices:
+            return self
+        center = _path_center(self.vertices)
+
+        def scaled(path):
+            return tuple(
+                (
+                    center[0] + (x - center[0]) * s_x,
+                    center[1] + (y - center[1]) * s_y,
+                    center[2] + (z - center[2]) * s_z,
+                )
+                for x, y, z in path
+            )
+
+        return self._as_polygon(
+            vertices=scaled(self.vertices),
+            interiors=tuple(scaled(path) for path in self.interiors),
+            depth=self.depth * s_z,
+        )
+
+    def rotate(self, angle, axis="z", point=None):
+        if not self.vertices:
+            return self
+        center = _path_center(self.vertices) if point is None else _position(point)
+        angle_rad = np.radians(float(angle))
+        return self._as_polygon(
+            vertices=_rotate(self.vertices, angle_rad, axis, center),
+            interiors=tuple(
+                _rotate(path, angle_rad, axis, center) for path in self.interiors
+            ),
+        )
+
+    def get_bounding_box(self):
+        if not self.vertices:
+            return (0.0,) * 6
+        coords = np.asarray(self.vertices, dtype=float)
+        minimum = coords.min(axis=0)
+        maximum = coords.max(axis=0)
+        maximum[2] = max(maximum[2], minimum[2] + self.depth)
+        expansion = self._max_taper_expansion()
+        return (
+            minimum[0] - expansion,
+            minimum[1] - expansion,
+            minimum[2],
+            maximum[0] + expansion,
+            maximum[1] + expansion,
+            maximum[2],
+        )
+
+    def has_tapered_sidewalls(self):
+        return abs(self.sidewall_angle) > 1e-12 and self.depth > 0.0
 
     def _taper_buffer_at_z(self, z):
         if not self.has_tapered_sidewalls():
             return 0.0
-        return -(float(z) - self._sidewall_reference_z()) * np.tan(
-            np.radians(float(self.sidewall_angle))
-        )
+        reference_z = self.z + self.width_to_z * self.depth
+        return -(float(z) - reference_z) * np.tan(np.radians(self.sidewall_angle))
 
     def _max_taper_expansion(self):
         if not self.has_tapered_sidewalls():
             return 0.0
-        z0 = float(self.z)
-        z1 = z0 + float(self.depth)
-        return max(0.0, self._taper_buffer_at_z(z0), self._taper_buffer_at_z(z1))
+        return max(
+            0.0,
+            self._taper_buffer_at_z(self.z),
+            self._taper_buffer_at_z(self.z + self.depth),
+        )
 
     def _base_shapely_polygon(self):
         from shapely.geometry import Polygon as ShapelyPolygon
 
-        if not self.vertices:
+        if len(self.vertices) < 3:
             return None
-        shell = [(float(v[0]), float(v[1])) for v in self.vertices]
-        holes = []
-        for hole in self.interiors:
-            if hole:
-                holes.append([(float(v[0]), float(v[1])) for v in hole])
-        poly = ShapelyPolygon(shell=shell, holes=holes if holes else None)
-        if poly.is_empty:
-            return None
-        if not poly.is_valid:
-            poly = poly.buffer(0)
-        if poly.is_empty or not poly.is_valid:
-            return None
-        return poly
+        polygon = ShapelyPolygon(
+            shell=[(x, y) for x, y, _ in self.vertices],
+            holes=[[(x, y) for x, y, _ in path] for path in self.interiors if path]
+            or None,
+        )
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        return None if polygon.is_empty or not polygon.is_valid else polygon
 
     def shapely_polygon_at_z(self, z):
-        if z is None:
-            z = float(self.z)
-        if float(self.depth) > 0.0 and not (
-            float(self.z) <= float(z) <= float(self.z) + float(self.depth)
-        ):
+        z = self.z if z is None else float(z)
+        if self.depth > 0.0 and not self.z <= z <= self.z + self.depth:
             return None
-
-        poly = self._base_shapely_polygon()
-        if poly is None or not self.has_tapered_sidewalls():
-            return poly
-
-        offset = self._taper_buffer_at_z(z)
-        if abs(offset) <= 1e-18:
-            return poly
-        buffered = poly.buffer(offset, join_style=2)
-        if buffered.is_empty:
-            return None
-        if not buffered.is_valid:
-            buffered = buffered.buffer(0)
-        if buffered.is_empty or not buffered.is_valid:
-            return None
-        return buffered
-
-    def _point_in_polygon_single_path(self, x, y, path_vertices):
-        if not path_vertices:
-            return False
-        path_2d = self._vertices_2d(path_vertices)
-        n = len(path_2d)
-        inside = False
-        p1x, p1y = path_2d[0]
-        for i in range(n + 1):
-            p2x, p2y = path_2d[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        else:
-                            xinters = p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x, p1y = p2x, p2y
-        return inside
+        polygon = self._base_shapely_polygon()
+        if polygon is None or not self.has_tapered_sidewalls():
+            return polygon
+        polygon = polygon.buffer(self._taper_buffer_at_z(z), join_style="mitre")
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        return None if polygon.is_empty or not polygon.is_valid else polygon
 
     def point_in_polygon(self, x, y, z=None):
-        # 3D containment check if z is provided
-        if z is not None and hasattr(self, "depth") and self.depth > 0:
-            if not (self.z <= z <= self.z + self.depth):
-                return False
-
-        if z is not None and self.has_tapered_sidewalls():
-            from shapely import contains_xy
-
-            poly = self.shapely_polygon_at_z(z)
-            if poly is None:
-                return False
-            return bool(contains_xy(poly.buffer(1e-15), [float(x)], [float(y)])[0])
-
-        exterior_path = self.vertices
-        interior_paths = self.interiors
-        if not exterior_path:
+        if (
+            z is not None
+            and self.depth > 0.0
+            and not self.z <= z <= self.z + self.depth
+        ):
             return False
-        if not self._point_in_polygon_single_path(x, y, exterior_path):
+        polygon = self.shapely_polygon_at_z(self.z if z is None else z)
+        if polygon is None:
             return False
-        for interior_path_pts in interior_paths:
-            if interior_path_pts and self._point_in_polygon_single_path(
-                x, y, interior_path_pts
-            ):
-                return False
-        return True
+        from shapely import contains_xy
+
+        return bool(contains_xy(polygon.buffer(1e-15), [float(x)], [float(y)])[0])
 
 
-class Rectangle(Polygon):
-    def __init__(
-        self,
-        position=(0, 0, 0),
-        width=1,
-        height=1,
-        depth=1,
-        material=None,
-        color=None,
-        is_pml=False,
-        optimize=False,
-        z=None,
-        sidewall_angle=0.0,
-        width_to_z=0.0,
-    ):
-        # Validate dimensions
-        if width <= 0:
-            raise ValueError(f"width must be positive, got {width}")
-        if height <= 0:
-            raise ValueError(f"height must be positive, got {height}")
-        if depth < 0:
-            raise ValueError(f"depth must be non-negative, got {depth}")
+@dataclass(frozen=True, eq=False, slots=True)
+class Polygon(PlanarStructure):
+    raster_kind: ClassVar[str] = "polygon"
+    vertices: Any = ()
+    material: Any = None
+    color: str = field(default=DEFAULT_COLOR, metadata={"beamz_cache": False})
+    optimize: bool = False
+    interiors: Any = ()
+    depth: float = 0.0
+    z: float = 0.0
+    sidewall_angle: float = 0.0
+    width_to_z: float = 0.0
 
-        position = _normalize_position(position, z)
-        x, y, z_pos = position
-        vertices = [
-            (x, y, z_pos),
-            (x + width, y, z_pos),
-            (x + width, y + height, z_pos),
-            (x, y + height, z_pos),
-        ]
-        super().__init__(
-            vertices=vertices,
-            material=material,
-            color=color,
-            optimize=optimize,
-            depth=depth,
-            z=z_pos,
-            sidewall_angle=sidewall_angle,
-            width_to_z=width_to_z,
+    def __post_init__(self):
+        z = float(0.0 if self.z is None else self.z)
+        object.__setattr__(self, "z", z)
+        object.__setattr__(
+            self,
+            "depth",
+            _positive(
+                "depth", 0.0 if self.depth is None else self.depth, allow_zero=True
+            ),
         )
-        self.position = position
-        self.width = width
-        self.height = height
-        self.depth = depth
-        self.is_pml = is_pml
+        object.__setattr__(self, "vertices", _vertices(self.vertices, z))
+        object.__setattr__(
+            self,
+            "interiors",
+            tuple(_vertices(path, z, ccw=False) for path in (self.interiors or ())),
+        )
+        _normalize_common(self)
 
-    def get_bounding_box(self):
-        if not hasattr(self, "vertices") or len(self.vertices) == 0:
-            x, y, z = self.position
-            return (x, y, z, x + self.width, y + self.height, z + self.depth)
-        return super().get_bounding_box()
 
-    def rotate(self, angle, axis="z", point=None):
-        super().rotate(angle, axis, point)
-        min_x = min(v[0] for v in self.vertices)
-        min_y = min(v[1] for v in self.vertices)
-        min_z = min(v[2] for v in self.vertices)
-        max_x = max(v[0] for v in self.vertices)
-        max_y = max(v[1] for v in self.vertices)
-        max_z = max(v[2] for v in self.vertices)
-        self.position = (min_x, min_y, min_z)
-        self.width = max_x - min_x
-        self.height = max_y - min_y
-        self.depth = max_z - min_z
-        return self
+@dataclass(frozen=True, eq=False, slots=True)
+class Rectangle(PlanarStructure):
+    raster_kind: ClassVar[str] = "rectangle"
+    position: Any = (0.0, 0.0, 0.0)
+    width: float = 1.0
+    height: float = 1.0
+    depth: float = 1.0
+    material: Any = None
+    color: str = field(default=DEFAULT_COLOR, metadata={"beamz_cache": False})
+    is_pml: bool = False
+    optimize: bool = False
+    z: float | None = None
+    sidewall_angle: float = 0.0
+    width_to_z: float = 0.0
+    vertices: tuple = field(init=False)
+    interiors: tuple = field(init=False, default=())
+
+    def __post_init__(self):
+        position = _position(self.position, self.z)
+        width = _positive("width", self.width)
+        height = _positive("height", self.height)
+        depth = _positive("depth", self.depth, allow_zero=True)
+        x, y, z = position
+        object.__setattr__(self, "position", position)
+        object.__setattr__(self, "width", width)
+        object.__setattr__(self, "height", height)
+        object.__setattr__(self, "depth", depth)
+        object.__setattr__(self, "z", z)
+        object.__setattr__(self, "is_pml", bool(self.is_pml))
+        object.__setattr__(
+            self,
+            "vertices",
+            (
+                (x, y, z),
+                (x + width, y, z),
+                (x + width, y + height, z),
+                (x, y + height, z),
+            ),
+        )
+        _normalize_common(self)
 
     def scale(self, s_x, s_y=None, s_z=None):
-        if s_y is None:
-            s_y = s_x
-        if s_z is None:
-            s_z = 1.0 if s_y != s_x else s_x
-        super().scale(s_x, s_y, s_z)
-        self.width *= s_x
-        self.height *= s_y
-        self.depth *= s_z
-        return self
-
-    def copy(self):
-        new_rect = Rectangle(
-            position=self.position,
-            width=self.width,
-            height=self.height,
-            depth=self.depth,
-            material=self.material,
-            color=self.color,
-            is_pml=self.is_pml,
-            optimize=self.optimize,
-            sidewall_angle=self.sidewall_angle,
-            width_to_z=self.width_to_z,
+        s_y = s_x if s_y is None else s_y
+        s_z = (1.0 if s_y != s_x else s_x) if s_z is None else s_z
+        return self.updated_copy(
+            width=self.width * float(s_x),
+            height=self.height * float(s_y),
+            depth=self.depth * float(s_z),
         )
-        new_rect.vertices = [(x, y, z) for x, y, z in self.vertices]
-        return new_rect
 
 
-class Box:
-    """Axis-aligned box specified by center and size.
+def _circle_vertices(position, radius, points):
+    if int(points) < 3:
+        raise ValueError(f"points must be at least 3, got {points}")
+    theta = np.linspace(0.0, 2.0 * np.pi, int(points), endpoint=False)
+    return tuple(
+        (
+            position[0] + radius * np.cos(t),
+            position[1] + radius * np.sin(t),
+            position[2],
+        )
+        for t in theta
+    )
 
-    This is a centered-geometry companion to :class:`Rectangle`. It is intended
-    for simulation construction APIs where coordinates are expressed relative to
-    the simulation center.
-    """
 
-    def __init__(self, center=(0, 0, 0), size=(1, 1, 1), material=None):
-        if len(center) == 2:
-            center = (center[0], center[1], 0.0)
+@dataclass(frozen=True, eq=False, slots=True)
+class Circle(PlanarStructure):
+    raster_kind: ClassVar[str] = "circle"
+    position: Any = (0.0, 0.0)
+    radius: float = 1.0
+    points: int = 32
+    material: Any = None
+    color: str = field(default=DEFAULT_COLOR, metadata={"beamz_cache": False})
+    optimize: bool = False
+    depth: float = 0.0
+    z: float = 0.0
+    sidewall_angle: float = 0.0
+    width_to_z: float = 0.0
+    vertices: tuple = field(init=False)
+    interiors: tuple = field(init=False, default=())
+
+    def __post_init__(self):
+        position = _position(self.position, self.z)
+        radius = _positive("radius", self.radius)
+        depth = _positive("depth", self.depth, allow_zero=True)
+        points = int(self.points)
+        object.__setattr__(self, "position", position)
+        object.__setattr__(self, "radius", radius)
+        object.__setattr__(self, "points", points)
+        object.__setattr__(self, "depth", depth)
+        object.__setattr__(self, "z", position[2])
+        object.__setattr__(self, "vertices", _circle_vertices(position, radius, points))
+        _normalize_common(self)
+
+    def scale(self, s_x, s_y=None, s_z=None):
+        if s_y is not None and not np.isclose(float(s_x), float(s_y)):
+            return PlanarStructure.scale(self, s_x, s_y, s_z)
+        return self.updated_copy(radius=self.radius * float(s_x))
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class Ring(PlanarStructure):
+    raster_kind: ClassVar[str] = "ring"
+    position: Any = (0.0, 0.0)
+    inner_radius: float = 1.0
+    outer_radius: float = 2.0
+    material: Any = None
+    color: str = field(default=DEFAULT_COLOR, metadata={"beamz_cache": False})
+    optimize: bool = False
+    points: int = 256
+    depth: float = 0.0
+    z: float | None = None
+    sidewall_angle: float = 0.0
+    width_to_z: float = 0.0
+    vertices: tuple = field(init=False)
+    interiors: tuple = field(init=False)
+
+    def __post_init__(self):
+        position = _position(self.position, self.z)
+        inner = _positive("inner_radius", self.inner_radius)
+        outer = _positive("outer_radius", self.outer_radius)
+        if outer <= inner:
+            raise ValueError(
+                f"outer_radius ({outer}) must be greater than inner_radius ({inner})"
+            )
+        depth = _positive("depth", self.depth, allow_zero=True)
+        points = int(self.points)
+        outer_vertices = _circle_vertices(position, outer, points)
+        inner_vertices = tuple(reversed(_circle_vertices(position, inner, points)))
+        for name, value in (
+            ("position", position),
+            ("inner_radius", inner),
+            ("outer_radius", outer),
+            ("points", points),
+            ("depth", depth),
+            ("z", position[2]),
+            ("vertices", outer_vertices),
+            ("interiors", (inner_vertices,)),
+        ):
+            object.__setattr__(self, name, value)
+        _normalize_common(self)
+
+    def scale(self, s_x, s_y=None, s_z=None):
+        if s_y is not None and not np.isclose(float(s_x), float(s_y)):
+            return PlanarStructure.scale(self, s_x, s_y, s_z)
+        return self.updated_copy(
+            inner_radius=self.inner_radius * float(s_x),
+            outer_radius=self.outer_radius * float(s_x),
+        )
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class CircularBend(PlanarStructure):
+    raster_kind: ClassVar[str] = "polygon"
+    position: Any = (0.0, 0.0)
+    inner_radius: float = 1.0
+    outer_radius: float = 2.0
+    angle: float = 90.0
+    rotation: float = 0.0
+    material: Any = None
+    facecolor: str | None = None
+    optimize: bool = False
+    points: int = 64
+    depth: float = 0.0
+    z: float = 0.0
+    sidewall_angle: float = 0.0
+    width_to_z: float = 0.0
+    vertices: tuple = field(init=False)
+    interiors: tuple = field(init=False, default=())
+
+    def __post_init__(self):
+        position = _position(self.position, self.z)
+        inner = _positive("inner_radius", self.inner_radius)
+        outer = _positive("outer_radius", self.outer_radius)
+        if outer <= inner:
+            raise ValueError(
+                f"outer_radius ({outer}) must be greater than inner_radius ({inner})"
+            )
+        depth = _positive("depth", self.depth, allow_zero=True)
+        points = int(self.points)
+        if points < 2:
+            raise ValueError(f"points must be at least 2, got {points}")
+        theta = np.linspace(0.0, np.radians(float(self.angle)), points) + np.radians(
+            float(self.rotation)
+        )
+        outer_vertices = tuple(
+            (
+                position[0] + outer * np.cos(t),
+                position[1] + outer * np.sin(t),
+                position[2],
+            )
+            for t in theta
+        )
+        inner_vertices = tuple(
+            (
+                position[0] + inner * np.cos(t),
+                position[1] + inner * np.sin(t),
+                position[2],
+            )
+            for t in reversed(theta)
+        )
+        for name, value in (
+            ("position", position),
+            ("inner_radius", inner),
+            ("outer_radius", outer),
+            ("points", points),
+            ("depth", depth),
+            ("z", position[2]),
+            ("vertices", outer_vertices + inner_vertices),
+        ):
+            object.__setattr__(self, name, value)
+        _normalize_common(self)
+
+    @property
+    def color(self):
+        return DEFAULT_COLOR if self.facecolor is None else str(self.facecolor)
+
+    def updated_copy(self, **changes):
+        if "color" in changes:
+            changes["facecolor"] = changes.pop("color")
+        return Structure.updated_copy(self, **changes)
+
+    def rotate(self, angle, axis="z", point=None):
+        if axis == "z" and (
+            point is None or tuple(_position(point)) == tuple(self.position)
+        ):
+            return self.updated_copy(rotation=(self.rotation + float(angle)) % 360.0)
+        return PlanarStructure.rotate(self, angle, axis, point)
+
+    def scale(self, s_x, s_y=None, s_z=None):
+        if s_y is not None and not np.isclose(float(s_x), float(s_y)):
+            return PlanarStructure.scale(self, s_x, s_y, s_z)
+        return self.updated_copy(
+            inner_radius=self.inner_radius * float(s_x),
+            outer_radius=self.outer_radius * float(s_x),
+        )
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class Taper(PlanarStructure):
+    raster_kind: ClassVar[str] = "polygon"
+    position: Any = (0.0, 0.0)
+    input_width: float = 1.0
+    output_width: float = 0.5
+    length: float = 1.0
+    material: Any = None
+    color: str = field(default=DEFAULT_COLOR, metadata={"beamz_cache": False})
+    optimize: bool = False
+    depth: float = 0.0
+    z: float = 0.0
+    sidewall_angle: float = 0.0
+    width_to_z: float = 0.0
+    vertices: tuple = field(init=False)
+    interiors: tuple = field(init=False, default=())
+
+    def __post_init__(self):
+        position = _position(self.position, self.z)
+        input_width = _positive("input_width", self.input_width)
+        output_width = _positive("output_width", self.output_width)
+        length = _positive("length", self.length)
+        depth = _positive("depth", self.depth, allow_zero=True)
+        x, y, z = position
+        vertices = (
+            (x, y - input_width / 2, z),
+            (x + length, y - output_width / 2, z),
+            (x + length, y + output_width / 2, z),
+            (x, y + input_width / 2, z),
+        )
+        for name, value in (
+            ("position", position),
+            ("input_width", input_width),
+            ("output_width", output_width),
+            ("length", length),
+            ("depth", depth),
+            ("z", z),
+            ("vertices", vertices),
+        ):
+            object.__setattr__(self, name, value)
+        _normalize_common(self)
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class Box(Structure):
+    raster_kind: ClassVar[str] = "box"
+    center: Any = (0.0, 0.0, 0.0)
+    size: Any = (1.0, 1.0, 1.0)
+    material: Any = None
+
+    def __post_init__(self):
+        center = _position(self.center)
+        size = tuple(self.size)
         if len(size) == 2:
-            size = (size[0], size[1], 0.0)
-        if len(center) != 3 or len(size) != 3:
+            size = (*size, 0.0)
+        if len(size) != 3:
             raise ValueError("Box center and size must be 2D or 3D coordinate tuples.")
-        self.center = tuple(float(v) for v in center)
-        self.size = tuple(float(v) for v in size)
-        finite_sizes = [abs(v) for v in self.size if np.isfinite(v)]
-        if any(v < 0 for v in finite_sizes):
+        size = tuple(float(value) for value in size)
+        if any(np.isnan(value) or value < 0.0 for value in size):
             raise ValueError(f"Box sizes must be non-negative, got {size!r}.")
-        self.material = material
-        self.position = self.lower
-        self.width = self.size[0]
-        self.height = self.size[1]
-        self.depth = self.size[2]
-        self.is_3d = bool(self.size[2] != 0)
+        object.__setattr__(self, "center", center)
+        object.__setattr__(self, "size", size)
+        _normalize_common(self)
 
     @property
     def lower(self):
@@ -491,498 +640,86 @@ class Box:
     def upper(self):
         return tuple(c + 0.5 * s for c, s in zip(self.center, self.size, strict=True))
 
+    position = property(lambda self: self.lower)
+    width = property(lambda self: self.size[0])
+    height = property(lambda self: self.size[1])
+    depth = property(lambda self: self.size[2])
+    is_3d = property(lambda self: bool(self.size[2] != 0.0))
+
     def shifted(self, offset):
-        return Box(
-            center=tuple(c + d for c, d in zip(self.center, offset, strict=True)),
-            size=self.size,
-            material=self.material,
+        return self.updated_copy(
+            center=tuple(c + d for c, d in zip(self.center, offset, strict=True))
         )
+
+    def shift(self, x, y, z=0):
+        return self.shifted((float(x), float(y), float(z)))
 
     def to_rectangle(self, offset=(0.0, 0.0, 0.0), material=None):
         shifted = self.shifted(offset)
-        lower = shifted.lower
-        size = shifted.size
-        if not all(np.isfinite(v) for v in (*lower, *size)):
+        if not all(np.isfinite(value) for value in (*shifted.lower, *shifted.size)):
             raise ValueError(
-                "Infinite Box sizes must be clipped by the Simulation(domain=...) "
-                "constructor before rasterization."
+                "Infinite Box sizes must be clipped by Simulation(domain=...) before rasterization."
             )
         return Rectangle(
-            position=lower,
-            width=max(float(size[0]), np.finfo(float).eps),
-            height=max(float(size[1]), np.finfo(float).eps),
-            depth=max(float(size[2]), 0.0),
-            material=material if material is not None else self.material,
+            position=shifted.lower,
+            width=max(shifted.width, np.finfo(float).eps),
+            height=max(shifted.height, np.finfo(float).eps),
+            depth=max(shifted.depth, 0.0),
+            material=self.material if material is None else material,
         )
 
     def get_bounding_box(self):
         return (*self.lower, *self.upper)
 
     def point_in_polygon(self, x, y, z=None):
-        lower = self.lower
-        upper = self.upper
+        lower, upper = self.lower, self.upper
         inside_xy = lower[0] <= x <= upper[0] and lower[1] <= y <= upper[1]
-        if z is None or self.size[2] == 0:
-            return inside_xy
-        return inside_xy and lower[2] <= z <= upper[2]
-
-    def copy(self):
-        return Box(center=self.center, size=self.size, material=self.material)
-
-
-class Structure:
-    """Deprecated compatibility wrapper pairing geometry with a material."""
-
-    def __init__(self, geometry, medium=None, material=None, _warn=True):
-        if _warn:
-            warnings.warn(
-                "Structure is deprecated; attach material=... to the geometry and add "
-                "it to a Design instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if medium is not None:
-                warnings.warn(
-                    "Structure(..., medium=...) is deprecated; use material=... instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-        self.geometry = geometry
-        self.material = material if material is not None else medium
-        if self.material is not None and hasattr(self.geometry, "material"):
-            self.geometry.material = self.material
-        self.medium = self.material
-
-    def __getattr__(self, name):
-        return getattr(self.geometry, name)
-
-    def get_bounding_box(self):
-        return self.geometry.get_bounding_box()
-
-    def point_in_polygon(self, x, y, z=None):
-        return self.geometry.point_in_polygon(x, y, z)
-
-    def to_beamz_structure(self, offset=(0.0, 0.0, 0.0), domain_size=None):
-        geometry = self.geometry
-        if isinstance(geometry, Box):
-            if domain_size is not None and any(
-                not np.isfinite(v) for v in geometry.size
-            ):
-                clipped_size = tuple(
-                    float(domain)
-                    if not np.isfinite(size)
-                    else min(float(size), float(domain))
-                    for size, domain in zip(geometry.size, domain_size, strict=True)
-                )
-                geometry = Box(center=geometry.center, size=clipped_size)
-            return geometry.to_rectangle(offset=offset, material=self.material)
-
-        copied = geometry.copy() if hasattr(geometry, "copy") else geometry
-        if hasattr(copied, "shift"):
-            copied = copied.shift(*offset)
-        if self.material is not None:
-            copied.material = self.material
-        return copied
-
-    def copy(self):
-        geometry = (
-            self.geometry.copy() if hasattr(self.geometry, "copy") else self.geometry
+        return (
+            inside_xy
+            if z is None or self.depth == 0.0
+            else inside_xy and lower[2] <= z <= upper[2]
         )
-        return Structure(geometry=geometry, material=self.material, _warn=False)
 
 
-class Circle(Polygon):
-    def __init__(
-        self,
-        position=(0, 0),
-        radius=1,
-        points=32,
-        material=None,
-        color=None,
-        optimize=False,
-        depth=0,
-        z=0,
-    ):
-        # Validate dimensions
-        if radius <= 0:
-            raise ValueError(f"radius must be positive, got {radius}")
-        if depth < 0:
-            raise ValueError(f"depth must be non-negative, got {depth}")
+@dataclass(frozen=True, eq=False, slots=True)
+class Sphere(Structure):
+    raster_kind: ClassVar[str] = "sphere"
+    position: Any = (0.0, 0.0, 0.0)
+    radius: float = 1.0
+    material: Any = None
+    color: str = field(default=DEFAULT_COLOR, metadata={"beamz_cache": False})
+    optimize: bool = False
+    sidewall_angle: float = 0.0
+    width_to_z: float = 0.0
 
-        position = _normalize_position(position)
-        theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
-        vertices = [
-            (
-                position[0] + radius * np.cos(t),
-                position[1] + radius * np.sin(t),
-                position[2],
-            )
-            for t in theta
-        ]
-        super().__init__(
-            vertices=vertices,
-            material=material,
-            color=color,
-            optimize=optimize,
-            depth=depth,
-            z=z,
-        )
-        self.position = position
-        self.radius = radius
-        self.points = points
+    def __post_init__(self):
+        object.__setattr__(self, "position", _position(self.position))
+        object.__setattr__(self, "radius", _positive("radius", self.radius))
+        _normalize_common(self)
+
+    center = property(lambda self: self.position)
+    vertices = property(lambda self: ())
+    interiors = property(lambda self: ())
+    depth = property(lambda self: 2.0 * self.radius)
+    z = property(lambda self: self.position[2] - self.radius)
+
+    def shift(self, x, y, z=0):
+        px, py, pz = self.position
+        return self.updated_copy(position=(px + float(x), py + float(y), pz + float(z)))
 
     def scale(self, s_x, s_y=None, s_z=None):
-        if s_y is None:
-            s_y = s_x
-        if s_z is None:
-            s_z = 1.0
-        self.radius *= s_x
-        theta = np.linspace(0, 2 * np.pi, self.points, endpoint=False)
-        self.vertices = [
-            (
-                self.position[0] + self.radius * np.cos(t),
-                self.position[1] + self.radius * np.sin(t),
-                self.position[2],
-            )
-            for t in theta
-        ]
-        return self
-
-    def copy(self):
-        return Circle(
-            position=self.position,
-            radius=self.radius,
-            points=self.points,
-            material=self.material,
-            color=self.color,
-            optimize=self.optimize,
-            depth=self.depth,
-            z=self.z,
-        )
-
-
-class Ring(Polygon):
-    def __init__(
-        self,
-        position=(0, 0),
-        inner_radius=1,
-        outer_radius=2,
-        material=None,
-        color=None,
-        optimize=False,
-        points=256,
-        depth=0,
-        z=None,
-    ):
-        # Validate dimensions
-        if inner_radius <= 0:
-            raise ValueError(f"inner_radius must be positive, got {inner_radius}")
-        if outer_radius <= inner_radius:
-            raise ValueError(
-                f"outer_radius ({outer_radius}) must be greater than inner_radius ({inner_radius})"
-            )
-        if depth < 0:
-            raise ValueError(f"depth must be non-negative, got {depth}")
-
-        position = _normalize_position(position, z)
-        theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
-        outer_ext_vertices = [
-            (
-                position[0] + outer_radius * np.cos(t),
-                position[1] + outer_radius * np.sin(t),
-                position[2],
-            )
-            for t in theta
-        ]
-        inner_int_vertices_cw = [
-            (
-                position[0] + inner_radius * np.cos(t),
-                position[1] + inner_radius * np.sin(t),
-                position[2],
-            )
-            for t in reversed(theta)
-        ]
-        super().__init__(
-            vertices=outer_ext_vertices,
-            interiors=[inner_int_vertices_cw] if inner_int_vertices_cw else [],
-            material=material,
-            color=color,
-            optimize=optimize,
-            depth=depth,
-            z=position[2],
-        )
-        self.points = points
-        self.position = position
-        self.inner_radius = inner_radius
-        self.outer_radius = outer_radius
-
-    def scale(self, s_x, s_y=None, s_z=None):
-        if s_y is None:
-            s_y = s_x
-        if s_z is None:
-            s_z = 1.0
-        self.inner_radius *= s_x
-        self.outer_radius *= s_x
-        theta = np.linspace(0, 2 * np.pi, self.points, endpoint=False)
-        outer_vertices = [
-            (
-                self.position[0] + self.outer_radius * np.cos(t),
-                self.position[1] + self.outer_radius * np.sin(t),
-                self.position[2],
-            )
-            for t in theta
-        ]
-        inner_vertices = [
-            (
-                self.position[0] + self.inner_radius * np.cos(t),
-                self.position[1] + self.inner_radius * np.sin(t),
-                self.position[2],
-            )
-            for t in reversed(theta)
-        ]
-        self.vertices = outer_vertices
-        self.interiors = [inner_vertices]
-        return self
-
-    def to_plot_data(
-        self, *, facecolor=None, edgecolor="black", alpha=None, linestyle=None
-    ):
-        if facecolor is None:
-            facecolor = self.color
-        if alpha is None:
-            alpha = 1
-        if linestyle is None:
-            linestyle = "-"
-        return super().to_plot_data(
-            facecolor=facecolor,
-            edgecolor=edgecolor,
-            alpha=alpha,
-            linestyle=linestyle,
-        )
-
-    def copy(self):
-        return Ring(
-            position=self.position,
-            inner_radius=self.inner_radius,
-            outer_radius=self.outer_radius,
-            material=self.material,
-            color=self.color,
-            optimize=self.optimize,
-            points=self.points,
-            depth=self.depth,
-            z=self.z,
-        )
-
-
-class CircularBend(Polygon):
-    def __init__(
-        self,
-        position=(0, 0),
-        inner_radius=1,
-        outer_radius=2,
-        angle=90,
-        rotation=0,
-        material=None,
-        facecolor=None,
-        optimize=False,
-        points=64,
-        depth=0,
-        z=0,
-    ):
-        position = _normalize_position(position)
-        self.points = points
-        theta = np.linspace(0, np.radians(angle), points)
-        rotation_rad = np.radians(rotation)
-        outer_vertices = [
-            (
-                position[0] + outer_radius * np.cos(t + rotation_rad),
-                position[1] + outer_radius * np.sin(t + rotation_rad),
-                position[2],
-            )
-            for t in theta
-        ]
-        inner_vertices = [
-            (
-                position[0] + inner_radius * np.cos(t + rotation_rad),
-                position[1] + inner_radius * np.sin(t + rotation_rad),
-                position[2],
-            )
-            for t in reversed(theta)
-        ]
-        vertices = outer_vertices + inner_vertices
-        super().__init__(
-            vertices=vertices,
-            material=material,
-            color=facecolor,
-            optimize=optimize,
-            depth=depth,
-            z=z,
-        )
-        self.position = position
-        self.inner_radius = inner_radius
-        self.outer_radius = outer_radius
-        self.angle = angle
-        self.rotation = rotation
-
-    def rotate(self, angle, axis="z", point=None):
-        if axis == "z":
-            self.rotation = (self.rotation + angle) % 360
-        super().rotate(angle, axis, point or self.position)
-        return self
-
-    def scale(self, s_x, s_y=None, s_z=None):
-        if s_y is None:
-            s_y = s_x
-        if s_z is None:
-            s_z = 1.0
-        self.inner_radius *= s_x
-        self.outer_radius *= s_x
-        theta = np.linspace(0, np.radians(self.angle), self.points)
-        rotation_rad = np.radians(self.rotation)
-        outer_vertices = [
-            (
-                self.position[0] + self.outer_radius * np.cos(t + rotation_rad),
-                self.position[1] + self.outer_radius * np.sin(t + rotation_rad),
-                self.position[2],
-            )
-            for t in theta
-        ]
-        inner_vertices = [
-            (
-                self.position[0] + self.inner_radius * np.cos(t + rotation_rad),
-                self.position[1] + self.inner_radius * np.sin(t + rotation_rad),
-                self.position[2],
-            )
-            for t in reversed(theta)
-        ]
-        self.vertices = outer_vertices + inner_vertices
-        return self
-
-    def to_plot_data(
-        self, *, facecolor=None, edgecolor="black", alpha=None, linestyle=None
-    ):
-        if facecolor is None:
-            facecolor = self.color
-        if alpha is None:
-            alpha = 1
-        if linestyle is None:
-            linestyle = "-"
-        return super().to_plot_data(
-            facecolor=facecolor,
-            edgecolor=edgecolor,
-            alpha=alpha,
-            linestyle=linestyle,
-        )
-
-    def copy(self):
-        return CircularBend(
-            self.position,
-            self.inner_radius,
-            self.outer_radius,
-            self.angle,
-            self.rotation,
-            self.material,
-            self.color,
-            self.optimize,
-            self.points,
-            self.depth,
-            self.z,
-        )
-
-
-class Taper(Polygon):
-    def __init__(
-        self,
-        position=(0, 0),
-        input_width=1,
-        output_width=0.5,
-        length=1,
-        material=None,
-        color=None,
-        optimize=False,
-        depth=0,
-        z=0,
-    ):
-        position = _normalize_position(position)
-        x, y, z = position
-        vertices = [
-            (x, y - input_width / 2, z),
-            (x + length, y - output_width / 2, z),
-            (x + length, y + output_width / 2, z),
-            (x, y + input_width / 2, z),
-        ]
-        super().__init__(
-            vertices=vertices,
-            material=material,
-            color=color,
-            optimize=optimize,
-            depth=depth,
-            z=z,
-        )
-        self.position = position
-        self.input_width = input_width
-        self.output_width = output_width
-        self.length = length
-        self.optimize = optimize
-
-    def rotate(self, angle, axis="z", point=None):
-        super().rotate(angle, axis, point)
-        min_x = min(v[0] for v in self.vertices)
-        min_y = min(v[1] for v in self.vertices)
-        min_z = min(v[2] for v in self.vertices)
-        max_x = max(v[0] for v in self.vertices)
-        self.position = (min_x, min_y, min_z)
-        self.length = max_x - min_x
-        return self
-
-    def copy(self):
-        new_taper = Taper(
-            self.position,
-            self.input_width,
-            self.output_width,
-            self.length,
-            self.material,
-            self.color,
-            self.optimize,
-            self.depth,
-            self.z,
-        )
-        new_taper.vertices = [(x, y, z) for x, y, z in self.vertices]
-        return new_taper
-
-
-class Sphere(Polygon):
-    def __init__(
-        self, position=(0, 0, 0), radius=1, material=None, color=None, optimize=False
-    ):
-        """Create a 3D sphere at position (x,y,z) with specified radius."""
-        # Validate dimensions
-        if radius <= 0:
-            raise ValueError(f"radius must be positive, got {radius}")
-
-        if len(position) == 2:
-            position = (position[0], position[1], 0.0)
-        super().__init__(
-            vertices=[],
-            material=material,
-            color=color,
-            optimize=optimize,
-            depth=2 * radius,
-            z=position[2] - radius,
-        )
-        self.position = position
-        self.radius = radius
+        if any(
+            value is not None and not np.isclose(float(s_x), float(value))
+            for value in (s_y, s_z)
+        ):
+            raise ValueError("Sphere scaling must be uniform.")
+        return self.updated_copy(radius=self.radius * float(s_x))
 
     def get_bounding_box(self):
         x, y, z = self.position
         r = self.radius
         return (x - r, y - r, z - r, x + r, y + r, z + r)
 
-    def point_in_polygon(self, x, y, z=0):
+    def point_in_polygon(self, x, y, z=0.0):
         cx, cy, cz = self.position
         return (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2 <= self.radius**2
-
-    def copy(self):
-        return Sphere(
-            self.position, self.radius, self.material, self.color, self.optimize
-        )

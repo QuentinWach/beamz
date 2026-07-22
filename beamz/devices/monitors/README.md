@@ -36,7 +36,7 @@ Then:
 
 “flux monitor” = op = cross(E,H).n, temporal=DFT, spatial=integrate
 
-“field snapshot” = op = E, temporal=instant, spatial=none
+“field recorder” = selected field components, temporal=interval, spatial=none
 
 “mode monitor” = op = dot(E, E_mode*), temporal=DFT, spatial=integrate
 

@@ -24,21 +24,21 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-import beamz.simulation.core as simulation_core
 from beamz import (
     LIGHT_SPEED,
     PML,
-    ModeMonitor,
     ModeSource,
-    Monitor,
-    PortSpec,
+    ModeSpec,
+    Port,
+    SampledSignal,
     Simulation,
     dxdt,
     µm,
 )
-from beamz.design.io import gdsf
+from beamz.analysis import s_parameters
+from beamz.design.gds import import_gds
 from beamz.devices._placement import snap_plane_region
-from beamz.devices.sources.signals import gaussian_band_pulse
+from beamz.devices.sources.time import gaussian_band_pulse
 
 # Fixed example hyperparameters. Match the gsim/meep reference geometry and
 # domain sizing directly, while using the currently best-performing BeamZ
@@ -71,10 +71,6 @@ RUN_AFTER_SOURCES_UOC = 90.0
 DECAY_RATIO = 1e-4
 LOOKBACK_RECORDS = 20
 PML_FORMULATION = "sigma"
-# Keep this compact regression on vertical sidewalls. The full UBC stack's
-# sloped sidewalls make the sponge PML terminal waveguides harder to absorb
-# cleanly and reintroduce a measurable top/bottom imbalance.
-USE_PDK_LAYER_STACK = False
 
 
 def ubcpdk_crossing_gds_available(cell: str = COMPONENT_NAME) -> bool:
@@ -150,28 +146,8 @@ def micromode_has_right_handed_y_basis() -> bool:
     return raw_version not in {"0.1.0a1", "0.1.0a2", "0.1.0a3"}
 
 
-def use_fixed_micromode_y_projection_convention() -> None:
-    """Keep this example compatible with micromode's corrected y-normal basis."""
-    if not micromode_has_right_handed_y_basis():
-        return
-
-    def projection_solver_direction(direction: str, axis: str) -> str:
-        direction = str(direction).lower()
-        axis = str(axis).lower()
-        if axis == "x":
-            return ("-" if direction.startswith("+") else "+") + axis
-        if axis == "y":
-            return direction
-        return direction
-
-    simulation_core._projection_solver_direction_3d = projection_solver_direction
-    print("Using fixed micromode y projection branch convention.")
-
-
-def ubcpdk_gds_layer_span(cell: str, layer: tuple[int, int]) -> tuple[float, float]:
-    """Return the GDS layer bbox span in meters without touching gdsfactory state."""
-    import gdspy
-
+def ubcpdk_gds_path(cell: str) -> Path:
+    """Return the path of a packaged UBC PDK cell."""
     spec = importlib.util.find_spec("ubcpdk")
     if spec is None or not spec.submodule_search_locations:
         raise ImportError("ubcpdk is not installed.")
@@ -180,10 +156,16 @@ def ubcpdk_gds_layer_span(cell: str, layer: tuple[int, int]) -> tuple[float, flo
     if not gdspath.exists():
         raise FileNotFoundError(f"Could not find '{gdspath.name}' in ubcpdk gds data.")
 
-    lib = gdspy.GdsLibrary(infile=str(gdspath))
-    polygons = []
-    for top_cell in lib.top_level():
-        polygons.extend(top_cell.get_polygons(by_spec=True).get(tuple(layer), []))
+    return gdspath
+
+
+def ubcpdk_gds_layer_span(cell: str, layer: tuple[int, int]) -> tuple[float, float]:
+    """Return the selected GDS layer span in metres."""
+    import gdsfactory as gf
+
+    gdspath = ubcpdk_gds_path(cell)
+    component = gf.read.import_gds(gdspath)
+    polygons = component.get_polygons_points(by="tuple").get(tuple(layer), [])
     if not polygons:
         raise ValueError(f"Layer {tuple(layer)} not found in '{gdspath.name}'.")
     points = np.vstack([np.asarray(poly)[:, :2] for poly in polygons])
@@ -202,17 +184,17 @@ def move_along(center: tuple[float, float], direction: str, distance: float):
 
 
 def port_plane(
-    port: dict,
+    port: Port,
     *,
     span: float,
     z_span: float,
     z_center: float,
     offset: float = 0.0,
 ):
-    cx, cy = move_along(port["center"], port["direction"], offset)
+    cx, cy = move_along(port.center[:2], port.signed_direction, offset)
     z0 = float(z_center) - 0.5 * float(z_span)
     z1 = float(z_center) + 0.5 * float(z_span)
-    if str(port["direction"]).endswith("x"):
+    if port.axis == "x":
         return (cx, cy - 0.5 * float(span), z0), (cx, cy + 0.5 * float(span), z1)
     return (cx - 0.5 * float(span), cy, z0), (cx + 0.5 * float(span), cy, z1)
 
@@ -236,10 +218,10 @@ def reflect_plane_y(line, *, mirror_y: float):
     return tuple(reflected)
 
 
-def signed_port_plane_offset(line, port: dict) -> float:
+def signed_port_plane_offset(line, port: Port) -> float:
     center = line_center(line)
-    port_center = port["center"]
-    direction = str(port["direction"])
+    port_center = port.center
+    direction = port.signed_direction
     if direction == "+x":
         return float(center[0]) - float(port_center[0])
     if direction == "-x":
@@ -281,7 +263,7 @@ def pml_clearances_xy(
 
 def pml_clearance_for_port(
     line,
-    port: dict,
+    port: Port,
     *,
     width: float,
     height: float,
@@ -293,7 +275,7 @@ def pml_clearance_for_port(
         "-x": clearances["right"],
         "+y": clearances["bottom"],
         "-y": clearances["top"],
-    }[str(port["direction"])]
+    }[port.signed_direction]
 
 
 def cell_aligned_xy_padding(
@@ -316,10 +298,10 @@ def cell_aligned_xy_padding(
     return padding, cells, domain_size
 
 
-def port_mode_geometry(port: dict) -> tuple[float, float, float]:
-    width = float(port["width"])
+def port_mode_geometry(port: Port) -> tuple[float, float, float]:
+    width = float(port.size[1] if port.axis == "x" else port.size[0])
     span = MODE_PLANE_SIZE_SCALE * max(width + 2.0 * PORT_MARGIN, width + 0.1 * µm)
-    return span, float(MONITOR_Z_SPAN), float(port["z_center"])
+    return span, float(MONITOR_Z_SPAN), float(port.center[2])
 
 
 def plot_simulation_overview(
@@ -451,7 +433,6 @@ try:
     )
 except Exception as exc:
     print(f"Could not report micromode runtime details: {exc}")
-use_fixed_micromode_y_projection_convention()
 dx, dt = dxdt(
     WL0,
     n_max=N_CORE,
@@ -472,8 +453,8 @@ print(
     f"monitor-to-PML target >= {MONITOR_TO_PML_SPACING / µm:.2f} um"
 )
 try:
-    prepared = gdsf.prepare_component(
-        COMPONENT_NAME,
+    imported = import_gds(
+        ubcpdk_gds_path(COMPONENT_NAME),
         layer=LAYER,
         n_core=N_CORE,
         n_clad=N_CLAD,
@@ -482,24 +463,20 @@ try:
         clad_above=CLAD_ABOVE,
         xy_padding=EXTENSION,
         z_padding=Z_PADDING + PML_Z,
-        extension=EXTENSION,
+        extend_ports=True,
         port_overlap=PORT_OVERLAP,
-        use_pdk_layer_stack=USE_PDK_LAYER_STACK,
     )
 except (ImportError, ValueError) as exc:
-    if not isinstance(exc, ImportError) and (
-        "Could not resolve gdsfactory/PDK component" not in str(exc)
-    ):
-        raise
     raise RuntimeError(
         f"Could not load the UBC PDK crossing '{COMPONENT_NAME}'. Install the "
         "compatible UBC PDK in the same Python environment, for example with "
         f"`uv pip install --python {sys.executable} '{UBC_PDK_REQUIREMENT}'`, "
         "then rerun this example."
     ) from exc
-print(f"Loaded crossing component: {prepared['component_label']}")
-design, ports = prepared["design"], prepared["ports"]
-world_origin = tuple(float(v) for v in prepared.get("world_origin", (0.0, 0.0, 0.0)))
+print(f"Loaded crossing component: {imported.component_name}")
+design = imported.design
+ports = {port.name: port for port in imported.ports}
+world_origin = imported.world_origin
 source_port, output_ports = "o1", ["o2", "o3", "o4"]
 port_names = (source_port, *output_ports)
 grid = design.rasterize(resolution=dx)
@@ -514,7 +491,7 @@ wl_um = LIGHT_SPEED / freqs / µm
 # Output monitors are also moved farther inward so the weak cross ports see a
 # cleaner outgoing guided mode before projection.
 src = ports[source_port]
-source_direction = src["direction"]
+source_direction = src.signed_direction
 source_span, z_span, source_z_center = port_mode_geometry(src)
 overview_z_focus = source_z_center
 source_plane = port_plane(
@@ -556,15 +533,13 @@ print(
     f"dx={(source_center[0] - crossing_center[0]) / µm:.6e}, "
     f"dy={(source_center[1] - crossing_center[1]) / µm:.6e}"
 )
-y_output_ports = [
-    name for name in output_ports if str(ports[name]["direction"]).endswith("y")
-]
+y_output_ports = [name for name in output_ports if ports[name].axis == "y"]
 if len(y_output_ports) == 2:
     top_port = next(
-        name for name in y_output_ports if str(ports[name]["direction"]) == "-y"
+        name for name in y_output_ports if ports[name].signed_direction == "-y"
     )
     bottom_port = next(
-        name for name in y_output_ports if str(ports[name]["direction"]) == "+y"
+        name for name in y_output_ports if ports[name].signed_direction == "+y"
     )
     top_region = snap_plane_region(
         start=monitor_planes[top_port][0],
@@ -652,78 +627,40 @@ pulse = gaussian_band_pulse(
     max_output_distance_um=runtime_output_distance_um,
 )
 source = ModeSource(
-    grid=grid,
     center=source_center,
-    width=source_span,
-    height=z_span,
-    wavelength=WL0,
-    pol="te",
-    signal=pulse.signal,
-    direction=source_direction,
+    size=tuple(abs(float(b) - float(a)) for a, b in zip(*source_plane, strict=True)),
+    source_time=SampledSignal(
+        pulse.signal,
+        dt=dt,
+        freq0=LIGHT_SPEED / WL0,
+    ),
+    direction=source_direction[0],
+    mode_spec=ModeSpec(polarization="te"),
 )
-source.initialize(grid.permittivity, dx, dt=dt)
-monitor_cfg = dict(
-    record_fields=False,
-    dft_enabled=True,
-    dft_frequencies=freqs,
-    dft_components=("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"),
-    dft_window="none",
-    dft_record_every_step=True,
-)
-monitors = [
-    ModeMonitor(
-        start=monitor_planes[p][0],
-        end=monitor_planes[p][1],
-        name=p,
-        direction=ports[p]["direction"],
-        polarization="te",
-        reference_monitor="o1_ref" if p == source_port else None,
-        **monitor_cfg,
-    )
-    for p in port_names
-]
-mode_monitors = {m.name: m for m in monitors}
-
-
-def crossing_port_spec(name: str) -> PortSpec:
-    """Build explicit modal wave selectors for this crossing benchmark."""
-    monitor = mode_monitors[name]
-    direction = str(ports[name]["direction"])
-    if direction.endswith("y") and micromode_has_right_handed_y_basis():
-        incident_wave = "minus"
-        scattered_wave = "plus"
-    else:
-        port = monitor.to_port()
-        incident_wave = port.incident_wave
-        scattered_wave = port.scattered_wave
-    return PortSpec(
+modal_ports = [
+    Port(
+        center=line_center(monitor_planes[name]),
+        size=tuple(
+            abs(float(b) - float(a)) for a, b in zip(*monitor_planes[name], strict=True)
+        ),
         name=name,
-        monitor_name=name,
-        direction=direction,
-        polarization="te",
-        mode_index=int(getattr(monitor, "mode_index", 0)),
-        reference_monitor="o1_ref" if name == source_port else None,
-        incident_wave=incident_wave,
-        scattered_wave=scattered_wave,
+        direction=ports[name].direction,
+        mode_spec=ModeSpec(polarization="te"),
     )
-
-
-modal_ports = [crossing_port_spec(name) for name in port_names]
+    for name in port_names
+]
+monitors = [port.to_monitor(freqs) for port in modal_ports]
 port_specs = {spec.name: spec for spec in modal_ports}
 print("Port wave selectors:")
 for name in port_names:
     port = port_specs[name]
+    incident = "plus" if port.direction == "+" else "minus"
+    scattered = "minus" if incident == "plus" else "plus"
     print(
-        f"  {name}: direction={port.direction}, "
-        f"incident={port.incident_wave}, scattered={port.scattered_wave}"
+        f"  {name}: direction={port.signed_direction}, "
+        f"incident={incident}, scattered={scattered}"
     )
-reference_monitor = Monitor(
-    start=source_plane[0],
-    end=source_plane[1],
-    name="o1_ref",
-    **monitor_cfg,
-)
-all_monitors = [*monitors, reference_monitor]
+all_monitors = monitors
 decay_monitors = monitors
 
 # 4. Feed the design, source, monitors, boundaries, and time array into the
@@ -776,16 +713,10 @@ plot_simulation_overview(
 )
 print(f"Saved overview figure: {OUT_DIR / 'beamz_crossing_overview.png'}")
 
-# 6. Run in compiled chunks until the monitor power has decayed sufficiently
-# after the pulse leaves the device.
+# 6. Run the compiled simulation.
 wall_t0 = pytime.perf_counter()
-executed_steps = sim.run_compiled_until_decay(
-    decay_monitors,
-    min_time_s=pulse.source_end_time + pulse.tail_time,
-    lookback_records=LOOKBACK_RECORDS,
-    decay_ratio=DECAY_RATIO,
-    progress=True,
-)
+results = sim.run(progress=True)
+executed_steps = sim.num_steps
 wall_s = max(pytime.perf_counter() - wall_t0, 1e-12)
 num_voxels = int(np.prod(np.asarray(grid.permittivity).shape))
 print(
@@ -796,30 +727,29 @@ print(
 
 # 7. Extract the broadband S-matrix with explicit modal wave selectors. The y
 # ports need the corrected micromode y-basis convention when using 0.1.0a4+.
-result = sim.get_S_matrix_modal_dft(
+result = s_parameters(
+    results,
     source_port=port_specs[source_port],
     ports=modal_ports,
     output_ports=modal_ports,
     frequencies=freqs,
-    as_sax=False,
-    return_diagnostics=True,
     min_incident_db=-45.0,
 )
 i0 = int(np.argmin(np.abs(wl_um - WL0 / µm)))
-valid = np.asarray(result["diagnostics"]["valid_mask"], dtype=bool)
-source_waves = result["diagnostics"]["waves"]["o1"]
+valid = np.asarray(result.diagnostics["valid_mask"], dtype=bool)
+source_waves = result.diagnostics["waves"]["o1"]
 source_dom = wave_dominance_db(
     source_waves["a_plus"],
     source_waves["a_minus"],
-    port_specs[source_port].incident_wave,
+    "plus" if port_specs[source_port].direction == "+" else "minus",
     valid,
 )
 print(f"o1 wave dominance: {source_dom:.2f} dB")
 src_cond = np.asarray(
-    result["diagnostics"]["condition_numbers"]["o1"]["monitor"], dtype=float
+    result.diagnostics["condition_numbers"]["o1"]["monitor"], dtype=float
 )
 src_ref_cond = np.asarray(
-    result["diagnostics"]["condition_numbers"]["o1"]["reference"], dtype=float
+    result.diagnostics["condition_numbers"]["o1"]["reference"], dtype=float
 )
 if src_cond.size and src_ref_cond.size:
     print(
@@ -829,16 +759,16 @@ if src_cond.size and src_ref_cond.size:
 
 s_matrix = {
     (port_name, source_port): np.asarray(
-        result["s_matrix"][(port_name, source_port)], dtype=np.complex128
+        result.s_matrix[(port_name, source_port)], dtype=np.complex128
     )
     for port_name in port_names
 }
 for port_name in output_ports:
-    waves = result["diagnostics"]["waves"][port_name]
+    waves = result.diagnostics["waves"][port_name]
     dom = wave_dominance_db(
         waves["a_plus"],
         waves["a_minus"],
-        port_specs[port_name].scattered_wave,
+        "minus" if port_specs[port_name].direction == "+" else "plus",
         valid,
     )
     print(

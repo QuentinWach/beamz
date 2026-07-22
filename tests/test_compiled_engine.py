@@ -11,45 +11,41 @@ from beamz import (
     PML,
     Box,
     Design,
+    FieldMonitor,
+    FieldRecorder,
     GaussianSource,
     Material,
     ModeSource,
-    Monitor,
+    ModeSpec,
     Rectangle,
+    SampledSignal,
     Simulation,
     calc_optimal_fdtd_params,
     ramped_cosine,
     um,
 )
-from beamz.const import EPS_0
+from beamz.const import EPS_0, MU_0
+from beamz.devices._boundary_compile import compile_metallic_masks
 from beamz.devices.monitors.compiler import CompiledMonitorSpec
-from beamz.devices.sources import compiler as source_compiler
 from beamz.devices.sources.compiler import (
     _analytic_subband_waveforms,
-    _as_slab_spec,
-    _compile_mode_source_3d,
     _sample_waveform,
 )
-from beamz.devices.sources.mode import (
-    _analytic_signal_quadrature,
-    _ModeSource3DResidual,
+from beamz.devices.sources.specs import CustomSource
+from beamz.devices.sources.time import (
+    analytic_signal_quadrature,
+    partition_weights_by_frequency,
 )
-from beamz.shared_kernels import (
-    CPML_3D_E_DERIVATIVES,
-    CPML_3D_H_DERIVATIVES,
-    build_cpml_3d_primitive_terms,
+from beamz.simulation import observe as monitor_runtime
+from beamz.simulation.execute import (
+    build_program_scan,
+    execution_cache,
+    initial_program_state,
+    run_program,
 )
-from beamz.simulation import ops
-from beamz.simulation.boundaries import (
-    build_h_boundary_views_for_e_3d,
-    create_metallic_boundary_masks,
-    initialize_full_pec_3d_state,
-)
-from beamz.simulation.compiled import (
-    CompiledRunConfig,
-    CompiledSimulation,
-    EngineState,
-    MonitorState,
+from beamz.simulation.model import (
+    RunConfig,
+    SimulationState,
 )
 
 pytestmark = [pytest.mark.compiled, pytest.mark.component]
@@ -75,120 +71,46 @@ def small_sim_params():
     return wl, dx, dt, domain, steps, t, signal
 
 
-def _engine_state_for_sim(sim: Simulation) -> EngineState:
-    if (not sim.is_3d) and sim.plane_2d == "xy":
-        tm_ez = sim.fields.Ez
-        tm_hx = sim.fields.Hx
-        tm_hy = sim.fields.Hy
-    else:
-        tm_ez = jnp.zeros((0, 0), dtype=sim.fields.Ez.dtype)
-        tm_hx = jnp.zeros((0, 0), dtype=sim.fields.Hx.dtype)
-        tm_hy = jnp.zeros((0, 0), dtype=sim.fields.Hy.dtype)
-    if sim.is_3d:
-        try:
-            fp_state = (
-                sim.fields.full_pec_3d_state
-                if sim.fields.full_pec_3d_state is not None
-                else initialize_full_pec_3d_state(sim.fields)
-            )
-        except Exception:
-            fp_ex = jnp.zeros((0, 0, 0), dtype=sim.fields.Ex.dtype)
-            fp_ey = jnp.zeros((0, 0, 0), dtype=sim.fields.Ey.dtype)
-            fp_ez = jnp.zeros((0, 0, 0), dtype=sim.fields.Ez.dtype)
-            fp_hx = jnp.zeros((0, 0, 0), dtype=sim.fields.Hx.dtype)
-            fp_hy = jnp.zeros((0, 0, 0), dtype=sim.fields.Hy.dtype)
-            fp_hz = jnp.zeros((0, 0, 0), dtype=sim.fields.Hz.dtype)
-        else:
-            fp_ex = fp_state.Ex
-            fp_ey = fp_state.Ey
-            fp_ez = fp_state.Ez
-            fp_hx = fp_state.Hx
-            fp_hy = fp_state.Hy
-            fp_hz = fp_state.Hz
-    else:
-        fp_ex = jnp.zeros((0, 0, 0), dtype=sim.fields.Ex.dtype)
-        fp_ey = jnp.zeros((0, 0, 0), dtype=sim.fields.Ey.dtype)
-        fp_ez = jnp.zeros((0, 0, 0), dtype=sim.fields.Ez.dtype)
-        fp_hx = jnp.zeros((0, 0, 0), dtype=sim.fields.Hx.dtype)
-        fp_hy = jnp.zeros((0, 0, 0), dtype=sim.fields.Hy.dtype)
-        fp_hz = jnp.zeros((0, 0, 0), dtype=sim.fields.Hz.dtype)
+def _monitor_result(result, name="monitor_0"):
+    assert result is not None
+    assert result.results.monitors is not None
+    return result.results.monitors[name]
 
-    return EngineState(
-        ex=sim.fields.Ex,
-        ey=sim.fields.Ey,
-        ez=sim.fields.Ez,
-        hx=sim.fields.Hx,
-        hy=sim.fields.Hy,
-        hz=sim.fields.Hz,
-        tm_ez=tm_ez,
-        tm_hx=tm_hx,
-        tm_hy=tm_hy,
-        fp_ex=fp_ex,
-        fp_ey=fp_ey,
-        fp_ez=fp_ez,
-        fp_hx=fp_hx,
-        fp_hy=fp_hy,
-        fp_hz=fp_hz,
-        cpml_psi_h_terms=jnp.zeros((2, 0, 0), dtype=sim.fields.Hx.dtype),
-        cpml_psi_e_terms=jnp.zeros((2, 0, 0), dtype=sim.fields.Ez.dtype),
-        cpml3d_psi_h_terms=tuple(
-            jnp.zeros((0, 0, 0), dtype=sim.fields.Hx.dtype) for _ in range(6)
-        ),
-        cpml3d_psi_e_terms=tuple(
-            jnp.zeros((0, 0, 0), dtype=sim.fields.Ez.dtype) for _ in range(6)
-        ),
-        t=jnp.asarray(sim.t, dtype=jnp.float32),
-        current_step=jnp.asarray(sim.current_step, dtype=jnp.int32),
+
+def _fields_for_sim(sim: Simulation):
+    return sim.compile().grid
+
+
+def _monitor_state(**values) -> SimulationState:
+    """Build a minimal unified state for isolated monitor-kernel tests."""
+    scalar_field = jnp.zeros((1, 1), dtype=jnp.float32)
+    return SimulationState(
+        ex=scalar_field,
+        ey=scalar_field,
+        ez=scalar_field,
+        hx=scalar_field,
+        hy=scalar_field,
+        hz=scalar_field,
+        cpml_psi_h_terms=(),
+        cpml_psi_e_terms=(),
+        recorded_fields=(),
+        recorded_steps=(),
+        recorded_times=(),
+        recorded_counts=(),
+        t=jnp.asarray(0.0, dtype=jnp.float32),
+        current_step=jnp.asarray(0, dtype=jnp.int32),
+        **values,
     )
 
 
-class _PlaneCurrentSheetSource3D:
-    def __init__(self, signal, ix: int, iy0: int, iy1: int, iz0: int, iz1: int):
-        self.signal = signal
-        self.ix = int(ix)
-        self.iy0 = int(iy0)
-        self.iy1 = int(iy1)
-        self.iz0 = int(iz0)
-        self.iz1 = int(iz1)
-
-    def compile_source_specs(
-        self,
-        *,
-        fields,
-        dt: float,
-        num_steps: int,
-        t0: float,
-        resolution: float,
-        total_steps: int | None = None,
-    ):
-        del resolution
-        idx = (slice(self.iz0, self.iz1), slice(self.iy0, self.iy1), self.ix)
-        eps_region = np.asarray(fields.eps_z[idx], dtype=np.float32)
-        sig_region = np.asarray(fields.sig_z[idx], dtype=np.float32)
-        denom = 1.0 + sig_region * (float(dt) / (2.0 * EPS_0 * eps_region))
-        source_coeff = (float(dt) / (EPS_0 * eps_region)) / denom
-        coeff = -source_coeff
-        waveform = _sample_waveform(
-            lambda t_sample, _dt: self.signal(float(t_sample)),
-            t0=t0,
-            dt=dt,
-            num_steps=num_steps,
-            offset_fn=lambda t, dt_: t + 0.5 * dt_,
-            total_steps=total_steps,
-        )
-        return (
-            _as_slab_spec(
-                component="Ez",
-                timing="e",
-                index=idx,
-                coeff=coeff,
-                waveform=waveform,
-                target_shape=tuple(fields.Ez.shape),
-            ),
-        )
+def _material_values(fields, name, index, target_shape):
+    value = np.asarray(getattr(fields, name))
+    if value.ndim == 0:
+        value = np.broadcast_to(value, target_shape)
+    return np.asarray(value[index], dtype=np.float32)
 
 
-def test_run_compiled_supports_3d_custom_current_source():
+def test_advance_supports_3d_custom_current_source():
     class _CurrentSource:
         def __init__(self, signal, voxel_indices, voxel_weights):
             self.signal = signal
@@ -204,39 +126,30 @@ def test_run_compiled_supports_3d_custom_current_source():
             values = -self._voxel_weights * signal_value
             return {"Ez": (values, self._indices)}, {}
 
-        def compile_source_specs(
-            self,
-            *,
-            fields,
-            dt: float,
-            num_steps: int,
-            t0: float,
-            resolution: float,
-            total_steps: int | None = None,
-        ):
-            del resolution
-            eps_region = np.asarray(fields.eps_z[self._indices], dtype=np.float32)
-            sig_region = np.asarray(fields.sig_z[self._indices], dtype=np.float32)
+        def to_custom_spec(self, sim):
+            fields = _fields_for_sim(sim)
+            target_shape = tuple(fields.Ez.shape)
+            eps_region = _material_values(fields, "eps_z", self._indices, target_shape)
+            sig_region = _material_values(fields, "sig_z", self._indices, target_shape)
+            dt = sim.dt
             denom = 1.0 + sig_region * (float(dt) / (2.0 * EPS_0 * eps_region))
             source_coeff = (float(dt) / (EPS_0 * eps_region)) / denom
             coeff = -self._voxel_weights * source_coeff
             waveform = _sample_waveform(
                 lambda t_sample, _dt: self.signal(float(t_sample)),
-                t0=t0,
+                t0=float(sim.time[0]),
                 dt=dt,
-                num_steps=num_steps,
+                num_steps=sim.num_steps,
                 offset_fn=lambda t, dt_: t + 0.5 * dt_,
-                total_steps=total_steps,
+                total_steps=sim.num_steps,
             )
-            return (
-                _as_slab_spec(
-                    component="Ez",
-                    timing="e",
-                    index=self._indices,
-                    coeff=coeff,
-                    waveform=waveform,
-                    target_shape=tuple(fields.Ez.shape),
-                ),
+            return CustomSource(
+                component="Ez",
+                timing="e",
+                index=self._indices,
+                coeff=coeff,
+                waveform=waveform,
+                target_shape=target_shape,
             )
 
     wl = 1.55 * um
@@ -286,28 +199,29 @@ def test_run_compiled_supports_3d_custom_current_source():
     source_b = _CurrentSource(signal, voxel_indices, voxel_weights)
     sim_compiled = Simulation(
         design=design.copy(),
-        sources=[source_b],
+        sources=[],
         boundaries=[PEC(edges="all")],
         time=t,
         resolution=dx,
     )
+    sim_compiled = sim_compiled.updated_copy(
+        sources=(source_b.to_custom_spec(sim_compiled),)
+    )
 
-    sim_compiled.run_compiled(progress=False)
+    program = sim_compiled.compile(num_steps=len(t))
+    result = sim_compiled.advance(progress=False)
 
-    assert sim_compiled._compiled_program is not None
-    assert sim_compiled._compiled_program.fp_h_decay_x.size == 0
-    assert sim_compiled._compiled_program.fp_e_decay_x.size == 0
-    assert sim_compiled._compiled_program.fp_e_source_x.size > 0
+    assert program.boundary.metallic.ez_mask.shape == result.state.ez.shape
 
-    assert sim_compiled.current_step == len(t)
+    assert result.state.current_step == len(t)
     for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
-        arr = np.asarray(getattr(sim_compiled.fields, component))
+        arr = np.asarray(getattr(result.state, component.lower()))
         assert arr.size > 0
         assert np.isfinite(arr).all()
-    assert float(np.max(np.abs(np.asarray(sim_compiled.fields.Ez)))) > 0.0
+    assert float(np.max(np.abs(np.asarray(result.state.ez)))) > 0.0
 
 
-def test_run_compiled_supports_2d_cpml_small_case(small_sim_params):
+def test_advance_supports_2d_cpml_small_case(small_sim_params):
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
 
@@ -322,15 +236,15 @@ def test_run_compiled_supports_2d_cpml_small_case(small_sim_params):
         resolution=dx,
     )
 
-    sim.run_compiled(progress=False)
+    result = sim.advance(progress=False)
 
     for component in ("Ez", "Hx", "Hy"):
-        arr = np.asarray(getattr(sim.fields, component))
+        arr = np.asarray(getattr(result.state, component.lower()))
         assert arr.size > 0
         assert np.isfinite(arr).all()
 
 
-def test_run_compiled_supports_3d_cpml_small_case():
+def test_advance_supports_3d_cpml_small_case():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -366,10 +280,10 @@ def test_run_compiled_supports_3d_cpml_small_case():
         resolution=dx,
     )
 
-    sim.run_compiled(progress=False)
+    result = sim.advance(progress=False)
 
     for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
-        arr = np.asarray(getattr(sim.fields, component))
+        arr = np.asarray(getattr(result.state, component.lower()))
         assert arr.size > 0
         assert np.isfinite(arr).all()
 
@@ -406,12 +320,10 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
     )
     program = sim.compile(num_steps=1)
 
-    assert program.use_primitive_cpml_3d_terms
-
-    cy = sim.fields.permittivity.shape[1] // 2
-    cx = sim.fields.permittivity.shape[2] // 2
-    cx_e = program.cpml3d_kappa_e_terms[4].shape[2] // 2
-    cx_h = program.cpml3d_kappa_h_terms[3].shape[2] // 2
+    cy = _fields_for_sim(sim).permittivity.shape[1] // 2
+    cx = _fields_for_sim(sim).permittivity.shape[2] // 2
+    e_term = program.boundary.cpml.e_terms[4]
+    h_term = program.boundary.cpml.h_terms[3]
 
     assert np.asarray(sim.pml_data["kappa_x"], dtype=np.float64)[
         0, 0, cx
@@ -419,57 +331,41 @@ def test_split_3d_cpml_boundaries_preserve_identity_kappa_in_compiled_terms():
     assert np.asarray(sim.pml_data["kappa_y"], dtype=np.float64)[
         0, cy, 0
     ] == pytest.approx(1.0)
-    assert np.asarray(program.cpml3d_kappa_e_terms[4], dtype=np.float64)[
-        0, 0, cx_e
-    ] == pytest.approx(1.0)
-    assert np.asarray(program.cpml3d_kappa_h_terms[3], dtype=np.float64)[
-        0, 0, cx_h
-    ] == pytest.approx(1.0)
+    assert e_term.slab.low + e_term.slab.high < _fields_for_sim(sim).Ez.shape[2]
+    assert h_term.slab.low + h_term.slab.high < _fields_for_sim(sim).Hy.shape[2]
 
 
-def test_cpml_3d_primitive_terms_fall_back_for_nonseparable_profiles():
-    shape = (3, 4, 5)
-    pml_data = {}
-    for spec in (*CPML_3D_H_DERIVATIVES, *CPML_3D_E_DERIVATIVES):
-        axis = {"z": 0, "y": 1, "x": 2}[spec.derivative_axis]
-        profile_shape = [1, 1, 1]
-        profile_shape[axis] = shape[axis]
-        base = jnp.linspace(0.0, 1.0, shape[axis], dtype=jnp.float32).reshape(
-            profile_shape
-        )
-        separable = jnp.broadcast_to(base, shape)
-        pml_data[f"cpml3d_{spec.name}_sigma"] = separable
-        pml_data[f"cpml3d_{spec.name}_kappa"] = 1.0 + separable
-        pml_data[f"cpml3d_{spec.name}_alpha"] = 0.1 * separable
-
-    key = f"cpml3d_{CPML_3D_E_DERIVATIVES[0].name}_sigma"
-    nonseparable = pml_data[key].at[1, 1, 1].add(0.25)
-    pml_data[key] = nonseparable
-
-    assert build_cpml_3d_primitive_terms(pml_data) is None
-
-
-def test_compiled_3d_metallic_edge_zeroing_matches_masks():
-    fields = SimpleNamespace(
-        Ex=jnp.ones((3, 4, 5), dtype=jnp.float32),
-        Ey=jnp.ones((3, 4, 5), dtype=jnp.float32),
-        Ez=jnp.ones((3, 4, 5), dtype=jnp.float32),
-        Hx=jnp.ones((3, 4, 5), dtype=jnp.float32),
-        Hy=jnp.ones((3, 4, 5), dtype=jnp.float32),
-        Hz=jnp.ones((3, 4, 5), dtype=jnp.float32),
+def test_compiled_3d_metallic_masks_are_preserved_in_boundary_plan():
+    wl = 1.55 * um
+    dx, dt = calc_optimal_fdtd_params(
+        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
     )
     edges = frozenset({"front", "bottom", "left"})
-    masks = create_metallic_boundary_masks(
-        fields,
-        [PEC(edges=list(edges))],
-        is_3d=True,
+    sim = Simulation(
+        design=Design(
+            width=2.0 * wl,
+            height=2.0 * wl,
+            depth=2.0 * wl,
+            material=Material(permittivity=1.0),
+        ),
+        sources=[],
+        boundaries=[PEC(edges=list(edges))],
+        time=np.arange(0, 2 * dt, dt),
+        resolution=dx,
+    )
+    program = sim.compile(num_steps=1)
+    fields = _fields_for_sim(sim)
+    expected = compile_metallic_masks(
+        fields.component_shapes,
+        fields.material_grid.shape,
+        sim.boundaries,
     )
 
     for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
-        field = getattr(fields, component)
-        expected = jnp.where(masks[component], 0.0, field)
-        actual = CompiledSimulation._apply_metal_edges_3d(field, component, edges)
-        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+        actual = getattr(program.boundary.metallic, f"{component.lower()}_mask")
+        np.testing.assert_array_equal(
+            np.asarray(actual), np.asarray(expected[component])
+        )
 
 
 def test_compiled_3d_cpml_uses_material_coefficients():
@@ -492,41 +388,55 @@ def test_compiled_3d_cpml_uses_material_coefficients():
     )
 
     program = sim.compile(num_steps=1)
+    coefficients = program.coefficients
 
-    assert program.use_cpml_3d
-    assert program.e_decay_x.shape == (0, 0, 0)
-    assert program.e_source_x.shape == (0, 0, 0)
-    assert program.h_decay_x.shape == (0, 0, 0)
-    assert program.h_source_x.shape == (0, 0, 0)
-    assert program.e_source_lossless_x.shape == (0, 0, 0)
-    assert program.e_source_lossless_y.shape == (0, 0, 0)
-    assert program.e_source_lossless_z.shape == (0, 0, 0)
-    assert program.e_conductivity_x.shape == ()
-    assert program.e_conductivity_y.shape == ()
-    assert program.e_conductivity_z.shape == ()
-    assert float(program.e_conductivity_x) == 0.0
-    assert float(program.e_conductivity_y) == 0.0
-    assert float(program.e_conductivity_z) == 0.0
-    assert program.e_permittivity_x is sim.fields.eps_x
-    assert program.e_permittivity_y is sim.fields.eps_y
-    assert program.e_permittivity_z is sim.fields.eps_z
-    assert program.ex_metal_mask.shape == (0, 0, 0)
-    assert program.hx_metal_mask.shape == (0, 0, 0)
-    assert program.field_shape_ex == tuple(sim.fields.Ex.shape)
-    assert program.field_shape_hx == tuple(sim.fields.Hx.shape)
-    assert program.h_sigma_m_x.shape == ()
-    assert program.h_sigma_m_y.shape == ()
-    assert program.h_sigma_m_z.shape == ()
-    assert float(program.h_sigma_m_x) == 0.0
-    assert float(program.h_sigma_m_y) == 0.0
-    assert float(program.h_sigma_m_z) == 0.0
-    assert program.h_source_lossless_x.shape == (0, 0, 0)
-    assert program.h_source_lossless_y.shape == (0, 0, 0)
-    assert program.h_source_lossless_z.shape == (0, 0, 0)
-    sim.run_compiled(num_steps=1, progress=False)
+    assert program.boundary.cpml.enabled
+    assert coefficients.e_decay_x.shape == (0, 0, 0)
+    assert coefficients.e_source_x.shape == (0, 0, 0)
+    assert coefficients.h_decay_x.shape == (0, 0, 0)
+    assert coefficients.h_source_x.shape == (0, 0, 0)
+    assert coefficients.e_conductivity_x.shape == ()
+    assert coefficients.e_conductivity_y.shape == ()
+    assert coefficients.e_conductivity_z.shape == ()
+    assert float(coefficients.e_conductivity_x) == 0.0
+    assert float(coefficients.e_conductivity_y) == 0.0
+    assert float(coefficients.e_conductivity_z) == 0.0
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.e_permittivity_x),
+        np.asarray(_fields_for_sim(sim).eps_x),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.e_permittivity_y),
+        np.asarray(_fields_for_sim(sim).eps_y),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.e_permittivity_z),
+        np.asarray(_fields_for_sim(sim).eps_z),
+    )
+    assert program.boundary.metallic.ex_mask.shape == tuple(
+        _fields_for_sim(sim).Ex.shape
+    )
+    assert program.boundary.metallic.hx_mask.shape == tuple(
+        _fields_for_sim(sim).Hx.shape
+    )
+    assert not bool(np.asarray(program.boundary.metallic.ex_mask).any())
+    assert not bool(np.asarray(program.boundary.metallic.hx_mask).any())
+    assert program.sharding.layout.logical_shapes["Ex"] == tuple(
+        _fields_for_sim(sim).Ex.shape
+    )
+    assert program.sharding.layout.logical_shapes["Hx"] == tuple(
+        _fields_for_sim(sim).Hx.shape
+    )
+    assert coefficients.h_sigma_m_x.shape == ()
+    assert coefficients.h_sigma_m_y.shape == ()
+    assert coefficients.h_sigma_m_z.shape == ()
+    assert float(coefficients.h_sigma_m_x) == 0.0
+    assert float(coefficients.h_sigma_m_y) == 0.0
+    assert float(coefficients.h_sigma_m_z) == 0.0
+    sim.advance(num_steps=1, progress=False)
 
 
-def test_compiled_3d_snapshot_shape_uses_field_reference():
+def test_compiled_3d_field_recorder_uses_logical_component_shape():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -540,20 +450,45 @@ def test_compiled_3d_snapshot_shape_uses_field_reference():
     sim = Simulation(
         design=design,
         sources=[],
+        monitors=[
+            FieldRecorder(("Ez",), interval=1, name="frames"),
+            FieldRecorder(
+                ("Ez", "Hx"),
+                interval=1,
+                name="plane",
+                center=(design.width / 2, design.height / 2, design.depth / 2),
+                size=(design.width, design.height, 0.0),
+            ),
+        ],
         boundaries=[PML(edges="all", thickness=0.5 * wl, formulation="cpml")],
         time=np.arange(0, 2 * dt, dt),
         resolution=dx,
     )
 
-    program = sim.compile(num_steps=2, snapshot_field="Ez", snapshot_interval=1)
-    snapshot_state = program._empty_snapshot_state()
+    program = sim.compile(num_steps=2)
+    result = sim.advance(num_steps=2, progress=False)
+    frames = result.results.monitor("frames")
+    plane = result.results.monitor("plane")
+    assert not hasattr(result.results, "snapshots")
 
-    assert program.e_source_lossless_z.shape == (0, 0, 0)
-    assert program.e_source_z.shape == (0, 0, 0)
-    assert program.field_shape_ez == tuple(sim.fields.Ez.shape)
-    assert program._snapshot_field_shape() == tuple(sim.fields.Ez.shape)
-    assert snapshot_state is not None
-    assert snapshot_state[0].shape == (2, *sim.fields.Ez.shape)
+    assert program.coefficients.e_source_z.shape == (0, 0, 0)
+    assert program.sharding.layout.logical_shapes["Ez"] == tuple(
+        _fields_for_sim(sim).Ez.shape
+    )
+    assert frames.fields["Ez"].shape == (2, *_fields_for_sim(sim).Ez.shape)
+    assert frames.field_steps.tolist() == [1, 2]
+    plane_shape = sim.monitors[1].get_analysis_plane_coords_3d(
+        dx=dx,
+        dy=dx,
+        dz=dx,
+        field_shape=tuple(
+            max(v)
+            for v in zip(*program.sharding.layout.logical_shapes.values(), strict=True)
+        ),
+    )
+    expected_plane_shape = tuple(np.asarray(axis).size for axis in plane_shape)
+    assert plane.fields["Ez"].shape == (2, *expected_plane_shape)
+    assert plane.fields["Hx"].shape == (2, *expected_plane_shape)
 
 
 def test_compiled_3d_sponge_pml_uses_material_coefficients():
@@ -576,235 +511,26 @@ def test_compiled_3d_sponge_pml_uses_material_coefficients():
     )
 
     program = sim.compile(num_steps=1)
-    assert not program.use_cpml_3d
-    assert program.e_decay_x.shape == (0, 0, 0)
-    assert program.e_source_x.shape == (0, 0, 0)
-    assert program.h_decay_x.shape == (0, 0, 0)
-    assert program.h_source_x.shape == (0, 0, 0)
-    assert program.e_source_lossless_x.shape == (0, 0, 0)
-    assert program.h_source_lossless_x.shape == (0, 0, 0)
-    assert program.e_conductivity_x is sim.fields.sig_x
-    assert program.e_permittivity_x is sim.fields.eps_x
-    assert program.h_sigma_m_x is sim.fields.sigma_m_hx
-
-    sim.run_compiled(num_steps=1, progress=False)
-
-
-def test_material_3d_permittivity_e_update_matches_dense_source_grid():
-    key = jax.random.PRNGKey(7)
-    keys = jax.random.split(key, 9)
-    hx = jax.random.normal(keys[0], (3, 4, 6), dtype=jnp.float32)
-    hy = jax.random.normal(keys[1], (3, 5, 5), dtype=jnp.float32)
-    hz = jax.random.normal(keys[2], (4, 4, 5), dtype=jnp.float32)
-    ex = jax.random.normal(keys[3], (4, 5, 5), dtype=jnp.float32)
-    ey = jax.random.normal(keys[4], (4, 4, 6), dtype=jnp.float32)
-    ez = jax.random.normal(keys[5], (3, 5, 6), dtype=jnp.float32)
-    eps_x = 1.0 + jnp.abs(jax.random.normal(keys[6], ex.shape, dtype=jnp.float32))
-    eps_y = 1.0 + jnp.abs(jax.random.normal(keys[7], ey.shape, dtype=jnp.float32))
-    eps_z = 1.0 + jnp.abs(jax.random.normal(keys[8], ez.shape, dtype=jnp.float32))
-    inv_eps_x = 1.0 / eps_x
-    inv_eps_y = 1.0 / eps_y
-    inv_eps_z = 1.0 / eps_z
-    dt = jnp.asarray(1.0e-17, dtype=jnp.float32)
-    resolution = jnp.asarray(2.5e-8, dtype=jnp.float32)
-    views = build_h_boundary_views_for_e_3d(hx, hy, hz, None)
-
-    dense = ops.fused_update_e_lossless_3d(
-        hx,
-        hy,
-        hz,
-        ex,
-        ey,
-        ez,
-        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_x),
-        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_y),
-        dt / (jnp.asarray(EPS_0, dtype=jnp.float32) * eps_z),
-        resolution,
-        boundary_views=views,
+    assert not program.boundary.cpml.enabled
+    coefficients = program.coefficients
+    assert coefficients.e_decay_x.shape == (0, 0, 0)
+    assert coefficients.e_source_x.shape == (0, 0, 0)
+    assert coefficients.h_decay_x.shape == (0, 0, 0)
+    assert coefficients.h_source_x.shape == (0, 0, 0)
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.e_conductivity_x),
+        np.asarray(_fields_for_sim(sim).sig_x),
     )
-    material = ops.fused_update_e_lossless_3d_inv_permittivity(
-        hx,
-        hy,
-        hz,
-        ex,
-        ey,
-        ez,
-        inv_eps_x,
-        inv_eps_y,
-        inv_eps_z,
-        dt,
-        resolution,
-        boundary_views=views,
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.e_permittivity_x),
+        np.asarray(_fields_for_sim(sim).eps_x),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.h_sigma_m_x),
+        np.asarray(_fields_for_sim(sim).sigma_m_hx),
     )
 
-    for dense_component, material_component in zip(dense, material, strict=True):
-        np.testing.assert_allclose(
-            np.asarray(material_component),
-            np.asarray(dense_component),
-            rtol=2e-6,
-            atol=1e-6,
-        )
-
-
-def test_lossless_h_update_incremental_matches_curl_formula():
-    key = jax.random.PRNGKey(11)
-    keys = jax.random.split(key, 6)
-    ex = jax.random.normal(keys[0], (4, 5, 5), dtype=jnp.float32)
-    ey = jax.random.normal(keys[1], (4, 4, 6), dtype=jnp.float32)
-    ez = jax.random.normal(keys[2], (3, 5, 6), dtype=jnp.float32)
-    hx = jax.random.normal(keys[3], (3, 4, 6), dtype=jnp.float32)
-    hy = jax.random.normal(keys[4], (3, 5, 5), dtype=jnp.float32)
-    hz = jax.random.normal(keys[5], (4, 4, 5), dtype=jnp.float32)
-    h_src = jnp.asarray(3.0e-12, dtype=jnp.float32)
-    resolution = jnp.asarray(2.5e-8, dtype=jnp.float32)
-    inv_res = 1.0 / resolution
-
-    expected_hx = (
-        hx
-        - h_src
-        * ((ez[:, 1:, :] - ez[:, :-1, :]) - (ey[1:, :, :] - ey[:-1, :, :]))
-        * inv_res
-    )
-    expected_hy = (
-        hy
-        - h_src
-        * ((ex[1:, :, :] - ex[:-1, :, :]) - (ez[:, :, 1:] - ez[:, :, :-1]))
-        * inv_res
-    )
-    expected_hz = (
-        hz
-        - h_src
-        * ((ey[:, :, 1:] - ey[:, :, :-1]) - (ex[:, 1:, :] - ex[:, :-1, :]))
-        * inv_res
-    )
-
-    actual = ops.fused_update_h_lossless_3d(
-        ex, ey, ez, hx, hy, hz, h_src, h_src, h_src, resolution
-    )
-    for actual_component, expected_component in zip(
-        actual, (expected_hx, expected_hy, expected_hz), strict=True
-    ):
-        np.testing.assert_allclose(
-            np.asarray(actual_component),
-            np.asarray(expected_component),
-            rtol=2e-6,
-            atol=1e-6,
-        )
-
-
-def test_primitive_material_3d_lossy_updates_match_dense_coefficients():
-    key = jax.random.PRNGKey(13)
-    keys = jax.random.split(key, 15)
-    hx = jax.random.normal(keys[0], (3, 4, 6), dtype=jnp.float32)
-    hy = jax.random.normal(keys[1], (3, 5, 5), dtype=jnp.float32)
-    hz = jax.random.normal(keys[2], (4, 4, 5), dtype=jnp.float32)
-    ex = jax.random.normal(keys[3], (4, 5, 5), dtype=jnp.float32)
-    ey = jax.random.normal(keys[4], (4, 4, 6), dtype=jnp.float32)
-    ez = jax.random.normal(keys[5], (3, 5, 6), dtype=jnp.float32)
-    eps_x = 1.0 + jnp.abs(jax.random.normal(keys[6], ex.shape, dtype=jnp.float32))
-    eps_y = 1.0 + jnp.abs(jax.random.normal(keys[7], ey.shape, dtype=jnp.float32))
-    eps_z = 1.0 + jnp.abs(jax.random.normal(keys[8], ez.shape, dtype=jnp.float32))
-    inv_eps_x = 1.0 / eps_x
-    inv_eps_y = 1.0 / eps_y
-    inv_eps_z = 1.0 / eps_z
-    sig_x = jnp.abs(jax.random.normal(keys[9], ex.shape, dtype=jnp.float32)) * 0.1
-    sig_y = jnp.abs(jax.random.normal(keys[10], ey.shape, dtype=jnp.float32)) * 0.1
-    sig_z = jnp.abs(jax.random.normal(keys[11], ez.shape, dtype=jnp.float32)) * 0.1
-    sigma_m_x = jnp.abs(jax.random.normal(keys[12], hx.shape, dtype=jnp.float32)) * 0.1
-    sigma_m_y = jnp.abs(jax.random.normal(keys[13], hy.shape, dtype=jnp.float32)) * 0.1
-    sigma_m_z = jnp.abs(jax.random.normal(keys[14], hz.shape, dtype=jnp.float32)) * 0.1
-    dt = jnp.asarray(1.0e-17, dtype=jnp.float32)
-    resolution = jnp.asarray(2.5e-8, dtype=jnp.float32)
-    views = build_h_boundary_views_for_e_3d(hx, hy, hz, None)
-
-    (h_decay_x, h_src_x, _), (h_decay_y, h_src_y, _), (h_decay_z, h_src_z, _) = (
-        ops.precompute_h_update_coefficients(sigma_m_x, dt),
-        ops.precompute_h_update_coefficients(sigma_m_y, dt),
-        ops.precompute_h_update_coefficients(sigma_m_z, dt),
-    )
-    dense_h = ops.fused_update_h_lossy_3d(
-        ex,
-        ey,
-        ez,
-        hx,
-        hy,
-        hz,
-        h_decay_x,
-        h_src_x,
-        h_decay_y,
-        h_src_y,
-        h_decay_z,
-        h_src_z,
-        resolution,
-    )
-    primitive_h = ops.fused_update_h_lossy_3d_material(
-        ex,
-        ey,
-        ez,
-        hx,
-        hy,
-        hz,
-        sigma_m_x,
-        sigma_m_y,
-        sigma_m_z,
-        dt,
-        resolution,
-    )
-
-    (e_decay_x, e_src_x, _), (e_decay_y, e_src_y, _), (e_decay_z, e_src_z, _) = (
-        ops.precompute_e_update_coefficients(
-            ex.shape, sig_x, eps_x, dt, (slice(None),) * 3
-        ),
-        ops.precompute_e_update_coefficients(
-            ey.shape, sig_y, eps_y, dt, (slice(None),) * 3
-        ),
-        ops.precompute_e_update_coefficients(
-            ez.shape, sig_z, eps_z, dt, (slice(None),) * 3
-        ),
-    )
-    dense_e = ops.fused_update_e_lossy_3d(
-        hx,
-        hy,
-        hz,
-        ex,
-        ey,
-        ez,
-        e_decay_x,
-        e_src_x,
-        e_decay_y,
-        e_src_y,
-        e_decay_z,
-        e_src_z,
-        resolution,
-        boundary_views=views,
-    )
-    primitive_e = ops.fused_update_e_lossy_3d_material(
-        hx,
-        hy,
-        hz,
-        ex,
-        ey,
-        ez,
-        sig_x,
-        inv_eps_x,
-        sig_y,
-        inv_eps_y,
-        sig_z,
-        inv_eps_z,
-        dt,
-        resolution,
-        boundary_views=views,
-    )
-
-    for primitive_component, dense_component in zip(
-        (*primitive_h, *primitive_e), (*dense_h, *dense_e), strict=True
-    ):
-        np.testing.assert_allclose(
-            np.asarray(primitive_component),
-            np.asarray(dense_component),
-            rtol=2e-6,
-            atol=1e-6,
-        )
+    sim.advance(num_steps=1, progress=False)
 
 
 def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
@@ -829,7 +555,7 @@ def test_simulation_memory_estimate_reports_fields_and_compiled_coefficients():
     report = sim.memory_estimate(include_compiled=True, num_steps=1)
 
     field_bytes = sum(
-        int(np.asarray(getattr(sim.fields, name)).nbytes)
+        int(np.asarray(getattr(_fields_for_sim(sim), name)).nbytes)
         for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
     )
     assert report["totals_by_category"]["yee_fields"] == field_bytes
@@ -875,21 +601,29 @@ def test_compiled_uses_material_coefficients_for_3d_loss():
     )
 
     program = sim.compile(num_steps=1)
+    coefficients = program.coefficients
 
-    assert program.e_decay_x.shape == (0, 0, 0)
-    assert program.e_source_x.shape == (0, 0, 0)
-    assert program.h_decay_x.shape == (0, 0, 0)
-    assert program.h_source_x.shape == (0, 0, 0)
-    assert program.e_conductivity_x is sim.fields.sig_x
-    assert program.e_permittivity_x is sim.fields.eps_x
-    assert program.h_sigma_m_x is sim.fields.sigma_m_hx
+    assert coefficients.e_decay_x.shape == (0, 0, 0)
+    assert coefficients.e_source_x.shape == (0, 0, 0)
+    assert coefficients.h_decay_x.shape == (0, 0, 0)
+    assert coefficients.h_source_x.shape == (0, 0, 0)
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.e_conductivity_x),
+        np.asarray(_fields_for_sim(sim).sig_x),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.e_permittivity_x),
+        np.asarray(_fields_for_sim(sim).eps_x),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(coefficients.h_sigma_m_x),
+        np.asarray(_fields_for_sim(sim).sigma_m_hx),
+    )
 
-    sim.run_compiled(num_steps=1, progress=False)
+    sim.advance(num_steps=1, progress=False)
 
 
-def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding(monkeypatch):
-    monkeypatch.setenv("BEAMZ_CPML_PACKED_PSI", "1")
-
+def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding():
     wl = 1.55 * um
     dx, dt = calc_optimal_fdtd_params(
         wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=8
@@ -919,97 +653,74 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding(monkeypat
     )
     program = sim.compile(num_steps=1)
 
-    nx = int(sim.fields.permittivity.shape[2])
     pml_cells = int(round(thickness / dx))
 
-    def expected_profile(count: int, *, sample_kind: str, domain_cells: int):
-        sigma = np.zeros((count,), dtype=np.float32)
-        kappa = np.ones((count,), dtype=np.float32)
-        alpha = np.zeros((count,), dtype=np.float32)
-        sigma_max = float(sim.boundaries[0].sigma_max)
-
+    def expected_profile(count: int, *, sample_kind: str):
+        boundary = sim.boundaries[0]
+        eta = np.sqrt(MU_0 / EPS_0)
+        sigma_max = -(
+            (boundary.m + 1)
+            * np.log(boundary.target_reflection)
+            / (2.0 * eta * float(boundary.thickness))
+        )
         if sample_kind == "E":
-            low_d = np.arange(pml_cells - 1, -1, -1, dtype=np.float32)[
-                : min(count, pml_cells)
-            ]
-            high_d = np.insert(
-                np.arange(0.5, pml_cells - 0.5, 1.0, dtype=np.float32),
-                0,
-                0.0,
-            )[: min(count, pml_cells)]
+            domain_cells = count - 1
+            coordinates = np.arange(count, dtype=np.float32)
         else:
-            low_d = np.append(
-                np.arange(pml_cells - 1.5, -0.5, -1.0, dtype=np.float32),
-                0.0,
-            )[: min(count, pml_cells)]
-
-        u = np.clip(low_d / max(float(pml_cells), 1e-30), 0.0, 1.0)
-        side_sigma = sigma_max * np.power(u, 3.0)
-        side_kappa = 1.0 + (4.0 - 1.0) * np.power(u, 3.0)
-        side_alpha = 300.0 * np.power(1.0 - u, 1.0)
-        sigma[: len(low_d)] = np.maximum(sigma[: len(low_d)], side_sigma)
-        kappa[: len(low_d)] = np.maximum(kappa[: len(low_d)], side_kappa)
-        alpha[: len(low_d)] = np.maximum(alpha[: len(low_d)], side_alpha)
-
-        if sample_kind == "E":
-            offset = 0.0
-        else:
-            offset = 0.5
-        coords = np.arange(count, dtype=np.float32) + np.float32(offset)
-        d = np.clip(coords - (float(domain_cells) - float(pml_cells)), 0.0, pml_cells)
-        mask = d > 0.0
-        u = np.clip(d / max(float(pml_cells), 1e-30), 0.0, 1.0)
-        side_sigma = sigma_max * np.power(u, 3.0)
-        side_kappa = 1.0 + (4.0 - 1.0) * np.power(u, 3.0)
-        side_alpha = 300.0 * np.power(1.0 - u, 1.0)
-        sigma = np.where(mask, np.maximum(sigma, side_sigma), sigma)
-        kappa = np.where(mask, np.maximum(kappa, side_kappa), kappa)
-        alpha = np.where(mask, np.maximum(alpha, side_alpha), alpha)
+            domain_cells = count
+            coordinates = np.arange(count, dtype=np.float32) + 0.5
+        low_distance = np.clip(pml_cells - coordinates, 0.0, pml_cells)
+        high_distance = np.clip(
+            coordinates - (domain_cells - pml_cells), 0.0, pml_cells
+        )
+        distance = np.maximum(low_distance, high_distance)
+        active = distance > 0.0
+        u = distance / max(float(pml_cells), 1e-30)
+        sigma = sigma_max * np.power(u, 3.0)
+        kappa = 1.0 + (4.0 - 1.0) * np.power(u, 3.0)
+        alpha = np.where(active, 300.0 * (1.0 - u), 0.0)
         return sigma, kappa, alpha
 
-    sigma_e_x, kappa_e_x, alpha_e_x = expected_profile(
-        nx, sample_kind="E", domain_cells=nx
-    )
-    sigma_h_x, kappa_h_x, alpha_h_x = expected_profile(
-        max(nx - 1, 0), sample_kind="H", domain_cells=nx
-    )
+    # Complete Yee storage keeps the wall-aligned Ez plane at x=nx and the
+    # half-cell-aligned Hy samples spanning all nx material cells.
+    e_count = int(_fields_for_sim(sim).Ez.shape[2])
+    h_count = int(_fields_for_sim(sim).Hy.shape[2])
+    _, kappa_e_x, _ = expected_profile(e_count, sample_kind="E")
+    _, kappa_h_x, _ = expected_profile(h_count, sample_kind="H")
 
-    assert program.use_primitive_cpml_3d_terms
-    assert program.use_cpml_3d_packed_psi
-    assert program.cpml3d_a_e_terms[4].shape == (1, 1, nx)
-    assert program.cpml3d_b_e_terms[4].shape == (1, 1, nx)
-    assert program.cpml3d_inv_kappa_e_terms[4].shape == (1, 1, nx)
-    assert program.cpml3d_sigma_e_terms[4].shape == (1, 1, nx)
-    assert program.cpml3d_sigma_h_terms[3].shape == (1, 1, max(nx - 1, 0))
-    assert program.cpml3d_e_psi_shapes[4] == program.cpml3d_e_slab_specs[4].shape
-    assert program.cpml3d_h_psi_shapes[3] == program.cpml3d_h_slab_specs[3].shape
-    assert program.cpml3d_e_psi_shapes[4][2] < sim.fields.Ez.shape[2]
-    assert program.cpml3d_h_psi_shapes[3][2] < sim.fields.Hy.shape[2]
+    e_term = program.boundary.cpml.e_terms[4]
+    h_term = program.boundary.cpml.h_terms[3]
+    assert e_term.a.shape == e_term.b.shape == e_term.inv_kappa.shape
+    assert e_term.a.shape[2] == e_term.slab.low + e_term.slab.high
+    assert h_term.a.shape[2] == h_term.slab.low + h_term.slab.high
+    assert e_term.slab.shape[2] < _fields_for_sim(sim).Ez.shape[2]
+    assert h_term.slab.shape[2] < _fields_for_sim(sim).Hy.shape[2]
 
     h_full_shapes = (
-        sim.fields.Hx.shape,
-        sim.fields.Hx.shape,
-        sim.fields.Hy.shape,
-        sim.fields.Hy.shape,
-        sim.fields.Hz.shape,
-        sim.fields.Hz.shape,
+        _fields_for_sim(sim).Hx.shape,
+        _fields_for_sim(sim).Hx.shape,
+        _fields_for_sim(sim).Hy.shape,
+        _fields_for_sim(sim).Hy.shape,
+        _fields_for_sim(sim).Hz.shape,
+        _fields_for_sim(sim).Hz.shape,
     )
     e_full_shapes = (
-        sim.fields.Ex.shape,
-        sim.fields.Ex.shape,
-        sim.fields.Ey.shape,
-        sim.fields.Ey.shape,
-        sim.fields.Ez.shape,
-        sim.fields.Ez.shape,
+        _fields_for_sim(sim).Ex.shape,
+        _fields_for_sim(sim).Ex.shape,
+        _fields_for_sim(sim).Ey.shape,
+        _fields_for_sim(sim).Ey.shape,
+        _fields_for_sim(sim).Ez.shape,
+        _fields_for_sim(sim).Ez.shape,
     )
     full_psi_cells = 0
     packed_psi_cells = 0
-    for slab_spec, psi_shape, full_shape in zip(
-        (*program.cpml3d_h_slab_specs, *program.cpml3d_e_slab_specs),
-        (*program.cpml3d_h_psi_shapes, *program.cpml3d_e_psi_shapes),
+    for term, full_shape in zip(
+        (*program.boundary.cpml.h_terms, *program.boundary.cpml.e_terms),
         (*h_full_shapes, *e_full_shapes),
         strict=True,
     ):
+        slab_spec = term.slab
+        psi_shape = slab_spec.shape
         assert isinstance(slab_spec.axis, int)
         assert isinstance(slab_spec.low, int)
         assert isinstance(slab_spec.high, int)
@@ -1019,7 +730,9 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding(monkeypat
         assert slab_spec.high >= 0
         assert slab_spec.low + slab_spec.high == psi_shape[slab_spec.axis]
         assert slab_spec.low + slab_spec.high <= full_shape[slab_spec.axis]
-        for dim, (packed_size, full_size) in enumerate(zip(psi_shape, full_shape)):
+        for dim, (packed_size, full_size) in enumerate(
+            zip(psi_shape, full_shape, strict=True)
+        ):
             if dim != slab_spec.axis:
                 assert packed_size == full_size
         full_psi_cells += int(np.prod(full_shape))
@@ -1027,137 +740,24 @@ def test_compiled_3d_cpml_profiles_match_expected_x_boundary_embedding(monkeypat
     assert packed_psi_cells < full_psi_cells
 
     np.testing.assert_allclose(
-        np.asarray(program.cpml3d_sigma_e_terms[4][0, 0, :]),
-        sigma_e_x,
+        np.asarray(e_term.inv_kappa[0, 0, :]),
+        np.concatenate(
+            (1.0 / kappa_e_x[: e_term.slab.low], 1.0 / kappa_e_x[-e_term.slab.high :])
+        ),
         rtol=1e-6,
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        np.asarray(program.cpml3d_kappa_e_terms[4][0, 0, :]),
-        kappa_e_x,
-        rtol=1e-6,
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.cpml3d_alpha_e_terms[4][0, 0, :]),
-        alpha_e_x,
-        rtol=1e-6,
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.cpml3d_inv_kappa_e_terms[4][0, 0, :]),
-        1.0 / kappa_e_x,
-        rtol=1e-6,
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.cpml3d_sigma_h_terms[3][0, 0, :]),
-        sigma_h_x,
-        rtol=1e-6,
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.cpml3d_kappa_h_terms[3][0, 0, :]),
-        kappa_h_x,
-        rtol=1e-6,
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        np.asarray(program.cpml3d_alpha_h_terms[3][0, 0, :]),
-        alpha_h_x,
+        np.asarray(h_term.inv_kappa[0, 0, :]),
+        np.concatenate(
+            (1.0 / kappa_h_x[: h_term.slab.low], 1.0 / kappa_h_x[-h_term.slab.high :])
+        ),
         rtol=1e-6,
         atol=1e-6,
     )
 
 
-def test_compiled_monitor_power_is_populated(small_sim_params):
-    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-
-    source = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    monitor = Monitor(
-        start=(domain * 0.35, domain * 0.35),
-        end=(domain * 0.35, domain * 0.65),
-        record_interval=3,
-    )
-
-    sim = Simulation(
-        design=design,
-        sources=[source],
-        monitors=[monitor],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-
-    sim.run_compiled(progress=False)
-
-    assert len(monitor.power_history) > 0
-    assert len(monitor.power_timestamps) == len(monitor.power_history)
-    assert np.isfinite(np.asarray(monitor.power_history)).all()
-
-
-def test_compiled_monitor_accumulates_across_chunks(small_sim_params):
-    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-
-    source_a = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    monitor_a = Monitor(
-        start=(domain * 0.35, domain * 0.35),
-        end=(domain * 0.35, domain * 0.65),
-        record_interval=3,
-    )
-    sim_full = Simulation(
-        design=design.copy(),
-        sources=[source_a],
-        monitors=[monitor_a],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-
-    source_b = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    monitor_b = Monitor(
-        start=(domain * 0.35, domain * 0.35),
-        end=(domain * 0.35, domain * 0.65),
-        record_interval=3,
-    )
-    sim_chunked = Simulation(
-        design=design.copy(),
-        sources=[source_b],
-        monitors=[monitor_b],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-
-    sim_full.run_compiled(num_steps=40, progress=False)
-    sim_chunked.run_compiled(
-        num_steps=40,
-        record_interval=10,  # force chunked execution path
-        record_fields=["Ez"],
-        progress=False,
-    )
-
-    p_full = np.asarray(monitor_a.power_history)
-    p_chunked = np.asarray(monitor_b.power_history)
-    t_full = np.asarray(monitor_a.power_timestamps)
-    t_chunked = np.asarray(monitor_b.power_timestamps)
-
-    assert p_full.size > 0
-    assert p_chunked.size == p_full.size
-    assert t_chunked.size == t_full.size
-    assert np.allclose(p_chunked, p_full, rtol=5e-3, atol=5e-5)
-    assert np.allclose(t_chunked, t_full, rtol=0.0, atol=0.0)
-
-
-def test_run_snapshot_path_does_not_fall_back_to_python_step(small_sim_params):
+def test_field_recorder_is_the_only_snapshot_source(small_sim_params):
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
     source = GaussianSource(
@@ -1166,391 +766,89 @@ def test_run_snapshot_path_does_not_fall_back_to_python_step(small_sim_params):
     sim = Simulation(
         design=design,
         sources=[source],
+        monitors=[
+            FieldRecorder(("Ez",), interval=8, name="frames"),
+            FieldRecorder(
+                ("Ez", "Hx"),
+                interval=8,
+                name="line",
+                center=(domain / 2, domain / 2, 0.0),
+                size=(0.0, domain, 0.0),
+            ),
+        ],
         boundaries=[PML(thickness=1.2 * wl)],
         time=t,
         resolution=dx,
     )
 
-    def _unexpected_step():
-        raise AssertionError("snapshot runs should stay on the compiled engine path")
-
-    sim.step = _unexpected_step
-    result = sim.run(snapshot_field="Ez", snapshot_interval=8, progress=False)
+    result = sim.run(progress=False)
 
     assert result is not None
-    assert len(result["snapshots"]) > 0
-    assert result["snapshots"][0]["step"] == 8
-
-
-def test_compiled_snapshot_state_warns_for_large_preallocation(
-    small_sim_params, monkeypatch
-):
-    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-    source = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    recorder = result.monitor("frames")
+    line = result.monitor("line")
+    assert result.monitors["line"].fields is line.fields
+    assert recorder.snapshot("Ez", 0)["step"] == 8
+    with pytest.raises(TypeError):
+        recorder.snapshot("Ez", 0)["step"] = 9
+    with pytest.raises(ValueError, match="read-only"):
+        recorder.snapshot("Ez", 0)["field"].flat[0] = 0.0
+    line_points = (
+        sim.monitors[1]
+        ._line_sample_coords_2d(dx, dx, _fields_for_sim(sim).permittivity.shape)[0]
+        .size
     )
-    sim = Simulation(
-        design=design,
-        sources=[source],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-    program = sim.compile(num_steps=2, snapshot_field="Ez", snapshot_interval=1)
-
-    monkeypatch.setenv("BEAMZ_SNAPSHOT_WARN_GIB", "1e-8")
-    with pytest.warns(RuntimeWarning, match="Compiled field snapshots will allocate"):
-        snapshot_state = program._empty_snapshot_state()
-
-    assert snapshot_state is not None
-    assert snapshot_state[0].shape[0] == 2
-
-
-def test_compiled_frequency_monitor_matches_direct_sum(small_sim_params):
-    wl, dx, dt, domain, _steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-
-    source = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    freq = LIGHT_SPEED / wl
-    monitor = Monitor(
-        start=(domain * 0.35, domain * 0.35),
-        end=(domain * 0.35, domain * 0.65),
-        record_interval=1,
-        power_spectrum_frequencies=[freq],
-        power_spectrum_record_interval=1,
-    )
-
-    sim = Simulation(
-        design=design,
-        sources=[source],
-        monitors=[monitor],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-    sim.run_compiled(num_steps=60, progress=False)
-
-    assert monitor.power_spectrum.shape == (1,)
-    assert np.isfinite(monitor.power_spectrum).all()
-
-    power = np.asarray(monitor.power_history, dtype=np.float64)
-    ts = np.asarray(monitor.power_timestamps, dtype=np.float64)
-    direct = np.sum(power * np.exp(-1j * 2.0 * np.pi * freq * ts)) * dt
-    assert np.allclose(
-        monitor.power_spectrum[0],
-        direct,
-        rtol=5e-3,
-        atol=5e-6,
-    )
-
-
-def test_compiled_frequency_monitor_accumulates_across_chunks(small_sim_params):
-    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-    freqs = [LIGHT_SPEED / wl, 1.1 * LIGHT_SPEED / wl]
-
-    source_a = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    monitor_a = Monitor(
-        start=(domain * 0.35, domain * 0.35),
-        end=(domain * 0.35, domain * 0.65),
-        record_interval=2,
-        power_spectrum_frequencies=freqs,
-        power_spectrum_record_interval=1,
-    )
-    sim_full = Simulation(
-        design=design.copy(),
-        sources=[source_a],
-        monitors=[monitor_a],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-
-    source_b = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    monitor_b = Monitor(
-        start=(domain * 0.35, domain * 0.35),
-        end=(domain * 0.35, domain * 0.65),
-        record_interval=2,
-        power_spectrum_frequencies=freqs,
-        power_spectrum_record_interval=1,
-    )
-    sim_chunked = Simulation(
-        design=design.copy(),
-        sources=[source_b],
-        monitors=[monitor_b],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-
-    sim_full.run_compiled(num_steps=50, progress=False)
-    sim_chunked.run_compiled(
-        num_steps=50,
-        record_interval=10,
-        record_fields=["Ez"],
-        progress=False,
-    )
-
-    s_full = np.asarray(monitor_a.power_spectrum)
-    s_chunked = np.asarray(monitor_b.power_spectrum)
-    assert s_full.shape == (2,)
-    assert s_chunked.shape == s_full.shape
-    assert np.allclose(s_chunked, s_full, rtol=5e-3, atol=5e-6)
-
-
-def test_compiled_frequency_monitor_3d_populated():
-    wl = 1.55 * um
-    dx, dt = calc_optimal_fdtd_params(
-        wl, 1.0, dims=3, safety_factor=0.95, points_per_wavelength=6
-    )
-    domain = 2.0 * wl
-    depth = 1.5 * wl
-    t = np.arange(0, 24 * dt, dt)
-    freq = LIGHT_SPEED / wl
-    signal = ramped_cosine(
-        t,
-        amplitude=1.0,
-        frequency=freq,
-        ramp_duration=2 / freq,
-        t_max=t[-1] * 0.6,
-    )
-
-    design = Design(
-        width=domain,
-        height=domain,
-        depth=depth,
-        material=Material(permittivity=1.0),
-    )
-    source = GaussianSource(
-        position=(domain * 0.45, domain * 0.5, depth * 0.5),
-        width=wl / 5,
-        signal=signal,
-    )
-    monitor = Monitor(
-        design=design,
-        start=(domain * 0.65, domain * 0.2, depth * 0.2),
-        plane_normal="x",
-        plane_position=domain * 0.65,
-        size=(domain * 0.6, depth * 0.6),
-        record_interval=2,
-        power_spectrum_frequencies=[freq],
-        power_spectrum_record_interval=1,
-        record_fields=False,
-    )
-    sim = Simulation(
-        design=design,
-        sources=[source],
-        monitors=[monitor],
-        boundaries=[PML(thickness=0.6 * wl, edges="all")],
-        time=t,
-        resolution=dx,
-    )
-    sim.run_compiled(num_steps=12, progress=False)
-
-    spec = np.asarray(monitor.power_spectrum)
-    assert spec.shape == (1,)
-    assert np.isfinite(spec).all()
-    assert len(monitor.power_history) > 0
-    assert np.isfinite(np.asarray(monitor.power_history)).all()
-
-
-def test_compiled_dft_component_monitor_populated(small_sim_params):
-    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
-    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
-    source = GaussianSource(
-        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
-    )
-    freq = LIGHT_SPEED / wl
-    monitor = Monitor(
-        start=(domain * 0.35, domain * 0.35),
-        end=(domain * 0.35, domain * 0.65),
-        record_fields=False,
-        dft_enabled=True,
-        dft_frequencies=[freq],
-        dft_components=("Ez", "Hy"),
-        dft_t_start=0.0,
-        dft_t_end=float(t[-1]),
-        dft_window="rect",
-        dft_record_every_step=True,
-        record_interval=2,
-    )
-    sim = Simulation(
-        design=design,
-        sources=[source],
-        monitors=[monitor],
-        boundaries=[PML(thickness=1.2 * wl)],
-        time=t,
-        resolution=dx,
-    )
-    sim.run_compiled(num_steps=60, progress=False)
-
-    ez_dft = np.asarray(monitor.get_dft_component("Ez"))
-    hy_dft = np.asarray(monitor.get_dft_component("Hy"))
-    assert ez_dft.shape[0] == 1
-    assert hy_dft.shape == ez_dft.shape
-    assert ez_dft.shape[1] > 0
-    assert np.isfinite(ez_dft).all()
-    assert np.isfinite(hy_dft).all()
-    assert np.max(np.abs(ez_dft)) > 0.0
-    assert np.max(np.abs(hy_dft)) > 0.0
-    np.testing.assert_allclose(
-        monitor.power_spectrum, np.zeros((0,), dtype=np.complex64)
-    )
-    assert np.isfinite(monitor.get_dft_flux()).all()
-
-
-def test_compiled_static_monitor_dft_uses_current_sample_phase():
-    program = CompiledSimulation.__new__(CompiledSimulation)
-    program.config = CompiledRunConfig(
-        resolution=1.0,
-        dt=1.0,
-        num_steps=1,
-        plane_2d="xy",
-        is_3d=False,
-    )
-    program.monitor_specs = (
-        CompiledMonitorSpec(
-            name="m",
-            monitor_index=0,
-            is_3d=False,
-            record_interval=1,
-            accumulate_power=False,
-            power_scale=1.0,
-            accumulate_frequency=True,
-            freq_record_interval=1,
-            freq_count=1,
-            freq_hz=jnp.asarray([1.0], dtype=jnp.float32),
-            freq_rot_re=jnp.asarray([0.0], dtype=jnp.float32),
-            freq_rot_im=jnp.asarray([-1.0], dtype=jnp.float32),
-            dft_enabled=True,
-            dft_record_interval=1,
-            dft_t_start=0.0,
-            dft_t_end=1.0,
-            dft_window_code=0,
-            dft_point_count=1,
-            dft_component_mask=jnp.asarray([0, 0, 1, 0, 0, 0], dtype=jnp.float32),
-            x_ex=jnp.asarray([0], dtype=jnp.int32),
-            y_ex=jnp.asarray([0], dtype=jnp.int32),
-            valid_ex=jnp.asarray([0.0], dtype=jnp.float32),
-            x_ey=jnp.asarray([0], dtype=jnp.int32),
-            y_ey=jnp.asarray([0], dtype=jnp.int32),
-            valid_ey=jnp.asarray([0.0], dtype=jnp.float32),
-            x_ez=jnp.asarray([0], dtype=jnp.int32),
-            y_ez=jnp.asarray([0], dtype=jnp.int32),
-            valid_ez=jnp.asarray([1.0], dtype=jnp.float32),
-            x_hx=jnp.asarray([0], dtype=jnp.int32),
-            y_hx=jnp.asarray([0], dtype=jnp.int32),
-            valid_hx=jnp.asarray([0.0], dtype=jnp.float32),
-            x_hy=jnp.asarray([0], dtype=jnp.int32),
-            y_hy=jnp.asarray([0], dtype=jnp.int32),
-            valid_hy=jnp.asarray([0.0], dtype=jnp.float32),
-            x_hz=jnp.asarray([0], dtype=jnp.int32),
-            y_hz=jnp.asarray([0], dtype=jnp.int32),
-            valid_hz=jnp.asarray([0.0], dtype=jnp.float32),
-        ),
-    )
-
-    monitor_state = MonitorState(
-        powers=jnp.zeros((1, 1), dtype=jnp.float32),
-        timestamps=jnp.zeros((1, 1), dtype=jnp.float32),
-        counts=jnp.zeros((1,), dtype=jnp.int32),
-        freq_flux_re=jnp.zeros((1, 1), dtype=jnp.float32),
-        freq_flux_im=jnp.zeros((1, 1), dtype=jnp.float32),
-        freq_phase_re=jnp.ones((1, 1), dtype=jnp.float32),
-        freq_phase_im=jnp.zeros((1, 1), dtype=jnp.float32),
-        dft_vec_re=jnp.zeros((1, 6, 1, 1), dtype=jnp.float32),
-        dft_vec_im=jnp.zeros((1, 6, 1, 1), dtype=jnp.float32),
-        dft_weight_sum=jnp.zeros((1, 1), dtype=jnp.float32),
-    )
-
-    updated = program._update_monitors(
-        monitor_state,
-        abs_step=jnp.asarray(0, dtype=jnp.int32),
-        t_phys=jnp.asarray(0.0, dtype=jnp.float32),
-        dt_scalar=jnp.asarray(1.0, dtype=jnp.float32),
-        ex=jnp.zeros((1, 1), dtype=jnp.float32),
-        ey=jnp.zeros((1, 1), dtype=jnp.float32),
-        ez=jnp.asarray([[2.0]], dtype=jnp.float32),
-        hx=jnp.zeros((1, 1), dtype=jnp.float32),
-        hy=jnp.zeros((1, 1), dtype=jnp.float32),
-        hz=jnp.zeros((1, 1), dtype=jnp.float32),
-        monitors_2d=program.monitor_specs,
-    )
-
-    np.testing.assert_allclose(
-        updated.dft_vec_re[0, 2, 0, 0], 2.0, rtol=1e-7, atol=1e-7
-    )
-    np.testing.assert_allclose(
-        updated.dft_vec_im[0, 2, 0, 0], 0.0, rtol=1e-7, atol=1e-7
-    )
-    np.testing.assert_allclose(updated.freq_phase_re[0, 0], 0.0, rtol=1e-7, atol=1e-7)
-    np.testing.assert_allclose(updated.freq_phase_im[0, 0], -1.0, rtol=1e-7, atol=1e-7)
+    assert line.fields["Ez"].shape == (line.field_steps.size, line_points)
+    assert line.fields["Hx"].shape == (line.field_steps.size, line_points)
 
 
 def test_compiled_static_monitor_physical_dft_uses_centered_tm_xy_sampling():
-    program = CompiledSimulation.__new__(CompiledSimulation)
-    program.config = CompiledRunConfig(
-        resolution=1.0,
-        dt=1.0,
-        num_steps=1,
-        plane_2d="xy",
-        is_3d=False,
-    )
-    program.monitor_specs = (
-        CompiledMonitorSpec(
-            name="m_physical",
-            monitor_index=0,
+    point = jnp.asarray([[0]], dtype=jnp.int32)
+    zero = jnp.asarray([[0.0]], dtype=jnp.float32)
+    indices = (point,) * 6
+    sample_weights = (zero,) * 6
+    ez_center_indices = jnp.asarray([[0, 1, 2, 3]], dtype=jnp.int32)
+    ez_center_weights = jnp.full((1, 4), 0.25, dtype=jnp.float32)
+    dft_indices = (point, point, ez_center_indices, point, point, point)
+    dft_weights = (zero, zero, ez_center_weights, zero, zero, zero)
+    program = SimpleNamespace(
+        config=RunConfig(
+            resolution=1.0,
+            dt=1.0,
+            num_steps=1,
+            plane_2d="xy",
             is_3d=False,
-            record_interval=1,
-            accumulate_power=False,
-            power_scale=1.0,
-            accumulate_frequency=True,
-            freq_record_interval=1,
-            freq_count=1,
-            freq_hz=jnp.asarray([0.0], dtype=jnp.float32),
-            freq_rot_re=jnp.asarray([1.0], dtype=jnp.float32),
-            freq_rot_im=jnp.asarray([0.0], dtype=jnp.float32),
-            dft_enabled=True,
-            dft_record_interval=1,
-            dft_t_start=0.0,
-            dft_t_end=1.0,
-            dft_window_code=0,
-            dft_normalization_code=1,
-            dft_length_unit=float(LIGHT_SPEED),
-            dft_centered_tm_xy_sampling=True,
-            dft_point_count=1,
-            dft_component_mask=jnp.asarray([0, 0, 1, 0, 0, 0], dtype=jnp.float32),
-            dft_target_x=jnp.asarray([0.5], dtype=jnp.float32),
-            dft_target_y=jnp.asarray([0.5], dtype=jnp.float32),
-            x_ex=jnp.asarray([0], dtype=jnp.int32),
-            y_ex=jnp.asarray([0], dtype=jnp.int32),
-            valid_ex=jnp.asarray([0.0], dtype=jnp.float32),
-            x_ey=jnp.asarray([0], dtype=jnp.int32),
-            y_ey=jnp.asarray([0], dtype=jnp.int32),
-            valid_ey=jnp.asarray([0.0], dtype=jnp.float32),
-            x_ez=jnp.asarray([0], dtype=jnp.int32),
-            y_ez=jnp.asarray([0], dtype=jnp.int32),
-            valid_ez=jnp.asarray([0.0], dtype=jnp.float32),
-            x_hx=jnp.asarray([0], dtype=jnp.int32),
-            y_hx=jnp.asarray([0], dtype=jnp.int32),
-            valid_hx=jnp.asarray([0.0], dtype=jnp.float32),
-            x_hy=jnp.asarray([0], dtype=jnp.int32),
-            y_hy=jnp.asarray([0], dtype=jnp.int32),
-            valid_hy=jnp.asarray([0.0], dtype=jnp.float32),
-            x_hz=jnp.asarray([0], dtype=jnp.int32),
-            y_hz=jnp.asarray([0], dtype=jnp.int32),
-            valid_hz=jnp.asarray([0.0], dtype=jnp.float32),
+        ),
+        monitors=(
+            CompiledMonitorSpec(
+                name="m_physical",
+                monitor_index=0,
+                record_interval=1,
+                accumulate_power=False,
+                power_scale=1.0,
+                accumulate_frequency=True,
+                freq_record_interval=1,
+                freq_count=1,
+                freq_hz=jnp.asarray([0.0], dtype=jnp.float32),
+                freq_rot_re=jnp.asarray([1.0], dtype=jnp.float32),
+                freq_rot_im=jnp.asarray([0.0], dtype=jnp.float32),
+                dft_enabled=True,
+                dft_record_interval=1,
+                dft_t_start=0.0,
+                dft_t_end=1.0,
+                dft_window_code=0,
+                dft_normalization_code=1,
+                dft_length_unit=float(LIGHT_SPEED),
+                dft_point_count=1,
+                dft_component_mask=jnp.asarray([0, 0, 1, 0, 0, 0], dtype=jnp.float32),
+                sample_flat_idx=indices,
+                sample_weights=sample_weights,
+                dft_flat_idx=dft_indices,
+                dft_weights=dft_weights,
+            ),
         ),
     )
 
-    monitor_state = MonitorState(
+    monitor_state = _monitor_state(
         powers=jnp.zeros((1, 1), dtype=jnp.float32),
         timestamps=jnp.zeros((1, 1), dtype=jnp.float32),
         counts=jnp.zeros((1,), dtype=jnp.int32),
@@ -1565,21 +863,18 @@ def test_compiled_static_monitor_physical_dft_uses_centered_tm_xy_sampling():
 
     tm_ez = jnp.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
 
-    updated = program._update_monitors(
+    updated = monitor_runtime.update_monitors(
+        program,
         monitor_state,
         abs_step=jnp.asarray(0, dtype=jnp.int32),
         t_phys=jnp.asarray(0.0, dtype=jnp.float32),
         dt_scalar=jnp.asarray(1.0, dtype=jnp.float32),
         ex=jnp.zeros((1, 1), dtype=jnp.float32),
         ey=jnp.zeros((1, 1), dtype=jnp.float32),
-        ez=jnp.zeros((1, 1), dtype=jnp.float32),
-        hx=jnp.zeros((1, 1), dtype=jnp.float32),
-        hy=jnp.zeros((1, 1), dtype=jnp.float32),
+        ez=tm_ez,
+        hx=jnp.zeros((1, 2), dtype=jnp.float32),
+        hy=jnp.zeros((2, 1), dtype=jnp.float32),
         hz=jnp.zeros((1, 1), dtype=jnp.float32),
-        tm_ez=tm_ez,
-        tm_hx=jnp.zeros((1, 2), dtype=jnp.float32),
-        tm_hy=jnp.zeros((2, 1), dtype=jnp.float32),
-        monitors_2d=program.monitor_specs,
     )
 
     expected = 2.5 / np.sqrt(2.0 * np.pi)
@@ -1611,63 +906,17 @@ def test_compiled_program_compiles_once(small_sim_params):
     )
 
     program = sim.compile(num_steps=20)
-    assert program.compile_count == 0
+    cache = execution_cache(program)
+    assert cache.compiled_scan is None
 
-    eng0 = _engine_state_for_sim(sim)
-    mon0 = MonitorState(
-        powers=jnp.zeros((0, 0), dtype=jnp.float32),
-        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
-        counts=jnp.zeros((0,), dtype=jnp.int32),
-        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
-        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
-    )
+    state0 = initial_program_state(program, t=float(sim.time[0]), current_step=0)
+    state1 = run_program(program, state0)
+    compiled_scan = cache.compiled_scan
+    assert callable(compiled_scan)
 
-    eng1, _, _, _ = program.run(eng0, mon0)
-    assert program.compile_count == 1
-
-    # Recreate states since donation invalidates buffers.
-    eng1_input = EngineState(
-        ex=eng1.ex,
-        ey=eng1.ey,
-        ez=eng1.ez,
-        hx=eng1.hx,
-        hy=eng1.hy,
-        hz=eng1.hz,
-        tm_ez=eng1.tm_ez,
-        tm_hx=eng1.tm_hx,
-        tm_hy=eng1.tm_hy,
-        fp_ex=eng1.fp_ex,
-        fp_ey=eng1.fp_ey,
-        fp_ez=eng1.fp_ez,
-        fp_hx=eng1.fp_hx,
-        fp_hy=eng1.fp_hy,
-        fp_hz=eng1.fp_hz,
-        cpml_psi_h_terms=eng1.cpml_psi_h_terms,
-        cpml_psi_e_terms=eng1.cpml_psi_e_terms,
-        cpml3d_psi_h_terms=eng1.cpml3d_psi_h_terms,
-        cpml3d_psi_e_terms=eng1.cpml3d_psi_e_terms,
-        t=eng1.t,
-        current_step=eng1.current_step,
-    )
-    mon1 = MonitorState(
-        powers=jnp.zeros((0, 0), dtype=jnp.float32),
-        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
-        counts=jnp.zeros((0,), dtype=jnp.int32),
-        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
-        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
-    )
-    program.run(eng1_input, mon1)
-    assert program.compile_count == 1
+    # The default execution variant preserves reusable continuation inputs.
+    run_program(program, state1)
+    assert cache.compiled_scan is compiled_scan
 
 
 def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
@@ -1686,23 +935,11 @@ def test_compiled_jaxpr_has_no_host_callbacks(small_sim_params):
     )
 
     program = sim.compile(num_steps=8)
-    eng0 = _engine_state_for_sim(sim)
-    mon0 = MonitorState(
-        powers=jnp.zeros((0, 0), dtype=jnp.float32),
-        timestamps=jnp.zeros((0, 0), dtype=jnp.float32),
-        counts=jnp.zeros((0,), dtype=jnp.int32),
-        freq_flux_re=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_flux_im=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_phase_re=jnp.zeros((0, 0), dtype=jnp.float32),
-        freq_phase_im=jnp.zeros((0, 0), dtype=jnp.float32),
-        dft_vec_re=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-        dft_vec_im=jnp.zeros((0, 0, 0, 0), dtype=jnp.float32),
-        dft_weight_sum=jnp.zeros((0, 0), dtype=jnp.float32),
-    )
+    state0 = initial_program_state(program, t=float(sim.time[0]), current_step=0)
 
-    program._build_scan()
-    jaxpr = jax.make_jaxpr(program._compiled_scan)(
-        eng0, mon0, program._update_coefficients()
+    build_program_scan(program)
+    jaxpr = jax.make_jaxpr(execution_cache(program).compiled_scan)(
+        state0, program.coefficients
     )
     assert "host_callback" not in str(jaxpr).lower()
 
@@ -1740,13 +977,11 @@ def test_compile_mode_source_builds_e_and_h_specs():
     )
 
     source = ModeSource(
-        grid=design.rasterize(resolution=dx),
-        center=(2 * wl, height / 2),
-        width=2.0 * wg_w,
-        wavelength=wl,
-        pol="tm",
-        signal=signal,
-        direction="+x",
+        center=(2 * wl, height / 2, 0.0),
+        size=(0.0, 2.0 * wg_w, wg_w),
+        source_time=SampledSignal(signal, dt=dt, freq0=freq),
+        direction="+",
+        mode_spec=ModeSpec(polarization="tm"),
     )
 
     sim = Simulation(
@@ -1758,29 +993,36 @@ def test_compile_mode_source_builds_e_and_h_specs():
     )
 
     program = sim.compile(num_steps=20)
-    assert any(spec.timing == "h" for spec in program.source_specs)
-    assert any(spec.timing == "e" for spec in program.source_specs)
+    assert any(spec.timing == "h" for spec in program.sources)
+    assert any(spec.timing == "e" for spec in program.sources)
 
-    sim.run_compiled(num_steps=20, progress=False)
-    assert np.isfinite(np.asarray(sim.fields.Ez)).all()
+    result = sim.advance(num_steps=20, progress=False)
+    assert np.isfinite(np.asarray(result.state.ez)).all()
 
 
 def test_analytic_signal_quadrature_matches_periodic_sine():
     phase = 2.0 * np.pi * 5.0 * np.arange(64, dtype=float) / 64.0
-    quadrature = _analytic_signal_quadrature(np.cos(phase))
+    quadrature = analytic_signal_quadrature(np.cos(phase))
 
     np.testing.assert_allclose(quadrature, np.sin(phase), atol=1e-12, rtol=1e-12)
 
 
 def test_mode_source_uses_explicit_signal_quadrature():
-    source = ModeSource.__new__(ModeSource)
-    source.signal = np.asarray([1.0, 2.0, 3.0], dtype=float)
-    source.signal_quadrature = np.asarray([4.0, 5.0, 6.0], dtype=float)
-    source._signal_quadrature = None
-    source._signal_quadrature_signature = None
+    source = ModeSource(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 1.0, 1.0),
+        source_time=SampledSignal(
+            np.asarray([1.0, 2.0, 3.0]),
+            dt=1.0,
+            quadrature=np.asarray([4.0, 5.0, 6.0]),
+            freq0=1.0,
+        ),
+        direction="+",
+    )
 
-    np.testing.assert_allclose(source._get_signal_quadrature(), [4.0, 5.0, 6.0])
-    assert source._get_signal_quadrature_value(1.0, 1.0) == 5.0
+    np.testing.assert_allclose(source.source_time.quadrature, [4.0, 5.0, 6.0])
+    _signal, quadrature = source.source_time.sample(np.asarray([1.0]))
+    np.testing.assert_allclose(quadrature, [5.0])
 
 
 def test_analytic_subband_waveforms_reconstruct_input():
@@ -1801,311 +1043,31 @@ def test_analytic_subband_waveforms_reconstruct_input():
     np.testing.assert_allclose(
         np.sum(subbands, axis=0), analytic, rtol=1e-12, atol=1e-12
     )
-
-
-def test_compile_3d_multifrequency_mode_source_uses_temporary_profile_sources(
-    monkeypatch,
-):
-    dt = 1e-15
-    source = ModeSource(
-        grid=SimpleNamespace(),
-        center=(0.0, 0.0, 0.0),
-        width=1.0,
-        height=1.0,
-        wavelength=LIGHT_SPEED / 200e12,
-        pol="te",
-        signal=np.ones(64, dtype=float),
-        direction="+x",
-        profile_frequencies=np.asarray([230e12, 170e12, 210e12]),
-    )
-    fields = SimpleNamespace(permittivity=jnp.ones((3, 3, 3), dtype=jnp.float32))
-    seen: list[tuple[bool, float, object]] = []
-
-    def fake_initialize(self, permittivity, resolution, dt=None):
-        del dt
-        self._initialized = True
-        self._is_3d = True
-        self._grid_shape = tuple(np.asarray(permittivity).shape)
-        self._resolution = float(resolution)
-
-    def fake_compile(profile_src, *_args, **_kwargs):
-        seen.append(
-            (
-                profile_src is source,
-                float(LIGHT_SPEED / profile_src.wavelength),
-                profile_src.profile_frequencies,
-            )
-        )
-        return ()
-
-    monkeypatch.setattr(ModeSource, "initialize", fake_initialize)
-    monkeypatch.setattr(source_compiler, "_compile_mode_source_3d", fake_compile)
-
-    specs = source_compiler._compile_mode_source(
-        source,
-        fields,
-        dt=dt,
-        num_steps=16,
-        t0=0.0,
-        resolution=1.0,
-        total_steps=64,
-    )
-
-    assert specs == ()
-    assert [item[0] for item in seen] == [False, False, False]
+    phase = np.exp(-2j * np.pi * nodes[:, None] * t[None, :])
+    total_response = phase @ analytic
+    subband_response = phase @ subbands.T
     np.testing.assert_allclose(
-        [item[1] for item in seen],
-        [170e12, 210e12, 230e12],
-        rtol=1e-15,
-        atol=0.0,
-    )
-    assert [item[2] for item in seen] == [None, None, None]
-
-
-def test_compile_3d_mode_source_derives_chebyshev_profile_frequencies(monkeypatch):
-    dt = 1e-15
-    freq0 = 200e12
-    fwidth = 20e12
-    source_time = SimpleNamespace(freq0=freq0, fwidth=fwidth)
-    source = ModeSource(
-        grid=SimpleNamespace(),
-        center=(0.0, 0.0, 0.0),
-        width=1.0,
-        height=1.0,
-        wavelength=LIGHT_SPEED / freq0,
-        pol="te",
-        signal=np.ones(64, dtype=float),
-        direction="+x",
-        source_time=source_time,
-        num_freqs=3,
-    )
-    fields = SimpleNamespace(permittivity=jnp.ones((3, 3, 3), dtype=jnp.float32))
-    seen_freqs: list[float] = []
-
-    def fake_initialize(self, permittivity, resolution, dt=None):
-        del dt
-        self._initialized = True
-        self._is_3d = True
-        self._grid_shape = tuple(np.asarray(permittivity).shape)
-        self._resolution = float(resolution)
-
-    def fake_compile(profile_src, *_args, **_kwargs):
-        seen_freqs.append(float(LIGHT_SPEED / profile_src.wavelength))
-        return ()
-
-    monkeypatch.setattr(ModeSource, "initialize", fake_initialize)
-    monkeypatch.setattr(source_compiler, "_compile_mode_source_3d", fake_compile)
-
-    source_compiler._compile_mode_source(
-        source,
-        fields,
-        dt=dt,
-        num_steps=16,
-        t0=0.0,
-        resolution=1.0,
-        total_steps=64,
+        subband_response / total_response[:, None],
+        np.eye(nodes.size),
+        rtol=1e-12,
+        atol=1e-12,
     )
 
-    k = np.arange(3, dtype=float)
-    expected = np.sort(freq0 + 1.5 * fwidth * np.cos((2.0 * k + 1.0) * np.pi / 6.0))
-    np.testing.assert_allclose(seen_freqs, expected, rtol=1e-15, atol=0.0)
 
+def test_frequency_partition_uses_polynomial_interpolation():
+    nodes = np.asarray([100e12, 150e12, 200e12], dtype=float)
+    frequencies = np.asarray([110e12, 140e12, 175e12], dtype=float)
 
-def test_compile_3d_broadband_mode_source_defers_profile_solves(monkeypatch):
-    dt = 1e-15
-    freq0 = 200e12
-    fwidth = 20e12
-    source_time = SimpleNamespace(freq0=freq0, fwidth=fwidth)
-    eps_full = np.ones((6, 7), dtype=float)
-    crop_slices = (slice(1, 4), slice(2, 6))
-    source = ModeSource(
-        grid=SimpleNamespace(),
-        center=(0.0, 0.0, 0.0),
-        width=1.0,
-        height=1.0,
-        wavelength=LIGHT_SPEED / freq0,
-        pol="te",
-        signal=np.ones(64, dtype=float),
-        direction="+x",
-        source_time=source_time,
-        num_freqs=3,
-        mode_eps_profile_full=eps_full,
-        mode_crop_slices=crop_slices,
-        mode_index=1,
-        mode_target_neff=2.3,
-        mode_num_modes=2,
-    )
-    fields = SimpleNamespace(permittivity=jnp.ones((3, 6, 7), dtype=jnp.float32))
-    seen_profile_sources = []
+    weights = partition_weights_by_frequency(frequencies, nodes)
+    scaled_nodes = nodes / 100e12
+    sampled_quadratic = scaled_nodes**2 @ weights
 
-    def fail_solve_modes(**_kwargs):
-        raise AssertionError("broadband compilation should defer profile solves.")
-
-    def fake_initialize(self, permittivity, resolution, dt=None):
-        del dt
-        self._initialized = True
-        self._is_3d = True
-        self._grid_shape = tuple(np.asarray(permittivity).shape)
-        self._resolution = float(resolution)
-
-    def fake_compile(profile_src, *_args, **_kwargs):
-        seen_profile_sources.append(profile_src)
-        return ()
-
-    monkeypatch.setattr(ModeSource, "initialize", fake_initialize)
-    monkeypatch.setattr(source_compiler, "_compile_mode_source_3d", fake_compile)
-    monkeypatch.setattr(source_compiler, "solve_modes", fail_solve_modes, raising=False)
-
-    source_compiler._compile_mode_source(
-        source,
-        fields,
-        dt=dt,
-        num_steps=16,
-        t0=0.0,
-        resolution=1.0,
-        total_steps=64,
-    )
-
-    assert len(seen_profile_sources) == 3
-    for profile_src in seen_profile_sources:
-        assert profile_src.mode_neff is None
-        assert profile_src.mode_e_field is None
-        assert profile_src.mode_h_field is None
-        assert profile_src.mode_eps_profile_full is eps_full
-        assert profile_src.mode_crop_slices == crop_slices
-        assert profile_src.mode_index == 1
-        assert profile_src.mode_target_neff == 2.3
-        assert profile_src.mode_num_modes == 2
-
-
-def test_compile_3d_mode_source_reinitializes_missing_launch_dt(monkeypatch):
-    dt = 1e-15
-    source = ModeSource(
-        grid=SimpleNamespace(),
-        center=(0.0, 0.0, 0.0),
-        width=1.0,
-        height=1.0,
-        wavelength=LIGHT_SPEED / 200e12,
-        pol="te",
-        signal=np.ones(64, dtype=float),
-        direction="+x",
-    )
-    source._initialized = True
-    source._is_3d = True
-    source._grid_shape = (3, 3, 3)
-    source._resolution = 1.0
-    source._launch_dt = None
-    source._k_num_axis = None
-    source._omega_launch = 2.0 * np.pi * LIGHT_SPEED / source.wavelength
-    fields = SimpleNamespace(permittivity=jnp.ones((3, 3, 3), dtype=jnp.float32))
-    seen_dt: list[float | None] = []
-
-    def fake_initialize(self, permittivity, resolution, dt=None):
-        seen_dt.append(dt)
-        self._initialized = True
-        self._is_3d = True
-        self._grid_shape = tuple(np.asarray(permittivity).shape)
-        self._resolution = float(resolution)
-        self._launch_dt = None if dt is None else float(dt)
-        self._k_num_axis = 1.0
-        self._omega_launch = 2.0 * np.pi * LIGHT_SPEED / self.wavelength
-
-    def fake_compile(profile_src, *_args, **_kwargs):
-        assert profile_src is source
-        assert np.isclose(profile_src._launch_dt, dt)
-        assert profile_src._k_num_axis is not None
-        return ()
-
-    monkeypatch.setattr(ModeSource, "initialize", fake_initialize)
-    monkeypatch.setattr(source_compiler, "_compile_mode_source_3d", fake_compile)
-
-    specs = source_compiler._compile_mode_source(
-        source,
-        fields,
-        dt=dt,
-        num_steps=16,
-        t0=0.0,
-        resolution=1.0,
-        total_steps=64,
-    )
-
-    assert specs == ()
-    assert seen_dt == [dt]
-
-
-def test_compile_3d_mode_source_uses_compact_phasor_residual_slabs():
-    fields = SimpleNamespace(
-        permittivity=jnp.ones((2, 2, 2)),
-        permeability=jnp.ones((2, 2, 2)),
-        Ex=jnp.zeros((2, 2, 1)),
-        Ey=jnp.zeros((2, 1, 2)),
-        Ez=jnp.zeros((1, 2, 2)),
-        Hx=jnp.zeros((1, 1, 2)),
-        Hy=jnp.zeros((1, 2, 1)),
-        Hz=jnp.zeros((2, 1, 1)),
-        eps_x=jnp.full((2, 2, 1), 2.0),
-        eps_y=jnp.full((2, 1, 2), 3.0),
-        eps_z=jnp.full((1, 2, 2), 4.0),
-    )
-
-    def compact_residuals(_fields, *, dt):
-        del _fields, dt
-        return (
-            _ModeSource3DResidual(
-                component="Hy",
-                timing="h",
-                index=(slice(0, 1), slice(0, 1), slice(0, 1)),
-                residual=np.asarray([[[1.0 + 2.0j]]], dtype=np.complex128),
-            ),
-            _ModeSource3DResidual(
-                component="Ex",
-                timing="e",
-                index=(slice(0, 1), slice(1, 2), slice(0, 1)),
-                residual=np.asarray([[[3.0 - 4.0j]]], dtype=np.complex128),
-            ),
-        )
-
-    source = SimpleNamespace(
-        _axis="z",
-        pol="te",
-        _direction_sign=1.0,
-        _compute_discrete_3d_phasor_residuals=compact_residuals,
-    )
-    waveform = jnp.asarray([2.0, 3.0], dtype=jnp.float32)
-    quadrature = jnp.asarray([5.0, 7.0], dtype=jnp.float32)
-
-    specs = _compile_mode_source_3d(
-        source,
-        fields,
-        dt=0.25,
-        resolution=7.0,
-        h_waveform=waveform,
-        e_waveform=waveform,
-        h_quadrature_waveform=quadrature,
-        e_quadrature_waveform=quadrature,
-        t0=1.0,
-    )
-
-    hy_specs = [spec for spec in specs if spec.component == "Hy"]
-    ex_specs = [spec for spec in specs if spec.component == "Ex"]
-    assert len(hy_specs) == 2
-    assert len(ex_specs) == 2
-    assert hy_specs[0].timing == "h"
-    assert hy_specs[0].slab_starts == (0, 0, 0)
-    assert hy_specs[0].slab_sizes == (1, 1, 1)
-    np.testing.assert_allclose(np.asarray(hy_specs[0].coeff).reshape(()), 1.0)
-    np.testing.assert_allclose(np.asarray(hy_specs[1].coeff).reshape(()), -2.0)
-    assert ex_specs[0].timing == "e"
-    assert ex_specs[0].slab_starts == (0, 1, 0)
-    assert ex_specs[0].slab_sizes == (1, 1, 1)
-    np.testing.assert_allclose(np.asarray(ex_specs[0].coeff).reshape(()), 3.0)
-    np.testing.assert_allclose(np.asarray(ex_specs[1].coeff).reshape(()), 4.0)
-    np.testing.assert_allclose(np.asarray(hy_specs[0].waveform), np.asarray(waveform))
-    np.testing.assert_allclose(np.asarray(hy_specs[1].waveform), np.asarray(quadrature))
+    np.testing.assert_allclose(np.sum(weights, axis=0), 1.0, atol=1e-14)
+    np.testing.assert_allclose(sampled_quadratic, (frequencies / 100e12) ** 2)
 
 
 def test_cache_reuse_across_equal_chunks(small_sim_params):
-    """Equal-sized chunks should reuse the same compiled program (compile_count == 1)."""
+    """Equal-sized chunks should reuse the same cached executable."""
     wl, dx, _dt, domain, _steps, t, signal = small_sim_params
     design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
     source = GaussianSource(
@@ -2120,13 +1082,16 @@ def test_cache_reuse_across_equal_chunks(small_sim_params):
         resolution=dx,
     )
 
-    # Run with record_interval to force multiple equal-sized chunks.
+    # Run equal-sized continuation chunks through the same compiled program.
     chunk_size = 30
-    sim.run_compiled(num_steps=90, record_interval=chunk_size, progress=False)
+    state = None
+    for _ in range(3):
+        result = sim.advance(num_steps=chunk_size, state=state, progress=False)
+        state = result.state
 
     # The program should have been compiled only once (all chunks are size 30).
-    assert sim._compiled_program is not None
-    assert sim._compiled_program.compile_count == 1
+    program = sim.compile(num_steps=chunk_size)
+    assert callable(execution_cache(program).compiled_scan)
 
 
 def test_compile_cache_invalidates_when_specs_change(small_sim_params):
@@ -2144,13 +1109,12 @@ def test_compile_cache_invalidates_when_specs_change(small_sim_params):
     )
 
     with_source = sim.compile(num_steps=8)
-    assert with_source.source_specs
+    assert with_source.sources
 
-    sim.sources = []
-    no_source = sim.compile(num_steps=8)
+    no_source = sim.updated_copy(sources=()).compile(num_steps=8)
 
     assert no_source is not with_source
-    assert no_source.source_specs == ()
+    assert no_source.sources == ()
 
 
 def test_waveform_absolute_indexing_correctness(small_sim_params):
@@ -2181,13 +1145,142 @@ def test_waveform_absolute_indexing_correctness(small_sim_params):
     )
 
     # Single-shot: run all 120 steps at once.
-    sim_single.run_compiled(num_steps=120, progress=False)
+    single_result = sim_single.advance(num_steps=120, progress=False)
 
     # Chunked: run 4 chunks of 30 steps each.
-    sim_chunked.run_compiled(num_steps=120, record_interval=30, progress=False)
+    state = None
+    for _ in range(4):
+        chunked_result = sim_chunked.advance(num_steps=30, state=state, progress=False)
+        state = chunked_result.state
 
-    ez_single = np.asarray(sim_single.fields.Ez)
-    ez_chunked = np.asarray(sim_chunked.fields.Ez)
+    ez_single = np.asarray(single_result.state.ez)
+    ez_chunked = np.asarray(chunked_result.state.ez)
 
-    assert sim_single.current_step == sim_chunked.current_step
+    assert single_result.state.current_step == chunked_result.state.current_step
     assert np.allclose(ez_single, ez_chunked, rtol=1e-5, atol=1e-6)
+
+
+def test_compiled_dft_component_monitor_populated(small_sim_params):
+    from beamz.simulation.observe import monitor_dft_component, monitor_dft_flux
+
+    wl, dx, _dt, domain, _steps, t, signal = small_sim_params
+    design = Design(width=domain, height=domain, material=Material(permittivity=1.0))
+    source = GaussianSource(
+        position=(domain / 2, domain / 2), width=wl / 6, signal=signal
+    )
+    freq = LIGHT_SPEED / wl
+    monitor = FieldMonitor(
+        center=(domain * 0.35, domain * 0.5, 0.0),
+        # A 2D simulation may retain a nonzero out-of-plane display span.
+        size=(0.0, domain * 0.3, domain * 0.3),
+        freqs=[freq],
+        fields=("Ez", "Hy"),
+        interval=2,
+    )
+    sim = Simulation(
+        design=design,
+        sources=[source],
+        monitors=[monitor],
+        boundaries=[PML(thickness=1.2 * wl)],
+        time=t,
+        resolution=dx,
+    )
+    result = sim.advance(num_steps=60, progress=False)
+    monitor_result = _monitor_result(result)
+    ez_dft = np.asarray(monitor_dft_component(monitor_result, "Ez"))
+    hy_dft = np.asarray(monitor_dft_component(monitor_result, "Hy"))
+    assert ez_dft.shape[0] == 1
+    assert hy_dft.shape == ez_dft.shape
+    assert ez_dft.shape[1] > 0
+    assert np.isfinite(ez_dft).all()
+    assert np.isfinite(hy_dft).all()
+    assert np.max(np.abs(ez_dft)) > 0.0
+    assert np.max(np.abs(hy_dft)) > 0.0
+    with pytest.raises(TypeError):
+        monitor_result.dft_fields["new"] = np.zeros((1, 1))
+    with pytest.raises(ValueError, match="read-only"):
+        monitor_result.dft_fields["Ez"].flat[0] = 0.0
+    np.testing.assert_allclose(
+        monitor_result.power_spectrum, np.zeros((0,), dtype=np.complex64)
+    )
+    assert np.isfinite(monitor_dft_flux(monitor_result)).all()
+    assert not hasattr(monitor, "_dft_accum")
+
+
+def test_compiled_static_monitor_dft_uses_current_sample_phase():
+    point = jnp.asarray([[0]], dtype=jnp.int32)
+    zero = jnp.asarray([[0.0]], dtype=jnp.float32)
+    one = jnp.asarray([[1.0]], dtype=jnp.float32)
+    indices = (point,) * 6
+    weights = (zero, zero, one, zero, zero, zero)
+    program = SimpleNamespace(
+        config=RunConfig(
+            resolution=1.0,
+            dt=1.0,
+            num_steps=1,
+            plane_2d="xy",
+            is_3d=False,
+        ),
+        monitors=(
+            CompiledMonitorSpec(
+                name="m",
+                monitor_index=0,
+                record_interval=1,
+                accumulate_power=False,
+                power_scale=1.0,
+                accumulate_frequency=True,
+                freq_record_interval=1,
+                freq_count=1,
+                freq_hz=jnp.asarray([1.0], dtype=jnp.float32),
+                freq_rot_re=jnp.asarray([0.0], dtype=jnp.float32),
+                freq_rot_im=jnp.asarray([-1.0], dtype=jnp.float32),
+                dft_enabled=True,
+                dft_record_interval=1,
+                dft_t_start=0.0,
+                dft_t_end=1.0,
+                dft_window_code=0,
+                dft_point_count=1,
+                dft_component_mask=jnp.asarray([0, 0, 1, 0, 0, 0], dtype=jnp.float32),
+                sample_flat_idx=indices,
+                sample_weights=weights,
+                dft_flat_idx=indices,
+                dft_weights=weights,
+            ),
+        ),
+    )
+
+    monitor_state = _monitor_state(
+        powers=jnp.zeros((1, 1), dtype=jnp.float32),
+        timestamps=jnp.zeros((1, 1), dtype=jnp.float32),
+        counts=jnp.zeros((1,), dtype=jnp.int32),
+        freq_flux_re=jnp.zeros((1, 1), dtype=jnp.float32),
+        freq_flux_im=jnp.zeros((1, 1), dtype=jnp.float32),
+        freq_phase_re=jnp.ones((1, 1), dtype=jnp.float32),
+        freq_phase_im=jnp.zeros((1, 1), dtype=jnp.float32),
+        dft_vec_re=jnp.zeros((1, 6, 1, 1), dtype=jnp.float32),
+        dft_vec_im=jnp.zeros((1, 6, 1, 1), dtype=jnp.float32),
+        dft_weight_sum=jnp.zeros((1, 1), dtype=jnp.float32),
+    )
+
+    updated = monitor_runtime.update_monitors(
+        program,
+        monitor_state,
+        abs_step=jnp.asarray(0, dtype=jnp.int32),
+        t_phys=jnp.asarray(0.0, dtype=jnp.float32),
+        dt_scalar=jnp.asarray(1.0, dtype=jnp.float32),
+        ex=jnp.zeros((1, 1), dtype=jnp.float32),
+        ey=jnp.zeros((1, 1), dtype=jnp.float32),
+        ez=jnp.asarray([[2.0]], dtype=jnp.float32),
+        hx=jnp.zeros((1, 1), dtype=jnp.float32),
+        hy=jnp.zeros((1, 1), dtype=jnp.float32),
+        hz=jnp.zeros((1, 1), dtype=jnp.float32),
+    )
+
+    np.testing.assert_allclose(
+        updated.dft_vec_re[0, 2, 0, 0], 2.0, rtol=1e-7, atol=1e-7
+    )
+    np.testing.assert_allclose(
+        updated.dft_vec_im[0, 2, 0, 0], 0.0, rtol=1e-7, atol=1e-7
+    )
+    np.testing.assert_allclose(updated.freq_phase_re[0, 0], 0.0, rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(updated.freq_phase_im[0, 0], -1.0, rtol=1e-7, atol=1e-7)

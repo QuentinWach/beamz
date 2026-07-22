@@ -1,15 +1,27 @@
-from .compiler import CompiledSourceSpec, compile_source_specs
-from .gaussian import GaussianSource
-from .gaussian_beam import GaussianBeamSource
-from .mode import ModeSource
-from .modesolver import ModeData, ModeSolver
+from .specs import (
+    CustomSource,
+    GaussianBeamSource,
+    GaussianSource,
+    ModeData,
+    ModeSource,
+    ModeSpec,
+)
+from .time import GaussianPulse, SampledSignal
+
+CANONICAL_SOURCE_TYPES = (
+    CustomSource,
+    GaussianSource,
+    GaussianBeamSource,
+    ModeSource,
+)
 
 __all__ = [
     "ModeSource",
-    "ModeSolver",
+    "ModeSpec",
     "ModeData",
+    "GaussianPulse",
+    "SampledSignal",
     "GaussianSource",
     "GaussianBeamSource",
-    "CompiledSourceSpec",
-    "compile_source_specs",
+    "CustomSource",
 ]

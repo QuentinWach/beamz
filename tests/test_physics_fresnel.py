@@ -13,13 +13,13 @@ from beamz import (
     LIGHT_SPEED,
     PML,
     Design,
+    FieldRecorder,
     GaussianSource,
     Material,
     Rectangle,
     Simulation,
     calc_optimal_fdtd_params,
     ramped_cosine,
-    um,
 )
 from tests.utils import (
     TEST_WAVELENGTH,
@@ -95,7 +95,8 @@ class TestFresnelCoefficients:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
         # Measure field in vacuum region at different times
         # Early: incident wave, Late: reflected wave
@@ -104,18 +105,19 @@ class TestFresnelCoefficients:
 
         # Find peak incident energy
         incident_energies = []
-        for Ez in result["fields"]["Ez"][: len(result["fields"]["Ez"]) // 2]:
+        for Ez in result.monitor("fields").fields["Ez"][
+            : len(result.monitor("fields").fields["Ez"]) // 2
+        ]:
             incident_energies.append(compute_field_energy(Ez[vacuum_region], dx))
         peak_incident = max(incident_energies)
 
         # Find reflected energy (late time, after wave has bounced back)
         reflected_energies = []
-        for Ez in result["fields"]["Ez"][len(result["fields"]["Ez"]) * 2 // 3 :]:
+        for Ez in result.monitor("fields").fields["Ez"][
+            len(result.monitor("fields").fields["Ez"]) * 2 // 3 :
+        ]:
             reflected_energies.append(compute_field_energy(Ez[vacuum_region], dx))
         peak_reflected = max(reflected_energies) if reflected_energies else 0
-
-        # Analytical R
-        R_analytical = analytical_fresnel_r(n1, n2)
 
         # Measured R (rough estimate from energy ratio)
         R_measured = peak_reflected / peak_incident if peak_incident > 0 else 0
@@ -167,11 +169,12 @@ class TestFresnelCoefficients:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=30)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 30)))
+        result = sim.run()
 
         # Check field in dielectric region (past interface)
         interface_idx = int(interface_x / dx)
-        late_snapshot = result["fields"]["Ez"][-1]
+        late_snapshot = result.monitor("fields").fields["Ez"][-1]
         dielectric_field = late_snapshot[:, interface_idx + 20 :]
 
         max_transmitted = np.max(np.abs(dielectric_field))
@@ -223,10 +226,13 @@ class TestFresnelCoefficients:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
         # Track total field energy over time
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         # Peak energy (during/after excitation)
         peak_energy = max(energies)

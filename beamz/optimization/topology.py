@@ -1,251 +1,315 @@
-"""Topology optimization manager and helpers."""
+"""Immutable topology-optimization configuration, state, and helpers."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field, replace
+from typing import Any
+
 import numpy as np
+
+from beamz._cache_tokens import cache_token
 
 # Defer imports to avoid circular dependencies if any,
 # or import at top level if safe. design shouldn't depend on optimization.
 from beamz.design.core import Design
 from beamz.design.materials import Material
 from beamz.design.meshing import RegularGrid
+from beamz.design.structures import Structure
 
 from .autodiff import compute_parameter_gradient_vjp, transform_density
 from .projections import validate_projection_options
 
 
-class TopologyManager:
+def _readonly_array(value, dtype=None):
+    array = np.array(value, dtype=dtype, copy=True)
+    array.setflags(write=False)
+    return array
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class TopologyState:
+    """Store explicit evolving values for a topology-optimization run.
+
+    Parameters
+    ----------
+    density : array-like
+        Latent design density in ``(y, x)`` array order.
+    optimizer_state : object, optional
+        Backend-specific immutable optimizer state.
+    objective_history : tuple of float, optional
+        Objective values from completed optimization steps.
     """
-    High-level manager for topology optimization.
 
-    Handles:
-    - Density parameter storage
-    - Physical density transformation (JAX-based)
-    - Gradient backpropagation (JAX-based)
-    - Optimizer stepping
-    - Material grid updates
+    density: np.ndarray
+    optimizer_state: Any = field(default=None, repr=False, compare=False)
+    objective_history: tuple[float, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "density", _readonly_array(self.density, float))
+        object.__setattr__(
+            self, "objective_history", tuple(float(v) for v in self.objective_history)
+        )
+
+    def with_objective(self, value: float) -> "TopologyState":
+        """Return state with one objective value appended to its history.
+
+        Parameters
+        ----------
+        value : float
+            Scalar objective value for the completed iteration.
+        """
+        return replace(self, objective_history=(*self.objective_history, float(value)))
+
+    def canonical_spec(self):
+        """Return evolving values included in state cache identity."""
+        return self.density, self.objective_history
+
+    def __eq__(self, other):
+        if not isinstance(other, TopologyState):
+            return NotImplemented
+        return cache_token(self.canonical_spec()) == cache_token(other.canonical_spec())
+
+    def __hash__(self):
+        return hash(cache_token(self.canonical_spec()))
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class TopologySpec:
+    """Configure immutable density-based topology optimization.
+
+    Parameters
+    ----------
+    design : Design
+        Base design containing fixed geometry and background material.
+    region_mask : array-like of bool
+        Cells that optimization may modify, in ``(y, x)`` order.
+    optimizer : {"adam", "sgd"}, default="adam"
+        Gradient-ascent optimizer.
+    learning_rate : float, default=0.1
+        Optimizer step size in latent-density units.
+    filter_radius : float, default=0
+        Physical density-filter radius in metres.
+    projection_eta : float, default=0.5
+        Threshold of the smooth Heaviside projection.
+    projection_type : {"heaviside", "ssp"}, default="heaviside"
+        Density projection applied after filtering.
+    ssp_smoothing_radius : float, default=0.55
+        Hammond SSP smoothing radius in density-grid cell units.
+    beta_schedule : tuple, default=(1.0, 20.0)
+        Initial and final projection sharpness.
+    eps_min : float, default=1.0
+        Relative permittivity represented by zero physical density.
+    eps_max : float, default=12.0
+        Relative permittivity represented by unit physical density.
+    resolution : float
+        Design-grid cell size in metres; required explicitly.
+    filter_type : str, default="conic"
+        Spatial density-filter implementation.
+    morphology_operation : str, default="openclose"
+        Optional smooth morphology applied after filtering.
+    morphology_smooth_tau : float, default=0.01
+        Smooth min/max temperature used by morphology.
+
+    Notes
+    -----
+    The region and fixed-structure masks are copied and made read-only. Evolving
+    density and optimizer values live in :class:`TopologyState`.
     """
 
-    def __init__(
-        self,
-        design,
-        region_mask: np.ndarray,
-        optimizer: str = "Adam",
-        learning_rate: float = 0.1,
-        filter_radius: float = 0.0,
-        projection_eta: float = 0.5,
-        projection_type: str = "heaviside",
-        ssp_smoothing_radius: float = 0.55,
-        beta_schedule: tuple[float, float] = (1.0, 20.0),
-        eps_min: float = 1.0,
-        eps_max: float = 12.0,
-        resolution: float = None,
-        filter_type: str = "conic",  # 'conic' or 'morphological'
-        morphology_operation: str = "openclose",  # 'opening', 'closing', 'openclose'
-        **kwargs,
-    ):
-        """
-        Args:
-            filter_radius: Filter radius in physical units (e.g. microns).
-                           Controls minimum feature size AND boundary smoothness.
-                           Recommended: 0.25-0.35 µm for smooth, rounded structures.
-            projection_type: 'heaviside' (default) or 'ssp'.
-            ssp_smoothing_radius: SSP smoothing radius in density-grid cell units.
-            filter_type: 'conic' (recommended, geometric constraints) or 'morphological'.
-            morphology_operation: 'opening', 'closing', or 'openclose' (for morphological filter).
-        """
-        self.design = design
-        self.mask = region_mask.astype(bool)
-        validate_projection_options(projection_type, ssp_smoothing_radius)
+    design: Design
+    region_mask: np.ndarray
+    optimizer: str = "adam"
+    learning_rate: float = 0.1
+    filter_radius: float = 0.0
+    projection_eta: float = 0.5
+    projection_type: str = "heaviside"
+    ssp_smoothing_radius: float = 0.55
+    beta_schedule: tuple[float, float] = (1.0, 20.0)
+    eps_min: float = 1.0
+    eps_max: float = 12.0
+    resolution: float | None = None
+    filter_type: str = "conic"
+    morphology_operation: str = "openclose"
+    morphology_smooth_tau: float = 0.01
+    fixed_structure_mask: np.ndarray = field(init=False, repr=False)
+    filter_radius_cells: int = field(init=False)
 
-        # Setup optimizer using optax (JAX-native)
-        try:
-            import optax
-        except ImportError:
-            raise ImportError(
-                "optax is required for optimization. Install with: pip install optax"
-            )
-
-        if optimizer.lower() == "adam":
-            self.optax_optimizer = optax.adam(learning_rate=learning_rate)
-        elif optimizer.lower() == "sgd":
-            self.optax_optimizer = optax.sgd(learning_rate=learning_rate)
-        else:
+    def __post_init__(self):
+        if self.resolution is None:
+            raise ValueError("TopologySpec requires explicit `resolution` (meters).")
+        resolution = float(self.resolution)
+        if resolution <= 0:
+            raise ValueError(f"resolution must be positive, got {resolution!r}")
+        optimizer = str(self.optimizer).lower()
+        if optimizer not in {"adam", "sgd"}:
             raise ValueError(
-                f"Unknown optimizer '{optimizer}'. Supported: 'adam', 'sgd'"
+                f"Unknown optimizer {self.optimizer!r}. Supported: 'adam', 'sgd'"
             )
-
-        # Initialize optimizer state (will be created on first use)
-        self._opt_state = None
-
-        # Parameters
-        self.filter_radius = filter_radius
-        self.projection_eta = projection_eta
-        self.projection_type = projection_type
-        self.ssp_smoothing_radius = ssp_smoothing_radius
-        self.beta_start, self.beta_end = beta_schedule
-        self.eps_min = eps_min
-        self.eps_max = eps_max
-        self.resolution = self._resolve_resolution(design, resolution)
-
-        # Filter settings
-        self.filter_type = filter_type
-        self.morphology_operation = morphology_operation
-        self.morphology_smooth_tau = kwargs.get(
-            "morphology_smooth_tau", 0.01
-        )  # Default good value
-
-        # Convert filter radius to cells
-        self.filter_radius_cells = (
-            int(round(filter_radius / self.resolution)) if self.resolution else 0
+        projection_type = str(self.projection_type).lower()
+        ssp_smoothing_radius = float(self.ssp_smoothing_radius)
+        validate_projection_options(projection_type, ssp_smoothing_radius)
+        mask = _readonly_array(self.region_mask, bool)
+        base_grid = self.design.rasterize(resolution)
+        fixed = get_fixed_structure_mask(
+            base_grid, float(self.eps_min), float(self.eps_max), mask
+        )
+        object.__setattr__(self, "region_mask", mask)
+        object.__setattr__(self, "optimizer", optimizer)
+        object.__setattr__(self, "projection_type", projection_type)
+        object.__setattr__(self, "ssp_smoothing_radius", ssp_smoothing_radius)
+        object.__setattr__(self, "resolution", resolution)
+        object.__setattr__(
+            self, "beta_schedule", tuple(float(v) for v in self.beta_schedule)
+        )
+        object.__setattr__(self, "fixed_structure_mask", _readonly_array(fixed, bool))
+        object.__setattr__(
+            self,
+            "filter_radius_cells",
+            int(round(float(self.filter_radius) / resolution)),
         )
 
-        # Initialize density parameters (0.5 inside mask)
-        self.design_density = np.zeros_like(self.mask, dtype=float)
-        self.design_density[self.mask] = 0.5
+    def initial_state(self, density: np.ndarray | None = None) -> TopologyState:
+        """Create independent optimization state for this specification.
 
-        # Store base grid for fixed structure detection
-        self.base_grid = design.rasterize(self.resolution)
-        self.fixed_structure_mask = get_fixed_structure_mask(
-            self.base_grid, self.eps_min, self.eps_max, self.mask
-        )
-
-        # History
-        self.objective_history = []
-
-    @staticmethod
-    def _resolve_resolution(design, resolution: float | None) -> float:
-        """Resolve optimization resolution without using unsafe implicit defaults.
-
-        Resolution must be explicitly provided unless the design has already been
-        rasterized and therefore carries a cached resolution.
+        Parameters
+        ----------
+        density : array-like, optional
+            Initial latent density with the design-grid shape. By default,
+            optimizable cells start at 0.5 and other cells at zero.
         """
-        if resolution is not None:
-            resolved = float(resolution)
-        else:
-            resolved = getattr(design, "_grid_resolution", None)
-            if resolved is None and hasattr(design, "_grid"):
-                resolved = getattr(design._grid, "dx", None)
-            if resolved is None:
-                raise ValueError(
-                    "TopologyManager requires explicit `resolution` (meters) when the "
-                    "design has no cached rasterization. Call `design.rasterize(...)` "
-                    "first or pass `resolution=...` explicitly."
-                )
-            resolved = float(resolved)
+        if density is None:
+            density = np.zeros(self.region_mask.shape, dtype=float)
+            density[self.region_mask] = 0.5
+        elif np.shape(density) != self.region_mask.shape:
+            raise ValueError(
+                f"density shape {np.shape(density)} does not match mask "
+                f"shape {self.region_mask.shape}"
+            )
+        return TopologyState(density)
 
-        if resolved <= 0:
-            raise ValueError(f"resolution must be positive, got {resolved!r}")
-        return resolved
+    def beta(self, step: int, total_steps: int) -> float:
+        """Return the projection strength for a continuation step.
 
-    def get_current_beta(self, step: int, total_steps: int) -> float:
-        """Calculate projection beta for current step."""
+        Parameters
+        ----------
+        step : int
+            Zero-based optimization step.
+        total_steps : int
+            Total number of continuation steps.
+        """
+        start, end = self.beta_schedule
         if total_steps <= 1:
-            return self.beta_end
-        frac = step / (total_steps - 1)
-        return self.beta_start + frac * (self.beta_end - self.beta_start)
+            return end
+        return start + step / (total_steps - 1) * (end - start)
 
-    def get_physical_density(self, beta: float) -> np.ndarray:
-        """Compute physical density from design parameters using JAX transform."""
+    def physical_density(self, state: TopologyState, beta: float) -> np.ndarray:
+        """Transform latent density into a detached physical density.
+
+        Parameters
+        ----------
+        state : TopologyState
+            Latent design density and optimizer state.
+        beta : float
+            Projection strength.
+        """
         import jax.numpy as jnp
 
-        d_jax = jnp.array(self.design_density)
-        m_jax = jnp.array(self.mask)
-        fixed_jax = (
-            jnp.array(self.fixed_structure_mask)
-            if self.fixed_structure_mask is not None
-            else None
-        )
-
-        p_jax = transform_density(
-            d_jax,
-            m_jax,
+        density = transform_density(
+            jnp.asarray(state.density),
+            jnp.asarray(self.region_mask),
             beta,
             self.projection_eta,
             self.filter_radius_cells,
             filter_type=self.filter_type,
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
-            fixed_structure_mask=fixed_jax,
+            fixed_structure_mask=jnp.asarray(self.fixed_structure_mask),
             projection_type=self.projection_type,
             ssp_smoothing_radius=self.ssp_smoothing_radius,
         )
-        return np.array(p_jax)
+        return _readonly_array(density, float)
 
-    def update_design(self, step: int, total_steps: int) -> tuple[float, np.ndarray]:
-        """
-        Update the design's material grid based on current parameters.
-        Returns (current_beta, physical_density).
-        """
-        beta = self.get_current_beta(step, total_steps)
-        physical_density = self.get_physical_density(beta)
+    def density_for_step(
+        self, state: TopologyState, step: int, total_steps: int
+    ) -> tuple[float, np.ndarray]:
+        """Return continuation beta and physical density for an iteration.
 
-        return beta, physical_density
-
-    def apply_gradient(self, grad_eps: np.ndarray, beta: float):
+        Parameters
+        ----------
+        state : TopologyState
+            Current latent design state.
+        step : int
+            Zero-based optimization step.
+        total_steps : int
+            Total number of continuation steps.
         """
-        Apply gradient update:
-        1. Convert dJ/dEps -> dJ/dPhysical
-        2. Backprop dJ/dPhysical -> dJ/dParams (using JAX)
-        3. Optimizer step
+        beta = self.beta(step, total_steps)
+        return beta, self.physical_density(state, beta)
+
+    def apply_gradient(
+        self, state: TopologyState, grad_eps: np.ndarray, beta: float
+    ) -> tuple[TopologyState, float]:
+        """Return state advanced by one gradient-ascent optimizer step.
+
+        Parameters
+        ----------
+        state : TopologyState
+            Current latent density and backend optimizer state.
+        grad_eps : array-like
+            Objective gradient with respect to field-grid permittivity.
+        beta : float
+            Projection strength used for the current physical density.
         """
         import jax.numpy as jnp
 
         grad_eps = self.gradient_to_design_grid(grad_eps)
-
-        # dJ/dPhysical = dJ/dEps * (eps_max - eps_min)
         grad_physical = grad_eps * (self.eps_max - self.eps_min)
-
-        fixed_jax = (
-            jnp.array(self.fixed_structure_mask)
-            if self.fixed_structure_mask is not None
-            else None
-        )
-
-        # JAX Backprop
-        grad_param_jax = compute_parameter_gradient_vjp(
-            jnp.array(self.design_density),
-            jnp.array(grad_physical),
-            jnp.array(self.mask),
+        grad_param = compute_parameter_gradient_vjp(
+            jnp.asarray(state.density),
+            jnp.asarray(grad_physical),
+            jnp.asarray(self.region_mask),
             beta,
             self.projection_eta,
             self.filter_radius_cells,
             filter_type=self.filter_type,
             morphology_operation=self.morphology_operation,
             morphology_tau=self.morphology_smooth_tau,
-            fixed_structure_mask=fixed_jax,
+            fixed_structure_mask=jnp.asarray(self.fixed_structure_mask),
             projection_type=self.projection_type,
             ssp_smoothing_radius=self.ssp_smoothing_radius,
         )
-        grad_param = np.array(grad_param_jax)
-
-        # Optimizer step (maximize objective -> ascent -> negative grad for minimizer)
-        # Convert to JAX array for optax
-        import jax.numpy as jnp
-
-        grad_jax = jnp.array(-grad_param)  # Negative because we want to maximize
-
-        # Initialize optimizer state on first call
-        if self._opt_state is None:
-            params_init = jnp.array(self.design_density)
-            self._opt_state = self.optax_optimizer.init(params_init)
-
-        # Compute updates
-        updates, self._opt_state = self.optax_optimizer.update(
-            grad_jax, self._opt_state
+        optimizer = self._optimizer()
+        opt_state = state.optimizer_state
+        if opt_state is None:
+            opt_state = optimizer.init(jnp.asarray(state.density))
+        updates, opt_state = optimizer.update(-grad_param, opt_state)
+        update = np.asarray(updates)
+        density = np.asarray(state.density).copy()
+        density[self.region_mask] += update[self.region_mask]
+        density = np.clip(density, 0.0, 1.0)
+        return replace(state, density=density, optimizer_state=opt_state), float(
+            np.max(np.abs(update))
         )
-        update = np.array(updates)
-
-        # Apply update
-        self.design_density[self.mask] += update[self.mask]
-        self.design_density = np.clip(self.design_density, 0.0, 1.0)
-
-        return np.max(np.abs(update))
 
     def gradient_to_design_grid(self, grad_eps: np.ndarray) -> np.ndarray:
-        """Return an epsilon gradient aligned to the design-density grid."""
+        """Collocate a field-grid permittivity gradient onto design cells.
 
-        return fold_high_side_yee_padding_to_shape(grad_eps, self.mask.shape)
+        Parameters
+        ----------
+        grad_eps : array-like
+            Permittivity gradient on the Yee/material field grid.
+        """
+        return fold_high_side_yee_padding_to_shape(grad_eps, self.region_mask.shape)
+
+    def _optimizer(self):
+        try:
+            import optax
+        except ImportError as exc:
+            raise ImportError(
+                "optax is required for optimization. Install with: pip install optax"
+            ) from exc
+        factory = optax.adam if self.optimizer == "adam" else optax.sgd
+        return factory(learning_rate=self.learning_rate)
 
 
 def compute_overlap_gradient(
@@ -312,13 +376,13 @@ def fold_high_side_yee_padding_to_shape(
                 f"size {size}, expected {target} or {target + 1}."
             )
 
-        core = [slice(None)] * out.ndim
+        core: list[Any] = [slice(None)] * out.ndim
         core[axis] = slice(0, target)
         folded = out[tuple(core)].copy()
 
-        last = [slice(None)] * out.ndim
+        last: list[Any] = [slice(None)] * out.ndim
         last[axis] = target - 1
-        high = [slice(None)] * out.ndim
+        high: list[Any] = [slice(None)] * out.ndim
         high[axis] = target
         folded[tuple(last)] += out[tuple(high)]
         out = folded
@@ -336,16 +400,11 @@ def create_optimization_mask(grid, region_structure):
         width=grid.width, height=grid.height, material=Material(permittivity=1.0)
     )
 
-    # Copy structure to avoid modifying original
-    if hasattr(region_structure, "copy"):
-        struct_copy = region_structure.copy()
-    else:
-        # Fallback if no copy method, reuse (risky if material modified, but we set it)
-        struct_copy = region_structure
-
-    # Set to a distinct permittivity to detect it
-    struct_copy.material = Material(permittivity=2.0)
-    temp_design.add(struct_copy)
+    # Set to a distinct permittivity to detect it without mutating the input.
+    marker = Material(permittivity=2.0)
+    if not isinstance(region_structure, Structure):
+        raise TypeError("Optimization regions must be canonical Structure objects.")
+    temp_design += region_structure.with_material(marker)
 
     # Rasterize
     temp_grid = RegularGrid(temp_design, resolution=grid.dx)

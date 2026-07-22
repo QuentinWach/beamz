@@ -7,6 +7,7 @@ from .polygonize import (
     shapely_geometry_to_polygons,
 )
 from .projections import smoothed_heaviside, subpixel_smoothed_projection
+from .topology import TopologySpec, TopologyState
 
 __all__ = [
     "topology",
@@ -16,4 +17,6 @@ __all__ = [
     "density_to_shapely_geometry",
     "shapely_geometry_to_polygons",
     "density_to_polygons",
+    "TopologySpec",
+    "TopologyState",
 ]

@@ -3,13 +3,16 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.devices.sources._custom_profile import _CustomFieldProfileSource
-from beamz.devices.sources._profiles import FieldProfile3D
-from beamz.devices.sources._time import _real_phasor_sample
 from beamz.devices.sources.compiler import (
-    apply_compiled_source_specs,
-    compile_source_specs,
+    SourceLoweringContext,
+    TemporalWaveform,
+    _compile_injection_plan,
+    _field_profile_injection_plan,
+    field_profile_phasor_residuals,
 )
+from beamz.devices.sources.specs import FieldProfile3D
+from beamz.devices.sources.time import sample_source_waveforms
+from beamz.simulation.execute import _apply_specs
 
 
 def _empty_3d_fields(shape=(7, 7, 7)):
@@ -75,7 +78,7 @@ def _planeish_x_profile():
 def _applied_component(specs, fields, component, *, step=0):
     component_specs = tuple(spec for spec in specs if spec.component == component)
     return np.asarray(
-        apply_compiled_source_specs(
+        _apply_specs(
             jnp.zeros_like(jnp.asarray(getattr(fields, component))),
             step,
             component_specs,
@@ -83,19 +86,67 @@ def _applied_component(specs, fields, component, *, step=0):
     )
 
 
+def _compile_field_profile_source_specs(
+    *,
+    profile,
+    signal,
+    fields,
+    dt,
+    resolution,
+    num_steps,
+    t0,
+    total_steps=None,
+    signal_quadrature=None,
+    max_shift=1,
+    power=1.0,
+):
+    values, quadrature = sample_source_waveforms(
+        signal,
+        signal_quadrature=signal_quadrature,
+        t0=t0,
+        dt=dt,
+        num_steps=num_steps,
+        total_steps=total_steps,
+    )
+    ctx = SourceLoweringContext(
+        fields=fields,
+        resolution=float(resolution),
+        dt=float(dt),
+        t0=float(t0),
+        num_steps=int(num_steps),
+        total_steps=int(total_steps if total_steps is not None else num_steps),
+    )
+    plan = _field_profile_injection_plan(
+        profile,
+        TemporalWaveform(
+            values=jnp.asarray(values, dtype=jnp.float32),
+            quadrature=jnp.asarray(quadrature, dtype=jnp.float32),
+        ),
+        ctx,
+        max_shift=max_shift,
+        power=power,
+    )
+    return _compile_injection_plan(plan)
+
+
+def _real_phasor_sample(profile, in_phase, quadrature):
+    values = np.asarray(profile, dtype=np.complex128)
+    return np.real(values) * float(in_phase) - np.imag(values) * float(quadrature)
+
+
 def test_custom_field_profile_source_compiles_planar_tfsf_specs():
     fields = _empty_3d_fields()
-    source = _CustomFieldProfileSource(
-        profile=_planeish_x_profile(),
-        signal=np.asarray([1.0, 0.25, -0.5], dtype=np.float64),
-        signal_quadrature=np.asarray([0.5, -0.25, 0.0], dtype=np.float64),
-    )
+    profile = _planeish_x_profile()
+    signal = np.asarray([1.0, 0.25, -0.5], dtype=np.float64)
+    quadrature = np.asarray([0.5, -0.25, 0.0], dtype=np.float64)
     dt = 0.1
     resolution = 1.0
 
-    specs = compile_source_specs(
-        [source],
-        fields,
+    specs = _compile_field_profile_source_specs(
+        profile=_planeish_x_profile(),
+        signal=signal,
+        signal_quadrature=quadrature,
+        fields=fields,
         dt=dt,
         resolution=resolution,
         num_steps=3,
@@ -103,7 +154,8 @@ def test_custom_field_profile_source_compiles_planar_tfsf_specs():
         total_steps=3,
     )
 
-    residuals = source._compute_discrete_3d_phasor_residuals(
+    residuals = field_profile_phasor_residuals(
+        profile,
         fields,
         dt=dt,
         resolution=resolution,
@@ -131,40 +183,37 @@ def test_custom_field_profile_source_compiles_planar_tfsf_specs():
 
 def test_custom_field_profile_source_power_scales_field_amplitude():
     fields = _empty_3d_fields()
-    unit = _CustomFieldProfileSource(
+    unit_specs = _compile_field_profile_source_specs(
         profile=_planeish_x_profile(),
         signal=np.ones(3, dtype=np.float64),
+        fields=fields,
+        dt=0.1,
+        resolution=1.0,
+        num_steps=3,
+        t0=0.0,
+        total_steps=3,
         power=1.0,
     )
-    stronger = _CustomFieldProfileSource(
+    strong_specs = _compile_field_profile_source_specs(
         profile=_planeish_x_profile(),
         signal=np.ones(3, dtype=np.float64),
+        fields=fields,
+        dt=0.1,
+        resolution=1.0,
+        num_steps=3,
+        t0=0.0,
+        total_steps=3,
         power=4.0,
     )
 
-    unit_residuals = unit._compute_discrete_3d_phasor_residuals(
-        fields,
-        dt=0.1,
-        resolution=1.0,
-    )
-    strong_residuals = stronger._compute_discrete_3d_phasor_residuals(
-        fields,
-        dt=0.1,
-        resolution=1.0,
-    )
-
-    assert len(unit_residuals) == len(strong_residuals)
-    for unit_residual, strong_residual in zip(
-        unit_residuals,
-        strong_residuals,
-        strict=True,
-    ):
-        assert unit_residual.component == strong_residual.component
-        assert unit_residual.timing == strong_residual.timing
-        assert unit_residual.index == strong_residual.index
+    assert len(unit_specs) == len(strong_specs)
+    for unit_spec, strong_spec in zip(unit_specs, strong_specs, strict=True):
+        assert unit_spec.component == strong_spec.component
+        assert unit_spec.timing == strong_spec.timing
+        assert unit_spec.index == strong_spec.index
         np.testing.assert_allclose(
-            strong_residual.residual,
-            2.0 * unit_residual.residual,
+            strong_spec.coeff,
+            2.0 * unit_spec.coeff,
             rtol=1e-12,
             atol=1e-12,
         )

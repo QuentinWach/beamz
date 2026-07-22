@@ -2,17 +2,20 @@ import hashlib
 import json
 import os
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
 
+from beamz._cache_tokens import cache_token
+from beamz._helpers import env_bool
 from beamz.const import µm
-from beamz.design.materials import Material
+from beamz.design.materials import Material, MaterialProtocol
 from beamz.design.structures import (
     Polygon,
-    Rectangle,
     Ring,
 )
 
@@ -142,7 +145,7 @@ def _merge_groups(material_groups, rings_to_preserve, structures_to_remove):
     Returns (new_structures, updated structures_to_remove).
     """
     new_structures = []
-    for material_key, structure_group in material_groups.items():
+    for structure_group in material_groups.values():
         filtered_group = [s for s in structure_group if s[0] not in rings_to_preserve]
         if len(filtered_group) <= 1:
             new_structures.extend([s[0] for s in filtered_group])
@@ -196,14 +199,7 @@ def _rebuild_structure_list(
     return rebuilt
 
 
-RASTER_CACHE_VERSION = "v6"
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+RASTER_CACHE_VERSION = "v7"
 
 
 def _to_jsonable(value):
@@ -236,12 +232,7 @@ def _to_jsonable(value):
 def _material_signature(material):
     if material is None:
         return None
-    keys = (
-        "permittivity",
-        "permeability",
-        "conductivity",
-    )
-    return {k: _to_jsonable(getattr(material, k, None)) for k in keys}
+    return _to_jsonable(cache_token(material))
 
 
 def _structure_signature(structure):
@@ -272,21 +263,10 @@ def _structure_signature(structure):
         if hasattr(structure, key):
             sig[key] = _to_jsonable(getattr(structure, key))
     if hasattr(structure, "vertices"):
-        sig["vertices"] = _to_jsonable(getattr(structure, "vertices"))
+        sig["vertices"] = _to_jsonable(structure.vertices)
     if hasattr(structure, "interiors"):
-        sig["interiors"] = _to_jsonable(getattr(structure, "interiors"))
+        sig["interiors"] = _to_jsonable(structure.interiors)
     return sig
-
-
-def _boundary_signature(boundary):
-    if boundary is None:
-        return None
-    raw = {}
-    for key, val in getattr(boundary, "__dict__", {}).items():
-        if key.startswith("_"):
-            continue
-        raw[key] = _to_jsonable(val)
-    return {"type": type(boundary).__name__, "attrs": raw}
 
 
 def _grid_kind_for_type(grid_type):
@@ -332,11 +312,20 @@ def _normalize_aa_config(kwargs):
     }
 
 
-def _design_cache_key(design_obj, resolution, grid_kind, resolution_z, aa_config):
-    raster_env = {
-        "fast_3d": os.getenv("BEAMZ_RASTER_FAST_3D"),
-        "fast_min_voxels": os.getenv("BEAMZ_RASTER_FAST_MIN_VOXELS", "1000000"),
+def _design_signature_payload(design_obj):
+    return {
+        "domain": {
+            "width": _to_jsonable(float(design_obj.width)),
+            "height": _to_jsonable(float(design_obj.height)),
+            "depth": _to_jsonable(float(design_obj.depth)),
+        },
+        "background": _material_signature(design_obj.background),
+        "structures": [_structure_signature(s) for s in design_obj.structures],
     }
+
+
+def _design_cache_key(design_obj, resolution, grid_kind, resolution_z, aa_config):
+    raster_env = {"exact_3d": os.getenv("BEAMZ_RASTER_EXACT_3D")}
     payload = {
         "version": RASTER_CACHE_VERSION,
         "grid_kind": grid_kind,
@@ -344,16 +333,7 @@ def _design_cache_key(design_obj, resolution, grid_kind, resolution_z, aa_config
         "resolution_z": _to_jsonable(float(resolution_z)),
         "antialiasing": _to_jsonable(aa_config),
         "raster_env": raster_env,
-        "domain": {
-            "width": _to_jsonable(float(design_obj.width)),
-            "height": _to_jsonable(float(design_obj.height)),
-            "depth": _to_jsonable(float(design_obj.depth)),
-            "is_3d": bool(design_obj.is_3d),
-        },
-        "structures": [_structure_signature(s) for s in design_obj.structures],
-        "boundaries": [
-            _boundary_signature(b) for b in getattr(design_obj, "boundaries", [])
-        ],
+        **_design_signature_payload(design_obj),
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -388,6 +368,7 @@ def _build_grid_from_cached_arrays(
 ):
     from beamz.design.meshing import RegularGrid, RegularGrid3D
 
+    grid: Any
     if grid_kind == "3d":
         grid = object.__new__(RegularGrid3D)
         grid.design = design_obj
@@ -421,14 +402,77 @@ def _build_grid_from_cached_arrays(
     return grid
 
 
+@dataclass(frozen=True, slots=True, eq=False, init=False)
 class Design:
+    """Immutable geometry specification with a functional convenience facade.
+
+    ``background`` is the sole background material. ``structures`` contains only
+    user geometry, in painter's order. Python's augmented assignment still gives
+    a friendly workflow because ``design += structure`` rebinds ``design`` to the
+    new value returned by :meth:`with_structure`.
+
+    Parameters
+    ----------
+    width : float, default=4 um
+        Domain extent along x in metres; must be finite and positive.
+    height : float, default=4 um
+        Domain extent along y in metres; must be finite and positive.
+    depth : float, default=0
+        Domain extent along z in metres. Zero selects a 2D design.
+    material : Material, optional
+        Backward-compatible name for the background material.
+    background : Material, optional
+        Material filling cells not covered by a structure. Do not pass together
+        with a different ``material`` value.
+    structures : iterable, optional
+        Geometry primitives in painter's order; later structures overwrite
+        earlier structures during rasterization.
+
+    Raises
+    ------
+    ValueError
+        If an extent is invalid or both background aliases disagree.
+    TypeError
+        If ``structures`` contains unsupported mutable geometry.
+
+    Notes
+    -----
+    Public geometry coordinates use ``(x, y, z)`` order and SI units. A design
+    is immutable: methods such as ``with_structure`` return a new value.
+
+    Examples
+    --------
+    >>> import beamz as bz
+    >>> design = bz.Design(
+    ...     width=6 * bz.um,
+    ...     height=3 * bz.um,
+    ...     background=bz.Material(permittivity=1.44**2),
+    ... )
+    >>> design += bz.Rectangle(
+    ...     position=(1 * bz.um, 1.25 * bz.um),
+    ...     width=4 * bz.um,
+    ...     height=0.5 * bz.um,
+    ...     material=bz.Material(permittivity=3.48**2),
+    ... )
+    """
+
+    width: float
+    height: float
+    depth: float
+    background: Any
+    structures: tuple[Any, ...]
+    _centered_coordinates: bool = field(
+        default=False, repr=False, compare=False, metadata={"beamz_cache": False}
+    )
+
     def __init__(
         self,
         width: float | object = _DEFAULT_DOMAIN_SIZE,
         height: float | object = _DEFAULT_DOMAIN_SIZE,
         depth: float | object = _DEFAULT_DOMAIN_SIZE,
-        material: Material = None,
-        background: Material = None,
+        material: Any = None,
+        background: Any = None,
+        structures=(),
     ):
         """Create a design domain with specified dimensions and background material."""
         width_is_default = width is _DEFAULT_DOMAIN_SIZE
@@ -454,33 +498,114 @@ class Design:
             material = background_arg
         if material is None:
             material = Material(permittivity=1.0, permeability=1.0, conductivity=0.0)
-        background = Rectangle(
-            position=(0, 0, 0),
-            width=width,
-            height=height,
-            depth=depth,
-            material=material,
+        if not isinstance(material, MaterialProtocol):
+            raise TypeError("Design background must satisfy MaterialProtocol.")
+
+        width = float(cast(float, width))
+        height = float(cast(float, height))
+        depth = float(cast(float, depth))
+        if not np.isfinite(width) or width <= 0:
+            raise ValueError("Design width must be finite and positive.")
+        if not np.isfinite(height) or height <= 0:
+            raise ValueError("Design height must be finite and positive.")
+        if not np.isfinite(depth) or depth < 0:
+            raise ValueError("Design depth must be finite and non-negative.")
+
+        normalized_structures = tuple(structures)
+        for structure in normalized_structures:
+            self._validate_structure(structure)
+
+        object.__setattr__(self, "width", width)
+        object.__setattr__(self, "height", height)
+        object.__setattr__(self, "depth", depth)
+        object.__setattr__(self, "background", material)
+        object.__setattr__(self, "structures", normalized_structures)
+        object.__setattr__(
+            self,
+            "_centered_coordinates",
+            bool(background_arg is not None and not explicit_size),
         )
-        self.structures = [background]
-        self.background = material
-        self.width, self.height, self.depth, self.time = width, height, depth, 0
-        self.is_3d = depth is not None and depth > 0
-        self._explicit_size = explicit_size
-        self._centered_coordinates = bool(
-            background_arg is not None and not explicit_size
-        )
-        self.layers: dict[int, list[Polygon]] = {}
+
+    @staticmethod
+    def _validate_structure(structure):
+        from beamz.design.structures import Structure
+
+        if not isinstance(structure, Structure):
+            raise TypeError(
+                "Design only accepts immutable geometry specs; pass sources and "
+                "monitors to Simulation instead."
+            )
+
+    @property
+    def is_3d(self):
+        """Return whether the design has a positive z extent."""
+        return self.depth > 0
 
     def __str__(self):
         return f"Design with {len(self.structures)} structures ({'3D' if self.is_3d else '2D'})"
 
-    def __iadd__(self, structure):
-        """Implement += operator for adding structures."""
-        self.add(structure)
-        return self
+    def canonical_spec(self):
+        """Return the immutable values defining physical cache identity."""
+        return self.width, self.height, self.depth, self.background, self.structures
 
-    def unify_polygons(self):
-        """Merge overlapping polygons with the same material properties into unified shapes."""
+    def __eq__(self, other):
+        if not isinstance(other, Design):
+            return NotImplemented
+        return cache_token(self.canonical_spec()) == cache_token(other.canonical_spec())
+
+    def __hash__(self):
+        return hash(cache_token(self.canonical_spec()))
+
+    def __iadd__(self, structure):
+        return self.with_structure(structure)
+
+    def with_structure(self, structure):
+        """Return a design with one geometry appended in painter's order.
+
+        Parameters
+        ----------
+        structure : Polygon or Box
+            Immutable geometry to place above existing structures.
+        """
+        self._validate_structure(structure)
+        return self.updated_copy(structures=(*self.structures, structure))
+
+    def updated_copy(self, **changes):
+        """Return a new design with the requested fields replaced.
+
+        Parameters
+        ----------
+        **changes
+            Any of ``width``, ``height``, ``depth``, ``background``, or
+            ``structures`` and their replacement values.
+        """
+        unknown = set(changes) - {
+            "width",
+            "height",
+            "depth",
+            "background",
+            "structures",
+        }
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            raise TypeError(f"Unknown Design field(s): {names}.")
+        values = {
+            "width": self.width,
+            "height": self.height,
+            "depth": self.depth,
+            "background": self.background,
+            "structures": self.structures,
+        }
+        values.update(changes)
+        result = type(self)(**values)
+        if not ({"width", "height", "depth"} & changes.keys()):
+            object.__setattr__(
+                result, "_centered_coordinates", self._centered_coordinates
+            )
+        return result
+
+    def unified_polygons(self):
+        """Return a design with compatible overlapping polygons merged."""
         material_groups, structures_to_remove = _group_by_material(self.structures)
         rings_to_preserve = _find_rings_to_preserve(
             material_groups, structures_to_remove
@@ -488,75 +613,47 @@ class Design:
         new_structures, structures_to_remove = _merge_groups(
             material_groups, rings_to_preserve, structures_to_remove
         )
-        self.structures = _rebuild_structure_list(
+        structures = _rebuild_structure_list(
             self.structures, structures_to_remove, new_structures, material_groups
         )
-        return True
-
-    def add(self, structure: type[Polygon]):
-        """Add a geometric structure to the design and update 3D state."""
-        from beamz.devices.monitors import Monitor
-        from beamz.devices.sources.compiler import source_supports_compiled_specs
-
-        if isinstance(structure, Monitor):
-            raise TypeError(
-                "Design only accepts geometry. Pass monitors to "
-                "Simulation(monitors=[...]) instead."
-            )
-        if source_supports_compiled_specs(structure):
-            raise TypeError(
-                "Design only accepts geometry. Pass sources to "
-                "Simulation(sources=[...]) instead."
-            )
-
-        # Set back-reference to design if the structure supports it
-        if hasattr(structure, "design"):
-            structure.design = self
-
-        self.structures.append(structure)
-
-        if hasattr(structure, "is_3d") and structure.is_3d:
-            self.is_3d = True
-        if hasattr(structure, "depth") and structure.depth != 0:
-            self.is_3d = True
-        if (
-            hasattr(structure, "position")
-            and len(structure.position) > 2
-            and structure.position[2] != 0
-        ):
-            self.is_3d = True
-        if hasattr(structure, "vertices") and structure.vertices:
-            for vertex in structure.vertices:
-                if len(vertex) > 2 and vertex[2] != 0:
-                    self.is_3d = True
-                    break
-
-    def get_material_value(self, x: float, y: float, z: float = 0.0):
-        """Return material properties at coordinate (x,y,z) prioritizing topmost structure."""
-        epsilon, mu, sigma_base = 1.0, 1.0, 0.0
-
-        for structure in reversed(self.structures):
-            if getattr(structure, "is_pml", False):
-                continue
-            if structure.point_in_polygon(x, y, z):
-                epsilon, mu, sigma_base = structure.material.get_sample()
-                break
-
-        return [epsilon, mu, sigma_base]
+        return self.updated_copy(structures=structures)
 
     def rasterize(
         self,
         resolution: float,
         grid_type: str = "auto",
         force_recompute: bool = False,
+        progress: bool = False,
         **kwargs,
     ):
-        """Rasterize design into a mesh grid with in-memory and optional disk cache."""
-        from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
-        from beamz.visual.helpers import display_status
+        """Rasterize this specification without attaching runtime state to it.
 
-        timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
-        disk_cache_enabled = _env_bool("BEAMZ_RASTER_CACHE", False)
+        Parameters
+        ----------
+        resolution : float
+            In-plane cell spacing in metres.
+        grid_type : {"auto", "2d", "3d"} or type, default="auto"
+            Mesh implementation. Automatic mode selects 3D for designs with a
+            positive depth and otherwise selects 2D.
+        force_recompute : bool, default=False
+            Ignore an enabled on-disk raster cache and rebuild the grid.
+        progress : bool, default=False
+            Emit rasterization progress to stdout.
+        **kwargs
+            Mesher options such as ``resolution_z``, ``aa_mode``, ``aa_samples``,
+            and ``aa_seed``.
+
+        Returns
+        -------
+        RegularGrid or RegularGrid3D
+            Frozen material grid owned by the caller.
+        """
+        from beamz._helpers import display_status
+        from beamz.design.meshing import RegularGrid, RegularGrid3D, create_mesh
+
+        kwargs = dict(kwargs)
+        timing_enabled = env_bool("BEAMZ_RASTER_TIMING", True)
+        disk_cache_enabled = env_bool("BEAMZ_RASTER_CACHE", False)
         t_total_start = time.perf_counter()
         grid_kind = _grid_kind_for_request(self, grid_type, kwargs)
         requested_resolution_z_raw = kwargs.get("resolution_z", resolution)
@@ -564,21 +661,9 @@ class Design:
             requested_resolution_z_raw = resolution
         requested_resolution_z = float(requested_resolution_z_raw)
         aa_config = _normalize_aa_config(kwargs)
-        request_signature = {
-            "resolution_xy": float(resolution),
-            "resolution_z": requested_resolution_z,
-            "grid_kind": grid_kind,
-            "aa_config": aa_config,
-        }
-
-        # Return cached grid if request signature matches and no force recompute
-        if not force_recompute and hasattr(self, "_grid"):
-            cached_sig = getattr(self, "_grid_request_signature", None)
-            if cached_sig is not None and cached_sig == request_signature:
-                return self._grid
 
         cache_path = None
-        if disk_cache_enabled and not force_recompute:
+        if disk_cache_enabled:
             cache_key = _design_cache_key(
                 self,
                 resolution=float(resolution),
@@ -587,19 +672,17 @@ class Design:
                 aa_config=aa_config,
             )
             cache_path = _raster_cache_path(cache_key)
-            if cache_path.exists():
+            if cache_path.exists() and not force_recompute:
                 t_load = time.perf_counter()
                 arrays = np.load(cache_path)
                 try:
-                    self._grid = _build_grid_from_cached_arrays(
+                    grid = _build_grid_from_cached_arrays(
                         design_obj=self,
                         resolution=float(resolution),
                         resolution_z=requested_resolution_z,
                         grid_kind=grid_kind,
                         arrays=arrays,
                     )
-                    self._grid_resolution = resolution
-                    self._grid_request_signature = request_signature
                 finally:
                     arrays.close()
                 if timing_enabled:
@@ -610,7 +693,7 @@ class Design:
                         ),
                         "success",
                     )
-                return self._grid
+                return grid.freeze()
 
         t_raster_start = time.perf_counter()
         if isinstance(grid_type, str):
@@ -620,83 +703,34 @@ class Design:
             elif gt in {"regular3d", "3d"}:
                 grid_cls = RegularGrid3D
             elif gt in {"auto", "auto-select", "autoselect"}:
-                self._grid = create_mesh(self, resolution, **kwargs)
-                self._grid_resolution = resolution
-                self._grid_request_signature = request_signature
-                t_raster_end = time.perf_counter()
-                if disk_cache_enabled:
-                    if cache_path is None:
-                        cache_key = _design_cache_key(
-                            self,
-                            resolution=float(resolution),
-                            grid_kind=(
-                                "3d"
-                                if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
-                                else "2d"
-                            ),
-                            resolution_z=float(
-                                getattr(self._grid, "resolution_z", resolution)
-                            ),
-                            aa_config=aa_config,
-                        )
-                        cache_path = _raster_cache_path(cache_key)
-                    t_save = time.perf_counter()
-                    _save_grid_to_cache(self._grid, cache_path)
-                    if timing_enabled:
-                        display_status(
-                            (
-                                f"Raster cache saved: {cache_path.name} | "
-                                f"save={time.perf_counter() - t_save:.2f}s"
-                            ),
-                            "info",
-                        )
-                if timing_enabled:
-                    display_status(
-                        (
-                            f"Rasterize wall-time: {t_raster_end - t_raster_start:.2f}s | "
-                            f"total={time.perf_counter() - t_total_start:.2f}s"
-                        ),
-                        "info",
-                    )
-                return self._grid
+                grid_cls = None
             else:
-                return None
+                raise ValueError(f"Unknown grid_type {grid_type!r}.")
         elif isinstance(grid_type, type):
             grid_cls = grid_type
+        else:
+            raise TypeError("grid_type must be a mesh type or a supported string.")
 
-        # If we got here with grid_cls, use it
-        if grid_cls is RegularGrid3D:
-            resolution_xy, resolution_z = resolution, kwargs.pop("resolution_z", None)
-            self._grid = grid_cls(
+        if grid_cls is None:
+            grid = create_mesh(self, resolution, progress=progress, **kwargs)
+        elif grid_cls is RegularGrid3D:
+            resolution_z = kwargs.pop("resolution_z", None)
+            grid = grid_cls(
                 self,
-                resolution_xy=resolution_xy,
+                resolution_xy=resolution,
                 resolution_z=resolution_z,
+                progress=progress,
                 **kwargs,
             )
-            self._grid_resolution = resolution
         else:
-            self._grid = grid_cls(self, resolution, **kwargs)
-            self._grid_resolution = resolution
-        self._grid_request_signature = request_signature
+            grid = grid_cls(self, resolution, progress=progress, **kwargs)
 
         t_raster_end = time.perf_counter()
 
         if disk_cache_enabled:
-            if cache_path is None:
-                cache_key = _design_cache_key(
-                    self,
-                    resolution=float(resolution),
-                    grid_kind=(
-                        "3d"
-                        if (hasattr(self._grid, "is_3d") and self._grid.is_3d)
-                        else "2d"
-                    ),
-                    resolution_z=float(getattr(self._grid, "resolution_z", resolution)),
-                    aa_config=aa_config,
-                )
-                cache_path = _raster_cache_path(cache_key)
+            assert cache_path is not None
             t_save = time.perf_counter()
-            _save_grid_to_cache(self._grid, cache_path)
+            _save_grid_to_cache(grid, cache_path)
             if timing_enabled:
                 display_status(
                     (
@@ -715,81 +749,55 @@ class Design:
                 "info",
             )
 
-        return self._grid
+        return grid.freeze()
 
-    def get_material_grids(self, resolution):
-        """Get cached rasterized material property arrays at specified resolution as references."""
-        if (
-            not hasattr(self, "_grid")
-            or not hasattr(self, "_grid_resolution")
-            or self._grid_resolution != resolution
-        ):
-            self.rasterize(resolution, grid_type="auto")
-        return (
-            self._grid.permittivity,
-            self._grid.conductivity,
-            self._grid.permeability,
-        )
+    def discretize(self, resolution, **kwargs):
+        """Return design-owned material grids at the requested resolution.
 
-    def copy(self):
-        """Create a deep copy of the design with all structures and properties."""
-        background_material = (
-            self.structures[0].material
-            if self.structures and hasattr(self.structures[0], "material")
-            else None
-        )
-        new_design = Design(
-            width=self.width,
-            height=self.height,
-            depth=self.depth,
-            background=background_material,
-        )
-        new_design.structures = []
+        Parameters
+        ----------
+        resolution : float
+            In-plane cell spacing in metres.
+        **kwargs
+            Additional options forwarded to :func:`build_material_grid`.
+        """
+        from beamz.design.discretization import build_material_grid
 
-        # Copy structures
-        for structure in self.structures:
-            if hasattr(structure, "copy"):
-                copied_structure = structure.copy()
-                if (
-                    hasattr(copied_structure, "material")
-                    and copied_structure.material
-                    and hasattr(copied_structure.material, "copy")
-                ):
-                    copied_structure.material = copied_structure.material.copy()
-                if hasattr(copied_structure, "design"):
-                    copied_structure.design = new_design
-                new_design.structures.append(copied_structure)
-            else:
-                new_design.structures.append(structure)
-
-        new_design.is_3d, new_design.depth, new_design.time = (
-            self.is_3d,
-            self.depth,
-            self.time,
-        )
-        new_design._explicit_size = self._explicit_size
-        new_design._centered_coordinates = self._centered_coordinates
-        new_design.background = (
-            new_design.structures[0].material if new_design.structures else None
-        )
-        new_design.layers = self.layers.copy() if hasattr(self, "layers") else {}
-
-        return new_design
-
-    def to_plot_data(self, **kwargs):
-        """Return renderer-agnostic design data for manual plotting."""
-        from beamz.visual.data import design_plot_data
-
-        return design_plot_data(self, **kwargs)
+        return build_material_grid(self, resolution, **kwargs)
 
     def plot(self, **kwargs):
-        """Plot the design layout using the matplotlib backend."""
-        from beamz.visual.mpl import plot_design
+        """Plot the design layout using the matplotlib backend.
+
+        Parameters
+        ----------
+        **kwargs
+            Plotting options forwarded to the design plotting backend. ``show``
+            defaults to false.
+        """
+        from beamz.analysis.plotting import plot_design
 
         kwargs.setdefault("show", False)
         return plot_design(self, **kwargs)
 
     def show(self, **kwargs):
-        """Display the design using the matplotlib backend."""
+        """Display the design layout using the matplotlib backend.
+
+        Parameters
+        ----------
+        **kwargs
+            Plotting options forwarded to :meth:`plot`. ``show`` defaults to
+            true.
+        """
         kwargs.setdefault("show", True)
         return self.plot(**kwargs)
+
+    def copy(self):
+        """Return this immutable specification."""
+        return self
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        del memo
+        return self

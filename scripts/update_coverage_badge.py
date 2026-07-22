@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import html
-from pathlib import Path
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Script to update version and create GitHub tag/release for beamz."""
 
-import re
-import sys
-import os
-import subprocess
 import argparse
+import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -195,10 +195,10 @@ def main():
             sys.exit(1)
 
     print(f"\n✓ Version {args.version} prepared successfully!")
-    print(f"  - Version files updated & committed")
+    print("  - Version files updated & committed")
     print(f"  - Git tag v{args.version} created")
     if not args.no_push:
-        print(f"  - Tag pushed to remote (CI/CD release triggered)")
+        print("  - Tag pushed to remote (CI/CD release triggered)")
 
 
 if __name__ == "__main__":

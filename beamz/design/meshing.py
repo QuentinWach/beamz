@@ -1,24 +1,213 @@
-import os
+from __future__ import annotations
+
 import time
+import warnings
+from dataclasses import dataclass
 
 import numpy as np
-from shapely import contains_xy
+from shapely import area as shapely_area
+from shapely import box as vectorized_box
+from shapely import intersection
 from shapely.geometry import Polygon as ShapelyPolygon
-from shapely.geometry import box as shapely_box
-from shapely.prepared import prep
 
-from beamz.design.structures import Rectangle
-from beamz.visual.helpers import (
+from beamz._helpers import (
     create_plain_progress,
     display_status,
+    env_bool,
+)
+from beamz.const import LIGHT_SPEED
+from beamz.design.materials import CustomMaterial, MaterialProtocol
+from beamz.design.structures import (
+    Circle,
+    PlanarStructure,
+    Rectangle,
+    Ring,
 )
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+@dataclass(frozen=True, slots=True)
+class RasterShape:
+    """Normalized geometry contract consumed by both rasterizers."""
+
+    source: object
+    kind: str
+    bounds: tuple[float, float, float, float, float, float]
+    material: object
+    polygon: object | None
+
+    @classmethod
+    def from_structure(cls, structure):
+        bounds = tuple(float(value) for value in structure.get_bounding_box())
+        if len(bounds) != 6:
+            raise ValueError(f"Invalid structure bounds: {bounds!r}")
+        return cls(
+            source=structure,
+            kind=structure.raster_kind,
+            bounds=bounds,
+            material=structure.material,
+            polygon=BaseMeshGrid._structure_polygon_2d(structure),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RasterContext:
+    """Dimension-aware coordinates used by the shared rasterization loop."""
+
+    dimensions: int
+    cell_sizes: tuple[float, ...]
+    grid_shape: tuple[int, ...]
+    storage_shape: tuple[int, ...]
+    centers: tuple[np.ndarray, ...]
+
+    def point(self, storage_index):
+        physical_index = tuple(reversed(storage_index))
+        values = tuple(
+            self.centers[axis][physical_index[axis]] for axis in range(self.dimensions)
+        )
+        return (*values, None) if self.dimensions == 2 else values
+
+
+@dataclass(frozen=True)
+class GridSpec:
+    """Configure automatic or explicit FDTD spatial discretization.
+
+    Parameters
+    ----------
+    min_steps_per_wvl : float, default=10.0
+        Minimum cells per wavelength inside the highest-index material.
+    wavelength : float, optional
+        Vacuum wavelength in metres used to derive automatic resolution.
+    resolution : float, optional
+        Explicit uniform cell size in metres. When present, it takes precedence
+        over ``wavelength`` and ``min_steps_per_wvl``.
+    courant : float, default=0.99
+        Fraction of the dimensional Courant stability limit used for time steps.
+
+    Notes
+    -----
+    Use :meth:`auto` for wavelength-driven grids and :meth:`uniform` for an
+    explicit cell size.
+
+    Examples
+    --------
+    >>> grid = GridSpec.auto(wavelength=1.55e-6, min_steps_per_wvl=12)
+    >>> grid = GridSpec.uniform(20e-9, courant=0.9)
+    """
+
+    min_steps_per_wvl: float = 10.0
+    wavelength: float | None = None
+    resolution: float | None = None
+    courant: float = 0.99
+
+    @classmethod
+    def auto(
+        cls,
+        *,
+        min_steps_per_wvl: float = 10.0,
+        wavelength: float | None = None,
+        courant: float = 0.99,
+    ) -> GridSpec:
+        """Create a wavelength-driven automatic grid specification.
+
+        Parameters
+        ----------
+        min_steps_per_wvl : float, default=10
+            Minimum cells per local material wavelength.
+        wavelength : float, optional
+            Free-space design wavelength in metres.
+        courant : float, default=0.99
+            Fraction of the dimensional Courant stability limit.
+
+        Returns
+        -------
+        GridSpec
+            Immutable wavelength-driven grid policy.
+
+        Examples
+        --------
+        >>> grid = GridSpec.auto(wavelength=1.55e-6, min_steps_per_wvl=12)
+        """
+        return cls(float(min_steps_per_wvl), wavelength, None, float(courant))
+
+    @classmethod
+    def uniform(cls, resolution: float, *, courant: float = 0.99) -> GridSpec:
+        """Create a grid specification with an explicit uniform cell size.
+
+        Parameters
+        ----------
+        resolution : float
+            Cell spacing in metres.
+        courant : float, default=0.99
+            Fraction of the dimensional Courant stability limit.
+
+        Returns
+        -------
+        GridSpec
+            Immutable uniform-grid policy.
+
+        Examples
+        --------
+        >>> grid = GridSpec.uniform(20e-9)
+        """
+        return cls(resolution=float(resolution), courant=float(courant))
+
+    def resolve_resolution(self, *, max_index: float = 1.0) -> float:
+        """Return the explicit or wavelength-derived cell size in metres.
+
+        Parameters
+        ----------
+        max_index : float, default=1
+            Largest refractive index represented by the grid.
+
+        Returns
+        -------
+        float
+            Uniform cell size in metres.
+
+        Raises
+        ------
+        ValueError
+            If neither an explicit resolution nor an automatic wavelength is set.
+
+        Notes
+        -----
+        Automatic resolution is the vacuum wavelength divided by the product of
+        ``max_index`` and ``min_steps_per_wvl``.
+        """
+        if self.resolution is not None:
+            return float(self.resolution)
+        if self.wavelength is None:
+            raise ValueError(
+                "GridSpec.auto requires wavelength when resolution is absent."
+            )
+        return float(self.wavelength) / (
+            max(float(max_index), 1.0) * float(self.min_steps_per_wvl)
+        )
+
+    def resolve_time_step(self, resolution: float, *, dims: int) -> float:
+        """Return a Courant-limited time step in seconds.
+
+        Parameters
+        ----------
+        resolution : float
+            Uniform cell spacing in metres.
+        dims : int
+            Number of active spatial dimensions.
+
+        Returns
+        -------
+        float
+            Courant-limited timestep in seconds.
+
+        Examples
+        --------
+        >>> dt = GridSpec.uniform(20e-9).resolve_time_step(20e-9, dims=3)
+        """
+        return (
+            float(self.courant)
+            * float(resolution)
+            / (LIGHT_SPEED * np.sqrt(float(max(1, int(dims)))))
+        )
 
 
 class MaterialGrids:
@@ -36,7 +225,7 @@ class MaterialGrids:
     def __init__(self, shape):
         self.shape = tuple(int(v) for v in shape)
         self._values = {}
-        for name, default in zip(self.NAMES, self.DEFAULTS):
+        for name, default in zip(self.NAMES, self.DEFAULTS, strict=True):
             self._values[name] = (
                 np.full(self.shape, default, dtype=self.DTYPE)
                 if name in self.DENSE_NAMES
@@ -65,26 +254,15 @@ class MaterialGrids:
 
     def fill_all(self, props):
         """Fill all grids with material property tuple."""
-        for name, val in zip(self.NAMES, props):
+        for name, val in zip(self.NAMES, props, strict=True):
             if name in self.DENSE_NAMES:
                 self._materialize(name).fill(val)
             else:
                 self._values[name] = self.DTYPE(val)
 
-    def set_at(self, idx, props):
-        """Set all properties at index (i,j) or (k,i,j)."""
-        for name, val in zip(self.NAMES, props):
-            self.set_channel_at(name, idx, val)
-
-    def set_channel_at(self, name, idx, val):
-        current = self._values[name]
-        if self._same_scalar(current, val):
-            return
-        self._materialize(name)[idx] = val
-
     def blend_at(self, idx, props, factor):
         """Blend properties at index with given factor."""
-        for name, val in zip(self.NAMES, props):
+        for name, val in zip(self.NAMES, props, strict=True):
             self.blend_channel_at(name, idx, val, factor)
 
     def blend_channel_at(self, name, idx, val, factor):
@@ -96,7 +274,7 @@ class MaterialGrids:
 
     def set_region(self, slices, props):
         """Set all properties for a slice/index-array region."""
-        for name, val in zip(self.NAMES, props):
+        for name, val in zip(self.NAMES, props, strict=True):
             self.set_channel_region(name, slices, val)
 
     def set_channel_region(self, name, slices, val):
@@ -131,17 +309,56 @@ class MaterialGrids:
 
 
 class BaseMeshGrid:
-    """Base class for mesh grids with common functionality."""
+    """Construction-time mesh builder that freezes before public use."""
 
     _SUPPORTED_AA_MODES = ("legacy_grid", "stratified_jitter")
     _DEFAULT_AA_MODE = "legacy_grid"
     _DEFAULT_AA_SAMPLES = 64
     _DEFAULT_AA_SEED = 0
 
-    def __init__(self, design, resolution):
+    shape: tuple[int, ...]
+    permittivity: np.ndarray
+    permeability: np.ndarray
+    conductivity: np.ndarray
+
+    def __init__(self, design, resolution, *, progress: bool = False):
+        object.__setattr__(self, "_frozen", False)
         self.design = design
         self.resolution = resolution
+        self.progress = bool(progress)
         self._validate_inputs()
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_frozen", False):
+            raise AttributeError("Rasterized material grids are immutable.")
+        object.__setattr__(self, name, value)
+
+    def freeze(self):
+        """Make rasterized arrays and metadata immutable, then return self."""
+        for name in MaterialGrids.NAMES:
+            value = getattr(self, name, None)
+            if isinstance(value, np.ndarray):
+                value.setflags(write=False)
+        object.__setattr__(self, "_frozen", True)
+        return self
+
+    def updated_copy(self, **materials):
+        """Return a grid with functionally replaced material channels."""
+        unknown = set(materials) - set(MaterialGrids.NAMES)
+        if unknown:
+            raise TypeError(f"Unsupported material grid fields: {sorted(unknown)!r}")
+        copied = object.__new__(type(self))
+        for name, value in vars(self).items():
+            object.__setattr__(copied, name, value)
+        object.__setattr__(copied, "_frozen", False)
+        for name, value in materials.items():
+            array = np.array(value, copy=True)
+            if array.shape != self.shape:
+                raise ValueError(
+                    f"{name} shape {array.shape} does not match grid shape {self.shape}"
+                )
+            setattr(copied, name, array)
+        return copied.freeze()
 
     def _validate_inputs(self):
         """Validate input parameters."""
@@ -166,6 +383,94 @@ class BaseMeshGrid:
         self.aa_mode = mode
         self.aa_samples = samples
         self.aa_seed = seed
+
+    def _raster_context(self, *cell_sizes):
+        dimensions = len(cell_sizes)
+        extents = (float(self.design.width), float(self.design.height))
+        if dimensions == 3:
+            extents += (float(self.design.depth),)
+        counts = tuple(
+            int(length / step) if length > 0.0 else 1
+            for length, step in zip(extents, cell_sizes, strict=True)
+        )
+        centers = tuple(
+            np.linspace(0.5 * step, length - 0.5 * step, count)
+            if length > 0.0
+            else np.asarray([0.0])
+            for length, step, count in zip(extents, cell_sizes, counts, strict=True)
+        )
+        return RasterContext(
+            dimensions,
+            tuple(map(float, cell_sizes)),
+            counts,
+            tuple(counts[axis] for axis in reversed(range(dimensions))),
+            centers,
+        )
+
+    def _rasterize_design(self, context):
+        """Run shared normalization, clipping, sampling, and reporting."""
+        started = time.perf_counter()
+        grids = MaterialGrids(context.storage_shape)
+        background_z = 0.0 if context.dimensions == 3 else None
+        grids.fill_all(self._get_material_props(self.design.background, z=background_z))
+        setup_finished = time.perf_counter()
+        counts = {}
+
+        with create_plain_progress(enabled=self.progress) as progress:
+            task = progress.add_task(
+                "Rasterizing structures...", total=len(self.design.structures)
+            )
+            for structure in self.design.structures:
+                try:
+                    shape = self._raster_shape(structure)
+                    if shape is None:
+                        continue
+                    bbox = self._bbox_indices(shape, context)
+                    if bbox is None:
+                        continue
+                    custom = isinstance(shape.material, CustomMaterial)
+                    props = (
+                        None
+                        if custom
+                        else self._get_material_props(shape.material, z=background_z)
+                    )
+                    sampler = (
+                        (
+                            lambda index, material=shape.material: (
+                                self._get_material_props(
+                                    material, *context.point(index)
+                                )
+                            )
+                        )
+                        if custom
+                        else None
+                    )
+                    kernel = self._paint_shape(
+                        shape, grids, bbox, context, props, sampler
+                    )
+                    counts[kernel] = counts.get(kernel, 0) + 1
+                except (AttributeError, TypeError) as exc:
+                    raise TypeError(
+                        f"Failed to rasterize {type(structure).__name__}."
+                    ) from exc
+                finally:
+                    progress.update(task, advance=1)
+
+        structures_finished = time.perf_counter()
+        grids.assign_to(self)
+        if env_bool("BEAMZ_RASTER_TIMING", context.dimensions == 3):
+            finished = time.perf_counter()
+            kernels = ", ".join(f"{name}={count}" for name, count in counts.items())
+            display_status(
+                f"{context.dimensions}D raster timing: "
+                f"setup={setup_finished - started:.2f}s, "
+                f"structures={structures_finished - setup_finished:.2f}s, "
+                f"total={finished - started:.2f}s; kernels: {kernels or 'none'}",
+                "info",
+            )
+
+    def _paint_shape(self, shape, grids, bbox, context, props, sampler):
+        raise NotImplementedError
 
     @staticmethod
     def _sample_grid_shape(sample_count):
@@ -254,13 +559,15 @@ class BaseMeshGrid:
     @staticmethod
     def _structure_polygon_2d(structure):
         """Convert a 2D polygonal structure to a valid Shapely polygon."""
-        vertices = getattr(structure, "vertices", None) or []
+        if not isinstance(structure, PlanarStructure):
+            return None
+        vertices = structure.vertices
         if len(vertices) < 3:
             return None
 
         shell = [(float(x), float(y)) for x, y, *_ in vertices]
         holes = []
-        for hole in getattr(structure, "interiors", None) or []:
+        for hole in structure.interiors:
             if len(hole) >= 3:
                 holes.append([(float(x), float(y)) for x, y, *_ in hole])
 
@@ -272,6 +579,206 @@ class BaseMeshGrid:
         if poly.is_empty or not poly.is_valid or poly.geom_type != "Polygon":
             return None
         return poly
+
+    @staticmethod
+    def _bbox_indices(shape, context, margin=1):
+        """Clip bounds and return starts/stops in kernel index order."""
+        bounds = list(shape.bounds)
+        if context.dimensions == 3:
+            axis = 2
+            upper = axis + 3
+            if bounds[upper] <= bounds[axis]:
+                bounds[upper] = bounds[axis] + context.cell_sizes[axis]
+        lower = bounds[:3][: context.dimensions]
+        upper = bounds[3:][: context.dimensions]
+        margin = max(0, int(margin))
+        starts = tuple(
+            max(0, int(np.floor(value / step)) - margin)
+            for value, step in zip(lower, context.cell_sizes, strict=True)
+        )
+        stops = tuple(
+            min(count, int(np.ceil(value / step)) + margin)
+            for value, step, count in zip(
+                upper, context.cell_sizes, context.grid_shape, strict=True
+            )
+        )
+        if any(start >= stop for start, stop in zip(starts, stops, strict=True)):
+            return None
+        order = (1, 0) if context.dimensions == 2 else (1, 0, 2)
+        return tuple(starts[axis] for axis in order) + tuple(
+            stops[axis] for axis in order
+        )
+
+    @staticmethod
+    def _axis_coverage(lower, upper, start, stop, cell_size):
+        cell_lower = np.arange(start, stop, dtype=float) * cell_size
+        return (
+            np.clip(
+                np.minimum(cell_lower + cell_size, upper)
+                - np.maximum(cell_lower, lower),
+                0.0,
+                cell_size,
+            )
+            / cell_size
+        )
+
+    @classmethod
+    def _product_coverage(cls, axes):
+        """Return separable cell coverage for axes in array storage order."""
+        coverage = 1.0
+        dims = len(axes)
+        for axis, (lower, upper, start, stop, cell_size) in enumerate(axes):
+            values = cls._axis_coverage(lower, upper, start, stop, cell_size)
+            shape = [1] * dims
+            shape[axis] = values.size
+            coverage = coverage * values.reshape(shape)
+        return np.asarray(coverage)
+
+    @staticmethod
+    def _raster_shape(structure):
+        """Return the normalized shape, or ``None`` for non-material geometry."""
+        if isinstance(structure, Rectangle) and structure.is_pml:
+            return None
+        shape = RasterShape.from_structure(structure)
+        return shape if shape.material is not None else None
+
+    @staticmethod
+    def _apply_coverage(grids, region, props, coverage, sampler=None):
+        coverage = np.asarray(coverage, dtype=float)
+        if sampler is not None:
+            origin = tuple(int(part.start or 0) for part in region)
+            for local in zip(*np.where(coverage > 0.0), strict=True):
+                index = tuple(
+                    value + offset for value, offset in zip(local, origin, strict=True)
+                )
+                grids.blend_at(index, sampler(index), float(coverage[local]))
+            return
+        full = coverage >= 1.0 - 1e-12
+        partial = (coverage > 0.0) & ~full
+        for name, value in zip(MaterialGrids.NAMES, props, strict=True):
+            grids.set_masked_region(name, region, full, value)
+            grids.blend_masked_region(name, region, partial, value, coverage[partial])
+
+    def _paint_axis_aligned(self, shape, grids, context, props, sampler):
+        """Paint a 2D rectangle or 3D prism with exact cell coverage."""
+        bbox = self._bbox_indices(shape, context, margin=0)
+        if bbox is None:
+            return
+        dimensions = context.dimensions
+        starts, stops = bbox[:dimensions], bbox[dimensions:]
+        order = (1, 0) if dimensions == 2 else (1, 0, 2)
+        physical_starts = tuple(starts[order.index(axis)] for axis in range(dimensions))
+        physical_stops = tuple(stops[order.index(axis)] for axis in range(dimensions))
+        lower = list(shape.bounds[:3][:dimensions])
+        upper = list(shape.bounds[3:][:dimensions])
+        if dimensions == 3 and upper[2] <= lower[2]:
+            upper[2] = lower[2] + context.cell_sizes[2]
+        storage_axes = tuple(reversed(range(dimensions)))
+        storage_starts = tuple(physical_starts[axis] for axis in storage_axes)
+        storage_stops = tuple(physical_stops[axis] for axis in storage_axes)
+        region = tuple(
+            slice(start, stop)
+            for start, stop in zip(storage_starts, storage_stops, strict=True)
+        )
+        aligned = all(
+            np.isclose(
+                lower[axis],
+                physical_starts[axis] * context.cell_sizes[axis],
+                rtol=0.0,
+                atol=1e-12,
+            )
+            and np.isclose(
+                upper[axis],
+                physical_stops[axis] * context.cell_sizes[axis],
+                rtol=0.0,
+                atol=1e-12,
+            )
+            for axis in range(dimensions)
+        )
+        if aligned and sampler is None:
+            grids.set_region(region, props)
+            return
+        coverage = self._product_coverage(
+            tuple(
+                (
+                    lower[axis],
+                    upper[axis],
+                    physical_starts[axis],
+                    physical_stops[axis],
+                    context.cell_sizes[axis],
+                )
+                for axis in storage_axes
+            )
+        )
+        self._apply_coverage(grids, region, props, coverage, sampler)
+
+    @staticmethod
+    def _polygon_coverage(polygon, *, min_i, min_j, max_i, max_j, cell_size):
+        """Compute exact vectorized XY cell coverage for a polygon."""
+        x0 = np.arange(min_j, max_j, dtype=float) * cell_size
+        y0 = np.arange(min_i, max_i, dtype=float) * cell_size
+        xx, yy = np.meshgrid(x0, y0)
+        cells = vectorized_box(xx, yy, xx + cell_size, yy + cell_size)
+        return np.asarray(shapely_area(intersection(cells, polygon)), dtype=float) / (
+            cell_size * cell_size
+        )
+
+    def _paint_polygon_exact(self, shape, grids, bbox, context, props, sampler):
+        """Paint a planar polygon, optionally extruded through Z."""
+        polygon = shape.polygon
+        if polygon is None:
+            return False
+        min_i, min_j, *rest = bbox
+        split = context.dimensions
+        max_i, max_j = bbox[split : split + 2]
+        coverage_xy = self._polygon_coverage(
+            polygon,
+            min_i=min_i,
+            min_j=min_j,
+            max_i=max_i,
+            max_j=max_j,
+            cell_size=context.cell_sizes[0],
+        )
+        if context.dimensions == 2:
+            region = (slice(min_i, max_i), slice(min_j, max_j))
+            self._apply_coverage(grids, region, props, coverage_xy, sampler)
+            return True
+
+        structure = shape.source
+        if not isinstance(structure, PlanarStructure) or isinstance(
+            structure, (Circle, Ring)
+        ):
+            return False
+        vertices = np.asarray(structure.vertices, dtype=float)
+        if (
+            shape.bounds[5] <= shape.bounds[2]
+            or vertices.ndim != 2
+            or vertices.shape[0] < 3
+            or (vertices.shape[1] >= 3 and np.ptp(vertices[:, 2]) > 1e-12)
+            or structure.has_tapered_sidewalls()
+        ):
+            return False
+        min_k, max_k = rest[0], bbox[-1]
+        coverage_z = self._axis_coverage(
+            shape.bounds[2],
+            shape.bounds[5],
+            min_k,
+            max_k,
+            context.cell_sizes[2],
+        )
+        region = (
+            slice(min_k, max_k),
+            slice(min_i, max_i),
+            slice(min_j, max_j),
+        )
+        self._apply_coverage(
+            grids, region, props, coverage_z[:, None, None] * coverage_xy, sampler
+        )
+        return True
+
+    @staticmethod
+    def _is_axis_aligned(shape):
+        return isinstance(shape.source, Rectangle)
 
     def _build_supersample_offsets_z(self, cell_size_z, depth_samples):
         """Build Z supersample offsets for 3D fallback paths."""
@@ -288,57 +795,15 @@ class BaseMeshGrid:
         jitter = rng.random(n)
         return ((bins + jitter) / float(n) - 0.5) * cell_size_z
 
-    def _get_material_properties_safe(self, material, x=0, y=0, z=0):
-        """Safely get material properties from either Material or CustomMaterial objects."""
+    @staticmethod
+    def _get_material_props(material, x=0, y=0, z=None):
+        """Return scalar material channels or propagate invalid material behavior."""
         if material is None:
-            return 1.0, 1.0, 0.0
-
-        # Check if this is a CustomMaterial (has getter methods)
-        if hasattr(material, "get_permittivity"):
-            try:
-                permittivity = material.get_permittivity(x, y, z)
-                permeability = material.get_permeability(x, y, z)
-                conductivity = material.get_conductivity(x, y, z)
-
-                # Handle numpy arrays vs scalars
-                if hasattr(permittivity, "item"):
-                    permittivity = permittivity.item()
-                if hasattr(permeability, "item"):
-                    permeability = permeability.item()
-                if hasattr(conductivity, "item"):
-                    conductivity = conductivity.item()
-
-                return permittivity, permeability, conductivity
-            except Exception as e:
-                print(f"Warning: CustomMaterial evaluation failed: {e}, using defaults")
-                return (
-                    getattr(material, "default_permittivity", 1.0),
-                    getattr(material, "default_permeability", 1.0),
-                    getattr(material, "default_conductivity", 0.0),
-                )
-
-        # Traditional Material object (direct attributes)
-        elif hasattr(material, "permittivity"):
-            return (
-                getattr(material, "permittivity", 1.0),
-                getattr(material, "permeability", 1.0),
-                getattr(material, "conductivity", 0.0),
-            )
-
-        # Fallback for unknown material types
-        else:
-            print(
-                f"Warning: Unknown material type {type(material)}, using vacuum properties"
-            )
-            return 1.0, 1.0, 0.0
-
-    def _get_material_props(self, material, x=0, y=0, z=0):
-        """Get material properties as a tuple matching MaterialGrids.NAMES order."""
-        return self._get_material_properties_safe(material, x, y, z)
-
-    def get_material_grids(self, resolution=None):
-        """Get the material property grids."""
-        return self.permittivity, self.conductivity, self.permeability
+            return MaterialGrids.DEFAULTS
+        if not isinstance(material, MaterialProtocol):
+            raise TypeError(f"Unsupported material type: {type(material).__name__}.")
+        values = material.get_sample(x, y, z)
+        return tuple(np.asarray(value).item() for value in values)
 
     def rasterize(self, resolution=None):
         """Return self if resolution matches, otherwise raise."""
@@ -347,6 +812,18 @@ class BaseMeshGrid:
         raise ValueError(
             "Cannot re-rasterize with different resolution. Use Design.rasterize()"
         )
+
+    def plot(self, **kwargs):
+        """Plot a rasterized grid field using the matplotlib backend."""
+        from beamz.analysis.plotting import plot_grid
+
+        kwargs.setdefault("show", False)
+        return plot_grid(self, **kwargs)
+
+    def show(self, **kwargs):
+        """Display a rasterized grid field using the matplotlib backend."""
+        kwargs.setdefault("show", True)
+        return self.plot(**kwargs)
 
 
 class RegularGrid(BaseMeshGrid):
@@ -359,8 +836,9 @@ class RegularGrid(BaseMeshGrid):
         aa_mode="legacy_grid",
         aa_samples=64,
         aa_seed=0,
+        progress=False,
     ):
-        super().__init__(design, resolution)
+        super().__init__(design, resolution, progress=progress)
         self._configure_antialiasing(
             aa_mode=aa_mode,
             aa_samples=aa_samples,
@@ -369,16 +847,20 @@ class RegularGrid(BaseMeshGrid):
 
         # Check if this is actually a 2D design
         if design.is_3d and design.depth > 0:
-            display_status(
-                "Warning: Using 2D RegularGrid for a 3D design. Use RegularGrid3D for proper 3D meshing.",
-                "warning",
+            warnings.warn(
+                "Using 2D RegularGrid for a 3D design; use RegularGrid3D for proper 3D meshing.",
+                RuntimeWarning,
+                stacklevel=2,
             )
 
         # Determine is_3d property for compatibility with Simulation class
         self.is_3d = design.is_3d and design.depth > 0
 
-        # Rasterize the design (assigns electromagnetic material grids)
-        self.__rasterize__()
+        context = self._raster_context(self.resolution, self.resolution)
+        self._sample_dx, self._sample_dy = self._build_supersample_offsets_xy(
+            self.resolution
+        )
+        self._rasterize_design(context)
 
         # Set grid properties
         self.shape = self.permittivity.shape
@@ -387,181 +869,21 @@ class RegularGrid(BaseMeshGrid):
         self.width = self.design.width
         self.height = self.design.height
         self.depth = 0.0
+        self.freeze()
 
-    def __rasterize__(self):
-        """Painters algorithm: rasterize design into a grid using super-sampling.
-
-        Iterates through structures in order (background first, foreground last).
-        Uses bounding-box clipping and fast paths for axis-aligned rectangles,
-        circles, and rings. Boundary cells get configurable super-sampling
-        for anti-aliasing.
-        """
-        width, height = self.design.width, self.design.height
-        grid_width, grid_height = (
-            int(width / self.resolution),
-            int(height / self.resolution),
+    def _paint_shape(self, shape, grids, bbox, context, props, sampler):
+        if shape.kind == "rectangle" and self._is_axis_aligned(shape):
+            self._paint_axis_aligned(shape, grids, context, props, sampler)
+            return "rectangle"
+        if shape.kind in {"circle", "ring"}:
+            self._rasterize_radial(shape.source, grids, props, sampler, bbox, context)
+            return "radial"
+        if self._paint_polygon_exact(shape, grids, bbox, context, props, sampler):
+            return "polygon"
+        self._rasterize_polygon_fallback(
+            shape.source, grids, props, sampler, bbox, context
         )
-        cell_size = self.resolution
-
-        # Create grid of cell centers
-        x_centers = np.linspace(0.5 * cell_size, width - 0.5 * cell_size, grid_width)
-        y_centers = np.linspace(0.5 * cell_size, height - 0.5 * cell_size, grid_height)
-
-        # Precompute subpixel offsets based on AA mode
-        sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size)
-        num_samples = len(sample_dx)
-
-        grids = MaterialGrids((grid_height, grid_width))
-
-        # Fill background (first structure)
-        if len(self.design.structures) > 0:
-            background = self.design.structures[0]
-            if hasattr(background, "material") and background.material is not None:
-                grids.fill_all(self._get_material_props(background.material))
-
-        # Process remaining structures
-        with create_plain_progress() as progress:
-            task = progress.add_task(
-                "Rasterizing structures...", total=len(self.design.structures)
-            )
-            progress.update(task, advance=1)  # Skip background
-
-            for idx in range(1, len(self.design.structures)):
-                structure = self.design.structures[idx]
-
-                if hasattr(structure, "is_pml") and structure.is_pml:
-                    progress.update(task, advance=1)
-                    continue
-                if not hasattr(structure, "material") or structure.material is None:
-                    progress.update(task, advance=1)
-                    continue
-
-                is_custom_material = hasattr(structure.material, "get_permittivity")
-                props = (
-                    None
-                    if is_custom_material
-                    else self._get_material_props(structure.material)
-                )
-
-                try:
-                    bbox_indices = self._get_bbox_indices(
-                        structure, grid_height, grid_width, cell_size
-                    )
-                    if bbox_indices is None:
-                        progress.update(task, advance=1)
-                        continue
-                    min_i, min_j, max_i, max_j = bbox_indices
-
-                    # Dispatch to shape-specific fast path
-                    if isinstance(structure, Rectangle) and self._is_axis_aligned(
-                        structure
-                    ):
-                        self._rasterize_rectangle(
-                            structure,
-                            grids,
-                            props,
-                            is_custom_material,
-                            grid_height,
-                            grid_width,
-                            cell_size,
-                            x_centers,
-                            y_centers,
-                            sample_dx,
-                            sample_dy,
-                            num_samples,
-                        )
-                    elif hasattr(structure, "radius") and not hasattr(
-                        structure, "inner_radius"
-                    ):
-                        self._rasterize_circle(
-                            structure,
-                            grids,
-                            props,
-                            min_i,
-                            min_j,
-                            max_i,
-                            max_j,
-                            cell_size,
-                            x_centers,
-                            y_centers,
-                            sample_dx,
-                            sample_dy,
-                            num_samples,
-                        )
-                    elif hasattr(structure, "inner_radius") and hasattr(
-                        structure, "outer_radius"
-                    ):
-                        self._rasterize_ring(
-                            structure,
-                            grids,
-                            props,
-                            min_i,
-                            min_j,
-                            max_i,
-                            max_j,
-                            cell_size,
-                            x_centers,
-                            y_centers,
-                            sample_dx,
-                            sample_dy,
-                            num_samples,
-                        )
-                    else:
-                        self._rasterize_polygon(
-                            structure,
-                            grids,
-                            props,
-                            is_custom_material,
-                            min_i,
-                            min_j,
-                            max_i,
-                            max_j,
-                            cell_size,
-                            x_centers,
-                            y_centers,
-                            sample_dx,
-                            sample_dy,
-                            num_samples,
-                        )
-
-                except (AttributeError, TypeError) as e:
-                    print(
-                        f"Warning: Structure {type(structure)} doesn't have proper bounding box: {e}"
-                    )
-
-                progress.update(task, advance=1)
-
-        grids.assign_to(self)
-
-    @staticmethod
-    def _is_axis_aligned(structure):
-        """Check if a Rectangle is axis-aligned (not rotated)."""
-        return (
-            structure.vertices[0][0] == structure.position[0]
-            and structure.vertices[0][1] == structure.position[1]
-        )
-
-    def _get_bbox_indices(self, structure, grid_height, grid_width, cell_size):
-        """Get bounding box grid indices for a structure. Returns None if outside grid."""
-        bbox = structure.get_bounding_box()
-        if bbox is None:
-            return None
-
-        if len(bbox) == 6:
-            min_x, min_y, _, max_x, max_y, _ = bbox
-        elif len(bbox) == 4:
-            min_x, min_y, max_x, max_y = bbox
-        else:
-            raise ValueError(f"Invalid bounding box format: {bbox}")
-
-        min_i = max(0, int(min_y / cell_size) - 1)
-        min_j = max(0, int(min_x / cell_size) - 1)
-        max_i = min(grid_height, int(np.ceil(max_y / cell_size)) + 1)
-        max_j = min(grid_width, int(np.ceil(max_x / cell_size)) + 1)
-
-        if min_i >= grid_height or min_j >= grid_width or max_i <= 0 or max_j <= 0:
-            return None
-        return min_i, min_j, max_i, max_j
+        return "polygon"
 
     def _supersample_cell(
         self,
@@ -589,363 +911,115 @@ class RegularGrid(BaseMeshGrid):
                 cell_k=cell_k,
             )
 
-        count = 0
-        for k in range(num_samples):
-            if contains_fn(cx + local_dx[k], cy + local_dy[k]):
-                count += 1
-        return count
-
-    def _rasterize_rectangle(
-        self,
-        structure,
-        grids,
-        props,
-        is_custom_material,
-        grid_height,
-        grid_width,
-        cell_size,
-        x_centers,
-        y_centers,
-        sample_dx,
-        sample_dy,
-        num_samples,
-    ):
-        """Exact area coverage for axis-aligned rectangles."""
-        rect_min_j = max(0, int(structure.position[0] / cell_size))
-        rect_min_i = max(0, int(structure.position[1] / cell_size))
-        rect_max_j = min(
-            grid_width,
-            int(np.ceil((structure.position[0] + structure.width) / cell_size)),
-        )
-        rect_max_i = min(
-            grid_height,
-            int(np.ceil((structure.position[1] + structure.height) / cell_size)),
-        )
-
-        sx, sy = structure.position[0], structure.position[1]
-        sw, sh = structure.width, structure.height
-        j_idx = np.arange(rect_min_j, rect_max_j, dtype=float)
-        i_idx = np.arange(rect_min_i, rect_max_i, dtype=float)
-        cell_x0 = j_idx * cell_size
-        cell_x1 = cell_x0 + cell_size
-        cell_y0 = i_idx * cell_size
-        cell_y1 = cell_y0 + cell_size
-
-        overlap_x = np.clip(
-            np.minimum(cell_x1, sx + sw) - np.maximum(cell_x0, sx), 0.0, cell_size
-        )
-        overlap_y = np.clip(
-            np.minimum(cell_y1, sy + sh) - np.maximum(cell_y0, sy), 0.0, cell_size
-        )
-        coverage = np.outer(overlap_y, overlap_x) / float(cell_size * cell_size)
-
-        local_i, local_j = np.where(coverage >= 1.0 - 1e-15)
-        for idx in range(len(local_i)):
-            i = local_i[idx] + rect_min_i
-            j = local_j[idx] + rect_min_j
-            rect_props = props
-            if is_custom_material:
-                rect_props = self._get_material_props(
-                    structure.material, x_centers[j], y_centers[i]
-                )
-            grids.set_at((i, j), rect_props)
-
-        boundary_i, boundary_j = np.where((coverage > 0.0) & (coverage < 1.0 - 1e-15))
-        for idx in range(len(boundary_i)):
-            i = boundary_i[idx] + rect_min_i
-            j = boundary_j[idx] + rect_min_j
-            rect_props = props
-            if is_custom_material:
-                rect_props = self._get_material_props(
-                    structure.material, x_centers[j], y_centers[i]
-                )
-            grids.blend_at(
-                (i, j), rect_props, float(coverage[boundary_i[idx], boundary_j[idx]])
+        return sum(
+            bool(contains_fn(cx + dx, cy + dy))
+            for dx, dy in zip(
+                local_dx[:num_samples], local_dy[:num_samples], strict=True
             )
+        )
 
-    def _rasterize_circle(
+    def _rasterize_radial(
         self,
         structure,
         grids,
         props,
-        min_i,
-        min_j,
-        max_i,
-        max_j,
-        cell_size,
-        x_centers,
-        y_centers,
-        sample_dx,
-        sample_dy,
-        num_samples,
+        sampler,
+        bbox,
+        context,
     ):
-        """Fast path for circles using distance-based classification."""
-        center_x, center_y = structure.position[0], structure.position[1]
-        radius = structure.radius
+        """Paint a circle or annulus with one radial coverage kernel."""
+        min_i, min_j, max_i, max_j = bbox
+        cell_size = context.cell_sizes[0]
+        x_centers, y_centers = context.centers
+        sample_dx, sample_dy = self._sample_dx, self._sample_dy
+        num_samples = len(sample_dx)
+        center_x, center_y = structure.position[:2]
+        inner = float(structure.inner_radius) if isinstance(structure, Ring) else 0.0
+        outer = float(
+            structure.outer_radius if isinstance(structure, Ring) else structure.radius
+        )
+        x, y = np.meshgrid(
+            x_centers[min_j:max_j],
+            y_centers[min_i:max_i],
+        )
+        distance = np.hypot(x - center_x, y - center_y)
+        half_diagonal = 0.3536 * cell_size
+        full = (distance - half_diagonal >= inner) & (distance + half_diagonal <= outer)
+        candidates = (
+            (distance + half_diagonal >= inner)
+            & (distance - half_diagonal <= outer)
+            & ~full
+        )
 
-        j_indices = np.arange(min_j, max_j)
-        i_indices = np.arange(min_i, max_i)
-        X, Y = np.meshgrid(x_centers[j_indices], y_centers[i_indices])
-        distances = np.sqrt((X - center_x) ** 2 + (Y - center_y) ** 2)
+        def contains(px, py):
+            radius = np.hypot(px - center_x, py - center_y)
+            return inner <= radius <= outer
 
-        diag = 0.3536 * cell_size  # sqrt(2)/4
-        fully_inside = distances + diag <= radius
-        boundary = (distances - diag <= radius) & ~fully_inside
-
-        # Bulk set fully inside cells
-        local_i, local_j = np.where(fully_inside)
-        if len(local_i) > 0:
-            grids.set_region((local_i + min_i, local_j + min_j), props)
-
-        # Super-sample boundary cells
-        boundary_i, boundary_j = np.where(boundary)
-        for idx in range(len(boundary_i)):
-            i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
-            cx, cy = x_centers[j], y_centers[i]
-            samples_inside = self._supersample_cell(
-                cx,
-                cy,
+        coverage = full.astype(float)
+        for local_i, local_j in zip(*np.where(candidates), strict=True):
+            i, j = local_i + min_i, local_j + min_j
+            count = self._supersample_cell(
+                x_centers[j],
+                y_centers[i],
                 sample_dx,
                 sample_dy,
                 num_samples,
-                lambda x, y: np.hypot(x - center_x, y - center_y) <= radius,
+                contains,
                 cell_i=i,
                 cell_j=j,
                 cell_size=cell_size,
             )
-            if samples_inside > 0:
-                grids.blend_at((i, j), props, samples_inside / num_samples)
+            coverage[local_i, local_j] = count / num_samples
+        self._apply_coverage(
+            grids,
+            (slice(min_i, max_i), slice(min_j, max_j)),
+            props,
+            coverage,
+            sampler,
+        )
 
-    def _rasterize_ring(
+    def _rasterize_polygon_fallback(
         self,
         structure,
         grids,
         props,
-        min_i,
-        min_j,
-        max_i,
-        max_j,
-        cell_size,
-        x_centers,
-        y_centers,
-        sample_dx,
-        sample_dy,
-        num_samples,
+        sampler,
+        bbox,
+        context,
     ):
-        """Fast path for rings using distance-based classification."""
-        center_x, center_y = structure.position[0], structure.position[1]
-        inner_radius = structure.inner_radius
-        outer_radius = structure.outer_radius
+        """Supersample geometry that cannot provide an exact polygon."""
+        min_i, min_j, max_i, max_j = bbox
+        cell_size = context.cell_sizes[0]
+        x_centers, y_centers = context.centers
+        sample_dx, sample_dy = self._sample_dx, self._sample_dy
+        num_samples = len(sample_dx)
+        contains = structure.point_in_polygon
 
-        j_indices = np.arange(min_j, max_j)
-        i_indices = np.arange(min_i, max_i)
-        X, Y = np.meshgrid(x_centers[j_indices], y_centers[i_indices])
-        distances = np.sqrt((X - center_x) ** 2 + (Y - center_y) ** 2)
-
-        diag = 0.3536 * cell_size
-        fully_inside = (distances - diag >= inner_radius) & (
-            distances + diag <= outer_radius
-        )
-        inner_boundary = (distances - diag <= inner_radius) & (
-            distances + diag >= inner_radius
-        )
-        outer_boundary = (distances - diag <= outer_radius) & (
-            distances + diag >= outer_radius
-        )
-        boundary = inner_boundary | outer_boundary
-
-        # Bulk set fully inside cells
-        local_i, local_j = np.where(fully_inside)
-        if len(local_i) > 0:
-            grids.set_region((local_i + min_i, local_j + min_j), props)
-
-        # Super-sample boundary cells
-        boundary_i, boundary_j = np.where(boundary)
-        for idx in range(len(boundary_i)):
-            i, j = boundary_i[idx] + min_i, boundary_j[idx] + min_j
-            cx, cy = x_centers[j], y_centers[i]
-            samples_inside = self._supersample_cell(
-                cx,
-                cy,
-                sample_dx,
-                sample_dy,
-                num_samples,
-                lambda x, y: (
-                    inner_radius <= np.hypot(x - center_x, y - center_y) <= outer_radius
-                ),
-                cell_i=i,
-                cell_j=j,
-                cell_size=cell_size,
-            )
-            if samples_inside > 0:
-                grids.blend_at((i, j), props, samples_inside / num_samples)
-
-    def _rasterize_polygon(
-        self,
-        structure,
-        grids,
-        props,
-        is_custom_material,
-        min_i,
-        min_j,
-        max_i,
-        max_j,
-        cell_size,
-        x_centers,
-        y_centers,
-        sample_dx,
-        sample_dy,
-        num_samples,
-    ):
-        """General path for polygons and complex shapes."""
-        polygon = self._structure_polygon_2d(structure)
-        if polygon is not None:
-            prepared_polygon = prep(polygon)
-            cell_area = float(cell_size * cell_size)
-            for i in range(min_i, max_i):
-                cell_y0 = i * cell_size
-                cell_y1 = cell_y0 + cell_size
-                cy = y_centers[i]
-                for j in range(min_j, max_j):
-                    cell_x0 = j * cell_size
-                    cell_x1 = cell_x0 + cell_size
-                    cx = x_centers[j]
-                    cell = shapely_box(cell_x0, cell_y0, cell_x1, cell_y1)
-                    if prepared_polygon.contains(cell):
-                        cell_props = props
-                        if is_custom_material:
-                            cell_props = self._get_material_props(
-                                structure.material, cx, cy
-                            )
-                        grids.set_at((i, j), cell_props)
-                        continue
-                    if not prepared_polygon.intersects(cell):
-                        continue
-
-                    blend_factor = polygon.intersection(cell).area / cell_area
-                    if blend_factor <= 0.0:
-                        continue
-                    cell_props = props
-                    if is_custom_material:
-                        cell_props = self._get_material_props(
-                            structure.material, cx, cy
-                        )
-                    grids.blend_at((i, j), cell_props, float(blend_factor))
-            return
-
-        if hasattr(structure, "point_in_polygon"):
-
-            def contains_func(x, y):
-                return structure.point_in_polygon(x, y)
-
-        else:
-
-            def contains_func(x, y):
-                return any(
-                    val != def_val
-                    for val, def_val in zip(
-                        self.design.get_material_value(x, y, z=0), [1.0, 1.0, 0.0]
+        coverage = np.zeros((max_i - min_i, max_j - min_j), dtype=float)
+        for local_i in range(coverage.shape[0]):
+            for local_j in range(coverage.shape[1]):
+                i, j = local_i + min_i, local_j + min_j
+                coverage[local_i, local_j] = (
+                    self._supersample_cell(
+                        x_centers[j],
+                        y_centers[i],
+                        sample_dx,
+                        sample_dy,
+                        num_samples,
+                        contains,
+                        cell_i=i,
+                        cell_j=j,
+                        cell_size=cell_size,
                     )
+                    / num_samples
                 )
-
-        if (
-            hasattr(structure, "vertices")
-            and len(getattr(structure, "vertices", [])) > 0
-        ):
-            # Classify cells as fully-inside, boundary, or remaining
-            inside_mask = np.zeros((max_i - min_i, max_j - min_j), dtype=bool)
-            boundary_mask = np.zeros((max_i - min_i, max_j - min_j), dtype=bool)
-            sample_points = [(0, 0), (-0.4, -0.4), (-0.4, 0.4), (0.4, -0.4), (0.4, 0.4)]
-
-            for i_rel in range(max_i - min_i):
-                for j_rel in range(max_j - min_j):
-                    cx = x_centers[j_rel + min_j]
-                    cy = y_centers[i_rel + min_i]
-                    points_inside = 0
-                    center_inside = False
-                    if contains_func(cx, cy):
-                        center_inside = True
-                        points_inside += 1
-                    for dx_pt, dy_pt in sample_points[1:]:
-                        if contains_func(
-                            cx + dx_pt * cell_size, cy + dy_pt * cell_size
-                        ):
-                            points_inside += 1
-                    if center_inside and points_inside == len(sample_points):
-                        inside_mask[i_rel, j_rel] = True
-                    elif points_inside > 0:
-                        boundary_mask[i_rel, j_rel] = True
-
-            # Set fully inside cells
-            inside_i, inside_j = np.where(inside_mask)
-            for idx in range(len(inside_i)):
-                i, j = inside_i[idx] + min_i, inside_j[idx] + min_j
-                grids.set_at((i, j), props)
-
-            # Blend boundary + remaining cells via super-sampling
-            for mask in (boundary_mask, ~inside_mask & ~boundary_mask):
-                bi, bj = np.where(mask)
-                for idx in range(len(bi)):
-                    i, j = bi[idx] + min_i, bj[idx] + min_j
-                    cx, cy = x_centers[j], y_centers[i]
-                    samples_inside = self._supersample_cell(
-                        cx,
-                        cy,
-                        sample_dx,
-                        sample_dy,
-                        num_samples,
-                        contains_func,
-                        cell_i=i,
-                        cell_j=j,
-                        cell_size=cell_size,
-                    )
-                    if samples_inside > 0:
-                        grids.blend_at((i, j), props, samples_inside / num_samples)
-        else:
-            # Direct super-sampling for all cells in bounding box
-            for i in range(min_i, max_i):
-                for j in range(min_j, max_j):
-                    cx, cy = x_centers[j], y_centers[i]
-                    samples_inside = self._supersample_cell(
-                        cx,
-                        cy,
-                        sample_dx,
-                        sample_dy,
-                        num_samples,
-                        contains_func,
-                        cell_i=i,
-                        cell_j=j,
-                        cell_size=cell_size,
-                    )
-                    if samples_inside > 0:
-                        grids.blend_at((i, j), props, samples_inside / num_samples)
-
-    def to_plot_data(
-        self,
-        field: str = "permittivity",
-        z_index=None,
-        z_position=None,
-    ):
-        """Return renderer-agnostic grid data for manual plotting."""
-        del z_index, z_position
-        from beamz.visual.data import grid_plot_data
-
-        grid = getattr(self, field, None)
-        if grid is None:
-            raise RuntimeError("Grid not rasterized yet.")
-        return grid_plot_data(self, field=field)
-
-    def plot(self, **kwargs):
-        """Plot a rasterized grid field using the matplotlib backend."""
-        from beamz.visual.mpl import plot_grid
-
-        kwargs.setdefault("show", False)
-        return plot_grid(self, **kwargs)
-
-    def show(self, **kwargs):
-        """Display a rasterized grid field using the matplotlib backend."""
-        kwargs.setdefault("show", True)
-        return self.plot(**kwargs)
+        self._apply_coverage(
+            grids,
+            (slice(min_i, max_i), slice(min_j, max_j)),
+            props,
+            coverage,
+            sampler,
+        )
 
 
 class RegularGrid3D(BaseMeshGrid):
@@ -959,43 +1033,34 @@ class RegularGrid3D(BaseMeshGrid):
         aa_mode="legacy_grid",
         aa_samples=64,
         aa_seed=0,
+        progress=False,
     ):
-        # Handle different resolution input formats
-        if isinstance(design, (int, float)) and resolution_xy is None:
-            # Legacy format: RegularGrid3D(resolution) - set uniform resolution
-            resolution = design
-            design = resolution_xy  # Second argument is actually design
-            resolution_xy = resolution
-            resolution_z = resolution
-        elif resolution_xy is None:
-            # Default to design.resolution if available, otherwise same as xy
-            resolution_xy = getattr(design, "resolution", resolution_xy)
-            resolution_z = resolution_xy
-        elif resolution_z is None:
+        if resolution_xy is None:
+            raise ValueError("RegularGrid3D requires an xy resolution.")
+        if resolution_z is None:
             # Only xy resolution provided, use same for z
             resolution_z = resolution_xy
 
-        super().__init__(design, resolution_xy)
+        if resolution_xy is None or resolution_z is None:
+            raise ValueError("RegularGrid3D requires xy and z resolutions.")
+        resolution_xy = float(resolution_xy)
+        resolution_z = float(resolution_z)
+
+        super().__init__(design, resolution_xy, progress=progress)
         self._configure_antialiasing(
             aa_mode=aa_mode,
             aa_samples=aa_samples,
             aa_seed=aa_seed,
         )
 
-        # Store separate resolutions for xy and z
         self.resolution_xy = resolution_xy
         self.resolution_z = resolution_z
+        context = self._raster_context(
+            self.resolution_xy, self.resolution_xy, self.resolution_z
+        )
+        self._prefer_exact = env_bool("BEAMZ_RASTER_EXACT_3D", True)
+        self._rasterize_design(context)
 
-        # Rasterize the design (assigns electromagnetic material grids)
-        self.__rasterize_3d__()
-
-        # Calculate grid dimensions for status message
-        width, height, depth = self.design.width, self.design.height, self.design.depth
-        grid_width = int(width / self.resolution_xy)
-        grid_height = int(height / self.resolution_xy)
-        grid_depth = int(depth / self.resolution_z) if depth > 0 else 1
-
-        # Set grid properties
         self.shape = self.permittivity.shape
         self.dx = self.resolution_xy
         self.dy = self.resolution_xy
@@ -1004,657 +1069,49 @@ class RegularGrid3D(BaseMeshGrid):
         self.height = self.design.height
         self.depth = self.design.depth
         display_status(
-            f"Created 3D mesh: {grid_width} × {grid_height} × {grid_depth} cells",
+            "Created 3D mesh: " + " × ".join(map(str, context.grid_shape)) + " cells",
             "success",
         )
+        self.freeze()
 
-    def __rasterize_3d__(self):
-        """3D rasterization using vectorized shape fills and bounded fallbacks."""
-        width, height, depth = self.design.width, self.design.height, self.design.depth
-        grid_width = int(width / self.resolution_xy)
-        grid_height = int(height / self.resolution_xy)
-        grid_depth = int(depth / self.resolution_z) if depth > 0 else 1
-
-        t_total_start = time.perf_counter()
-        cell_size_xy = self.resolution_xy
-        cell_size_z = self.resolution_z
-
-        # Create grid of cell centers
-        x_centers = np.linspace(
-            0.5 * cell_size_xy, width - 0.5 * cell_size_xy, grid_width
-        )
-        y_centers = np.linspace(
-            0.5 * cell_size_xy, height - 0.5 * cell_size_xy, grid_height
-        )
-        z_centers = (
-            np.linspace(0.5 * cell_size_z, depth - 0.5 * cell_size_z, grid_depth)
-            if depth > 0
-            else [0]
-        )
-
-        # Estimate dt for PML calculations
-        c = 3e8
-        dt_estimate = 0.5 * self.resolution / (c * np.sqrt(2))
-
-        grids = MaterialGrids((grid_depth, grid_height, grid_width))
-        t_setup_end = time.perf_counter()
-
-        # Fill background
-        if len(self.design.structures) > 0:
-            background = self.design.structures[0]
-            if hasattr(background, "material") and background.material is not None:
-                grids.fill_all(self._get_material_props(background.material))
-
-        timing_enabled = _env_bool("BEAMZ_RASTER_TIMING", True)
-        voxel_count = int(grid_width) * int(grid_height) * int(grid_depth)
-        fast_min_voxels = int(
-            float(os.getenv("BEAMZ_RASTER_FAST_MIN_VOXELS", 1_000_000))
-        )
-        fast_env = os.getenv("BEAMZ_RASTER_FAST_3D")
-        if fast_env is None:
-            prefer_fast = voxel_count >= fast_min_voxels
-        else:
-            prefer_fast = _env_bool("BEAMZ_RASTER_FAST_3D", True)
-        fast_rect_count = 0
-        fast_poly_count = 0
-        fallback_count = 0
-
-        t_struct_start = time.perf_counter()
-        with create_plain_progress() as progress:
-            task = progress.add_task(
-                "Rasterizing 3D structures...", total=len(self.design.structures)
-            )
-            progress.update(task, advance=1)
-
-            for idx in range(1, len(self.design.structures)):
-                structure = self.design.structures[idx]
-
-                if hasattr(structure, "is_pml") and structure.is_pml:
-                    progress.update(task, advance=1)
-                    continue
-                if not hasattr(structure, "material") or structure.material is None:
-                    progress.update(task, advance=1)
-                    continue
-
-                props = self._get_material_props(structure.material)
-
-                try:
-                    bbox = self._get_bbox_indices_3d(
-                        structure,
-                        grid_height=grid_height,
-                        grid_width=grid_width,
-                        grid_depth=grid_depth,
-                        cell_size_xy=cell_size_xy,
-                        cell_size_z=cell_size_z,
-                        margin_cells=1,
-                    )
-                    if bbox is None:
-                        progress.update(task, advance=1)
-                        continue
-                    min_i, min_j, min_k, max_i, max_j, max_k = bbox
-
-                    fast_done = False
-                    if (
-                        prefer_fast
-                        and isinstance(structure, Rectangle)
-                        and self._is_axis_aligned(structure)
-                        and not getattr(
-                            structure, "has_tapered_sidewalls", lambda: False
-                        )()
-                    ):
-                        self._rasterize_rectangle_3d_fast(
-                            structure=structure,
-                            grids=grids,
-                            props=props,
-                            grid_height=grid_height,
-                            grid_width=grid_width,
-                            grid_depth=grid_depth,
-                            cell_size_xy=cell_size_xy,
-                            cell_size_z=cell_size_z,
-                        )
-                        fast_rect_count += 1
-                        fast_done = True
-
-                    if not fast_done and prefer_fast:
-                        poly_done = self._rasterize_polygon_3d_fast(
-                            structure=structure,
-                            grids=grids,
-                            props=props,
-                            min_i=min_i,
-                            min_j=min_j,
-                            min_k=min_k,
-                            max_i=max_i,
-                            max_j=max_j,
-                            max_k=max_k,
-                            x_centers=x_centers,
-                            y_centers=y_centers,
-                            z_centers=z_centers,
-                            cell_size_xy=cell_size_xy,
-                            cell_size_z=cell_size_z,
-                        )
-                        if poly_done:
-                            fast_poly_count += 1
-                            fast_done = True
-
-                    if not fast_done:
-                        self._rasterize_structure_3d_fallback(
-                            structure=structure,
-                            grids=grids,
-                            props=props,
-                            min_i=min_i,
-                            min_j=min_j,
-                            min_k=min_k,
-                            max_i=max_i,
-                            max_j=max_j,
-                            max_k=max_k,
-                            cell_size_xy=cell_size_xy,
-                            cell_size_z=cell_size_z,
-                            x_centers=x_centers,
-                            y_centers=y_centers,
-                            z_centers=z_centers,
-                        )
-                        fallback_count += 1
-
-                except (AttributeError, TypeError) as e:
-                    display_status(
-                        f"Warning: Structure {type(structure)} processing failed: {e}",
-                        "warning",
-                    )
-
-                progress.update(task, advance=1)
-        t_struct_end = time.perf_counter()
-
-        # Process 3D PML boundaries
-        t_pml_start = time.perf_counter()
-        self._process_3d_pml(
-            grids,
-            x_centers,
-            y_centers,
-            z_centers,
-            dt_estimate,
-        )
-        t_pml_end = time.perf_counter()
-
-        grids.assign_to(self)
-        t_total_end = time.perf_counter()
-
-        if timing_enabled:
-            display_status(
-                (
-                    "3D raster timing: "
-                    f"setup={t_setup_end - t_total_start:.2f}s, "
-                    f"structures={t_struct_end - t_struct_start:.2f}s, "
-                    f"pml={t_pml_end - t_pml_start:.2f}s, "
-                    f"total={t_total_end - t_total_start:.2f}s"
-                ),
-                "info",
-            )
-            display_status(
-                (
-                    "3D raster kernels: "
-                    f"fast_enabled={prefer_fast}, "
-                    f"fast_rect={fast_rect_count}, "
-                    f"fast_poly={fast_poly_count}, "
-                    f"fallback={fallback_count}"
-                ),
-                "info",
-            )
-
-    def _process_3d_pml(
-        self,
-        grids,
-        x_centers,
-        y_centers,
-        z_centers,
-        dt_estimate,
-    ):
-        """Process 3D PML boundaries and add conductivity to the grid."""
-        if not hasattr(self.design, "boundaries") or not self.design.boundaries:
-            return
-
-        with create_plain_progress() as progress:
-            task = progress.add_task(
-                "Processing 3D PML boundaries...", total=len(self.design.boundaries)
-            )
-
-            for boundary in self.design.boundaries:
-                # Add PML conductivity to the global 3D conductivity grid for all 6 faces
-                for k, z in enumerate(z_centers):
-                    for i, y in enumerate(y_centers):
-                        for j, x in enumerate(x_centers):
-                            # Calculate PML conductivity at this point (x,y,z)
-                            pml_conductivity = boundary.get_conductivity(
-                                x,
-                                y,
-                                z,
-                                dx=self.resolution_xy,
-                                dt=dt_estimate,
-                                eps_avg=grids.permittivity[k, i, j],
-                                width=self.design.width,
-                                height=self.design.height,
-                                depth=self.design.depth,
-                            )
-                            if pml_conductivity > 0:
-                                conductivity = grids._materialize("conductivity")
-                                conductivity[k, i, j] += pml_conductivity
-
-                progress.update(task, advance=1)
-
-    @staticmethod
-    def _is_axis_aligned(structure):
-        """Check if a rectangle is axis-aligned (not rotated)."""
-        return (
-            hasattr(structure, "vertices")
-            and structure.vertices
-            and structure.vertices[0][0] == structure.position[0]
-            and structure.vertices[0][1] == structure.position[1]
-        )
-
-    def _get_bbox_indices_3d(
-        self,
-        structure,
-        *,
-        grid_height,
-        grid_width,
-        grid_depth,
-        cell_size_xy,
-        cell_size_z,
-        margin_cells=1,
-    ):
-        """Get clipped 3D bbox index range for a structure."""
-        bbox = structure.get_bounding_box()
-        if bbox is None:
-            return None
-        if len(bbox) == 6:
-            min_x, min_y, min_z, max_x, max_y, max_z = bbox
-        elif len(bbox) == 4:
-            min_x, min_y, max_x, max_y = bbox
-            min_z = getattr(structure, "z", 0.0)
-            max_z = min_z + float(getattr(structure, "depth", 0.0))
-            if max_z <= min_z:
-                max_z = min_z + cell_size_z
-        else:
-            return None
-
-        margin = int(max(0, margin_cells))
-        min_i = max(0, int(min_y / cell_size_xy) - margin)
-        min_j = max(0, int(min_x / cell_size_xy) - margin)
-        min_k = max(0, int(min_z / cell_size_z) - margin) if grid_depth > 1 else 0
-        max_i = min(grid_height, int(np.ceil(max_y / cell_size_xy)) + margin)
-        max_j = min(grid_width, int(np.ceil(max_x / cell_size_xy)) + margin)
-        max_k = (
-            min(grid_depth, int(np.ceil(max_z / cell_size_z)) + margin)
-            if grid_depth > 1
-            else 1
-        )
-
-        if min_i >= max_i or min_j >= max_j or min_k >= max_k:
-            return None
-        return min_i, min_j, min_k, max_i, max_j, max_k
-
-    def _rasterize_rectangle_3d_fast(
-        self,
-        *,
-        structure,
-        grids,
-        props,
-        grid_height,
-        grid_width,
-        grid_depth,
-        cell_size_xy,
-        cell_size_z,
-    ):
-        """Fast fill for axis-aligned rectangular prisms."""
-        x0, y0, z0 = structure.position
-        x1 = x0 + float(structure.width)
-        y1 = y0 + float(structure.height)
-        z1 = z0 + float(getattr(structure, "depth", 0.0))
-        if z1 <= z0:
-            z1 = z0 + cell_size_z
-
-        i0 = max(0, int(np.floor(y0 / cell_size_xy)))
-        j0 = max(0, int(np.floor(x0 / cell_size_xy)))
-        k0 = max(0, int(np.floor(z0 / cell_size_z))) if grid_depth > 1 else 0
-        i1 = min(grid_height, int(np.ceil(y1 / cell_size_xy)))
-        j1 = min(grid_width, int(np.ceil(x1 / cell_size_xy)))
-        k1 = min(grid_depth, int(np.ceil(z1 / cell_size_z))) if grid_depth > 1 else 1
-        if i0 >= i1 or j0 >= j1 or k0 >= k1:
-            return
-
-        aligned_tol = 1e-12
+    def _paint_shape(self, shape, grids, bbox, context, props, sampler):
+        structure = shape.source
         if (
-            abs(x0 - j0 * cell_size_xy) <= aligned_tol
-            and abs(y0 - i0 * cell_size_xy) <= aligned_tol
-            and abs(z0 - k0 * cell_size_z) <= aligned_tol
-            and abs(x1 - j1 * cell_size_xy) <= aligned_tol
-            and abs(y1 - i1 * cell_size_xy) <= aligned_tol
-            and abs(z1 - k1 * cell_size_z) <= aligned_tol
+            self._prefer_exact
+            and shape.kind == "rectangle"
+            and self._is_axis_aligned(shape)
+            and (
+                not isinstance(structure, PlanarStructure)
+                or not structure.has_tapered_sidewalls()
+            )
         ):
-            grids.set_region((slice(k0, k1), slice(i0, i1), slice(j0, j1)), props)
-            return
-
-        # Compute exact axis-aligned overlap fractions per voxel to preserve
-        # anti-aliased boundaries without expensive per-sample point checks.
-        x_edges0 = np.arange(j0, j1, dtype=float) * cell_size_xy
-        x_edges1 = x_edges0 + cell_size_xy
-        y_edges0 = np.arange(i0, i1, dtype=float) * cell_size_xy
-        y_edges1 = y_edges0 + cell_size_xy
-        z_edges0 = np.arange(k0, k1, dtype=float) * cell_size_z
-        z_edges1 = z_edges0 + cell_size_z
-
-        fx = (
-            np.clip(
-                np.minimum(x_edges1, x1) - np.maximum(x_edges0, x0), 0.0, cell_size_xy
-            )
-            / cell_size_xy
+            self._paint_axis_aligned(shape, grids, context, props, sampler)
+            return "rectangle"
+        if self._prefer_exact and self._paint_polygon_exact(
+            shape, grids, bbox, context, props, sampler
+        ):
+            return "polygon"
+        self._rasterize_structure_3d_fallback(
+            structure, grids, props, sampler, bbox, context
         )
-        fy = (
-            np.clip(
-                np.minimum(y_edges1, y1) - np.maximum(y_edges0, y0), 0.0, cell_size_xy
-            )
-            / cell_size_xy
-        )
-        fz = (
-            np.clip(
-                np.minimum(z_edges1, z1) - np.maximum(z_edges0, z0), 0.0, cell_size_z
-            )
-            / cell_size_z
-        )
-
-        frac = fz[:, None, None] * fy[None, :, None] * fx[None, None, :]
-        if not np.any(frac > 0.0):
-            return
-
-        full_mask = frac >= (1.0 - 1e-12)
-        blend_mask = (frac > 0.0) & ~full_mask
-
-        if np.any(full_mask):
-            region = (slice(k0, k1), slice(i0, i1), slice(j0, j1))
-            for name, val in zip(MaterialGrids.NAMES, props):
-                grids.set_masked_region(name, region, full_mask, val)
-
-        if np.any(blend_mask):
-            region = (slice(k0, k1), slice(i0, i1), slice(j0, j1))
-            for name, val in zip(MaterialGrids.NAMES, props):
-                grids.blend_masked_region(name, region, blend_mask, val, frac[blend_mask])
-
-    def _rasterize_polygon_3d_fast(
-        self,
-        *,
-        structure,
-        grids,
-        props,
-        min_i,
-        min_j,
-        min_k,
-        max_i,
-        max_j,
-        max_k,
-        x_centers,
-        y_centers,
-        z_centers,
-        cell_size_xy,
-        cell_size_z,
-    ):
-        """Vectorized anti-aliased fill for extruded polygons.
-
-        Uses configurable supersampling in XY and exact voxel overlap in Z so imported
-        taper polygons get the same subpixel smoothing behavior as fallback paths.
-        """
-        if not hasattr(structure, "vertices") or not structure.vertices:
-            return False
-        if hasattr(structure, "radius"):
-            # Circle/ring currently uses fallback path.
-            return False
-        if float(getattr(structure, "depth", 0.0)) <= 0.0:
-            return False
-        if min_i >= max_i or min_j >= max_j or min_k >= max_k:
-            return False
-
-        verts3 = np.asarray(structure.vertices, dtype=float)
-        if verts3.ndim != 2 or verts3.shape[0] < 3:
-            return False
-        if verts3.shape[1] >= 3 and np.ptp(verts3[:, 2]) > 1e-12:
-            # Non-planar polygons should use full fallback.
-            return False
-
-        verts = np.asarray([(v[0], v[1]) for v in structure.vertices], dtype=float)
-        if verts.ndim != 2 or verts.shape[0] < 3:
-            return False
-
-        z0 = float(getattr(structure, "z", np.min(verts3[:, 2])))
-        z1 = z0 + float(getattr(structure, "depth", 0.0))
-        if z1 <= z0:
-            z1 = float(np.max(verts3[:, 2]))
-        if z1 <= z0:
-            z1 = z0 + float(cell_size_z)
-
-        x_local = x_centers[min_j:max_j]
-        y_local = y_centers[min_i:max_i]
-        xx, yy = np.meshgrid(x_local, y_local)
-        interiors = getattr(structure, "interiors", None) or []
-        holes = []
-        for hole in interiors:
-            iv3 = np.asarray(hole, dtype=float)
-            if iv3.ndim == 2 and iv3.shape[1] >= 3 and np.ptp(iv3[:, 2]) > 1e-12:
-                return False
-            iv = np.asarray([(v[0], v[1]) for v in hole], dtype=float)
-            if iv.ndim == 2 and iv.shape[0] >= 3:
-                holes.append(iv)
-        polygon = ShapelyPolygon(verts, holes=holes if holes else None)
-        if polygon.is_empty:
-            return True
-        if not polygon.is_valid:
-            polygon = polygon.buffer(0)
-        if polygon.is_empty or not polygon.is_valid:
-            return False
-
-        if getattr(structure, "has_tapered_sidewalls", lambda: False)():
-            sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
-            offsets_z = self._build_supersample_offsets_z(
-                cell_size_z=cell_size_z,
-                depth_samples=(3 if len(z_centers) > 1 else 1),
-            )
-            x_local = x_centers[min_j:max_j]
-            y_local = y_centers[min_i:max_i]
-            xx, yy = np.meshgrid(x_local, y_local)
-            frac = np.zeros((max_k - min_k, max_i - min_i, max_j - min_j), dtype=float)
-
-            shift_x_map = None
-            shift_y_map = None
-            rot_map = None
-            if self.aa_mode == "stratified_jitter":
-                shift_x_map = np.empty(xx.shape, dtype=float)
-                shift_y_map = np.empty(xx.shape, dtype=float)
-                rot_map = np.empty(xx.shape, dtype=np.uint8)
-                for i_rel in range(xx.shape[0]):
-                    cell_i = min_i + i_rel
-                    for j_rel in range(xx.shape[1]):
-                        cell_j = min_j + j_rel
-                        sx, sy, rot90 = self._cell_scramble_params_xy(cell_i, cell_j, 0)
-                        shift_x_map[i_rel, j_rel] = sx
-                        shift_y_map[i_rel, j_rel] = sy
-                        rot_map[i_rel, j_rel] = rot90
-
-            for k_rel, k in enumerate(range(min_k, max_k)):
-                z_center = z_centers[k]
-                inside_count = np.zeros(xx.shape, dtype=float)
-                for z_off in offsets_z:
-                    poly_z = structure.shapely_polygon_at_z(z_center + z_off)
-                    if poly_z is None:
-                        continue
-                    poly_z = poly_z.buffer(1e-15)
-                    for sidx in range(sample_dx.size):
-                        if self.aa_mode == "stratified_jitter":
-                            u0 = sample_dx[sidx] / float(cell_size_xy) + 0.5
-                            v0 = sample_dy[sidx] / float(cell_size_xy) + 0.5
-                            u_rot = np.where(
-                                rot_map == 0,
-                                u0,
-                                np.where(
-                                    rot_map == 1,
-                                    v0,
-                                    np.where(rot_map == 2, 1.0 - u0, 1.0 - v0),
-                                ),
-                            )
-                            v_rot = np.where(
-                                rot_map == 0,
-                                v0,
-                                np.where(
-                                    rot_map == 1,
-                                    1.0 - u0,
-                                    np.where(rot_map == 2, 1.0 - v0, u0),
-                                ),
-                            )
-                            cell_dx = (np.mod(u_rot + shift_x_map, 1.0) - 0.5) * float(
-                                cell_size_xy
-                            )
-                            cell_dy = (np.mod(v_rot + shift_y_map, 1.0) - 0.5) * float(
-                                cell_size_xy
-                            )
-                            points = np.column_stack(
-                                ((xx + cell_dx).ravel(), (yy + cell_dy).ravel())
-                            )
-                        else:
-                            points = np.column_stack(
-                                (
-                                    (xx + sample_dx[sidx]).ravel(),
-                                    (yy + sample_dy[sidx]).ravel(),
-                                )
-                            )
-                        inside = contains_xy(
-                            poly_z, points[:, 0], points[:, 1]
-                        ).reshape(xx.shape)
-                        inside_count += inside.astype(float)
-                frac[k_rel] = inside_count / float(sample_dx.size * offsets_z.size)
-
-            if not np.any(frac > 0.0):
-                return True
-
-            full_mask = frac >= (1.0 - 1e-12)
-            blend_mask = (frac > 0.0) & ~full_mask
-
-            if np.any(full_mask):
-                region = (slice(min_k, max_k), slice(min_i, max_i), slice(min_j, max_j))
-                for name, val in zip(MaterialGrids.NAMES, props):
-                    grids.set_masked_region(name, region, full_mask, val)
-
-            if np.any(blend_mask):
-                region = (slice(min_k, max_k), slice(min_i, max_i), slice(min_j, max_j))
-                for name, val in zip(MaterialGrids.NAMES, props):
-                    grids.blend_masked_region(
-                        name,
-                        region,
-                        blend_mask,
-                        val,
-                        frac[blend_mask],
-                    )
-            return True
-
-        sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
-        n_samples_xy = float(sample_dx.size)
-        inside_count = np.zeros(xx.shape, dtype=float)
-        polygon_for_contains = polygon.buffer(1e-15)
-
-        shift_x_map = None
-        shift_y_map = None
-        rot_map = None
-        if self.aa_mode == "stratified_jitter":
-            shift_x_map = np.empty(xx.shape, dtype=float)
-            shift_y_map = np.empty(xx.shape, dtype=float)
-            rot_map = np.empty(xx.shape, dtype=np.uint8)
-            for i_rel in range(xx.shape[0]):
-                cell_i = min_i + i_rel
-                for j_rel in range(xx.shape[1]):
-                    cell_j = min_j + j_rel
-                    sx, sy, rot90 = self._cell_scramble_params_xy(cell_i, cell_j, 0)
-                    shift_x_map[i_rel, j_rel] = sx
-                    shift_y_map[i_rel, j_rel] = sy
-                    rot_map[i_rel, j_rel] = rot90
-
-        for sidx in range(sample_dx.size):
-            if self.aa_mode == "stratified_jitter":
-                u0 = sample_dx[sidx] / float(cell_size_xy) + 0.5
-                v0 = sample_dy[sidx] / float(cell_size_xy) + 0.5
-                u_rot = np.where(
-                    rot_map == 0,
-                    u0,
-                    np.where(
-                        rot_map == 1, v0, np.where(rot_map == 2, 1.0 - u0, 1.0 - v0)
-                    ),
-                )
-                v_rot = np.where(
-                    rot_map == 0,
-                    v0,
-                    np.where(
-                        rot_map == 1, 1.0 - u0, np.where(rot_map == 2, 1.0 - v0, u0)
-                    ),
-                )
-                cell_dx = (np.mod(u_rot + shift_x_map, 1.0) - 0.5) * float(cell_size_xy)
-                cell_dy = (np.mod(v_rot + shift_y_map, 1.0) - 0.5) * float(cell_size_xy)
-                points = np.column_stack(
-                    ((xx + cell_dx).ravel(), (yy + cell_dy).ravel())
-                )
-            else:
-                points = np.column_stack(
-                    ((xx + sample_dx[sidx]).ravel(), (yy + sample_dy[sidx]).ravel())
-                )
-            inside = contains_xy(
-                polygon_for_contains, points[:, 0], points[:, 1]
-            ).reshape(xx.shape)
-            inside_count += inside.astype(float)
-        frac_xy = inside_count / n_samples_xy
-        if not np.any(frac_xy > 0.0):
-            return True
-
-        z_edges0 = np.arange(min_k, max_k, dtype=float) * float(cell_size_z)
-        z_edges1 = z_edges0 + float(cell_size_z)
-        frac_z = np.clip(
-            np.minimum(z_edges1, z1) - np.maximum(z_edges0, z0),
-            0.0,
-            float(cell_size_z),
-        ) / float(cell_size_z)
-        frac = frac_z[:, None, None] * frac_xy[None, :, :]
-        if not np.any(frac > 0.0):
-            return True
-
-        full_mask = frac >= (1.0 - 1e-12)
-        blend_mask = (frac > 0.0) & ~full_mask
-
-        if np.any(full_mask):
-            region = (slice(min_k, max_k), slice(min_i, max_i), slice(min_j, max_j))
-            for name, val in zip(MaterialGrids.NAMES, props):
-                grids.set_masked_region(name, region, full_mask, val)
-
-        if np.any(blend_mask):
-            region = (slice(min_k, max_k), slice(min_i, max_i), slice(min_j, max_j))
-            for name, val in zip(MaterialGrids.NAMES, props):
-                grids.blend_masked_region(name, region, blend_mask, val, frac[blend_mask])
-
-        return True
+        return "fallback"
 
     def _rasterize_structure_3d_fallback(
         self,
-        *,
         structure,
         grids,
         props,
-        min_i,
-        min_j,
-        min_k,
-        max_i,
-        max_j,
-        max_k,
-        cell_size_xy,
-        cell_size_z,
-        x_centers,
-        y_centers,
-        z_centers,
+        sampler,
+        bbox,
+        context,
     ):
         """Fallback supersampling path for non-rectilinear 3D structures."""
+        min_i, min_j, min_k, max_i, max_j, max_k = bbox
         if min_i >= max_i or min_j >= max_j or min_k >= max_k:
             return
 
+        cell_size_xy, _, cell_size_z = context.cell_sizes
+        x_centers, y_centers, z_centers = context.centers
         sample_dx, sample_dy = self._build_supersample_offsets_xy(cell_size_xy)
         offsets_z = self._build_supersample_offsets_z(
             cell_size_z=cell_size_z,
@@ -1662,26 +1119,14 @@ class RegularGrid3D(BaseMeshGrid):
         )
         num_samples = sample_dx.size * offsets_z.size
 
-        if hasattr(structure, "point_in_polygon"):
+        contains_fn = structure.point_in_polygon
 
-            def contains_fn(x, y, z):
-                return structure.point_in_polygon(x, y, z)
-
-        else:
-
-            def contains_fn(x, y, z):
-                return any(
-                    val != def_val
-                    for val, def_val in zip(
-                        self.design.get_material_value(x, y, z), [1.0, 1.0, 0.0]
-                    )
-                )
-
-        for k in range(min_k, max_k):
+        coverage = np.zeros((max_k - min_k, max_i - min_i, max_j - min_j), dtype=float)
+        for local_k, k in enumerate(range(min_k, max_k)):
             z_center = z_centers[k]
-            for i in range(min_i, max_i):
+            for local_i, i in enumerate(range(min_i, max_i)):
                 y_center = y_centers[i]
-                for j in range(min_j, max_j):
+                for local_j, j in enumerate(range(min_j, max_j)):
                     x_center = x_centers[j]
                     cell_dx, cell_dy = self._scramble_offsets_xy_for_cell(
                         sample_dx=sample_dx,
@@ -1691,17 +1136,29 @@ class RegularGrid3D(BaseMeshGrid):
                         cell_j=j,
                         cell_k=k,
                     )
-                    inside = 0
-                    for z_off in offsets_z:
-                        for sidx in range(cell_dx.size):
-                            if contains_fn(
-                                x_center + cell_dx[sidx],
-                                y_center + cell_dy[sidx],
+                    inside = sum(
+                        bool(
+                            contains_fn(
+                                x_center + dx,
+                                y_center + dy,
                                 z_center + z_off,
-                            ):
-                                inside += 1
-                    if inside > 0:
-                        grids.blend_at((k, i, j), props, inside / float(num_samples))
+                            )
+                        )
+                        for z_off in offsets_z
+                        for dx, dy in zip(cell_dx, cell_dy, strict=True)
+                    )
+                    coverage[local_k, local_i, local_j] = inside / num_samples
+        self._apply_coverage(
+            grids,
+            (
+                slice(min_k, max_k),
+                slice(min_i, max_i),
+                slice(min_j, max_j),
+            ),
+            props,
+            coverage,
+            sampler,
+        )
 
     def get_2d_slice(self, z_index=None, z_position=None):
         """Extract a 2D slice from the 3D grid.
@@ -1731,32 +1188,11 @@ class RegularGrid3D(BaseMeshGrid):
             "conductivity": slice_channel(self.conductivity),
         }
 
-    def to_plot_data(self, field="permittivity", z_index=None, z_position=None):
-        """Return renderer-agnostic 2D slice data for manual plotting."""
-        from beamz.visual.data import grid_plot_data
-
-        return grid_plot_data(
-            self,
-            field=field,
-            z_index=z_index,
-            z_position=z_position,
-        )
-
-    def plot(self, **kwargs):
-        """Plot a 2D slice of the rasterized 3D grid."""
-        from beamz.visual.mpl import plot_grid
-
-        kwargs.setdefault("show", False)
-        return plot_grid(self, **kwargs)
-
-    def show(self, **kwargs):
-        """Display a 2D slice of the rasterized 3D grid."""
-        kwargs.setdefault("show", True)
-        return self.plot(**kwargs)
-
 
 # Convenience functions for automatic mesh selection
-def create_mesh(design, resolution, auto_select=True, force_3d=False, **kwargs):
+def create_mesh(
+    design, resolution, auto_select=True, force_3d=False, progress=False, **kwargs
+):
     """Create a mesh automatically selecting 2D or 3D based on design properties.
 
     Args:
@@ -1764,6 +1200,7 @@ def create_mesh(design, resolution, auto_select=True, force_3d=False, **kwargs):
         resolution: Mesh resolution (or xy resolution for 3D)
         auto_select: If True, automatically choose between 2D and 3D meshing
         force_3d: If True, force 3D meshing even for 2D designs
+        progress: Emit rasterization progress to stdout when True.
         **kwargs: Extra mesh kwargs forwarded to RegularGrid/RegularGrid3D
 
     Returns:
@@ -1776,6 +1213,7 @@ def create_mesh(design, resolution, auto_select=True, force_3d=False, **kwargs):
             design,
             resolution_xy=resolution,
             resolution_z=resolution_z,
+            progress=progress,
             **kwargs,
         )
     else:
@@ -1783,4 +1221,4 @@ def create_mesh(design, resolution, auto_select=True, force_3d=False, **kwargs):
             display_status(
                 "Auto-selecting 2D meshing for effectively 2D design (depth=0)", "info"
             )
-        return RegularGrid(design, resolution, **kwargs)
+        return RegularGrid(design, resolution, progress=progress, **kwargs)

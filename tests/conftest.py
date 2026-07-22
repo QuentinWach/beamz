@@ -1,21 +1,13 @@
 """Shared fixtures and utilities for BeamZ FDTD physics validation tests."""
 
-import numpy as np
 import pytest
 
 from beamz import (
-    EPS_0,
     LIGHT_SPEED,
-    MU_0,
-    PML,
     Design,
-    GaussianSource,
     Material,
-    Monitor,
     Rectangle,
-    Simulation,
     calc_optimal_fdtd_params,
-    ramped_cosine,
     um,
 )
 

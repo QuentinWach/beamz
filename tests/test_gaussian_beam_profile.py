@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from beamz.devices.sources._gaussian_beam import GaussianBeamProfile
-from beamz.devices.sources._profiles import FieldProfile3D
+from beamz.devices.sources.compiler import GaussianBeamProfile
+from beamz.devices.sources.specs import FieldProfile3D
 
 
 def test_gaussian_beam_profile_has_transverse_gaussian_envelope():
@@ -79,6 +79,7 @@ def test_gaussian_beam_profile_transverse_phase_matches_tilt_direction():
     y_mid = ex.shape[0] // 2
     row = ex[y_mid, :]
     x_slice = profile.indices["Ex"][2]
+    assert isinstance(x_slice, slice)
     x_coords = (np.arange(x_slice.start, x_slice.stop) + 0.5) * 0.25
     phase = np.unwrap(np.angle(row))
     slope, _intercept = np.polyfit(x_coords, phase, deg=1)

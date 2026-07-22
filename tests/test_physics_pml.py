@@ -15,19 +15,20 @@ from beamz import (
     MU_0,
     PML,
     Design,
+    FieldRecorder,
     GaussianSource,
     Material,
     ModeSource,
+    ModeSpec,
+    SampledSignal,
     Simulation,
     calc_optimal_fdtd_params,
     ramped_cosine,
     um,
 )
-from beamz.shared_kernels import build_tm_xy_cpml_terms
-from beamz.simulation.boundaries import (
-    _cpml_ab_from_profiles,
-    cpml_curl_e_to_h_3d,
-    cpml_curl_h_to_e_3d,
+from beamz.devices._boundary_compile import _AbsorberCompiler
+from beamz.devices.sources.specs import CustomSource
+from beamz.simulation.kernels import (
     tm_xy_curl_h_to_e_2d,
 )
 from tests.utils import compute_field_energy
@@ -77,6 +78,31 @@ class _TaperedLineEzSource:
         injection = -self._profile * value * dt / EPS_0
         fields.Ez = fields.Ez.at[self._indices].add(injection)
 
+    def to_custom_spec(self, sim):
+        fields = sim.compile().grid
+        if self._indices is None:
+            self._initialize(fields, sim.resolution)
+        dt = float(sim.dt)
+        t0 = float(sim.time[0])
+        signal = np.asarray(self.signal, dtype=np.float32).reshape(-1)
+        values = np.zeros((int(sim.num_steps),), dtype=np.float32)
+        for step in range(values.size):
+            sample = t0 + step * dt + 0.5 * dt
+            idx_float = sample / dt
+            idx_low = int(np.floor(idx_float))
+            idx_high = idx_low + 1
+            frac = idx_float - np.floor(idx_float)
+            if 0 <= idx_low < signal.size - 1:
+                values[step] = (1.0 - frac) * signal[idx_low] + frac * signal[idx_high]
+        return CustomSource(
+            component="Ez",
+            timing="e",
+            index=self._indices,
+            coeff=-np.asarray(self._profile, dtype=np.float32) * dt / EPS_0,
+            waveform=values,
+            target_shape=tuple(fields.Ez.shape),
+        )
+
 
 def _homogeneous_cpml_reflection_db(
     *, points_per_wavelength: int, refractive_index: float = 1.0
@@ -122,7 +148,7 @@ def _homogeneous_cpml_reflection_db(
     cpml_alpha_max = 2.0 * EPS_0 * cpml_alpha_normalized / max(float(dt), 1e-30)
     sim = Simulation(
         design=design,
-        sources=[source],
+        sources=[],
         boundaries=[
             PML(
                 thickness=pml_thickness,
@@ -133,14 +159,16 @@ def _homogeneous_cpml_reflection_db(
         time=time,
         resolution=dx,
     )
+    sim = sim.updated_copy(sources=(source.to_custom_spec(sim),))
 
     probe_ix = int(round(probe_x / dx))
     probe_y0 = int(round(3.0 * wavelength / dx))
     probe_y1 = int(round(5.0 * wavelength / dx))
     samples = []
+    state = sim.initial_state()
     for _ in range(len(time)):
-        sim.step()
-        ez = np.asarray(sim.fields.Ez)
+        state = sim.step(state)
+        ez = np.asarray(state.ez)
         samples.append(float(np.mean(ez[probe_y0:probe_y1, probe_ix])))
 
     samples = np.asarray(samples)
@@ -160,6 +188,116 @@ def _homogeneous_cpml_reflection_db(
     incident = float(np.max(np.abs(samples[incident_window])))
     reflected = float(np.max(np.abs(samples[reflected_window])))
     return 20.0 * np.log10(max(reflected, 1e-300) / max(incident, 1e-300))
+
+
+def _expected_cpml_profile_on_yee_coordinates(
+    *,
+    domain_cells: int,
+    pml_cells: int,
+    sample_kind: str,
+    sigma_max: float,
+    kappa_max: float,
+    alpha_max: float,
+    order: float,
+):
+    """Evaluate the CPML polynomial independently on physical Yee coordinates."""
+
+    if sample_kind == "E":
+        coordinates = np.arange(domain_cells + 1, dtype=np.float64)
+    elif sample_kind == "H":
+        coordinates = np.arange(domain_cells, dtype=np.float64) + 0.5
+    else:
+        raise ValueError(sample_kind)
+    low_distance = np.clip(pml_cells - coordinates, 0.0, pml_cells)
+    high_distance = np.clip(coordinates - (domain_cells - pml_cells), 0.0, pml_cells)
+    distance = np.maximum(low_distance, high_distance)
+    active = distance > 0.0
+    normalized = distance / float(pml_cells)
+    sigma = sigma_max * normalized**order
+    kappa = 1.0 + (kappa_max - 1.0) * normalized**order
+    alpha = np.where(active, alpha_max * (1.0 - normalized), 0.0)
+    return sigma, kappa, alpha
+
+
+@pytest.mark.parametrize("sample_kind", ["E", "H"])
+def test_cpml_profiles_follow_physical_complete_yee_coordinates(sample_kind):
+    domain_cells = 24
+    pml_cells = 6
+    spacing = 0.1
+    sigma_max = 10.0
+    kappa_max = 3.0
+    alpha_max = 2.0
+    order = 3.0
+    total_samples = domain_cells + 1 if sample_kind == "E" else domain_cells
+    compiler = _AbsorberCompiler(
+        PML(
+            thickness=pml_cells * spacing,
+            formulation="cpml",
+            sigma_max=sigma_max,
+            kappa_max=kappa_max,
+            alpha_max=alpha_max,
+            m=int(order),
+        )
+    )
+
+    actual = compiler._compute_fdtdx_staggered_profile_1d(
+        total_samples,
+        spacing,
+        True,
+        True,
+        sample_kind=sample_kind,
+        domain_cells=domain_cells,
+    )
+    expected = _expected_cpml_profile_on_yee_coordinates(
+        domain_cells=domain_cells,
+        pml_cells=pml_cells,
+        sample_kind=sample_kind,
+        sigma_max=sigma_max,
+        kappa_max=kappa_max,
+        alpha_max=alpha_max,
+        order=order,
+    )
+
+    for got, want in zip(actual, expected, strict=True):
+        np.testing.assert_allclose(np.asarray(got), want, rtol=1e-6, atol=1e-7)
+
+
+@pytest.mark.parametrize("sample_kind", ["E", "H"])
+def test_cpml_complete_yee_profiles_mirror_low_and_high_boundaries(sample_kind):
+    domain_cells = 20
+    pml_cells = 5
+    total_samples = domain_cells + 1 if sample_kind == "E" else domain_cells
+    compiler = _AbsorberCompiler(
+        PML(
+            thickness=float(pml_cells),
+            formulation="cpml",
+            sigma_max=4.0,
+            kappa_max=2.5,
+            alpha_max=0.5,
+        )
+    )
+
+    low = compiler._compute_fdtdx_staggered_profile_1d(
+        total_samples,
+        1.0,
+        True,
+        False,
+        sample_kind=sample_kind,
+        domain_cells=domain_cells,
+    )
+    high = compiler._compute_fdtdx_staggered_profile_1d(
+        total_samples,
+        1.0,
+        False,
+        True,
+        sample_kind=sample_kind,
+        domain_cells=domain_cells,
+    )
+
+    for low_values, high_values in zip(low, high, strict=True):
+        np.testing.assert_allclose(
+            np.asarray(low_values), np.asarray(high_values)[::-1], rtol=0.0, atol=1e-7
+        )
 
 
 @pytest.mark.simulation
@@ -206,12 +344,13 @@ class TestPMLAbsorption:
         sigma_shell = np.asarray(
             sim.pml_data["sigma_x"], dtype=np.float64
         ) + np.asarray(sim.pml_data["sigma_y"], dtype=np.float64)
-        total_sigma = np.asarray(sim.fields.total_conductivity, dtype=np.float64)
+        fields = sim.compile().grid
+        total_sigma = np.asarray(fields.total_conductivity, dtype=np.float64)
 
-        np.testing.assert_allclose(total_sigma, np.asarray(sim.fields.conductivity))
+        np.testing.assert_allclose(total_sigma, np.asarray(fields.conductivity))
         assert float(np.max(sigma_shell)) > 0.0
         assert float(np.max(total_sigma)) == pytest.approx(
-            float(np.max(sim.fields.conductivity))
+            float(np.max(fields.conductivity))
         )
 
     def test_sponge_absorber_still_contributes_loss_in_material_updates(
@@ -233,7 +372,9 @@ class TestPMLAbsorption:
         sigma_shell = np.asarray(
             sim.pml_data["sigma_x"], dtype=np.float64
         ) + np.asarray(sim.pml_data["sigma_y"], dtype=np.float64)
-        total_sigma = np.asarray(sim.fields.total_conductivity, dtype=np.float64)
+        total_sigma = np.asarray(
+            sim.compile().grid.total_conductivity, dtype=np.float64
+        )
 
         assert float(np.max(sigma_shell)) > 0.0
         assert float(np.max(total_sigma)) >= float(np.max(sigma_shell))
@@ -256,7 +397,7 @@ class TestPMLAbsorption:
         alpha_x = np.asarray(sim.pml_data["alpha_x"], dtype=np.float64)
         alpha_y = np.asarray(sim.pml_data["alpha_y"], dtype=np.float64)
 
-        assert float(sim.boundaries[0].alpha_max) > 0.0
+        assert sim.boundaries[0].alpha_max is None
         assert float(np.max(alpha_x)) > 0.0
         assert float(np.max(alpha_y)) > 0.0
 
@@ -274,7 +415,7 @@ class TestPMLAbsorption:
             m=3,
         )
 
-        Simulation(
+        sim = Simulation(
             design=design,
             sources=[],
             boundaries=[pml],
@@ -284,7 +425,8 @@ class TestPMLAbsorption:
 
         eta = np.sqrt(MU_0 / EPS_0)
         unscaled = -4.0 * np.log(1e-6) / (2.0 * eta * wavelength)
-        assert pml.sigma_max == pytest.approx(unscaled)
+        assert pml.sigma_max is None
+        assert float(np.max(np.asarray(sim.pml_data["sigma_x"], dtype=np.float64))) == pytest.approx(unscaled)  # fmt: skip
 
     def test_cpml_default_sigma_uses_target_reflection_formula_3d(self):
         dx = 0.1 * um
@@ -303,7 +445,7 @@ class TestPMLAbsorption:
             material=Material(permittivity=1.0),
         )
 
-        Simulation(
+        sim = Simulation(
             design=design,
             sources=[],
             boundaries=[pml],
@@ -313,7 +455,8 @@ class TestPMLAbsorption:
 
         eta = np.sqrt(MU_0 / EPS_0)
         unscaled = -4.0 * np.log(1e-6) / (2.0 * eta * thickness)
-        assert pml.sigma_max == pytest.approx(unscaled)
+        assert pml.sigma_max is None
+        assert float(np.max(np.asarray(sim.pml_data["sigma_x"], dtype=np.float64))) == pytest.approx(unscaled)  # fmt: skip
 
     def test_split_cpml_boundaries_preserve_identity_kappa_2d(
         self, vacuum_domain_small
@@ -334,8 +477,9 @@ class TestPMLAbsorption:
             resolution=dx,
         )
 
-        cy = sim.fields.permittivity.shape[0] // 2
-        cx = sim.fields.permittivity.shape[1] // 2
+        fields = sim.compile().grid
+        cy = fields.permittivity.shape[0] // 2
+        cx = fields.permittivity.shape[1] // 2
         assert np.asarray(sim.pml_data["kappa_x"], dtype=np.float64)[
             cy, cx
         ] == pytest.approx(1.0)
@@ -351,97 +495,11 @@ class TestPMLAbsorption:
             cy, cx
         ] == pytest.approx(1.0)
 
-        terms = build_tm_xy_cpml_terms(tm_xy, ez_shape=sim.fields.Ez.shape)
-        np.testing.assert_allclose(
-            np.asarray(terms.kappa_h_direct_terms),
-            np.asarray(terms.kappa_h_aux_terms),
-            rtol=0.0,
-            atol=0.0,
+        plan = sim.compile().boundary.cpml
+        assert len(plan.h_terms) == len(plan.e_terms) == 2
+        assert all(
+            not hasattr(term, "sigma") for term in (*plan.h_terms, *plan.e_terms)
         )
-
-    def test_cpml_full_tm_profiles_follow_discrete_yee_staggering(self):
-        pml = PML(thickness=1.0, formulation="cpml", sigma_max=10.0, alpha_max=1.0)
-        profile_fn = getattr(
-            pml,
-            next(name for name in dir(pml) if name.endswith("_staggered_profile_1d")),
-        )
-
-        sigma_low_e, _, _ = profile_fn(
-            total_samples=21,
-            spacing=0.1,
-            low_active=True,
-            high_active=False,
-            sample_kind="E",
-        )
-        sigma_high_e, _, _ = profile_fn(
-            total_samples=21,
-            spacing=0.1,
-            low_active=False,
-            high_active=True,
-            sample_kind="E",
-        )
-        sigma_low_h, _, _ = profile_fn(
-            total_samples=20,
-            spacing=0.1,
-            low_active=True,
-            high_active=False,
-            sample_kind="H",
-        )
-
-        # The discrete Yee staggering does not drive E-node samples all the way
-        # to sigma_max at the outer boundary, and the interface node stays at zero.
-        assert 0.0 < float(sigma_low_e[0]) < pml.sigma_max
-        assert float(sigma_low_e[10]) == pytest.approx(0.0)
-        assert float(sigma_high_e[-11]) == pytest.approx(0.0)
-        assert 0.0 < float(sigma_high_e[-1]) < pml.sigma_max
-        # H samples are half-cell shifted and stay strictly positive through the low-side slab.
-        assert float(sigma_low_h[0]) > float(sigma_low_h[1]) > 0.0
-
-    def test_cpml_compact_3d_high_side_uses_domain_cell_coordinates(self):
-        pml = PML(thickness=1.0, formulation="cpml", sigma_max=10.0, alpha_max=1.0)
-        profile_fn = getattr(
-            pml,
-            next(name for name in dir(pml) if name.endswith("_staggered_profile_1d")),
-        )
-
-        sigma_low_e, _, _ = profile_fn(
-            total_samples=20,
-            spacing=0.1,
-            low_active=True,
-            high_active=False,
-            sample_kind="E",
-        )
-        sigma_high_e, _, _ = profile_fn(
-            total_samples=20,
-            spacing=0.1,
-            low_active=False,
-            high_active=True,
-            sample_kind="E",
-            domain_cells=20,
-        )
-        sigma_low_h, _, _ = profile_fn(
-            total_samples=19,
-            spacing=0.1,
-            low_active=True,
-            high_active=False,
-            sample_kind="H",
-        )
-        sigma_high_h, _, _ = profile_fn(
-            total_samples=19,
-            spacing=0.1,
-            low_active=False,
-            high_active=True,
-            sample_kind="H",
-            domain_cells=20,
-        )
-
-        np.testing.assert_allclose(
-            np.asarray(sigma_high_e[-10:]), np.asarray(sigma_low_e[:10])[::-1]
-        )
-        np.testing.assert_allclose(
-            np.asarray(sigma_high_h[-10:]), np.asarray(sigma_low_h[:10])[::-1]
-        )
-        assert float(sigma_high_h[-10]) == pytest.approx(0.0)
 
     def test_tm_xy_curl_h_to_e_updates_open_boundary_nodes(self):
         hx = np.array(
@@ -467,223 +525,6 @@ class TestPMLAbsorption:
         assert not np.allclose(np.asarray(curl[-1, :]), 0.0)
         assert not np.allclose(np.asarray(curl[:, 0]), 0.0)
         assert not np.allclose(np.asarray(curl[:, -1]), 0.0)
-
-    def test_cpml_3d_curl_helpers_match_literal_split_form(self):
-        rng = np.random.default_rng(7)
-        resolution = np.float64(0.2)
-        dt = 0.05
-
-        ex = jnp.asarray(rng.normal(size=(3, 4, 4)).astype(np.float32))
-        ey = jnp.asarray(rng.normal(size=(3, 3, 5)).astype(np.float32))
-        ez = jnp.asarray(rng.normal(size=(2, 4, 5)).astype(np.float32))
-        hx = jnp.asarray(rng.normal(size=(2, 3, 5)).astype(np.float32))
-        hy = jnp.asarray(rng.normal(size=(2, 4, 4)).astype(np.float32))
-        hz = jnp.asarray(rng.normal(size=(3, 3, 4)).astype(np.float32))
-
-        h_term_shapes = (
-            (2, 3, 5),
-            (2, 3, 5),
-            (2, 4, 4),
-            (2, 4, 4),
-            (3, 3, 4),
-            (3, 3, 4),
-        )
-        e_term_shapes = (
-            (3, 4, 4),
-            (3, 4, 4),
-            (3, 3, 5),
-            (3, 3, 5),
-            (2, 4, 5),
-            (2, 4, 5),
-        )
-
-        sigma_h = tuple(
-            jnp.asarray(rng.uniform(0.0, 2.0, size=shape).astype(np.float32))
-            for shape in h_term_shapes
-        )
-        kappa_h = tuple(
-            jnp.asarray(rng.uniform(1.0, 3.0, size=shape).astype(np.float32))
-            for shape in h_term_shapes
-        )
-        alpha_h = tuple(
-            jnp.asarray(rng.uniform(0.0, 0.5, size=shape).astype(np.float32))
-            for shape in h_term_shapes
-        )
-        psi_h = tuple(
-            jnp.asarray(rng.normal(size=shape).astype(np.float32))
-            for shape in h_term_shapes
-        )
-        sigma_e = tuple(
-            jnp.asarray(rng.uniform(0.0, 2.0, size=shape).astype(np.float32))
-            for shape in e_term_shapes
-        )
-        kappa_e = tuple(
-            jnp.asarray(rng.uniform(1.0, 3.0, size=shape).astype(np.float32))
-            for shape in e_term_shapes
-        )
-        alpha_e = tuple(
-            jnp.asarray(rng.uniform(0.0, 0.5, size=shape).astype(np.float32))
-            for shape in e_term_shapes
-        )
-        psi_e = tuple(
-            jnp.asarray(rng.normal(size=shape).astype(np.float32))
-            for shape in e_term_shapes
-        )
-
-        a_h, b_h, inv_kappa_h = [], [], []
-        for sigma_term, kappa_term, alpha_term in zip(
-            sigma_h, kappa_h, alpha_h, strict=True
-        ):
-            a_term, b_term = _cpml_ab_from_profiles(
-                sigma_term, kappa_term, alpha_term, dt
-            )
-            a_h.append(a_term)
-            b_h.append(b_term)
-            inv_kappa_h.append(1.0 / kappa_term)
-        a_e, b_e, inv_kappa_e = [], [], []
-        for sigma_term, kappa_term, alpha_term in zip(
-            sigma_e, kappa_e, alpha_e, strict=True
-        ):
-            a_term, b_term = _cpml_ab_from_profiles(
-                sigma_term, kappa_term, alpha_term, dt
-            )
-            a_e.append(a_term)
-            b_e.append(b_term)
-            inv_kappa_e.append(1.0 / kappa_term)
-
-        a_h_mixed = tuple(term.astype(jnp.float64) for term in a_h)
-        b_h_mixed = tuple(term.astype(jnp.float64) for term in b_h)
-        inv_kappa_h_mixed = tuple(term.astype(jnp.float64) for term in inv_kappa_h)
-        a_e_mixed = tuple(term.astype(jnp.float64) for term in a_e)
-        b_e_mixed = tuple(term.astype(jnp.float64) for term in b_e)
-        inv_kappa_e_mixed = tuple(term.astype(jnp.float64) for term in inv_kappa_e)
-
-        curl_hx, curl_hy, curl_hz, psi_h_updated = cpml_curl_e_to_h_3d(
-            ex,
-            ey,
-            ez,
-            resolution,
-            a_h_terms=a_h_mixed,
-            b_h_terms=b_h_mixed,
-            inv_kappa_h_terms=inv_kappa_h_mixed,
-            psi_h_terms=psi_h,
-        )
-
-        d_terms_h = (
-            (ez[:, 1:, :] - ez[:, :-1, :]) / resolution,
-            (ey[1:, :, :] - ey[:-1, :, :]) / resolution,
-            (ex[1:, :, :] - ex[:-1, :, :]) / resolution,
-            (ez[:, :, 1:] - ez[:, :, :-1]) / resolution,
-            (ey[:, :, 1:] - ey[:, :, :-1]) / resolution,
-            (ex[:, 1:, :] - ex[:, :-1, :]) / resolution,
-        )
-        psi_h_ref = tuple(
-            b_term * psi_term + a_term * d_term
-            for b_term, psi_term, a_term, d_term in zip(
-                b_h, psi_h, a_h, d_terms_h, strict=True
-            )
-        )
-        corrected_h = tuple(
-            d_term * inv_term + psi_term
-            for d_term, inv_term, psi_term in zip(
-                d_terms_h, inv_kappa_h, psi_h_ref, strict=True
-            )
-        )
-        curl_hx_ref = corrected_h[0] - corrected_h[1]
-        curl_hy_ref = corrected_h[2] - corrected_h[3]
-        curl_hz_ref = corrected_h[4] - corrected_h[5]
-
-        for psi_got, psi_ref in zip(psi_h_updated, psi_h_ref, strict=True):
-            np.testing.assert_allclose(
-                np.asarray(psi_got), np.asarray(psi_ref), rtol=1e-6, atol=1e-6
-            )
-        assert all(term.dtype == psi_h[0].dtype for term in psi_h_updated)
-        np.testing.assert_allclose(
-            np.asarray(curl_hx), np.asarray(curl_hx_ref), rtol=1e-6, atol=1e-6
-        )
-        np.testing.assert_allclose(
-            np.asarray(curl_hy), np.asarray(curl_hy_ref), rtol=1e-6, atol=1e-6
-        )
-        np.testing.assert_allclose(
-            np.asarray(curl_hz), np.asarray(curl_hz_ref), rtol=1e-6, atol=1e-6
-        )
-
-        curl_ex, curl_ey, curl_ez, psi_e_updated = cpml_curl_h_to_e_3d(
-            hx,
-            hy,
-            hz,
-            resolution,
-            a_e_terms=a_e_mixed,
-            b_e_terms=b_e_mixed,
-            inv_kappa_e_terms=inv_kappa_e_mixed,
-            psi_e_terms=psi_e,
-            metallic_edges=frozenset(
-                {"left", "right", "bottom", "top", "front", "back"}
-            ),
-        )
-
-        d_terms_e = (
-            (
-                jnp.pad(hz, ((0, 0), (1, 1), (0, 0)))[:, 1:, :]
-                - jnp.pad(hz, ((0, 0), (1, 1), (0, 0)))[:, :-1, :]
-            )
-            / resolution,
-            (
-                jnp.pad(hy, ((1, 1), (0, 0), (0, 0)))[1:, :, :]
-                - jnp.pad(hy, ((1, 1), (0, 0), (0, 0)))[:-1, :, :]
-            )
-            / resolution,
-            (
-                jnp.pad(hx, ((1, 1), (0, 0), (0, 0)))[1:, :, :]
-                - jnp.pad(hx, ((1, 1), (0, 0), (0, 0)))[:-1, :, :]
-            )
-            / resolution,
-            (
-                jnp.pad(hz, ((0, 0), (0, 0), (1, 1)))[:, :, 1:]
-                - jnp.pad(hz, ((0, 0), (0, 0), (1, 1)))[:, :, :-1]
-            )
-            / resolution,
-            (
-                jnp.pad(hy, ((0, 0), (0, 0), (1, 1)))[:, :, 1:]
-                - jnp.pad(hy, ((0, 0), (0, 0), (1, 1)))[:, :, :-1]
-            )
-            / resolution,
-            (
-                jnp.pad(hx, ((0, 0), (1, 1), (0, 0)))[:, 1:, :]
-                - jnp.pad(hx, ((0, 0), (1, 1), (0, 0)))[:, :-1, :]
-            )
-            / resolution,
-        )
-        psi_e_ref = tuple(
-            b_term * psi_term + a_term * d_term
-            for b_term, psi_term, a_term, d_term in zip(
-                b_e, psi_e, a_e, d_terms_e, strict=True
-            )
-        )
-        corrected_e = tuple(
-            d_term * inv_term + psi_term
-            for d_term, inv_term, psi_term in zip(
-                d_terms_e, inv_kappa_e, psi_e_ref, strict=True
-            )
-        )
-        curl_ex_ref = corrected_e[0] - corrected_e[1]
-        curl_ey_ref = corrected_e[2] - corrected_e[3]
-        curl_ez_ref = corrected_e[4] - corrected_e[5]
-
-        for psi_got, psi_ref in zip(psi_e_updated, psi_e_ref, strict=True):
-            np.testing.assert_allclose(
-                np.asarray(psi_got), np.asarray(psi_ref), rtol=1e-6, atol=1e-6
-            )
-        assert all(term.dtype == psi_e[0].dtype for term in psi_e_updated)
-        np.testing.assert_allclose(
-            np.asarray(curl_ex), np.asarray(curl_ex_ref), rtol=1e-6, atol=1e-6
-        )
-        np.testing.assert_allclose(
-            np.asarray(curl_ey), np.asarray(curl_ey_ref), rtol=1e-6, atol=1e-6
-        )
-        np.testing.assert_allclose(
-            np.asarray(curl_ez), np.asarray(curl_ez_ref), rtol=1e-6, atol=1e-6
-        )
 
     @pytest.mark.slow
     @pytest.mark.parametrize("points_per_wavelength", [10, 11, 12])
@@ -730,15 +571,12 @@ class TestPMLAbsorption:
             t_max=15.0 / frequency,
         )
 
-        grid = design.rasterize(resolution=dx)
         source = ModeSource(
-            grid=grid,
-            center=(3.0 * wavelength, domain_height / 2.0),
-            width=3.0 * core_width,
-            wavelength=wavelength,
-            pol="tm",
-            signal=signal,
-            direction="+x",
+            center=(3.0 * wavelength, domain_height / 2.0, 0.0),
+            size=(0.0, 3.0 * core_width, core_width),
+            source_time=SampledSignal(signal, dt=dt, freq0=frequency),
+            direction="+",
+            mode_spec=ModeSpec(polarization="tm"),
         )
         sim = Simulation(
             design=design,
@@ -748,8 +586,9 @@ class TestPMLAbsorption:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=60)
-        frames = [np.asarray(frame) for frame in result["fields"]["Ez"]]
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 60)))
+        result = sim.run()
+        frames = [np.asarray(frame) for frame in result.monitor("fields").fields["Ez"]]
         energies = np.asarray([compute_field_energy(frame, dx) for frame in frames])
         peak_energy = float(np.max(energies))
         late_energy = float(np.mean(energies[-3:]))
@@ -816,10 +655,13 @@ class TestPMLAbsorption:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
         # Compute energy at each snapshot
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         # Find peak energy (during excitation)
         peak_energy = max(energies)
@@ -879,9 +721,12 @@ class TestPMLAbsorption:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=10)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+        result = sim.run()
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         # After source stops (~35% accounting for ramp), check monotonic decay
         source_stop_idx = int(len(energies) * 0.4)
@@ -941,9 +786,12 @@ class TestPMLAbsorption:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         peak_energy = max(energies)
         late_energy = np.mean(energies[-3:]) if len(energies) >= 3 else energies[-1]
@@ -992,18 +840,21 @@ class TestPMLAbsorption:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=100)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 100)))
+        result = sim.run()
 
         # Check for field explosion
         max_reasonable = 1e10
-        for i, Ez in enumerate(result["fields"]["Ez"]):
+        for i, Ez in enumerate(result.monitor("fields").fields["Ez"]):
             max_field = np.max(np.abs(Ez))
             assert max_field < max_reasonable, (
                 f"PML instability detected at snapshot {i}: max={max_field:.2e}"
             )
 
         # Check that energy eventually decays (not stuck at high level)
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
         if energies[0] > 1e-30:
             decay_ratio = energies[-1] / max(energies)
             assert decay_ratio < 0.5, (

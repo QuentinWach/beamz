@@ -1,4 +1,4 @@
-# Python
+# Python bytecode and build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,81 +19,70 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-*.excalidraw
-wip/
-experiments/
-results/
 
-# Virtual Environment
+# Virtual environments and dependency caches
 venv/
 env/
 ENV/
 .venv/
 .uv-cache/
+.cache/
+
+# Test, coverage, and type-checker artifacts
+.coverage
+coverage.xml
+htmlcov/
+.hypothesis/
+.benchmarks/
+.mypy_cache/
 .pytest_cache/
 .ruff_cache/
-.claude
-.cursor
-.becnhmarks
+.tox/
 
-# IDE
+# Editors and local tooling
 .DS_Store
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# Testing
-.coverage
-htmlcov/
-.pytest_cache/
-.tox/
+.claude/
 .cursor
 
-# Distribution
-dist/
-build/
-*.egg-info/
+# Jupyter
+.ipynb_checkpoints/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Local development settings
+# Local configuration
 .env
-.env.local 
+.env.local
+.mplconfig/
+.python_cache/
+.beamz_cache/
 
-archive
+# Local work and generated output
+/archive/
+/experiments/
+/notes/
+/old_examples/
+/project_ideas/
+/reference/
+/results/
+/simulation_results/
+/tmp/
+/wip/
+/benchmarks/results/
+
+# Local scratch files
 NOTES.md
-*.pdf
-simulation_results/
-*.h5
-*.gds
 mat_lib.txt
 tape_coupler.py
 BENCHMARKS.md
 ARTICLES.md
 analyze_project.py
-*.mp4
 pre_README.md
 data.txt
 plot_data.py
-project_ideas/
 MARKETING_2.md
-!BEAMZ_logo.png
-*.npy
-tmp/
-.benchmarks/
-benchmarks/results/ir/
-benchmarks/results/trace/
-benchmarks/results/**
-!benchmarks/results/.gitkeep
-old_examples/
+*.excalidraw
 
-beamz/devices/reference/
-notes/
-.mplconfig/
-.pytest_cache/
-.python_cache/
-.venv/
-reference/
-.beamz_cache/
+# Generated reference data
+/beamz/devices/reference/

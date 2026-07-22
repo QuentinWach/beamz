@@ -1,11 +1,13 @@
 import warnings
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from beamz import EPS_0, MU_0, PML, AbsorbingLayer, Design, Material, um
-from beamz.simulation.fields import Fields
+from beamz import EPS_0, MU_0, PML, Absorber, um
+from beamz.devices._boundary_compile import (
+    compile_absorber_regions,
+)
+from tests.utils import compiled_grid
 
 pytestmark = pytest.mark.unit
 
@@ -14,7 +16,7 @@ def _make_fields_2d(shape=(6, 8), *, resolution=0.1):
     permittivity = np.ones(shape, dtype=np.float32)
     conductivity = np.zeros(shape, dtype=np.float32)
     permeability = np.ones(shape, dtype=np.float32)
-    return Fields(
+    return compiled_grid(
         permittivity=permittivity,
         conductivity=conductivity,
         permeability=permeability,
@@ -27,7 +29,7 @@ def _make_fields_3d(shape=(5, 6, 7), *, resolution=0.1):
     permittivity = np.ones(shape, dtype=np.float32)
     conductivity = np.zeros(shape, dtype=np.float32)
     permeability = np.ones(shape, dtype=np.float32)
-    return Fields(
+    return compiled_grid(
         permittivity=permittivity,
         conductivity=conductivity,
         permeability=permeability,
@@ -36,19 +38,14 @@ def _make_fields_3d(shape=(5, 6, 7), *, resolution=0.1):
 
 
 def _make_design_2d(shape=(6, 8), *, resolution=0.1):
-    return Design(
-        width=shape[1] * resolution,
-        height=shape[0] * resolution,
-        material=Material(permittivity=1.0, permeability=1.0, conductivity=0.0),
-    )
+    return (shape[1] * resolution, shape[0] * resolution, 0.0)
 
 
 def _make_design_3d(shape=(5, 6, 7), *, resolution=0.1):
-    return Design(
-        width=shape[2] * resolution,
-        height=shape[1] * resolution,
-        depth=shape[0] * resolution,
-        material=Material(permittivity=1.0, permeability=1.0, conductivity=0.0),
+    return (
+        shape[2] * resolution,
+        shape[1] * resolution,
+        shape[0] * resolution,
     )
 
 
@@ -65,33 +62,41 @@ def test_pml_parameter_defaults():
     assert pml.target_reflection == pytest.approx(1e-6)
 
 
+def test_sponge_absorber_is_an_explicit_boundary_specification():
+    absorber = Absorber(edges=["left"], thickness=0.2, sigma_max=5.0)
+
+    payload = compile_absorber_regions(
+        absorber,
+        _make_fields_2d(),
+        _make_design_2d(),
+        resolution=0.1,
+        dt=1e-15,
+    )
+
+    assert absorber.formulation == "sponge"
+    assert absorber.edges == ("left",)
+    assert payload["formulation"] == "sponge"
+    assert np.any(np.asarray(payload["mask"]))
+
+
 def test_sigma_max_is_computed_when_omitted():
     fields = _make_fields_2d()
     design = _make_design_2d()
     pml = PML(thickness=0.2, sigma_max=None, formulation="sponge")
 
-    payload = pml.create_pml_regions(
-        fields, design, resolution=0.1, dt=1e-15, plane_2d="xy"
-    )
+    payload = compile_absorber_regions(pml, fields, design, resolution=0.1, dt=1e-15)
 
-    assert pml.sigma_max is not None
-    assert float(pml.sigma_max) > 0.0
+    assert pml.sigma_max is None
+    assert float(np.max(np.asarray(payload["sigma_x"], dtype=np.float64))) > 0.0
     assert payload["sigma_x"].shape == fields.permittivity.shape
     assert payload["sigma_y"].shape == fields.permittivity.shape
     assert payload["mask"].shape == fields.permittivity.shape
     assert payload["formulation"] == "sponge"
 
 
-def test_absorbing_layer_uses_sponge_formulation():
-    absorber = AbsorbingLayer(thickness=0.2, sigma_max=5.0)
-
-    assert absorber.formulation == "sponge"
-
-
-def test_sigma_alias_maps_to_sponge():
-    pml = PML(formulation="sigma")
-
-    assert pml.formulation == "sponge"
+def test_pml_rejects_removed_sigma_formulation_alias():
+    with pytest.raises(ValueError, match="sponge"):
+        PML(formulation="sigma")
 
 
 def test_cpml_alpha_is_computed_when_omitted():
@@ -104,12 +109,9 @@ def test_cpml_alpha_is_computed_when_omitted():
         formulation="cpml",
     )
 
-    payload = pml.create_pml_regions(
-        fields, design, resolution=0.1, dt=2e-15, plane_2d="xy"
-    )
+    payload = compile_absorber_regions(pml, fields, design, resolution=0.1, dt=2e-15)
 
-    assert pml.alpha_max is not None
-    assert float(pml.alpha_max) > 0.0
+    assert pml.alpha_max is None
     assert float(np.max(np.asarray(payload["alpha_x"], dtype=np.float64))) > 0.0
     assert float(np.max(np.asarray(payload["alpha_y"], dtype=np.float64))) > 0.0
 
@@ -120,17 +122,16 @@ def test_cpml_auto_sigma_uses_target_reflection_formula_directly():
     pml = PML(thickness=0.2, sigma_max=None, alpha_max=None, formulation="cpml")
     dt = 2e-15
 
-    pml.create_pml_regions(fields, design, resolution=0.1, dt=dt, plane_2d="xy")
+    payload = compile_absorber_regions(pml, fields, design, resolution=0.1, dt=dt)
 
     eta = np.sqrt(MU_0 / EPS_0)
     unscaled_sigma = -(
         (pml.m + 1) * np.log(pml.target_reflection) / (2.0 * eta * float(pml.thickness))
     )
-    assert pml.sigma_max == pytest.approx(unscaled_sigma)
-    assert pml.alpha_max == pytest.approx(
-        2.0 * EPS_0 * pml._DEFAULT_CPML_ALPHA_NORMALIZED / dt
-    )
-    assert pml._DEFAULT_CPML_ALPHA_NORMALIZED == pytest.approx(0.1)
+    assert pml.sigma_max is None
+    assert pml.alpha_max is None
+    assert float(np.max(np.asarray(payload["sigma_x"], dtype=np.float64))) == pytest.approx(unscaled_sigma)  # fmt: skip
+    assert pytest.approx(0.1) == pml._DEFAULT_CPML_ALPHA_NORMALIZED
 
 
 def test_cpml_3d_auto_alpha_uses_tuned_default():
@@ -139,12 +140,47 @@ def test_cpml_3d_auto_alpha_uses_tuned_default():
     pml = PML(thickness=0.2, sigma_max=5.0, alpha_max=None, formulation="cpml")
     dt = 2e-15
 
-    pml.create_pml_regions(fields, design, resolution=0.1, dt=dt)
+    payload = compile_absorber_regions(pml, fields, design, resolution=0.1, dt=dt)
 
-    assert pml.alpha_max == pytest.approx(
-        2.0 * EPS_0 * pml._DEFAULT_3D_CPML_ALPHA_NORMALIZED / dt
+    assert pml.alpha_max is None
+    assert float(np.max(np.asarray(payload["alpha_x"], dtype=np.float64))) > 0.0
+    assert pytest.approx(0.05) == pml._DEFAULT_3D_CPML_ALPHA_NORMALIZED
+
+
+def test_cpml_auto_parameters_do_not_leak_between_shared_pml_uses():
+    shared = PML(thickness=0.2, sigma_max=None, alpha_max=None, formulation="cpml")
+    compile_absorber_regions(
+        shared,
+        _make_fields_2d(),
+        _make_design_2d(),
+        resolution=0.1,
+        dt=2e-15,
     )
-    assert pml._DEFAULT_3D_CPML_ALPHA_NORMALIZED == pytest.approx(0.05)
+
+    shared_payload = compile_absorber_regions(
+        shared,
+        _make_fields_3d(),
+        _make_design_3d(),
+        resolution=0.1,
+        dt=2e-15,
+    )
+    fresh = PML(
+        thickness=0.2,
+        sigma_max=None,
+        alpha_max=None,
+        formulation="cpml",
+    )
+    fresh_payload = compile_absorber_regions(
+        fresh,
+        _make_fields_3d(),
+        _make_design_3d(),
+        resolution=0.1,
+        dt=2e-15,
+    )
+
+    assert shared.sigma_max is None
+    assert shared.alpha_max is None
+    np.testing.assert_allclose(shared_payload["alpha_x"], fresh_payload["alpha_x"])
 
 
 def test_profile_shapes_match_2d_field_grid():
@@ -158,9 +194,7 @@ def test_profile_shapes_match_2d_field_grid():
         formulation="cpml",
     )
 
-    payload = pml.create_pml_regions(
-        fields, design, resolution=0.1, dt=1e-15, plane_2d="xy"
-    )
+    payload = compile_absorber_regions(pml, fields, design, resolution=0.1, dt=1e-15)
 
     for key in (
         "mask",
@@ -187,7 +221,7 @@ def test_pml_warns_when_material_changes_along_absorber_normal():
     eps = np.ones((6, 8), dtype=np.float32)
     eps[:, 0] = 3.0
     eps[:, 1] = 2.0
-    fields = Fields(
+    fields = compiled_grid(
         permittivity=eps,
         conductivity=np.zeros_like(eps),
         permeability=np.ones_like(eps),
@@ -198,12 +232,12 @@ def test_pml_warns_when_material_changes_along_absorber_normal():
     pml = PML(edges=["left"], thickness=0.2, sigma_max=5.0)
 
     with pytest.warns(RuntimeWarning, match="PML material varies"):
-        pml.create_pml_regions(
+        compile_absorber_regions(
+            pml,
             fields,
             design,
             resolution=0.1,
             dt=1e-15,
-            plane_2d="xy",
         )
 
 
@@ -217,7 +251,7 @@ def test_cpml_extends_material_changes_along_absorber_normal():
     mu = np.ones_like(eps)
     mu[:, 0] = 1.5
     mu[:, 1] = 1.25
-    fields = Fields(
+    fields = compiled_grid(
         permittivity=eps,
         conductivity=sigma,
         permeability=mu,
@@ -233,12 +267,12 @@ def test_cpml_extends_material_changes_along_absorber_normal():
         formulation="cpml",
     )
 
-    pml.create_pml_regions(
+    compile_absorber_regions(
+        pml,
         fields,
         design,
         resolution=0.1,
         dt=1e-15,
-        plane_2d="xy",
     )
 
     np.testing.assert_allclose(np.asarray(fields.permittivity)[:, :2], 1.0)
@@ -253,7 +287,7 @@ def test_cpml_3d_compact_profiles_extend_material_changes():
     sigma[:, :, :2] = 0.7
     mu = np.ones_like(eps)
     mu[:, :, :2] = 1.5
-    fields = Fields(
+    fields = compiled_grid(
         permittivity=eps,
         conductivity=sigma,
         permeability=mu,
@@ -268,7 +302,7 @@ def test_cpml_3d_compact_profiles_extend_material_changes():
         formulation="cpml",
     )
 
-    payload = pml.create_pml_regions(fields, design, resolution=0.1, dt=1e-15)
+    payload = compile_absorber_regions(pml, fields, design, resolution=0.1, dt=1e-15)
 
     assert payload["sigma_x"].shape == (1, 1, eps.shape[2])
     np.testing.assert_allclose(np.asarray(fields.permittivity)[:, :, :2], 1.0)
@@ -279,7 +313,7 @@ def test_cpml_3d_compact_profiles_extend_material_changes():
 def test_pml_allows_material_extruded_through_absorber():
     eps = np.ones((6, 8), dtype=np.float32)
     eps[:, :3] = 2.0
-    fields = Fields(
+    fields = compiled_grid(
         permittivity=eps,
         conductivity=np.zeros_like(eps),
         permeability=np.ones_like(eps),
@@ -291,12 +325,12 @@ def test_pml_allows_material_extruded_through_absorber():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        pml.create_pml_regions(
+        compile_absorber_regions(
+            pml,
             fields,
             design,
             resolution=0.1,
             dt=1e-15,
-            plane_2d="xy",
         )
 
     assert not [
@@ -315,7 +349,7 @@ def test_cpml_3d_base_profiles_stay_axis_compact():
         formulation="cpml",
     )
 
-    payload = pml.create_pml_regions(fields, design, resolution=0.1, dt=1e-15)
+    payload = compile_absorber_regions(pml, fields, design, resolution=0.1, dt=1e-15)
 
     assert "mask" not in payload
     assert payload["sigma_x"].shape == (1, 1, fields.permittivity.shape[2])
@@ -367,104 +401,6 @@ def test_thickness_is_preserved():
     assert pml.thickness == pytest.approx(0.35)
 
 
-def test_staggered_profile_shape_dtype_and_monotonicity():
-    pml = PML(
-        thickness=0.4,
-        sigma_max=10.0,
-        alpha_max=1.0,
-        formulation="cpml",
-    )
-
-    sigma_low_e, kappa_low_e, alpha_low_e = pml._compute_fdtdx_staggered_profile_1d(
-        total_samples=10,
-        spacing=0.1,
-        low_active=True,
-        high_active=False,
-        sample_kind="E",
-    )
-    sigma_high_h, kappa_high_h, alpha_high_h = pml._compute_fdtdx_staggered_profile_1d(
-        total_samples=10,
-        spacing=0.1,
-        low_active=False,
-        high_active=True,
-        sample_kind="H",
-    )
-
-    assert sigma_low_e.shape == (10,)
-    assert kappa_low_e.shape == (10,)
-    assert alpha_low_e.shape == (10,)
-    assert sigma_low_e.dtype == jnp.float32
-    assert kappa_low_e.dtype == jnp.float32
-    assert alpha_low_e.dtype == jnp.float32
-
-    assert float(sigma_low_e[0]) > float(sigma_low_e[1]) > float(sigma_low_e[2]) >= 0.0
-    assert float(kappa_low_e[0]) > float(kappa_low_e[1]) >= 1.0
-    assert float(alpha_low_e[0]) < float(alpha_low_e[1]) < float(alpha_low_e[2])
-
-    assert sigma_high_h.dtype == jnp.float32
-    assert kappa_high_h.dtype == jnp.float32
-    assert alpha_high_h.dtype == jnp.float32
-    assert (
-        float(sigma_high_h[-1])
-        > float(sigma_high_h[-2])
-        > float(sigma_high_h[-3])
-        >= 0.0
-    )
-    assert float(kappa_high_h[-1]) > float(kappa_high_h[-2]) >= 1.0
-    assert float(alpha_high_h[-1]) < float(alpha_high_h[-2]) < float(alpha_high_h[-3])
-
-
-@pytest.mark.parametrize("sample_kind", ["E", "H"])
-def test_staggered_profile_directionality_on_both_faces(sample_kind):
-    pml = PML(
-        thickness=0.4,
-        sigma_max=10.0,
-        alpha_max=1.0,
-        formulation="cpml",
-    )
-    profile_fn = getattr(
-        pml,
-        next(name for name in dir(pml) if name.endswith("_staggered_profile_1d")),
-    )
-    pml_cells = 4
-
-    sigma_low, kappa_low, alpha_low = profile_fn(
-        total_samples=12,
-        spacing=0.1,
-        low_active=True,
-        high_active=False,
-        sample_kind=sample_kind,
-    )
-    sigma_high, kappa_high, alpha_high = profile_fn(
-        total_samples=12,
-        spacing=0.1,
-        low_active=False,
-        high_active=True,
-        sample_kind=sample_kind,
-    )
-
-    sigma_low = np.asarray(sigma_low, dtype=np.float64)
-    kappa_low = np.asarray(kappa_low, dtype=np.float64)
-    alpha_low = np.asarray(alpha_low, dtype=np.float64)
-    sigma_high = np.asarray(sigma_high, dtype=np.float64)
-    kappa_high = np.asarray(kappa_high, dtype=np.float64)
-    alpha_high = np.asarray(alpha_high, dtype=np.float64)
-
-    assert np.all(np.diff(sigma_low[:pml_cells]) <= 0.0)
-    assert np.all(np.diff(kappa_low[:pml_cells]) <= 0.0)
-    assert np.all(np.diff(alpha_low[:pml_cells]) >= 0.0)
-    np.testing.assert_allclose(sigma_low[pml_cells:], 0.0)
-    np.testing.assert_allclose(kappa_low[pml_cells:], 1.0)
-    np.testing.assert_allclose(alpha_low[pml_cells:], 0.0)
-
-    assert np.all(np.diff(sigma_high[-pml_cells:]) >= 0.0)
-    assert np.all(np.diff(kappa_high[-pml_cells:]) >= 0.0)
-    assert np.all(np.diff(alpha_high[-pml_cells:]) <= 0.0)
-    np.testing.assert_allclose(sigma_high[:-pml_cells], 0.0)
-    np.testing.assert_allclose(kappa_high[:-pml_cells], 1.0)
-    np.testing.assert_allclose(alpha_high[:-pml_cells], 0.0)
-
-
 def test_cpml_grid_profiles_are_directional_and_identity_interior():
     fields = _make_fields_2d(shape=(8, 12))
     design = _make_design_2d(shape=(8, 12))
@@ -475,9 +411,7 @@ def test_cpml_grid_profiles_are_directional_and_identity_interior():
         formulation="cpml",
     )
 
-    payload = pml.create_pml_regions(
-        fields, design, resolution=0.1, dt=1e-15, plane_2d="xy"
-    )
+    payload = compile_absorber_regions(pml, fields, design, resolution=0.1, dt=1e-15)
 
     center_y = fields.permittivity.shape[0] // 2
     center_x = fields.permittivity.shape[1] // 2

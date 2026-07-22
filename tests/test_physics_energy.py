@@ -10,19 +10,14 @@ import numpy as np
 import pytest
 
 from beamz import (
-    EPS_0,
     LIGHT_SPEED,
-    MU_0,
     PML,
-    Design,
+    FieldRecorder,
     GaussianSource,
-    Material,
     Simulation,
-    calc_optimal_fdtd_params,
     ramped_cosine,
-    um,
 )
-from tests.utils import TEST_WAVELENGTH, compute_field_energy
+from tests.utils import compute_field_energy
 
 
 @pytest.mark.simulation
@@ -68,10 +63,13 @@ class TestEnergyConservation:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=10)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+        result = sim.run()
 
         # Compute energy at each snapshot
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         # After source stops (~35% with ramp), energy should decay
         source_stop_idx = int(len(energies) * 0.4)
@@ -129,9 +127,12 @@ class TestEnergyConservation:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=15)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 15)))
+        result = sim.run()
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         peak_energy = max(energies)
         final_energy = energies[-1]
@@ -180,13 +181,14 @@ class TestEnergyConservation:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez", "Hx", "Hy"], field_subsample=20)
+        sim = sim.updated_copy(
+            monitors=(*sim.monitors, FieldRecorder(("Ez", "Hx", "Hy"), 20))
+        )
+        result = sim.run()
 
         # Get a snapshot during active emission
-        mid_idx = len(result["fields"]["Ez"]) // 2
-        Ez = result["fields"]["Ez"][mid_idx]
-        Hx = result["fields"]["Hx"][mid_idx]
-        Hy = result["fields"]["Hy"][mid_idx]
+        mid_idx = len(result.monitor("fields").fields["Ez"]) // 2
+        Ez = result.monitor("fields").fields["Ez"][mid_idx]
 
         # Compute Poynting vector components
         # Note: H fields may have different shapes due to Yee staggering
@@ -243,9 +245,12 @@ class TestEnergyConservation:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=10)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+        result = sim.run()
 
-        energies = [compute_field_energy(Ez, dx) for Ez in result["fields"]["Ez"]]
+        energies = [
+            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+        ]
 
         # Energy should increase from zero
         initial_energy = energies[0]
@@ -295,16 +300,19 @@ class TestEnergyConservation:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=20)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 20)))
+        result = sim.run()
 
         # Compute energy with correct permittivity
         energies_correct = [
-            compute_field_energy(Ez, dx, eps=eps_r) for Ez in result["fields"]["Ez"]
+            compute_field_energy(Ez, dx, eps=eps_r)
+            for Ez in result.monitor("fields").fields["Ez"]
         ]
 
         # Compare to energy computed with vacuum permittivity
         energies_vacuum = [
-            compute_field_energy(Ez, dx, eps=1.0) for Ez in result["fields"]["Ez"]
+            compute_field_energy(Ez, dx, eps=1.0)
+            for Ez in result.monitor("fields").fields["Ez"]
         ]
 
         # Correct energy should be eps_r times vacuum energy

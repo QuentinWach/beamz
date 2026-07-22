@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 
 import beamz as bz
@@ -42,30 +44,30 @@ signal = bz.ramped_cosine(
     t_max=TIME / 2.5,
 )
 source = bz.ModeSource(
-    grid=grid,
-    center=(WL * 2, WL * 2 + WG_WIDTH / 2),
-    width=WG_WIDTH * 3.5,  # Slightly wider than waveguide to capture mode tails
-    wavelength=WL,
-    pol="tm",
-    signal=signal,
-    direction="+x",
+    center=(WL * 2, WL * 2 + WG_WIDTH / 2, 0.0),
+    size=(0.0, WG_WIDTH * 3.5, WG_WIDTH),
+    source_time=bz.SampledSignal(signal, dt=DT, freq0=bz.LIGHT_SPEED / WL),
+    direction="+",
+    mode_spec=bz.ModeSpec(polarization="tm"),
 )
-source.show_signal(t=time_steps)
-
 # Run the simulation
 sim = bz.Simulation(
     design=design,
     sources=[source],
+    monitors=[bz.FieldRecorder(("Ez",), interval=15, name="fields")],
     boundaries=[bz.PML(edges="all", thickness=1.2 * WL)],
     time=time_steps,
     resolution=DX,
 )
-results = sim.save_video(
-    "resring.mp4",
+results = sim.run()
+
+# Save the recorded field using one fixed color scale across all frames.
+bz.analysis.save_field_video(
+    results,
+    Path(__file__).with_suffix(".mp4"),
     field="Ez",
-    animation_interval=15,
-    video_fps=40,
-    cmap="twilight_zero",
-    save_fields=["Ez"],
-    field_subsample=15,
+    fps=30,
+    cmap="RdBu",
+    cmap_limits="global",
+    interpolation="nearest",
 )

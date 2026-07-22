@@ -9,22 +9,15 @@ import numpy as np
 import pytest
 
 from beamz import (
-    EPS_0,
     LIGHT_SPEED,
     PML,
-    Design,
+    FieldRecorder,
     GaussianSource,
-    Material,
-    Monitor,
-    Rectangle,
     Simulation,
-    calc_optimal_fdtd_params,
     ramped_cosine,
-    um,
 )
 
 # Import utilities
-from tests.utils import TEST_WAVELENGTH
 
 
 @pytest.mark.simulation
@@ -75,11 +68,12 @@ class TestFresnelReflection:
         )
 
         # Run and save field snapshots
-        result = sim.run(save_fields=["Ez"], field_subsample=50)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 50)))
+        result = sim.run()
 
         # Take a late snapshot when wave should have crossed interface
-        late_idx = int(len(result["fields"]["Ez"]) * 0.8)
-        Ez = result["fields"]["Ez"][late_idx]
+        late_idx = int(len(result.monitor("fields").fields["Ez"]) * 0.8)
+        Ez = result.monitor("fields").fields["Ez"][late_idx]
 
         # Check field in dielectric region (right side of interface)
         interface_idx = int(interface_x / dx)
@@ -93,102 +87,6 @@ class TestFresnelReflection:
             f"No field transmitted through interface. "
             f"Max field in dielectric: {max_field_dielectric:.2e}"
         )
-
-    def test_reflection_increases_with_index_contrast(self):
-        """Higher index contrast should produce more reflection.
-
-        A sanity check that Fresnel physics is qualitatively correct.
-        """
-        wavelength = TEST_WAVELENGTH
-        domain_width = 15 * wavelength
-        domain_height = 8 * wavelength
-
-        reflectances = []
-        n2_values = [1.2, 1.5, 2.0]  # Increasing index contrast from n1=1
-
-        for n2 in n2_values:
-            dx, dt = calc_optimal_fdtd_params(
-                wavelength, n2, dims=2, safety_factor=0.95, points_per_wavelength=12
-            )
-
-            # Create domain with interface at center
-            design = Design(
-                width=domain_width,
-                height=domain_height,
-                material=Material(permittivity=1.0),  # vacuum
-            )
-
-            interface_x = domain_width / 2
-            design += Rectangle(
-                position=(interface_x + domain_width / 4, domain_height / 2),
-                width=domain_width / 2,
-                height=domain_height,
-                material=Material(permittivity=n2**2),
-            )
-
-            frequency = LIGHT_SPEED / wavelength
-            t_total = 20 / frequency
-            time = np.arange(0, t_total, dt)
-
-            signal = ramped_cosine(
-                time,
-                amplitude=1.0,
-                frequency=frequency,
-                ramp_duration=2 / frequency,
-                t_max=t_total * 0.3,
-            )
-
-            source = GaussianSource(
-                position=(interface_x / 3, domain_height / 2),
-                width=wavelength / 3,
-                signal=signal,
-            )
-
-            # Monitor in vacuum region to catch reflected wave
-            monitor = Monitor(
-                start=(interface_x * 0.4, domain_height * 0.3),
-                end=(interface_x * 0.4, domain_height * 0.7),
-                name="reflection_monitor",
-            )
-
-            sim = Simulation(
-                design=design,
-                sources=[source],
-                monitors=[monitor],
-                boundaries=[PML(thickness=wavelength)],
-                time=time,
-                resolution=dx,
-            )
-
-            sim.run()
-
-            # Get power history
-            if monitor.power_history:
-                P = np.array(monitor.power_history)
-                # Look for secondary peak (reflected wave)
-                # First peak is incident, second (if any) is reflected
-                peak_idx = np.argmax(P)
-
-                # Simple measure: ratio of late-time power to peak
-                late_idx = int(len(P) * 0.8)
-                if late_idx > peak_idx:
-                    late_power = np.mean(P[late_idx:])
-                    reflectances.append(
-                        late_power / P[peak_idx] if P[peak_idx] > 0 else 0
-                    )
-                else:
-                    reflectances.append(0)
-            else:
-                reflectances.append(0)
-
-        # Verify reflectance increases with index contrast
-        # (This is a weak test but catches gross errors)
-        for i in range(1, len(reflectances)):
-            if reflectances[i - 1] > 1e-10:  # Only check if we have data
-                assert reflectances[i] >= reflectances[i - 1] * 0.8, (
-                    f"Reflectance should generally increase with index contrast. "
-                    f"Got: {reflectances} for n2={n2_values}"
-                )
 
     def test_interface_does_not_cause_instability(self, dielectric_interface_domain):
         """Simulation should remain stable at material interface.
@@ -229,11 +127,12 @@ class TestFresnelReflection:
             resolution=dx,
         )
 
-        result = sim.run(save_fields=["Ez"], field_subsample=50)
+        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 50)))
+        result = sim.run()
 
         # Check for field explosion
         max_reasonable = 1e10
-        for i, Ez in enumerate(result["fields"]["Ez"]):
+        for i, Ez in enumerate(result.monitor("fields").fields["Ez"]):
             max_field = np.max(np.abs(Ez))
             assert max_field < max_reasonable, (
                 f"Field explosion at interface: snapshot {i}, max={max_field:.2e}"

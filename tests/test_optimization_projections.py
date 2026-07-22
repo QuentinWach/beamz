@@ -29,9 +29,7 @@ class TestSubpixelSmoothedProjection:
     """Tests for Hammond SSP1 projection behavior."""
 
     def test_exported_from_optimization_namespace(self):
-        assert (
-            optimization.subpixel_smoothed_projection is subpixel_smoothed_projection
-        )
+        assert optimization.subpixel_smoothed_projection is subpixel_smoothed_projection
 
     def test_beta_inf_keeps_binary_input_binary(self):
         density = jnp.array(
