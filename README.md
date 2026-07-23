@@ -42,14 +42,19 @@
 ## Examples
 Try out notebooks from our growing **[example library](https://beamz.tech/examples/)**. It includes:
 
-- [Mode Sources and Monitors](https://beamz.tech/examples/modal_sources_monitors)
-- [Waveguide Crossing with Cosine Tapers](https://beamz.tech/examples/cosine_waveguide_crossing)
-- [Topology Optimized 90° Bend (2D)](https://beamz.tech/examples/ceviche_bend)
+- [1) Mode Sources and Monitors](https://beamz.tech/examples/modal_sources_monitors)
+- [2) Waveguide Crossing with Cosine Tapers](https://beamz.tech/examples/cosine_waveguide_crossing)
+- [3) Topology Optimized 90° Bend (2D)](https://beamz.tech/examples/ceviche_bend)
 <!--- [Broadband Mode Sources]() (coming soon)
 - [Straight & Curved Waveguide Benchmark]() (coming soon)-->
 <!--- [Mode Converter (3D)]() (coming soon)
 - [DEMUX]() (coming soon)-->
 
+## Integration 
+
+BeamZ is used by several other OSS packages as an FDTD engine:
++ [SiEPIC's GDS FDTD](https://github.com/SiEPIC/gds_fdtd), an EDA- and solver-agnostic 3D FDTD compact modeling framework.
++ [Lumix](https://github.com/amiskandarmuda/lumix), a research codebase for optical neural networks and matrix inverse design.
 
 
 ## Installation
