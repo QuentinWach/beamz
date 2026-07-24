@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+from scripts.execute_notebook import code_cells, execute_notebook
 
 pytestmark = pytest.mark.unit
 
@@ -39,7 +44,7 @@ def test_cosine_crossing_notebook_uses_canonical_monitor_geometry():
 def test_cosine_crossing_notebook_uses_internal_launch_power_normalization():
     source = _notebook_source()
 
-    assert "min_steps_per_wvl = 10" in source
+    assert "min_steps_per_wvl = 4 if test_mode else 10" in source
     assert 'flux_through = sim_data["flux_through"].flux' in source
     assert 'flux_cross = sim_data["flux_cross"].flux' in source
     assert "source_power = sim_data.launched_power(source=0)" in source
@@ -73,6 +78,44 @@ def test_example_notebook_code_cells_compile(path):
             continue
         source = "".join(cell.get("source", ()))
         compile(source, f"{path.name}:cell-{index}", "exec")
+
+
+def test_notebook_executor_uses_one_shared_namespace(tmp_path):
+    path = tmp_path / "contract.ipynb"
+    path.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {"cell_type": "markdown", "source": ["ignored"]},
+                    {"cell_type": "code", "source": ["answer = 40\n"]},
+                    {"cell_type": "code", "source": ["answer += 2\n"]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert code_cells(path) == ("answer = 40\n", "answer += 2\n")
+    assert execute_notebook(path)["answer"] == 42
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
+def test_example_notebook_executes_in_reduced_mode(path):
+    env = {
+        **os.environ,
+        "BEAMZ_DOCS_TEST": "1",
+        "JAX_PLATFORMS": "cpu",
+        "MPLBACKEND": "Agg",
+    }
+
+    subprocess.run(
+        [sys.executable, "scripts/execute_notebook.py", str(path)],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        timeout=600,
+    )
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
@@ -116,6 +159,12 @@ def test_waveguide_notebook_uses_field_recorder_and_result_analysis():
     source = _notebook_source(ROOT / "examples" / "notebooks" / "waveguide_demo.ipynb")
 
     assert "bz.FieldRecorder(" in source
+    assert "center=(0.0, 0.0, 0.5 * core_height)" in source
+    assert "size=(sim_size[0], sim_size[1], 0.0)" in source
+    assert "plane_normal=" not in source
+    assert (
+        "shape_zyx = tuple(int(v) for v in sim.to_request(num_steps=1).materials.shape)"
+    ) in source
     assert 'sim_data.monitor("ey_slice")' in source
     assert "s_parameters(\n    sim_data," in source
 

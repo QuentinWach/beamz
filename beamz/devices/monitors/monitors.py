@@ -361,8 +361,9 @@ class FieldMonitor(_Monitor):
 class FieldRecorder(_Monitor):
     """Record time-domain field snapshots on the domain or a center/size plane."""
 
+    freqs: np.ndarray = field(init=False, repr=False)
     components: tuple[str, ...]
-    region: str
+    region: str = field(init=False)
 
     def __init__(
         self,
