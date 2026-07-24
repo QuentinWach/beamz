@@ -71,6 +71,15 @@ _TOLERANCES = {
         relative=0.0,
         rationale="Two percentage-point closure error for normalized power budgets.",
     ),
+    "second_order_convergence": Tolerance(
+        name="second_order_convergence",
+        absolute=0.1,
+        relative=0.0,
+        rationale=(
+            "Smooth Yee spatial operators should converge within 0.1 of their "
+            "formal second-order rate across successive factor-two refinements."
+        ),
+    ),
     "gradient_float64": Tolerance(
         name="gradient_float64",
         absolute=1e-8,
