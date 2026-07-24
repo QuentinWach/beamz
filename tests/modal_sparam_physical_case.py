@@ -108,7 +108,14 @@ class StraightWaveguideSParamResult:
     condition_numbers: dict[str, np.ndarray]
 
 
-def _build_case(cfg: StraightWaveguideSParamConfig, *, resolution_ppw: int):
+def _build_case(
+    cfg: StraightWaveguideSParamConfig,
+    *,
+    resolution_ppw: int,
+    launch_direction: str = "+",
+):
+    if launch_direction not in {"+", "-"}:
+        raise ValueError("launch_direction must be '+' or '-'")
     pml_m = cfg.pml_m
     width_m = cfg.guide_length_m + 2.0 * pml_m
     height_m = cfg.waveguide_width_m + 2.0 * (cfg.vertical_clearance_m + pml_m)
@@ -154,19 +161,31 @@ def _build_case(cfg: StraightWaveguideSParamConfig, *, resolution_ppw: int):
         cfg.waveguide_width_m + 2.0 * cfg.port_margin_m,
         3.0 * cfg.waveguide_width_m,
     )
+    source_x = (
+        pml_m + float(cfg.source_offset_um) * µm
+        if launch_direction == "+"
+        else width_m - pml_m - float(cfg.source_offset_um) * µm
+    )
     source = ModeSource(
-        center=(pml_m + float(cfg.source_offset_um) * µm, y_center, 0.0),
+        center=(source_x, y_center, 0.0),
         size=(0.0, source_span, cfg.waveguide_width_m),
         source_time=SampledSignal(pulse.signal, dt=dt, freq0=cfg.frequency_hz),
-        direction="+",
+        direction=launch_direction,
         mode_spec=ModeSpec(polarization="tm"),
     )
 
-    monitor_x = {
-        "o1": pml_m + float(cfg.input_monitor_offset_um) * µm,
-        "mid": width_m - pml_m - float(cfg.output_monitor_offsets_um[0]) * µm,
-        "far": width_m - pml_m - float(cfg.output_monitor_offsets_um[1]) * µm,
-    }
+    if launch_direction == "+":
+        monitor_x = {
+            "o1": pml_m + float(cfg.input_monitor_offset_um) * µm,
+            "mid": width_m - pml_m - float(cfg.output_monitor_offsets_um[0]) * µm,
+            "far": width_m - pml_m - float(cfg.output_monitor_offsets_um[1]) * µm,
+        }
+    else:
+        monitor_x = {
+            "o1": width_m - pml_m - float(cfg.input_monitor_offset_um) * µm,
+            "mid": pml_m + float(cfg.output_monitor_offsets_um[0]) * µm,
+            "far": pml_m + float(cfg.output_monitor_offsets_um[1]) * µm,
+        }
     monitors = {
         name: ModeMonitor(
             center=(x_m, y_center, 0.0),
@@ -213,10 +232,13 @@ def run_straight_waveguide_sparam_case(
     *,
     resolution_ppw: int,
     cfg: StraightWaveguideSParamConfig | None = None,
+    launch_direction: str = "+",
 ) -> StraightWaveguideSParamResult:
     cfg = cfg or StraightWaveguideSParamConfig()
     sim, monitors, monitor_x, freqs, pulse, dx, dt = _build_case(
-        cfg, resolution_ppw=int(resolution_ppw)
+        cfg,
+        resolution_ppw=int(resolution_ppw),
+        launch_direction=launch_direction,
     )
     t0 = time.perf_counter()
     run_results = sim.advance(progress=False)
@@ -231,21 +253,21 @@ def run_straight_waveguide_sparam_case(
                 center=monitors["o1"].center,
                 size=monitors["o1"].size,
                 name="o1",
-                direction="+",
+                direction=launch_direction,
                 mode_spec=ModeSpec(polarization="tm"),
             ),
             Port(
                 center=monitors["mid"].center,
                 size=monitors["mid"].size,
                 name="mid",
-                direction="-",
+                direction="-" if launch_direction == "+" else "+",
                 mode_spec=ModeSpec(polarization="tm"),
             ),
             Port(
                 center=monitors["far"].center,
                 size=monitors["far"].size,
                 name="far",
-                direction="-",
+                direction="-" if launch_direction == "+" else "+",
                 mode_spec=ModeSpec(polarization="tm"),
             ),
         ],

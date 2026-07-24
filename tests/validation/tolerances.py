@@ -90,6 +90,15 @@ _TOLERANCES = {
         ),
         relative_floor=1e-12,
     ),
+    "sparameter_reciprocity": Tolerance(
+        name="sparameter_reciprocity",
+        absolute=1e-3,
+        relative=0.0,
+        rationale=(
+            "Complex transmission reciprocity gate for matched, geometrically "
+            "symmetric reference planes in the compact straight-waveguide case."
+        ),
+    ),
     "gradient_float64": Tolerance(
         name="gradient_float64",
         absolute=1e-8,
