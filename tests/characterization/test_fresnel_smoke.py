@@ -1,9 +1,8 @@
-"""Quantitative Fresnel coefficient validation tests.
+"""Fresnel interface smoke and analytical-helper tests.
 
-Tests verify:
-1. Reflection coefficient R matches analytical Fresnel formula
-2. Transmission coefficient T matches analytical formula
-3. Energy conservation: R + T = 1
+The solver checks in this module establish only that interface simulations run,
+remain bounded, and produce reflected/transmitted fields. They do not measure
+reference-normalized R or T and therefore are not Fresnel validation.
 """
 
 import numpy as np
@@ -31,7 +30,7 @@ from tests.utils import (
 
 @pytest.mark.simulation
 class TestFresnelCoefficients:
-    """Quantitative validation of Fresnel reflection and transmission."""
+    """Characterize basic reflection and transmission behavior."""
 
     @pytest.mark.parametrize("n2", [1.5, 2.0])
     def test_fresnel_reflection_qualitative(self, n2):

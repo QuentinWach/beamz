@@ -1,50 +1,81 @@
-# Test Structure
+# BeamZ testing constitution
 
-The suite currently mixes several kinds of tests. New tests should be placed and
-marked by contract, not just by subsystem.
+BeamZ tests are organized by the evidence they provide. Passing code coverage
+is useful engineering evidence, but it is not proof that a simulated physical
+quantity is correct.
 
-## Test categories
+## Primary evidence classes
 
-- `unit`: Fast tests for public API behavior and pure helper logic.
-- `component`: Small real-component tests with limited simulation scope.
-- `integration`: End-to-end tests that span multiple subsystems.
-- `characterization`: Numerical sweeps and behavior-profiling tests. These are
-  useful for research and regression analysis.
-- `compiled`: Tests that exercise the compiled/JAX execution path.
-- `pdk`: Tests that depend on an external PDK or design-kit install.
-- `slow`: Expensive tests. These remain marked for discoverability, but the
-  default CI gate runs them.
+Every collected test receives exactly one primary marker from its directory:
 
-## Running tests
+- `contract`: the API or an execution path behaves as promised;
+- `invariant`: a mathematical or physical identity is preserved;
+- `validation`: a BeamZ observable agrees with an independent oracle;
+- `characterization`: the suite records current behavior without claiming that
+  the behavior is physically correct.
 
-The pull-request and main-branch CI gates run the complete test suite with
-coverage:
+A smoke test belongs in `characterization/` and uses the additional `smoke`
+marker. “The field is finite/nonzero” is valid smoke evidence, never analytical
+validation.
 
-```bash
-python -m pytest tests/ --cov=beamz --cov-report=term-missing --cov-report=xml --cov-fail-under=75
+`differential`, `hardware`, `performance`, `compiled`, `pdk`, and `simulation`
+are orthogonal scope markers. They do not replace a primary evidence class.
+Collection fails when a file is outside the evidence-oriented directory tree or
+when an explicit primary marker conflicts with its placement.
+
+## Directory ownership
+
+```text
+tests/
+├── unit/                    # Pure-function and local behavior contracts
+├── contracts/               # Public API, immutability, caching, serialization
+├── kernels/                 # Discrete operators and local-update invariants
+├── integration/             # Multiple BeamZ subsystems and execution paths
+├── characterization/        # Honest smoke checks and exploratory behavior
+├── validation/
+│   ├── analytical/          # Comparison with independently derived formulas
+│   ├── invariants/          # Maxwell, energy, reciprocity, symmetry
+│   ├── convergence/         # Measured refinement order
+│   └── regression/          # Named historical physics failures
+├── differential/            # Solver-neutral cross-solver observables
+├── hardware/                # CPU/GPU, precision, sharding, multi-device
+├── performance/             # Runtime, compilation, memory, scaling
+├── docs/                    # Executed documentation and examples
+└── pdk/                     # External PDK-dependent cases
 ```
 
-For local development, use the same batch:
+## Rules for scientific claims
+
+1. State the observable, independent oracle, error definition, and tolerance.
+2. Normalize power measurements against an incident/reference run.
+3. Keep analytical helper tests in `unit/`; they test the oracle, not BeamZ.
+4. A convergence claim must calculate and gate a convergence order.
+5. Report measured values even when a test passes.
+6. Calibrate tolerances from a documented refinement study, not a single run.
+7. Use deterministic random generators and include the seed in failures.
+8. Do not hide a validation case with `__test__ = False`, an unmarked skip, or
+   an unbounded tolerance. Move unfinished work to a case specification or
+   characterize it honestly.
+
+## Local gates
+
+The compact pull-request-style suite excludes explicitly slow simulations,
+external PDKs, and hardware-specific work:
 
 ```bash
-make test
+python -m pytest -m "not slow and not pdk and not hardware"
 ```
 
-## Placement guidance
+Run a focused evidence class with, for example:
 
-- Keep API normalization and validation tests in focused files such as
-  `test_simulation_api.py`.
-- Keep small compiled-engine and monitor tests in compiled/component files.
-- Keep expensive physics validation in integration-oriented files.
-- Keep broad numerical sweeps and exploratory residual checks in
-  characterization files, not mixed into core API tests. They still run in CI;
-  the marker is for ownership and selective local debugging.
+```bash
+python -m pytest -m invariant
+python -m pytest -m validation
+python -m pytest -m characterization
+```
 
-## Rules of thumb
+The full CPU suite remains:
 
-- Prefer public-behavior assertions over private attribute checks.
-- Avoid asserting internal helper names or exact implementation wording in
-  exception messages.
-- Do not freeze known defects as expected behavior.
-- Mark heavy tests explicitly so they can be found and run selectively during
-  local debugging.
+```bash
+python -m pytest tests/
+```

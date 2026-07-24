@@ -53,7 +53,7 @@ from beamz.simulation.compile import CompiledProgramKey
 from beamz.simulation.execute import _apply_specs
 from beamz.simulation.model import SimulationRequest, SimulationState
 from beamz.simulation.sharding import sharding_cache_token
-from tests.test_engine_equivalence import (
+from tests.validation.invariants.test_engine_equivalence import (
     TEST_WAVELENGTH,
     _center_index,
     _make_2d_sim,

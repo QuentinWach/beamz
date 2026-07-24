@@ -1,5 +1,7 @@
 """Shared fixtures and utilities for BeamZ FDTD physics validation tests."""
 
+from pathlib import Path
+
 import pytest
 
 from beamz import (
@@ -10,6 +12,33 @@ from beamz import (
     calc_optimal_fdtd_params,
     um,
 )
+from tests.evidence import PRIMARY_EVIDENCE_MARKERS, evidence_markers_for_path
+
+TESTS_ROOT = Path(__file__).parent
+
+
+def pytest_collection_modifyitems(items):
+    """Classify every test by the kind of evidence it provides.
+
+    Directory placement supplies the default primary class. An explicitly
+    marked test may repeat that class, but may not claim a conflicting one.
+    """
+    for item in items:
+        markers = evidence_markers_for_path(Path(item.path), tests_root=TESTS_ROOT)
+        expected_primary = markers[0]
+        explicit_primary = {
+            marker.name
+            for marker in item.iter_markers()
+            if marker.name in PRIMARY_EVIDENCE_MARKERS
+        }
+        if explicit_primary and explicit_primary != {expected_primary}:
+            raise pytest.UsageError(
+                f"{item.nodeid} is stored as {expected_primary!r} evidence but "
+                f"explicitly claims {sorted(explicit_primary)!r}"
+            )
+        for marker in markers:
+            item.add_marker(marker)
+
 
 # =============================================================================
 # Constants (exposed via fixtures)

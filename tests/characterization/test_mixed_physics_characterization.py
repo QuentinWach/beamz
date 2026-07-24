@@ -1,14 +1,10 @@
-"""R&D-Grade Physics Validation Tests.
+"""Legacy physics characterization and analytical-helper checks.
 
-Quantitative validation against analytical solutions with <5% error tolerance.
-Suitable for publication-quality confidence in FDTD accuracy.
-
-Tests cover:
-1. Fresnel reflection/transmission coefficients
-2. Grid convergence (2nd order accuracy)
-3. Mie scattering (2D cylinder + 3D sphere)
-4. Fabry-Pérot cavity resonance
-5. Waveguide effective index
+Several solver checks here establish stability, field presence, or coarse
+refinement consistency. Those checks are useful characterization, but they do
+not measure every quantity suggested by the underlying analytical formulas.
+Cases graduate to ``validation/`` only after they compare a BeamZ observable to
+an independent oracle with a defensible error gate.
 """
 
 import numpy as np
@@ -52,16 +48,11 @@ TOLERANCE_TIGHT = 0.05  # 5% for most tests
 
 
 # =============================================================================
-# Fresnel Coefficient Validation
+# Fresnel Interface Characterization
 # =============================================================================
 @pytest.mark.simulation
 class TestFresnelCoefficients:
-    """Quantitative validation of Fresnel reflection and transmission.
-
-    Physics: R = ((n1-n2)/(n1+n2))², T = 4n1n2/(n1+n2)²
-    Method: Time-domain pulse → interface → measure reflected/transmitted power
-    Target: <5% error from analytical values
-    """
+    """Characterize stable interface execution and field transmission."""
 
     @pytest.mark.parametrize(
         "n1,n2,expected_R",
@@ -72,12 +63,8 @@ class TestFresnelCoefficients:
             (1.5, 2.5, 0.0625),  # Glass → Diamond-like
         ],
     )
-    def test_fresnel_reflection_quantitative(self, n1, n2, expected_R):
-        """Verify reflection coefficient matches Fresnel formula.
-
-        Uses energy comparison: track energy in incident vs transmitted regions
-        to verify power is conserved and approximately matches Fresnel.
-        """
+    def test_interface_run_has_bounded_fields(self, n1, n2, expected_R):
+        """Run an interface case without claiming a measured Fresnel coefficient."""
         wavelength = TEST_WAVELENGTH
 
         # Domain sized for good pulse separation
@@ -179,18 +166,13 @@ class TestFresnelCoefficients:
 
 
 # =============================================================================
-# Grid Convergence Order Validation
+# Grid Refinement Characterization
 # =============================================================================
 @pytest.mark.simulation
-class TestGridConvergenceOrder:
-    """Verify FDTD scheme is 2nd order accurate.
+class TestGridRefinementCharacterization:
+    """Check stability and coarse consistency across three grid resolutions."""
 
-    Physics: Yee scheme error scales as O(dx²)
-    Method: Run same simulation at multiple resolutions, fit error vs dx
-    Target: Measured order between 1.8 and 2.2
-    """
-
-    def test_second_order_accuracy_propagation(self):
+    def test_propagation_is_consistent_across_refinement(self):
         """Verify FDTD scheme stability and consistency across resolutions.
 
         Tests that simulations at different resolutions produce consistent
@@ -357,16 +339,11 @@ class TestGridConvergenceOrder:
 
 
 # =============================================================================
-# Mie Scattering Validation
+# Scattering Characterization
 # =============================================================================
 @pytest.mark.simulation
 class TestMieScattering:
-    """Quantitative validation of Mie scattering theory.
-
-    Physics: Q_ext from exact Mie series solution
-    Method: Total-field/scattered-field decomposition + DFT
-    Target: <5% error for 2D cylinder, <10% for 3D sphere
-    """
+    """Characterize stable cylinder scattering without measuring flux efficiency."""
 
     @pytest.mark.parametrize("size_param", [0.5, 1.5, 3.0])
     def test_2d_cylinder_qext(self, size_param):
@@ -509,16 +486,11 @@ class TestMieScattering:
 
 
 # =============================================================================
-# Fabry-Pérot Cavity Validation
+# Fabry-Pérot Cavity Characterization
 # =============================================================================
 @pytest.mark.simulation
 class TestFabryPerot:
-    """Quantitative validation of Fabry-Pérot resonator physics.
-
-    Physics: f_m = mc/(2nL), Q from ringdown
-    Method: Excite cavity, measure resonance frequency and Q-factor
-    Target: <5% error on frequency, <10% on Q
-    """
+    """Characterize cavity spectra and independently test helper formulas."""
 
     def test_cavity_resonance_frequency(self):
         """Verify cavity resonance matches f_m = mc/(2nL).
@@ -648,16 +620,11 @@ class TestFabryPerot:
 
 
 # =============================================================================
-# Waveguide Effective Index Validation
+# Waveguide Effective Index Characterization
 # =============================================================================
 @pytest.mark.simulation
 class TestWaveguideEffectiveIndex:
-    """Quantitative validation of waveguide mode physics.
-
-    Physics: Symmetric slab dispersion relation
-    Method: Compare analytical n_eff to ModeSource solver
-    Target: <2% error on effective index
-    """
+    """Exercise slab-waveguide helpers and basic propagation behavior."""
 
     @pytest.mark.parametrize("width_factor", [0.5, 1.0, 1.5])
     def test_slab_waveguide_neff_analytical(self, width_factor):
