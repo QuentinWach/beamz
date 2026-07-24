@@ -92,6 +92,9 @@ below a −40 dB ceiling is not misreported as being “far from the reference.�
 Unexpected warnings fail the suite. Plain skips in `validation/` and
 `differential/` are converted to failures so missing numerical evidence cannot
 silently pass; named strict `xfail` regressions remain visible and allowed.
+Hypothesis exercises randomized public-API and interpolation contracts, while
+fault-sensitivity tests demonstrate that representative missing-derivative and
+wrong-sign operator mutations are rejected by the numerical invariants.
 
 ## Local gates
 
@@ -131,6 +134,8 @@ The compact gate now makes the following quantitative claims:
 - reciprocal forward/reverse straight-waveguide transmission, apart from the
   strict named regression for reverse 2D mode-source leakage;
 - directional derivatives for the available optimization primitives;
+- one-step lossless Yee time reversibility and mutation-sensitive
+  divergence-of-curl detection;
 - execution of all notebooks in reduced mode against an isolated built wheel.
 
 These claims are emitted as structured JSON and portable HTML. The pull-request
