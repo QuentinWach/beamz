@@ -529,31 +529,44 @@ class TestPMLAbsorption:
     @pytest.mark.slow
     @pytest.mark.parametrize("points_per_wavelength", [10, 11, 12])
     def test_cpml_homogeneous_vacuum_reflection_below_minus_40_db(
-        self, points_per_wavelength
+        self, points_per_wavelength, validation_metrics
     ):
         reflection_db = _homogeneous_cpml_reflection_db(
             points_per_wavelength=points_per_wavelength,
             refractive_index=1.0,
         )
 
-        assert reflection_db < -40.0, (
-            f"CPML reflection was {reflection_db:.2f} dB for "
-            f"{points_per_wavelength} cells per wavelength."
+        validation_metrics.check_upper(
+            "time-gated CPML amplitude reflection",
+            measured=reflection_db,
+            upper_bound=-40.0,
+            unit="dB",
+            resolution=f"{points_per_wavelength} ppw in vacuum",
+            metadata={"incidence": "normal", "refractive_index": 1.0},
         )
 
     @pytest.mark.slow
-    def test_cpml_homogeneous_dielectric_reflection_below_minus_40_db(self):
+    def test_cpml_homogeneous_dielectric_reflection_below_minus_40_db(
+        self, validation_metrics
+    ):
         reflection_db = _homogeneous_cpml_reflection_db(
             points_per_wavelength=12,
             refractive_index=1.5,
         )
 
-        assert reflection_db < -40.0, (
-            f"Uniform dielectric CPML reflection was {reflection_db:.2f} dB."
+        validation_metrics.check_upper(
+            "time-gated CPML amplitude reflection",
+            measured=reflection_db,
+            upper_bound=-40.0,
+            unit="dB",
+            resolution="12 ppw in n=1.5",
+            metadata={"incidence": "normal", "refractive_index": 1.5},
         )
 
     @pytest.mark.slow
-    def test_cpml_absorbs_slab_waveguide_mode_after_turnoff(self, waveguide_domain):
+    def test_cpml_absorbs_slab_waveguide_mode_after_turnoff(
+        self, waveguide_domain, validation_metrics
+    ):
         design = waveguide_domain["design"]
         wavelength = waveguide_domain["wavelength"]
         dx = waveguide_domain["dx"]
@@ -600,11 +613,21 @@ class TestPMLAbsorption:
         downstream_energy = float(compute_field_energy(last_frame[:, source_ix:], dx))
         upstream_fraction = upstream_energy / (upstream_energy + downstream_energy)
 
-        assert residual_db < -25.0, (
-            f"Waveguide CPML residual energy was {residual_db:.2f} dB."
+        validation_metrics.check_upper(
+            "waveguide CPML residual energy",
+            measured=residual_db,
+            upper_bound=-25.0,
+            unit="dB",
+            resolution=f"{wavelength / dx:.1f} vacuum-wavelength ppw",
+            metadata={"mode": "TM", "turnoff_periods": 15.0},
         )
-        assert upstream_fraction < 0.25, (
-            f"Waveguide CPML left {upstream_fraction:.2%} of late energy upstream."
+        validation_metrics.check_upper(
+            "late upstream energy fraction",
+            measured=upstream_fraction,
+            upper_bound=0.25,
+            unit="fraction",
+            resolution=f"{wavelength / dx:.1f} vacuum-wavelength ppw",
+            metadata={"mode": "TM", "turnoff_periods": 15.0},
         )
 
     def test_pml_reflection_level(self, vacuum_domain_small):
