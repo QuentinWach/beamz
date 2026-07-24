@@ -160,8 +160,10 @@ class TestWaveInMaterial:
         # Find zero crossings to measure wavelength
         zero_crossings = np.where(np.diff(np.sign(profile)))[0]
 
-        if len(zero_crossings) < 4:
-            pytest.skip("Insufficient zero crossings to measure wavelength")
+        assert len(zero_crossings) >= 4, (
+            "Validation premise failed: the sampled field has fewer than four "
+            "zero crossings, so wavelength cannot be measured."
+        )
 
         # Measure half-wavelength from consecutive crossings
         half_wavelengths = np.diff(zero_crossings) * dx

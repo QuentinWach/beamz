@@ -41,6 +41,22 @@ def pytest_collection_modifyitems(items):
             item.add_marker(marker)
 
 
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    """Turn silent skips in numerical-evidence suites into explicit failures."""
+    outcome = yield
+    report = outcome.get_result()
+    relative = Path(item.path).resolve().relative_to(TESTS_ROOT.resolve())
+    is_numerical_evidence = relative.parts[0] in {"validation", "differential"}
+    is_plain_skip = report.skipped and not hasattr(report, "wasxfail")
+    if is_numerical_evidence and is_plain_skip:
+        report.outcome = "failed"
+        report.longrepr = (
+            f"{item.nodeid} skipped during {report.when}; numerical evidence must "
+            "either satisfy its test premise or fail explicitly"
+        )
+
+
 # =============================================================================
 # Constants (exposed via fixtures)
 # =============================================================================

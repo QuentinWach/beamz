@@ -57,8 +57,16 @@ def test_canonical_tmxy_curls_match_maxwell_identities():
     np.testing.assert_allclose(curl_hx, 1.0)
     np.testing.assert_allclose(curl_hy, -2.0)
 
-    hx = 3 * (np.arange(ny)[:, None] + 0.5) * np.ones((1, nx + 1))
-    hy = 5 * np.ones((ny + 1, 1)) * (np.arange(nx)[None, :] + 0.5)
+    hx = (
+        3
+        * (np.arange(ny, dtype=np.float32)[:, None] + 0.5)
+        * np.ones((1, nx + 1), dtype=np.float32)
+    )
+    hy = (
+        5
+        * np.ones((ny + 1, 1), dtype=np.float32)
+        * (np.arange(nx, dtype=np.float32)[None, :] + 0.5)
+    )
     curl_ez = tm_xy_curl_h_to_e_2d(hx, hy, 1.0, (ny + 1, nx + 1), frozenset())
     np.testing.assert_allclose(curl_ez[1:-1, 1:-1], 2.0)
 

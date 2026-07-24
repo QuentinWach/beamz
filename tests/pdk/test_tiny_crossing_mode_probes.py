@@ -9,6 +9,15 @@ from beamz.design.gds import import_component
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.pdk,
+    pytest.mark.filterwarnings(
+        "ignore:Support for class-based `config` is deprecated.*:DeprecationWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:Implicitly cleaning up <TemporaryDirectory.*:ResourceWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:unclosed file .*gdsfactory.*:ResourceWarning"
+    ),
     pytest.mark.skipif(
         importlib.util.find_spec("gdsfactory") is None,
         reason="gdsfactory not installed",

@@ -42,6 +42,18 @@ from beamz.devices.sources.mode_profiles import (
 from beamz.lattice import component_shape_3d
 from beamz.simulation.results import FieldMetadata, MaterialRegion, SimulationMetadata
 
+pytestmark = [
+    pytest.mark.filterwarnings(
+        "ignore:Support for class-based `config` is deprecated.*:DeprecationWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:Implicitly cleaning up <TemporaryDirectory.*:ResourceWarning"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:unclosed file .*gdsfactory.*:ResourceWarning"
+    ),
+]
+
 
 def _analysis_contract(*, monitor=None, frequencies=(), shape=(1, 1), dt=0.1):
     is_3d = len(shape) == 3

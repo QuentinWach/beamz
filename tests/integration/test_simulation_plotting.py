@@ -64,7 +64,8 @@ def test_3d_simulation_plot_uses_tidy_layout_cross_sections():
         time=np.array([0.0, 1e-15]),
     )
 
-    fig, axes = sim.plot(z=0.0, y=0.0, show=False)
+    with pytest.warns(RuntimeWarning, match="PML material varies"):
+        fig, axes = sim.plot(z=0.0, y=0.0, show=False)
 
     try:
         assert len(axes) == 2
