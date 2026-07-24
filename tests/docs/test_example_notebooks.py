@@ -48,8 +48,8 @@ def test_cosine_crossing_notebook_uses_internal_launch_power_normalization():
     assert 'flux_through = sim_data["flux_through"].flux' in source
     assert 'flux_cross = sim_data["flux_cross"].flux' in source
     assert "source_power = sim_data.launched_power(source=0)" in source
-    assert "T_through = flux_through / source_power" in source
-    assert "T_cross = flux_cross / source_power" in source
+    assert "T_through = safe_power_ratio(flux_through, source_power)" in source
+    assert "T_cross = safe_power_ratio(flux_cross, source_power)" in source
     assert "same Yee-grid Poynting convention" in source
     assert "flux_input" not in source
     assert "sim_reference" not in source
@@ -142,6 +142,15 @@ def test_example_notebooks_use_detached_results_workflow(path):
     assert "run_compiled" not in source
     for token in forbidden:
         assert token not in source
+
+
+@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
+def test_example_notebooks_define_reduced_mode_with_numerical_assertions(path):
+    source = _notebook_source(path)
+
+    assert 'test_mode = os.environ.get("BEAMZ_DOCS_TEST") == "1"' in source
+    assert "offset=0.5 if test_mode else 4.0" in source
+    assert "assert np.all(np.isfinite(" in source
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
