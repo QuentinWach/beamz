@@ -77,7 +77,7 @@ jobs:
           -v --tb=short --durations=50
           --cov=beamz --cov-branch
           --cov-report=term-missing --cov-report=xml
-          --cov-report=json:coverage.json --cov-fail-under=80
+          --cov-report=json:coverage.json
           --validation-report=validation-results.json
       - name: Enforce risk-weighted coverage floors
         run: >-
@@ -92,11 +92,6 @@ jobs:
           uv run --no-active --python 3.11 diff-cover coverage.xml
           --compare-branch "origin/${BASE_REF}"
           --fail-under 100
-      - name: Render portable validation report
-        run: >-
-          uv run --no-active --python 3.11 python
-          scripts/render_validation_report.py
-          validation-results.json validation-report.html
       - name: Upload coverage and validation evidence
         uses: actions/upload-artifact@v4
         with:
@@ -105,7 +100,6 @@ jobs:
             coverage.json
             coverage.xml
             validation-results.json
-            validation-report.html
 
   docs:
     name: Documentation (strict + executable)

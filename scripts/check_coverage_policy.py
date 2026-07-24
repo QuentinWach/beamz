@@ -19,7 +19,7 @@ class CoverageResult:
 
     @property
     def percent(self) -> float:
-        return 100.0 * self.covered / self.total if self.total else 100.0
+        return 100.0 * self.covered / self.total
 
     @property
     def passes(self) -> bool:
@@ -39,6 +39,10 @@ def evaluate_policy(
 
     results = []
     covered, total = _covered_and_total(coverage["totals"])
+    if total <= 0:
+        raise ValueError(
+            "Global coverage contains no measurable statements or branches."
+        )
     results.append(
         CoverageResult(
             name="global",
@@ -63,6 +67,8 @@ def evaluate_policy(
             file_covered, file_total = _covered_and_total(files[filename]["summary"])
             group_covered += file_covered
             group_total += file_total
+        if group_total <= 0:
+            raise ValueError(f"Coverage group {name!r} contains no measurable code.")
         results.append(
             CoverageResult(
                 name=name,

@@ -35,7 +35,6 @@ coverage.xml
 htmlcov/
 site/
 validation-results.json
-validation-report.html
 .hypothesis/
 .benchmarks/
 .mypy_cache/

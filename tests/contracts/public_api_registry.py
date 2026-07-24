@@ -82,9 +82,7 @@ CONFIGURATION_CASES = (
     ),
     PublicConfigCase(
         "GaussianSource",
-        lambda: bz.GaussianSource(
-            position=(0.0, 0.0), width=1.0, signal=np.ones(2)
-        ),
+        lambda: bz.GaussianSource(position=(0.0, 0.0), width=1.0, signal=np.ones(2)),
     ),
     PublicConfigCase(
         "GaussianBeamSource",
@@ -149,9 +147,7 @@ CONFIGURATION_CASES = (
     ),
     PublicConfigCase("GridSpec", bz.GridSpec),
     PublicConfigCase("GaussianPulse", lambda: bz.GaussianPulse(2e14, 2e13)),
-    PublicConfigCase(
-        "SampledSignal", lambda: bz.SampledSignal(np.ones(2), dt=1e-15)
-    ),
+    PublicConfigCase("SampledSignal", lambda: bz.SampledSignal(np.ones(2), dt=1e-15)),
     PublicConfigCase("ModeSpec", bz.ModeSpec),
     PublicConfigCase("PML", bz.PML),
     PublicConfigCase("PEC", bz.PEC),

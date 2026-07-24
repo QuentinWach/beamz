@@ -6,7 +6,6 @@ import json
 import math
 import platform
 import subprocess
-import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -296,19 +295,3 @@ def write_validation_report(report: dict[str, Any], destination: Path) -> None:
         json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-
-
-def main() -> int:
-    """Keep direct execution useful when diagnosing the report environment."""
-    json.dump(
-        validation_report([], exit_status=0, random_seed="not-running-pytest"),
-        sys.stdout,
-        indent=2,
-        sort_keys=True,
-    )
-    sys.stdout.write("\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

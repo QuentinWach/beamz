@@ -15,9 +15,7 @@ pytestmark = [
     pytest.mark.filterwarnings(
         "ignore:Implicitly cleaning up <TemporaryDirectory.*:ResourceWarning"
     ),
-    pytest.mark.filterwarnings(
-        "ignore:unclosed file .*gdsfactory.*:ResourceWarning"
-    ),
+    pytest.mark.filterwarnings("ignore:unclosed file .*gdsfactory.*:ResourceWarning"),
     pytest.mark.skipif(
         importlib.util.find_spec("gdsfactory") is None,
         reason="gdsfactory not installed",

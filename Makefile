@@ -13,7 +13,7 @@ install-dev:  ## Install package with dev dependencies
 	uv sync --all-extras
 
 test:  ## Run the compact pull-request evidence gate with branch coverage
-	uv run python -m pytest tests/ -m "not slow and not pdk and not hardware" -v --tb=short --cov=beamz --cov-branch --cov-report=xml --cov-report=json:coverage.json --cov-report=term-missing --cov-fail-under=80 --validation-report=validation-results.json
+	uv run python -m pytest tests/ -m "not slow and not pdk and not hardware" -v --tb=short --cov=beamz --cov-branch --cov-report=xml --cov-report=json:coverage.json --cov-report=term-missing --validation-report=validation-results.json
 	uv run python scripts/check_coverage_policy.py coverage.json tests/coverage_policy.json
 
 test-all-cpu:  ## Run every CPU test, including slow characterization

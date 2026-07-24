@@ -43,24 +43,19 @@ def _assert_canonical_immutable(value, *, path: str) -> None:
             )
 
 
-@pytest.mark.contract
 def test_top_level_registry_classifies_every_export_exactly_once():
     registered = registered_export_names()
     assert len(registered) == len(set(registered)), "public API categories overlap"
     assert set(registered) == set(bz.__all__)
 
 
-@pytest.mark.contract
 def test_registry_categories_match_runtime_kinds():
-    assert all(
-        isinstance(getattr(bz, name), ModuleType) for name in MODULE_EXPORTS
-    )
+    assert all(isinstance(getattr(bz, name), ModuleType) for name in MODULE_EXPORTS)
     assert all(callable(getattr(bz, name)) for name in FUNCTION_EXPORTS)
     assert all(isinstance(getattr(bz, name), type) for name in RUNTIME_EXPORTS)
     assert all(not callable(getattr(bz, name)) for name in CONSTANT_EXPORTS)
 
 
-@pytest.mark.contract
 @pytest.mark.parametrize("case", CONFIGURATION_CASES, ids=lambda case: case.name)
 def test_public_configuration_is_frozen_and_canonically_immutable(case):
     public_type = getattr(bz, case.name)
@@ -77,9 +72,8 @@ def test_public_configuration_is_frozen_and_canonically_immutable(case):
     _assert_canonical_immutable(instance, path=case.name)
 
 
-@pytest.mark.contract
 @pytest.mark.parametrize("case", CONFIGURATION_CASES, ids=lambda case: case.name)
-def test_public_configuration_copy_preserves_canonical_immutability(case):
+def test_available_public_copy_api_preserves_canonical_immutability(case):
     instance = case.factory()
 
     updated_copy = getattr(instance, "updated_copy", None)

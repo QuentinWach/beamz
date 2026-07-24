@@ -83,3 +83,17 @@ def test_coverage_policy_rejects_stale_group_paths():
 
     with pytest.raises(ValueError, match="references missing file"):
         evaluate_policy(coverage, policy)
+
+
+def test_coverage_policy_rejects_empty_measurement_sets():
+    empty = _summary(
+        covered_lines=0,
+        statements=0,
+        covered_branches=0,
+        branches=0,
+    )
+    coverage = {"totals": empty, "files": {}}
+    policy = {"global_minimum": 0.0, "groups": {}}
+
+    with pytest.raises(ValueError, match="no measurable"):
+        evaluate_policy(coverage, policy)

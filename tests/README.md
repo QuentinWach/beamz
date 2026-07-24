@@ -79,16 +79,10 @@ Emit the collected measurements as portable JSON with:
 python -m pytest -m validation --validation-report=validation-results.json
 ```
 
-Render the same evidence as a dependency-free HTML artifact with:
-
-```bash
-python scripts/render_validation_report.py \
-  validation-results.json validation-report.html
-```
-
-The CI evidence job uploads both representations. Threshold metrics preserve
-whether a value is an equality target, upper bound, or lower bound; a result
-below a −40 dB ceiling is not misreported as being “far from the reference.”
+The CI evidence job uploads this JSON alongside the coverage data. Threshold
+metrics preserve whether a value is an equality target, upper bound, or lower
+bound; a result below a −40 dB ceiling is not misreported as being “far from
+the reference.”
 Unexpected warnings fail the suite. Plain skips in `validation/` and
 `differential/` are converted to failures so missing numerical evidence cannot
 silently pass; named strict `xfail` regressions remain visible and allowed.
@@ -138,15 +132,15 @@ The compact gate now makes the following quantitative claims:
   divergence-of-curl detection;
 - execution of all notebooks in reduced mode against an isolated built wheel.
 
-These claims are emitted as structured JSON and portable HTML. The pull-request
-gate enforces combined statement-and-branch coverage at 80%, changed-line
-coverage at 100%, and the risk-weighted floors in `tests/coverage_policy.json`:
-87% for public configuration, 90.5% for the solver core, 77% for PIC analysis,
-and 93.5% for numerical kernels. The top-level public API also has an executable
-inventory: adding an export requires classifying it, and every public
-configuration object shares frozen-state, nested-immutability, and functional
-copy contracts. The longer-term 90% global branch-inclusive target remains a
-target, not a current claim.
+These claims are emitted as structured JSON. The pull-request gate enforces
+combined statement-and-branch coverage at 80%, changed-line coverage at 100%,
+and the risk-weighted floors in `tests/coverage_policy.json`: 87% for public
+configuration, 90.5% for the solver core, 77% for PIC analysis, and 93.5% for
+numerical kernels. The top-level public API also has an executable inventory:
+adding an export requires classifying it, and every public configuration object
+shares frozen-state and nested-immutability contracts. Available functional
+copy APIs are checked as well. The longer-term 90% global branch-inclusive
+target remains a target, not a current claim.
 
 The suite deliberately does **not** yet claim complete Mie scattering, cavity
 resonance/Q validation, end-to-end FDTD adjoints, external-solver consensus,

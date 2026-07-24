@@ -42,17 +42,11 @@ from beamz.devices.sources.mode_profiles import (
 from beamz.lattice import component_shape_3d
 from beamz.simulation.results import FieldMetadata, MaterialRegion, SimulationMetadata
 
-pytestmark = [
-    pytest.mark.filterwarnings(
-        "ignore:Support for class-based `config` is deprecated.*:DeprecationWarning"
-    ),
-    pytest.mark.filterwarnings(
-        "ignore:Implicitly cleaning up <TemporaryDirectory.*:ResourceWarning"
-    ),
-    pytest.mark.filterwarnings(
-        "ignore:unclosed file .*gdsfactory.*:ResourceWarning"
-    ),
-]
+GDS_WARNING_FILTERS = (
+    "ignore:Support for class-based `config` is deprecated.*:DeprecationWarning",
+    "ignore:Implicitly cleaning up <TemporaryDirectory.*:ResourceWarning",
+    "ignore:unclosed file .*gdsfactory.*:ResourceWarning",
+)
 
 
 def _analysis_contract(*, monitor=None, frequencies=(), shape=(1, 1), dt=0.1):
@@ -118,6 +112,7 @@ def test_dxdt_alias_matches_calc_optimal_fdtd_params():
     importlib.util.find_spec("gdsfactory") is None,
     reason="gdsfactory not installed",
 )
+@pytest.mark.filterwarnings(*GDS_WARNING_FILTERS)
 def test_component_import_returns_materialized_design_and_canonical_ports():
     imported = import_component(
         "mmi1x2", layer=(1, 0), n_core=2.0, n_clad=1.44, xy_padding=2e-6
@@ -153,6 +148,7 @@ def test_component_import_returns_materialized_design_and_canonical_ports():
     importlib.util.find_spec("gdsfactory") is None,
     reason="gdsfactory not installed",
 )
+@pytest.mark.filterwarnings(*GDS_WARNING_FILTERS)
 def test_gds_export_round_trip_uses_the_same_component_converter(tmp_path):
     source = Design(width=3e-6, height=2e-6)
     source += Rectangle(
