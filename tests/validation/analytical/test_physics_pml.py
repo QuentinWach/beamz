@@ -630,17 +630,8 @@ class TestPMLAbsorption:
             metadata={"mode": "TM", "turnoff_periods": 15.0},
         )
 
-    def test_pml_reflection_level(self, vacuum_domain_small):
-        """PML should absorb waves with minimal reflection.
-
-        Physics: A properly implemented PML creates an impedance-matched
-        absorbing region that minimizes reflections.
-
-        Method: Launch pulse, let it hit PML, measure late-time field
-        relative to peak. Late-time field is primarily reflections.
-
-        Tolerance: Reflection ratio < 10%
-        """
+    def test_late_field_energy_stays_below_coarse_bound(self, vacuum_domain_small):
+        """Late electric-field energy should remain below 10% of its peak."""
         design = vacuum_domain_small["design"]
         wavelength = vacuum_domain_small["wavelength"]
         dx = vacuum_domain_small["dx"]
@@ -692,16 +683,18 @@ class TestPMLAbsorption:
 
         # Check late-time energy (should be very small after absorption)
         late_idx = int(len(energies) * 0.9)
-        if late_idx > peak_idx:
-            late_energy = np.mean(energies[late_idx:])
+        assert peak_energy > 0.0, "PML reflection premise requires a nonzero pulse."
+        assert late_idx > peak_idx, (
+            "PML reflection premise failed: the field-energy peak overlaps the "
+            "late-time reflection window."
+        )
+        late_energy = np.mean(energies[late_idx:])
+        late_energy_fraction = late_energy / peak_energy
 
-            # Reflection ratio
-            reflection_ratio = late_energy / peak_energy if peak_energy > 0 else 0
-
-            assert reflection_ratio < 0.10, (
-                f"PML reflection {reflection_ratio * 100:.1f}% exceeds 10%. "
-                "This indicates poor PML absorption."
-            )
+        assert late_energy_fraction < 0.10, (
+            f"Late field energy {late_energy_fraction * 100:.1f}% exceeds 10% "
+            "of the pulse peak."
+        )
 
     def test_energy_decay_with_pml(self, vacuum_domain_small):
         """Energy should decay monotonically after source stops.
@@ -769,13 +762,10 @@ class TestPMLAbsorption:
                     )
 
     @pytest.mark.parametrize("pml_layers_wl", [0.5, 1.0, 1.5])
-    def test_thicker_pml_better_absorption(self, vacuum_domain_small, pml_layers_wl):
-        """Thicker PML should generally provide better absorption.
-
-        This test verifies that the PML implementation is reasonable
-        by checking that absorption improves (or doesn't degrade)
-        with thickness.
-        """
+    def test_pml_absorption_stays_below_coarse_bound(
+        self, vacuum_domain_small, pml_layers_wl
+    ):
+        """Each supported PML thickness should satisfy a coarse absorption bound."""
         design = vacuum_domain_small["design"]
         wavelength = vacuum_domain_small["wavelength"]
         dx = vacuum_domain_small["dx"]
@@ -817,13 +807,13 @@ class TestPMLAbsorption:
         ]
 
         peak_energy = max(energies)
+        assert peak_energy > 0.0, "PML stability premise requires a nonzero pulse."
         late_energy = np.mean(energies[-3:]) if len(energies) >= 3 else energies[-1]
 
-        # For any reasonable PML, reflection should be < 20%
-        reflection_ratio = late_energy / peak_energy if peak_energy > 0 else 0
-        assert reflection_ratio < 0.20, (
+        late_energy_fraction = late_energy / peak_energy
+        assert late_energy_fraction < 0.20, (
             f"PML with {pml_layers_wl} wavelength thickness has "
-            f"{reflection_ratio * 100:.1f}% reflection, exceeds 20%"
+            f"{late_energy_fraction * 100:.1f}% late field energy, exceeds 20%"
         )
 
     def test_pml_does_not_cause_instability(self, vacuum_domain_small):
@@ -878,8 +868,9 @@ class TestPMLAbsorption:
         energies = [
             compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
         ]
-        if energies[0] > 1e-30:
-            decay_ratio = energies[-1] / max(energies)
-            assert decay_ratio < 0.5, (
-                f"Energy not decaying with PML: final/peak = {decay_ratio:.2f}"
-            )
+        peak_energy = max(energies)
+        assert peak_energy > 0.0, "PML stability premise requires a nonzero pulse."
+        decay_ratio = energies[-1] / peak_energy
+        assert decay_ratio < 0.5, (
+            f"Energy not decaying with PML: final/peak = {decay_ratio:.2f}"
+        )

@@ -13,7 +13,9 @@ from tests.differential.case_schema import (
 )
 from tests.validation.tolerances import TOLERANCES
 
-CASES = tuple(sorted((Path(__file__).parent / "cases").glob("*.json")))
+CASES = tuple(
+    sorted((Path(__file__).parents[1] / "differential" / "cases").glob("*.json"))
+)
 
 
 def test_solver_neutral_case_catalog_is_valid_and_unique():
