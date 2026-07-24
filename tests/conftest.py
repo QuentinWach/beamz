@@ -151,7 +151,7 @@ def dielectric_interface_domain():
     # Add dielectric in right half
     interface_x = domain_width / 2
     design += Rectangle(
-        position=(interface_x + domain_width / 4, domain_height / 2),
+        position=(interface_x, 0.0),
         width=domain_width / 2,
         height=domain_height,
         material=Material(permittivity=n2**2),
@@ -198,7 +198,7 @@ def waveguide_domain():
 
     # Add waveguide core (horizontal stripe in center)
     design += Rectangle(
-        position=(domain_width / 2, domain_height / 2),
+        position=(0.0, (domain_height - core_width) / 2),
         width=domain_width,
         height=core_width,
         material=Material(permittivity=n_core**2),

@@ -60,7 +60,7 @@ class TestFresnelCoefficients:
 
         interface_x = domain_width / 2
         design += Rectangle(
-            position=(interface_x + domain_width / 4, domain_height / 2),
+            position=(interface_x, 0.0),
             width=domain_width / 2,
             height=domain_height,
             material=Material(permittivity=n2**2),
