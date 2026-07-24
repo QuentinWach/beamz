@@ -120,7 +120,9 @@ jobs:
           BEAMZ_DOCS_TEST: "1"
           JAX_PLATFORMS: cpu
           MPLBACKEND: Agg
-        run: uv run --no-active --python 3.11 python -m pytest tests/docs/ -v --tb=short
+        run: >-
+          uv run --no-active --python 3.11 python -m pytest tests/docs/
+          -m "not slow" -v --tb=short
 
   package:
     name: Package build and installed-wheel quickstart
@@ -156,6 +158,17 @@ jobs:
         run: >-
           /tmp/beamz-smoke/bin/python scripts/execute_markdown_python.py
           docs/getting-started.md
+      - name: Execute notebooks against installed wheel
+        working-directory: /tmp
+        env:
+          BEAMZ_DOCS_TEST: "1"
+          JAX_PLATFORMS: cpu
+          MPLBACKEND: Agg
+        run: |
+          for notebook in "$GITHUB_WORKSPACE"/examples/notebooks/*.ipynb; do
+            /tmp/beamz-smoke/bin/python \
+              "$GITHUB_WORKSPACE/scripts/execute_notebook.py" "$notebook"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: distributions

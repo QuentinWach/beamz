@@ -151,6 +151,7 @@ def test_example_notebooks_define_reduced_mode_with_numerical_assertions(path):
     assert 'test_mode = os.environ.get("BEAMZ_DOCS_TEST") == "1"' in source
     assert "offset=0.5 if test_mode else 4.0" in source
     assert "assert np.all(np.isfinite(" in source
+    assert "except ImportError:\n    display = print" in source
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
