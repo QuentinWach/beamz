@@ -79,6 +79,17 @@ Emit the collected measurements as portable JSON with:
 python -m pytest -m validation --validation-report=validation-results.json
 ```
 
+Render the same evidence as a dependency-free HTML artifact with:
+
+```bash
+python scripts/render_validation_report.py \
+  validation-results.json validation-report.html
+```
+
+The CI evidence job uploads both representations. Threshold metrics preserve
+whether a value is an equality target, upper bound, or lower bound; a result
+below a −40 dB ceiling is not misreported as being “far from the reference.”
+
 ## Local gates
 
 The compact pull-request-style suite excludes explicitly slow simulations,
