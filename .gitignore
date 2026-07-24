@@ -32,6 +32,8 @@ ENV/
 .coverage
 coverage.xml
 htmlcov/
+site/
+validation-results.json
 .hypothesis/
 .benchmarks/
 .mypy_cache/

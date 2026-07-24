@@ -1,4 +1,4 @@
-name: Refactor Gate
+name: Trust Gate
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   quality:
-    name: Quality (Ruff + Pyright)
+    name: Quality (Ruff + Pyright + Vulture)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -32,14 +32,14 @@ jobs:
       - name: Vulture
         run: uv run --no-active --python 3.11 vulture beamz vulture_allowlist.py --min-confidence 60
 
-  tests:
-    name: Tests (Python ${{ matrix.python }})
+  compatibility:
+    name: Compatibility (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python: ["3.10", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -48,34 +48,78 @@ jobs:
           enable-cache: true
       - run: uv python install ${{ matrix.python }}
       - name: Install test dependencies
-        run: |
-          if [[ "${{ matrix.python }}" == "3.11" ]]; then
-            uv sync --python "${{ matrix.python }}" --extra test --extra gds
-          else
-            uv sync --python "${{ matrix.python }}" --extra test
-          fi
-      - name: Run test suite
-        if: matrix.python != '3.11'
+        run: uv sync --python "${{ matrix.python }}" --extra test
+      - name: Run fast contracts and kernels
         run: >-
-          uv run --no-active --python ${{ matrix.python }} python -m pytest tests/
-          -v --tb=short --durations=50
-      - name: Run test suite with coverage
-        if: matrix.python == '3.11'
+          uv run --no-active --python ${{ matrix.python }} python -m pytest
+          tests/unit tests/contracts tests/kernels
+          -v --tb=short --durations=30
+
+  evidence:
+    name: Evidence (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install 3.11
+      - name: Install test dependencies
+        run: uv sync --python 3.11 --extra test --extra gds
+      - name: Run compact evidence suite with branch coverage
         run: >-
           uv run --no-active --python 3.11 python -m pytest tests/
+          -m "not slow and not pdk and not hardware"
           -v --tb=short --durations=50
-          --cov=beamz --cov-report=term-missing --cov-report=xml --cov-fail-under=75
-      - name: Upload coverage report
-        if: matrix.python == '3.11'
+          --cov=beamz --cov-branch
+          --cov-report=term-missing --cov-report=xml --cov-fail-under=75
+          --validation-report=validation-results.json
+      - name: Require 100% changed-line coverage
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: >-
+          uv run --no-active --python 3.11 diff-cover coverage.xml
+          --compare-branch "origin/${BASE_REF}"
+          --fail-under 100
+      - name: Upload coverage and validation evidence
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-xml
-          path: coverage.xml
+          name: scientific-evidence
+          path: |
+            coverage.xml
+            validation-results.json
+
+  docs:
+    name: Documentation (strict + executable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install 3.11
+      - name: Install documentation dependencies
+        run: uv sync --python 3.11 --extra dev --extra test
+      - name: Build documentation with warnings as errors
+        run: uv run --no-active --python 3.11 mkdocs build --strict
+      - name: Execute documentation contracts
+        env:
+          BEAMZ_DOCS_TEST: "1"
+          JAX_PLATFORMS: cpu
+          MPLBACKEND: Agg
+        run: uv run --no-active --python 3.11 python -m pytest tests/docs/ -v --tb=short
 
   package:
-    name: Package build and smoke test
+    name: Package build and installed-wheel quickstart
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -98,23 +142,35 @@ jobs:
           uv pip install --python /tmp/beamz-smoke/bin/python dist/*.whl
       - name: Import installed package
         run: /tmp/beamz-smoke/bin/python -c "import beamz; print(beamz.__version__)"
+      - name: Execute quickstart against installed wheel
+        env:
+          BEAMZ_DOCS_TEST: "1"
+          JAX_PLATFORMS: cpu
+          MPLBACKEND: Agg
+        run: >-
+          /tmp/beamz-smoke/bin/python scripts/execute_markdown_python.py
+          docs/getting-started.md
       - uses: actions/upload-artifact@v4
         with:
           name: distributions
           path: dist/
 
-  refactor-gate:
-    name: required / refactor-gate
+  trust-gate:
+    name: required / trust-gate
     if: always()
-    needs: [quality, tests, package]
+    needs: [quality, compatibility, evidence, docs, package]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every refactor check
+      - name: Require every trust check
         env:
           QUALITY: ${{ needs.quality.result }}
-          TESTS: ${{ needs.tests.result }}
+          COMPATIBILITY: ${{ needs.compatibility.result }}
+          EVIDENCE: ${{ needs.evidence.result }}
+          DOCS: ${{ needs.docs.result }}
           PACKAGE: ${{ needs.package.result }}
         run: |
           test "$QUALITY" = success
-          test "$TESTS" = success
+          test "$COMPATIBILITY" = success
+          test "$EVIDENCE" = success
+          test "$DOCS" = success
           test "$PACKAGE" = success

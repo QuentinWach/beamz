@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 NOTEBOOK = ROOT / "examples" / "notebooks" / "cosine_waveguide_crossing.ipynb"
 NOTEBOOKS = tuple(sorted((ROOT / "examples" / "notebooks").glob("*.ipynb")))
 

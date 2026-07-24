@@ -1,0 +1,21 @@
+site_name: BeamZ
+site_description: Open GPU-accelerated FDTD for photonic chip designers
+site_url: https://beamz.tech/
+repo_url: https://github.com/beamzorg/beamz
+strict: true
+
+theme:
+  name: material
+
+nav:
+  - Getting Started: getting-started.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+exclude_docs: |
+  assets/BEAMZ Dark.png
+  assets/BEAMZ Light.png

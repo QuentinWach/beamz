@@ -31,20 +31,29 @@ In the core workflow, you
 For example:
 
 ```python
+import os
+
 import numpy as np
 import beamz as bz
 
+docs_test_mode = os.environ.get("BEAMZ_DOCS_TEST") == "1"
 wl = 1.55 * bz.um
-dx, dt = bz.dxdt(wl, n_max=3.48, dims=2, points_per_wavelength=10)
-time = np.arange(0, 20 * wl / bz.LIGHT_SPEED, dt)
+dx, dt = bz.dxdt(
+    wl,
+    n_max=3.48,
+    dims=2,
+    points_per_wavelength=6 if docs_test_mode else 10,
+)
+num_periods = 3 if docs_test_mode else 20
+time = np.arange(0, num_periods * wl / bz.LIGHT_SPEED, dt)
 
 cladding = bz.Material(permittivity=1.44**2)
 core = bz.Material(permittivity=3.48**2)
 
 design = bz.Design(width=6 * bz.um, height=3 * bz.um, material=cladding)
 design += bz.Rectangle(
-    position=(1 * bz.um, 1.25 * bz.um),
-    width=4 * bz.um,
+    position=(1.25 * bz.um, 1.25 * bz.um),
+    width=3.5 * bz.um,
     height=0.5 * bz.um,
     material=core,
 )
@@ -57,7 +66,7 @@ signal = bz.ramped_cosine(
     t_max=time[-1] / 2,
 )
 source = bz.GaussianSource(
-    position=(1 * bz.um, 1.5 * bz.um),
+    position=(1.5 * bz.um, 1.5 * bz.um),
     width=wl / 6,
     signal=signal,
 )
@@ -74,6 +83,8 @@ simulation = bz.Simulation(
 )
 results = simulation.run()
 ez_frames = results.monitor("field_frames").fields["Ez"]
+assert ez_frames.shape[0] > 0
+assert np.isfinite(ez_frames).all()
 ```
 
 `run()` is the normal execution method: it covers the complete time grid and
@@ -84,12 +95,18 @@ Use `advance()` only when you need the runtime state for chunking, checkpointing
 or branching:
 
 ```python
-first = simulation.advance(num_steps=100)
-second = simulation.advance(state=first.state, num_steps=100)
+chunk_steps = min(100, max(1, simulation.num_steps // 3))
+first = simulation.advance(num_steps=chunk_steps)
+second = simulation.advance(state=first.state, num_steps=chunk_steps)
 
 # first.results and second.results are durable analysis values.
 # first.state remains reusable because continuation preserves inputs by default.
-alternative = simulation.advance(state=first.state, num_steps=50)
+alternative = simulation.advance(
+    state=first.state,
+    num_steps=min(50, simulation.num_steps - first.state.current_step),
+)
+assert second.state.current_step > first.state.current_step
+assert alternative.state.current_step > first.state.current_step
 ```
 
 For the lower-memory continuation path, `donate_state=True` explicitly transfers

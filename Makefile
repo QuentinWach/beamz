@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test lint typecheck dead-code audit format clean build publish
+.PHONY: help install install-dev test test-all-cpu docs lint typecheck dead-code audit format clean build publish
 
 help:  ## Show this help message
 	@echo "Usage: make [target]"
@@ -12,8 +12,15 @@ install:  ## Install package in development mode
 install-dev:  ## Install package with dev dependencies
 	uv sync --all-extras
 
-test:  ## Run all tests with coverage
-	uv run python -m pytest tests/ -v --tb=short --cov=beamz --cov-report=xml --cov-report=term-missing --cov-fail-under=75
+test:  ## Run the compact pull-request evidence gate with branch coverage
+	uv run python -m pytest tests/ -m "not slow and not pdk and not hardware" -v --tb=short --cov=beamz --cov-branch --cov-report=xml --cov-report=term-missing --cov-fail-under=75 --validation-report=validation-results.json
+
+test-all-cpu:  ## Run every CPU test, including slow characterization
+	uv run python -m pytest tests/ -v --tb=short --validation-report=validation-results.json
+
+docs:  ## Build strict docs and execute documentation contracts
+	uv run mkdocs build --strict
+	BEAMZ_DOCS_TEST=1 uv run python -m pytest tests/docs/ -v --tb=short
 
 test-single:  ## Run a single test file (usage: make test-single FILE=test_physics_energy.py)
 	uv run python -m pytest tests/$(FILE) -v --tb=short

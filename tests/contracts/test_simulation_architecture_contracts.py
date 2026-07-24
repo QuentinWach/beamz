@@ -694,7 +694,7 @@ def test_simulation_request_material_payloads_are_deeply_immutable():
         steps=3,
         boundaries=[PML(thickness=0.4 * TEST_WAVELENGTH, formulation="cpml")],
     )
-
+    sim.clear_compiled_cache()
     request = sim.to_request(num_steps=1)
 
     for values in (
@@ -707,10 +707,23 @@ def test_simulation_request_material_payloads_are_deeply_immutable():
             values.flat[0] = 0.0
     grid = sim.compile(num_steps=1).grid
     assert grid.material_grid is request.materials
-    assert grid.pml_data is not None
+
+    # Rebuild the request's material value while leaving the equal compiled
+    # program warm. Cache transparency must not depend on Python identity.
+    simulation_core._MATERIAL_GRID_CACHE.clear()
+    warm_request = sim.to_request(num_steps=1)
+    warm_grid = sim.compile(num_steps=1).grid
+    assert warm_grid is grid
+    assert warm_grid.material_grid is not warm_request.materials
+    # A warm compiled-program cache may hold an equal immutable MaterialGrid
+    # produced by an earlier request. Value equality is the contract; Python
+    # object identity is deliberately not observable across cache lifetimes.
+    assert warm_grid.material_grid == warm_request.materials
+    assert cache_token(warm_grid.material_grid) == cache_token(warm_request.materials)
+    assert warm_grid.pml_data is not None
     with pytest.raises(TypeError):
-        grid.pml_data["new"] = np.zeros(1)
-    for value in grid.pml_data.values():
+        warm_grid.pml_data["new"] = np.zeros(1)
+    for value in warm_grid.pml_data.values():
         if hasattr(value, "flags"):
             assert not value.flags.writeable
 

@@ -28,7 +28,7 @@ from beamz.devices.sources.time import (
 from beamz.simulation.observe import source_normalization as _source_normalization
 from tests.utils import compiled_grid
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _uniform_3d_fields(shape=(5, 5, 6), resolution=1.0):
