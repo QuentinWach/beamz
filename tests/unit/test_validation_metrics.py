@@ -4,6 +4,7 @@ import pytest
 
 from tests.validation.metrics import (
     SCHEMA_VERSION,
+    EvidenceCaseResult,
     ValidationMetric,
     ValidationRecorder,
     validation_report,
@@ -26,6 +27,9 @@ def test_named_tolerances_are_reviewable_and_immutable():
         "gradient_float32",
         "gradient_float64",
         "cross_solver",
+        "material_wavefront_coarse",
+        "material_wavelength_coarse",
+        "strict_bound",
     } == set(TOLERANCES)
     assert all(tolerance.rationale for tolerance in TOLERANCES.values())
 
@@ -38,9 +42,9 @@ def test_unknown_tolerance_lists_valid_names():
         get_tolerance("wishful")
 
 
-def test_tolerance_requires_a_positive_gate_and_rationale():
-    with pytest.raises(ValueError, match="at least one"):
-        Tolerance("none", 0.0, 0.0, "not useful")
+def test_tolerance_allows_strict_zero_slack_but_requires_a_rationale():
+    strict = Tolerance("strict", 0.0, 0.0, "an exact inequality")
+    assert strict.error_limit(1e-15) == 0.0
     with pytest.raises(ValueError, match="rationale"):
         Tolerance("mystery", 1.0, 0.0, "")
 
@@ -94,6 +98,8 @@ def test_validation_recorder_supports_honest_upper_and_lower_bounds():
     assert lower.comparison == "greater_equal"
     with pytest.raises(AssertionError, match="upper_bound=-40"):
         recorder.check_upper("bad reflection", -35.0, -40.0, unit="dB")
+    with pytest.raises(AssertionError, match="upper_bound=5e-16"):
+        recorder.check_upper("group delay", 6e-16, 5e-16, unit="s")
 
 
 def test_validation_metric_rejects_unknown_comparison():
@@ -108,7 +114,7 @@ def test_validation_metric_rejects_unknown_comparison():
         )
 
 
-def test_validation_report_is_json_serializable(tmp_path):
+def test_validation_report_is_json_serializable_and_inventories_cases(tmp_path):
     metric = ValidationMetric(
         case_id="kernel",
         quantity="adjoint residual",
@@ -118,7 +124,16 @@ def test_validation_report_is_json_serializable(tmp_path):
         backend="cpu",
         metadata={"seed": 7},
     )
-    report = validation_report([metric], exit_status=0, random_seed="123")
+    cases = (
+        EvidenceCaseResult("kernel", "invariant", "passed"),
+        EvidenceCaseResult("material", "validation", "passed"),
+    )
+    report = validation_report(
+        [metric],
+        exit_status=0,
+        random_seed="123",
+        cases=cases,
+    )
     destination = tmp_path / "nested" / "validation.json"
 
     write_validation_report(report, destination)
@@ -126,11 +141,32 @@ def test_validation_report_is_json_serializable(tmp_path):
 
     assert loaded["schema_version"] == SCHEMA_VERSION
     assert loaded["summary"] == {
+        "cases": 2,
         "exit_status": 0,
         "failed": 0,
+        "failed_cases": 0,
         "metrics": 1,
+        "metricless_cases": 1,
         "passed": 1,
+        "passed_cases": 2,
+        "skipped_cases": 0,
+        "xfailed_cases": 0,
     }
+    assert loaded["cases"] == [
+        {
+            "case_id": "kernel",
+            "evidence_class": "invariant",
+            "metrics": 1,
+            "outcome": "passed",
+        },
+        {
+            "case_id": "material",
+            "evidence_class": "validation",
+            "metrics": 0,
+            "outcome": "passed",
+        },
+    ]
+    assert loaded["metricless_case_ids"] == ["material"]
     assert loaded["metrics"][0]["metadata"] == {"seed": 7}
     assert loaded["metrics"][0]["relative_error"] is None
 

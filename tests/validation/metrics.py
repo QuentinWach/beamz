@@ -18,7 +18,24 @@ import numpy as np
 import beamz
 from tests.validation.tolerances import Tolerance, get_tolerance
 
-SCHEMA_VERSION = "beamz.validation/v2"
+SCHEMA_VERSION = "beamz.validation/v3"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceCaseResult:
+    """Outcome of one executed numerical-evidence test case."""
+
+    case_id: str
+    evidence_class: str
+    outcome: str
+
+    def __post_init__(self) -> None:
+        if not self.case_id:
+            raise ValueError("case_id must be non-empty")
+        if self.evidence_class not in {"validation", "invariant"}:
+            raise ValueError("evidence_class must be validation or invariant")
+        if self.outcome not in {"passed", "failed", "skipped", "xfailed"}:
+            raise ValueError("unsupported evidence-case outcome")
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +184,7 @@ class ValidationRecorder:
         measured: float,
         upper_bound: float,
         *,
-        tolerance: str | Tolerance = "exact",
+        tolerance: str | Tolerance = "strict_bound",
         unit: str = "",
         resolution: str = "",
         backend: str = "",
@@ -192,7 +209,7 @@ class ValidationRecorder:
         measured: float,
         lower_bound: float,
         *,
-        tolerance: str | Tolerance = "exact",
+        tolerance: str | Tolerance = "strict_bound",
         unit: str = "",
         resolution: str = "",
         backend: str = "",
@@ -262,9 +279,25 @@ def validation_report(
     *,
     exit_status: int,
     random_seed: str,
+    cases: tuple[EvidenceCaseResult, ...] = (),
 ) -> dict[str, Any]:
     """Build the bounded, portable validation report payload."""
     passed = sum(metric.passed for metric in metrics)
+    metric_counts: dict[str, int] = {}
+    for metric in metrics:
+        metric_counts[metric.case_id] = metric_counts.get(metric.case_id, 0) + 1
+    case_payloads = [
+        {
+            "case_id": case.case_id,
+            "evidence_class": case.evidence_class,
+            "outcome": case.outcome,
+            "metrics": metric_counts.get(case.case_id, 0),
+        }
+        for case in cases
+    ]
+    metricless_cases = [
+        case["case_id"] for case in case_payloads if case["metrics"] == 0
+    ]
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -283,7 +316,19 @@ def validation_report(
             "metrics": len(metrics),
             "passed": passed,
             "failed": len(metrics) - passed,
+            "cases": len(case_payloads),
+            "passed_cases": sum(case["outcome"] == "passed" for case in case_payloads),
+            "failed_cases": sum(case["outcome"] == "failed" for case in case_payloads),
+            "skipped_cases": sum(
+                case["outcome"] == "skipped" for case in case_payloads
+            ),
+            "xfailed_cases": sum(
+                case["outcome"] == "xfailed" for case in case_payloads
+            ),
+            "metricless_cases": len(metricless_cases),
         },
+        "cases": case_payloads,
+        "metricless_case_ids": metricless_cases,
         "metrics": [metric.as_dict() for metric in metrics],
     }
 

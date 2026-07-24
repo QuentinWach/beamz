@@ -79,10 +79,12 @@ Emit the collected measurements as portable JSON with:
 python -m pytest -m validation --validation-report=validation-results.json
 ```
 
-The CI evidence job uploads this JSON alongside the coverage data. Threshold
-metrics preserve whether a value is an equality target, upper bound, or lower
-bound; a result below a −40 dB ceiling is not misreported as being “far from
-the reference.”
+The CI evidence job uploads this JSON alongside the coverage data. The report
+inventories every executed test under `validation/` and `differential/`, records
+its outcome and metric count, and explicitly lists cases that emitted no scalar
+metric. Threshold metrics preserve whether a value is an equality target, upper
+bound, or lower bound; a result below a −40 dB ceiling is not misreported as
+being “far from the reference.”
 Unexpected warnings fail the suite. Plain skips in `validation/` and
 `differential/` are converted to failures so missing numerical evidence cannot
 silently pass; named strict `xfail` regressions remain visible and allowed.
@@ -92,11 +94,14 @@ wrong-sign operator mutations are rejected by the numerical invariants.
 
 ## Local gates
 
-The compact pull-request-style suite excludes explicitly slow simulations,
-external PDKs, and hardware-specific work:
+The pull-request gate includes the current `slow` simulations because they add
+less than a minute locally. Its main coverage job excludes external PDKs and
+hardware-specific work, while a parallel job runs the fake-CPU sharding
+contracts. Both jobs exclude tests explicitly marked `release`:
 
 ```bash
-python -m pytest -m "not slow and not pdk and not hardware"
+python -m pytest -m "not release and not pdk and not hardware"
+python -m pytest tests/hardware/ -m "not release"
 ```
 
 Run a focused evidence class with, for example:
@@ -113,9 +118,18 @@ The full CPU suite remains:
 python -m pytest tests/
 ```
 
+Version tags cannot publish a release until `.github/workflows/release-validation.yml`
+passes. That reusable workflow is reserved for future high-resolution or
+long-duration tests explicitly marked `release`; there are no such tests yet.
+It can also be dispatched manually before creating a version tag:
+
+```bash
+python -m pytest tests/ -m "release and not pdk"
+```
+
 ## Current verification boundary
 
-The compact gate now makes the following quantitative claims:
+The pull-request gate now makes the following quantitative claims:
 
 - reference-normalized normal-incidence Fresnel power;
 - three-level second-order Yee-curl convergence;
@@ -150,5 +164,5 @@ integrated adjoint execution, installed external adapters, real accelerators,
 and a controlled benchmark host. Their schemas and evidence directories are in
 place, but promoting them to validation requires the missing independent
 observable or execution environment. Large 3D sweeps, long-time CPML stability,
-and broad convergence/performance matrices belong in weekly or controlled
-hardware runs rather than the compact pull-request gate.
+and broad convergence/performance matrices belong in the release gate or
+controlled hardware runs rather than the pull-request gate.

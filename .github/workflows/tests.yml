@@ -70,10 +70,10 @@ jobs:
       - run: uv python install 3.11
       - name: Install test dependencies
         run: uv sync --python 3.11 --extra test --extra gds
-      - name: Run compact evidence suite with branch coverage
+      - name: Run PR evidence suite with branch coverage
         run: >-
           uv run --no-active --python 3.11 python -m pytest tests/
-          -m "not slow and not pdk and not hardware"
+          -m "not release and not pdk and not hardware"
           -v --tb=short --durations=50
           --cov=beamz --cov-branch
           --cov-report=term-missing --cov-report=xml
@@ -100,6 +100,27 @@ jobs:
             coverage.json
             coverage.xml
             validation-results.json
+
+  sharding:
+    name: Fake multi-device CPU sharding
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install 3.11
+      - name: Install test dependencies
+        run: uv sync --python 3.11 --extra test
+      - name: Run PR sharding contracts
+        env:
+          JAX_PLATFORMS: cpu
+        run: >-
+          uv run --no-active --python 3.11 python -m pytest tests/hardware/
+          -m "not release"
+          -v --tb=short --durations=30
 
   docs:
     name: Documentation (strict + executable)
@@ -178,7 +199,7 @@ jobs:
   trust-gate:
     name: required / trust-gate
     if: always()
-    needs: [quality, compatibility, evidence, docs, package]
+    needs: [quality, compatibility, evidence, sharding, docs, package]
     runs-on: ubuntu-latest
     steps:
       - name: Require every trust check
@@ -186,11 +207,13 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           COMPATIBILITY: ${{ needs.compatibility.result }}
           EVIDENCE: ${{ needs.evidence.result }}
+          SHARDING: ${{ needs.sharding.result }}
           DOCS: ${{ needs.docs.result }}
           PACKAGE: ${{ needs.package.result }}
         run: |
           test "$QUALITY" = success
           test "$COMPATIBILITY" = success
           test "$EVIDENCE" = success
+          test "$SHARDING" = success
           test "$DOCS" = success
           test "$PACKAGE" = success

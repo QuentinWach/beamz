@@ -1,0 +1,50 @@
+name: Release Validation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-evidence:
+    name: Release-only numerical evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install 3.11
+      - name: Install test dependencies
+        run: uv sync --python 3.11 --extra test --extra gds
+      - name: Run release-only CPU evidence
+        env:
+          JAX_PLATFORMS: cpu
+          MPLBACKEND: Agg
+        run: |
+          release_collect_exit_code=0
+          uv run --no-active --python 3.11 python -m pytest tests/ \
+            -m "release and not pdk" --collect-only -q \
+            || release_collect_exit_code=$?
+          if [ "$release_collect_exit_code" -eq 5 ]; then
+            echo "No release-only tests are registered yet."
+            exit 0
+          fi
+          if [ "$release_collect_exit_code" -ne 0 ]; then
+            exit "$release_collect_exit_code"
+          fi
+          uv run --no-active --python 3.11 python -m pytest tests/ \
+            -m "release and not pdk" \
+            -v --tb=short --durations=75 \
+            --validation-report=validation-results-release.json
+      - name: Upload release validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-scientific-evidence
+          path: validation-results-release.json
+          if-no-files-found: ignore

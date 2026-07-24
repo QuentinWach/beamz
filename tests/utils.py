@@ -7,7 +7,7 @@ import numpy as np
 from scipy.optimize import brentq
 from scipy.special import jv, yv
 
-from beamz import EPS_0, LIGHT_SPEED, um
+from beamz import EPS_0, LIGHT_SPEED, MU_0, um
 from beamz.design.discretization import MaterialGrid
 from beamz.devices._boundary_compile import lower_boundaries
 from beamz.lattice import component_shapes
@@ -79,6 +79,22 @@ def compute_field_energy(Ez, dx, eps=1.0):
         Total field energy
     """
     return 0.5 * EPS_0 * np.sum(eps * Ez**2) * dx * dx
+
+
+def compute_tm_field_energy(ez, hx, hy, dx, *, eps=1.0, mu=1.0):
+    """Compute total TM electromagnetic energy on native Yee supports.
+
+    The electric and magnetic samples are integrated separately because their
+    complete-Yee arrays have different shapes. This is suitable for relative
+    decay and stability measurements in homogeneous compact test domains.
+    """
+    eps_r = float(eps)
+    mu_r = float(mu)
+    electric = 0.5 * EPS_0 * eps_r * np.sum(np.asarray(ez) ** 2)
+    magnetic = (
+        0.5 * MU_0 * mu_r * (np.sum(np.asarray(hx) ** 2) + np.sum(np.asarray(hy) ** 2))
+    )
+    return float((electric + magnetic) * dx * dx)
 
 
 def estimate_phase_velocity(field_snapshots, dx, dt_snapshot, threshold=0.3):

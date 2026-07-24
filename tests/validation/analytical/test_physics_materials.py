@@ -1,7 +1,7 @@
 """Physics validation tests for wave behavior in dielectric materials.
 
 Tests verify:
-1. Phase velocity = c/n in dielectric materials
+1. Pulse wavefront velocity = c/n in nondispersive dielectric materials
 2. Wavelength contraction by factor n
 """
 
@@ -18,7 +18,6 @@ from beamz import (
     Simulation,
     calc_optimal_fdtd_params,
     ramped_cosine,
-    um,
 )
 
 # Import utilities
@@ -30,13 +29,13 @@ class TestWaveInMaterial:
     """Verify wave behavior in dielectric materials."""
 
     @pytest.mark.parametrize("n_material", [1.5, 2.0])
-    def test_phase_velocity_in_dielectric(self, n_material):
-        """Phase velocity should equal c/n in a dielectric.
+    def test_wavefront_velocity_in_dielectric(self, n_material, validation_metrics):
+        """Pulse wavefront velocity should equal c/n in a dielectric.
 
-        Physics: In a dielectric with refractive index n,
-        v_p = c / n = c / sqrt(epsilon_r)
+        Physics: In a nondispersive dielectric with refractive index n,
+        v_front = c / n = c / sqrt(epsilon_r)
 
-        Tolerance: 8% (higher tolerance due to material averaging)
+        Tolerance: 10% for the compact threshold-tracking measurement.
         """
         wavelength = TEST_WAVELENGTH
         domain_size = 12 * wavelength
@@ -92,15 +91,19 @@ class TestWaveInMaterial:
 
         expected_velocity = LIGHT_SPEED / n_material
 
-        assert v_measured is not None, "Could not measure phase velocity"
+        assert v_measured is not None, "Could not measure wavefront velocity"
 
-        error = abs(v_measured - expected_velocity) / expected_velocity
-        assert error < 0.08, (
-            f"Phase velocity error {error * 100:.1f}% exceeds 8% in n={n_material}. "
-            f"Measured: {v_measured:.3e} m/s, Expected: {expected_velocity:.3e} m/s"
+        validation_metrics.check(
+            "dielectric wavefront velocity",
+            measured=v_measured,
+            reference=expected_velocity,
+            tolerance="material_wavefront_coarse",
+            unit="m/s",
+            resolution=f"{wavelength / dx:.1f} vacuum-wavelength ppw",
+            metadata={"refractive_index": n_material, "threshold": 0.2},
         )
 
-    def test_wavelength_contraction(self, dielectric_domain):
+    def test_wavelength_contraction(self, dielectric_domain, validation_metrics):
         """Wavelength should contract by factor n in a dielectric.
 
         Physics: lambda_material = lambda_0 / n
@@ -174,15 +177,18 @@ class TestWaveInMaterial:
 
         expected_wavelength = wavelength / n
 
-        error = abs(measured_wavelength - expected_wavelength) / expected_wavelength
-        assert error < 0.10, (
-            f"Wavelength error {error * 100:.1f}% exceeds 10%. "
-            f"Measured: {measured_wavelength / um:.3f} um, "
-            f"Expected: {expected_wavelength / um:.3f} um"
+        validation_metrics.check(
+            "dielectric wavelength",
+            measured=measured_wavelength,
+            reference=expected_wavelength,
+            tolerance="material_wavelength_coarse",
+            unit="m",
+            resolution=f"{wavelength / dx:.1f} vacuum-wavelength ppw",
+            metadata={"refractive_index": n, "zero_crossings": len(zero_crossings)},
         )
 
-    def test_permittivity_affects_propagation(self):
-        """Verify that different permittivity values produce different velocities.
+    def test_permittivity_affects_propagation(self, validation_metrics):
+        """Verify each permittivity produces its expected wavefront velocity.
 
         A sanity check that the material actually affects the simulation.
         """
@@ -194,7 +200,7 @@ class TestWaveInMaterial:
         for eps_r in [1.0, 2.25, 4.0]:  # n = 1, 1.5, 2
             n = np.sqrt(eps_r)
             dx, dt = calc_optimal_fdtd_params(
-                wavelength, n, dims=2, safety_factor=0.95, points_per_wavelength=10
+                wavelength, n, dims=2, safety_factor=0.95, points_per_wavelength=12
             )
 
             design = Design(
@@ -217,7 +223,7 @@ class TestWaveInMaterial:
 
             source = GaussianSource(
                 position=(2 * wavelength, domain_size / 2),
-                width=wavelength / 4,
+                width=wavelength / (4 * n),
                 signal=signal,
             )
 
@@ -238,11 +244,25 @@ class TestWaveInMaterial:
             v = estimate_phase_velocity(
                 result.monitor("fields").fields["Ez"], dx, dt * subsample, threshold=0.2
             )
-            if v is not None:
-                velocities.append(v)
+            assert v is not None, (
+                f"Could not measure wavefront velocity for eps_r={eps_r}, n={n}."
+            )
+            velocities.append(v)
+            validation_metrics.check(
+                f"wavefront velocity for eps_r={eps_r}",
+                measured=v,
+                reference=LIGHT_SPEED / n,
+                tolerance="material_wavefront_coarse",
+                unit="m/s",
+                resolution=f"{wavelength / dx:.1f} vacuum-wavelength ppw",
+                metadata={
+                    "relative_permittivity": eps_r,
+                    "refractive_index": n,
+                    "threshold": 0.2,
+                },
+            )
 
-        # Verify we got measurements and they're monotonically decreasing
-        assert len(velocities) >= 2, "Could not measure velocities"
+        assert len(velocities) == 3
         for i in range(1, len(velocities)):
             assert velocities[i] < velocities[i - 1], (
                 f"Higher permittivity should give lower velocity. "

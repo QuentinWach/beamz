@@ -5,11 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from beamz import um
+from beamz import EPS_0, MU_0, um
 from tests.utils import (
     analytical_cavity_frequency,
     analytical_fresnel_r,
     analytical_fresnel_t,
+    compute_tm_field_energy,
     fabry_perot_fsr,
     fabry_perot_q_factor,
     mie_qext_2d,
@@ -19,6 +20,22 @@ from tests.utils import (
     slab_waveguide_neff_te,
     slab_waveguide_neff_tm,
 )
+
+
+def test_tm_energy_helper_includes_electric_and_magnetic_components():
+    dx = 0.25
+    ez = np.full((3, 4), 2.0)
+    hx = np.full((2, 4), 3.0)
+    hy = np.full((3, 3), 4.0)
+
+    measured = compute_tm_field_energy(ez, hx, hy, dx, eps=2.5, mu=1.5)
+    expected = (
+        0.5
+        * dx**2
+        * (EPS_0 * 2.5 * np.sum(ez**2) + MU_0 * 1.5 * (np.sum(hx**2) + np.sum(hy**2)))
+    )
+
+    assert measured == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(

@@ -6,7 +6,11 @@ on:
       - 'v*'
 
 jobs:
+  validation:
+    uses: ./.github/workflows/release-validation.yml
+
   build:
+    needs: validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

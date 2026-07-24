@@ -11,7 +11,7 @@ from beamz import (
     Simulation,
     ramped_cosine,
 )
-from tests.utils import compute_field_energy
+from tests.utils import compute_tm_field_energy
 
 
 @pytest.mark.simulation
@@ -19,13 +19,13 @@ class TestPassiveEnergyDecay:
     """Verify that energy does not grow after a source turns off."""
 
     def test_passive_pml_domain_does_not_gain_energy_after_source_turnoff(
-        self, vacuum_domain_small
+        self, vacuum_domain_small, validation_metrics
     ):
-        """Recorded electric energy should not grow after source turnoff.
+        """Recorded electromagnetic energy should not grow after source turnoff.
 
         Physics: energy leaves the domain through the PML after source turnoff.
 
-        Method: track electric-field energy and bound transient growth.
+        Method: track electric and magnetic energy and bound transient growth.
         """
         design = vacuum_domain_small["design"]
         wavelength = vacuum_domain_small["wavelength"]
@@ -59,12 +59,20 @@ class TestPassiveEnergyDecay:
             resolution=dx,
         )
 
-        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 10)))
+        sim = sim.updated_copy(
+            monitors=(*sim.monitors, FieldRecorder(("Ez", "Hx", "Hy"), 10))
+        )
         result = sim.run()
 
-        # Compute energy at each snapshot
+        recorded = result.monitor("fields").fields
         energies = [
-            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+            compute_tm_field_energy(ez, hx, hy, dx)
+            for ez, hx, hy in zip(
+                recorded["Ez"],
+                recorded["Hx"],
+                recorded["Hy"],
+                strict=True,
+            )
         ]
 
         # After source stops (~35% with ramp), energy should decay
@@ -84,13 +92,22 @@ class TestPassiveEnergyDecay:
                     growth_violations += 1
 
         # Allow at most 2 violations (numerical transients)
-        assert growth_violations < 3, (
-            f"Energy grew {growth_violations} times after source stopped. "
-            "Possible energy conservation violation."
+        validation_metrics.check_upper(
+            "post-source total-energy growth violations",
+            measured=float(growth_violations),
+            upper_bound=2.0,
+            unit="frames",
+            resolution=f"{wavelength / dx:.1f} ppw",
+            metadata={
+                "field_components": ["Ez", "Hx", "Hy"],
+                "growth_ratio": max_growth,
+            },
         )
 
-    def test_recorded_electric_energy_decays_to_near_zero(self, vacuum_domain_small):
-        """Recorded electric energy should decay after sufficient time.
+    def test_recorded_total_energy_decays_to_near_zero(
+        self, vacuum_domain_small, validation_metrics
+    ):
+        """Recorded electromagnetic energy should decay after sufficient time.
 
         Physics: With PML boundaries, all energy eventually leaves the domain.
         """
@@ -126,11 +143,20 @@ class TestPassiveEnergyDecay:
             resolution=dx,
         )
 
-        sim = sim.updated_copy(monitors=(*sim.monitors, FieldRecorder(("Ez",), 15)))
+        sim = sim.updated_copy(
+            monitors=(*sim.monitors, FieldRecorder(("Ez", "Hx", "Hy"), 15))
+        )
         result = sim.run()
 
+        recorded = result.monitor("fields").fields
         energies = [
-            compute_field_energy(Ez, dx) for Ez in result.monitor("fields").fields["Ez"]
+            compute_tm_field_energy(ez, hx, hy, dx)
+            for ez, hx, hy in zip(
+                recorded["Ez"],
+                recorded["Hx"],
+                recorded["Hy"],
+                strict=True,
+            )
         ]
 
         peak_energy = max(energies)
@@ -139,7 +165,11 @@ class TestPassiveEnergyDecay:
         # Final energy should be small fraction of peak
         assert peak_energy > 0.0, "Energy-decay premise requires a nonzero pulse."
         decay_ratio = final_energy / peak_energy
-        assert decay_ratio < 0.15, (
-            f"Final energy is {decay_ratio * 100:.1f}% of peak. "
-            "Energy should decay more with PML."
+        validation_metrics.check_upper(
+            "late total electromagnetic energy / peak",
+            measured=decay_ratio,
+            upper_bound=0.15,
+            unit="fraction",
+            resolution=f"{wavelength / dx:.1f} ppw",
+            metadata={"field_components": ["Ez", "Hx", "Hy"]},
         )

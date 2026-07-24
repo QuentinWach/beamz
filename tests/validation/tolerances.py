@@ -21,8 +21,6 @@ class Tolerance:
             raise ValueError("tolerance name must be non-empty")
         if self.absolute < 0 or self.relative < 0 or self.relative_floor < 0:
             raise ValueError("tolerance limits must be non-negative")
-        if self.absolute == 0 and self.relative == 0:
-            raise ValueError("at least one tolerance limit must be positive")
         if not self.rationale.strip():
             raise ValueError("tolerance rationale must be non-empty")
 
@@ -33,6 +31,12 @@ class Tolerance:
 
 
 _TOLERANCES = {
+    "strict_bound": Tolerance(
+        name="strict_bound",
+        absolute=0.0,
+        relative=0.0,
+        rationale="Inclusive inequality bound applied without unit-dependent slack.",
+    ),
     "exact": Tolerance(
         name="exact",
         absolute=1e-12,
@@ -63,6 +67,26 @@ _TOLERANCES = {
         absolute=0.0,
         relative=0.02,
         rationale="Target gate after a case demonstrates grid refinement.",
+        relative_floor=1e-12,
+    ),
+    "material_wavefront_coarse": Tolerance(
+        name="material_wavefront_coarse",
+        absolute=0.0,
+        relative=0.10,
+        rationale=(
+            "Ten-percent gate for threshold-tracked wavefront speed in a compact "
+            "coarse-grid dielectric pulse simulation."
+        ),
+        relative_floor=1e-12,
+    ),
+    "material_wavelength_coarse": Tolerance(
+        name="material_wavelength_coarse",
+        absolute=0.0,
+        relative=0.10,
+        rationale=(
+            "Ten-percent gate for zero-crossing wavelength extraction from a "
+            "compact coarse-grid dielectric simulation."
+        ),
         relative_floor=1e-12,
     ),
     "normalized_power_balance": Tolerance(
