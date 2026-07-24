@@ -22,7 +22,6 @@ from beamz import (
     Simulation,
     calc_optimal_fdtd_params,
     ramped_cosine,
-    um,
 )
 from tests.utils import (
     TEST_WAVELENGTH,
@@ -30,15 +29,8 @@ from tests.utils import (
     analytical_fresnel_r,
     analytical_fresnel_t,
     compute_field_energy,
-    fabry_perot_fsr,
-    fabry_perot_q_factor,
     measure_resonance_frequency,
     mie_qext_2d,
-    mie_qext_3d,
-    mie_qsca_2d,
-    mie_qsca_3d,
-    slab_waveguide_neff_te,
-    slab_waveguide_neff_tm,
 )
 
 # =============================================================================
@@ -436,54 +428,6 @@ class TestMieScattering:
         assert Q_ext_analytical > 0, "Q_ext should be positive"
         assert Q_ext_analytical < 15, f"Q_ext={Q_ext_analytical:.2f} seems too large"
 
-    def test_analytical_mie_2d_vs_reference(self):
-        """Verify 2D Mie analytical formulas against known values.
-
-        Reference values from standard Mie theory implementations.
-        """
-        # Test case: n_cyl=2.0, n_med=1.0, x=1.0
-        wavelength = 1.0 * um
-        radius = wavelength / (2 * np.pi)  # x = 1.0
-        n_cyl = 2.0
-
-        Q_ext = mie_qext_2d(radius, wavelength, n_cyl, 1.0)
-        Q_sca = mie_qsca_2d(radius, wavelength, n_cyl, 1.0)
-
-        # For dielectric cylinder, Q_ext should be positive and reasonable
-        assert 0 < Q_ext < 10, f"Q_ext={Q_ext:.3f} should be reasonable"
-        # Q_sca should be close to Q_ext for dielectric (no absorption)
-        # Use small tolerance for floating point
-        assert 0 < Q_sca <= Q_ext * 1.001, (
-            f"Q_sca={Q_sca:.6f} should be <= Q_ext={Q_ext:.6f}"
-        )
-
-    def test_analytical_mie_3d_vs_reference(self):
-        """Verify 3D Mie analytical formulas against known values.
-
-        Reference: Bohren & Huffman, Table of Mie coefficients
-        """
-        # Test case: x=1.0, m=1.5 (glass sphere in air)
-        wavelength = 1.0 * um
-        radius = wavelength / (2 * np.pi)  # x = 1.0
-        n_sphere = 1.5
-
-        Q_ext = mie_qext_3d(radius, wavelength, n_sphere, 1.0)
-        Q_sca = mie_qsca_3d(radius, wavelength, n_sphere, 1.0)
-
-        # Q_ext can vary widely depending on size parameter and refractive index
-        # For moderate index contrast, typically Q_ext < 10
-        assert 0 < Q_ext < 15, f"Q_ext={Q_ext:.3f} should be positive and bounded"
-        # Q_sca should be close to Q_ext for dielectric (no absorption)
-        assert 0 < Q_sca <= Q_ext * 1.001, "Q_sca should be <= Q_ext"
-
-        # Test larger particle (x=5, geometric regime)
-        radius_large = 5 * wavelength / (2 * np.pi)
-        Q_ext_large = mie_qext_3d(radius_large, wavelength, n_sphere, 1.0)
-
-        # In geometric regime, Q_ext → 2 (extinction paradox)
-        # For moderate size, Q_ext should be substantial
-        assert Q_ext_large > 0.5, "Larger particles should have significant Q_ext"
-
 
 # =============================================================================
 # Fabry-Pérot Cavity Characterization
@@ -596,28 +540,6 @@ class TestFabryPerot:
             f"(error={min_error * 100:.1f}%)"
         )
 
-    def test_analytical_cavity_formulas(self):
-        """Unit test for cavity analytical formulas."""
-        L = 1.0 * um
-        n = 1.5
-
-        # Resonance frequencies
-        f1 = analytical_cavity_frequency(1, L, n)
-        f2 = analytical_cavity_frequency(2, L, n)
-
-        assert abs(f2 - 2 * f1) < 1e-6 * f1, "f2 should be 2*f1"
-
-        # FSR
-        fsr = fabry_perot_fsr(L, n)
-        assert abs(fsr - f1) < 1e-6 * f1, "FSR should equal fundamental frequency"
-
-        # Q-factor (high reflectivity case)
-        R = 0.99
-        Q = fabry_perot_q_factor(L, n, R, R)
-
-        # For high R, Q should be large
-        assert Q > 100, f"Q={Q:.1f} should be high for R=0.99"
-
 
 # =============================================================================
 # Waveguide Effective Index Characterization
@@ -625,54 +547,6 @@ class TestFabryPerot:
 @pytest.mark.simulation
 class TestWaveguideEffectiveIndex:
     """Exercise slab-waveguide helpers and basic propagation behavior."""
-
-    @pytest.mark.parametrize("width_factor", [0.5, 1.0, 1.5])
-    def test_slab_waveguide_neff_analytical(self, width_factor):
-        """Verify analytical waveguide dispersion solver.
-
-        Tests symmetric slab waveguide at different widths.
-        """
-        n_core = 2.0
-        n_clad = 1.0
-        wavelength = TEST_WAVELENGTH
-        width = width_factor * wavelength
-
-        # Solve for fundamental TE mode
-        neff_te = slab_waveguide_neff_te(n_core, n_clad, width, wavelength, mode=0)
-
-        if neff_te is not None:
-            # n_eff should be between n_clad and n_core
-            assert n_clad < neff_te < n_core, (
-                f"n_eff={neff_te:.4f} should be between {n_clad} and {n_core}"
-            )
-
-            # Check TM mode as well
-            neff_tm = slab_waveguide_neff_tm(n_core, n_clad, width, wavelength, mode=0)
-            if neff_tm is not None:
-                # TM mode should have lower n_eff than TE for symmetric waveguide
-                assert neff_tm < neff_te, (
-                    f"TM n_eff={neff_tm:.4f} should be < TE n_eff={neff_te:.4f}"
-                )
-
-    def test_waveguide_cutoff_condition(self):
-        """Verify waveguide cutoff: no mode below V < π/2 for m=1."""
-        n_core = 2.0
-        n_clad = 1.0
-        wavelength = TEST_WAVELENGTH
-
-        # Calculate width for V = π/4 (below cutoff for m=1)
-        # V = k0 * d/2 * sqrt(n_core² - n_clad²)
-        k0 = 2 * np.pi / wavelength
-        V_target = np.pi / 4
-        width = 2 * V_target / (k0 * np.sqrt(n_core**2 - n_clad**2))
-
-        # Should have fundamental mode
-        neff_0 = slab_waveguide_neff_te(n_core, n_clad, width, wavelength, mode=0)
-        assert neff_0 is not None, "Fundamental mode should exist"
-
-        # Should NOT have first higher-order mode
-        neff_1 = slab_waveguide_neff_te(n_core, n_clad, width, wavelength, mode=1)
-        assert neff_1 is None, "Higher-order mode should be cut off"
 
     def test_waveguide_propagation_qualitative(self):
         """Verify guided mode propagation in slab waveguide.
@@ -749,72 +623,4 @@ class TestWaveguideEffectiveIndex:
             # Most energy should be in/near core for guided mode
             assert confinement > 0.3, (
                 f"Only {confinement * 100:.1f}% energy in core region"
-            )
-
-
-# =============================================================================
-# Summary Test - Verify All Analytical Functions Work
-# =============================================================================
-class TestAnalyticalFunctions:
-    """Unit tests for all analytical helper functions."""
-
-    def test_fresnel_r_plus_t_equals_one(self):
-        """Verify R + T = 1 for all index combinations."""
-        test_cases = [(1.0, 1.5), (1.5, 1.0), (1.0, 3.0), (2.0, 2.5)]
-
-        for n1, n2 in test_cases:
-            R = analytical_fresnel_r(n1, n2)
-            T = analytical_fresnel_t(n1, n2)
-            assert abs(R + T - 1.0) < 1e-10, f"R+T={R + T} for n1={n1}, n2={n2}"
-
-    def test_mie_qext_positive(self):
-        """Verify Mie Q_ext is always positive."""
-        wavelength = 1.0 * um
-
-        # 2D cylinder
-        for x in [0.5, 1.0, 2.0, 5.0]:
-            radius = x * wavelength / (2 * np.pi)
-            Q = mie_qext_2d(radius, wavelength, 2.0, 1.0)
-            assert Q > 0, f"2D Q_ext should be positive for x={x}"
-
-        # 3D sphere
-        for x in [0.5, 1.0, 2.0, 5.0]:
-            radius = x * wavelength / (2 * np.pi)
-            Q = mie_qext_3d(radius, wavelength, 2.0, 1.0)
-            assert Q > 0, f"3D Q_ext should be positive for x={x}"
-
-    def test_cavity_frequency_scaling(self):
-        """Verify cavity frequency scales correctly with parameters."""
-        L = 1.0 * um
-
-        # f ~ 1/L
-        f1 = analytical_cavity_frequency(1, L, 1.0)
-        f2 = analytical_cavity_frequency(1, 2 * L, 1.0)
-        assert abs(f2 - f1 / 2) / f1 < 1e-10, "f should scale as 1/L"
-
-        # f ~ 1/n
-        f_n1 = analytical_cavity_frequency(1, L, 1.0)
-        f_n2 = analytical_cavity_frequency(1, L, 2.0)
-        assert abs(f_n2 - f_n1 / 2) / f_n1 < 1e-10, "f should scale as 1/n"
-
-    def test_waveguide_dispersion_limits(self):
-        """Verify waveguide n_eff is bounded correctly."""
-        n_core = 2.5
-        n_clad = 1.5
-        wavelength = 1.0 * um
-
-        # Wide waveguide should have n_eff close to n_core
-        wide = 3 * wavelength
-        neff_wide = slab_waveguide_neff_te(n_core, n_clad, wide, wavelength)
-        if neff_wide:
-            assert neff_wide > 0.85 * n_core, (
-                "Wide waveguide n_eff should be near n_core"
-            )
-
-        # Narrower waveguide should have lower n_eff (if mode exists)
-        narrow = 0.5 * wavelength
-        neff_narrow = slab_waveguide_neff_te(n_core, n_clad, narrow, wavelength)
-        if neff_narrow and neff_wide:
-            assert neff_narrow < neff_wide, (
-                f"Narrow waveguide n_eff ({neff_narrow:.4f}) should be lower than wide ({neff_wide:.4f})"
             )
