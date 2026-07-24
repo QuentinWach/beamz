@@ -80,6 +80,16 @@ _TOLERANCES = {
             "formal second-order rate across successive factor-two refinements."
         ),
     ),
+    "waveguide_neff": Tolerance(
+        name="waveguide_neff",
+        absolute=0.0,
+        relative=0.002,
+        rationale=(
+            "Two-tenths-percent effective-index gate for a resolved symmetric "
+            "slab against its independent transcendental dispersion equation."
+        ),
+        relative_floor=1e-12,
+    ),
     "gradient_float64": Tolerance(
         name="gradient_float64",
         absolute=1e-8,

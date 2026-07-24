@@ -21,6 +21,7 @@ def test_named_tolerances_are_reviewable_and_immutable():
         "analytical_fine",
         "normalized_power_balance",
         "second_order_convergence",
+        "waveguide_neff",
         "gradient_float32",
         "gradient_float64",
         "cross_solver",
