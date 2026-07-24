@@ -20,6 +20,7 @@ def test_named_tolerances_are_reviewable_and_immutable():
         "analytical_coarse",
         "analytical_fine",
         "normalized_power_balance",
+        "second_order_convergence",
         "gradient_float32",
         "gradient_float64",
         "cross_solver",
@@ -73,6 +74,36 @@ def test_validation_recorder_preserves_failed_measurement_before_asserting():
 
     assert len(recorded) == 1
     assert not recorded[0].passed
+
+
+def test_validation_recorder_supports_honest_upper_and_lower_bounds():
+    recorded = []
+    recorder = ValidationRecorder("cpml", recorded)
+
+    upper = recorder.check_upper("reflection", -52.0, -40.0, unit="dB")
+    lower = recorder.check_lower("mode overlap", 0.995, 0.99)
+
+    assert upper.passed
+    assert upper.margin == pytest.approx(12.0)
+    assert upper.comparison == "less_equal"
+    assert upper.as_dict()["comparison"] == "less_equal"
+    assert lower.passed
+    assert lower.margin == pytest.approx(0.005)
+    assert lower.comparison == "greater_equal"
+    with pytest.raises(AssertionError, match="upper_bound=-40"):
+        recorder.check_upper("bad reflection", -35.0, -40.0, unit="dB")
+
+
+def test_validation_metric_rejects_unknown_comparison():
+    with pytest.raises(ValueError, match="comparison"):
+        ValidationMetric(
+            case_id="case",
+            quantity="quantity",
+            measured=1.0,
+            reference=1.0,
+            tolerance=get_tolerance("exact"),
+            comparison="approximately-ish",
+        )
 
 
 def test_validation_report_is_json_serializable(tmp_path):
