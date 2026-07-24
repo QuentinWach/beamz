@@ -112,3 +112,35 @@ The full CPU suite remains:
 ```bash
 python -m pytest tests/
 ```
+
+## Current verification boundary
+
+The compact gate now makes the following quantitative claims:
+
+- reference-normalized normal-incidence Fresnel power;
+- three-level second-order Yee-curl convergence;
+- plane-wave phase velocity, impedance, amplitude, direction, and polarization
+  against the discrete Yee relation in every 2D plane;
+- bounded CPML packet reflection in vacuum and a dielectric;
+- slab-waveguide effective index against the analytical dispersion equation;
+- straight-waveguide launch, reflection, transmission, reference-plane, and
+  resolution metrics;
+- reciprocal forward/reverse straight-waveguide transmission, apart from the
+  strict named regression for reverse 2D mode-source leakage;
+- directional derivatives for the available optimization primitives;
+- execution of all notebooks in reduced mode against an isolated built wheel.
+
+These claims are emitted as structured JSON and portable HTML. The pull-request
+gate enforces branch-inclusive coverage at 75% and changed-line coverage at
+100%. The longer-term 90% branch target remains a target, not a current claim.
+
+The suite deliberately does **not** yet claim complete Mie scattering, cavity
+resonance/Q validation, end-to-end FDTD adjoints, external-solver consensus,
+CUDA parity, multi-GPU equivalence, or stable performance trends. Those require,
+respectively, closed-contour flux/TFSF support, calibrated long ringdowns,
+integrated adjoint execution, installed external adapters, real accelerators,
+and a controlled benchmark host. Their schemas and evidence directories are in
+place, but promoting them to validation requires the missing independent
+observable or execution environment. Large 3D sweeps, long-time CPML stability,
+and broad convergence/performance matrices belong in weekly or controlled
+hardware runs rather than the compact pull-request gate.
