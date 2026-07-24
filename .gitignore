@@ -30,6 +30,7 @@ ENV/
 
 # Test, coverage, and type-checker artifacts
 .coverage
+coverage.json
 coverage.xml
 htmlcov/
 site/
