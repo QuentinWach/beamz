@@ -1,0 +1,61 @@
+{
+  "metric": "combined covered statements and branch outcomes",
+  "global_minimum": 80.0,
+  "groups": {
+    "public_configuration": {
+      "minimum": 87.0,
+      "files": [
+        "beamz/design/core.py",
+        "beamz/design/materials.py",
+        "beamz/design/meshing.py",
+        "beamz/design/structures.py",
+        "beamz/devices/boundaries.py",
+        "beamz/devices/ports.py",
+        "beamz/devices/monitors/monitors.py",
+        "beamz/devices/sources/specs.py",
+        "beamz/devices/sources/time.py",
+        "beamz/simulation/api.py"
+      ]
+    },
+    "solver_core": {
+      "minimum": 90.5,
+      "files": [
+        "beamz/lattice.py",
+        "beamz/devices/_boundary_compile.py",
+        "beamz/devices/monitors/compiler.py",
+        "beamz/devices/sources/compiler.py",
+        "beamz/simulation/compile.py",
+        "beamz/simulation/execute.py",
+        "beamz/simulation/kernels.py",
+        "beamz/simulation/model.py",
+        "beamz/simulation/observe.py",
+        "beamz/simulation/results.py"
+      ]
+    },
+    "pic_analysis": {
+      "minimum": 77.0,
+      "files": [
+        "beamz/analysis/modal_projection/colocation.py",
+        "beamz/analysis/modal_projection/diagnostics.py",
+        "beamz/analysis/modal_projection/geometry.py",
+        "beamz/analysis/mode_projection.py",
+        "beamz/analysis/sparameters.py",
+        "beamz/devices/monitors/monitors.py",
+        "beamz/devices/ports.py",
+        "beamz/devices/sources/mode_launch.py",
+        "beamz/devices/sources/mode_profiles.py",
+        "beamz/devices/sources/solve.py"
+      ]
+    },
+    "numerical_kernels": {
+      "minimum": 93.5,
+      "files": [
+        "beamz/lattice.py",
+        "beamz/devices/_boundary_compile.py",
+        "beamz/devices/sources/planar_tfsf.py",
+        "beamz/optimization/autodiff.py",
+        "beamz/simulation/kernels.py"
+      ]
+    }
+  }
+}

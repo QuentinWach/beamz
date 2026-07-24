@@ -76,8 +76,14 @@ jobs:
           -m "not slow and not pdk and not hardware"
           -v --tb=short --durations=50
           --cov=beamz --cov-branch
-          --cov-report=term-missing --cov-report=xml --cov-fail-under=75
+          --cov-report=term-missing --cov-report=xml
+          --cov-report=json:coverage.json --cov-fail-under=80
           --validation-report=validation-results.json
+      - name: Enforce risk-weighted coverage floors
+        run: >-
+          uv run --no-active --python 3.11 python
+          scripts/check_coverage_policy.py
+          coverage.json tests/coverage_policy.json
       - name: Require 100% changed-line coverage
         if: github.event_name == 'pull_request'
         env:
@@ -96,6 +102,7 @@ jobs:
         with:
           name: scientific-evidence
           path: |
+            coverage.json
             coverage.xml
             validation-results.json
             validation-report.html

@@ -89,6 +89,9 @@ python scripts/render_validation_report.py \
 The CI evidence job uploads both representations. Threshold metrics preserve
 whether a value is an equality target, upper bound, or lower bound; a result
 below a −40 dB ceiling is not misreported as being “far from the reference.”
+Unexpected warnings fail the suite. Plain skips in `validation/` and
+`differential/` are converted to failures so missing numerical evidence cannot
+silently pass; named strict `xfail` regressions remain visible and allowed.
 
 ## Local gates
 
@@ -131,8 +134,14 @@ The compact gate now makes the following quantitative claims:
 - execution of all notebooks in reduced mode against an isolated built wheel.
 
 These claims are emitted as structured JSON and portable HTML. The pull-request
-gate enforces branch-inclusive coverage at 75% and changed-line coverage at
-100%. The longer-term 90% branch target remains a target, not a current claim.
+gate enforces combined statement-and-branch coverage at 80%, changed-line
+coverage at 100%, and the risk-weighted floors in `tests/coverage_policy.json`:
+87% for public configuration, 90.5% for the solver core, 77% for PIC analysis,
+and 93.5% for numerical kernels. The top-level public API also has an executable
+inventory: adding an export requires classifying it, and every public
+configuration object shares frozen-state, nested-immutability, and functional
+copy contracts. The longer-term 90% global branch-inclusive target remains a
+target, not a current claim.
 
 The suite deliberately does **not** yet claim complete Mie scattering, cavity
 resonance/Q validation, end-to-end FDTD adjoints, external-solver consensus,

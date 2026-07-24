@@ -40,9 +40,7 @@ def test_source_waveform_sampling_supports_protocol_callable_and_arrays():
         dt=1.0,
         freq0=1.0,
     )
-    signal, quadrature = sample_source_waveforms(
-        sampled, t0=0.0, dt=1.0, num_steps=3
-    )
+    signal, quadrature = sample_source_waveforms(sampled, t0=0.0, dt=1.0, num_steps=3)
     np.testing.assert_array_equal(signal, [0.0, 1.0, 0.0])
     np.testing.assert_array_equal(quadrature, [1.0, 0.0, -1.0])
 
@@ -73,9 +71,7 @@ def test_frequency_partition_is_normalized_exact_at_nodes_and_clamped():
     with pytest.raises(ValueError, match="strictly positive"):
         partition_weights_by_frequency(np.array([1.0]), np.array([0.0, 1.0]))
 
-    single = partition_weights_by_frequency(
-        np.array([-2.0, 0.0, 2.0]), np.array([1.0])
-    )
+    single = partition_weights_by_frequency(np.array([-2.0, 0.0, 2.0]), np.array([1.0]))
     np.testing.assert_array_equal(single, np.ones((1, 3)))
 
     nodes = np.array([1.0, 2.0, 3.0])
@@ -96,9 +92,7 @@ def test_analytic_subbands_preserve_shape_and_reconstruct_waveform():
     assert empty.shape == (0, 0)
 
     time = np.arange(32) * 0.01
-    waveform = np.exp(2j * np.pi * 3.0 * time) + 0.5 * np.exp(
-        2j * np.pi * 6.0 * time
-    )
+    waveform = np.exp(2j * np.pi * 3.0 * time) + 0.5 * np.exp(2j * np.pi * 6.0 * time)
     nodes, subbands = analytic_subband_waveforms(
         waveform, dt=0.01, profile_frequencies=np.array([3.0, 6.0])
     )
@@ -112,13 +106,9 @@ def test_ramped_cosine_requires_a_complete_envelope_specification():
     with pytest.raises(ValueError, match="t_max"):
         ramped_cosine(time, amplitude=1.0, frequency=1.0)
     with pytest.raises(ValueError, match="t_max"):
-        ramped_cosine(
-            time, amplitude=1.0, frequency=1.0, ramp_duration=0.1
-        )
+        ramped_cosine(time, amplitude=1.0, frequency=1.0, ramp_duration=0.1)
 
-    implicit = ramped_cosine(
-        time, amplitude=1.0, frequency=1.0, phase=None, t_max=1.0
-    )
+    implicit = ramped_cosine(time, amplitude=1.0, frequency=1.0, phase=None, t_max=1.0)
     explicit = ramped_cosine(
         time,
         amplitude=1.0,
@@ -173,12 +163,8 @@ def test_gaussian_pulse_dc_policy_and_frequency_nodes_are_deterministic():
     assert np.mean(nodes) == pytest.approx(10.0)
 
     times = np.linspace(0.0, 2e-13, 21)
-    with_dc = GaussianPulse(
-        2e14, 2e13, remove_dc_component=False
-    ).sample(times)[0]
-    without_dc = GaussianPulse(
-        2e14, 2e13, remove_dc_component=True
-    ).sample(times)[0]
+    with_dc = GaussianPulse(2e14, 2e13, remove_dc_component=False).sample(times)[0]
+    without_dc = GaussianPulse(2e14, 2e13, remove_dc_component=True).sample(times)[0]
     assert float(np.mean(without_dc)) == pytest.approx(0.0, abs=1e-7)
     assert not np.array_equal(with_dc, without_dc)
 

@@ -195,9 +195,7 @@ def test_monitor_unsnapped_geometry_fallbacks_cover_every_orientation():
         ((2.0, 0.0, 2.0), "y"),
         ((2.0, 2.0, 0.0), "z"),
     ):
-        monitor = bz.FluxMonitor(
-            center=(1.0, 1.0, 1.0), size=size, freqs=[2e14]
-        )
+        monitor = bz.FluxMonitor(center=(1.0, 1.0, 1.0), size=size, freqs=[2e14])
         region = monitor.get_grid_slice_3d(1.0, 1.0, 1.0, None)
         assert tuple(type(item) for item in region) == expected_kinds[axis]
 
@@ -281,6 +279,46 @@ def test_mode_and_legacy_source_edge_contracts():
         bz.GaussianSource(position=(0.0, 0.0), width=0.0, signal=[1.0])
     legacy = bz.GaussianSource(position=(1.0, 2.0), width=0.5, signal=[1.0])
     assert legacy.shifted((3.0, 4.0)).position == (4.0, 6.0)
+
+
+def test_mode_data_selects_nearest_frequency_and_owns_full_profile():
+    frequencies = np.array([1e14, 2e14])
+    neffs = np.array([[1.5], [1.6]], dtype=complex)
+    fields = np.arange(2 * 1 * 2 * 3, dtype=float).reshape(2, 1, 2, 3)
+    profiles = np.ones((2, 2, 3))
+    full_profiles = np.full((2, 4, 5), 2.0)
+    data = bz.ModeData(
+        frequencies=frequencies,
+        neffs=neffs,
+        e_fields=fields,
+        h_fields=-fields,
+        eps_profiles=profiles,
+        eps_profile_fulls=full_profiles,
+        resolution=0.1,
+        center=(1.0, 2.0, 3.0, 4.0),
+    )
+
+    f_idx, m_idx, neff, e_field, h_field, eps_full = data.selected_mode(
+        f=1.9e14, mode_index=0
+    )
+    assert (f_idx, m_idx) == (1, 0)
+    assert neff == 1.6
+    np.testing.assert_array_equal(e_field, fields[1, 0])
+    np.testing.assert_array_equal(h_field, -fields[1, 0])
+    np.testing.assert_array_equal(eps_full, full_profiles[1])
+    assert data.center == (1.0, 2.0, 3.0)
+    assert not data.eps_profile_fulls.flags.writeable
+
+    empty = bz.ModeData(
+        frequencies=np.array([]),
+        neffs=np.empty((0, 1)),
+        e_fields=np.empty((0, 1, 1)),
+        h_fields=np.empty((0, 1, 1)),
+        eps_profiles=np.empty((0, 1)),
+        resolution=0.1,
+    )
+    with pytest.raises(ValueError, match="no frequencies"):
+        empty.selected_mode()
 
 
 @pytest.mark.parametrize(
@@ -402,7 +440,9 @@ def test_custom_material_grid_callable_identity_and_validation_contracts():
     assert grids.max_permittivity == 8.0
     with pytest.raises(ValueError, match="Unknown property"):
         grids.update_grid("refractive_index", np.ones((2, 2)))
-    assert grids.update_grid("conductivity", np.zeros((2, 2))).conductivity_grid.max() == 0
+    assert (
+        grids.update_grid("conductivity", np.zeros((2, 2))).conductivity_grid.max() == 0
+    )
 
     functional = bz.CustomMaterial(
         permittivity_func=lambda x, y, z=None: x + y + (0.0 if z is None else z),
