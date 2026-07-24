@@ -1,0 +1,38 @@
+{
+  "schema_version": "beamz.differential/v1",
+  "name": "slab_waveguide_te0",
+  "description": "Fundamental symmetric slab mode at 1.55 micrometres.",
+  "dimension": 2,
+  "wavelength_m": 1.55e-06,
+  "resolution_m": 2.5e-08,
+  "oracle": {
+    "kind": "analytical",
+    "reference": "symmetric-slab TE transcendental dispersion equation"
+  },
+  "materials": {
+    "core_n": 2.04,
+    "cladding_n": 1.444
+  },
+  "geometry": {
+    "kind": "symmetric_slab",
+    "core_width_m": 6e-07,
+    "transverse_span_m": 5e-06
+  },
+  "observables": [
+    {
+      "name": "effective_index",
+      "unit": "dimensionless",
+      "tolerance": "waveguide_neff"
+    },
+    {
+      "name": "normalized_field_profile",
+      "unit": "overlap",
+      "tolerance": "cross_solver"
+    }
+  ],
+  "adapters": [
+    "beamz",
+    "micromode",
+    "meep"
+  ]
+}

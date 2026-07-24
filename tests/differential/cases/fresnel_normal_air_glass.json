@@ -1,0 +1,43 @@
+{
+  "schema_version": "beamz.differential/v1",
+  "name": "fresnel_normal_air_glass",
+  "description": "Normal-incidence TM plane wave crossing an aligned air-to-glass interface.",
+  "dimension": 2,
+  "wavelength_m": 1e-06,
+  "resolution_m": 3.7037037037037036e-08,
+  "oracle": {
+    "kind": "analytical",
+    "reference": "normal-incidence Fresnel power coefficients"
+  },
+  "materials": {
+    "incident_n": 1.0,
+    "transmitted_n": 1.5
+  },
+  "geometry": {
+    "kind": "aligned_half_space",
+    "interface_axis": "x",
+    "interface_position_m": 8e-06
+  },
+  "observables": [
+    {
+      "name": "reflectance",
+      "unit": "fraction",
+      "tolerance": "analytical_coarse"
+    },
+    {
+      "name": "transmittance",
+      "unit": "fraction",
+      "tolerance": "analytical_coarse"
+    },
+    {
+      "name": "power_balance",
+      "unit": "fraction",
+      "tolerance": "normalized_power_balance"
+    }
+  ],
+  "adapters": [
+    "beamz",
+    "meep",
+    "fdtdx"
+  ]
+}
