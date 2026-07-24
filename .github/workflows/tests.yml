@@ -86,6 +86,11 @@ jobs:
           uv run --no-active --python 3.11 diff-cover coverage.xml
           --compare-branch "origin/${BASE_REF}"
           --fail-under 100
+      - name: Render portable validation report
+        run: >-
+          uv run --no-active --python 3.11 python
+          scripts/render_validation_report.py
+          validation-results.json validation-report.html
       - name: Upload coverage and validation evidence
         uses: actions/upload-artifact@v4
         with:
@@ -93,6 +98,7 @@ jobs:
           path: |
             coverage.xml
             validation-results.json
+            validation-report.html
 
   docs:
     name: Documentation (strict + executable)
