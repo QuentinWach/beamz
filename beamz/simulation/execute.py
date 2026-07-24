@@ -230,7 +230,12 @@ def forward_step(
     )
 
 
-def build_scan(program, *, donate_state: bool = False):
+def build_scan(
+    program,
+    *,
+    donate_state: bool = False,
+    rematerialize: bool = False,
+):
     """Build the jitted compiled scan for a program."""
 
     # 1. Pull immutable configuration out of the program before tracing. These values
@@ -284,8 +289,9 @@ def build_scan(program, *, donate_state: bool = False):
                     None,
                 )
 
+            scan_body = jax.checkpoint(_scan_body) if rematerialize else _scan_body
             scan_out, _ = jax.lax.scan(
-                _scan_body,
+                scan_body,
                 state,
                 xs=None,
                 length=cfg.num_steps,

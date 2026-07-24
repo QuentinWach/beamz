@@ -43,7 +43,13 @@ from beamz.design.structures import (
     Taper,
 )
 from beamz.devices.boundaries import PEC, PML, Absorber
-from beamz.devices.monitors import FieldMonitor, FieldRecorder, FluxMonitor, ModeMonitor
+from beamz.devices.monitors import (
+    DomainFieldMonitor,
+    FieldMonitor,
+    FieldRecorder,
+    FluxMonitor,
+    ModeMonitor,
+)
 from beamz.devices.ports import Port
 from beamz.devices.sources import (
     CustomSource,
@@ -95,6 +101,7 @@ __all__ = [
     "GaussianSource",
     "GaussianBeamSource",
     "CustomSource",
+    "DomainFieldMonitor",
     "FieldMonitor",
     "FieldRecorder",
     "FluxMonitor",

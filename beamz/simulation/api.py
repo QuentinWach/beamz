@@ -25,6 +25,7 @@ from beamz.design.meshing import GridSpec
 from beamz.design.structures import Box
 from beamz.devices.boundaries import normalize_boundaries
 from beamz.devices.monitors.monitors import (
+    DomainFieldMonitor,
     FieldMonitor,
     FieldRecorder,
     FluxMonitor,
@@ -58,7 +59,13 @@ from beamz.simulation.results import MonitorResults as MonitorResults
 from beamz.simulation.results import SimulationResults as SimulationResults
 from beamz.simulation.results import SimulationRun as SimulationRun
 
-_MONITOR_TYPES = (FieldMonitor, FieldRecorder, FluxMonitor, ModeMonitor)
+_MONITOR_TYPES = (
+    DomainFieldMonitor,
+    FieldMonitor,
+    FieldRecorder,
+    FluxMonitor,
+    ModeMonitor,
+)
 _MAX_MATERIAL_GRIDS = 4
 _MATERIAL_GRID_CACHE = OrderedDict()
 

@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.devices.monitors.monitors import (
+    DomainFieldMonitor,
     FieldRecorder,
     _line_integral_scale_2d,
     _line_normal_2d,
@@ -52,6 +53,7 @@ class CompiledMonitorSpec:
     dft_length_unit: float = 1e-6
     dft_point_count: int = 0
     dft_component_mask: jnp.ndarray = field(default_factory=_empty_array)
+    dft_component_enabled: tuple[bool, ...] = ()
     sample_flat_idx: tuple[jnp.ndarray, ...] = ()
     sample_weights: tuple[jnp.ndarray, ...] = ()
     dft_flat_idx: tuple[jnp.ndarray, ...] = ()
@@ -153,6 +155,40 @@ def _inactive_sampling_plan(point_count: int):
     """Represent an inactive canonical component without a runtime dimension branch."""
     shape = (int(point_count), 1)
     return jnp.zeros(shape, dtype=jnp.int32), jnp.zeros(shape, dtype=jnp.float32)
+
+
+def _compile_domain_monitor_2d_plan(component, fields, resolution):
+    """Collocate one canonical Yee component at all material-cell centers."""
+    from beamz.lattice import component_coordinates_2d_um
+
+    if getattr(fields, "plane_2d", "xy") != "xy":
+        raise NotImplementedError(
+            "DomainFieldMonitor currently supports the 2D 'xy' plane only."
+        )
+    ny, nx = (int(value) for value in fields.permittivity.shape)
+    target_x = (np.arange(nx, dtype=np.float64) + 0.5) * float(resolution)
+    target_y = (np.arange(ny, dtype=np.float64) + 0.5) * float(resolution)
+    grid_x, grid_y = np.meshgrid(target_x, target_y)
+    coords = component_coordinates_2d_um(
+        component,
+        (ny, nx),
+        float(resolution),
+        getattr(fields, "plane_2d", "xy"),
+    )
+    src_x = np.asarray(coords["x"], dtype=np.float64)
+    src_y = np.asarray(coords["y"], dtype=np.float64)
+    x0, x1, wx0, wx1 = linear_interpolation_plan(src_x, grid_x.reshape(-1))
+    y0, y1, wy0, wy1 = linear_interpolation_plan(src_y, grid_y.reshape(-1))
+    bits = np.asarray([(0, 0), (0, 1), (1, 0), (1, 1)], dtype=np.int32)
+    x_idx = np.where(bits[:, 1][None, :] == 0, x0[:, None], x1[:, None])
+    y_idx = np.where(bits[:, 0][None, :] == 0, y0[:, None], y1[:, None])
+    wx = np.where(bits[:, 1][None, :] == 0, wx0[:, None], wx1[:, None])
+    wy = np.where(bits[:, 0][None, :] == 0, wy0[:, None], wy1[:, None])
+    flat_idx = np.ravel_multi_index(
+        (y_idx.astype(np.int32), x_idx.astype(np.int32)),
+        dims=tuple(int(value) for value in getattr(fields, component).shape),
+    ).astype(np.int32)
+    return jnp.asarray(flat_idx), jnp.asarray((wx * wy).astype(np.float32))
 
 
 def compile_monitor_specs(
@@ -343,28 +379,35 @@ def compile_monitor_specs(
             dft_normalization_code=0,
             dft_length_unit=1e-6,
             dft_component_mask=jnp.asarray(dft_component_mask),
+            dft_component_enabled=tuple(bool(value) for value in dft_component_mask),
         )
 
         if not is_3d:
-            points = monitor.get_grid_points_2d(resolution, resolution)
-            if points:
-                x_raw = np.asarray([p[0] for p in points], dtype=np.int32)
-                y_raw = np.asarray([p[1] for p in points], dtype=np.int32)
+            if isinstance(monitor, DomainFieldMonitor):
+                component_plans = [
+                    _compile_domain_monitor_2d_plan(name, fields, resolution)
+                    for name in ("Ez", "Hx", "Hy")
+                ]
             else:
-                x_raw = np.zeros((0,), dtype=np.int32)
-                y_raw = np.zeros((0,), dtype=np.int32)
-            component_plans = []
-            for name in ("Ez", "Hx", "Hy"):
-                shape = tuple(getattr(fields, name).shape)
-                x, y, valid = _clip_indices(x_raw, y_raw, shape)
-                flat_idx, weights = _compile_monitor_2d_interpolation(
-                    monitor, name, fields, resolution
-                )
-                component_plans.append(
-                    (flat_idx, weights)
-                    if flat_idx.size
-                    else _direct_sampling_plan(x, y, valid, shape)
-                )
+                points = monitor.get_grid_points_2d(resolution, resolution)
+                if points:
+                    x_raw = np.asarray([p[0] for p in points], dtype=np.int32)
+                    y_raw = np.asarray([p[1] for p in points], dtype=np.int32)
+                else:
+                    x_raw = np.zeros((0,), dtype=np.int32)
+                    y_raw = np.zeros((0,), dtype=np.int32)
+                component_plans = []
+                for name in ("Ez", "Hx", "Hy"):
+                    shape = tuple(getattr(fields, name).shape)
+                    x, y, valid = _clip_indices(x_raw, y_raw, shape)
+                    flat_idx, weights = _compile_monitor_2d_interpolation(
+                        monitor, name, fields, resolution
+                    )
+                    component_plans.append(
+                        (flat_idx, weights)
+                        if flat_idx.size
+                        else _direct_sampling_plan(x, y, valid, shape)
+                    )
             point_count = int(component_plans[0][0].shape[0])
             inactive = _inactive_sampling_plan(point_count)
             sample_plans = (
@@ -397,6 +440,10 @@ def compile_monitor_specs(
                 )
             )
         else:
+            if isinstance(monitor, DomainFieldMonitor):
+                raise NotImplementedError(
+                    "DomainFieldMonitor currently supports 2D simulations only."
+                )
             shape_3d = {
                 "Ex": tuple(fields.Ex.shape),
                 "Ey": tuple(fields.Ey.shape),

@@ -98,13 +98,27 @@ def _safe_ratio(num, den, eps=1e-18):
 
 def _wave_selectors(port: Port, *, is_3d: bool) -> tuple[str, str]:
     """Return incident and scattered modal branches for one canonical port."""
-    positive_axis_wave = "minus" if is_3d and port.axis in {"x", "y"} else "plus"
+    # The mode solver's global-axis remapping reverses the magnetic-field sign
+    # for y propagation. Consequently its first (E, H) basis column represents
+    # -y in 2D, while the x basis represents +x. Keep that solver convention
+    # localized here so Port.direction retains its physical, axis-independent
+    # meaning (the direction pointing into the device).
+    if is_3d:
+        positive_axis_wave = "minus" if port.axis in {"x", "y"} else "plus"
+    else:
+        positive_axis_wave = "minus" if port.axis == "y" else "plus"
     incident = (
         positive_axis_wave
         if port.direction == "+"
         else ("minus" if positive_axis_wave == "plus" else "plus")
     )
     return incident, "minus" if incident == "plus" else "plus"
+
+
+def wave_selectors(port: Port, *, is_3d: bool) -> tuple[str, str]:
+    """Return the canonical incident and scattered branches for ``port``."""
+
+    return _wave_selectors(port, is_3d=is_3d)
 
 
 def _resample_complex_matrix(freq_src, values_src, freq_dst):

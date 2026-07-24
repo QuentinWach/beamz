@@ -526,6 +526,26 @@ def _build_port_projection(
     return projection
 
 
+def build_port_projection(
+    sim,
+    spec,
+    monitor,
+    frequency,
+    cache,
+    mode_pad_cells=6,
+):
+    """Build or reuse the canonical modal projection for one port frequency."""
+
+    return _build_port_projection(
+        sim,
+        spec,
+        monitor,
+        frequency,
+        cache,
+        mode_pad_cells=mode_pad_cells,
+    )
+
+
 def _project_modal_coefficients_3d_group(field_components, projections):
     """Project one 3D monitor field onto a coupled forward/backward mode set."""
     projections = tuple(projections)

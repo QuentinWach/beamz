@@ -103,6 +103,19 @@ def test_raster_cache_is_disabled_by_default(monkeypatch, tmp_path):
     assert not (tmp_path / ".beamz_cache" / "raster").exists()
 
 
+def test_integral_si_extent_does_not_lose_boundary_cell():
+    resolution = 25e-9
+    design = Design(
+        width=3.15e-6,
+        height=3.15e-6,
+        material=Material(permittivity=1.0),
+    )
+
+    grid = design.rasterize(resolution=resolution, force_recompute=True)
+
+    assert grid.shape == (126, 126)
+
+
 def test_canonical_2d_materials_accept_scalar_zero_conductivity():
     shape = (3, 4)
     fields = compiled_grid(

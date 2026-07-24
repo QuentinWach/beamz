@@ -36,7 +36,11 @@
 - Built-in layout flow (GDSII import/export).
 - **DFT monitors** and S-parameter extraction workflow for compact modeling.
 - Streamlined **parametric design** module.
-- Optimization/autodiff utilities for gradient-based **inverse-design** with Jax.
+- End-to-end JAX differentiation through 2D/3D FDTD material grids, with reusable
+  design regions and checkpointed scans for gradient-based **inverse design**.
+  The current high-level port projector, strict-foundry generator, and
+  full-domain DFT optimization monitor are 2D workflows; multi-device sharding
+  is not yet part of the differentiable runner.
 
 
 ## Examples
@@ -44,7 +48,11 @@ Try out notebooks from our growing **[example library](https://beamz.tech/exampl
 
 - [Mode Sources and Monitors](https://beamz.tech/examples/modal_sources_monitors)
 - [Waveguide Crossing with Cosine Tapers](https://beamz.tech/examples/cosine_waveguide_crossing)
-- [Topology Optimized 90° Bend (2D)](https://beamz.tech/examples/ceviche_bend)
+- [Original 1550 nm topology-optimized bend](examples/optimization/ceviche_bend_1550nm.py)
+- [Strict-foundry O-band waveguide bend](examples/optimization/ceviche_bend_o_band.py)
+- [Fabrication-constrained O-band beam splitter](examples/optimization/ceviche_beam_splitter_o_band.py)
+- [Fabrication-constrained O-band mode converter](examples/optimization/ceviche_mode_converter_o_band.py)
+- [Fabrication-constrained O-band wavelength demultiplexer](examples/optimization/ceviche_wdm_o_band.py)
 <!--- [Broadband Mode Sources]() (coming soon)
 - [Straight & Curved Waveguide Benchmark]() (coming soon)-->
 <!--- [Mode Converter (3D)]() (coming soon)

@@ -358,6 +358,67 @@ class FieldMonitor(_Monitor):
 
 
 @dataclass(frozen=True, init=False, eq=False)
+class DomainFieldMonitor(_Monitor):
+    """Accumulate frequency-domain fields at every material-cell center.
+
+    Returned component arrays use a flattened spatial axis and can be reshaped
+    to ``SimulationResults.metadata.fields.grid_shape``.
+    """
+
+    fields: tuple[str, ...]
+
+    def __init__(
+        self,
+        freqs,
+        fields=("Ez",),
+        *,
+        name="frequency_fields",
+        interval=1,
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 0.0, 0.0),
+    ):
+        center, size = _normalize_center_size(center, size)
+        if center != (0.0, 0.0, 0.0) or size != (0.0, 0.0, 0.0):
+            raise ValueError(
+                "DomainFieldMonitor always spans the full domain; center and size "
+                "must remain zero."
+            )
+        fields = tuple(str(component) for component in fields)
+        invalid = set(fields) - {"Ex", "Ey", "Ez", "Hx", "Hy", "Hz"}
+        if not fields or invalid:
+            raise ValueError(
+                f"Unsupported DomainFieldMonitor fields: {sorted(invalid)}"
+            )
+        _Monitor.__init__(
+            self,
+            center=center,
+            size=size,
+            freqs=freqs,
+            name=name,
+            interval=interval,
+        )
+        object.__setattr__(self, "fields", fields)
+
+    @property
+    def dft_components(self):
+        return self.fields
+
+    def updated_copy(self, **changes):
+        values = {
+            "freqs": self.freqs,
+            "fields": self.fields,
+            "name": self.name,
+            "interval": self.interval,
+        }
+        values.update(changes)
+        return type(self)(**values)
+
+    def shifted(self, offset):
+        del offset
+        return self
+
+
+@dataclass(frozen=True, init=False, eq=False)
 class FieldRecorder(_Monitor):
     """Record time-domain field snapshots on the domain or a center/size plane."""
 

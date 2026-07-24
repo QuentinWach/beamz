@@ -67,6 +67,22 @@ class RasterContext:
         return (*values, None) if self.dimensions == 2 else values
 
 
+def _cell_count(length: float, step: float) -> int:
+    """Convert an extent to cells without losing mathematically integral grids.
+
+    SI geometry commonly arrives through sums of decimal nanometre values. A
+    quotient that is mathematically 126 can consequently be represented just
+    below 126, where a bare ``int`` would silently drop an entire boundary cell.
+    Preserve the historical floor behavior for genuinely non-integral extents.
+    """
+
+    scaled = float(length) / float(step)
+    nearest = int(round(scaled))
+    if np.isclose(scaled, nearest, rtol=1e-12, atol=1e-12):
+        return nearest
+    return int(scaled)
+
+
 @dataclass(frozen=True)
 class GridSpec:
     """Configure automatic or explicit FDTD spatial discretization.
@@ -390,7 +406,7 @@ class BaseMeshGrid:
         if dimensions == 3:
             extents += (float(self.design.depth),)
         counts = tuple(
-            int(length / step) if length > 0.0 else 1
+            _cell_count(length, step) if length > 0.0 else 1
             for length, step in zip(extents, cell_sizes, strict=True)
         )
         centers = tuple(

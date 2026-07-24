@@ -110,6 +110,22 @@ def _run_sparameters(waves, ports, frequencies, output_ports, monkeypatch, **kwa
     )
 
 
+@pytest.mark.parametrize(
+    ("direction", "incident", "scattered"),
+    [
+        ("+x", "plus", "minus"),
+        ("-x", "minus", "plus"),
+        ("+y", "minus", "plus"),
+        ("-y", "plus", "minus"),
+    ],
+)
+def test_2d_wave_selectors_follow_physical_port_direction(
+    direction, incident, scattered
+):
+    port = _port(name="port", direction=direction, polarization="tm")
+    assert sp._wave_selectors(port, is_3d=False) == (incident, scattered)
+
+
 def test_s_parameters_returns_typed_result_and_matrix(monkeypatch):
     freqs = np.array([191e12, 193e12, 195e12], dtype=float)
     ports = [

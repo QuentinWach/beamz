@@ -505,7 +505,7 @@ def sample_voxel_grid_at_e_component_3d_centered(
         )
 
     # 2. Resolve the requested stored support, Yee offsets, and optional update region before sampling any axis.
-    grid_shape = tuple(int(v) for v in np.asarray(grid).shape)
+    grid_shape = tuple(int(v) for v in jnp.shape(grid))
     shape = (
         tuple(int(v) for v in stored_shape)
         if stored_shape is not None
@@ -629,15 +629,17 @@ def sample_voxel_grid_at_component_2d(
     region: tuple[slice, slice] | None = None,
 ):
     """Sample a material raster on the canonical TMxy support."""
-    grid_np = np.asarray(grid)
+    grid_shape = tuple(int(value) for value in jnp.shape(grid))
+    if len(grid_shape) != 2:
+        raise ValueError(f"A 2D material raster must be rank two, got {grid_shape}.")
     canonical = canonical_component_2d(component, plane)
     if canonical is None:
-        return jnp.asarray(grid_np[:1, :1])
-    shape = component_shape_2d(component, tuple(int(v) for v in grid_np.shape), plane)
+        return jnp.asarray(grid)[:1, :1]
+    shape = component_shape_2d(component, grid_shape, plane)
     if stored_shape is not None and tuple(int(v) for v in stored_shape) != shape:
         raise ValueError(f"stored_shape={stored_shape!r} does not match {shape!r}")
     region = region or (slice(None), slice(None))
-    ny, nx = (int(v) for v in grid_np.shape)
+    ny, nx = grid_shape
     y_len, x_len = shape
     y_offset, x_offset = {"Ez": (0.0, 0.0), "Hx": (0.5, 0.0), "Hy": (0.0, 0.5)}[
         canonical
