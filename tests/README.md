@@ -57,6 +57,28 @@ tests/
    an unbounded tolerance. Move unfinished work to a case specification or
    characterize it honestly.
 
+Named gates live in `validation/tolerances.py`. Validation tests use the
+`validation_metrics` fixture so each assertion records its measured value,
+reference, absolute/relative error, resolution, backend, and tolerance
+rationale:
+
+```python
+def test_observable(validation_metrics):
+    validation_metrics.check(
+        "reflectance",
+        measured=measured_R,
+        reference=analytical_R,
+        tolerance="analytical_coarse",
+        resolution="20 ppw",
+    )
+```
+
+Emit the collected measurements as portable JSON with:
+
+```bash
+python -m pytest -m validation --validation-report=validation-results.json
+```
+
 ## Local gates
 
 The compact pull-request-style suite excludes explicitly slow simulations,

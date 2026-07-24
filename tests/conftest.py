@@ -15,6 +15,7 @@ from beamz import (
 from tests.evidence import PRIMARY_EVIDENCE_MARKERS, evidence_markers_for_path
 
 TESTS_ROOT = Path(__file__).parent
+pytest_plugins = ("tests.validation.plugin",)
 
 
 def pytest_collection_modifyitems(items):

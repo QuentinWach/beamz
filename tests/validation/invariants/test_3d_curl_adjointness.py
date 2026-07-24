@@ -13,7 +13,7 @@ from beamz.simulation.kernels import apply_zero_mask
 from tests.utils import compiled_grid
 
 
-def test_complete_3d_pec_curl_pair_is_skew_adjoint():
+def test_complete_3d_pec_curl_pair_is_skew_adjoint(validation_metrics):
     fields = compiled_grid(
         np.ones((6, 8, 18), dtype=np.float32),
         np.zeros((6, 8, 18), dtype=np.float32),
@@ -61,4 +61,12 @@ def test_complete_3d_pec_curl_pair_is_skew_adjoint():
         for name, curl in zip(("Hx", "Hy", "Hz"), curl_h, strict=True)
     )
     scale = abs(float(lhs)) + abs(float(rhs)) + 1e-30
-    assert abs(float(lhs - rhs)) / scale < 1e-6
+    residual = abs(float(lhs - rhs)) / scale
+    validation_metrics.check(
+        "relative skew-adjoint residual",
+        measured=residual,
+        reference=0.0,
+        tolerance="kernel_float32",
+        resolution="6x8x18 material cells",
+        metadata={"boundary": "PEC", "seed": 0},
+    )
