@@ -81,6 +81,16 @@ def test_solve_modes_uses_one_signed_axis_for_normal_and_direction(monkeypatch):
     assert calls[0]["direction"] == "-"
 
 
+def test_solve_modes_rejects_unknown_polarization():
+    with pytest.raises(ValueError, match="filter_pol"):
+        solve_modes(
+            np.ones(4),
+            omega=2 * np.pi,
+            dL=1e-7,
+            filter_pol="hybrid",  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize("axis", "xyz")
 def test_solve_modes_preserves_beamz_plane_axes_for_polarization(axis):
     permittivity = np.full((40, 6), 1.44**2)

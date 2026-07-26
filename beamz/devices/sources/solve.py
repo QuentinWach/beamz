@@ -61,6 +61,8 @@ def solve_modes(
         raise ValueError("npml must be non-negative")
     if m <= 0:
         raise ValueError("m must be positive")
+    if filter_pol not in {None, "te", "tm"}:
+        raise ValueError("filter_pol must be 'te', 'tm', or None")
 
     axis = str(direction)[-1].lower()
     if axis not in {"x", "y", "z"}:
