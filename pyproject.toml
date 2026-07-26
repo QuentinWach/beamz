@@ -33,7 +33,6 @@ dependencies = [
     "shapely>=2.0.6",
     "jax>=0.4.0",
     "optax>=0.1.0",
-    "micromode>=0.1.0a6",
     "matplotlib>=3.8.0",
     "scikit-image>=0.21.0",
     "xarray>=2024.0.0",
@@ -75,6 +74,10 @@ test = [ # Adding a 'test' extra that includes pytest and pytest-cov for conveni
     "pytest-randomly>=3.0.0",
     "hypothesis>=6.100.0",
     "diff-cover>=9.0.0",
+    "h5py>=3.10,<4.0",
+]
+mode-io = [
+    "h5py>=3.10,<4.0",
 ]
 
 

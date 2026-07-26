@@ -10,6 +10,7 @@
         "beamz/design/meshing.py",
         "beamz/design/structures.py",
         "beamz/devices/boundaries.py",
+        "beamz/devices/modes/specs.py",
         "beamz/devices/ports.py",
         "beamz/devices/monitors/monitors.py",
         "beamz/devices/sources/specs.py",
@@ -55,6 +56,19 @@
         "beamz/devices/sources/planar_tfsf.py",
         "beamz/optimization/autodiff.py",
         "beamz/simulation/kernels.py"
+      ]
+    },
+    "mode_solver": {
+      "minimum": 80.0,
+      "files": [
+        "beamz/devices/modes/_scipy.py",
+        "beamz/devices/modes/_yee.py",
+        "beamz/devices/modes/discrete.py",
+        "beamz/devices/modes/models.py",
+        "beamz/devices/modes/result.py",
+        "beamz/devices/modes/solver.py",
+        "beamz/devices/modes/specs.py",
+        "beamz/devices/modes/sweep.py"
       ]
     }
   }

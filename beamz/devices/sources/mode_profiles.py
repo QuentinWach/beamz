@@ -179,7 +179,7 @@ def _local_mode_plane_spec(
     snapped_region=None,
     aperture_pad_cells=2,
 ):
-    """Build a compact local micromode plane and metadata to shift it globally."""
+    """Build a compact local mode plane and metadata to shift it globally."""
     axis = str(axis).lower()
     counts = _axis_counts_from_grid_shape(grid_shape)
     centers = _center_by_axis(center, grid_shape, resolution)
@@ -312,7 +312,7 @@ def _shift_3d_index(index, origin_zyx):
 
 
 def _shift_discrete_mode_to_global(discrete_mode, *, origin_zyx, axis, resolution):
-    """Shift a micromode result solved on a local crop back to global indices."""
+    """Shift a mode result solved on a local crop back to global indices."""
     if discrete_mode is None:
         return None
     component_indices = {

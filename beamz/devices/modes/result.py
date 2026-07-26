@@ -387,13 +387,15 @@ class Result:
 
         try:
             import h5py
-        except ImportError as exc:  # pragma: no cover - dependency should be present in package installs.
-            raise ImportError("h5py is required for Result.to_hdf5()") from exc
+        except ImportError as exc:  # pragma: no cover - optional dependency path.
+            raise ImportError(
+                "Result.to_hdf5() requires the `beamz[mode-io]` extra"
+            ) from exc
 
         destination = Path(path)
         with h5py.File(destination, "w") as handle:
             # Store a tiny file-level marker before writing xarray-shaped groups.
-            handle.attrs["format"] = "micromode.Result"
+            handle.attrs["format"] = "beamz.devices.modes.Result"
             handle.attrs["version"] = 1
             self._write_data_array(handle, "n_complex", self.n_complex)
 
@@ -419,8 +421,10 @@ class Result:
 
         try:
             import h5py
-        except ImportError as exc:  # pragma: no cover - dependency should be present in package installs.
-            raise ImportError("h5py is required for Result.from_hdf5()") from exc
+        except ImportError as exc:  # pragma: no cover - optional dependency path.
+            raise ImportError(
+                "Result.from_hdf5() requires the `beamz[mode-io]` extra"
+            ) from exc
 
         with h5py.File(path, "r") as handle:
             # Rehydrate required and optional DataArrays from the compact group

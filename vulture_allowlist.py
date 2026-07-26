@@ -39,3 +39,12 @@ _lower_custom_source
 _lower_gaussian_beam_source
 _lower_gaussian_source
 _lower_mode_source
+
+# Public native mode-solver fields and methods are consumed by downstream users
+# and optional serialization paths, not necessarily by BeamZ itself.
+_.component_offsets
+_.phase_reference_component
+_.from_subpixel_diagonal
+_.diagonal_eps
+_.to_hdf5
+_.from_hdf5

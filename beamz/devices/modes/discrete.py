@@ -1,8 +1,9 @@
 """BEAMZ-facing discrete mode contract.
 
-This module is intentionally small and data-oriented. BEAMZ owns geometry and
-Yee-grid placement; MicroMode owns mode solving and conversion into component
-planes that BEAMZ can inject without another interpretation layer.
+This module is intentionally small and data-oriented. BeamZ owns geometry and
+Yee-grid placement; the native mode package solves and converts fields into
+component planes that the simulation can inject without another interpretation
+layer.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ PolarizationName = Literal["te", "tm"]
 ComponentIndex = tuple[slice | int, slice | int, slice | int]
 
 _COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+# Legacy schema identifier retained for saved diagnostics and external consumers.
+# It names the v1 data shape and no longer implies an external package dependency.
+DISCRETE_MODE_CONTRACT = "micromode.beamz.DiscreteMode/v1"
 _AXIS_INDEX: dict[AxisName, Literal[0, 1, 2]] = {"x": 0, "y": 1, "z": 2}
 _AXIS_NAMES: tuple[AxisName, AxisName, AxisName] = ("x", "y", "z")
 _YEE_OFFSETS_3D = {
@@ -40,10 +44,10 @@ class _ModeCandidate(TypedDict):
 
 @dataclass(frozen=True)
 class ModePlaneSpec:
-    """Exact BEAMZ mode-plane metadata passed to MicroMode.
+    """Exact mode-plane metadata passed to the BeamZ-native solver.
 
-    ``scalar_permittivity`` uses ``transverse_axes`` order, not MicroMode's
-    internal local-axis order. For example, an x-normal BEAMZ plane is usually
+    ``scalar_permittivity`` uses ``transverse_axes`` order, not the solver's
+    internal local-axis order. For example, an x-normal BeamZ plane is usually
     stored as ``("z", "y")``.
     """
 
@@ -335,7 +339,7 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
     backward_profiles = _backward_mode_from_forward(profiles)
 
     diagnostics = {
-        "contract": "micromode.beamz.DiscreteMode/v1",
+        "contract": DISCRETE_MODE_CONTRACT,
         "normal_axis": spec.axis,
         "transverse_axes": spec.transverse_axes,
         "solver_axes": solver_axes,

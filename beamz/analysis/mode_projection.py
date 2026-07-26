@@ -14,6 +14,7 @@ from beamz.analysis.modal_projection.geometry import (
     _monitor_analysis_plane_3d,
     _plane_axes_for_port_axis,
 )
+from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT
 from beamz.devices.monitors.monitors import ModeMonitor
 from beamz.devices.sources.mode_profiles import (
     _MODE_PLANE_APERTURE_PAD_CELLS,
@@ -394,7 +395,7 @@ def _build_discrete_port_projection_3d(
         "axis": axis,
         "direction_sign": float(direction_sign),
         "d_area": float(d_area),
-        "discrete_contract": "micromode.beamz.DiscreteMode/v1",
+        "discrete_contract": DISCRETE_MODE_CONTRACT,
         "analysis_coords0": np.asarray(analysis_coords0, dtype=np.float64),
         "analysis_coords1": np.asarray(analysis_coords1, dtype=np.float64),
     }

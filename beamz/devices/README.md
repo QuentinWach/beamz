@@ -3,9 +3,15 @@
 Simulation devices define how fields enter, leave, and are sampled from a
 simulation.
 
-- `sources/specs.py`: immutable public source and mode-data values.
+- `modes/`: native finite-difference mode solving, modal results and sweeps,
+  BeamZ-shaped discrete modes, and guarded Yee-grid refinement.
+- `modes/specs.py`: immutable mode-selection and mode-data values shared by
+  sources, monitors, and ports.
+- `sources/specs.py`: immutable public source values and compatibility re-exports
+  for `ModeSpec` and `ModeData`.
 - `sources/time.py`: sampled and analytic temporal waveforms.
-- `sources/solve.py`: the optional micromode adapter and mode-plane solving.
+- `sources/solve.py`: source-plane extraction and compatibility wrappers around
+  the native mode solver.
 - `sources/mode_profiles.py`: mode-profile geometry, interpolation, and power scaling.
 - `sources/mode_launch.py`: 2D/3D launch planning from solved profiles.
 - `sources/planar_tfsf.py`: discrete 3D total-field/scattered-field residuals.

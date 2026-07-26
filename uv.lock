@@ -120,7 +120,6 @@ dependencies = [
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "jax", version = "0.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "matplotlib" },
-    { name = "micromode" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "optax" },
@@ -154,8 +153,12 @@ lint = [
     { name = "ruff" },
     { name = "vulture" },
 ]
+mode-io = [
+    { name = "h5py" },
+]
 test = [
     { name = "diff-cover" },
+    { name = "h5py" },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -174,10 +177,11 @@ requires-dist = [
     { name = "gdsfactory", marker = "python_full_version >= '3.14' and extra == 'ubc'", specifier = ">=9.0" },
     { name = "gdsfactory", marker = "python_full_version < '3.14' and extra == 'gds'", specifier = ">=8.0" },
     { name = "gdsfactory", marker = "python_full_version < '3.14' and extra == 'ubc'", specifier = ">=8.0" },
+    { name = "h5py", marker = "extra == 'mode-io'", specifier = ">=3.10,<4.0" },
+    { name = "h5py", marker = "extra == 'test'", specifier = ">=3.10,<4.0" },
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.100.0" },
     { name = "jax", specifier = ">=0.4.0" },
     { name = "matplotlib", specifier = ">=3.8.0" },
-    { name = "micromode", specifier = ">=0.1.0a6" },
     { name = "mkdocs", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "mkdocs-material", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "myst-parser", marker = "extra == 'dev'", specifier = ">=2.0.0" },
@@ -200,7 +204,7 @@ requires-dist = [
     { name = "vulture", marker = "extra == 'lint'", specifier = ">=2.14" },
     { name = "xarray", specifier = ">=2024.0.0" },
 ]
-provides-extras = ["gds", "dev", "lint", "ubc", "test"]
+provides-extras = ["gds", "dev", "lint", "ubc", "test", "mode-io"]
 
 [[package]]
 name = "black"
@@ -2623,25 +2627,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/3a/41/580bb4006e3ed0361b8151a01d324fb03f420815446c7def45d02f74c270/mergedeep-1.3.4.tar.gz", hash = "sha256:0096d52e9dad9939c3d975a774666af186eda617e6ca84df4c94dec30004f2a8", size = 4661, upload-time = "2021-02-05T18:55:30.623Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/19/04f9b178c2d8a15b076c8b5140708fa6ffc5601fb6f1e975537072df5b2a/mergedeep-1.3.4-py3-none-any.whl", hash = "sha256:70775750742b25c0d8f36c55aed03d24c3384d17c951b3175d898bd778ef0307", size = 6354, upload-time = "2021-02-05T18:55:29.583Z" },
-]
-
-[[package]]
-name = "micromode"
-version = "0.1.0a6"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "h5py" },
-    { name = "matplotlib" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "scipy", version = "1.17.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "xarray", version = "2025.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "xarray", version = "2025.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/de/1475d5e22fc882c85e6e30e6d27f587ba0124d706cc25daaa8dee7a9836f/micromode-0.1.0a6.tar.gz", hash = "sha256:8920bcd45813b4a51fb26bf0d62fb04c13138da707ecc3161427d87cee99971c", size = 60262, upload-time = "2026-06-20T15:00:44.496Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9b/69/cc452ff7264f1a5f7360199b2b8919bdf6ca8a53feea9710566532e33fa4/micromode-0.1.0a6-py3-none-any.whl", hash = "sha256:e8a6bd5ecd712c353d5f1acf9470ca69077b3c97b45ce6b907fa75c30af6c63d", size = 53359, upload-time = "2026-06-20T15:00:43.299Z" },
 ]
 
 [[package]]

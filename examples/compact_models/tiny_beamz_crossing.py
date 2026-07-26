@@ -12,7 +12,6 @@ Workflow:
 
 from __future__ import annotations
 
-import importlib.metadata
 import importlib.util
 import math
 import shutil
@@ -37,6 +36,7 @@ from beamz import (
 )
 from beamz.analysis import s_parameters
 from beamz.design.gds import import_gds
+from beamz.devices import modes as native_modes
 from beamz.devices._placement import snap_plane_region
 from beamz.devices.sources.time import gaussian_band_pulse
 
@@ -125,25 +125,6 @@ def ensure_ubcpdk_available(requirement: str = UBC_PDK_REQUIREMENT) -> None:
             f"`gds/{COMPONENT_NAME}.gds` file is still not available from this "
             "Python environment."
         )
-
-
-def micromode_has_right_handed_y_basis() -> bool:
-    """Return whether installed micromode has the y-normal basis fix."""
-    try:
-        raw_version = importlib.metadata.version("micromode")
-    except importlib.metadata.PackageNotFoundError:
-        return False
-
-    if raw_version.startswith("0.1.0a"):
-        suffix = raw_version.split("0.1.0a", 1)[1]
-        digits = ""
-        for char in suffix:
-            if not char.isdigit():
-                break
-            digits += char
-        if digits:
-            return int(digits) >= 4
-    return raw_version not in {"0.1.0a1", "0.1.0a2", "0.1.0a3"}
 
 
 def ubcpdk_gds_path(cell: str) -> Path:
@@ -423,16 +404,7 @@ def format_duration(seconds: float) -> str:
 # and extend the ports into uniform straight sections.
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 ensure_ubcpdk_available()
-try:
-    import micromode
-
-    print(
-        "Using micromode "
-        f"{importlib.metadata.version('micromode')} from {micromode.__file__} "
-        f"(right-handed y basis={micromode_has_right_handed_y_basis()})"
-    )
-except Exception as exc:
-    print(f"Could not report micromode runtime details: {exc}")
+print(f"Using BeamZ native mode solver from {native_modes.__file__}")
 dx, dt = dxdt(
     WL0,
     n_max=N_CORE,
@@ -725,8 +697,8 @@ print(
     f"wall={wall_s:.2f}s, step_rate={executed_steps / wall_s:.2f} steps/s, MCUPS={num_voxels * executed_steps / wall_s / 1e6:.2f}"
 )
 
-# 7. Extract the broadband S-matrix with explicit modal wave selectors. The y
-# ports need the corrected micromode y-basis convention when using 0.1.0a4+.
+# 7. Extract the broadband S-matrix with explicit modal wave selectors. The
+# native solver uses the corrected right-handed basis for y-normal ports.
 result = s_parameters(
     results,
     source_port=port_specs[source_port],

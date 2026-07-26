@@ -62,15 +62,14 @@ def refine_x_mode_at_fixed_beta(
     target = (omega_d / _C0) ** 2
     seed = np.concatenate([out[name].reshape(-1) for name in ("Ex", "Ey", "Ez")])
     count = min(4, operator.shape[0] - 2)
-    eigenpairs = spla.eigs(
+    values, vectors = _converged_shift_invert_eigenpairs(
+        spla,
         operator,
-        M=mass,
-        k=count,
-        sigma=target,
-        v0=seed,
-        tol=1e-9,  # pyright: ignore[reportArgumentType] -- SciPy infers int from its untyped default.
+        mass,
+        target=target,
+        seed=seed,
+        count=count,
     )
-    values, vectors = cast(tuple[np.ndarray, np.ndarray], eigenpairs)
     overlaps = np.abs(np.conjugate(seed) @ vectors)
     selected = int(np.argmax(overlaps))
     electric = np.asarray(vectors[:, selected], dtype=np.complex128)
@@ -140,6 +139,50 @@ def refine_x_mode_at_fixed_beta(
                 frequency_ratio_initial,
             )
     return out, float(residual), frequency_ratio, float(k_num), frequency_ratio
+
+
+def _converged_shift_invert_eigenpairs(
+    spla,
+    operator,
+    mass,
+    *,
+    target,
+    seed,
+    count,
+):
+    """Return numerically valid eigenpairs near ``target``.
+
+    Some ARPACK/SciPy combinations can report converged null-space vectors for
+    this singular curl-curl operator even though their generalized eigenpair
+    residuals are large. Retrying with a wider search reliably exposes the
+    physical modes; independently checking the residual prevents a false mode
+    from reaching the refinement validator.
+    """
+    attempts = (count, min(8, operator.shape[0] - 2))
+    for candidate_count in dict.fromkeys(attempts):
+        eigenpairs = spla.eigs(
+            operator,
+            M=mass,
+            k=candidate_count,
+            sigma=target,
+            v0=seed,
+            tol=1e-9,  # pyright: ignore[reportArgumentType] -- SciPy infers int from its untyped default.
+        )
+        values, vectors = cast(tuple[np.ndarray, np.ndarray], eigenpairs)
+        valid = []
+        for index, value in enumerate(values):
+            vector = vectors[:, index]
+            right = value * (mass @ vector)
+            relative_residual = np.linalg.norm(operator @ vector - right) / max(
+                np.linalg.norm(right), np.finfo(float).eps
+            )
+            if np.isfinite(relative_residual) and relative_residual <= 1e-6:
+                valid.append(index)
+        if valid:
+            return values[valid], vectors[:, valid]
+    raise RuntimeError(
+        "fixed-beta mode refinement did not produce a converged eigenpair"
+    )
 
 
 def validate_x_mode_refinement(

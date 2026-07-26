@@ -32,7 +32,7 @@
   ],
   "adapters": [
     "beamz",
-    "micromode",
+    "beamz-native-modes",
     "meep"
   ]
 }

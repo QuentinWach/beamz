@@ -1,4 +1,4 @@
-"""Small public data models used by the renamed MicroMode API."""
+"""Small public data models used by BeamZ's native mode-solver API."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ class Grid:
 
     The two edge arrays describe the two tangential axes of the mode plane in
     microns. Beamz can pass its own rasterized grid directly through this
-    object without involving any geometry code in MicroMode.
+    object without involving any mode-plane geometry code.
     """
 
     x_edges: tuple[float, ...]

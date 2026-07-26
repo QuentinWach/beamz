@@ -8,6 +8,7 @@ from typing import Any, Literal, Tuple, Union, cast, overload
 import numpy as np
 
 from beamz.devices.modes import ModePlaneSpec, solve_beamz_mode, solve_grid
+from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT
 from beamz.devices.modes.specs import ModeData, ModeSpec
 
 from .specs import plane_axis_and_spans
@@ -396,9 +397,6 @@ def _normalize_by_poynting_flux(
     if not np.all(np.isfinite(E_norm)) or not np.all(np.isfinite(H_norm)):
         return E, H
     return E_norm, H_norm
-
-
-DISCRETE_MODE_CONTRACT = "micromode.beamz.DiscreteMode/v1"
 
 
 def solve_discrete_mode_plane(**spec_kwargs: Any):

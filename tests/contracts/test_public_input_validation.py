@@ -200,6 +200,35 @@ def test_monitor_unsnapped_geometry_fallbacks_cover_every_orientation():
         assert tuple(type(item) for item in region) == expected_kinds[axis]
 
 
+def test_monitor_2d_normalization_and_snapped_line_coordinates():
+    compact = bz.FieldMonitor(
+        center=(1.0, 2.0),
+        size=(2.0, 0.0),
+        freqs=[2e14],
+    )
+    assert compact.center == (1.0, 2.0, 0.0)
+    assert compact.size == (2.0, 0.0, 0.0)
+
+    horizontal = bz.FluxMonitor(
+        center=(2.0, 1.0, 0.0),
+        size=(4.0, 0.0, 1.0),
+        freqs=[2e14],
+    )
+    vertical = bz.FluxMonitor(
+        center=(2.0, 1.0, 0.0),
+        size=(0.0, 2.0, 1.0),
+        freqs=[2e14],
+    )
+    np.testing.assert_allclose(
+        horizontal._line_sample_coords_2d(1.0, 1.0, (5, 5)),
+        ([0.5, 1.5, 2.5, 3.5], [1.0] * 4),
+    )
+    np.testing.assert_allclose(
+        vertical._line_sample_coords_2d(1.0, 1.0, (5, 5)),
+        ([2.0] * 2, [0.5, 1.5]),
+    )
+
+
 def test_field_recorder_domain_and_slice_copy_translation_contracts():
     with pytest.raises(ValueError, match="Unsupported"):
         bz.FieldRecorder(components=())

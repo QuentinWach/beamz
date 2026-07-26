@@ -5,6 +5,7 @@ from __future__ import annotations
 import beamz
 import beamz.analysis as analysis
 import beamz.design as design
+import beamz.devices.modes as modes
 import beamz.devices.monitors as monitors
 import beamz.devices.sources as sources
 import beamz.optimization as optimization
@@ -104,6 +105,27 @@ EXPECTED_EXPORTS = {
         "FluxMonitor",
         "ModeMonitor",
     ),
+    "beamz.devices.modes": (
+        "C_0",
+        "EPSILON_0",
+        "BoundarySpec",
+        "DiscreteMode",
+        "Grid",
+        "Materials",
+        "ModeData",
+        "ModePlaneSpec",
+        "ModeSpec",
+        "PmlSpec",
+        "Result",
+        "Spec",
+        "Sweep",
+        "overlap",
+        "solve_beamz_mode",
+        "solve_grid",
+        "solve_modes",
+        "solve_slice",
+        "track_modes_by_overlap",
+    ),
     "beamz.devices.sources": (
         "ModeSource",
         "ModeSpec",
@@ -148,6 +170,7 @@ def test_supported_module_exports_are_frozen():
         beamz,
         analysis,
         design,
+        modes,
         monitors,
         sources,
         optimization,

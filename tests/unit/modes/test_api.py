@@ -1,4 +1,4 @@
-"""Integration-style tests for the public MicroMode API."""
+"""Integration-style tests for the public native mode-solver API."""
 
 from __future__ import annotations
 
@@ -12,6 +12,22 @@ import xarray as xr
 
 import beamz.devices.modes as mm
 from beamz.devices.modes.discrete import _boundary_refractive_index
+
+
+def test_beamz_mode_specs_validate_selection_and_empty_results():
+    with pytest.raises(ValueError, match="polarization"):
+        mm.ModeSpec(polarization="longitudinal")
+
+    empty = mm.ModeData(
+        frequencies=np.asarray([]),
+        neffs=np.empty((0, 1)),
+        e_fields=np.empty((0, 1, 3, 0)),
+        h_fields=np.empty((0, 1, 3, 0)),
+        eps_profiles=np.empty((0, 0)),
+        resolution=1.0,
+    )
+    with pytest.raises(ValueError, match="no frequencies"):
+        empty.selected_mode()
 
 
 def _linspace_edges(start: float, stop: float, count: int) -> tuple[float, ...]:
@@ -507,7 +523,12 @@ def test_solver_specs_report_diagnostics_and_persist_to_hdf5(tmp_path):
     assert run_info["power_norms"][0] == pytest.approx(1.0)
     assert len(run_info["lorentz_norms"]) == 1
 
-    loaded = mm.Result.from_hdf5(data.to_hdf5(tmp_path / "diagnostic_result.h5"))
+    result_path = data.to_hdf5(tmp_path / "diagnostic_result.h5")
+    import h5py
+
+    with h5py.File(result_path) as handle:
+        assert handle.attrs["format"] == "beamz.devices.modes.Result"
+    loaded = mm.Result.from_hdf5(result_path)
     loaded_solver_info = _solver_info(loaded)
     assert loaded_solver_info["pml"]["num_cells"] == [1, 1]
     assert loaded_solver_info["boundary"]["low"] == ["pec", "pmc"]

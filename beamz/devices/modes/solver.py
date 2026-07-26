@@ -61,7 +61,7 @@ def solve_grid(
 
     This is the core API Beamz should target: geometry and materials are already
     sampled on a two-dimensional mode-plane grid. Coordinates are in microns and
-    frequencies are in Hz, matching the rest of MicroMode.
+    frequencies are in Hz, matching the rest of BeamZ.
     """
     material_grid = Materials.from_components(
         eps_xx=eps_xx,
@@ -153,7 +153,7 @@ def solve_slice(
     """Solve modes from a one-dimensional mode-plane material slice.
 
     This is the convenience API for 2D FDTD simulations. The supplied material
-    arrays vary along one mode-plane axis and MicroMode inserts a single
+    arrays vary along one mode-plane axis and the solver inserts a single
     invariant cell along the other axis before using the same sparse solve path
     as ``solve_modes``.
     """
@@ -227,9 +227,9 @@ def solve_modes(
 ) -> Result:
     """Solve modes for an already-rasterized material tensor grid.
 
-    This is the preferred Beamz integration point. Beamz owns geometry and
-    material rasterization; MicroMode owns the sparse SciPy mode solve and field
-    reconstruction on the supplied grid.
+    This is the preferred BeamZ integration point. BeamZ owns geometry and
+    material rasterization; this package owns the sparse SciPy mode solve and
+    field reconstruction on the supplied grid.
     """
     # Main solver orchestration layer. It validates user-facing grid objects,
     # solves one frequency at a time, then wraps flattened solver outputs into

@@ -403,7 +403,7 @@ def _import_scipy():
         import scipy.sparse.linalg as spla
     except ImportError as exc:  # pragma: no cover - depends on optional extra.
         raise ImportError(
-            "the SciPy solver requires `pip install micromode` with SciPy installed"
+            "the native mode solver requires BeamZ's SciPy runtime dependency"
         ) from exc
     return sparse, spla, scipy_linalg
 
@@ -771,10 +771,11 @@ def _selected_eigenpairs(
         ncv = min(size, num_modes + 2)
 
     # Shift-invert mode returns eigenvalues closest to sigma.
+    complex_warning = getattr(
+        getattr(np, "exceptions", np), "ComplexWarning", RuntimeWarning
+    )
     with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", category=np.exceptions.ComplexWarning, module="scipy"
-        )
+        warnings.filterwarnings("ignore", category=complex_warning, module="scipy")
         values, vectors = spla.eigs(
             mat,
             k=num_modes,

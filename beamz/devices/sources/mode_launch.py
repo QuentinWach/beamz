@@ -428,7 +428,7 @@ def _plan_3d_mode_source(
     )
     if discrete_mode is None:
         raise RuntimeError(
-            "micromode returned a DiscreteMode that could not be shifted into "
+            "The native mode solver returned a DiscreteMode that could not be shifted into "
             "the BEAMZ global Yee grid."
         )
     profiles = {

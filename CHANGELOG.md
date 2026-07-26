@@ -14,6 +14,12 @@ aliases.
 
 ### Added
 
+- Integrated the complete MicroMode finite-difference eigensolver into
+  `beamz.devices.modes`, including the latest guarded Yee-grid refinement and
+  validation work from `beamzorg/micromode@80c57d8`.
+- Added a public native mode-solver package for rasterized solves, modal sweeps,
+  overlap analysis, and optional HDF5 result persistence through
+  `beamz[mode-io]`.
 - Added immutable `SimulationState`, `SimulationRun`, and detached
   `SimulationResults` ownership contracts.
 - Added canonical immutable source, monitor, boundary, port, material, geometry, and
@@ -25,6 +31,11 @@ aliases.
 
 ### Changed
 
+- Mode sources, monitors, and ports now share `ModeSpec` and `ModeData` from
+  `beamz.devices.modes`; the former source import paths remain compatibility
+  re-exports.
+- Removed the external `micromode` runtime dependency. Mode solving and source
+  compilation now use the BeamZ-owned implementation directly.
 - `Simulation.run()` is now the normal complete execution path and returns detached
   `SimulationResults`. Use `Simulation.advance()` for continuation or checkpointing,
   and `Simulation.step()` only for single-timestep debugging.

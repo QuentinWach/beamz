@@ -96,7 +96,7 @@ def test_mode_source_frequency_nodes_cover_tidy_style_band():
     assert nodes[-1] == pytest.approx(freq0 + half_span)
 
 
-def test_mode_launch_planner_consumes_micromode_discrete_mode(monkeypatch):
+def test_mode_launch_planner_consumes_native_discrete_mode(monkeypatch):
     fields = _uniform_3d_fields()
     source = _mode_source()
     before = dict(source.__dict__)
@@ -169,10 +169,13 @@ def test_source_solver_uses_the_native_modes_package():
     assert solve_module.solve_grid is modes.solve_grid
 
 
-def test_project_requires_micromode_with_beamz_discrete_contract():
+def test_project_packages_the_native_solver_without_external_micromode():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    lockfile = (ROOT / "uv.lock").read_text(encoding="utf-8")
 
-    assert '"micromode>=0.1.0a6"' in pyproject
+    assert '"micromode' not in pyproject
+    assert 'name = "micromode"' not in lockfile
+    assert "mode-io" in pyproject
 
 
 def test_mode_source_compile_is_deterministic_and_does_not_mutate_source(monkeypatch):

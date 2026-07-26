@@ -26,7 +26,7 @@
 - **Multi-GPU** runs, handling **large-scale simulations** with _billions of cells_.
 - CPU-capable for **fast prototyping**, even on your laptop.
 - Intuitive and **familiar API**.
-- **Native FDFD mode solver, _[micromode](https://github.com/beamzorg/micromode)_**.
+- Native **FDFD mode solver** with discrete Yee-grid refinement and validation.
 - **CPML**, absorbing layers and PEC boundaries.
 - Unidirectional **mode sources** (single freq. and broadband, Huygens fields + TFSF, TE/TM).
 - **Gaussian sources**, e.g. for grating coupler simulations.
