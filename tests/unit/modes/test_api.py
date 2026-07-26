@@ -243,6 +243,27 @@ def test_beamz_mode_plane_contract_returns_component_local_profiles(
     )
 
 
+def test_beamz_mode_plane_spec_snapshots_mutable_inputs():
+    base = _beamz_mode_plane_spec()
+    eps = np.asarray(base.scalar_permittivity).copy()
+    component_eps = np.ones(base.component_shapes["Ex"])
+    spec = replace(
+        base,
+        scalar_permittivity=eps,
+        component_permittivity={"Ex": component_eps},
+    )
+
+    eps[...] = 0.0
+    component_eps[...] = 0.0
+    assert np.all(spec.scalar_permittivity != 0.0)
+    assert np.all(spec.component_permittivity["Ex"] != 0.0)
+    for array in (spec.scalar_permittivity, spec.component_permittivity["Ex"]):
+        with pytest.raises(ValueError, match="read-only"):
+            array[...] = 0.0
+    with pytest.raises(TypeError):
+        spec.component_shapes["Ex"] = (1, 1, 1)  # type: ignore[index]
+
+
 def test_beamz_yee_refinement_can_be_disabled(monkeypatch):
     """Verify callers can explicitly retain the unrefined mode profile."""
     import beamz.devices.modes.discrete as beamz_module

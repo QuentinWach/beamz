@@ -9,6 +9,8 @@ from typing import Literal, SupportsIndex, cast
 
 import numpy as np
 
+from beamz.devices._immutable import readonly_array
+
 AverageMethod = Literal["arithmetic", "harmonic", "geometric", "min", "max"]
 SliceAxis = Literal["x", "y", 0, 1]
 BoundaryCondition = Literal["pec", "pmc"]
@@ -171,7 +173,7 @@ class Materials:
     def __post_init__(self) -> None:
         """Normalize constructor inputs and enforce model invariants."""
         # Epsilon is required and must already be sampled on the solver cells.
-        eps_tensor = np.asarray(self.eps_tensor, dtype=np.complex128)
+        eps_tensor = readonly_array(self.eps_tensor, dtype=np.complex128)
         if eps_tensor.shape != (3, 3, *self.grid.shape):
             raise ValueError(
                 "eps_tensor must have shape (3, 3, nx, ny) matching the grid"
@@ -183,8 +185,9 @@ class Materials:
             mu_tensor = np.zeros_like(eps_tensor)
             for axis in range(3):
                 mu_tensor[axis, axis, :, :] = 1.0
+            mu_tensor.setflags(write=False)
         else:
-            mu_tensor = np.asarray(self.mu_tensor, dtype=np.complex128)
+            mu_tensor = readonly_array(self.mu_tensor, dtype=np.complex128)
             if mu_tensor.shape != eps_tensor.shape:
                 raise ValueError("mu_tensor must have the same shape as eps_tensor")
 

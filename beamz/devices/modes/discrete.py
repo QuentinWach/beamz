@@ -8,10 +8,13 @@ layer.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict, cast
 
 import numpy as np
+
+from beamz.devices._immutable import immutable_snapshot, readonly_array
 
 from ._yee import refine_x_mode_at_fixed_beta, validate_x_mode_refinement
 from .solver import solve_grid
@@ -59,7 +62,7 @@ class ModePlaneSpec:
     direction: DirectionName
     transverse_axes: tuple[AxisName, AxisName]
     grid_shape: tuple[int, int, int]
-    component_shapes: dict[str, tuple[int, int, int]]
+    component_shapes: Mapping[str, tuple[int, int, int]]
     center: tuple[float, float, float]
     width: float
     height: float
@@ -74,17 +77,17 @@ class ModePlaneSpec:
     aperture_window_alpha: float = 0.2
     phase_reference: str = "dominant_h_real_positive"
     time_convention: str = "exp(-i omega t); E at integer steps, H at half steps"
-    component_offsets: dict[str, dict[str, float]] = field(
+    component_offsets: Mapping[str, Mapping[str, float]] = field(
         default_factory=lambda: dict(_YEE_OFFSETS_3D)
     )
-    component_permittivity: dict[str, np.ndarray] = field(default_factory=dict)
-    component_permeability: dict[str, np.ndarray] = field(default_factory=dict)
+    component_permittivity: Mapping[str, np.ndarray] = field(default_factory=dict)
+    component_permeability: Mapping[str, np.ndarray] = field(default_factory=dict)
     # Guarded by joint field, power, energy, and discrete-Maxwell validation.
     yee_refinement: bool = True
     boundary: str = "beamz-finite-aperture"
 
     def __post_init__(self) -> None:
-        eps = np.asarray(self.scalar_permittivity, dtype=np.complex128)
+        eps = readonly_array(self.scalar_permittivity, dtype=np.complex128)
         if eps.ndim != 2:
             raise ValueError("scalar_permittivity must be a 2D transverse plane")
         object.__setattr__(self, "scalar_permittivity", eps)
@@ -138,7 +141,13 @@ class ModePlaneSpec:
             raise ValueError(
                 f"component_shapes missing: {', '.join(sorted(missing_shapes))}"
             )
-        object.__setattr__(self, "component_shapes", component_shapes)
+        for name, value in (
+            ("component_shapes", component_shapes),
+            ("component_offsets", self.component_offsets),
+            ("component_permittivity", self.component_permittivity),
+            ("component_permeability", self.component_permeability),
+        ):
+            object.__setattr__(self, name, immutable_snapshot(value))
 
         if float(self.frequency) <= 0.0 or not np.isfinite(float(self.frequency)):
             raise ValueError("frequency must be finite and positive")
