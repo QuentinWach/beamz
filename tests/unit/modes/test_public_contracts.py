@@ -292,6 +292,18 @@ def test_result_optional_io_plotting_and_error_contracts(tmp_path):
         _ = modes.Result(data.n_complex, {"Ex": ambiguous}).pol_fraction
 
 
+def test_result_metrics_follow_field_mutations():
+    result = _result()
+    initial_area = result.mode_area
+
+    for component in ("Ex", "Ey", "Ez"):
+        values = result.field_components[component].values
+        values[...] = 0.0
+        values[0, 0, 0, :, :] = 1.0
+
+    assert not np.array_equal(result.mode_area, initial_area)
+
+
 def test_result_overlap_validation_and_zero_norm():
     complete = _result()
     electric_only = _result(field_components=("Ex", "Ey", "Ez"))

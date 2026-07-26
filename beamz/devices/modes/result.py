@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +19,8 @@ _H_COMPONENTS = ("Hx", "Hy", "Hz")
 _OVERLAP_KINDS = {"electric", "power", "lorentz"}
 
 
-# Result is the post-processing boundary: solver outputs are immutable xarray
-# arrays, and convenience methods derive metrics without mutating fields.
+# Result is the post-processing boundary: helpers derive metrics from the current
+# xarray fields without mutating them.
 @dataclass(frozen=True)
 class Result:
     """Mode solver result data.
@@ -52,7 +51,7 @@ class Result:
         # The imaginary part is used by loss calculations and release summaries.
         return self.n_complex.imag
 
-    @cached_property
+    @property
     def pol_fraction(self) -> xr.Dataset:
         """TE/TM fraction from the two electric components in the mode plane."""
 
@@ -73,7 +72,7 @@ class Result:
         te = first_power / total
         return self._fraction_dataset(te, 1.0 - te)
 
-    @cached_property
+    @property
     def pol_fraction_waveguide(self) -> xr.Dataset:
         """Waveguide TE/TM fractions using normal E and H field components.
 
@@ -99,7 +98,7 @@ class Result:
         )
         return self._fraction_dataset(te, tm)
 
-    @cached_property
+    @property
     def mode_area(self) -> xr.DataArray:
         """Effective mode area from electric-field intensity."""
 
@@ -120,7 +119,7 @@ class Result:
         )
         return self._mode_data_array(numerator / denominator)
 
-    @cached_property
+    @property
     def modes_info(self) -> xr.Dataset:
         """Tabular mode metrics as an xarray dataset."""
 
