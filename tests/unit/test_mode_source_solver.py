@@ -91,6 +91,17 @@ def test_solve_modes_rejects_unknown_polarization():
         )
 
 
+@pytest.mark.parametrize("direction", ["x", "forward-x", "", "+q"])
+def test_solve_modes_rejects_malformed_signed_axis(direction):
+    with pytest.raises(ValueError, match="direction must be one of"):
+        solve_modes(
+            np.ones(4),
+            omega=2 * np.pi,
+            dL=1e-7,
+            direction=direction,  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize("axis", "xyz")
 def test_solve_modes_preserves_beamz_plane_axes_for_polarization(axis):
     permittivity = np.full((40, 6), 1.44**2)

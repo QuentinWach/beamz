@@ -12,6 +12,7 @@ from beamz.devices.modes.specs import ModeData, ModeSpec
 from .specs import plane_axis_and_spans
 
 SignedAxis = Literal["+x", "-x", "+y", "-y", "+z", "-z"]
+_SIGNED_AXES = frozenset({"+x", "-x", "+y", "-y", "+z", "-z"})
 
 
 @overload
@@ -64,9 +65,12 @@ def solve_modes(
     if filter_pol not in {None, "te", "tm"}:
         raise ValueError("filter_pol must be 'te', 'tm', or None")
 
-    axis = str(direction)[-1].lower()
-    if axis not in {"x", "y", "z"}:
-        raise ValueError(f"Unsupported propagation axis {direction!r}.")
+    signed_axis = str(direction).lower()
+    if signed_axis not in _SIGNED_AXES:
+        raise ValueError(
+            "direction must be one of '+x', '-x', '+y', '-y', '+z', or '-z'"
+        )
+    axis = signed_axis[1]
     axis_index = {"x": 0, "y": 1, "z": 2}[axis]
 
     is_plane = eps_array.ndim == 2
@@ -82,7 +86,7 @@ def solve_modes(
         x_edges=edges[0],
         y_edges=edges[1],
         freqs=[float(omega) / (2.0 * np.pi)],
-        direction="+" if str(direction).startswith("+") else "-",
+        direction="+" if signed_axis[0] == "+" else "-",
         num_modes=2 * int(m) + 5,
         target_neff=target_neff,
         pml=(int(npml), int(npml)),
