@@ -48,6 +48,39 @@ def test_solve_modes_uses_one_native_solve_and_forwards_pml(monkeypatch):
     assert axis == 0
 
 
+def test_solve_modes_uses_one_signed_axis_for_normal_and_direction(monkeypatch):
+    calls = []
+    dims = ("x", "z", "y", "f", "mode_index")
+    values = np.ones((4, 1, 1, 1, 7), dtype=np.complex128)
+    result = SimpleNamespace(
+        n_complex=xr.DataArray(
+            np.linspace(3.0, 1.0, 7)[None, :],
+            dims=("f", "mode_index"),
+        ),
+        field_components={
+            name: xr.DataArray(values, dims=dims)
+            for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        },
+    )
+
+    def fake_solve(**kwargs):
+        calls.append(kwargs)
+        return result
+
+    monkeypatch.setattr("beamz.devices.sources.solve.solve_fdfd_grid", fake_solve)
+
+    _, _, _, axis = solve_modes(
+        np.ones(4),
+        omega=2 * np.pi,
+        dL=1e-7,
+        direction="-y",
+        return_fields=True,
+    )
+
+    assert calls[0]["normal_axis"] == axis == 1
+    assert calls[0]["direction"] == "-"
+
+
 @pytest.mark.parametrize("axis", "xyz")
 def test_solve_modes_preserves_beamz_plane_axes_for_polarization(axis):
     permittivity = np.full((40, 6), 1.44**2)

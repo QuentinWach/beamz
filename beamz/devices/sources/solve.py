@@ -24,7 +24,6 @@ def solve_modes(
     direction: SignedAxis = "+x",
     filter_pol: Literal["te", "tm"] | None = None,
     return_fields: Literal[True] = True,
-    propagation_axis: SignedAxis | None = None,
     target_neff: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]: ...
 
@@ -39,7 +38,6 @@ def solve_modes(
     direction: SignedAxis = "+x",
     filter_pol: Literal["te", "tm"] | None = None,
     return_fields: Literal[False] = False,
-    propagation_axis: SignedAxis | None = None,
     target_neff: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]: ...
 
@@ -53,7 +51,6 @@ def solve_modes(
     direction: SignedAxis = "+x",
     filter_pol: Literal["te", "tm"] | None = None,
     return_fields: bool = False,
-    propagation_axis: SignedAxis | None = None,
     target_neff: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """Solve a BeamZ material profile with one native FDFD eigensolve."""
@@ -65,10 +62,9 @@ def solve_modes(
     if m <= 0:
         raise ValueError("m must be positive")
 
-    axis_hint = propagation_axis or direction
-    axis = str(axis_hint)[-1].lower()
+    axis = str(direction)[-1].lower()
     if axis not in {"x", "y", "z"}:
-        raise ValueError(f"Unsupported propagation axis {axis_hint!r}.")
+        raise ValueError(f"Unsupported propagation axis {direction!r}.")
     axis_index = {"x": 0, "y": 1, "z": 2}[axis]
 
     is_plane = eps_array.ndim == 2
