@@ -71,7 +71,10 @@ def solve_modes(
         raise ValueError(f"Unsupported propagation axis {axis_hint!r}.")
     axis_index = {"x": 0, "y": 1, "z": 2}[axis]
 
-    plane = eps_array[:, None] if eps_array.ndim == 1 else eps_array
+    is_plane = eps_array.ndim == 2
+    # BeamZ stores 3D arrays in (z, y, x) order, so a normal slice retains the
+    # reverse of the solver's Cartesian tangential-axis order.
+    plane = eps_array[:, None] if not is_plane else eps_array.T
     edges = tuple(
         tuple(np.arange(size + 1, dtype=float) * float(dL) / 1e-6)
         for size in plane.shape
@@ -90,6 +93,8 @@ def solve_modes(
     fields = {
         name: _mode_planes(data, axis) for name, data in result.field_components.items()
     }
+    if is_plane:
+        fields = {name: values.swapaxes(-2, -1) for name, values in fields.items()}
     order = _mode_order(result.n_complex.values[0], fields, axis, filter_pol)[: int(m)]
     neffs = np.asarray(result.n_complex.values[0, order], dtype=np.complex128)
     electric = np.stack([fields[name][order] for name in ("Ex", "Ey", "Ez")], axis=1)
