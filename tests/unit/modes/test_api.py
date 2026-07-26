@@ -208,10 +208,19 @@ def test_grid_api_solves_with_scipy_solver():
     assert abs(anchor.imag) <= 1e-10 * max(abs(anchor), 1.0)
 
 
-@pytest.mark.parametrize("axis", ["x", "y", "z"])
-def test_beamz_mode_plane_contract_returns_component_local_profiles(axis: str):
+@pytest.mark.parametrize(
+    ("axis", "direction"),
+    [(axis, sign + axis) for axis in "xyz" for sign in "+-"],
+)
+def test_beamz_mode_plane_contract_returns_component_local_profiles(
+    axis: str, direction: str
+):
     """Verify BEAMZ contract returns component-local profile arrays."""
-    spec = _beamz_mode_plane_spec(axis)
+    spec = replace(
+        _beamz_mode_plane_spec(axis),
+        direction=direction,
+        solver_direction=None,
+    )
 
     discrete = mm.solve_beamz_mode(spec)
 
@@ -229,9 +238,9 @@ def test_beamz_mode_plane_contract_returns_component_local_profiles(axis: str):
         assert discrete.backward_profiles[component].shape == profile.shape
         assert np.isfinite(profile).all()
 
-    assert abs(
-        float(discrete.diagnostics["power_after_phase_reference"])
-    ) == pytest.approx(1.0, rel=2e-6, abs=2e-6)
+    assert float(discrete.diagnostics["power_after_phase_reference"]) == pytest.approx(
+        1.0, rel=2e-6, abs=2e-6
+    )
 
 
 def test_beamz_yee_refinement_can_be_disabled(monkeypatch):

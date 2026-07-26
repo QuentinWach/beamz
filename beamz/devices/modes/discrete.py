@@ -322,7 +322,7 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
             profiles = seed_profiles
             k_num = seed_k_num
             yee_refinement_rejection_reason = f"{type(exc).__name__}: {exc}"
-    profiles, power_scale = _normalize_profiles_by_phase_referenced_flux(
+    profiles, power_scale, signed_power = _normalize_profiles_by_phase_referenced_flux(
         profiles,
         indices,
         axis=spec.axis,
@@ -336,6 +336,9 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
     profiles = _runtime_oriented_profiles(
         profiles, spec.axis, _direction_sign(spec.direction)
     )
+    if signed_power < 0.0:
+        profiles = _backward_mode_from_forward(profiles)
+        signed_power = -signed_power
     backward_profiles = _backward_mode_from_forward(profiles)
 
     diagnostics = {
@@ -361,22 +364,7 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         "yee_frequency_ratio": float(yee_frequency_ratio),
         "yee_initial_frequency_ratio": float(yee_initial_frequency_ratio),
         "power_before_phase_reference": float(extra.get("initial_power", np.nan)),
-        "power_after_phase_reference": float(
-            _modal_power_from_profiles(
-                _phase_reference_profiles(
-                    profiles,
-                    indices,
-                    axis=spec.axis,
-                    omega=omega,
-                    k_num=k_num,
-                    ref_coord=phase_ref_coord,
-                    resolution=spec.resolution,
-                ),
-                axis=spec.axis,
-                d_area=spec.resolution * spec.resolution,
-                direction_sign=_direction_sign(spec.direction),
-            )
-        ),
+        "power_after_phase_reference": float(signed_power),
         "solver_info": result.solver_info or {},
     }
     return DiscreteMode(
@@ -838,7 +826,7 @@ def _normalize_profiles_by_phase_referenced_flux(
     k_num: float,
     ref_coord: float,
     resolution: float,
-) -> tuple[dict[str, np.ndarray], float]:
+) -> tuple[dict[str, np.ndarray], float, float]:
     referenced = _phase_reference_profiles(
         profiles,
         indices,
@@ -855,7 +843,7 @@ def _normalize_profiles_by_phase_referenced_flux(
         direction_sign=direction_sign,
     )
     if (not np.isfinite(flux)) or abs(flux) <= np.finfo(float).tiny:
-        return profiles, 1.0
+        return profiles, 1.0, float(flux)
     scale = float(np.sqrt(1.0 / abs(flux)))
     return (
         {
@@ -863,6 +851,7 @@ def _normalize_profiles_by_phase_referenced_flux(
             for key, value in profiles.items()
         },
         scale,
+        float(flux) * scale**2,
     )
 
 
