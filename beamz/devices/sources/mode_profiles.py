@@ -8,7 +8,6 @@ from dataclasses import replace
 
 import numpy as np
 
-from beamz.const import LIGHT_SPEED
 from beamz.devices._placement import snap_centered_extent
 from beamz.devices.modes.discrete import (
     AxisName,
@@ -20,7 +19,6 @@ from beamz.lattice import (
     component_shape_3d,
     sample_voxel_grid_at_component_3d,
     sample_voxel_grid_at_e_component_3d_centered,
-    yee_flux,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,59 +55,6 @@ def _to_real_profile(profile, imag_ratio_warn=1e-2, eps=1e-30):
             im_peak / re_peak,
         )
     return re
-
-
-def _solve_numeric_k_axis(omega, dt, d_axis, neff, eps=1e-30):
-    """Solve 1D Yee dispersion for k at a fixed omega (normal incidence)."""
-    neff_r = max(float(np.real(neff)), eps)
-    d = max(float(d_axis), eps)
-    dt_r = max(float(dt), eps)
-    omega_r = float(omega)
-    k_phys = omega_r * neff_r / LIGHT_SPEED
-
-    S = LIGHT_SPEED * dt_r / (neff_r * d)
-    if (not np.isfinite(S)) or eps >= S:
-        return k_phys
-
-    rhs = np.sin(0.5 * omega_r * dt_r) / S
-    rhs = float(np.clip(rhs, -1.0, 1.0))
-    k_num = (2.0 / d) * np.arcsin(rhs)
-    if (not np.isfinite(k_num)) or k_num <= eps:
-        return k_phys
-    return float(k_num)
-
-
-def _numeric_phase_delay(omega, k_num, delta_s, eps=1e-30):
-    """Convert numerical phase advance into a time delay."""
-    omega_r = max(abs(float(omega)), eps)
-    # Keep the sign: launch direction depends on the signed E/H plane offset.
-    return float((float(k_num) * float(delta_s)) / omega_r)
-
-
-def _axis_index_from_component_indices(indices, axis):
-    """Extract scalar axis index from a 3D component index tuple."""
-    if indices is None:
-        return None
-    axis_pos = {"x": 2, "y": 1, "z": 0}[axis]
-    val = indices[axis_pos]
-    if isinstance(val, slice):
-        return None
-    return int(val)
-
-
-def _component_axis_coord(component_name, axis_index, axis, dx, dy, dz):
-    """Yee-location coordinate along propagation axis for one component plane index."""
-    if axis_index is None:
-        return 0.0
-
-    d_axis = {"x": dx, "y": dy, "z": dz}[axis]
-    staggered_along_axis = {
-        "x": {"Ex", "Hy", "Hz"},
-        "y": {"Ey", "Hx", "Hz"},
-        "z": {"Ez", "Hx", "Hy"},
-    }
-    offset = 1.0 if component_name in staggered_along_axis[axis] else 0.5
-    return (axis_index + offset) * d_axis
 
 
 def _shift_component_indices_along_axis(indices, axis, shift, field_shape):
@@ -435,71 +380,6 @@ def _shift_discrete_mode_to_global(
     )
 
 
-def _modal_power_3d_from_profiles(profiles, axis, d_area, direction_sign=1.0):
-    """Compute phasor power from colocated modal cross-section profiles."""
-    normal_axis = {"x": 0, "y": 1, "z": 2}.get(str(axis).lower())
-    if normal_axis is None:
-        return 0.0
-    required = (
-        ("Ey", "Ez", "Hy", "Hz"),
-        ("Ex", "Ez", "Hx", "Hz"),
-        ("Ex", "Ey", "Hx", "Hy"),
-    )[normal_axis]
-    if any(profiles.get(name) is None for name in required):
-        return 0.0
-
-    def plane(value):
-        array = np.asarray(value, dtype=np.complex128)
-        return array[:, None] if array.ndim == 1 else array
-
-    present = [plane(value) for value in profiles.values() if value is not None]
-    shape = tuple(min(array.shape[axis] for array in present) for axis in (0, 1))
-    if not all(shape):
-        return 0.0
-    template = np.zeros(shape, dtype=np.complex128)
-    samples = tuple(
-        template
-        if profiles.get(name) is None
-        else plane(profiles[name])[: shape[0], : shape[1]]
-        for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
-    )
-    return float(
-        np.asarray(
-            yee_flux(
-                samples,
-                normal_axis,
-                normal_sign=float(direction_sign),
-                measure=float(d_area),
-                phasor=True,
-            )
-        )
-    )
-
-
-def _normalize_3d_profiles_by_flux(
-    profiles,
-    axis,
-    d_area=1.0,
-    direction_sign=1.0,
-    eps=1e-18,
-):
-    """Normalize 3D source profiles so |modal power| equals 1."""
-    flux = _modal_power_3d_from_profiles(
-        profiles,
-        axis=axis,
-        d_area=d_area,
-        direction_sign=direction_sign,
-    )
-    if (not np.isfinite(flux)) or abs(flux) <= eps:
-        return profiles
-
-    scale = float(np.sqrt(1.0 / max(abs(flux), eps)))
-    scale = float(np.clip(scale, 1e-6, 1e6))
-    for key, value in profiles.items():
-        profiles[key] = np.asarray(value) * scale
-    return profiles
-
-
 def _scale_profiles_for_power(profiles, power):
     """Scale unit-power modal profiles to the requested launched power."""
     power_value = float(power)
@@ -526,67 +406,3 @@ def _scale_pair_for_power(first, second, power):
         return first, second
     scale = float(np.sqrt(power_value))
     return np.asarray(first) * scale, np.asarray(second) * scale
-
-
-def _modal_overlap_3d_profiles(
-    field_profiles,
-    mode_profiles,
-    axis,
-    d_area,
-    direction_sign=1.0,
-):
-    """Symmetric power overlap between a field sample and a 3D modal basis field."""
-    comp_map = {
-        "x": ("Ey", "Ez", "Hz", "Hy"),
-        "y": ("Ez", "Ex", "Hx", "Hz"),
-        "z": ("Ex", "Ey", "Hy", "Hx"),
-    }
-    try:
-        e1, e2, h1, h2 = comp_map[str(axis)]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported axis {axis!r}") from exc
-
-    n_common = None
-    for name in (e1, e2, h1, h2):
-        for profiles in (field_profiles, mode_profiles):
-            if name not in profiles:
-                continue
-            arr = np.asarray(profiles[name], dtype=np.complex128).reshape(-1)
-            if arr.size <= 0:
-                continue
-            n_common = arr.size if n_common is None else min(n_common, arr.size)
-
-    n_common = int(max(0, n_common or 0))
-    if n_common <= 0:
-        return np.complex128(0.0 + 0.0j)
-
-    def _component(profiles, name):
-        if name not in profiles:
-            return np.zeros((n_common,), dtype=np.complex128)
-        arr = np.asarray(profiles[name], dtype=np.complex128).reshape(-1)
-        if arr.size >= n_common:
-            return arr[:n_common]
-        out = np.zeros((n_common,), dtype=np.complex128)
-        out[: arr.size] = arr
-        return out
-
-    ef1 = _component(field_profiles, e1)
-    ef2 = _component(field_profiles, e2)
-    hf1 = _component(field_profiles, h1)
-    hf2 = _component(field_profiles, h2)
-    em1 = _component(mode_profiles, e1)
-    em2 = _component(mode_profiles, e2)
-    hm1 = _component(mode_profiles, h1)
-    hm2 = _component(mode_profiles, h2)
-
-    overlap = (
-        0.25
-        * np.sum(
-            ef1 * np.conjugate(hm1)
-            - ef2 * np.conjugate(hm2)
-            + np.conjugate(em1) * hf1
-            - np.conjugate(em2) * hf2
-        )
-        * float(d_area)
-    )
-    return np.complex128(float(direction_sign) * overlap)

@@ -11,11 +11,11 @@ from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices._immutable import readonly_array
 from beamz.devices._placement import snap_mode_source_region, snap_plane_region
 from beamz.devices.modes import solve_beamz_mode
+from beamz.devices.modes.fields import _numeric_wave_number
 from beamz.devices.sources.mode_profiles import (
     _scale_pair_for_power,
     _scale_profiles_for_power,
     _solve_mode_plane_3d,
-    _solve_numeric_k_axis,
     _to_real_profile,
 )
 from beamz.lattice import (
@@ -388,7 +388,7 @@ def _plan_3d_mode_source(
     if dt is None:
         k_axis = float(np.real(discrete_mode.neff)) * float(omega) / LIGHT_SPEED
     elif not np.isfinite(k_axis):
-        k_axis = _solve_numeric_k_axis(omega, dt, resolution, discrete_mode.neff)
+        k_axis = _numeric_wave_number(omega, dt, resolution, discrete_mode.neff)
     field_profile = FieldProfile3D(
         components=profiles,
         indices=indices,  # type: ignore[arg-type]

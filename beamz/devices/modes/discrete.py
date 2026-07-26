@@ -17,6 +17,14 @@ import numpy as np
 from beamz.devices._immutable import immutable_snapshot, readonly_array
 
 from ._yee import refine_x_mode_at_fixed_beta, validate_x_mode_refinement
+from .fields import (
+    _axis_coordinate,
+    _axis_index,
+    _modal_power,
+    _normalize_profiles,
+    _numeric_wave_number,
+    _phase_delay,
+)
 from .solver import solve_grid
 
 AxisName = Literal["x", "y", "z"]
@@ -257,13 +265,14 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
     if symmetric_axes:
         profiles = _enforce_componentwise_parity(profiles, symmetric_axes)
 
-    phase_ref_coord = _component_axis_coord(
+    phase_ref_coord = _axis_coordinate(
         phase_component,
-        _axis_index_from_component_indices(indices.get(phase_component), spec.axis),
-        spec,
+        _axis_index(indices.get(phase_component), spec.axis),
+        spec.axis,
+        spec.resolution,
     )
     omega = 2.0 * np.pi * spec.frequency
-    k_num = _solve_numeric_k_axis(omega, spec.dt, spec.resolution, selected["neff"])
+    k_num = _numeric_wave_number(omega, spec.dt, spec.resolution, selected["neff"])
     boundary_neff = _boundary_refractive_index(spec.scalar_permittivity)
     yee_refinement_eligible = (
         spec.axis == "x"
@@ -558,10 +567,10 @@ def _build_x_profiles(
     profiles = _crop_window_all(
         staggered, z_start, z_end, y_start, y_end, _direction_sign(spec.direction), spec
     )
-    initial_power = _normalize_profiles_by_flux(
+    initial_power = _normalize_profiles(
         profiles,
         axis="x",
-        d_area=spec.resolution**2,
+        measure=spec.resolution**2,
         direction_sign=_direction_sign(spec.direction),
     )
     return profiles, indices, {"initial_power": initial_power}
@@ -618,10 +627,10 @@ def _build_y_profiles(
     if _direction_sign(spec.direction) < 0.0:
         for component in ("Ex", "Ey", "Ez"):
             profiles[component] = -profiles[component]
-    initial_power = _normalize_profiles_by_flux(
+    initial_power = _normalize_profiles(
         profiles,
         axis="y",
-        d_area=spec.resolution**2,
+        measure=spec.resolution**2,
         direction_sign=_direction_sign(spec.direction),
     )
     return profiles, indices, {"initial_power": initial_power}
@@ -678,10 +687,10 @@ def _build_z_profiles(
     profiles = _crop_window_all(
         staggered, y_start, y_end, x_start, x_end, _direction_sign(spec.direction), spec
     )
-    initial_power = _normalize_profiles_by_flux(
+    initial_power = _normalize_profiles(
         profiles,
         axis="z",
-        d_area=spec.resolution**2,
+        measure=spec.resolution**2,
         direction_sign=_direction_sign(spec.direction),
     )
     return profiles, indices, {"initial_power": initial_power}
@@ -808,22 +817,6 @@ def _tukey(count: int, alpha: float) -> np.ndarray:
     return np.where(n < width, left, np.where(n > (count - 1) - width, right, 1.0))
 
 
-def _normalize_profiles_by_flux(
-    profiles: dict[str, np.ndarray],
-    axis: AxisName,
-    d_area: float,
-    direction_sign: float,
-) -> float:
-    flux = _modal_power_from_profiles(
-        profiles, axis=axis, d_area=d_area, direction_sign=direction_sign
-    )
-    if np.isfinite(flux) and abs(flux) > np.finfo(float).tiny:
-        scale = float(np.sqrt(1.0 / abs(flux)))
-        for key, value in profiles.items():
-            profiles[key] = np.asarray(value, dtype=np.complex128) * scale
-    return float(flux)
-
-
 def _normalize_profiles_by_phase_referenced_flux(
     profiles: dict[str, np.ndarray],
     indices: dict[str, ComponentIndex],
@@ -845,10 +838,10 @@ def _normalize_profiles_by_phase_referenced_flux(
         ref_coord=ref_coord,
         resolution=resolution,
     )
-    flux = _modal_power_from_profiles(
+    flux = _modal_power(
         referenced,
         axis=axis,
-        d_area=d_area,
+        measure=d_area,
         direction_sign=direction_sign,
     )
     if (not np.isfinite(flux)) or abs(flux) <= np.finfo(float).tiny:
@@ -875,90 +868,14 @@ def _phase_reference_profiles(
     resolution: float,
 ) -> dict[str, np.ndarray]:
     out = {}
-    dummy_spec = _CoordSpec(axis=axis, resolution=resolution)
     for component, value in profiles.items():
-        axis_idx = _axis_index_from_component_indices(indices.get(component), axis)
-        coord = _component_axis_coord(component, axis_idx, dummy_spec)
-        delay = _numeric_phase_delay(omega, k_num, coord - ref_coord)
+        axis_idx = _axis_index(indices.get(component), axis)
+        coord = _axis_coordinate(component, axis_idx, axis, resolution)
+        delay = _phase_delay(omega, k_num, coord - ref_coord)
         out[component] = np.asarray(value, dtype=np.complex128) * np.exp(
             -1j * omega * delay
         )
     return out
-
-
-@dataclass(frozen=True)
-class _CoordSpec:
-    axis: AxisName
-    resolution: float
-
-
-def _modal_power_from_profiles(
-    profiles: dict[str, np.ndarray],
-    axis: AxisName,
-    d_area: float,
-    direction_sign: float,
-) -> float:
-    if axis == "x":
-        terms = ("Ey", "Ez", "Hz", "Hy")
-    elif axis == "y":
-        terms = ("Ez", "Ex", "Hx", "Hz")
-    else:
-        terms = ("Ex", "Ey", "Hy", "Hx")
-    arrays = [np.asarray(profiles.get(name, ()), dtype=np.complex128) for name in terms]
-    if any(arr.size == 0 for arr in arrays):
-        return 0.0
-    a0, a1, b0, b1 = arrays
-    flux = np.vdot(b0.reshape(-1), a0.reshape(-1)) - np.vdot(
-        b1.reshape(-1), a1.reshape(-1)
-    )
-    return float(0.5 * direction_sign * np.real(flux * float(d_area)))
-
-
-def _axis_index_from_component_indices(
-    indices: ComponentIndex | None, axis: AxisName
-) -> int | None:
-    if indices is None:
-        return None
-    axis_pos = {"x": 2, "y": 1, "z": 0}[axis]
-    value = indices[axis_pos]
-    return None if isinstance(value, slice) else int(value)
-
-
-def _component_axis_coord(
-    component: str, axis_index: int | None, spec: ModePlaneSpec | _CoordSpec
-) -> float:
-    if axis_index is None:
-        return 0.0
-    staggered_along_axis = {
-        "x": {"Ex", "Hy", "Hz"},
-        "y": {"Ey", "Hx", "Hz"},
-        "z": {"Ez", "Hx", "Hy"},
-    }
-    offset = 1.0 if component in staggered_along_axis[spec.axis] else 0.5
-    return (int(axis_index) + offset) * float(spec.resolution)
-
-
-def _solve_numeric_k_axis(
-    omega: float,
-    dt: float | None,
-    d_axis: float,
-    neff: complex,
-) -> float:
-    neff_r = max(float(np.real(neff)), 1e-30)
-    if dt is None:
-        return float(omega) * neff_r / 299_792_458.0
-    s = 299_792_458.0 * float(dt) / (neff_r * float(d_axis))
-    if (not np.isfinite(s)) or s <= 1e-30:
-        return float(omega) * neff_r / 299_792_458.0
-    rhs = np.sin(0.5 * float(omega) * float(dt)) / s
-    k_num = (2.0 / float(d_axis)) * np.arcsin(float(np.clip(rhs, -1.0, 1.0)))
-    if np.isfinite(k_num) and k_num > 0.0:
-        return float(k_num)
-    return float(omega) * neff_r / 299_792_458.0
-
-
-def _numeric_phase_delay(omega: float, k_num: float, delta_s: float) -> float:
-    return float(float(k_num) * float(delta_s) / max(abs(float(omega)), 1e-30))
 
 
 def _detect_transverse_symmetry_axes(

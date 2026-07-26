@@ -15,12 +15,9 @@ from beamz.analysis.modal_projection.geometry import (
 )
 from beamz.devices.modes import solve_beamz_mode
 from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT
+from beamz.devices.modes.fields import _modal_overlap, _normalize_profiles
 from beamz.devices.monitors.monitors import ModeMonitor
-from beamz.devices.sources.mode_profiles import (
-    _modal_overlap_3d_profiles,
-    _normalize_3d_profiles_by_flux,
-    _solve_mode_plane_3d,
-)
+from beamz.devices.sources.mode_profiles import _solve_mode_plane_3d
 from beamz.devices.sources.solve import solve_modes
 
 
@@ -259,35 +256,39 @@ def _build_discrete_port_projection_3d(
             + ", ".join(missing_components)
         )
 
-    plus_components = _normalize_3d_profiles_by_flux(
-        {
-            name: np.asarray(plus_components[name], dtype=np.complex128)
-            for name in proj_components
-        },
+    plus_components = {
+        name: np.asarray(plus_components[name], dtype=np.complex128)
+        for name in proj_components
+    }
+    minus_components = {
+        name: np.asarray(minus_components[name], dtype=np.complex128)
+        for name in proj_components
+    }
+    _normalize_profiles(
+        plus_components,
         axis=axis,
-        d_area=float(d_area),
+        measure=float(d_area),
         direction_sign=float(direction_sign),
+        max_scale=1e6,
     )
-    minus_components = _normalize_3d_profiles_by_flux(
-        {
-            name: np.asarray(minus_components[name], dtype=np.complex128)
-            for name in proj_components
-        },
+    _normalize_profiles(
+        minus_components,
         axis=axis,
-        d_area=float(d_area),
+        measure=float(d_area),
         direction_sign=float(direction_sign),
+        max_scale=1e6,
     )
     overlap_matrix = np.asarray(
         [
             [
-                _modal_overlap_3d_profiles(
+                _modal_overlap(
                     plus_components,
                     plus_components,
                     axis,
                     float(d_area),
                     direction_sign=direction_sign,
                 ),
-                _modal_overlap_3d_profiles(
+                _modal_overlap(
                     plus_components,
                     minus_components,
                     axis,
@@ -296,14 +297,14 @@ def _build_discrete_port_projection_3d(
                 ),
             ],
             [
-                _modal_overlap_3d_profiles(
+                _modal_overlap(
                     minus_components,
                     plus_components,
                     axis,
                     float(d_area),
                     direction_sign=direction_sign,
                 ),
-                _modal_overlap_3d_profiles(
+                _modal_overlap(
                     minus_components,
                     minus_components,
                     axis,
@@ -510,7 +511,7 @@ def _project_modal_coefficients_3d_group(field_components, projections):
 
     rhs = np.asarray(
         [
-            _modal_overlap_3d_profiles(
+            _modal_overlap(
                 field_components,
                 mode,
                 axis,
@@ -524,7 +525,7 @@ def _project_modal_coefficients_3d_group(field_components, projections):
     overlap = np.asarray(
         [
             [
-                _modal_overlap_3d_profiles(
+                _modal_overlap(
                     basis_i,
                     basis_j,
                     axis,

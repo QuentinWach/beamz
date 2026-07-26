@@ -8,10 +8,7 @@ import numpy as np
 
 from beamz.analysis.data import AnalysisData, static_fields
 from beamz.const import LIGHT_SPEED, µm
-from beamz.devices.sources.mode_profiles import (
-    _numeric_phase_delay,
-    _solve_numeric_k_axis,
-)
+from beamz.devices.modes.fields import _numeric_wave_number, _phase_delay
 from beamz.lattice import component_coordinates_3d_um, plane_sample_area
 
 
@@ -84,8 +81,8 @@ def _modal_projection_plane_delay_s(sim, spec, frequency, mode_neff):
     delta_s = direction_sign * 0.5 * d_axis
     if getattr(sim, "is_3d", False) and hasattr(sim, "dt") and sim.dt is not None:
         omega = 2.0 * np.pi * freq
-        k_num = _solve_numeric_k_axis(omega, float(sim.dt), d_axis, neff)
-        return _numeric_phase_delay(omega, k_num, delta_s)
+        k_num = _numeric_wave_number(omega, float(sim.dt), d_axis, neff)
+        return _phase_delay(omega, k_num, delta_s)
     return float(delta_s * neff / LIGHT_SPEED)
 
 

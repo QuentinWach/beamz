@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 
 from beamz.analysis import mode_projection as mp
-from beamz.devices.sources.mode_profiles import (
-    _modal_overlap_3d_profiles,
-    _modal_power_3d_from_profiles,
-    _normalize_3d_profiles_by_flux,
+from beamz.devices.modes.fields import (
+    _modal_overlap,
+    _modal_power,
+    _normalize_profiles,
 )
 
 _COMPONENTS_3D = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
@@ -17,17 +17,18 @@ def _unit_flux_x_mode(mask):
     e = np.zeros((4, 5), dtype=np.complex128)
     e[mask] = 1.0
     zeros = np.zeros_like(e)
-    forward = _normalize_3d_profiles_by_flux(
-        {
-            "Ex": zeros.copy(),
-            "Ey": e.copy(),
-            "Ez": zeros.copy(),
-            "Hx": zeros.copy(),
-            "Hy": zeros.copy(),
-            "Hz": e.copy(),
-        },
+    forward = {
+        "Ex": zeros.copy(),
+        "Ey": e.copy(),
+        "Ez": zeros.copy(),
+        "Hx": zeros.copy(),
+        "Hy": zeros.copy(),
+        "Hz": e.copy(),
+    }
+    _normalize_profiles(
+        forward,
         axis="x",
-        d_area=0.25,
+        measure=0.25,
         direction_sign=1.0,
     )
     backward = {
@@ -48,12 +49,12 @@ def _projection_from_basis(forward, backward):
         "overlap_matrix": np.asarray(
             [
                 [
-                    _modal_overlap_3d_profiles(forward, forward, "x", 0.25),
-                    _modal_overlap_3d_profiles(forward, backward, "x", 0.25),
+                    _modal_overlap(forward, forward, "x", 0.25),
+                    _modal_overlap(forward, backward, "x", 0.25),
                 ],
                 [
-                    _modal_overlap_3d_profiles(backward, forward, "x", 0.25),
-                    _modal_overlap_3d_profiles(backward, backward, "x", 0.25),
+                    _modal_overlap(backward, forward, "x", 0.25),
+                    _modal_overlap(backward, backward, "x", 0.25),
                 ],
             ],
             dtype=np.complex128,
@@ -108,10 +109,10 @@ def test_signed_flux_subtracts_backward_modal_power():
         for component in _COMPONENTS_3D
     }
 
-    flux = _modal_power_3d_from_profiles(
+    flux = _modal_power(
         field,
         axis="x",
-        d_area=0.25,
+        measure=0.25,
         direction_sign=1.0,
     )
 
