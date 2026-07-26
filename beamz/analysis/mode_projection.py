@@ -14,6 +14,7 @@ from beamz.analysis.modal_projection.geometry import (
     _monitor_analysis_plane_3d,
     _plane_axes_for_port_axis,
 )
+from beamz.devices.modes import ModePlaneSpec, solve_beamz_mode
 from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT
 from beamz.devices.monitors.monitors import ModeMonitor
 from beamz.devices.sources.mode_profiles import (
@@ -26,7 +27,7 @@ from beamz.devices.sources.mode_profiles import (
     _normalize_3d_profiles_by_flux,
     _shift_discrete_mode_to_global,
 )
-from beamz.devices.sources.solve import solve_discrete_mode_plane, solve_modes
+from beamz.devices.sources.solve import solve_modes
 
 
 def _material_arrays(sim):
@@ -238,33 +239,35 @@ def _build_discrete_port_projection_3d(
     component_permittivity, component_permeability = _local_component_materials(
         perm, permeability, sampling_plane
     )
-    discrete_mode = solve_discrete_mode_plane(
-        scalar_permittivity=np.asarray(
-            local_plane["scalar_permittivity"],
-            dtype=np.complex128,
-        ),
-        frequency=float(frequency),
-        resolution=float(sim.resolution),
-        dt=float(sim.dt),
-        axis=axis,
-        direction=spec.projection_direction,
-        solver_direction=spec.projection_direction,
-        transverse_axes=transverse_axes,
-        grid_shape=local_plane["grid_shape"],
-        component_shapes=local_plane["component_shapes"],
-        component_permittivity=component_permittivity,
-        component_permeability=component_permeability,
-        center=local_plane["center"],
-        width=float(width),
-        height=float(height),
-        plane_index=int(local_plane["plane_index"]),
-        offset_index=int(local_plane["offset_index"]),
-        mode_index=int(spec.mode_index),
-        polarization=str(spec.polarization).lower(),
-        target_neff=target,
-        num_modes=num_modes,
-        aperture_pad_cells=_MODE_PLANE_APERTURE_PAD_CELLS,
-        aperture_window_alpha=_MODE_PLANE_APERTURE_WINDOW_ALPHA,
+    discrete_mode = solve_beamz_mode(
+        ModePlaneSpec(
+            scalar_permittivity=np.asarray(
+                local_plane["scalar_permittivity"],
+                dtype=np.complex128,
+            ),
+            frequency=float(frequency),
+            resolution=float(sim.resolution),
+            dt=float(sim.dt),
+            axis=axis,
+            direction=spec.projection_direction,
+            solver_direction=spec.projection_direction,
+            transverse_axes=transverse_axes,
+            grid_shape=local_plane["grid_shape"],
+            component_shapes=local_plane["component_shapes"],
+            component_permittivity=component_permittivity,
+            component_permeability=component_permeability,
+            center=local_plane["center"],
+            width=float(width),
+            height=float(height),
+            plane_index=int(local_plane["plane_index"]),
+            offset_index=int(local_plane["offset_index"]),
+            mode_index=int(spec.mode_index),
+            polarization=str(spec.polarization).lower(),
+            target_neff=target,
+            num_modes=num_modes,
+            aperture_pad_cells=_MODE_PLANE_APERTURE_PAD_CELLS,
+            aperture_window_alpha=_MODE_PLANE_APERTURE_WINDOW_ALPHA,
+        )
     )
     discrete_mode = _shift_discrete_mode_to_global(
         discrete_mode,
@@ -272,9 +275,6 @@ def _build_discrete_port_projection_3d(
         axis=axis,
         resolution=float(sim.resolution),
     )
-    if discrete_mode is None:
-        raise RuntimeError("Unable to place the discrete mode on the monitor grid.")
-
     proj_components = tuple(parts.get("projection_components_3d", ()))
     if not proj_components:
         raise ValueError(f"Port axis {axis!r} has no 3D projection components.")

@@ -3,21 +3,14 @@ from __future__ import annotations
 from collections import namedtuple
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Literal, Tuple, Union, cast, overload
+from typing import Literal, Tuple, Union, cast, overload
 
 import numpy as np
 
-from beamz.devices.modes import ModePlaneSpec, solve_beamz_mode, solve_grid
-from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT
+from beamz.devices.modes import solve_grid
 from beamz.devices.modes.specs import ModeData, ModeSpec
 
 from .specs import plane_axis_and_spans
-
-
-def solve_beamz_mode_plane(**spec_kwargs):
-    """Solve a BeamZ mode plane through the native discrete launch contract."""
-    return solve_beamz_mode(ModePlaneSpec(**spec_kwargs))
-
 
 ModeTupleType = namedtuple("Mode", ["neff", "Ex", "Ey", "Ez", "Hx", "Hy", "Hz"])
 """A named tuple containing the mode fields and effective index."""
@@ -397,37 +390,6 @@ def _normalize_by_poynting_flux(
     if not np.all(np.isfinite(E_norm)) or not np.all(np.isfinite(H_norm)):
         return E, H
     return E_norm, H_norm
-
-
-def solve_discrete_mode_plane(**spec_kwargs: Any):
-    """Return a native BeamZ DiscreteMode or fail with a clear contract error."""
-
-    discrete_mode = solve_beamz_mode_plane(**spec_kwargs)
-    if discrete_mode is None:
-        raise RuntimeError(
-            "The native mode solver returned None for the required "
-            f"{DISCRETE_MODE_CONTRACT} contract."
-        )
-    missing = [
-        name
-        for name in (
-            "neff",
-            "profiles",
-            "backward_profiles",
-            "component_indices",
-            "phase_reference_coord",
-            "phase_plane_coord",
-            "k_num_axis",
-            "power_scale",
-        )
-        if not hasattr(discrete_mode, name)
-    ]
-    if missing:
-        raise RuntimeError(
-            "The native mode solver returned an incompatible DiscreteMode object; "
-            f"missing {', '.join(missing)}."
-        )
-    return discrete_mode
 
 
 def _profile_crop_slices(eps_profile, *, profile_axes, center, size, resolution):

@@ -69,11 +69,11 @@ def test_mode_monitor_uses_shared_finite_aperture_policy(monkeypatch):
     spec = port
     seen = {}
 
-    def fake_solve(**kwargs):
-        seen.update(kwargs)
+    def fake_solve(spec):
+        seen.update(vars(spec))
         raise RuntimeError("stop after contract capture")
 
-    monkeypatch.setattr(mode_projection, "solve_discrete_mode_plane", fake_solve)
+    monkeypatch.setattr(mode_projection, "solve_beamz_mode", fake_solve)
 
     with pytest.raises(RuntimeError, match="stop after contract capture"):
         mode_projection._build_discrete_port_projection_3d(

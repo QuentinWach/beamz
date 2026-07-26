@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import logging
 from contextlib import suppress
-from copy import copy
-from dataclasses import is_dataclass, replace
-from typing import Any, cast
+from dataclasses import replace
 
 import numpy as np
 
 from beamz.const import LIGHT_SPEED
 from beamz.devices._placement import snap_centered_extent
+from beamz.devices.modes.discrete import DiscreteMode
 from beamz.lattice import (
     component_shape_3d,
     sample_voxel_grid_at_component_3d,
@@ -311,28 +310,21 @@ def _shift_3d_index(index, origin_zyx):
     return tuple(out)
 
 
-def _shift_discrete_mode_to_global(discrete_mode, *, origin_zyx, axis, resolution):
+def _shift_discrete_mode_to_global(
+    discrete_mode: DiscreteMode, *, origin_zyx, axis, resolution
+) -> DiscreteMode:
     """Shift a mode result solved on a local crop back to global indices."""
-    if discrete_mode is None:
-        return None
     component_indices = {
         name: _shift_3d_index(index, origin_zyx)
-        for name, index in dict(discrete_mode.component_indices).items()
+        for name, index in discrete_mode.component_indices.items()
     }
     axis_offset = float(origin_zyx[_AXIS_POS_3D[str(axis).lower()]]) * float(resolution)
-    updates = {
-        "component_indices": component_indices,
-        "phase_reference_coord": (
-            float(discrete_mode.phase_reference_coord) + axis_offset
-        ),
-        "phase_plane_coord": float(discrete_mode.phase_plane_coord) + axis_offset,
-    }
-    if is_dataclass(discrete_mode):
-        return replace(cast(Any, discrete_mode), **updates)
-    shifted = copy(discrete_mode)
-    for name, value in updates.items():
-        setattr(shifted, name, value)
-    return shifted
+    return replace(
+        discrete_mode,
+        component_indices=component_indices,
+        phase_reference_coord=float(discrete_mode.phase_reference_coord) + axis_offset,
+        phase_plane_coord=float(discrete_mode.phase_plane_coord) + axis_offset,
+    )
 
 
 def _modal_power_3d_from_profiles(profiles, axis, d_area, direction_sign=1.0):

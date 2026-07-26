@@ -10,6 +10,7 @@ import numpy as np
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices._immutable import readonly_array
 from beamz.devices._placement import snap_mode_source_region, snap_plane_region
+from beamz.devices.modes import ModePlaneSpec, solve_beamz_mode
 from beamz.devices.sources.mode_profiles import (
     _MODE_PLANE_APERTURE_PAD_CELLS,
     _MODE_PLANE_APERTURE_WINDOW_ALPHA,
@@ -30,7 +31,7 @@ from beamz.lattice import (
 )
 
 from . import planar_tfsf
-from .solve import solve_discrete_mode_plane, solve_modes
+from .solve import solve_modes
 from .specs import FieldProfile3D, ModeSource
 
 
@@ -392,33 +393,35 @@ def _plan_3d_mode_source(
         local_plane,
     )
     transverse_axes = {"x": ("z", "y"), "y": ("z", "x"), "z": ("y", "x")}[axis]
-    discrete_mode = solve_discrete_mode_plane(
-        scalar_permittivity=np.asarray(local_plane["scalar_permittivity"]),
-        frequency=float(omega) / (2.0 * np.pi),
-        resolution=float(resolution),
-        dt=None if dt is None else float(dt),
-        axis=axis,
-        direction=source.signed_direction,
-        solver_direction=solver_direction,
-        transverse_axes=transverse_axes,
-        grid_shape=local_grid_shape,
-        component_shapes=component_shapes,
-        component_permittivity=component_permittivity,
-        component_permeability=component_permeability,
-        center=local_plane["center"],
-        width=float(width),
-        height=float(height),
-        plane_index=int(local_plane["plane_index"]),
-        offset_index=int(local_plane["offset_index"]),
-        mode_index=int(source.mode_spec.mode_index),
-        polarization=source.mode_spec.polarization,
-        target_neff=target_neff,
-        num_modes=max(
-            int(source.mode_spec.num_modes),
-            int(source.mode_spec.mode_index) + 1,
-        ),
-        aperture_pad_cells=_MODE_PLANE_APERTURE_PAD_CELLS,
-        aperture_window_alpha=_MODE_PLANE_APERTURE_WINDOW_ALPHA,
+    discrete_mode = solve_beamz_mode(
+        ModePlaneSpec(
+            scalar_permittivity=np.asarray(local_plane["scalar_permittivity"]),
+            frequency=float(omega) / (2.0 * np.pi),
+            resolution=float(resolution),
+            dt=None if dt is None else float(dt),
+            axis=axis,
+            direction=source.signed_direction,
+            solver_direction=solver_direction,
+            transverse_axes=transverse_axes,
+            grid_shape=local_grid_shape,
+            component_shapes=component_shapes,
+            component_permittivity=component_permittivity,
+            component_permeability=component_permeability,
+            center=local_plane["center"],
+            width=float(width),
+            height=float(height),
+            plane_index=int(local_plane["plane_index"]),
+            offset_index=int(local_plane["offset_index"]),
+            mode_index=int(source.mode_spec.mode_index),
+            polarization=source.mode_spec.polarization,
+            target_neff=target_neff,
+            num_modes=max(
+                int(source.mode_spec.num_modes),
+                int(source.mode_spec.mode_index) + 1,
+            ),
+            aperture_pad_cells=_MODE_PLANE_APERTURE_PAD_CELLS,
+            aperture_window_alpha=_MODE_PLANE_APERTURE_WINDOW_ALPHA,
+        )
     )
     discrete_mode = _shift_discrete_mode_to_global(
         discrete_mode,
@@ -426,11 +429,6 @@ def _plan_3d_mode_source(
         axis=axis,
         resolution=resolution,
     )
-    if discrete_mode is None:
-        raise RuntimeError(
-            "The native mode solver returned a DiscreteMode that could not be shifted into "
-            "the BEAMZ global Yee grid."
-        )
     profiles = {
         name: np.asarray(value, dtype=np.complex128)
         for name, value in discrete_mode.profiles.items()
