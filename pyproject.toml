@@ -74,10 +74,6 @@ test = [ # Adding a 'test' extra that includes pytest and pytest-cov for conveni
     "pytest-randomly>=3.0.0",
     "hypothesis>=6.100.0",
     "diff-cover>=9.0.0",
-    "h5py>=3.10,<4.0",
-]
-mode-io = [
-    "h5py>=3.10,<4.0",
 ]
 
 

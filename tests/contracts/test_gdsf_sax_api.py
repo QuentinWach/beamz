@@ -35,7 +35,7 @@ from beamz.design.gds import (
     import_component,
     import_gds,
 )
-from beamz.devices.modes import DiscreteMode
+from beamz.devices.modes.discrete import DiscreteMode
 from beamz.devices.sources.mode_profiles import (
     _MODE_PLANE_APERTURE_PAD_CELLS,
     _MODE_PLANE_APERTURE_WINDOW_ALPHA,

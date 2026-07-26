@@ -15,8 +15,10 @@ The source-file mapping is:
 - `micromode/raster.py` → `beamz/devices/modes/solver.py`
 - `micromode/scipy_reference.py` → `beamz/devices/modes/_scipy.py`
 - `micromode/yee.py` → `beamz/devices/modes/_yee.py`
-- all other Python modules retain their upstream filename
+- result and option models were reduced to the fields used by BeamZ
+- standalone sweep, tracking, slice, transformation-optics, plotting, and
+  serialization helpers were intentionally omitted
 
 Import-path and module-name edits plus BeamZ's automatic Ruff formatting are
 the only intentional changes in the initial snapshot. Subsequent integration
-changes are recorded in later commits.
+and pruning changes are recorded in later commits.

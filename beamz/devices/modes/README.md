@@ -11,7 +11,8 @@ permittivity grid:
 ```python
 import numpy as np
 
-from beamz.devices.modes import C_0, solve_grid
+from beamz import LIGHT_SPEED
+from beamz.devices.modes import solve_grid
 
 eps = np.ones((40, 30))
 eps[15:25, 12:18] = 3.48**2
@@ -19,15 +20,16 @@ result = solve_grid(
     eps_xx=eps,
     x_edges=np.linspace(-2.0, 2.0, eps.shape[0] + 1),
     y_edges=np.linspace(-1.5, 1.5, eps.shape[1] + 1),
-    freqs=[C_0 / 1.55],
+    freqs=[LIGHT_SPEED / 1.55e-6],
     num_modes=2,
     target_neff=3.0,
 )
 ```
 
 Coordinates passed to the direct raster API are measured in micrometres and
-frequencies are measured in hertz. `Result.to_hdf5()` and
-`Result.from_hdf5()` require the optional `beamz[mode-io]` extra.
+frequencies are measured in hertz. The result contains labeled effective
+indices, field components, and solver diagnostics; BeamZ analysis owns plotting
+and persistence.
 
 The discrete launch path converts solved modes onto BeamZ's component-specific
 Yee supports, normalizes their signed power, and applies guarded refinement

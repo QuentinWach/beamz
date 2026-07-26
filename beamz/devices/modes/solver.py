@@ -10,7 +10,7 @@ import xarray as xr
 
 from ._scipy import solve_diagonal_scipy_reference, solve_tensorial_scipy_reference
 from .constants import C_0
-from .models import BoundaryCondition, BoundarySpec, Materials, PmlSpec, SliceAxis, Spec
+from .models import BoundaryCondition, BoundarySpec, Materials, PmlSpec
 from .result import Result
 
 _COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
@@ -51,11 +51,6 @@ def solve_grid(
     normal_axis: Literal[0, 1, 2] = 2,
     normal_coordinate: float = 0.0,
     krylov_dim: int | None = None,
-    angle_theta: float = 0.0,
-    angle_phi: float = 0.0,
-    bend_radius: float | None = None,
-    bend_axis: Literal[0, 1] = 0,
-    spec: Spec | None = None,
 ) -> Result:
     """Solve modes from rasterized material components and grid edges.
 
@@ -90,7 +85,7 @@ def solve_grid(
 
     # Once the component arrays have been normalized into Materials, the full
     # solve path is identical to solve_modes.
-    return solve_modes(
+    return _solve_materials(
         material_grid=material_grid,
         freqs=freqs,
         wavelength=wavelength,
@@ -101,113 +96,10 @@ def solve_grid(
         direction=direction,
         components=components,
         krylov_dim=krylov_dim,
-        angle_theta=angle_theta,
-        angle_phi=angle_phi,
-        bend_radius=bend_radius,
-        bend_axis=bend_axis,
-        spec=spec,
     )
 
 
-def solve_slice(
-    *,
-    eps_xx: np.ndarray,
-    coord_edges: Sequence[float],
-    axis: SliceAxis = "x",
-    invariant_width: float = 1.0,
-    invariant_coordinate: float = 0.0,
-    eps_yy: np.ndarray | None = None,
-    eps_zz: np.ndarray | None = None,
-    eps_xy: np.ndarray | None = None,
-    eps_xz: np.ndarray | None = None,
-    eps_yx: np.ndarray | None = None,
-    eps_yz: np.ndarray | None = None,
-    eps_zx: np.ndarray | None = None,
-    eps_zy: np.ndarray | None = None,
-    mu_xx: np.ndarray | None = None,
-    mu_yy: np.ndarray | None = None,
-    mu_zz: np.ndarray | None = None,
-    mu_xy: np.ndarray | None = None,
-    mu_xz: np.ndarray | None = None,
-    mu_yx: np.ndarray | None = None,
-    mu_yz: np.ndarray | None = None,
-    mu_zx: np.ndarray | None = None,
-    mu_zy: np.ndarray | None = None,
-    freqs: Sequence[float] | None = None,
-    wavelength: float | Sequence[float] | None = None,
-    num_modes: int = 1,
-    target_neff: float | None = None,
-    pml: PmlSpec | tuple[int, int] | None = None,
-    boundary: BoundarySpec | tuple[str, str] | None = None,
-    direction: Literal["+", "-"] = "+",
-    components: Sequence[str] | None = None,
-    normal_axis: Literal[0, 1, 2] = 2,
-    normal_coordinate: float = 0.0,
-    krylov_dim: int | None = None,
-    angle_theta: float = 0.0,
-    angle_phi: float = 0.0,
-    bend_radius: float | None = None,
-    bend_axis: Literal[0, 1] = 0,
-    spec: Spec | None = None,
-) -> Result:
-    """Solve modes from a one-dimensional mode-plane material slice.
-
-    This is the convenience API for 2D FDTD simulations. The supplied material
-    arrays vary along one mode-plane axis and the solver inserts a single
-    invariant cell along the other axis before using the same sparse solve path
-    as ``solve_modes``.
-    """
-
-    # A one-dimensional slice is converted into a thin 2D Materials object so it
-    # can reuse the same validation, solver dispatch, and result wrapping.
-    material_grid = Materials.from_slice(
-        eps_xx=eps_xx,
-        eps_yy=eps_yy,
-        eps_zz=eps_zz,
-        eps_xy=eps_xy,
-        eps_xz=eps_xz,
-        eps_yx=eps_yx,
-        eps_yz=eps_yz,
-        eps_zx=eps_zx,
-        eps_zy=eps_zy,
-        mu_xx=mu_xx,
-        mu_yy=mu_yy,
-        mu_zz=mu_zz,
-        mu_xy=mu_xy,
-        mu_xz=mu_xz,
-        mu_yx=mu_yx,
-        mu_yz=mu_yz,
-        mu_zx=mu_zx,
-        mu_zy=mu_zy,
-        coord_edges=coord_edges,
-        axis=axis,
-        invariant_width=invariant_width,
-        invariant_coordinate=invariant_coordinate,
-        normal_axis=normal_axis,
-        normal_coordinate=normal_coordinate,
-    )
-
-    # Delegate to solve_modes after the slice-specific padding is complete.
-    return solve_modes(
-        material_grid=material_grid,
-        freqs=freqs,
-        wavelength=wavelength,
-        num_modes=num_modes,
-        target_neff=target_neff,
-        pml=pml,
-        boundary=boundary,
-        direction=direction,
-        components=components,
-        krylov_dim=krylov_dim,
-        angle_theta=angle_theta,
-        angle_phi=angle_phi,
-        bend_radius=bend_radius,
-        bend_axis=bend_axis,
-        spec=spec,
-    )
-
-
-def solve_modes(
+def _solve_materials(
     *,
     material_grid: Materials,
     freqs: Sequence[float] | None = None,
@@ -219,11 +111,6 @@ def solve_modes(
     direction: Literal["+", "-"] = "+",
     components: Sequence[str] | None = None,
     krylov_dim: int | None = None,
-    angle_theta: float = 0.0,
-    angle_phi: float = 0.0,
-    bend_radius: float | None = None,
-    bend_axis: Literal[0, 1] = 0,
-    spec: Spec | None = None,
 ) -> Result:
     """Solve modes for an already-rasterized material tensor grid.
 
@@ -244,18 +131,6 @@ def solve_modes(
     y_edges_arr = _validate_edges("y_edges", material_grid.grid.y_edges, shape[1])
     solve_freqs = _resolve_freqs(freqs=freqs, wavelength=wavelength)
 
-    if spec is not None:
-        # Spec is a convenience bundle. Once unpacked, the rest of the function
-        # follows exactly the same path as explicit keyword arguments.
-        num_modes = spec.num_modes
-        target_neff = spec.target_neff
-        pml = spec.pml
-        boundary = spec.boundary
-        angle_theta = spec.angle_theta
-        angle_phi = spec.angle_phi
-        bend_radius = spec.bend_radius
-        bend_axis = 0 if spec.bend_axis is None else spec.bend_axis
-
     # Normalize scalar options and compact model objects at the API boundary.
     if num_modes <= 0:
         raise ValueError("num_modes must be positive")
@@ -263,11 +138,6 @@ def solve_modes(
         raise ValueError("direction must be '+' or '-'")
     pml_spec = _resolve_pml_spec(pml)
     boundary_spec = _resolve_boundary_spec(boundary)
-    if bend_radius is not None and np.isclose(bend_radius, 0.0):
-        raise ValueError("bend_radius magnitude must be larger than 0")
-    if bend_axis not in {0, 1}:
-        raise ValueError("bend_axis must be 0 or 1")
-
     # Component filtering happens after solving so field reconstruction still has
     # every component needed for normalization and coordinate conversion.
     requested_components = tuple(components or _COMPONENTS)
@@ -295,10 +165,6 @@ def solve_modes(
             direction=direction,
             krylov_dim=krylov_dim,
             boundary_spec=boundary_spec,
-            angle_theta=float(angle_theta),
-            angle_phi=float(angle_phi),
-            bend_radius=None if bend_radius is None else float(bend_radius),
-            bend_axis=int(bend_axis),
             material_grid=material_grid,
         )
         # The solver uses local coordinates where local z is the propagation
@@ -349,10 +215,6 @@ def _solve_one_frequency(
     direction: str,
     krylov_dim: int | None,
     boundary_spec: BoundarySpec,
-    angle_theta: float,
-    angle_phi: float,
-    bend_radius: float | None,
-    bend_axis: int,
 ) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, object]]:
     """Select the sparse formulation and solve a single frequency."""
     # Forward and backward spacings represent the local Yee grid. The derivative
@@ -370,54 +232,7 @@ def _solve_one_frequency(
         target_neff = float(np.sqrt(np.max(np.abs(eps_tensor))))
     target_neff = _shift_target_neff(float(target_neff))
 
-    # Coordinate transforms can introduce off-diagonal coupling, so diagonal
-    # dispatch must be decided after any transform is applied.
-    has_transform = abs(angle_theta) > 0.0 or bend_radius is not None
-    is_diagonal = material_grid.is_diagonal
-    if has_transform:
-        # Angle and bend coordinates are applied by transforming eps/mu. A
-        # diagonal grid may become full tensor after this step.
-        eps_tensor, mu_tensor = _transformed_material_tensors(
-            material_grid.eps_tensor,
-            material_grid._resolved_mu_tensor(),
-            x_edges=x_edges,
-            y_edges=y_edges,
-            angle_theta=angle_theta,
-            angle_phi=angle_phi,
-            bend_radius=bend_radius,
-            bend_axis=bend_axis,
-        )
-        if not (_is_diagonal_tensor(eps_tensor) and _is_diagonal_tensor(mu_tensor)):
-            # Off-diagonal components require the tensorial first-order operator.
-            return _solve_one_frequency_scipy_tensorial(
-                eps_tensor=eps_tensor,
-                mu_tensor=mu_tensor,
-                dlf=dlf,
-                dlb=dlb,
-                freq=freq,
-                num_modes=num_modes,
-                target_neff=target_neff,
-                pml_spec=pml_spec,
-                direction=direction,
-                krylov_dim=krylov_dim,
-                boundary_spec=boundary_spec,
-            )
-        # If the transformed tensors remain diagonal, keep the faster diagonal
-        # sparse formulation.
-        return _solve_one_frequency_scipy(
-            eps_tensor=eps_tensor,
-            mu_tensor=mu_tensor,
-            dlf=dlf,
-            dlb=dlb,
-            freq=freq,
-            num_modes=num_modes,
-            target_neff=target_neff,
-            pml_spec=pml_spec,
-            direction=direction,
-            krylov_dim=krylov_dim,
-            boundary_spec=boundary_spec,
-        )
-    if not is_diagonal:
+    if not material_grid.is_diagonal:
         # User supplied a full tensor grid with no coordinate transform.
         return _solve_one_frequency_scipy_tensorial(
             eps_tensor=eps_tensor,
@@ -557,85 +372,6 @@ def _solve_one_frequency_scipy_tensorial(
     )
 
 
-def _transformed_material_tensors(
-    eps: np.ndarray,
-    mu: np.ndarray,
-    *,
-    x_edges: np.ndarray,
-    y_edges: np.ndarray,
-    angle_theta: float,
-    angle_phi: float,
-    bend_radius: float | None,
-    bend_axis: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Apply angle and bend coordinate transforms to material tensors."""
-    # Transformation-optics material update:
-    #   eps' = J eps J.T / det(J)
-    #   mu'  = J mu  J.T / det(J)
-    # Angle and bend solves are handled by changing material tensors, then
-    # passing the resulting grid to the same tensorial operator family.
-    if eps.shape != mu.shape or eps.shape[:2] != (3, 3):
-        raise ValueError("eps and mu tensors must both have shape (3, 3, nx, ny)")
-
-    # Work in flattened cell order because the sparse solvers consume per-cell
-    # 3x3 material matrices.
-    nx, ny = eps.shape[2:]
-    n = nx * ny
-    eps_tensor = np.zeros((3, 3, n), dtype=np.complex128)
-    mu_tensor = np.zeros((3, 3, n), dtype=np.complex128)
-
-    # Cell centers define material sample locations for affine angle transforms
-    # and H-field bend samples.
-    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
-    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
-    # Slopes of the tilted propagation coordinate in the local x/y directions.
-    tx = np.tan(angle_theta) * np.cos(angle_phi)
-    ty = np.tan(angle_theta) * np.sin(angle_phi)
-
-    for ix, x_value in enumerate(x_centers):
-        for iy, y_value in enumerate(y_centers):
-            # Convert the 2D cell index into the flattened tensor column used by
-            # the sparse assembly layer.
-            flat = ix * ny + iy
-            local_eps = eps[:, :, ix, iy]
-            local_mu = mu[:, :, ix, iy]
-            # Angle transform is affine and therefore constant across the grid.
-            # It is built here next to the bend transform so the combined
-            # Jacobian is easy to inspect.
-            jac_angle = np.asarray(
-                [
-                    [1.0, 0.0, -tx],
-                    [0.0, 1.0, -ty],
-                    [0.0, 0.0, 1.0],
-                ],
-                dtype=np.complex128,
-            )
-            jac_e = jac_angle
-            jac_h = jac_angle
-            if bend_radius is not None:
-                # Bend transform depends on transverse position. E and H use
-                # different sample locations on the Yee grid, so we build
-                # separate Jacobians for the two material tensors.
-                if bend_axis == 0:
-                    e_coord = y_edges[iy]
-                    h_coord = y_value
-                else:
-                    e_coord = x_edges[ix]
-                    h_coord = x_value
-                dwdz_e = bend_radius / (e_coord + bend_radius)
-                dwdz_h = bend_radius / (h_coord + bend_radius)
-                bend_jac_e = np.diag([1.0, 1.0, dwdz_e]).astype(np.complex128)
-                bend_jac_h = np.diag([1.0, 1.0, dwdz_h]).astype(np.complex128)
-                jac_e = bend_jac_e @ jac_e
-                jac_h = bend_jac_h @ jac_h
-
-            # Apply the transformation-optics tensor update separately for E and
-            # H because their Yee-grid sample locations can differ under bend.
-            eps_tensor[:, :, flat] = jac_e @ local_eps @ jac_e.T / np.linalg.det(jac_e)
-            mu_tensor[:, :, flat] = jac_h @ local_mu @ jac_h.T / np.linalg.det(jac_h)
-    return eps_tensor, mu_tensor
-
-
 def _resolve_pml_spec(
     pml: PmlSpec | tuple[int, int] | None,
 ) -> PmlSpec:
@@ -678,15 +414,6 @@ def _solver_info_with_context(
     out["phase_convention"] = "dominant_e_real_positive"
     out["normalization"] = "lorentz_orthogonal_unit_transverse_power"
     return out
-
-
-def _is_diagonal_tensor(tensor: np.ndarray, *, atol: float = 1e-12) -> bool:
-    """Return whether a flattened tensor has negligible off-diagonal terms."""
-    # Only the first two tensor axes are structural; the remaining axis is the
-    # flattened cell index.
-    off_diagonal = np.ones((3, 3), dtype=bool)
-    np.fill_diagonal(off_diagonal, False)
-    return bool(np.all(np.abs(tensor[off_diagonal]) <= atol))
 
 
 def _shift_target_neff(target_neff: float) -> float:

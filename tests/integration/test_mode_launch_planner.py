@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from beamz import GaussianPulse, ModeSource, ModeSpec, SampledSignal
-from beamz.devices.modes import DiscreteMode
+from beamz.devices.modes.discrete import DiscreteMode
 from beamz.devices.sources import compiler as source_compiler
 from beamz.devices.sources import mode_launch as mode_launch_module
 from beamz.devices.sources.compiler import (
@@ -140,7 +140,8 @@ def test_project_packages_the_native_solver_without_external_micromode():
 
     assert '"micromode' not in pyproject
     assert 'name = "micromode"' not in lockfile
-    assert "mode-io" in pyproject
+    assert "mode-io" not in pyproject
+    assert "h5py" not in pyproject
 
 
 def test_mode_source_compile_is_deterministic_and_does_not_mutate_source(monkeypatch):
