@@ -33,9 +33,7 @@ PolarizationName = Literal["te", "tm"]
 ComponentIndex = tuple[slice | int, slice | int, slice | int]
 
 _COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
-# Legacy schema identifier retained for saved diagnostics and external consumers.
-# It names the v1 data shape and no longer implies an external package dependency.
-DISCRETE_MODE_CONTRACT = "micromode.beamz.DiscreteMode/v1"
+DISCRETE_MODE_CONTRACT = "beamz.devices.modes.DiscreteMode/v1"
 _AXIS_INDEX: dict[AxisName, Literal[0, 1, 2]] = {"x": 0, "y": 1, "z": 2}
 _AXIS_NAMES: tuple[AxisName, AxisName, AxisName] = ("x", "y", "z")
 _YEE_OFFSETS_3D = {
@@ -70,7 +68,6 @@ class ModePlaneSpec:
     direction: DirectionName
     transverse_axes: tuple[AxisName, AxisName]
     grid_shape: tuple[int, int, int]
-    component_shapes: Mapping[str, tuple[int, int, int]]
     center: tuple[float, float, float]
     width: float
     height: float
@@ -83,16 +80,10 @@ class ModePlaneSpec:
     solver_direction: DirectionName | None = None
     aperture_pad_cells: int = 2
     aperture_window_alpha: float = 0.2
-    phase_reference: str = "dominant_h_real_positive"
-    time_convention: str = "exp(-i omega t); E at integer steps, H at half steps"
-    component_offsets: Mapping[str, Mapping[str, float]] = field(
-        default_factory=lambda: dict(_YEE_OFFSETS_3D)
-    )
     component_permittivity: Mapping[str, np.ndarray] = field(default_factory=dict)
     component_permeability: Mapping[str, np.ndarray] = field(default_factory=dict)
     # Guarded by joint field, power, energy, and discrete-Maxwell validation.
     yee_refinement: bool = True
-    boundary: str = "beamz-finite-aperture"
 
     def __post_init__(self) -> None:
         eps = readonly_array(self.scalar_permittivity, dtype=np.complex128)
@@ -140,18 +131,7 @@ class ModePlaneSpec:
             raise ValueError("grid_shape must contain three dimensions larger than one")
         object.__setattr__(self, "grid_shape", grid_shape)
 
-        component_shapes = {
-            name: tuple(int(v) for v in shape)
-            for name, shape in self.component_shapes.items()
-        }
-        missing_shapes = set(_COMPONENTS).difference(component_shapes)
-        if missing_shapes:
-            raise ValueError(
-                f"component_shapes missing: {', '.join(sorted(missing_shapes))}"
-            )
         for name, value in (
-            ("component_shapes", component_shapes),
-            ("component_offsets", self.component_offsets),
             ("component_permittivity", self.component_permittivity),
             ("component_permeability", self.component_permeability),
         ):
@@ -367,8 +347,8 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         "solver_direction": spec.solver_direction,
         "mode_index": spec.mode_index,
         "selected_neff": complex(selected["neff"]),
-        "phase_reference": spec.phase_reference,
-        "time_convention": spec.time_convention,
+        "phase_reference": "dominant_h_real_positive",
+        "time_convention": "exp(-i omega t); E at integer steps, H at half steps",
         "aperture_window_alpha": spec.aperture_window_alpha,
         "yee_refinement": yee_refinement_accepted,
         "yee_refinement_requested": yee_refinement_requested,

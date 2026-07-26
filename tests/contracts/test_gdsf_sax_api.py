@@ -393,10 +393,10 @@ def test_build_port_projection_3d_modemonitor_uses_discrete_contract(monkeypatch
     assert captured["aperture_window_alpha"] == _MODE_PLANE_APERTURE_WINDOW_ALPHA
     assert captured["scalar_permittivity"].shape == (4, 4)
     assert captured["grid_shape"] == (4, 4, 3)
-    assert captured["component_shapes"]["Ey"] == (5, 4, 4)
+    assert captured["component_permittivity"]["Ey"].shape == (5, 4, 4)
     assert "component_permittivity" in captured
     assert "component_permeability" in captured
-    assert projection["discrete_contract"] == "micromode.beamz.DiscreteMode/v1"
+    assert projection["discrete_contract"] == "beamz.devices.modes.DiscreteMode/v1"
     assert projection["components"] == ("Ey", "Ez", "Hy", "Hz")
     assert np.real(projection["mode_components"]["Hz"][0]) < 0.0
     assert np.real(projection["mode_components_bwd"]["Hz"][0]) > 0.0

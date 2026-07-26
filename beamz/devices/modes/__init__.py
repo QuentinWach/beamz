@@ -12,26 +12,12 @@ from .solver import solve_grid, solve_modes, solve_slice
 from .specs import ModeData, ModeSpec
 from .sweep import Sweep, track_modes_by_overlap
 
-# Keep __all__ explicit so documentation and static analysis show the intended
-# public surface.
+# BeamZ users configure modes through ModeSpec/ModeData. ``solve_grid`` and its
+# Result are the only supported low-level escape hatch; placement contracts and
+# numerical implementation models remain internal.
 __all__ = [
-    "C_0",
-    "EPSILON_0",
-    "BoundarySpec",
-    "DiscreteMode",
-    "Grid",
-    "Materials",
     "ModeData",
-    "ModePlaneSpec",
     "ModeSpec",
-    "PmlSpec",
     "Result",
-    "Spec",
-    "Sweep",
-    "overlap",
-    "solve_beamz_mode",
     "solve_grid",
-    "solve_modes",
-    "solve_slice",
-    "track_modes_by_overlap",
 ]

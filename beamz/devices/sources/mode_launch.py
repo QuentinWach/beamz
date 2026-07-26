@@ -10,7 +10,7 @@ import numpy as np
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices._immutable import readonly_array
 from beamz.devices._placement import snap_mode_source_region, snap_plane_region
-from beamz.devices.modes import solve_beamz_mode
+from beamz.devices.modes.discrete import solve_beamz_mode
 from beamz.devices.modes.fields import _numeric_wave_number
 from beamz.devices.sources.mode_profiles import (
     _scale_pair_for_power,

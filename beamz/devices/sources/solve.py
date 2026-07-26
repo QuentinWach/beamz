@@ -6,7 +6,7 @@ from typing import Literal, cast, overload
 
 import numpy as np
 
-from beamz.devices.modes import solve_grid as solve_fdfd_grid
+from beamz.devices.modes.solver import solve_grid as solve_fdfd_grid
 from beamz.devices.modes.specs import ModeData, ModeSpec
 
 from .specs import plane_axis_and_spans

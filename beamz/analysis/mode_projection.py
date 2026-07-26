@@ -13,8 +13,7 @@ from beamz.analysis.modal_projection.geometry import (
     _mode_components_for_port,
     _monitor_analysis_plane_3d,
 )
-from beamz.devices.modes import solve_beamz_mode
-from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT
+from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT, solve_beamz_mode
 from beamz.devices.modes.fields import _modal_overlap, _normalize_profiles
 from beamz.devices.monitors.monitors import ModeMonitor
 from beamz.devices.sources.mode_profiles import _solve_mode_plane_3d

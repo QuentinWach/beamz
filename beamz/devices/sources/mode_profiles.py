@@ -285,7 +285,6 @@ def _solve_mode_plane_3d(
             solver_direction=solver_direction or direction,
             transverse_axes=_TRANSVERSE_AXES_3D[axis],
             grid_shape=local_plane["grid_shape"],
-            component_shapes=local_plane["component_shapes"],
             component_permittivity=component_permittivity,
             component_permeability=component_permeability,
             center=local_plane["center"],

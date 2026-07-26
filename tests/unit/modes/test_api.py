@@ -12,6 +12,7 @@ import xarray as xr
 
 import beamz.devices.modes as mm
 from beamz.devices.modes.discrete import _boundary_refractive_index
+from beamz.lattice import component_shape_3d
 
 
 def test_beamz_mode_specs_validate_selection_and_empty_results():
@@ -58,21 +59,6 @@ def _strip_grid(
     xx, yy = np.meshgrid(x_centers, y_centers, indexing="ij")
     eps = np.where((np.abs(xx) <= 0.35) & (np.abs(yy) <= 0.25), 3.4**2, 1.44**2)
     return eps, x_edges, y_edges
-
-
-def _beamz_component_shapes(
-    grid_shape: tuple[int, int, int],
-) -> dict[str, tuple[int, int, int]]:
-    """Return BEAMZ 3D Yee component shapes used by contract tests."""
-    nz, ny, nx = grid_shape
-    return {
-        "Ex": (nz, ny, nx - 1),
-        "Ey": (nz, ny - 1, nx),
-        "Ez": (nz - 1, ny, nx),
-        "Hx": (nz - 1, ny - 1, nx),
-        "Hy": (nz - 1, ny, nx - 1),
-        "Hz": (nz, ny - 1, nx - 1),
-    }
 
 
 def _indexed_shape(
@@ -124,7 +110,6 @@ def _beamz_mode_plane_spec(axis: str = "x") -> mm.ModePlaneSpec:
         solver_direction="+y" if axis == "y" else direction,
         transverse_axes=transverse_axes,
         grid_shape=grid_shape,
-        component_shapes=_beamz_component_shapes(grid_shape),
         center=(
             0.5 * grid_shape[2] * resolution,
             0.5 * grid_shape[1] * resolution,
@@ -145,11 +130,11 @@ def _with_component_materials(
     spec: mm.ModePlaneSpec, *, yee_refinement: bool | None = None
 ) -> mm.ModePlaneSpec:
     component_permittivity = {
-        name: np.full(spec.component_shapes[name], 2.25, dtype=np.float64)
+        name: np.full(component_shape_3d(name, spec.grid_shape), 2.25, dtype=np.float64)
         for name in ("Ex", "Ey", "Ez")
     }
     component_permeability = {
-        name: np.ones(spec.component_shapes[name], dtype=np.float64)
+        name: np.ones(component_shape_3d(name, spec.grid_shape), dtype=np.float64)
         for name in ("Hx", "Hy", "Hz")
     }
     updates: dict[str, object] = {
@@ -224,7 +209,7 @@ def test_beamz_mode_plane_contract_returns_component_local_profiles(
 
     discrete = mm.solve_beamz_mode(spec)
 
-    assert discrete.diagnostics["contract"] == "micromode.beamz.DiscreteMode/v1"
+    assert discrete.diagnostics["contract"] == "beamz.devices.modes.DiscreteMode/v1"
     assert discrete.axis == axis
     assert discrete.transverse_axes == spec.transverse_axes
     assert np.isfinite(discrete.neff.real)
@@ -234,7 +219,9 @@ def test_beamz_mode_plane_contract_returns_component_local_profiles(
 
     for component, profile in discrete.profiles.items():
         index = discrete.component_indices[component]
-        assert profile.shape == _indexed_shape(spec.component_shapes[component], index)
+        assert profile.shape == _indexed_shape(
+            component_shape_3d(component, spec.grid_shape), index
+        )
         assert discrete.backward_profiles[component].shape == profile.shape
         assert np.isfinite(profile).all()
 
@@ -246,7 +233,7 @@ def test_beamz_mode_plane_contract_returns_component_local_profiles(
 def test_beamz_mode_plane_spec_snapshots_mutable_inputs():
     base = _beamz_mode_plane_spec()
     eps = np.asarray(base.scalar_permittivity).copy()
-    component_eps = np.ones(base.component_shapes["Ex"])
+    component_eps = np.ones(component_shape_3d("Ex", base.grid_shape))
     spec = replace(
         base,
         scalar_permittivity=eps,
@@ -260,8 +247,6 @@ def test_beamz_mode_plane_spec_snapshots_mutable_inputs():
     for array in (spec.scalar_permittivity, spec.component_permittivity["Ex"]):
         with pytest.raises(ValueError, match="read-only"):
             array[...] = 0.0
-    with pytest.raises(TypeError):
-        spec.component_shapes["Ex"] = (1, 1, 1)  # type: ignore[index]
 
 
 def test_beamz_yee_refinement_can_be_disabled(monkeypatch):
