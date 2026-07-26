@@ -10,7 +10,7 @@ from beamz.devices._placement import (
     snap_axis_aligned_line_region,
     snap_plane_region,
 )
-from beamz.devices.sources.specs import ModeSpec
+from beamz.devices.modes.specs import ModeSpec
 from beamz.lattice import yee_plane_coordinates_3d
 
 

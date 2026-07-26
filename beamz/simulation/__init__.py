@@ -2,8 +2,8 @@
 
 from beamz.design.meshing import GridSpec
 from beamz.devices.boundaries import PEC, PML, Absorber
+from beamz.devices.modes.specs import ModeSpec
 from beamz.devices.ports import Port
-from beamz.devices.sources.specs import ModeSpec
 from beamz.devices.sources.time import GaussianPulse
 from beamz.simulation.api import Simulation
 from beamz.simulation.model import SimulationState

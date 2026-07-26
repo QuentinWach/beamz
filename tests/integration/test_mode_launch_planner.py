@@ -130,7 +130,7 @@ def test_mode_launch_planner_consumes_micromode_discrete_mode(monkeypatch):
         assert not hasattr(source, removed_attr)
 
 
-def test_solve_beamz_mode_plane_accepts_micromode_beamz_namespace(monkeypatch):
+def test_solve_beamz_mode_plane_builds_native_mode_plane_spec(monkeypatch):
     from beamz.devices.sources import solve as solve_module
 
     calls = {}
@@ -143,13 +143,8 @@ def test_solve_beamz_mode_plane_accepts_micromode_beamz_namespace(monkeypatch):
         calls["spec_kwargs"] = spec.kwargs
         return _fake_discrete_mode()
 
-    fake_micromode = SimpleNamespace(
-        beamz=SimpleNamespace(
-            ModePlaneSpec=FakeModePlaneSpec,
-            solve_beamz_mode=fake_solve_beamz_mode,
-        )
-    )
-    monkeypatch.setattr(solve_module, "micromode", fake_micromode)
+    monkeypatch.setattr(solve_module, "ModePlaneSpec", FakeModePlaneSpec)
+    monkeypatch.setattr(solve_module, "solve_beamz_mode", fake_solve_beamz_mode)
 
     discrete_mode = solve_module.solve_beamz_mode_plane(
         axis="x",
@@ -165,47 +160,13 @@ def test_solve_beamz_mode_plane_accepts_micromode_beamz_namespace(monkeypatch):
     }
 
 
-def test_solve_beamz_mode_plane_imports_micromode_beamz_submodule(monkeypatch):
+def test_source_solver_uses_the_native_modes_package():
+    import beamz.devices.modes as modes
     from beamz.devices.sources import solve as solve_module
 
-    calls = {}
-
-    class FakeModePlaneSpec:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    def fake_solve_beamz_mode(spec):
-        calls["spec_kwargs"] = spec.kwargs
-        return _fake_discrete_mode()
-
-    fake_beamz_api = SimpleNamespace(
-        ModePlaneSpec=FakeModePlaneSpec,
-        solve_beamz_mode=fake_solve_beamz_mode,
-    )
-    fake_micromode = SimpleNamespace(
-        __version__="fake",
-        __file__="/fake/micromode/__init__.py",
-    )
-
-    def fake_import_module(name):
-        assert name == "micromode.beamz"
-        return fake_beamz_api
-
-    monkeypatch.setattr(solve_module, "micromode", fake_micromode)
-    monkeypatch.setattr(solve_module.importlib, "import_module", fake_import_module)
-
-    discrete_mode = solve_module.solve_beamz_mode_plane(
-        axis="y",
-        direction="-y",
-        wavelength=1.31,
-    )
-
-    assert discrete_mode.neff == 1.5 + 0.0j
-    assert calls["spec_kwargs"] == {
-        "axis": "y",
-        "direction": "-y",
-        "wavelength": 1.31,
-    }
+    assert solve_module.ModePlaneSpec is modes.ModePlaneSpec
+    assert solve_module.solve_beamz_mode is modes.solve_beamz_mode
+    assert solve_module.solve_grid is modes.solve_grid
 
 
 def test_project_requires_micromode_with_beamz_discrete_contract():

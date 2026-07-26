@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Literal, Sequence
 import numpy as np
 
 from beamz.devices._immutable import immutable_snapshot
-from beamz.devices.sources.specs import ModeSpec
+from beamz.devices.modes.specs import ModeSpec
 
 if TYPE_CHECKING:
     from beamz.devices.monitors import ModeMonitor

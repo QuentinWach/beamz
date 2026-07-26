@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib
-import sys
 from collections import namedtuple
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -9,62 +7,15 @@ from typing import Any, Literal, Tuple, Union, cast, overload
 
 import numpy as np
 
-from .specs import ModeData, ModeSpec, plane_axis_and_spans
+from beamz.devices.modes import ModePlaneSpec, solve_beamz_mode, solve_grid
+from beamz.devices.modes.specs import ModeData, ModeSpec
 
-# Lazy import of micromode to allow package to work without it
-micromode: Any | None = None
-
-
-def _ensure_micromode():
-    """Lazily import micromode when needed."""
-    global micromode
-    if micromode is None:
-        try:
-            import micromode as _micromode
-
-            micromode = _micromode
-        except ImportError as exc:
-            raise ImportError(
-                "micromode is required for mode solving. "
-                "Install it with: pip install micromode"
-            ) from exc
-    return micromode
-
-
-def _micromode_beamz_namespace():
-    _ensure_micromode()
-    beamz_api = getattr(micromode, "beamz", None)
-    if beamz_api is not None:
-        return beamz_api
-    try:
-        return importlib.import_module("micromode.beamz")
-    except ModuleNotFoundError as exc:
-        if exc.name != "micromode.beamz":
-            raise
-        return None
+from .specs import plane_axis_and_spans
 
 
 def solve_beamz_mode_plane(**spec_kwargs):
-    """Solve a BEAMZ ModePlaneSpec using micromode's discrete launch contract."""
-    _ensure_micromode()
-    beamz_api = _micromode_beamz_namespace()
-    mode_plane_spec = getattr(micromode, "ModePlaneSpec", None) or getattr(
-        beamz_api, "ModePlaneSpec", None
-    )
-    solve_beamz_mode = getattr(micromode, "solve_beamz_mode", None) or getattr(
-        beamz_api, "solve_beamz_mode", None
-    )
-    if mode_plane_spec is None or solve_beamz_mode is None:
-        version = getattr(micromode, "__version__", "unknown")
-        location = getattr(micromode, "__file__", "unknown location")
-        raise RuntimeError(
-            "BEAMZ 3D ModeSource requires micromode.beamz.ModePlaneSpec and "
-            "micromode.beamz.solve_beamz_mode, or equivalent top-level aliases. "
-            "Upgrade micromode to >=0.1.0a6 with the DiscreteMode/v1 BEAMZ "
-            "contract. Imported micromode "
-            f"{version!r} from {location!r} in {sys.executable!r}."
-        )
-    return solve_beamz_mode(mode_plane_spec(**spec_kwargs))
+    """Solve a BeamZ mode plane through the native discrete launch contract."""
+    return solve_beamz_mode(ModePlaneSpec(**spec_kwargs))
 
 
 ModeTupleType = namedtuple("Mode", ["neff", "Ex", "Ey", "Ez", "Hx", "Hy", "Hz"])
@@ -97,7 +48,7 @@ def compute_mode_polarization_fraction(
 
 
 def _field_plane(data_array, normal_axis: int, mode_index: int) -> np.ndarray:
-    """Extract a BeamZ transverse field plane from a micromode field component."""
+    """Extract a BeamZ transverse field plane from a native mode component."""
     normal_dim = ("x", "y", "z")[normal_axis]
     selected = data_array.isel(f=0, mode_index=mode_index)
     normal_position = selected.dims.index(normal_dim)
@@ -108,7 +59,7 @@ def _remap_mode_tuple_to_global(
     mode: ModeTupleType,
     local_axis_to_global: tuple[int, int, int],
 ) -> ModeTupleType:
-    """Map micromode local-axis component labels to BEAMZ global Cartesian labels."""
+    """Map solver-local component labels to BeamZ global Cartesian labels."""
 
     def _remap_components(components):
         out = [None, None, None]
@@ -179,7 +130,6 @@ def compute_mode(
     target_neff: Union[float, None] = None,
     local_axis_to_global: tuple[int, int, int] = (0, 1, 2),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-    micromode_module = _ensure_micromode()
     inv_permittivities = np.asarray(inv_permittivities, dtype=np.complex128)
     if inv_permittivities.ndim == 1:
         inv_permittivities = inv_permittivities[np.newaxis, :, np.newaxis]
@@ -239,7 +189,7 @@ def compute_mode(
     else:
         mu_xx = np.asarray(permeability_squeezed, dtype=np.complex128)
 
-    result = micromode_module.solve_grid(
+    result = solve_grid(
         eps_xx=permittivity_squeezed,
         mu_xx=mu_xx,
         x_edges=coords[0],
@@ -452,12 +402,12 @@ DISCRETE_MODE_CONTRACT = "micromode.beamz.DiscreteMode/v1"
 
 
 def solve_discrete_mode_plane(**spec_kwargs: Any):
-    """Return a micromode BEAMZ DiscreteMode or fail with a BEAMZ-facing error."""
+    """Return a native BeamZ DiscreteMode or fail with a clear contract error."""
 
     discrete_mode = solve_beamz_mode_plane(**spec_kwargs)
     if discrete_mode is None:
         raise RuntimeError(
-            "micromode.solve_beamz_mode returned None for the required "
+            "The native mode solver returned None for the required "
             f"{DISCRETE_MODE_CONTRACT} contract."
         )
     missing = [
@@ -476,7 +426,7 @@ def solve_discrete_mode_plane(**spec_kwargs: Any):
     ]
     if missing:
         raise RuntimeError(
-            "micromode returned an incompatible BEAMZ DiscreteMode object; "
+            "The native mode solver returned an incompatible DiscreteMode object; "
             f"missing {', '.join(missing)}."
         )
     return discrete_mode
@@ -588,7 +538,7 @@ def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
 def solve_mode_plane(
     *, simulation, plane, mode_spec: ModeSpec | None, freqs, direction=None
 ) -> ModeData:
-    """Solve modal fields on a finite simulation plane using micromode."""
+    """Solve modal fields on a finite simulation plane."""
 
     spec = mode_spec if mode_spec is not None else ModeSpec()
     freq_arr = np.asarray(freqs, dtype=float).reshape(-1)
