@@ -10,7 +10,12 @@ import numpy as np
 
 from beamz.const import LIGHT_SPEED
 from beamz.devices._placement import snap_centered_extent
-from beamz.devices.modes.discrete import DiscreteMode
+from beamz.devices.modes.discrete import (
+    AxisName,
+    DiscreteMode,
+    ModePlaneSpec,
+    solve_beamz_mode,
+)
 from beamz.lattice import (
     component_shape_3d,
     sample_voxel_grid_at_component_3d,
@@ -22,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 _VALID_DIRECTIONS = {"+x", "-x", "+y", "-y", "+z", "-z"}
 _AXIS_POS_3D = {"z": 0, "y": 1, "x": 2}
-_TRANSVERSE_AXES_3D = {
+_TRANSVERSE_AXES_3D: dict[str, tuple[AxisName, AxisName]] = {
     "x": ("z", "y"),
     "y": ("z", "x"),
     "z": ("y", "x"),
@@ -177,6 +182,7 @@ def _local_mode_plane_spec(
     resolution,
     snapped_region=None,
     aperture_pad_cells=2,
+    material_origin_zyx=(0, 0, 0),
 ):
     """Build a compact local mode plane and metadata to shift it globally."""
     axis = str(axis).lower()
@@ -188,6 +194,9 @@ def _local_mode_plane_spec(
                 centers[name] = float(snapped_region.axis_coord(name))
 
     origin = {"z": 0, "y": 0, "x": 0}
+    material_origin: dict[str, int] = dict(
+        zip(("z", "y", "x"), (int(value) for value in material_origin_zyx), strict=True)
+    )
     local_counts = dict(counts)
     crop_slices = []
     pad = max(0, int(aperture_pad_cells))
@@ -213,7 +222,12 @@ def _local_mode_plane_spec(
         start, stop = _ensure_min_interval(start, stop, counts[transverse_axis])
         origin[transverse_axis] = int(start)
         local_counts[transverse_axis] = int(stop) - int(start)
-        crop_slices.append(slice(int(start), int(stop)))
+        crop_slices.append(
+            slice(
+                int(start) - material_origin[transverse_axis],
+                int(stop) - material_origin[transverse_axis],
+            )
+        )
 
     normal_origin = min(int(plane_index), int(offset_index))
     normal_stop = max(int(plane_index), int(offset_index)) + 2
@@ -254,6 +268,100 @@ def _local_mode_plane_spec(
             int(origin["x"]),
         ),
     }
+
+
+def _solve_mode_plane_3d(
+    permittivity,
+    permeability,
+    *,
+    frequency,
+    resolution,
+    dt,
+    axis,
+    direction,
+    grid_shape,
+    center,
+    width,
+    height,
+    plane_index,
+    offset_index,
+    mode_index,
+    polarization,
+    target_neff,
+    num_modes,
+    snapped_region,
+    solver_direction=None,
+    material_origin_zyx=(0, 0, 0),
+    solver=solve_beamz_mode,
+) -> DiscreteMode:
+    """Solve one finite 3D mode plane and return globally indexed fields."""
+    axis_index = _AXIS_POS_3D[axis]
+    profile_index = int(plane_index) - int(material_origin_zyx[axis_index])
+    eps_profile = np.take(permittivity, profile_index, axis=axis_index)
+    local_plane = _local_mode_plane_spec(
+        eps_profile,
+        axis=axis,
+        grid_shape=grid_shape,
+        center=center,
+        width=width,
+        height=height,
+        plane_index=plane_index,
+        offset_index=offset_index,
+        resolution=resolution,
+        snapped_region=snapped_region,
+        aperture_pad_cells=_mode_plane_outer_pad_cells(width, height, resolution),
+        material_origin_zyx=material_origin_zyx,
+    )
+    target = target_neff
+    if target is None:
+        target = 0.98 * np.sqrt(
+            max(float(np.max(np.real(local_plane["scalar_permittivity"]))), 1e-12)
+        )
+    sampling_plane = dict(local_plane)
+    sampling_plane["origin_zyx"] = tuple(
+        int(global_offset) - int(region_offset)
+        for global_offset, region_offset in zip(
+            local_plane["origin_zyx"], material_origin_zyx, strict=True
+        )
+    )
+    component_permittivity, component_permeability = _local_component_materials(
+        permittivity, permeability, sampling_plane
+    )
+    mode = solver(
+        ModePlaneSpec(
+            scalar_permittivity=np.asarray(
+                local_plane["scalar_permittivity"], dtype=np.complex128
+            ),
+            frequency=float(frequency),
+            resolution=float(resolution),
+            dt=None if dt is None else float(dt),
+            axis=axis,
+            direction=direction,
+            solver_direction=solver_direction or direction,
+            transverse_axes=_TRANSVERSE_AXES_3D[axis],
+            grid_shape=local_plane["grid_shape"],
+            component_shapes=local_plane["component_shapes"],
+            component_permittivity=component_permittivity,
+            component_permeability=component_permeability,
+            center=local_plane["center"],
+            width=float(width),
+            height=float(height),
+            plane_index=int(local_plane["plane_index"]),
+            offset_index=int(local_plane["offset_index"]),
+            mode_index=int(mode_index),
+            polarization=polarization,
+            target_neff=target,
+            num_modes=int(num_modes),
+            aperture_pad_cells=_MODE_PLANE_APERTURE_PAD_CELLS,
+            aperture_window_alpha=_MODE_PLANE_APERTURE_WINDOW_ALPHA,
+        )
+    )
+    return _shift_discrete_mode_to_global(
+        mode,
+        origin_zyx=local_plane["origin_zyx"],
+        axis=axis,
+        resolution=resolution,
+    )
 
 
 def _local_component_materials(permittivity, permeability, local_plane):

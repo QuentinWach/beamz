@@ -12,20 +12,14 @@ from beamz.analysis.modal_projection.geometry import (
     _modal_projection_plane_delay_s,
     _mode_components_for_port,
     _monitor_analysis_plane_3d,
-    _plane_axes_for_port_axis,
 )
-from beamz.devices.modes import ModePlaneSpec, solve_beamz_mode
+from beamz.devices.modes import solve_beamz_mode
 from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT
 from beamz.devices.monitors.monitors import ModeMonitor
 from beamz.devices.sources.mode_profiles import (
-    _MODE_PLANE_APERTURE_PAD_CELLS,
-    _MODE_PLANE_APERTURE_WINDOW_ALPHA,
-    _local_component_materials,
-    _local_mode_plane_spec,
     _modal_overlap_3d_profiles,
-    _mode_plane_outer_pad_cells,
     _normalize_3d_profiles_by_flux,
-    _shift_discrete_mode_to_global,
+    _solve_mode_plane_3d,
 )
 from beamz.devices.sources.solve import solve_modes
 
@@ -186,8 +180,6 @@ def _build_discrete_port_projection_3d(
             int(spec.mode_index) + 1,
         )
     )
-    target = mode_spec.target_neff
-
     center = tuple(float(value) for value in monitor.center)
     size = tuple(float(value) for value in monitor.size_spec)
     if axis == "x":
@@ -197,83 +189,33 @@ def _build_discrete_port_projection_3d(
     else:
         width, height = size[0], size[1]
 
-    transverse_axes = _plane_axes_for_port_axis(axis)
-    eps_profile_full = np.take(perm, plane_index - origin[axis_index], axis=axis_index)
     snapped_region = monitor.get_snapped_region(
         dx=float(sim.resolution),
         dy=float(sim.resolution),
         dz=float(sim.resolution),
         field_shape=full_shape,
     )
-    local_plane = _local_mode_plane_spec(
-        eps_profile_full,
+    discrete_mode = _solve_mode_plane_3d(
+        perm,
+        permeability,
+        frequency=frequency,
+        resolution=sim.resolution,
+        dt=sim.dt,
         axis=axis,
         grid_shape=full_shape,
         center=center,
-        width=float(width),
-        height=float(height),
-        plane_index=int(plane_index),
-        offset_index=int(offset_index),
-        resolution=float(sim.resolution),
+        width=width,
+        height=height,
+        plane_index=plane_index,
+        offset_index=offset_index,
+        direction=spec.projection_direction,
+        mode_index=spec.mode_index,
+        polarization=str(spec.polarization).lower(),
+        target_neff=mode_spec.target_neff,
+        num_modes=num_modes,
         snapped_region=snapped_region,
-        aperture_pad_cells=_mode_plane_outer_pad_cells(
-            width,
-            height,
-            sim.resolution,
-        ),
-    )
-    if target is None:
-        target = 0.98 * np.sqrt(
-            max(
-                float(np.max(np.real(local_plane["scalar_permittivity"]))),
-                1e-12,
-            )
-        )
-    sampling_plane = dict(local_plane)
-    sampling_plane["origin_zyx"] = tuple(
-        int(global_offset) - int(region_offset)
-        for global_offset, region_offset in zip(
-            local_plane["origin_zyx"], origin, strict=True
-        )
-    )
-    component_permittivity, component_permeability = _local_component_materials(
-        perm, permeability, sampling_plane
-    )
-    discrete_mode = solve_beamz_mode(
-        ModePlaneSpec(
-            scalar_permittivity=np.asarray(
-                local_plane["scalar_permittivity"],
-                dtype=np.complex128,
-            ),
-            frequency=float(frequency),
-            resolution=float(sim.resolution),
-            dt=float(sim.dt),
-            axis=axis,
-            direction=spec.projection_direction,
-            solver_direction=spec.projection_direction,
-            transverse_axes=transverse_axes,
-            grid_shape=local_plane["grid_shape"],
-            component_shapes=local_plane["component_shapes"],
-            component_permittivity=component_permittivity,
-            component_permeability=component_permeability,
-            center=local_plane["center"],
-            width=float(width),
-            height=float(height),
-            plane_index=int(local_plane["plane_index"]),
-            offset_index=int(local_plane["offset_index"]),
-            mode_index=int(spec.mode_index),
-            polarization=str(spec.polarization).lower(),
-            target_neff=target,
-            num_modes=num_modes,
-            aperture_pad_cells=_MODE_PLANE_APERTURE_PAD_CELLS,
-            aperture_window_alpha=_MODE_PLANE_APERTURE_WINDOW_ALPHA,
-        )
-    )
-    discrete_mode = _shift_discrete_mode_to_global(
-        discrete_mode,
-        origin_zyx=local_plane["origin_zyx"],
-        axis=axis,
-        resolution=float(sim.resolution),
+        material_origin_zyx=origin,
+        solver=solve_beamz_mode,
     )
     proj_components = tuple(parts.get("projection_components_3d", ()))
     if not proj_components:
