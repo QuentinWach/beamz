@@ -266,9 +266,13 @@ class GaussianSource:
             Cartesian translation in metres.
         """
         offset = tuple(float(v) for v in offset)
+        if len(offset) != len(self.position):
+            raise ValueError(
+                "GaussianSource offset dimensionality must match its position."
+            )
         return replace(
             self,
-            position=tuple(a + b for a, b in zip(self.position, offset, strict=False)),
+            position=tuple(a + b for a, b in zip(self.position, offset, strict=True)),
         )
 
 

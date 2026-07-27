@@ -315,6 +315,12 @@ def test_mode_and_legacy_source_edge_contracts():
         bz.GaussianSource(position=(0.0, 0.0), width=0.0, signal=[1.0])
     legacy = bz.GaussianSource(position=(1.0, 2.0), width=0.5, signal=[1.0])
     assert legacy.shifted((3.0, 4.0)).position == (4.0, 6.0)
+    with pytest.raises(ValueError, match="dimensionality"):
+        legacy.shifted((3.0, 4.0, 5.0))
+
+    volume = bz.GaussianSource(position=(1.0, 2.0, 3.0), width=0.5, signal=[1.0])
+    with pytest.raises(ValueError, match="dimensionality"):
+        volume.shifted((3.0, 4.0))
 
 
 def test_mode_data_selects_nearest_frequency_and_owns_full_profile():
