@@ -10,21 +10,34 @@ import numpy as np
 from beamz.const import µm
 
 BoundaryEdges = tuple[str, ...] | str
+_PLANAR_EDGES = ("left", "right", "top", "bottom")
+_VOLUME_EDGES = (*_PLANAR_EDGES, "front", "back")
 
 
 def normalize_edges(edges: BoundaryEdges) -> BoundaryEdges:
-    """Freeze an edge selection while retaining the dimensional ``"all"`` sentinel."""
-    if edges == "all":
+    """Validate and freeze an edge selection while retaining the ``"all"`` sentinel."""
+    if isinstance(edges, str) and edges.lower() == "all":
         return "all"
-    return tuple(edges) if isinstance(edges, (list, tuple, set)) else (str(edges),)
+    values = sorted(edges) if isinstance(edges, set) else edges
+    values = values if isinstance(values, (list, tuple)) else (values,)
+    normalized = tuple(str(edge).lower() for edge in values)
+    invalid = set(normalized).difference(_VOLUME_EDGES)
+    if invalid:
+        raise ValueError(f"Unsupported boundary edges: {sorted(invalid)}")
+    return normalized
 
 
 def edges_for_dimension(edges: BoundaryEdges, is_3d: bool) -> tuple[str, ...]:
     """Resolve an edge selection after the compiler knows the domain dimension."""
+    resolved = _VOLUME_EDGES if edges == "all" and is_3d else _PLANAR_EDGES
     if edges != "all":
-        return tuple(edges)
-    planar = ("left", "right", "top", "bottom")
-    return (*planar, "front", "back") if is_3d else planar
+        resolved = tuple(edges)
+    invalid = set(resolved).difference(_VOLUME_EDGES if is_3d else _PLANAR_EDGES)
+    if invalid:
+        raise ValueError(
+            f"Boundary edges {sorted(invalid)} are only available in 3D simulations."
+        )
+    return resolved
 
 
 @dataclass(frozen=True, slots=True)
