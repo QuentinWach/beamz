@@ -60,13 +60,21 @@ Install BeamZ using pip:
 pip install beamz
 ```
 
-For development installation, clone the repository and install in editable mode:
+Development uses [uv](https://docs.astral.sh/uv/). Clone the repository and sync
+the package with its contributor dependencies:
 
 ```bash
 git clone https://github.com/beamzorg/beamz
 cd beamz
-pip install -e ".[dev]"
+uv sync --extra dev --extra test
 ```
+
+When opening an example notebook, select the Python interpreter inside this
+checkout's `.venv` as its kernel (`.venv/bin/python` on macOS/Linux or
+`.venv\Scripts\python.exe` on Windows). Avoid a generic system or Conda
+`python3` kernel, which may import BeamZ from a different checkout. The notebook
+setup cell prints the active Python executable and BeamZ package path for
+verification.
 
 For a ready-to-use CUDA and Jupyter development environment, see the
 [Docker and RunPod guide](docker/runpod/README.md).
