@@ -20,9 +20,6 @@ from beamz.lattice import (
     curl_h_to_e_3d,
 )
 
-from .mode_profiles import (
-    _shift_component_indices_along_axis,
-)
 from .specs import FieldProfile3D
 
 _FIELD_COMPONENTS_3D = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
@@ -34,6 +31,22 @@ _STAGGERED_ALONG_AXIS = {
     "y": {"Ey", "Hx", "Hz"},
     "z": {"Ez", "Hx", "Hy"},
 }
+
+
+def _shift_component_indices_along_axis(indices, axis, shift, field_shape):
+    """Shift component support by integer cells along the propagation axis."""
+    if indices is None:
+        return None
+    axis_pos = _AXIS_POS_3D[axis]
+    out = list(indices)
+    plane_idx = out[axis_pos]
+    if isinstance(plane_idx, slice):
+        return None
+    plane_new = int(plane_idx) + int(shift)
+    if plane_new < 0 or plane_new >= int(field_shape[axis_pos]):
+        return None
+    out[axis_pos] = plane_new
+    return tuple(out)
 
 
 def _shape3(shape) -> tuple[int, int, int]:

@@ -36,9 +36,9 @@ from beamz.design.gds import (
     import_gds,
 )
 from beamz.devices.modes.discrete import DiscreteMode
-from beamz.devices.sources.mode_profiles import (
-    _MODE_PLANE_APERTURE_PAD_CELLS,
-    _MODE_PLANE_APERTURE_WINDOW_ALPHA,
+from beamz.devices.modes.plane import (
+    MODE_PLANE_APERTURE_PAD_CELLS,
+    MODE_PLANE_APERTURE_WINDOW_ALPHA,
 )
 from beamz.lattice import component_shape_3d
 from beamz.simulation.results import FieldMetadata, MaterialRegion, SimulationMetadata
@@ -389,8 +389,8 @@ def test_build_port_projection_3d_modemonitor_uses_discrete_contract(monkeypatch
     assert captured["offset_index"] == 0
     assert captured["num_modes"] == 4
     assert captured["target_neff"] == 2.25
-    assert captured["aperture_pad_cells"] == _MODE_PLANE_APERTURE_PAD_CELLS
-    assert captured["aperture_window_alpha"] == _MODE_PLANE_APERTURE_WINDOW_ALPHA
+    assert captured["aperture_pad_cells"] == MODE_PLANE_APERTURE_PAD_CELLS
+    assert captured["aperture_window_alpha"] == MODE_PLANE_APERTURE_WINDOW_ALPHA
     assert captured["scalar_permittivity"].shape == (4, 4)
     assert captured["grid_shape"] == (4, 4, 3)
     assert captured["component_permittivity"]["Ey"].shape == (5, 4, 4)

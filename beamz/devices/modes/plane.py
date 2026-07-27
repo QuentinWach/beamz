@@ -1,76 +1,173 @@
-"""Shared modal profile and discrete-mode solver helpers."""
+"""Shared extraction and solving for finite 3D mode planes."""
 
 from __future__ import annotations
 
-import logging
 from contextlib import suppress
 from dataclasses import replace
+from typing import Literal, cast, overload
 
 import numpy as np
 
 from beamz.devices._placement import snap_centered_extent
-from beamz.devices.modes.discrete import (
-    AxisName,
-    DiscreteMode,
-    ModePlaneSpec,
-    solve_beamz_mode,
-)
 from beamz.lattice import (
     component_shape_3d,
     sample_voxel_grid_at_component_3d,
     sample_voxel_grid_at_e_component_3d_centered,
 )
 
-logger = logging.getLogger(__name__)
+from .discrete import AxisName, DiscreteMode, ModePlaneSpec, solve_beamz_mode
+from .solver import solve_grid
 
-_VALID_DIRECTIONS = {"+x", "-x", "+y", "-y", "+z", "-z"}
 _AXIS_POS_3D = {"z": 0, "y": 1, "x": 2}
 _TRANSVERSE_AXES_3D: dict[str, tuple[AxisName, AxisName]] = {
     "x": ("z", "y"),
     "y": ("z", "x"),
     "z": ("y", "x"),
 }
-_MODE_PLANE_APERTURE_PAD_CELLS = 2
-_MODE_PLANE_APERTURE_WINDOW_ALPHA = 0.2
+MODE_PLANE_APERTURE_PAD_CELLS = 2
+MODE_PLANE_APERTURE_WINDOW_ALPHA = 0.2
+SignedAxis = Literal["+x", "-x", "+y", "-y", "+z", "-z"]
+_SIGNED_AXES = frozenset({"+x", "-x", "+y", "-y", "+z", "-z"})
 
 
-def _mode_plane_outer_pad_cells(width, height, resolution) -> int:
+@overload
+def solve_modes(
+    eps: np.ndarray,
+    omega: float,
+    dL: float,
+    npml: int = 0,
+    m: int = 1,
+    direction: SignedAxis = "+x",
+    filter_pol: Literal["te", "tm"] | None = None,
+    return_fields: Literal[True] = True,
+    target_neff: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]: ...
+
+
+@overload
+def solve_modes(
+    eps: np.ndarray,
+    omega: float,
+    dL: float,
+    npml: int = 0,
+    m: int = 1,
+    direction: SignedAxis = "+x",
+    filter_pol: Literal["te", "tm"] | None = None,
+    return_fields: Literal[False] = False,
+    target_neff: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]: ...
+
+
+def solve_modes(
+    eps: np.ndarray,
+    omega: float,
+    dL: float,
+    npml: int = 0,
+    m: int = 1,
+    direction: SignedAxis = "+x",
+    filter_pol: Literal["te", "tm"] | None = None,
+    return_fields: bool = False,
+    target_neff: float | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Solve a one- or two-dimensional BeamZ material profile."""
+    eps_array = np.asarray(eps, dtype=np.complex128)
+    if eps_array.ndim not in {1, 2}:
+        raise ValueError("solve_modes expects a 1D or 2D permittivity array")
+    if npml < 0:
+        raise ValueError("npml must be non-negative")
+    if m <= 0:
+        raise ValueError("m must be positive")
+    if filter_pol not in {None, "te", "tm"}:
+        raise ValueError("filter_pol must be 'te', 'tm', or None")
+
+    signed_axis = str(direction).lower()
+    if signed_axis not in _SIGNED_AXES:
+        raise ValueError(
+            "direction must be one of '+x', '-x', '+y', '-y', '+z', or '-z'"
+        )
+    axis = signed_axis[1]
+    axis_index = {"x": 0, "y": 1, "z": 2}[axis]
+
+    is_plane = eps_array.ndim == 2
+    # BeamZ stores 3D arrays in (z, y, x) order, so a normal slice retains the
+    # reverse of the solver's Cartesian tangential-axis order.
+    plane = eps_array[:, None] if not is_plane else eps_array.T
+    edges = tuple(
+        tuple(np.arange(size + 1, dtype=float) * float(dL) / 1e-6)
+        for size in plane.shape
+    )
+    result = solve_grid(
+        eps_xx=plane,
+        x_edges=edges[0],
+        y_edges=edges[1],
+        freqs=[float(omega) / (2.0 * np.pi)],
+        direction="+" if signed_axis[0] == "+" else "-",
+        num_modes=2 * int(m) + 5,
+        target_neff=target_neff,
+        pml=(int(npml), int(npml)),
+        normal_axis=cast(Literal[0, 1, 2], axis_index),
+    )
+    fields = {
+        name: _mode_planes(data, axis) for name, data in result.field_components.items()
+    }
+    if is_plane:
+        fields = {name: values.swapaxes(-2, -1) for name, values in fields.items()}
+    order = _mode_order(result.n_complex.values[0], fields, axis, filter_pol)[: int(m)]
+    neffs = np.asarray(result.n_complex.values[0, order], dtype=np.complex128)
+    electric = np.stack([fields[name][order] for name in ("Ex", "Ey", "Ez")], axis=1)
+    magnetic = np.stack([fields[name][order] for name in ("Hx", "Hy", "Hz")], axis=1)
+    if axis_index == 1:
+        magnetic = -magnetic
+    if eps_array.ndim == 1:
+        electric = electric[..., 0]
+        magnetic = magnetic[..., 0]
+
+    if return_fields:
+        return neffs, electric, magnetic, axis_index
+
+    dominant = np.argmax(
+        np.linalg.norm(electric.reshape(len(order), 3, -1), axis=2), axis=1
+    )
+    vectors = [
+        np.ravel(electric[index, component]) for index, component in enumerate(dominant)
+    ]
+    return neffs, np.column_stack(vectors)
+
+
+def _mode_planes(data_array, normal_axis: str) -> np.ndarray:
+    selected = data_array.isel(f=0)
+    values = np.take(
+        np.asarray(selected.values),
+        0,
+        axis=selected.dims.index(normal_axis),
+    )
+    return np.moveaxis(values, -1, 0)
+
+
+def _mode_order(neffs, fields, axis, polarization):
+    descending = np.argsort(np.real(neffs))[::-1]
+    if polarization is None:
+        return descending
+    first, second = {
+        "x": ("Ey", "Ez"),
+        "y": ("Ex", "Ez"),
+        "z": ("Ex", "Ey"),
+    }[axis]
+    axes = tuple(range(1, fields[first].ndim))
+    first_power = np.sum(np.abs(fields[first]) ** 2, axis=axes)
+    second_power = np.sum(np.abs(fields[second]) ** 2, axis=axes)
+    fraction = first_power / np.maximum(first_power + second_power, np.finfo(float).eps)
+    matching = fraction >= 0.5 if polarization == "te" else fraction < 0.5
+    return np.concatenate(
+        (descending[matching[descending]], descending[~matching[descending]])
+    )
+
+
+def mode_plane_outer_pad_cells(width, height, resolution) -> int:
     """Return the shared finite-domain padding for 3D modal solves."""
     extent = max(float(width), float(width if height is None else height))
     res = max(float(resolution), 1e-30)
     return int(np.clip(np.ceil(0.5 * extent / res), 8, 48))
-
-
-def _to_real_profile(profile, imag_ratio_warn=1e-2, eps=1e-30):
-    """Project profile to real-valued injection coefficients."""
-    arr = np.asarray(profile, dtype=np.complex128)
-    re = np.real(arr)
-    im = np.imag(arr)
-    re_peak = float(np.max(np.abs(re))) if re.size else 0.0
-    im_peak = float(np.max(np.abs(im))) if im.size else 0.0
-    if re_peak > eps and im_peak / re_peak > imag_ratio_warn:
-        logger.debug(
-            "Mode profile has non-negligible imaginary content before real projection: "
-            "imag/real peak ratio=%.3e",
-            im_peak / re_peak,
-        )
-    return re
-
-
-def _shift_component_indices_along_axis(indices, axis, shift, field_shape):
-    """Shift a component support tuple by integer cells along the propagation axis."""
-    if indices is None:
-        return None
-    axis_pos = _AXIS_POS_3D[axis]
-    out = list(indices)
-    plane_idx = out[axis_pos]
-    if isinstance(plane_idx, slice):
-        return None
-    plane_new = int(plane_idx) + int(shift)
-    if plane_new < 0 or plane_new >= int(field_shape[axis_pos]):
-        return None
-    out[axis_pos] = plane_new
-    return tuple(out)
 
 
 def _axis_counts_from_grid_shape(grid_shape):
@@ -88,7 +185,7 @@ def _center_by_axis(center, grid_shape, resolution):
     }
 
 
-def _source_extent_by_axis(axis, width, height):
+def _plane_extent_by_axis(axis, width, height):
     height = float(width if height is None else height)
     width = float(width)
     if axis == "x":
@@ -97,7 +194,7 @@ def _source_extent_by_axis(axis, width, height):
         return {"x": width, "z": height}
     if axis == "z":
         return {"x": width, "y": height}
-    raise ValueError(f"Unsupported mode-source axis {axis!r}")
+    raise ValueError(f"Unsupported mode-plane axis {axis!r}")
 
 
 def _ensure_min_interval(start, stop, limit, min_cells=2):
@@ -145,7 +242,7 @@ def _local_mode_plane_spec(
     local_counts = dict(counts)
     crop_slices = []
     pad = max(0, int(aperture_pad_cells))
-    extents = _source_extent_by_axis(axis, width, height)
+    extents = _plane_extent_by_axis(axis, width, height)
 
     for transverse_axis in _TRANSVERSE_AXES_3D[axis]:
         interval = None
@@ -215,7 +312,7 @@ def _local_mode_plane_spec(
     }
 
 
-def _solve_mode_plane_3d(
+def solve_mode_plane_3d(
     permittivity,
     permeability,
     *,
@@ -254,7 +351,7 @@ def _solve_mode_plane_3d(
         offset_index=offset_index,
         resolution=resolution,
         snapped_region=snapped_region,
-        aperture_pad_cells=_mode_plane_outer_pad_cells(width, height, resolution),
+        aperture_pad_cells=mode_plane_outer_pad_cells(width, height, resolution),
         material_origin_zyx=material_origin_zyx,
     )
     target = target_neff
@@ -296,8 +393,8 @@ def _solve_mode_plane_3d(
             polarization=polarization,
             target_neff=target,
             num_modes=int(num_modes),
-            aperture_pad_cells=_MODE_PLANE_APERTURE_PAD_CELLS,
-            aperture_window_alpha=_MODE_PLANE_APERTURE_WINDOW_ALPHA,
+            aperture_pad_cells=MODE_PLANE_APERTURE_PAD_CELLS,
+            aperture_window_alpha=MODE_PLANE_APERTURE_WINDOW_ALPHA,
         )
     )
     return _shift_discrete_mode_to_global(
@@ -377,31 +474,3 @@ def _shift_discrete_mode_to_global(
         phase_reference_coord=float(discrete_mode.phase_reference_coord) + axis_offset,
         phase_plane_coord=float(discrete_mode.phase_plane_coord) + axis_offset,
     )
-
-
-def _scale_profiles_for_power(profiles, power):
-    """Scale unit-power modal profiles to the requested launched power."""
-    power_value = float(power)
-    if not np.isfinite(power_value) or power_value < 0.0:
-        raise ValueError(
-            f"ModeSource power must be a non-negative finite value, got {power!r}."
-        )
-    if power_value == 1.0:
-        return profiles
-    scale = float(np.sqrt(power_value))
-    for key, value in profiles.items():
-        if value is not None:
-            profiles[key] = np.asarray(value) * scale
-    return profiles
-
-
-def _scale_pair_for_power(first, second, power):
-    power_value = float(power)
-    if not np.isfinite(power_value) or power_value < 0.0:
-        raise ValueError(
-            f"ModeSource power must be a non-negative finite value, got {power!r}."
-        )
-    if power_value == 1.0:
-        return first, second
-    scale = float(np.sqrt(power_value))
-    return np.asarray(first) * scale, np.asarray(second) * scale

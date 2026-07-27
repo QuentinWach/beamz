@@ -36,4 +36,8 @@ Yee supports, normalizes their signed power, and applies guarded refinement
 only when field overlap, impedance, energy, power, and discrete-Maxwell
 validation all accept the candidate.
 
+`plane.py` owns the shared finite-plane extraction used by source launch and
+modal projection, so both consumers solve identical material crops and Yee
+supports.
+
 See `UPSTREAM.md` for the imported MicroMode revision and source mapping.

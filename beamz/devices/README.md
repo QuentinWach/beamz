@@ -5,13 +5,14 @@ simulation.
 
 - `modes/`: native finite-difference mode solving, minimal labeled results,
   BeamZ-shaped discrete modes, and guarded Yee-grid refinement.
+- `modes/plane.py`: shared finite-plane extraction and solving for source launch
+  and modal analysis.
 - `modes/specs.py`: immutable mode-selection and mode-data values shared by
   sources, monitors, and ports.
 - `sources/specs.py`: immutable public source values.
 - `sources/time.py`: sampled and analytic temporal waveforms.
 - `sources/solve.py`: source-plane extraction and the 2D native-solver adapter.
-- `sources/mode_profiles.py`: mode-profile geometry, interpolation, and power scaling.
-- `sources/mode_launch.py`: 2D/3D launch planning from solved profiles.
+- `sources/mode_launch.py`: 2D/3D launch planning, profile conversion, and power scaling.
 - `sources/planar_tfsf.py`: discrete 3D total-field/scattered-field residuals.
 - `sources/compiler.py`: the single lowering boundary into executable source plans.
 - `monitors/monitors.py`: immutable public monitor specifications.

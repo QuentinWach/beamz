@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from beamz import LIGHT_SPEED, um
-from beamz.devices.sources.solve import solve_modes
+from beamz.devices.modes.plane import solve_modes
 from tests.utils import slab_waveguide_neff_te, slab_waveguide_neff_tm
 
 

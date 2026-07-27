@@ -336,8 +336,8 @@ def mode_data(results, name):
         If no monitor result exists under ``name``.
     """
     from beamz.analysis import sparameters as _sp
+    from beamz.devices.modes.specs import ModeSpec
     from beamz.devices.ports import Port
-    from beamz.devices.sources.specs import ModeSpec
 
     data = analysis_data(results, name)
     monitor = data.monitor_geometry

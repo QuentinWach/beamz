@@ -5,7 +5,7 @@ import pytest
 import xarray as xr
 
 from beamz import LIGHT_SPEED
-from beamz.devices.sources.solve import solve_modes
+from beamz.devices.modes.plane import solve_modes
 
 
 def test_solve_modes_uses_one_native_solve_and_forwards_pml(monkeypatch):
@@ -28,7 +28,7 @@ def test_solve_modes_uses_one_native_solve_and_forwards_pml(monkeypatch):
         calls.append(kwargs)
         return result
 
-    monkeypatch.setattr("beamz.devices.sources.solve.solve_fdfd_grid", fake_solve)
+    monkeypatch.setattr("beamz.devices.modes.plane.solve_grid", fake_solve)
 
     neffs, electric, magnetic, axis = solve_modes(
         np.ones((4, 3)),
@@ -67,7 +67,7 @@ def test_solve_modes_uses_one_signed_axis_for_normal_and_direction(monkeypatch):
         calls.append(kwargs)
         return result
 
-    monkeypatch.setattr("beamz.devices.sources.solve.solve_fdfd_grid", fake_solve)
+    monkeypatch.setattr("beamz.devices.modes.plane.solve_grid", fake_solve)
 
     _, _, _, axis = solve_modes(
         np.ones(4),

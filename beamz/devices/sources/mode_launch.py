@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
@@ -12,12 +13,7 @@ from beamz.devices._immutable import readonly_array
 from beamz.devices._placement import snap_mode_source_region, snap_plane_region
 from beamz.devices.modes.discrete import solve_beamz_mode
 from beamz.devices.modes.fields import _numeric_wave_number
-from beamz.devices.sources.mode_profiles import (
-    _scale_pair_for_power,
-    _scale_profiles_for_power,
-    _solve_mode_plane_3d,
-    _to_real_profile,
-)
+from beamz.devices.modes.plane import solve_mode_plane_3d, solve_modes
 from beamz.lattice import (
     common_grid_shape_3d,
     compile_yee_plane_quadrature_3d,
@@ -25,8 +21,51 @@ from beamz.lattice import (
 )
 
 from . import planar_tfsf
-from .solve import solve_modes
 from .specs import FieldProfile3D, ModeSource
+
+logger = logging.getLogger(__name__)
+
+
+def _to_real_profile(profile, imag_ratio_warn=1e-2, eps=1e-30):
+    """Project a launch profile to real-valued injection coefficients."""
+    arr = np.asarray(profile, dtype=np.complex128)
+    real = np.real(arr)
+    real_peak = float(np.max(np.abs(real))) if arr.size else 0.0
+    imag_peak = float(np.max(np.abs(np.imag(arr)))) if arr.size else 0.0
+    if real_peak > eps and imag_peak / real_peak > imag_ratio_warn:
+        logger.debug(
+            "Mode profile has non-negligible imaginary content before real projection: "
+            "imag/real peak ratio=%.3e",
+            imag_peak / real_peak,
+        )
+    return real
+
+
+def _power_scale(power) -> float:
+    value = float(power)
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(
+            f"ModeSource power must be a non-negative finite value, got {power!r}."
+        )
+    return float(np.sqrt(value))
+
+
+def _scale_profiles_for_power(profiles, power):
+    """Scale unit-power modal profiles to the requested launched power."""
+    scale = _power_scale(power)
+    if scale == 1.0:
+        return profiles
+    for key, value in profiles.items():
+        if value is not None:
+            profiles[key] = np.asarray(value) * scale
+    return profiles
+
+
+def _scale_pair_for_power(first, second, power):
+    scale = _power_scale(power)
+    if scale == 1.0:
+        return first, second
+    return np.asarray(first) * scale, np.asarray(second) * scale
 
 
 @dataclass(frozen=True)
@@ -344,7 +383,7 @@ def _plan_3d_mode_source(
     offset_idx = int(snapped.companion_index)
     omega = 2.0 * np.pi * source.frequency
     solver_direction = "+y" if axis == "y" else source.signed_direction
-    discrete_mode = _solve_mode_plane_3d(
+    discrete_mode = solve_mode_plane_3d(
         permittivity,
         np.asarray(fields.permeability),
         frequency=source.frequency,

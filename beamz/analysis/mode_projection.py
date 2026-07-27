@@ -15,9 +15,8 @@ from beamz.analysis.modal_projection.geometry import (
 )
 from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT, solve_beamz_mode
 from beamz.devices.modes.fields import _modal_overlap, _normalize_profiles
+from beamz.devices.modes.plane import solve_mode_plane_3d, solve_modes
 from beamz.devices.monitors.monitors import ModeMonitor
-from beamz.devices.sources.mode_profiles import _solve_mode_plane_3d
-from beamz.devices.sources.solve import solve_modes
 
 
 def _material_arrays(sim):
@@ -191,7 +190,7 @@ def _build_discrete_port_projection_3d(
         dz=float(sim.resolution),
         field_shape=full_shape,
     )
-    discrete_mode = _solve_mode_plane_3d(
+    discrete_mode = solve_mode_plane_3d(
         perm,
         permeability,
         frequency=frequency,

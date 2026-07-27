@@ -5,10 +5,10 @@ from beamz import ModeMonitor, ModeSpec, Port
 from beamz.analysis import mode_projection
 from beamz.analysis.data import AnalysisData
 from beamz.analysis.modal_projection.geometry import _mode_components_for_port
-from beamz.devices.sources.mode_profiles import (
-    _MODE_PLANE_APERTURE_PAD_CELLS,
-    _MODE_PLANE_APERTURE_WINDOW_ALPHA,
-    _mode_plane_outer_pad_cells,
+from beamz.devices.modes.plane import (
+    MODE_PLANE_APERTURE_PAD_CELLS,
+    MODE_PLANE_APERTURE_WINDOW_ALPHA,
+    mode_plane_outer_pad_cells,
 )
 from beamz.lattice import component_shape_3d
 from beamz.simulation.results import FieldMetadata, MaterialRegion, SimulationMetadata
@@ -18,8 +18,8 @@ from beamz.simulation.results import FieldMetadata, MaterialRegion, SimulationMe
 def test_mode_plane_outer_padding_scales_with_aperture():
     resolution = 0.045e-6
 
-    assert _mode_plane_outer_pad_cells(3.0e-6, 2.0e-6, resolution) == 34
-    assert _mode_plane_outer_pad_cells(0.1e-6, 0.1e-6, resolution) == 8
+    assert mode_plane_outer_pad_cells(3.0e-6, 2.0e-6, resolution) == 34
+    assert mode_plane_outer_pad_cells(0.1e-6, 0.1e-6, resolution) == 8
 
 
 @pytest.mark.unit
@@ -87,6 +87,6 @@ def test_mode_monitor_uses_shared_finite_aperture_policy(monkeypatch):
             analysis_coords1=np.arange(10, dtype=float),
         )
 
-    assert seen["aperture_pad_cells"] == _MODE_PLANE_APERTURE_PAD_CELLS
-    assert seen["aperture_window_alpha"] == _MODE_PLANE_APERTURE_WINDOW_ALPHA
+    assert seen["aperture_pad_cells"] == MODE_PLANE_APERTURE_PAD_CELLS
+    assert seen["aperture_window_alpha"] == MODE_PLANE_APERTURE_WINDOW_ALPHA
     assert seen["scalar_permittivity"].shape == (24, 26)
