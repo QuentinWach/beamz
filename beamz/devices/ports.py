@@ -91,6 +91,8 @@ class Port:
         mode_spec = immutable_snapshot(self.mode_spec)
         if not isinstance(mode_spec, ModeSpec):
             raise TypeError("Port mode_spec must be a ModeSpec.")
+        if mode_spec.polarization is None:
+            mode_spec = replace(mode_spec, polarization="te")
         object.__setattr__(self, "mode_spec", mode_spec)
 
     @property
@@ -244,7 +246,7 @@ class Port:
         self,
         freq0: float,
         fwidth: float,
-        mode_index: int = 0,
+        mode_index: int | None = None,
         num_freqs: int = 1,
         *,
         source_time: Any | None = None,
@@ -258,8 +260,9 @@ class Port:
             Carrier frequency in hertz.
         fwidth : float
             Gaussian frequency width in hertz when ``source_time`` is omitted.
-        mode_index : int, default=0
-            Zero-based mode to launch.
+        mode_index : int, optional
+            Zero-based mode to launch. Defaults to the mode selected by
+            :attr:`mode_spec`.
         num_freqs : int, default=1
             Frequency samples used for broadband modal reconstruction.
         source_time : source-time specification, optional
@@ -282,7 +285,9 @@ class Port:
             source_time = GaussianPulse(freq0=float(freq0), fwidth=float(fwidth))
         mode_spec = replace(
             self.mode_spec,
-            mode_index=int(mode_index),
+            mode_index=(
+                self.mode_spec.mode_index if mode_index is None else int(mode_index)
+            ),
             num_freqs=max(1, int(num_freqs)),
         )
         return ModeSource(

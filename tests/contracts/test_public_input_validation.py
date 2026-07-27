@@ -81,6 +81,7 @@ def test_port_derivations_translation_and_device_factories_are_consistent():
     assert port.num_modes == 3
     assert port.mode_index == 1
     assert port.polarization == "te"
+    assert port.mode_spec.polarization == "te"
 
     shifted = port.shifted((1.0, 2.0, 3.0))
     assert shifted.center == (1.0, 2.0, 3.0)
@@ -91,6 +92,10 @@ def test_port_derivations_translation_and_device_factories_are_consistent():
     assert monitor.center == port.center
     assert monitor.name == port.monitor_name
     assert monitor.mode_spec is port.mode_spec
+
+    default_source = port.to_source(2e14, 2e13)
+    assert default_source.mode_spec.mode_index == port.mode_index
+    assert default_source.mode_spec.polarization == port.polarization
 
     generated = port.to_source(2e14, 2e13, mode_index=2, num_freqs=0)
     assert isinstance(generated.source_time, bz.GaussianPulse)
