@@ -3,7 +3,12 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from beamz._helpers import positive_integer
-from beamz.devices._immutable import immutable_snapshot, readonly_1d_array
+from beamz.devices._immutable import (
+    finite_tuple,
+    immutable_snapshot,
+    nonnegative_finite_extents,
+    readonly_1d_array,
+)
 from beamz.devices._placement import (
     line_region_points,
     plane_region_slices,
@@ -15,8 +20,8 @@ from beamz.lattice import yee_plane_coordinates_3d
 
 
 def _normalize_center_size(center, size):
-    center = tuple(float(v) for v in center)
-    size = tuple(float(v) for v in size)
+    center = finite_tuple(center, name="Monitor center")
+    size = nonnegative_finite_extents(size, name="Monitor size")
     if len(center) == 2:
         center = (center[0], center[1], 0.0)
     if len(size) == 2:
@@ -75,10 +80,6 @@ class _Monitor:
 
     def __post_init__(self) -> None:
         center, size = _normalize_center_size(self.center, self.size)
-        if any(not np.isfinite(value) for value in center):
-            raise ValueError("Monitor center must be finite.")
-        if any(value < 0.0 or np.isnan(value) for value in size):
-            raise ValueError("Monitor size must contain non-negative extents.")
         frequencies = readonly_1d_array(self.freqs, dtype=float)
         if np.any(~np.isfinite(frequencies)) or np.any(frequencies <= 0.0):
             raise ValueError("Monitor frequencies must be finite and positive.")

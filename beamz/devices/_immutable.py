@@ -64,6 +64,20 @@ def canonical_tuple(value: Any, *, dtype=float) -> tuple:
     return tuple(dtype(v) for v in value)
 
 
+def finite_tuple(value: Any, *, name: str) -> tuple[float, ...]:
+    values = tuple(float(item) for item in value)
+    if any(not np.isfinite(item) for item in values):
+        raise ValueError(f"{name} must be finite.")
+    return values
+
+
+def nonnegative_finite_extents(value: Any, *, name: str) -> tuple[float, ...]:
+    values = finite_tuple(value, name=name)
+    if any(item < 0.0 for item in values):
+        raise ValueError(f"{name} must contain non-negative finite extents.")
+    return values
+
+
 def normalize_source_signal(signal: Any, *, name: str = "signal") -> Any:
     if callable(signal):
         raise TypeError(

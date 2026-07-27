@@ -10,7 +10,9 @@ import numpy as np
 
 from beamz.devices._immutable import (
     canonical_tuple,
+    finite_tuple,
     immutable_snapshot,
+    nonnegative_finite_extents,
     normalize_source_signal,
 )
 from beamz.devices.modes.specs import ModeData, ModeSpec
@@ -86,14 +88,10 @@ class ModeSource:
     power: float = 1.0
 
     def __post_init__(self) -> None:
-        center = tuple(float(value) for value in self.center)
-        size = tuple(float(value) for value in self.size)
+        center = finite_tuple(self.center, name="ModeSource center")
+        size = nonnegative_finite_extents(self.size, name="ModeSource size")
         if len(center) != 3 or len(size) != 3:
             raise ValueError("ModeSource center and size must contain three values.")
-        if any(not np.isfinite(value) for value in center):
-            raise ValueError("ModeSource center must be finite.")
-        if any(value < 0.0 or np.isnan(value) for value in size):
-            raise ValueError("ModeSource size must contain non-negative extents.")
         direction = str(self.direction)
         if direction not in {"+", "-"}:
             raise ValueError("ModeSource direction must be '+' or '-'.")
