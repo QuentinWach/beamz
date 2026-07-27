@@ -7,6 +7,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from beamz.devices.modes._scipy import _pml_average_all_sides
 from beamz.devices.modes.constants import C_0
 from beamz.devices.modes.discrete import ModePlaneSpec, solve_beamz_mode
 from beamz.devices.modes.solver import solve_grid
@@ -120,6 +121,21 @@ def test_grid_solve_supports_pml_boundaries_and_tensor_materials():
     assert result.solver_info["runs"][0]["backend_kind"] == "tensorial_scipy_reference"
     assert result.solver_info["pml"]["num_cells"] == (1, 1)
     assert result.solver_info["boundary"]["low"] == ("pmc", "pec")
+
+
+def test_pml_material_averages_include_each_high_side_cell():
+    nx, ny = 4, 3
+    values = np.fromfunction(lambda ix, iy: 10 * ix + iy, (nx, ny))
+    tensor = np.zeros((3, 3, nx * ny), dtype=np.complex128)
+    for component in range(3):
+        tensor[component, component] = values.ravel()
+
+    averages = _pml_average_all_sides((nx, ny), (1, 1), tensor)
+
+    np.testing.assert_allclose(
+        averages,
+        [values[0].mean(), values[-1].mean(), values[:, 0].mean(), values[:, -1].mean()],
+    )
 
 
 @pytest.mark.parametrize(

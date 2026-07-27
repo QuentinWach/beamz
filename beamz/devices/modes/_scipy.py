@@ -896,11 +896,11 @@ def _pml_average_all_sides(
                 # Collect only cells that lie inside the requested PML thickness.
                 if ix < num_pml[0]:
                     regions[0].append(value)
-                if ix >= max(nx - num_pml[0], 0) + 1:
+                if ix >= max(nx - num_pml[0], 0):
                     regions[1].append(value)
                 if iy < num_pml[1]:
                     regions[2].append(value)
-                if iy >= max(ny - num_pml[1], 0) + 1:
+                if iy >= max(ny - num_pml[1], 0):
                     regions[3].append(value)
     out = np.ones(4, dtype=np.complex128)
 
