@@ -338,11 +338,20 @@ class _Monitor:
 
 @dataclass(frozen=True, kw_only=True, eq=False)
 class FieldMonitor(_Monitor):
-    """Record selected frequency-domain field components in a region."""
+    """Record selected frequency-domain field components on a plane or line."""
 
     fields: tuple[str, ...] = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
 
     def __post_init__(self) -> None:
+        if not np.any(
+            np.isclose(
+                tuple(float(value) for value in self.size),
+                0.0,
+                rtol=0.0,
+                atol=1e-15,
+            )
+        ):
+            raise ValueError("FieldMonitor size must contain at least one zero extent.")
         super().__post_init__()
         if self.freqs.size == 0:
             raise ValueError("FieldMonitor requires at least one frequency.")

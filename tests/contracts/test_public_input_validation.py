@@ -123,6 +123,8 @@ def _field_monitor(**changes):
         ({"center": (0.0,)}, "2D or 3D"),
         ({"center": (np.nan, 0.0, 0.0)}, "finite"),
         ({"size": (0.0, -1.0, 1.0)}, "non-negative"),
+        ({"size": (1.0, 2.0, 3.0)}, "at least one zero"),
+        ({"center": (0.0, 0.0), "size": (1.0, 2.0)}, "at least one zero"),
         ({"freqs": [0.0]}, "positive"),
         ({"freqs": [np.inf]}, "finite"),
         ({"freqs": []}, "at least one"),
