@@ -69,13 +69,6 @@ cd beamz
 uv sync --extra dev --extra test
 ```
 
-When opening an example notebook, select the Python interpreter inside this
-checkout's `.venv` as its kernel (`.venv/bin/python` on macOS/Linux or
-`.venv\Scripts\python.exe` on Windows). Avoid a generic system or Conda
-`python3` kernel, which may import BeamZ from a different checkout. The notebook
-setup cell prints the active Python executable and BeamZ package path for
-verification.
-
 For a ready-to-use CUDA and Jupyter development environment, see the
 [Docker and RunPod guide](docker/runpod/README.md).
 
