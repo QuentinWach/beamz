@@ -49,6 +49,8 @@ gds = [
     "gdsfactory>=9.0; python_version >= '3.14'",
 ]
 dev = [
+    "ipykernel>=6.29.0",
+    "nbconvert>=7.16.0",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "myst-parser>=2.0.0",
