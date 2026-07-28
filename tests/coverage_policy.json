@@ -43,8 +43,9 @@
         "beamz/analysis/sparameters.py",
         "beamz/devices/monitors/monitors.py",
         "beamz/devices/ports.py",
+        "beamz/devices/modes/fields.py",
+        "beamz/devices/modes/plane.py",
         "beamz/devices/sources/mode_launch.py",
-        "beamz/devices/sources/mode_profiles.py",
         "beamz/devices/sources/solve.py"
       ]
     },
@@ -67,8 +68,7 @@
         "beamz/devices/modes/models.py",
         "beamz/devices/modes/result.py",
         "beamz/devices/modes/solver.py",
-        "beamz/devices/modes/specs.py",
-        "beamz/devices/modes/sweep.py"
+        "beamz/devices/modes/specs.py"
       ]
     }
   }

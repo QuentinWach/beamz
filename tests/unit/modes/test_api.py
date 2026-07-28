@@ -134,7 +134,12 @@ def test_pml_material_averages_include_each_high_side_cell():
 
     np.testing.assert_allclose(
         averages,
-        [values[0].mean(), values[-1].mean(), values[:, 0].mean(), values[:, -1].mean()],
+        [
+            values[0].mean(),
+            values[-1].mean(),
+            values[:, 0].mean(),
+            values[:, -1].mean(),
+        ],
     )
 
 
