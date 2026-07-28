@@ -48,3 +48,10 @@ _.from_subpixel_diagonal
 _.diagonal_eps
 _.to_hdf5
 _.from_hdf5
+_.n_group
+_.dispersion
+_.n_eff
+_.k_eff
+
+# Public design metadata is consumed by callers and examples outside beamz/.
+_.component_name

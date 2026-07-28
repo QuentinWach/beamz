@@ -88,7 +88,6 @@ def _modal_overlap(
             return np.zeros(size, dtype=np.complex128)
         return np.asarray(profiles[name], dtype=np.complex128).reshape(-1)[:size]
 
-    e1, e2, h1, h2 = names
     ef1, ef2, hf1, hf2 = (component(fields, name) for name in names)
     em1, em2, hm1, hm2 = (component(mode, name) for name in names)
     overlap = 0.25 * np.sum(
