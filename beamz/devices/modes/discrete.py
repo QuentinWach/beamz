@@ -887,8 +887,6 @@ def _enforce_componentwise_parity(
             if arr.ndim <= axis:
                 continue
             flipped = np.flip(arr, axis=axis)
-            if flipped.shape != arr.shape:
-                continue
             overlap = float(np.real(np.sum(arr * np.conjugate(flipped))))
             parity = 1.0 if overlap >= 0.0 else -1.0
             arr = 0.5 * (arr + parity * flipped)

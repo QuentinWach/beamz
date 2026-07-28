@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -132,6 +133,31 @@ def test_mode_launch_planner_consumes_native_discrete_mode(monkeypatch):
         "_Hz_profile",
     ):
         assert not hasattr(source, removed_attr)
+
+
+def test_mode_launch_recomputes_nonfinite_discrete_wave_number(monkeypatch):
+    mode = replace(_fake_discrete_mode(), k_num_axis=np.nan)
+    calls = []
+    monkeypatch.setattr(
+        mode_launch_module,
+        "solve_mode_plane_3d",
+        lambda *_args, **_kwargs: mode,
+    )
+    monkeypatch.setattr(
+        mode_launch_module,
+        "_numeric_wave_number",
+        lambda *args: calls.append(args) or 3.0,
+    )
+
+    plan = plan_mode_source_launch(
+        _mode_source(),
+        _uniform_3d_fields(),
+        resolution=1.0,
+        dt=1e-15,
+    )
+
+    assert isinstance(plan, Mode3DLaunchPlan)
+    assert len(calls) == 1
 
 
 def test_project_packages_the_native_solver_without_external_micromode():

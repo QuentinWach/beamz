@@ -767,8 +767,6 @@ def _selected_eigenpairs(
     # Keep ARPACK's Krylov subspace large enough for the requested number of
     # modes but bounded by the matrix size.
     ncv = min(size, max(int(krylov_dim), num_modes + 2))
-    if ncv <= num_modes + 1:
-        ncv = min(size, num_modes + 2)
 
     # Shift-invert mode returns eigenvalues closest to sigma.
     complex_warning = getattr(
