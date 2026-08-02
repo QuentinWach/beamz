@@ -52,12 +52,20 @@ def fit_array_to_shape(arr, target_shape, *, pad_value=0.0):
 
 
 def collocate_yee_component(value, source: str, target: str, target_shape):
-    """Linearly collocate one electric-support array onto another Yee support."""
+    """Linearly collocate an electric or node-support array onto another support."""
 
     out = jnp.asarray(value)
     axes = ("z", "y", "x")[-out.ndim :]
-    source_offsets = component_axis_offsets_3d(source)
-    target_offsets = component_axis_offsets_3d(target)
+    source_offsets = (
+        {"z": 0.0, "y": 0.0, "x": 0.0}
+        if source == "Node"
+        else component_axis_offsets_3d(source)
+    )
+    target_offsets = (
+        {"z": 0.0, "y": 0.0, "x": 0.0}
+        if target == "Node"
+        else component_axis_offsets_3d(target)
+    )
     for axis_index, axis in enumerate(axes):
         source_offset = source_offsets[axis]
         target_offset = target_offsets[axis]
@@ -83,18 +91,37 @@ def collocate_yee_component(value, source: str, target: str, target_shape):
     return fit_array_to_shape(out, target_shape)
 
 
-def advance_e_full_tensor(fields, curls, inverse_rows, components, dt):
-    """Advance lossless electric fields through precomputed inverse tensor rows."""
+def advance_e_centered_tensor(
+    fields,
+    curls,
+    inverse_diagonals,
+    inverse_offdiagonal,
+    components,
+    dt,
+):
+    """Advance E with diagonal terms on E sites and cross terms on dual centers."""
 
     scale = jnp.asarray(dt, dtype=fields[0].dtype) / jnp.asarray(
         EPS_0, dtype=fields[0].dtype
     )
+    node_shape = inverse_offdiagonal.shape[:-1]
+    centered_curls = tuple(
+        collocate_yee_component(curl, source, "Node", node_shape)
+        for curl, source in zip(curls, components, strict=True)
+    )
+    cross_component = {(0, 1): 0, (0, 2): 1, (1, 2): 2}
     updated = []
-    for field, row, target in zip(fields, inverse_rows, components, strict=True):
-        coupled = jnp.zeros_like(field)
-        for column, (curl, source) in enumerate(zip(curls, components, strict=True)):
-            coupled = coupled + row[..., column] * collocate_yee_component(
-                curl, source, target, field.shape
+    for row, (field, diagonal, target) in enumerate(
+        zip(fields, inverse_diagonals, components, strict=True)
+    ):
+        coupled = diagonal * curls[row]
+        for column, centered_curl in enumerate(centered_curls):
+            if row == column:
+                continue
+            pair = (min(row, column), max(row, column))
+            centered = inverse_offdiagonal[..., cross_component[pair]] * centered_curl
+            coupled = coupled + collocate_yee_component(
+                centered, "Node", target, field.shape
             )
         updated.append(field + scale * coupled)
     return tuple(updated)
@@ -251,7 +278,8 @@ def fused_update_e_lossy_3d_material(
     resolution,
     *,
     boundary_views,
-    inverse_tensor_rows=None,
+    inverse_diagonals=None,
+    inverse_offdiagonal=None,
 ):
     """Advance all electric components directly from collocated material grids."""
     del hx, hy, hz
@@ -272,9 +300,14 @@ def fused_update_e_lossy_3d_material(
             field.shape,
         )
         curls.append(curl)
-    if inverse_tensor_rows is not None:
-        return advance_e_full_tensor(
-            (ex, ey, ez), curls, inverse_tensor_rows, ("Ex", "Ey", "Ez"), dt
+    if inverse_offdiagonal is not None:
+        return advance_e_centered_tensor(
+            (ex, ey, ez),
+            curls,
+            inverse_diagonals,
+            inverse_offdiagonal,
+            ("Ex", "Ey", "Ez"),
+            dt,
         )
     out = []
     for field, conductivity, inv_permittivity, curl in zip(
@@ -356,7 +389,8 @@ def cpml_update_e_from_h_3d(
     dt,
     conductivities,
     inverse_permittivities,
-    inverse_tensor_rows=None,
+    inverse_diagonals=None,
+    inverse_offdiagonal=None,
 ):
     """Advance 3D E fields and their six packed CPML memories."""
     views = build_h_boundary_views_for_e_3d(hx, hy, hz, metallic_edges)
@@ -384,9 +418,14 @@ def cpml_update_e_from_h_3d(
         strict=True,
     )
     curls = tuple(corrected[index] + corrected[index + 1] for index in (0, 2, 4))
-    if inverse_tensor_rows is not None:
-        updated = advance_e_full_tensor(
-            (ex, ey, ez), curls, inverse_tensor_rows, ("Ex", "Ey", "Ez"), dt
+    if inverse_offdiagonal is not None:
+        updated = advance_e_centered_tensor(
+            (ex, ey, ez),
+            curls,
+            inverse_diagonals,
+            inverse_offdiagonal,
+            ("Ex", "Ey", "Ez"),
+            dt,
         )
         return *updated, tuple(next_psi)
     one = jnp.asarray(1.0, dtype=ex.dtype)
@@ -683,13 +722,13 @@ def update_e_3d_cpml(eng, ctx, coeffs):
     inv_x = jnp.reciprocal(coeffs.e_permittivity_x)
     inv_y = jnp.reciprocal(coeffs.e_permittivity_y)
     inv_z = jnp.reciprocal(coeffs.e_permittivity_z)
-    inverse_tensor_rows = (
+    inverse_diagonals = (
         (
-            coeffs.e_inverse_tensor_x,
-            coeffs.e_inverse_tensor_y,
-            coeffs.e_inverse_tensor_z,
+            coeffs.e_inverse_diagonal_x,
+            coeffs.e_inverse_diagonal_y,
+            coeffs.e_inverse_diagonal_z,
         )
-        if coeffs.e_inverse_tensor_x.size
+        if coeffs.e_inverse_offdiagonal.size
         else None
     )
     # 2. Advance E while updating psi only inside the packed boundary slabs selected by
@@ -712,7 +751,10 @@ def update_e_3d_cpml(eng, ctx, coeffs):
             coeffs.e_conductivity_z,
         ),
         inverse_permittivities=(inv_x, inv_y, inv_z),
-        inverse_tensor_rows=inverse_tensor_rows,
+        inverse_diagonals=inverse_diagonals,
+        inverse_offdiagonal=(
+            coeffs.e_inverse_offdiagonal if coeffs.e_inverse_offdiagonal.size else None
+        ),
     )
     # 3. Replace E and packed 3D memory atomically, leaving unrelated carry fields intact.
     return _replace_e(
@@ -763,14 +805,17 @@ def update_e_3d_yee(eng, ctx, coeffs):
         ctx.dt_scalar,
         ctx.resolution,
         boundary_views=boundary_views,
-        inverse_tensor_rows=(
+        inverse_diagonals=(
             (
-                coeffs.e_inverse_tensor_x,
-                coeffs.e_inverse_tensor_y,
-                coeffs.e_inverse_tensor_z,
+                coeffs.e_inverse_diagonal_x,
+                coeffs.e_inverse_diagonal_y,
+                coeffs.e_inverse_diagonal_z,
             )
-            if coeffs.e_inverse_tensor_x.size
+            if coeffs.e_inverse_offdiagonal.size
             else None
+        ),
+        inverse_offdiagonal=(
+            coeffs.e_inverse_offdiagonal if coeffs.e_inverse_offdiagonal.size else None
         ),
     )
     return _replace_e(eng, ex, ey, ez)
@@ -876,11 +921,12 @@ def update_h_2d_te_xy_cpml(eng, ctx, coeffs):
 
 
 def _update_e_te_from_curls(eng, ctx, coeffs, curls, psi_e=None):
-    if coeffs.e_inverse_tensor_x.size:
-        ex, ey = advance_e_full_tensor(
+    if coeffs.e_inverse_offdiagonal.size:
+        ex, ey = advance_e_centered_tensor(
             (eng.ex, eng.ey),
             curls,
-            (coeffs.e_inverse_tensor_x, coeffs.e_inverse_tensor_y),
+            (coeffs.e_inverse_diagonal_x, coeffs.e_inverse_diagonal_y),
+            coeffs.e_inverse_offdiagonal,
             ("Ex", "Ey"),
             ctx.dt_scalar,
         )

@@ -265,9 +265,10 @@ _COEFFICIENT_COMPONENTS = {
             "source",
             "conductivity",
             "permittivity",
-            "inverse_tensor",
+            "inverse_diagonal",
         )
     },
+    "e_inverse_offdiagonal": "Node",
 }
 
 
@@ -280,13 +281,24 @@ def _lower_coefficients(coefficients, layout: ShardingLayout):
         value = getattr(coefficients, name)
         if _array_ndim(value) == 0 or not int(np.prod(_array_shape(value))):
             continue
-        is_tensor = "_inverse_tensor_" in name
+        is_tensor = name == "e_inverse_offdiagonal"
         neutral = (
             1.0
             if "_decay_" in name or ("_permittivity_" in name and not is_tensor)
             else 0.0
         )
-        target_shape = layout.padded_shapes[component]
+        target_shape = (
+            _pad_shape_for_devices(
+                tuple(
+                    max(shape[axis] for shape in layout.logical_shapes.values())
+                    for axis in range(len(next(iter(layout.logical_shapes.values()))))
+                ),
+                layout.axis,
+                layout.num_devices,
+            )
+            if component == "Node"
+            else layout.padded_shapes[component]
+        )
         if is_tensor:
             target_shape = (*target_shape, int(value.shape[-1]))
         updates[name] = _pad_high_to_shape(value, target_shape, pad_value=neutral)

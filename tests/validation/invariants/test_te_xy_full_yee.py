@@ -8,7 +8,7 @@ from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices._boundary_compile import compile_metallic_masks
 from beamz.lattice import advance_e_field, advance_h_field, component_shapes
 from beamz.simulation.kernels import (
-    advance_e_full_tensor,
+    advance_e_centered_tensor,
     te_xy_curl_e_to_h_2d,
     te_xy_curl_h_to_e_2d,
 )
@@ -21,33 +21,58 @@ def test_full_tensor_e_update_applies_cross_component_coupling():
     curl_ey = 2.0 * jnp.ones_like(ey)
     epsilon = np.asarray(((2.0, 0.5), (0.5, 3.0)))
     inverse = np.linalg.inv(epsilon)
-    row_x = jnp.stack(
-        (
-            jnp.full_like(ex, inverse[0, 0]),
-            jnp.full_like(ex, inverse[0, 1]),
-            jnp.zeros_like(ex),
-        ),
-        axis=-1,
+    diagonals = (
+        jnp.full_like(ex, inverse[0, 0]),
+        jnp.full_like(ey, inverse[1, 1]),
     )
-    row_y = jnp.stack(
-        (
-            jnp.full_like(ey, inverse[1, 0]),
-            jnp.full_like(ey, inverse[1, 1]),
-            jnp.zeros_like(ey),
-        ),
-        axis=-1,
-    )
+    offdiagonal = jnp.zeros((4, 6, 3), dtype=jnp.float32)
+    offdiagonal = offdiagonal.at[..., 0].set(inverse[0, 1])
 
-    updated_ex, updated_ey = advance_e_full_tensor(
+    updated_ex, updated_ey = advance_e_centered_tensor(
         (ex, ey),
         (curl_ex, curl_ey),
-        (row_x, row_y),
+        diagonals,
+        offdiagonal,
         ("Ex", "Ey"),
         EPS_0,
     )
 
     np.testing.assert_allclose(updated_ex, inverse[0] @ (1.0, 2.0))
     np.testing.assert_allclose(updated_ey, inverse[1] @ (1.0, 2.0))
+
+
+def test_full_tensor_cross_term_multiplies_between_the_two_averages():
+    ex = jnp.zeros((4, 4), dtype=jnp.float32)
+    ey = jnp.zeros((3, 5), dtype=jnp.float32)
+    curl_ex = jnp.zeros_like(ex)
+    curl_ey = jnp.asarray(
+        [[1.0, 2.0, 4.0, 8.0, 16.0]] * 3,
+        dtype=jnp.float32,
+    )
+    offdiagonal = jnp.zeros((4, 5, 3), dtype=jnp.float32)
+    xy = jnp.asarray(np.arange(20, dtype=np.float32).reshape(4, 5) + 1.0)
+    offdiagonal = offdiagonal.at[..., 0].set(xy)
+
+    updated_ex, _ = advance_e_centered_tensor(
+        (ex, ey),
+        (curl_ex, curl_ey),
+        (jnp.zeros_like(ex), jnp.zeros_like(ey)),
+        offdiagonal,
+        ("Ex", "Ey"),
+        EPS_0,
+    )
+
+    centered_ey = np.concatenate(
+        (
+            np.asarray(curl_ey[:1]),
+            0.5 * np.asarray(curl_ey[:-1] + curl_ey[1:]),
+            np.asarray(curl_ey[-1:]),
+        ),
+        axis=0,
+    )
+    weighted = np.asarray(xy) * centered_ey
+    expected_ex = 0.5 * (weighted[:, :-1] + weighted[:, 1:])
+    np.testing.assert_allclose(updated_ex, expected_ex)
 
 
 def _step(ex, ey, hz, *, dx, dt, edges=frozenset()):

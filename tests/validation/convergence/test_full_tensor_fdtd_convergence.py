@@ -10,7 +10,7 @@ import numpy as np
 from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.lattice import advance_h_field
 from beamz.simulation.kernels import (
-    advance_e_full_tensor,
+    advance_e_centered_tensor,
     te_xy_curl_e_to_h_2d,
     te_xy_curl_h_to_e_2d,
 )
@@ -44,24 +44,12 @@ def _anisotropic_packet_displacement(cells: int) -> float:
         dtype=jnp.float32,
     )
     hz = jnp.asarray(np.tile(packet(x_h) / impedance, (4, 1)), dtype=jnp.float32)
-    rows = (
-        jnp.stack(
-            (
-                jnp.full_like(ex, inverse[0, 0]),
-                jnp.full_like(ex, inverse[0, 1]),
-                jnp.zeros_like(ex),
-            ),
-            axis=-1,
-        ),
-        jnp.stack(
-            (
-                jnp.full_like(ey, inverse[1, 0]),
-                jnp.full_like(ey, inverse[1, 1]),
-                jnp.zeros_like(ey),
-            ),
-            axis=-1,
-        ),
+    diagonals = (
+        jnp.full_like(ex, inverse[0, 0]),
+        jnp.full_like(ey, inverse[1, 1]),
     )
+    offdiagonal = jnp.zeros((5, cells + 1, 3), dtype=jnp.float32)
+    offdiagonal = offdiagonal.at[..., 0].set(inverse[0, 1])
     start = _centroid(hz, spacing)
     duration = 30e-15
     steps = round(duration / (0.2 * spacing / LIGHT_SPEED))
@@ -70,7 +58,9 @@ def _anisotropic_packet_displacement(cells: int) -> float:
         curl_hz = te_xy_curl_e_to_h_2d(ex, ey, spacing, hz.shape)
         hz = advance_h_field(hz, curl_hz, 0.0, dt)
         curls = te_xy_curl_h_to_e_2d(hz, spacing, ex.shape, ey.shape, frozenset())
-        ex, ey = advance_e_full_tensor((ex, ey), curls, rows, ("Ex", "Ey"), dt)
+        ex, ey = advance_e_centered_tensor(
+            (ex, ey), curls, diagonals, offdiagonal, ("Ex", "Ey"), dt
+        )
     return _centroid(hz, spacing) - start
 
 

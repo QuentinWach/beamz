@@ -433,7 +433,7 @@ def test_material_grid_simulation_rejects_conflicting_geometry_controls(
         bz.Simulation(material_grid=material_grid, run_time=2e-9, **kwargs)
 
 
-def test_full_tensor_and_full_farjadpour_compile_into_inverse_rows():
+def test_full_tensor_and_full_farjadpour_compile_onto_constitutive_supports():
     tensor_scene = Scene(
         (Material(epsilon_r=((3.0, 0.2, 0.0), (0.2, 2.0, 0.0), (0.0, 0.0, 1.0))),)
     )
@@ -475,9 +475,10 @@ def test_full_tensor_and_full_farjadpour_compile_into_inverse_rows():
 
     assert material_grid.uses_full_permittivity
     assert program.boundary.cpml.enabled
-    assert program.coefficients.e_inverse_tensor_x.shape == (3, 3, 2, 3)
-    assert program.coefficients.e_inverse_tensor_y.shape == (3, 2, 3, 3)
-    assert program.coefficients.e_inverse_tensor_z.shape == (2, 3, 3, 3)
+    assert program.coefficients.e_inverse_diagonal_x.shape == (3, 3, 2)
+    assert program.coefficients.e_inverse_diagonal_y.shape == (3, 2, 3)
+    assert program.coefficients.e_inverse_diagonal_z.shape == (2, 3, 3)
+    assert program.coefficients.e_inverse_offdiagonal.shape == (3, 3, 3, 3)
     assert all(np.all(np.isfinite(getattr(state, name))) for name in ("ex", "ey", "ez"))
 
     logical_shapes = program.sharding.layout.logical_shapes
@@ -488,7 +489,8 @@ def test_full_tensor_and_full_farjadpour_compile_into_inverse_rows():
         program.coefficients,
         ShardingLayout(True, "z", 0, 2, "cpu", logical_shapes, padded_shapes),
     )
-    assert lowered.e_inverse_tensor_x.shape == (*padded_shapes["Ex"], 3)
+    assert lowered.e_inverse_diagonal_x.shape == padded_shapes["Ex"]
+    assert lowered.e_inverse_offdiagonal.shape == (4, 3, 3, 3)
 
     with pytest.raises(ValueError, match="use CPML"):
         bz.Simulation(

@@ -119,6 +119,8 @@ pub struct DiagnosticSummary {
 pub struct RasterResult {
     /// Compact epsilon tensors at Ex, Ey, and Ez supports.
     pub epsilon: [TensorArray; 3],
+    /// Compact epsilon tensor on the dual-cell centers shared by cross terms.
+    pub node_epsilon: TensorArray,
     /// Compact mu tensors at Hx, Hy, and Hz supports.
     pub mu: [TensorArray; 3],
     /// Compact electric-conductivity tensors at Ex, Ey, and Ez supports.
@@ -139,6 +141,7 @@ enum Component {
     Hx,
     Hy,
     Hz,
+    Node,
     Cell,
 }
 
@@ -151,6 +154,7 @@ impl Component {
             Self::Hx => SupportSpec::HX,
             Self::Hy => SupportSpec::HY,
             Self::Hz => SupportSpec::HZ,
+            Self::Node => SupportSpec::NODE,
             Self::Cell => SupportSpec::CELL,
         }
     }
@@ -463,6 +467,21 @@ fn rasterize_impl(
             mu.push(omitted_tensor(component, grid));
         }
     }
+    let node_epsilon = if options.smoothing == SmoothingMode::FarjadpourFull
+        && options.output_components != OutputComponents::TwoDimensionalTm
+    {
+        let (shape, samples) =
+            raster_material_support(scene, &index, grid, options, Component::Node);
+        record_diagnostics(&mut diagnostics, &samples);
+        tensor_from_samples(
+            shape,
+            &samples,
+            |sample| sample.material.epsilon_r,
+            maximum_components,
+        )
+    } else {
+        omitted_tensor(Component::Node, grid)
+    };
     let (cell_epsilon, cell_mu, cell_conductivity) = if scalar_volume {
         let (cell_shape, cell_samples) =
             raster_scalar_support(scene, &index, grid, options, Component::Cell);
@@ -506,6 +525,7 @@ fn rasterize_impl(
     diagnostics.elapsed_seconds = start.elapsed().as_secs_f64();
     Ok(RasterResult {
         epsilon: epsilon.try_into().unwrap(),
+        node_epsilon,
         mu: mu.try_into().unwrap(),
         conductivity: conductivity.try_into().unwrap(),
         cell_epsilon,
@@ -1527,6 +1547,7 @@ mod tests {
         assert!(result.mu[0].values.is_empty());
         assert!(result.mu[1].values.is_empty());
         assert!(!result.mu[2].values.is_empty());
+        assert!(result.node_epsilon.values.is_empty());
         assert!(!result.cell_epsilon.values.is_empty());
     }
 
@@ -1579,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn full_tensors_are_integrated_independently_at_each_electric_support() {
+    fn full_tensors_are_integrated_independently_at_each_constitutive_support() {
         let polygon = Polygon2::new(vec![[-1.0, -1.0], [2.0, -1.0], [-1.0, 2.0]], vec![]).unwrap();
         let geometry =
             Geometry::ExtrudedPolygon(crate::ExtrudedPolygon::new(polygon, -1.0, 2.0).unwrap());
@@ -1607,9 +1628,9 @@ mod tests {
         };
         let result = rasterize(&scene, &grid, &options).unwrap();
 
-        for (component, tensor) in [Component::Ex, Component::Ey, Component::Ez]
+        for (component, tensor) in [Component::Ex, Component::Ey, Component::Ez, Component::Node]
             .into_iter()
-            .zip(&result.epsilon)
+            .zip(result.epsilon.iter().chain([&result.node_epsilon]))
         {
             assert_eq!(tensor.shape[0], 6);
             let logical_shape = component.support().logical_shape(&grid);

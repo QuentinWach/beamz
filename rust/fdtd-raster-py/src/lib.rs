@@ -61,6 +61,7 @@ impl NativeRasterResult {
         {
             insert_tensor(py, &arrays, name, tensor)?;
         }
+        insert_tensor(py, &arrays, "epsilon_node", &mut self.result.node_epsilon)?;
         for (name, tensor) in ["mu_hx", "mu_hy", "mu_hz"]
             .into_iter()
             .zip(&mut self.result.mu)

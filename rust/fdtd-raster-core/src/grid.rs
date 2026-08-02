@@ -19,6 +19,8 @@ impl SupportSpec {
         AxisLocation::Center,
         AxisLocation::Center,
     ]);
+    pub(crate) const NODE: Self =
+        Self::new([AxisLocation::Edge, AxisLocation::Edge, AxisLocation::Edge]);
     pub(crate) const EX: Self =
         Self::new([AxisLocation::Center, AxisLocation::Edge, AxisLocation::Edge]);
     pub(crate) const EY: Self =
@@ -221,6 +223,7 @@ mod tests {
         assert_eq!(SupportSpec::EX.logical_shape(&grid), [4, 4, 3]);
         assert_eq!(SupportSpec::EY.logical_shape(&grid), [5, 3, 3]);
         assert_eq!(SupportSpec::EZ.logical_shape(&grid), [5, 4, 2]);
+        assert_eq!(SupportSpec::NODE.logical_shape(&grid), [5, 4, 3]);
         let hx = SupportSpec::new([
             AxisLocation::Edge,
             AxisLocation::Center,

@@ -49,6 +49,7 @@ def _yee_tensor_shapes(
         "epsilon_ex": ex,
         "epsilon_ey": ey,
         "epsilon_ez": ez,
+        "epsilon_node": (nz + 1, ny + 1, nx + 1),
         "conductivity_ex": ex,
         "conductivity_ey": ey,
         "conductivity_ez": ez,

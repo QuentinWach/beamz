@@ -13,7 +13,7 @@ from beamz.design.materials import Material
 
 from . import _native  # type: ignore[attr-defined]
 
-_CACHE_SCHEMA_VERSION = 3
+_CACHE_SCHEMA_VERSION = 4
 _ENGINE_VERSION = str(_native.ENGINE_VERSION)
 
 

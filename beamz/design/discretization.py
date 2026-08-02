@@ -54,7 +54,8 @@ class MaterialGrid:
     tensors : mapping, optional
         Packed symmetric cell tensors retained for compatible mode solving.
     yee_tensors : mapping, optional
-        Full symmetric permittivity tensors sampled at electric Yee supports.
+        Full symmetric permittivity tensors sampled at electric Yee supports and,
+        for cross coupling, at the shared grid nodes.
     smoothing : str, default="volume"
         Raster smoothing policy that produced the coefficients.
     origin : tuple of float, default=(0, 0, 0)
@@ -160,7 +161,12 @@ class MaterialGrid:
                 or shape[1:] != self.shape
             ):
                 raise ValueError(f"{name} tensor has invalid compact shape {shape}.")
-        unknown_yee_tensors = set(self.yee_tensors) - {"eps_x", "eps_y", "eps_z"}
+        unknown_yee_tensors = set(self.yee_tensors) - {
+            "eps_x",
+            "eps_y",
+            "eps_z",
+            "eps_node",
+        }
         if unknown_yee_tensors:
             raise ValueError(
                 "Unknown Yee permittivity tensors: "
@@ -171,7 +177,11 @@ class MaterialGrid:
 
             shapes = component_shapes(self.shape, self.polarization or "tm")
             for name, values in self.yee_tensors.items():
-                expected = shapes[{"eps_x": "Ex", "eps_y": "Ey", "eps_z": "Ez"}[name]]
+                expected = (
+                    tuple(value + 1 for value in self.shape)
+                    if name == "eps_node"
+                    else shapes[{"eps_x": "Ex", "eps_y": "Ey", "eps_z": "Ez"}[name]]
+                )
                 actual = np.asarray(values).shape
                 if actual[0:1] not in ((1,), (3,), (6,)) or actual[1:] != expected:
                     raise ValueError(
@@ -317,7 +327,14 @@ class MaterialGrid:
             np.any(np.abs(np.asarray(values)[3:]) > 1e-10)
             for values in yee_tensors.values()
         )
-        if not has_full_permittivity:
+        if has_full_permittivity:
+            if "epsilon_node" not in support_tensors:
+                raise ValueError(
+                    "Full-tensor permittivity requires the node-centered "
+                    "off-diagonal raster tensor."
+                )
+            yee_tensors["eps_node"] = np.asarray(support_tensors["epsilon_node"])
+        else:
             yee_tensors = {}
         if has_full_permittivity and np.any(np.abs(conductivity_tensor) > 1e-10):
             raise ValueError(

@@ -50,10 +50,12 @@ conductivity remains volume averaged.
 
 `RasterResult` contains immutable grid edges, cell-centered `tensors`, summary
 diagnostics, and constitutive `yee_tensors` integrated independently over the
-Ex/Ey/Ez and Hx/Hy/Hz dual volumes. Tensor arrays use one leading component for
-isotropic materials, three `(xx, yy, zz)` components for diagonal materials,
-and six `(xx, yy, zz, xy, xz, yz)` components for full symmetric materials. It
-does not produce dense material-ID, boundary-mask, or error arrays.
+Ex/Ey/Ez and Hx/Hy/Hz dual volumes. Full smoothing also integrates epsilon at
+the grid nodes shared by the off-diagonal electric terms. Tensor arrays use one
+leading component for isotropic materials, three `(xx, yy, zz)` components for
+diagonal materials, and six `(xx, yy, zz, xy, xz, yz)` components for full
+symmetric materials. It does not produce dense material-ID, boundary-mask, or
+error arrays.
 
 Farjadpour smoothing is applied only when the surface patches crossing one Yee
 support form a reliable, sign-invariant lamination axis. Corners, non-coplanar
@@ -76,10 +78,11 @@ corrupt-cache recovery.
 
 Standalone rasterization accepts uniform and nonuniform rectilinear grids.
 BeamZ's FDTD engine requires a single uniform resolution. It extracts the target
-diagonal from each `farjadpour_diagonal` support tensor or precomputes inverse
-tensor rows from `farjadpour_full` results. Full coupling currently requires
-zero electric conductivity and unit permeability; use CPML rather than a
-conductive sponge PML with that mode.
+diagonal from each electric support tensor. For `farjadpour_full`, it compiles
+the inverse diagonal at each E support and the inverse cross terms at shared
+grid nodes, then uses the paper's average-multiply-average coupling. Full
+coupling currently requires zero electric conductivity and unit permeability;
+use CPML rather than a conductive sponge PML with that mode.
 
 Imported scenes use the same simulation workflow as BeamZ designs; the
 solver-specific conversion stays internal:

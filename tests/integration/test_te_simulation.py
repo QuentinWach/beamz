@@ -183,7 +183,7 @@ def test_te_simulation_can_select_full_or_diagonal_farjadpour_updates():
     full_program, full_hz = run("farjadpour_full")
     diagonal_program, diagonal_hz = run("farjadpour_diagonal")
 
-    assert full_program.coefficients.e_inverse_tensor_x.size > 0
-    assert diagonal_program.coefficients.e_inverse_tensor_x.size == 0
+    assert full_program.coefficients.e_inverse_offdiagonal.size > 0
+    assert diagonal_program.coefficients.e_inverse_offdiagonal.size == 0
     assert np.all(np.isfinite(full_hz))
     assert np.linalg.norm(full_hz - diagonal_hz) > 0.01 * np.linalg.norm(full_hz)
