@@ -308,7 +308,11 @@ def _rasterize_scene_for_simulation(
         raise TypeError("Simulation scene must be a raster Scene.")
     if not isinstance(raster_grid, Grid):
         raise TypeError("Simulation raster_grid must be a raster Grid.")
-    options = RasterOptions() if raster_options is None else raster_options
+    options = (
+        RasterOptions(smoothing="farjadpour_diagonal")
+        if raster_options is None
+        else raster_options
+    )
     if not isinstance(options, RasterOptions):
         raise TypeError("raster_options must be RasterOptions or None.")
     dimensions = 2 if raster_grid.shape[2] == 1 else 3
@@ -473,9 +477,9 @@ class Simulation:
         to retain raw acquisitions.
     raster_options : RasterOptions, optional
         Native raster quality and smoothing policy. Component selection remains
-        automatic for the simulation dimensionality. The default preserves volume
-        averaging; select ``smoothing="farjadpour_diagonal"`` for the explicit
-        projection supported by the current componentwise FDTD update.
+        automatic for the simulation dimensionality. Simulations default to
+        ``farjadpour_diagonal``; select ``farjadpour_full`` to retain lossless
+        off-diagonal electric coupling.
 
     Notes
     -----

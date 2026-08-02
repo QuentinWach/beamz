@@ -42,7 +42,8 @@ The public package exports:
 `RasterOptions` has three choices: `quality` (`fast`, `balanced`, or
 `reference`), `smoothing` (`volume`, `farjadpour_diagonal`, or
 `farjadpour_full`), and `components` (`all`, `two_dimensional_tm`, or
-`two_dimensional_te`). Adaptive
+`two_dimensional_te`). Standalone rasterization defaults to `farjadpour_full`.
+Adaptive
 tolerances and threading remain internal. Farjadpour modes use the generalized
 local-interface tensor transform for permittivity and permeability;
 conductivity remains volume averaged.
@@ -74,11 +75,11 @@ corrupt-cache recovery.
 ## Standalone versus simulation use
 
 Standalone rasterization accepts uniform and nonuniform rectilinear grids.
-BeamZ's current FDTD engine requires a single uniform resolution and supports
-componentwise diagonal material coefficients. `MaterialGrid.from_raster_result()`
-therefore rejects nonuniform and `farjadpour_full` results. It extracts the
-target diagonal from each `farjadpour_diagonal` support tensor and never
-silently discards off-diagonal terms.
+BeamZ's FDTD engine requires a single uniform resolution. It extracts the target
+diagonal from each `farjadpour_diagonal` support tensor or precomputes inverse
+tensor rows from `farjadpour_full` results. Full coupling currently requires
+zero electric conductivity and unit permeability; use CPML rather than a
+conductive sponge PML with that mode.
 
 Imported scenes use the same simulation workflow as BeamZ designs; the
 solver-specific conversion stays internal:
@@ -110,27 +111,27 @@ Pre-sampled
 spatial coefficients enter `Simulation` directly as `MaterialGrid`; there is no
 second Python geometry rasterizer or engine-selection switch.
 
-Normal simulations retain volume averaging unless an explicit native policy is
-requested:
+Normal simulations use diagonal Farjadpour smoothing. Full lossless coupling can
+be requested explicitly:
 
 ```python
 import beamz
 
 simulation = beamz.Simulation(
     design=design,
-    raster_options=raster.RasterOptions(smoothing="farjadpour_diagonal"),
+    raster_options=raster.RasterOptions(smoothing="farjadpour_full"),
     run_time=1e-12,
 )
 ```
 
-The compiler consumes those native Yee arrays directly. Full Farjadpour tensors,
-nonuniform grids, off-diagonal volume tensors, and non-unit permeability fail at
-the `MaterialGrid` boundary with a capability-specific message. Conductive
-materials propagate in FDTD but are rejected for `ModeSource` until the mode
-bridge represents their frequency-dependent complex permittivity. The current
-2D and public convenience mode solvers likewise reject direct-Yee grids rather
-than solving a cell-centered approximation; the 3D launch planner retains its
-Yee-aware refinement path.
+The compiler consumes those native Yee arrays directly. Nonuniform grids,
+full-tensor conductivity, full permittivity combined with conductivity, and
+non-unit permeability fail with a capability-specific message. Conductive
+diagonal materials propagate in FDTD but are rejected for `ModeSource` until
+the mode bridge represents their frequency-dependent complex permittivity. The
+current 2D and public convenience mode solvers use the cell-tensor approximation
+for diagonal Farjadpour grids and reject full off-diagonal coupling; the 3D
+launch planner retains its Yee-aware refinement path.
 
 ## Importers
 

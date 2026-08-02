@@ -12,7 +12,7 @@ from beamz.const import EPS_0, MU_0
 from beamz.lattice import (
     adjacent_difference as _adjacent_difference,
 )
-from beamz.lattice import build_h_boundary_views_for_e_3d
+from beamz.lattice import build_h_boundary_views_for_e_3d, component_axis_offsets_3d
 from beamz.simulation.model import (
     BoundaryPlan,
     CpmlPackedSlabSpec,
@@ -49,6 +49,55 @@ def fit_array_to_shape(arr, target_shape, *, pad_value=0.0):
         if any(high for _, high in padding)
         else out
     )
+
+
+def collocate_yee_component(value, source: str, target: str, target_shape):
+    """Linearly collocate one electric-support array onto another Yee support."""
+
+    out = jnp.asarray(value)
+    axes = ("z", "y", "x")[-out.ndim :]
+    source_offsets = component_axis_offsets_3d(source)
+    target_offsets = component_axis_offsets_3d(target)
+    for axis_index, axis in enumerate(axes):
+        source_offset = source_offsets[axis]
+        target_offset = target_offsets[axis]
+        if source_offset == target_offset:
+            continue
+        if source_offset == 0.0 and target_offset == 0.5:
+            low = [slice(None)] * out.ndim
+            high = [slice(None)] * out.ndim
+            low[axis_index] = slice(0, -1)
+            high[axis_index] = slice(1, None)
+            out = 0.5 * (out[tuple(low)] + out[tuple(high)])
+        elif source_offset == 0.5 and target_offset == 0.0:
+            first = jnp.take(out, jnp.asarray([0]), axis=axis_index)
+            last = jnp.take(out, jnp.asarray([-1]), axis=axis_index)
+            low = [slice(None)] * out.ndim
+            high = [slice(None)] * out.ndim
+            low[axis_index] = slice(0, -1)
+            high[axis_index] = slice(1, None)
+            middle = 0.5 * (out[tuple(low)] + out[tuple(high)])
+            out = jnp.concatenate((first, middle, last), axis=axis_index)
+        else:  # pragma: no cover - canonical Yee offsets are binary
+            raise ValueError("Unsupported Yee colocation offset.")
+    return fit_array_to_shape(out, target_shape)
+
+
+def advance_e_full_tensor(fields, curls, inverse_rows, components, dt):
+    """Advance lossless electric fields through precomputed inverse tensor rows."""
+
+    scale = jnp.asarray(dt, dtype=fields[0].dtype) / jnp.asarray(
+        EPS_0, dtype=fields[0].dtype
+    )
+    updated = []
+    for field, row, target in zip(fields, inverse_rows, components, strict=True):
+        coupled = jnp.zeros_like(field)
+        for column, (curl, source) in enumerate(zip(curls, components, strict=True)):
+            coupled = coupled + row[..., column] * collocate_yee_component(
+                curl, source, target, field.shape
+            )
+        updated.append(field + scale * coupled)
+    return tuple(updated)
 
 
 def cpml_coefficients(sigma, kappa, alpha, dt):
@@ -202,6 +251,7 @@ def fused_update_e_lossy_3d_material(
     resolution,
     *,
     boundary_views,
+    inverse_tensor_rows=None,
 ):
     """Advance all electric components directly from collocated material grids."""
     del hx, hy, hz
@@ -212,16 +262,8 @@ def fused_update_e_lossy_3d_material(
         (("hx_z", 0), ("hz_x", 2)),
         (("hy_x", 2), ("hx_y", 1)),
     )
-    out = []
-    for field, conductivity, inv_permittivity, pair in zip(
-        (ex, ey, ez),
-        (conductivity_x, conductivity_y, conductivity_z),
-        (inv_permittivity_x, inv_permittivity_y, inv_permittivity_z),
-        derivative_pairs,
-        strict=True,
-    ):
-        beta = conductivity * (0.5 * dt_over_eps) * inv_permittivity
-        denom = one + beta
+    curls = []
+    for field, pair in zip((ex, ey, ez), derivative_pairs, strict=True):
         curl = fit_array_to_shape(
             _adjacent_difference(boundary_views[pair[0][0]], pair[0][1], resolution),
             field.shape,
@@ -229,6 +271,21 @@ def fused_update_e_lossy_3d_material(
             _adjacent_difference(boundary_views[pair[1][0]], pair[1][1], resolution),
             field.shape,
         )
+        curls.append(curl)
+    if inverse_tensor_rows is not None:
+        return advance_e_full_tensor(
+            (ex, ey, ez), curls, inverse_tensor_rows, ("Ex", "Ey", "Ez"), dt
+        )
+    out = []
+    for field, conductivity, inv_permittivity, curl in zip(
+        (ex, ey, ez),
+        (conductivity_x, conductivity_y, conductivity_z),
+        (inv_permittivity_x, inv_permittivity_y, inv_permittivity_z),
+        curls,
+        strict=True,
+    ):
+        beta = conductivity * (0.5 * dt_over_eps) * inv_permittivity
+        denom = one + beta
         out.append(
             (one - beta) / denom * field
             + (dt_over_eps * inv_permittivity / denom) * curl
@@ -299,6 +356,7 @@ def cpml_update_e_from_h_3d(
     dt,
     conductivities,
     inverse_permittivities,
+    inverse_tensor_rows=None,
 ):
     """Advance 3D E fields and their six packed CPML memories."""
     views = build_h_boundary_views_for_e_3d(hx, hy, hz, metallic_edges)
@@ -326,6 +384,11 @@ def cpml_update_e_from_h_3d(
         strict=True,
     )
     curls = tuple(corrected[index] + corrected[index + 1] for index in (0, 2, 4))
+    if inverse_tensor_rows is not None:
+        updated = advance_e_full_tensor(
+            (ex, ey, ez), curls, inverse_tensor_rows, ("Ex", "Ey", "Ez"), dt
+        )
+        return *updated, tuple(next_psi)
     one = jnp.asarray(1.0, dtype=ex.dtype)
     dt_over_eps = jnp.asarray(dt, dtype=ex.dtype) / jnp.asarray(EPS_0, dtype=ex.dtype)
     updated = []
@@ -620,6 +683,15 @@ def update_e_3d_cpml(eng, ctx, coeffs):
     inv_x = jnp.reciprocal(coeffs.e_permittivity_x)
     inv_y = jnp.reciprocal(coeffs.e_permittivity_y)
     inv_z = jnp.reciprocal(coeffs.e_permittivity_z)
+    inverse_tensor_rows = (
+        (
+            coeffs.e_inverse_tensor_x,
+            coeffs.e_inverse_tensor_y,
+            coeffs.e_inverse_tensor_z,
+        )
+        if coeffs.e_inverse_tensor_x.size
+        else None
+    )
     # 2. Advance E while updating psi only inside the packed boundary slabs selected by
     # the planner.
     ex, ey, ez, psi_e = cpml_update_e_from_h_3d(
@@ -640,6 +712,7 @@ def update_e_3d_cpml(eng, ctx, coeffs):
             coeffs.e_conductivity_z,
         ),
         inverse_permittivities=(inv_x, inv_y, inv_z),
+        inverse_tensor_rows=inverse_tensor_rows,
     )
     # 3. Replace E and packed 3D memory atomically, leaving unrelated carry fields intact.
     return _replace_e(
@@ -690,6 +763,15 @@ def update_e_3d_yee(eng, ctx, coeffs):
         ctx.dt_scalar,
         ctx.resolution,
         boundary_views=boundary_views,
+        inverse_tensor_rows=(
+            (
+                coeffs.e_inverse_tensor_x,
+                coeffs.e_inverse_tensor_y,
+                coeffs.e_inverse_tensor_z,
+            )
+            if coeffs.e_inverse_tensor_x.size
+            else None
+        ),
     )
     return _replace_e(eng, ex, ey, ez)
 
@@ -793,13 +875,22 @@ def update_h_2d_te_xy_cpml(eng, ctx, coeffs):
     return _update_h_te_from_curl(eng, coeffs, curl_hz, psi_h=psi_h)
 
 
-def _update_e_te_from_curls(eng, coeffs, curls, psi_e=None):
-    ex = advance_e_from_coefficients(
-        eng.ex, curls[0], coeffs.e_decay_x, coeffs.e_source_x
-    )
-    ey = advance_e_from_coefficients(
-        eng.ey, curls[1], coeffs.e_decay_y, coeffs.e_source_y
-    )
+def _update_e_te_from_curls(eng, ctx, coeffs, curls, psi_e=None):
+    if coeffs.e_inverse_tensor_x.size:
+        ex, ey = advance_e_full_tensor(
+            (eng.ex, eng.ey),
+            curls,
+            (coeffs.e_inverse_tensor_x, coeffs.e_inverse_tensor_y),
+            ("Ex", "Ey"),
+            ctx.dt_scalar,
+        )
+    else:
+        ex = advance_e_from_coefficients(
+            eng.ex, curls[0], coeffs.e_decay_x, coeffs.e_source_x
+        )
+        ey = advance_e_from_coefficients(
+            eng.ey, curls[1], coeffs.e_decay_y, coeffs.e_source_y
+        )
     return _replace_e(eng, ex, ey, eng.ez, cpml_e=psi_e)
 
 
@@ -811,7 +902,7 @@ def update_e_2d_te_xy(eng, ctx, coeffs):
         eng.ey.shape,
         ctx.boundary.metallic_edges_2d,
     )
-    return _update_e_te_from_curls(eng, coeffs, curls)
+    return _update_e_te_from_curls(eng, ctx, coeffs, curls)
 
 
 def update_e_2d_te_xy_cpml(eng, ctx, coeffs):
@@ -822,7 +913,7 @@ def update_e_2d_te_xy_cpml(eng, ctx, coeffs):
         terms=ctx.boundary.cpml.e_terms,
         psi_e_terms=eng.cpml_psi_e_terms,
     )
-    return _update_e_te_from_curls(eng, coeffs, curls, psi_e=psi_e)
+    return _update_e_te_from_curls(eng, ctx, coeffs, curls, psi_e=psi_e)
 
 
 @dataclass(frozen=True)

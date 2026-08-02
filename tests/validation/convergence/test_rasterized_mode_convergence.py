@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -10,7 +12,7 @@ from beamz.devices.modes.solver import solve_grid
 
 
 def _rotated_waveguide_scene() -> raster.Scene:
-    corners = np.asarray(((-0.5, -0.225), (0.5, -0.225), (0.5, 0.225), (-0.5, 0.225)))
+    corners = np.asarray(((-0.5, -0.15), (0.5, -0.15), (0.5, 0.15), (-0.5, 0.15)))
     angle = np.deg2rad(27.0)
     rotation = np.asarray(
         ((np.cos(angle), -np.sin(angle)), (np.sin(angle), np.cos(angle)))
@@ -57,12 +59,11 @@ def _effective_index(scene: raster.Scene, cells: int) -> float:
 @pytest.mark.simulation
 def test_farjadpour_waveguide_mode_converges_under_grid_refinement():
     scene = _rotated_waveguide_scene()
-    coarse = _effective_index(scene, 16)
-    fine = _effective_index(scene, 32)
-    reference = _effective_index(scene, 64)
+    coarse = _effective_index(scene, 12)
+    medium = _effective_index(scene, 24)
+    fine = _effective_index(scene, 48)
 
-    coarse_error = abs(coarse - reference)
-    fine_error = abs(fine - reference)
+    observed_order = math.log2(abs(coarse - medium) / abs(medium - fine))
     assert 1.44 < coarse < 3.4
     assert 1.44 < fine < 3.4
-    assert fine_error < 0.6 * coarse_error
+    assert 1.5 < observed_order < 2.3

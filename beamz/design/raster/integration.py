@@ -46,7 +46,7 @@ def _rasterize_design(
     progress: bool = False,
     resolution_z: float | None = None,
     quality: str = "balanced",
-    smoothing: str = "volume",
+    smoothing: str = "farjadpour_diagonal",
     polarization: str = "tm",
     cache_directory: str | Path | None = None,
 ):

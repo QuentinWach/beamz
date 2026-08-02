@@ -8,9 +8,46 @@ from beamz.const import EPS_0, LIGHT_SPEED, MU_0
 from beamz.devices._boundary_compile import compile_metallic_masks
 from beamz.lattice import advance_e_field, advance_h_field, component_shapes
 from beamz.simulation.kernels import (
+    advance_e_full_tensor,
     te_xy_curl_e_to_h_2d,
     te_xy_curl_h_to_e_2d,
 )
+
+
+def test_full_tensor_e_update_applies_cross_component_coupling():
+    ex = jnp.zeros((4, 5), dtype=jnp.float32)
+    ey = jnp.zeros((3, 6), dtype=jnp.float32)
+    curl_ex = jnp.ones_like(ex)
+    curl_ey = 2.0 * jnp.ones_like(ey)
+    epsilon = np.asarray(((2.0, 0.5), (0.5, 3.0)))
+    inverse = np.linalg.inv(epsilon)
+    row_x = jnp.stack(
+        (
+            jnp.full_like(ex, inverse[0, 0]),
+            jnp.full_like(ex, inverse[0, 1]),
+            jnp.zeros_like(ex),
+        ),
+        axis=-1,
+    )
+    row_y = jnp.stack(
+        (
+            jnp.full_like(ey, inverse[1, 0]),
+            jnp.full_like(ey, inverse[1, 1]),
+            jnp.zeros_like(ey),
+        ),
+        axis=-1,
+    )
+
+    updated_ex, updated_ey = advance_e_full_tensor(
+        (ex, ey),
+        (curl_ex, curl_ey),
+        (row_x, row_y),
+        ("Ex", "Ey"),
+        EPS_0,
+    )
+
+    np.testing.assert_allclose(updated_ex, inverse[0] @ (1.0, 2.0))
+    np.testing.assert_allclose(updated_ey, inverse[1] @ (1.0, 2.0))
 
 
 def _step(ex, ey, hz, *, dx, dt, edges=frozenset()):

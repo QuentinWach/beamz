@@ -5,7 +5,18 @@ import pytest
 
 import beamz as bz
 from beamz.design import MaterialGrid
-from beamz.design.raster import Grid, Material, RasterOptions, Scene, rasterize
+from beamz.design.raster import (
+    ExtrudedPolygon,
+    Grid,
+    Material,
+    Object,
+    Polygon,
+    RasterOptions,
+    Scene,
+    rasterize,
+)
+from beamz.simulation.model import ShardingLayout
+from beamz.simulation.sharding import _lower_coefficients
 
 
 def design_2d() -> bz.Design:
@@ -61,6 +72,27 @@ def test_material_grid_rejects_nonpositive_resolution():
         MaterialGrid(values, values, values, 0.0, values.shape)
 
 
+@pytest.mark.parametrize(
+    ("yee_tensors", "message"),
+    (
+        ({"unknown": np.ones((6, 2, 2))}, "Unknown Yee permittivity tensors"),
+        ({"eps_x": np.ones((2, 3, 2))}, "expected compact"),
+    ),
+)
+def test_material_grid_validates_full_yee_tensor_contract(yee_tensors, message):
+    values = np.ones((2, 2))
+
+    with pytest.raises(ValueError, match=message):
+        MaterialGrid(
+            values,
+            values,
+            values,
+            1.0,
+            values.shape,
+            yee_tensors=yee_tensors,
+        )
+
+
 def test_design_rasterize_returns_direct_3d_solver_grid():
     grid = design_3d().rasterize(0.25e-6)
 
@@ -83,7 +115,7 @@ def test_design_tensor_material_uses_same_native_path_as_imported_scene():
 
 
 @pytest.mark.parametrize("design", [design_2d(), design_3d()])
-def test_default_scalar_volume_compilation_preserves_cell_colocation(design):
+def test_default_farjadpour_compilation_preserves_native_colocation(design):
     material_grid = design.rasterize(0.25e-6)
     simulation = bz.Simulation(
         design=design,
@@ -94,7 +126,8 @@ def test_default_scalar_volume_compilation_preserves_cell_colocation(design):
 
     np.testing.assert_array_equal(compiled.permittivity, material_grid.permittivity)
     np.testing.assert_array_equal(compiled.permeability, material_grid.permeability)
-    assert not material_grid.uses_direct_yee_materials
+    assert material_grid.smoothing == "farjadpour_diagonal"
+    assert material_grid.uses_direct_yee_materials
 
 
 def test_simulation_conversion_rejects_nonunit_permeability():
@@ -105,6 +138,32 @@ def test_simulation_conversion_rejects_nonunit_permeability():
 
     with pytest.raises(ValueError, match="unit permeability"):
         MaterialGrid.from_raster_result(result)
+
+
+@pytest.mark.parametrize(
+    ("epsilon", "conductivity", "dimensions", "message"),
+    (
+        (
+            (3.0, 2.0, 1.5),
+            (1.0, 0.5, 0.2, 0.1, 0.0, 0.0),
+            3,
+            "off-diagonal conductivity",
+        ),
+        ((3.0, 2.0, 1.5, 0.0, 0.1, 0.0), 0.0, 2, "without xz or yz"),
+        ((3.0, 2.0, 1.5, 0.2, 0.0, 0.0), (1.0, 0.5, 0.2), 3, "zero conductivity"),
+    ),
+)
+def test_full_tensor_conversion_rejects_unsupported_material_couplings(
+    epsilon, conductivity, dimensions, message
+):
+    shape = (2, 2, 2 if dimensions == 3 else 1)
+    result = rasterize(
+        Scene((Material(epsilon_r=epsilon, conductivity=conductivity),)),
+        Grid.uniform((0, 0, 0), (1, 1, 1), shape),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        MaterialGrid.from_raster_result(result, dimensions=dimensions)
 
 
 def test_material_grid_rejects_nonuniform_raster_results():
@@ -374,21 +433,69 @@ def test_material_grid_simulation_rejects_conflicting_geometry_controls(
         bz.Simulation(material_grid=material_grid, run_time=2e-9, **kwargs)
 
 
-def test_full_tensor_and_full_farjadpour_require_future_engine():
+def test_full_tensor_and_full_farjadpour_compile_into_inverse_rows():
     tensor_scene = Scene(
         (Material(epsilon_r=((3.0, 0.2, 0.0), (0.2, 2.0, 0.0), (0.0, 0.0, 1.0))),)
     )
     grid = Grid.uniform((0, 0, 0), (1, 1, 1), (2, 2, 2))
-    with pytest.raises(ValueError, match="silently discard"):
-        MaterialGrid.from_raster_result(rasterize(tensor_scene, grid))
+    intrinsic = MaterialGrid.from_raster_result(
+        rasterize(
+            tensor_scene,
+            grid,
+            options=RasterOptions(smoothing="farjadpour_full"),
+        )
+    )
+    assert intrinsic.uses_full_permittivity
 
     full = rasterize(
-        Scene((Material(),)),
+        Scene(
+            (Material(), Material(4.0)),
+            (
+                Object(
+                    ExtrudedPolygon(
+                        Polygon(((-1.0, -1.0), (2.0, -1.0), (-1.0, 2.0))),
+                        -1.0,
+                        2.0,
+                    ),
+                    1,
+                ),
+            ),
+        ),
         grid,
         options=RasterOptions(smoothing="farjadpour_full"),
     )
-    with pytest.raises(ValueError, match="full off-diagonal Farjadpour"):
-        MaterialGrid.from_raster_result(full)
+    material_grid = MaterialGrid.from_raster_result(full)
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        boundaries=[bz.PML(thickness=0.5, formulation="cpml")],
+        run_time=2e-9,
+    )
+    program = simulation.compile()
+    state = simulation.advance().state
+
+    assert material_grid.uses_full_permittivity
+    assert program.boundary.cpml.enabled
+    assert program.coefficients.e_inverse_tensor_x.shape == (3, 3, 2, 3)
+    assert program.coefficients.e_inverse_tensor_y.shape == (3, 2, 3, 3)
+    assert program.coefficients.e_inverse_tensor_z.shape == (2, 3, 3, 3)
+    assert all(np.all(np.isfinite(getattr(state, name))) for name in ("ex", "ey", "ez"))
+
+    logical_shapes = program.sharding.layout.logical_shapes
+    padded_shapes = {
+        name: (shape[0] + 1, *shape[1:]) for name, shape in logical_shapes.items()
+    }
+    lowered = _lower_coefficients(
+        program.coefficients,
+        ShardingLayout(True, "z", 0, 2, "cpu", logical_shapes, padded_shapes),
+    )
+    assert lowered.e_inverse_tensor_x.shape == (*padded_shapes["Ex"], 3)
+
+    with pytest.raises(ValueError, match="use CPML"):
+        bz.Simulation(
+            material_grid=material_grid,
+            boundaries=[bz.PML(thickness=0.5, formulation="sponge")],
+            run_time=2e-9,
+        ).compile()
 
 
 def test_simulation_selects_explicit_diagonal_farjadpour_policy():

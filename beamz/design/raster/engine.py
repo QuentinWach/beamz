@@ -20,7 +20,7 @@ from .schema import _CACHE_SCHEMA_VERSION, _ENGINE_VERSION, Grid, Scene
 @dataclass(frozen=True, slots=True)
 class RasterOptions:
     quality: str = "balanced"
-    smoothing: str = "volume"
+    smoothing: str = "farjadpour_full"
     components: str = "all"
 
     def __post_init__(self) -> None:

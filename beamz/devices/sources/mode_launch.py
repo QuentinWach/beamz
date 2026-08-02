@@ -366,9 +366,20 @@ def _plan_2d_mode_source(
     if snapped.companion_index is None:
         raise ValueError("A mode source launch needs a companion Yee plane.")
     offset_idx = int(snapped.companion_index)
-    eps_profile = (
-        permittivity[:, center_idx] if axis == "x" else permittivity[center_idx, :]
-    )
+    material_grid = getattr(fields, "material_grid", None)
+    if material_grid is not None and material_grid.uses_direct_yee_materials:
+        component = (
+            "eps_z" if polarization == "tm" else ("eps_y" if axis == "x" else "eps_x")
+        )
+        direct = np.asarray(getattr(fields, component))
+        normal_index = min(center_idx, direct.shape[1 if axis == "x" else 0] - 1)
+        eps_profile = (
+            direct[:, normal_index] if axis == "x" else direct[normal_index, :]
+        )
+    else:
+        eps_profile = (
+            permittivity[:, center_idx] if axis == "x" else permittivity[center_idx, :]
+        )
     omega = 2.0 * np.pi * source.frequency
     neff, e_mode, h_mode = _solve_2d_mode(
         source, eps_profile, omega, resolution, axis, polarization

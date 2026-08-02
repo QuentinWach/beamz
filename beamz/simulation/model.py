@@ -268,14 +268,17 @@ class UpdateCoefficients(NamedTuple):
     e_source_x: jnp.ndarray
     e_conductivity_x: jnp.ndarray
     e_permittivity_x: jnp.ndarray
+    e_inverse_tensor_x: jnp.ndarray
     e_decay_y: jnp.ndarray
     e_source_y: jnp.ndarray
     e_conductivity_y: jnp.ndarray
     e_permittivity_y: jnp.ndarray
+    e_inverse_tensor_y: jnp.ndarray
     e_decay_z: jnp.ndarray
     e_source_z: jnp.ndarray
     e_conductivity_z: jnp.ndarray
     e_permittivity_z: jnp.ndarray
+    e_inverse_tensor_z: jnp.ndarray
 
 
 class CpmlPackedSlabSpec(NamedTuple):

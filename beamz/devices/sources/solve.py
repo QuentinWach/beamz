@@ -15,11 +15,10 @@ from .specs import plane_axis_and_spans
 def _require_cell_mode_materials(material_grid, *, operation: str) -> None:
     """Reject material grids whose propagation coefficients cannot be reproduced."""
 
-    if material_grid is not None and material_grid.uses_direct_yee_materials:
+    if material_grid is not None and material_grid.uses_full_permittivity:
         raise ValueError(
-            f"{operation} cannot yet reproduce direct Yee-support material "
-            "coefficients. Use volume-averaged isotropic materials or solve the "
-            "mode with a Yee-aware path."
+            f"{operation} cannot yet reproduce full off-diagonal permittivity. "
+            "Use farjadpour_diagonal or solve the mode with a full-tensor path."
         )
 
 

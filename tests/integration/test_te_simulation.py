@@ -5,6 +5,7 @@ import pytest
 
 import beamz as bz
 from beamz.const import LIGHT_SPEED
+from beamz.design import raster
 
 
 def _te_simulation(*, cpml: bool = False):
@@ -131,3 +132,58 @@ def test_te_simulation_rejects_tm_mode_monitor():
 
     with pytest.raises(ValueError, match="does not match"):
         simulation.compile()
+
+
+def test_te_simulation_can_select_full_or_diagonal_farjadpour_updates():
+    length = 1.0 * bz.um
+    cells = 8
+    resolution = length / cells
+    dt = 0.2 * resolution / LIGHT_SPEED
+    time = np.arange(10) * dt
+    scene = raster.Scene(
+        (raster.Material(), raster.Material(4.0)),
+        (
+            raster.Object(
+                raster.ExtrudedPolygon(
+                    raster.Polygon(
+                        (
+                            (-length, -length),
+                            (2 * length, -length),
+                            (-length, 2 * length),
+                        )
+                    ),
+                    0.0,
+                    1.0,
+                ),
+                1,
+            ),
+        ),
+    )
+    grid = raster.Grid.uniform(
+        (0.0, 0.0, 0.0), (length, length, 1.0), (cells, cells, 1)
+    )
+
+    def run(smoothing):
+        simulation = bz.Simulation(
+            scene=scene,
+            raster_grid=grid,
+            polarization="te",
+            time=time,
+            raster_options=raster.RasterOptions(smoothing=smoothing),
+            sources=(
+                bz.GaussianSource(
+                    position=(0.3 * bz.um, 0.35 * bz.um),
+                    width=0.1 * bz.um,
+                    signal=np.r_[1.0, np.zeros(time.size - 1)],
+                ),
+            ),
+        )
+        return simulation.compile(), np.asarray(simulation.advance().state.hz)
+
+    full_program, full_hz = run("farjadpour_full")
+    diagonal_program, diagonal_hz = run("farjadpour_diagonal")
+
+    assert full_program.coefficients.e_inverse_tensor_x.size > 0
+    assert diagonal_program.coefficients.e_inverse_tensor_x.size == 0
+    assert np.all(np.isfinite(full_hz))
+    assert np.linalg.norm(full_hz - diagonal_hz) > 0.01 * np.linalg.norm(full_hz)

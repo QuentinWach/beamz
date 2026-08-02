@@ -62,6 +62,20 @@ def _direct_yee_2d_fields(shape, *, resolution=1.0):
     return fields
 
 
+def _full_tensor_2d_fields(shape, *, resolution=1.0):
+    fields = _direct_yee_2d_fields(shape, resolution=resolution)
+    support_shape = fields.material_grid.yee_materials["eps_z"].shape
+    tensor = np.zeros((6, *support_shape), dtype=np.float32)
+    tensor[:3] = 2.25
+    tensor[3] = 0.1
+    fields.material_grid = replace(
+        fields.material_grid,
+        yee_tensors={"eps_z": tensor},
+        smoothing="farjadpour_full",
+    )
+    return fields
+
+
 def _mode_source(**overrides):
     source_time = overrides.pop(
         "source_time", GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
@@ -228,11 +242,11 @@ def test_mode_launch_rejects_conductive_material_profile():
         plan_mode_source_launch(_mode_source(), fields, resolution=1.0, dt=1e-15)
 
 
-def test_2d_mode_launch_rejects_materials_requiring_direct_yee_supports():
-    fields = _direct_yee_2d_fields((5, 6))
+def test_2d_mode_launch_rejects_full_off_diagonal_materials():
+    fields = _full_tensor_2d_fields((5, 6))
     source = _mode_source(mode_spec=ModeSpec(polarization="tm"))
 
-    with pytest.raises(ValueError, match="direct Yee-support"):
+    with pytest.raises(ValueError, match="full off-diagonal"):
         plan_mode_source_launch(source, fields, resolution=1.0, dt=1e-15)
 
 
@@ -281,8 +295,8 @@ def test_2d_mode_source_rejects_polarization_mismatch():
         plan_mode_source_launch(source, fields, resolution=1.0, dt=1e-15)
 
 
-def test_public_mode_solve_rejects_materials_requiring_direct_yee_supports():
-    fields = _direct_yee_2d_fields((5, 6))
+def test_public_mode_solve_rejects_full_off_diagonal_materials():
+    fields = _full_tensor_2d_fields((5, 6))
     simulation = SimpleNamespace(fields=fields, resolution=1.0)
     plane = SimpleNamespace(
         center=(2.5, 2.5, 2.5),
@@ -290,7 +304,7 @@ def test_public_mode_solve_rejects_materials_requiring_direct_yee_supports():
         axis="x",
     )
 
-    with pytest.raises(ValueError, match="direct Yee-support"):
+    with pytest.raises(ValueError, match="full off-diagonal"):
         mode_plane_context(simulation=simulation, plane=plane)
 
 

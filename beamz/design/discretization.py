@@ -53,6 +53,8 @@ class MaterialGrid:
         Componentwise material arrays already sampled at Yee supports.
     tensors : mapping, optional
         Packed symmetric cell tensors retained for compatible mode solving.
+    yee_tensors : mapping, optional
+        Full symmetric permittivity tensors sampled at electric Yee supports.
     smoothing : str, default="volume"
         Raster smoothing policy that produced the coefficients.
     origin : tuple of float, default=(0, 0, 0)
@@ -76,6 +78,7 @@ class MaterialGrid:
     smoothing: str = "volume"
     origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
     polarization: Literal["tm", "te"] | None = None
+    yee_tensors: Mapping[str, npt.ArrayLike] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "permittivity", readonly_array(self.permittivity))
@@ -104,7 +107,7 @@ class MaterialGrid:
                 continue
             if actual != shape:
                 raise ValueError(f"{name} has shape {actual}, expected {shape}.")
-        for name in ("yee_materials", "tensors"):
+        for name in ("yee_materials", "tensors", "yee_tensors"):
             values = {
                 str(key): readonly_array(value)
                 for key, value in dict(getattr(self, name)).items()
@@ -157,6 +160,24 @@ class MaterialGrid:
                 or shape[1:] != self.shape
             ):
                 raise ValueError(f"{name} tensor has invalid compact shape {shape}.")
+        unknown_yee_tensors = set(self.yee_tensors) - {"eps_x", "eps_y", "eps_z"}
+        if unknown_yee_tensors:
+            raise ValueError(
+                "Unknown Yee permittivity tensors: "
+                f"{', '.join(sorted(unknown_yee_tensors))}."
+            )
+        if self.yee_tensors:
+            from beamz.lattice import component_shapes
+
+            shapes = component_shapes(self.shape, self.polarization or "tm")
+            for name, values in self.yee_tensors.items():
+                expected = shapes[{"eps_x": "Ex", "eps_y": "Ey", "eps_z": "Ez"}[name]]
+                actual = np.asarray(values).shape
+                if actual[0:1] not in ((1,), (3,), (6,)) or actual[1:] != expected:
+                    raise ValueError(
+                        f"{name} tensor has shape {actual}, expected compact "
+                        f"(1|3|6, {', '.join(map(str, expected))})."
+                    )
 
     @classmethod
     def from_raster_result(
@@ -259,15 +280,14 @@ class MaterialGrid:
                 "BeamZ Simulation requires one uniform spacing on every active axis."
             )
         smoothing = str(getattr(result, "smoothing", "volume"))
-        if smoothing == "farjadpour_full":
-            raise ValueError(
-                "BeamZ Simulation cannot consume full off-diagonal Farjadpour "
-                "tensors yet. Rasterize with smoothing='farjadpour_diagonal' "
-                "for the current componentwise FDTD engine."
-            )
         materials = {
             target: _support_diagonal(support_tensors[source], axis)
             for target, source, axis in component_specs
+        }
+        yee_tensors = {
+            target: np.asarray(support_tensors[source])
+            for target, source, _axis in component_specs
+            if target.startswith("eps_")
         }
         tensors = dict(getattr(result, "tensors", {}))
         missing_tensors = {"epsilon", "mu", "conductivity"} - set(tensors)
@@ -276,25 +296,33 @@ class MaterialGrid:
                 "RasterResult omits cell tensors: "
                 f"{', '.join(sorted(missing_tensors))}."
             )
-        if smoothing == "volume":
-            off_diagonal = max(
-                (
-                    float(np.max(np.abs(np.asarray(values)[3:])))
-                    for values in tensors.values()
-                    if np.asarray(values).shape[0] == 6
-                ),
-                default=0.0,
-            )
-            if off_diagonal > 1e-10:
-                raise ValueError(
-                    "BeamZ Simulation cannot silently discard off-diagonal material "
-                    "terms. Select smoothing='farjadpour_diagonal' to request an "
-                    "explicit diagonal projection, or use the standalone result."
-                )
-
         epsilon_tensor = np.asarray(tensors["epsilon"])
         mu_tensor = np.asarray(tensors["mu"])
         conductivity_tensor = np.asarray(tensors["conductivity"])
+        if np.any(np.abs(_tensor_off_diagonal(conductivity_tensor)) > 1e-10):
+            raise ValueError(
+                "BeamZ's full-tensor update does not support off-diagonal "
+                "conductivity. Use diagonal conductivity coefficients."
+            )
+        if (
+            dimensions == 2
+            and epsilon_tensor.shape[0] == 6
+            and np.any(np.abs(epsilon_tensor[[4, 5]]) > 1e-10)
+        ):
+            raise ValueError(
+                "A 2D simulation requires permittivity without xz or yz coupling."
+            )
+        has_full_permittivity = dimensions == 3 or polarization == "te"
+        has_full_permittivity = has_full_permittivity and any(
+            np.any(np.abs(np.asarray(values)[3:]) > 1e-10)
+            for values in yee_tensors.values()
+        )
+        if not has_full_permittivity:
+            yee_tensors = {}
+        if has_full_permittivity and np.any(np.abs(conductivity_tensor) > 1e-10):
+            raise ValueError(
+                "Full-tensor permittivity currently requires zero conductivity."
+            )
         mu_diagonal = _tensor_diagonal(mu_tensor)
         if not (
             np.allclose(mu_diagonal, 1.0, rtol=1e-10, atol=1e-12)
@@ -328,6 +356,9 @@ class MaterialGrid:
                 name: np.asarray(value)[0] for name, value in materials.items()
             }
             tensors = {name: np.asarray(value)[:, 0] for name, value in tensors.items()}
+            yee_tensors = {
+                name: np.asarray(value)[:, 0] for name, value in yee_tensors.items()
+            }
         return cls(
             epsilon,
             conductivity,
@@ -343,6 +374,7 @@ class MaterialGrid:
                 float(np.asarray(edges[2])[0]),
             ),
             polarization if dimensions == 2 else None,
+            yee_tensors,
         )
 
     def field_arrays(self) -> tuple[npt.ArrayLike, npt.ArrayLike, npt.ArrayLike]:
@@ -355,7 +387,7 @@ class MaterialGrid:
 
         if not self.yee_materials:
             return False
-        if self.smoothing == "farjadpour_diagonal":
+        if self.smoothing == "farjadpour_diagonal" or self.uses_full_permittivity:
             return True
         for name in ("epsilon", "conductivity"):
             if name not in self.tensors:
@@ -368,6 +400,15 @@ class MaterialGrid:
                 return True
         return False
 
+    @property
+    def uses_full_permittivity(self) -> bool:
+        """Return whether propagation needs off-diagonal electric coupling."""
+
+        return any(
+            np.any(np.abs(np.asarray(values)[3:]) > 1e-10)
+            for values in self.yee_tensors.values()
+        )
+
     def canonical_spec(self):
         """Return values defining material-grid cache identity."""
         return (
@@ -379,6 +420,7 @@ class MaterialGrid:
             self.smoothing,
             self.origin,
             self.polarization,
+            self.yee_tensors,
         )
 
     def __eq__(self, other):

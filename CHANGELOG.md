@@ -14,6 +14,8 @@ aliases.
 
 ### Added
 
+- Added lossless full-tensor Farjadpour permittivity updates for 2D TE and 3D
+  FDTD, while retaining the explicit diagonal update policy.
 - Integrated the complete MicroMode finite-difference eigensolver into
   `beamz.devices.modes`, including the latest guarded Yee-grid refinement and
   validation work from `beamzorg/micromode@80c57d8`.
@@ -31,6 +33,9 @@ aliases.
 
 ### Changed
 
+- Farjadpour smoothing is now the default: standalone rasterization retains full
+  tensors and simulations use the diagonal policy unless full coupling is
+  requested explicitly.
 - Mode sources, monitors, and ports now share `ModeSpec` and `ModeData` from
   `beamz.devices.modes`; the former source import paths remain compatibility
   re-exports.
