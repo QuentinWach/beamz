@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 import beamz as bz
 import beamz.design.raster as raster
+import beamz.design.raster.importers.mesh_import as mesh_import
 from beamz.design import MaterialGrid
 from beamz.design.raster.importers import from_mesh, from_mesh_arrays, repair_mesh
 
@@ -49,6 +53,120 @@ def cube():
         dtype=np.uint32,
     )
     return vertices, triangles
+
+
+@pytest.mark.parametrize(
+    ("values", "error", "message"),
+    [
+        ([[0, 1]], ValueError, "at least 3 vertex indices"),
+        ([[0.5, 1, 2]], ValueError, "finite integers"),
+        ([[np.inf, 1, 2]], ValueError, "finite integers"),
+        ([["0", "1", "2"]], TypeError, "integer numeric dtype"),
+        ([[-1, 1, 2]], ValueError, "out of range"),
+        ([[0, 1, 3]], ValueError, "out of range"),
+    ],
+)
+def test_mesh_cell_indices_reject_invalid_arrays(values, error, message):
+    with pytest.raises(error, match=message):
+        mesh_import._cell_indices(
+            values,
+            width=3,
+            point_count=3,
+            cell_type="triangle",
+        )
+
+
+def test_mesh_cell_indices_accept_integral_floats_and_trim_high_order_nodes():
+    result = mesh_import._cell_indices(
+        [[0.0, 1.0, 2.0, 3.0]],
+        width=3,
+        point_count=3,
+        cell_type="triangle",
+    )
+
+    np.testing.assert_array_equal(result, [[0, 1, 2]])
+    assert result.dtype == np.uint32
+
+
+@pytest.mark.parametrize(
+    ("values", "error", "message"),
+    [
+        ([[7]], ValueError, "match their cell block length"),
+        ([7.5], ValueError, "finite integers"),
+        ([np.nan], ValueError, "finite integers"),
+        (["7"], TypeError, "integer numeric dtype"),
+    ],
+)
+def test_mesh_cell_tags_reject_invalid_arrays(values, error, message):
+    with pytest.raises(error, match=message):
+        mesh_import._cell_tags(values, cell_count=1)
+
+
+def test_mesh_cell_tags_accept_integral_floats():
+    np.testing.assert_array_equal(mesh_import._cell_tags([7.0], cell_count=1), [7.0])
+
+
+def test_meshio_adapter_handles_surface_and_tetrahedral_regions(monkeypatch):
+    vertices, triangles = tetrahedron()
+    surface = SimpleNamespace(
+        points=vertices,
+        cells=(SimpleNamespace(type="triangle", data=triangles[:2]),),
+        cell_data={"gmsh:physical": [np.array([7, 8])]},
+        field_data={"core": np.array([7, 2])},
+    )
+    volume = SimpleNamespace(
+        points=vertices,
+        cells=(SimpleNamespace(type="tetra10", data=np.array([[0, 1, 2, 3]])),),
+        cell_data={},
+        field_data={},
+    )
+    meshes = {"surface": surface, "volume": volume}
+    monkeypatch.setitem(
+        sys.modules,
+        "meshio",
+        SimpleNamespace(read=lambda path: meshes[str(path)]),
+    )
+
+    surface_scene = from_mesh(
+        "surface",
+        materials={"core": raster.Material(4), 8: raster.Material(9)},
+        unit_scale=2,
+    )
+    volume_scene = from_mesh("volume", material=raster.Material(6))
+
+    assert len(surface_scene.objects) == 2
+    np.testing.assert_array_equal(
+        surface_scene.objects[0].geometry.vertices,
+        vertices * 2,
+    )
+    assert len(volume_scene.objects) == 1
+    assert volume_scene.objects[0].geometry.triangles.shape == (4, 3)
+
+
+def test_meshio_adapter_rejects_invalid_scale_empty_mesh_and_missing_material(
+    monkeypatch,
+):
+    with pytest.raises(ValueError, match="finite and positive"):
+        from_mesh("unused", material=raster.Material(2), unit_scale=0)
+
+    vertices, triangles = tetrahedron()
+    data = SimpleNamespace(
+        points=vertices,
+        cells=(),
+        cell_data={},
+        field_data={},
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "meshio",
+        SimpleNamespace(read=lambda _path: data),
+    )
+    with pytest.raises(ValueError, match="no triangle or tetrahedral cells"):
+        from_mesh("empty", material=raster.Material(2))
+
+    data.cells = (SimpleNamespace(type="triangle", data=triangles[:1]),)
+    with pytest.raises(ValueError, match="No material configured"):
+        from_mesh("unconfigured")
 
 
 @pytest.mark.parametrize("scale", [1e-9, 1.0, 1e6])
