@@ -44,6 +44,10 @@ aliases.
   mutable runtime fields or monitor buffers.
 - Grid materialization is deferred until compilation or execution. `GridSpec`
   describes the requested grid, while `Design.rasterize()` returns material data.
+- The Python `RegularGrid` rasterizer and callback-based `CustomMaterial` API
+  were removed. Rust rasterization is the only geometry path for `Design`,
+  simulations, imported GDS, STL, Gmsh, meshio, and raw-mesh scenes. Pass
+  pre-sampled spatial coefficients directly as `MaterialGrid`.
 - GDS support is now optional and loaded lazily. Install `beamz[gds]` before calling
   the GDS import or export functions.
 - Plotting and labeled-data conversion are loaded lazily from `beamz.analysis` so the

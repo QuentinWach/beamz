@@ -1,17 +1,40 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
 
 from beamz._cache_tokens import cache_token
 from beamz.devices._immutable import readonly_array
+from beamz.lattice import normalize_polarization_2d
+
+
+def _tensor_diagonal(values) -> np.ndarray:
+    tensor = np.asarray(values)
+    if tensor.shape[0] == 1:
+        return np.broadcast_to(tensor, (3, *tensor.shape[1:]))
+    return tensor[:3]
+
+
+def _tensor_off_diagonal(values) -> np.ndarray:
+    tensor = np.asarray(values)
+    return tensor[3:] if tensor.shape[0] == 6 else np.zeros((0,), dtype=tensor.dtype)
+
+
+def _support_diagonal(values, axis: int) -> np.ndarray:
+    tensor = np.asarray(values)
+    if tensor.ndim < 2 or tensor.shape[0] not in (1, 3, 6):
+        raise ValueError(f"Yee tensor has invalid compact shape {tensor.shape}.")
+    return tensor[0 if tensor.shape[0] == 1 else axis]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
 class MaterialGrid:
-    """Store an immutable, center-sampled material discretization.
+    """Store immutable cell summaries and optional direct Yee coefficients.
 
     Parameters
     ----------
@@ -26,6 +49,17 @@ class MaterialGrid:
     shape : tuple of int
         Material array shape. It must follow array storage order, not public
         coordinate order.
+    yee_materials : mapping, optional
+        Componentwise material arrays already sampled at Yee supports.
+    tensors : mapping, optional
+        Packed symmetric cell tensors retained for compatible mode solving.
+    smoothing : str, default="volume"
+        Raster smoothing policy that produced the coefficients.
+    origin : tuple of float, default=(0, 0, 0)
+        Physical coordinate of the first x, y, and z grid edges.
+    polarization : {"tm", "te"}, optional
+        Active component family for a two-dimensional solver grid. Three-dimensional
+        grids leave this unset.
 
     Notes
     -----
@@ -37,44 +71,315 @@ class MaterialGrid:
     permeability: npt.ArrayLike
     resolution: float
     shape: tuple[int, ...]
+    yee_materials: Mapping[str, npt.ArrayLike] = field(default_factory=dict)
+    tensors: Mapping[str, npt.ArrayLike] = field(default_factory=dict)
+    smoothing: str = "volume"
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    polarization: Literal["tm", "te"] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "permittivity", readonly_array(self.permittivity))
         object.__setattr__(self, "conductivity", readonly_array(self.conductivity))
         object.__setattr__(self, "permeability", readonly_array(self.permeability))
-        object.__setattr__(self, "resolution", float(self.resolution))
-        object.__setattr__(self, "shape", tuple(int(v) for v in self.shape))
+        resolution = float(self.resolution)
+        if not np.isfinite(resolution) or resolution <= 0.0:
+            raise ValueError("MaterialGrid resolution must be finite and positive.")
+        object.__setattr__(self, "resolution", resolution)
+        shape = tuple(int(v) for v in self.shape)
+        if len(shape) not in (2, 3) or any(value <= 0 for value in shape):
+            raise ValueError(
+                "MaterialGrid shape must contain two or three positive counts."
+            )
+        object.__setattr__(self, "shape", shape)
+        polarization = self.polarization
+        if len(shape) == 2:
+            polarization = normalize_polarization_2d(polarization or "tm")
+        elif polarization is not None:
+            raise ValueError("MaterialGrid polarization applies only to 2D grids.")
+        object.__setattr__(self, "polarization", polarization)
+        for name in ("permittivity", "conductivity", "permeability"):
+            values = np.asarray(getattr(self, name))
+            actual = values.shape
+            if actual == ():
+                continue
+            if actual != shape:
+                raise ValueError(f"{name} has shape {actual}, expected {shape}.")
+        for name in ("yee_materials", "tensors"):
+            values = {
+                str(key): readonly_array(value)
+                for key, value in dict(getattr(self, name)).items()
+            }
+            object.__setattr__(self, name, MappingProxyType(values))
+        smoothing = str(self.smoothing).strip().lower()
+        if smoothing not in {"volume", "farjadpour_diagonal", "farjadpour_full"}:
+            raise ValueError("Unknown material-grid smoothing mode.")
+        object.__setattr__(self, "smoothing", smoothing)
+        origin = tuple(float(value) for value in self.origin)
+        if len(origin) != 3 or not np.all(np.isfinite(origin)):
+            raise ValueError("MaterialGrid origin must contain three finite values.")
+        object.__setattr__(self, "origin", origin)
+        allowed_yee = {
+            "eps_x": "Ex",
+            "eps_y": "Ey",
+            "eps_z": "Ez",
+            "sig_x": "Ex",
+            "sig_y": "Ey",
+            "sig_z": "Ez",
+            "mu_hx": "Hx",
+            "mu_hy": "Hy",
+            "mu_hz": "Hz",
+        }
+        unknown_yee = set(self.yee_materials) - set(allowed_yee)
+        if unknown_yee:
+            raise ValueError(
+                f"Unknown Yee material fields: {', '.join(sorted(unknown_yee))}."
+            )
+        if self.yee_materials:
+            from beamz.lattice import component_shapes
+
+            shapes = component_shapes(self.shape, self.polarization or "tm")
+            for name, values in self.yee_materials.items():
+                expected = shapes[allowed_yee[name]]
+                if np.asarray(values).shape != expected:
+                    raise ValueError(
+                        f"{name} has shape {np.asarray(values).shape}, expected {expected}."
+                    )
+        unknown_tensors = set(self.tensors) - {"epsilon", "mu", "conductivity"}
+        if unknown_tensors:
+            raise ValueError(
+                f"Unknown cell tensors: {', '.join(sorted(unknown_tensors))}."
+            )
+        for name, values in self.tensors.items():
+            shape = np.asarray(values).shape
+            if (
+                len(shape) != len(self.shape) + 1
+                or shape[0] not in (1, 3, 6)
+                or shape[1:] != self.shape
+            ):
+                raise ValueError(f"{name} tensor has invalid compact shape {shape}.")
 
     @classmethod
-    def from_grid(cls, grid, *, resolution: float) -> MaterialGrid:
-        """Snapshot a rasterizer object into an immutable material grid.
+    def from_raster_result(
+        cls,
+        result: Any,
+        *,
+        dimensions: Literal[2, 3] | None = None,
+        polarization: Literal["tm", "te"] = "tm",
+    ) -> MaterialGrid:
+        """Convert a uniform raster result into the current 2D or 3D solver grid.
 
-        Parameters
-        ----------
-        grid : object
-            Rasterizer result exposing permittivity, conductivity, and
-            permeability arrays.
-        resolution : float
-            Uniform cell spacing in metres.
+        Reduced TMz/TEz output identifies a 2D result automatically. Full output
+        remains 3D, including a legitimate one-cell-thick 3D raster; pass
+        ``dimensions=2`` explicitly when repurposing full output for 2D.
         """
-        permittivity = grid.permittivity
-        conductivity = grid.conductivity
-        permeability = grid.permeability
+
+        support_tensors = dict(getattr(result, "yee_tensors", {}))
+        edges = getattr(result, "grid_edges", None)
+        if edges is None or len(edges) != 3:
+            raise ValueError("RasterResult must retain x, y, and z grid edges.")
+        if dimensions is None:
+            available = set(support_tensors)
+            full_output = {
+                "epsilon_ex",
+                "epsilon_ey",
+                "epsilon_ez",
+                "conductivity_ex",
+                "conductivity_ey",
+                "conductivity_ez",
+                "mu_hx",
+                "mu_hy",
+                "mu_hz",
+            }
+            tm_output = {"epsilon_ez", "conductivity_ez", "mu_hx", "mu_hy"}
+            te_output = {
+                "epsilon_ex",
+                "epsilon_ey",
+                "conductivity_ex",
+                "conductivity_ey",
+                "mu_hz",
+            }
+            if full_output <= available:
+                dimensions = 3
+            elif (tm_output <= available and not (te_output & available)) or (
+                te_output <= available and not (tm_output & available)
+            ):
+                dimensions = 2
+            else:
+                raise ValueError(
+                    "Cannot infer RasterResult dimensionality from its Yee "
+                    "components; pass dimensions=2 or dimensions=3 explicitly."
+                )
+        if dimensions not in (2, 3):
+            raise ValueError("dimensions must be 2 or 3.")
+        polarization = normalize_polarization_2d(polarization)
+        component_specs = (
+            (
+                ("eps_x", "epsilon_ex", 0),
+                ("eps_y", "epsilon_ey", 1),
+                ("eps_z", "epsilon_ez", 2),
+                ("sig_x", "conductivity_ex", 0),
+                ("sig_y", "conductivity_ey", 1),
+                ("sig_z", "conductivity_ez", 2),
+                ("mu_hx", "mu_hx", 0),
+                ("mu_hy", "mu_hy", 1),
+                ("mu_hz", "mu_hz", 2),
+            )
+            if dimensions == 3
+            else (
+                (
+                    ("eps_z", "epsilon_ez", 2),
+                    ("sig_z", "conductivity_ez", 2),
+                    ("mu_hx", "mu_hx", 0),
+                    ("mu_hy", "mu_hy", 1),
+                )
+                if polarization == "tm"
+                else (
+                    ("eps_x", "epsilon_ex", 0),
+                    ("eps_y", "epsilon_ey", 1),
+                    ("sig_x", "conductivity_ex", 0),
+                    ("sig_y", "conductivity_ey", 1),
+                    ("mu_hz", "mu_hz", 2),
+                )
+            )
+        )
+        required = {source for _target, source, _axis in component_specs}
+        missing = required - set(support_tensors)
+        if missing:
+            raise ValueError(
+                f"RasterResult omits solver components: {', '.join(sorted(missing))}."
+            )
+        spacings = tuple(np.diff(np.asarray(axis, dtype=float)) for axis in edges)
+        resolution = float(spacings[0][0])
+        active_axes = spacings if dimensions == 3 else spacings[:2]
+        if any(
+            not np.allclose(axis, resolution, rtol=1e-12, atol=0.0)
+            for axis in active_axes
+        ):
+            raise ValueError(
+                "BeamZ Simulation requires one uniform spacing on every active axis."
+            )
+        smoothing = str(getattr(result, "smoothing", "volume"))
+        if smoothing == "farjadpour_full":
+            raise ValueError(
+                "BeamZ Simulation cannot consume full off-diagonal Farjadpour "
+                "tensors yet. Rasterize with smoothing='farjadpour_diagonal' "
+                "for the current componentwise FDTD engine."
+            )
+        materials = {
+            target: _support_diagonal(support_tensors[source], axis)
+            for target, source, axis in component_specs
+        }
+        tensors = dict(getattr(result, "tensors", {}))
+        missing_tensors = {"epsilon", "mu", "conductivity"} - set(tensors)
+        if missing_tensors:
+            raise ValueError(
+                "RasterResult omits cell tensors: "
+                f"{', '.join(sorted(missing_tensors))}."
+            )
+        if smoothing == "volume":
+            off_diagonal = max(
+                (
+                    float(np.max(np.abs(np.asarray(values)[3:])))
+                    for values in tensors.values()
+                    if np.asarray(values).shape[0] == 6
+                ),
+                default=0.0,
+            )
+            if off_diagonal > 1e-10:
+                raise ValueError(
+                    "BeamZ Simulation cannot silently discard off-diagonal material "
+                    "terms. Select smoothing='farjadpour_diagonal' to request an "
+                    "explicit diagonal projection, or use the standalone result."
+                )
+
+        epsilon_tensor = np.asarray(tensors["epsilon"])
+        mu_tensor = np.asarray(tensors["mu"])
+        conductivity_tensor = np.asarray(tensors["conductivity"])
+        mu_diagonal = _tensor_diagonal(mu_tensor)
+        if not (
+            np.allclose(mu_diagonal, 1.0, rtol=1e-10, atol=1e-12)
+            and np.allclose(
+                _tensor_off_diagonal(mu_tensor), 0.0, rtol=1e-10, atol=1e-12
+            )
+        ):
+            raise ValueError(
+                "BeamZ's current FDTD update supports only unit permeability. "
+                "The tensor raster remains available for standalone use."
+            )
+        epsilon_diagonal = _tensor_diagonal(epsilon_tensor)
+        conductivity_diagonal = _tensor_diagonal(conductivity_tensor)
+        epsilon = np.mean(epsilon_diagonal, axis=0)
+        conductivity = np.mean(conductivity_diagonal, axis=0)
+        permeability = np.mean(mu_diagonal, axis=0)
+        if dimensions == 2:
+            if epsilon.shape[0] != 1:
+                raise ValueError("A 2D MaterialGrid requires exactly one z cell.")
+            if polarization == "tm":
+                epsilon = epsilon_diagonal[2, 0]
+                conductivity = conductivity_diagonal[2, 0]
+                permeability = 0.5 * (mu_diagonal[0, 0] + mu_diagonal[1, 0])
+            else:
+                epsilon = 0.5 * (epsilon_diagonal[0, 0] + epsilon_diagonal[1, 0])
+                conductivity = 0.5 * (
+                    conductivity_diagonal[0, 0] + conductivity_diagonal[1, 0]
+                )
+                permeability = mu_diagonal[2, 0]
+            materials = {
+                name: np.asarray(value)[0] for name, value in materials.items()
+            }
+            tensors = {name: np.asarray(value)[:, 0] for name, value in tensors.items()}
         return cls(
-            permittivity,
+            epsilon,
             conductivity,
             permeability,
-            float(resolution),
-            tuple(int(v) for v in np.asarray(permittivity).shape),
+            resolution,
+            tuple(int(value) for value in epsilon.shape),
+            materials,
+            tensors,
+            smoothing,
+            (
+                float(np.asarray(edges[0])[0]),
+                float(np.asarray(edges[1])[0]),
+                float(np.asarray(edges[2])[0]),
+            ),
+            polarization if dimensions == 2 else None,
         )
 
     def field_arrays(self) -> tuple[npt.ArrayLike, npt.ArrayLike, npt.ArrayLike]:
         """Return permittivity, conductivity, and permeability arrays."""
         return self.permittivity, self.conductivity, self.permeability
 
+    @property
+    def uses_direct_yee_materials(self) -> bool:
+        """Return whether propagation must consume the retained Yee arrays."""
+
+        if not self.yee_materials:
+            return False
+        if self.smoothing == "farjadpour_diagonal":
+            return True
+        for name in ("epsilon", "conductivity"):
+            if name not in self.tensors:
+                continue
+            diagonal = _tensor_diagonal(self.tensors[name])
+            if not (
+                np.allclose(diagonal[0], diagonal[1], rtol=1e-10, atol=1e-12)
+                and np.allclose(diagonal[0], diagonal[2], rtol=1e-10, atol=1e-12)
+            ):
+                return True
+        return False
+
     def canonical_spec(self):
         """Return values defining material-grid cache identity."""
-        return (*self.field_arrays(), self.resolution, self.shape)
+        return (
+            *self.field_arrays(),
+            self.resolution,
+            self.shape,
+            self.yee_materials,
+            self.tensors,
+            self.smoothing,
+            self.origin,
+            self.polarization,
+        )
 
     def __eq__(self, other):
         if not isinstance(other, MaterialGrid):
@@ -94,7 +399,7 @@ def build_material_grid(
     progress: bool = False,
     **kwargs,
 ) -> MaterialGrid:
-    """Discretize a design into center-sampled material-property grids.
+    """Discretize a design into the immutable solver material grid.
 
     Parameters
     ----------
@@ -103,7 +408,7 @@ def build_material_grid(
     resolution : float
         Uniform spatial cell size in metres.
     grid_type : str, default="auto"
-        Rasterizer selection forwarded to ``design.rasterize``.
+        Dimensionality policy: ``"auto"``, ``"2d"``, or ``"3d"``.
     force_recompute : bool, default=False
         Rebuild the grid even when a matching cached discretization exists.
     progress : bool, default=False
@@ -114,14 +419,13 @@ def build_material_grid(
     Returns
     -------
     MaterialGrid
-        Read-only permittivity, conductivity, and permeability arrays.
+        Read-only cell summaries and compatible direct Yee coefficients.
 
     """
-    grid = design.rasterize(
+    return design.rasterize(
         resolution,
         grid_type=grid_type,
         force_recompute=force_recompute,
         progress=progress,
         **kwargs,
     )
-    return MaterialGrid.from_grid(grid, resolution=resolution)

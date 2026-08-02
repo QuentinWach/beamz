@@ -22,11 +22,13 @@ from beamz.devices.sources.mode_launch import (
     plan_mode_source_launch,
 )
 from beamz.devices.sources.planar_tfsf import ModeSource3DResidual
+from beamz.devices.sources.solve import mode_plane_context
 from beamz.devices.sources.specs import FieldProfile3D
 from beamz.devices.sources.time import (
     chebyshev_frequency_nodes,
     sample_source_waveforms,
 )
+from beamz.lattice import component_shapes
 from beamz.simulation.observe import source_normalization as _source_normalization
 from tests.utils import compiled_grid
 
@@ -41,6 +43,22 @@ def _uniform_3d_fields(shape=(5, 5, 6), resolution=1.0):
         resolution=resolution,
     )
     fields.boundaries = []
+    return fields
+
+
+def _direct_yee_2d_fields(shape, *, resolution=1.0):
+    fields = compiled_grid(
+        permittivity=np.ones(shape, dtype=np.float32) * 2.25,
+        conductivity=np.zeros(shape, dtype=np.float32),
+        permeability=np.ones(shape, dtype=np.float32),
+        resolution=resolution,
+    )
+    yee_materials = {"eps_z": np.ones(tuple(value + 1 for value in shape))}
+    fields.material_grid = replace(
+        fields.material_grid,
+        yee_materials=yee_materials,
+        smoothing="farjadpour_diagonal",
+    )
     return fields
 
 
@@ -133,6 +151,165 @@ def test_mode_launch_planner_consumes_native_discrete_mode(monkeypatch):
         "_Hz_profile",
     ):
         assert not hasattr(source, removed_attr)
+
+
+def test_mode_launch_receives_same_diagonal_tensor_material_view(monkeypatch):
+    fields = _uniform_3d_fields()
+    shape = fields.permittivity.shape
+    epsilon = np.stack(
+        [
+            np.full(shape, value, dtype=np.float32)
+            for value in (2.0, 3.0, 4.0, 0.0, 0.0, 0.0)
+        ]
+    )
+    mu = np.stack(
+        [
+            np.full(shape, value, dtype=np.float32)
+            for value in (1.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+        ]
+    )
+    fields.material_grid = replace(
+        fields.material_grid,
+        tensors={"epsilon": epsilon, "mu": mu},
+    )
+    seen = {}
+
+    def fake_solve(spec):
+        seen.update(vars(spec))
+        return _fake_discrete_mode()
+
+    monkeypatch.setattr(mode_launch_module, "solve_beamz_mode", fake_solve)
+    plan_mode_source_launch(_mode_source(), fields, resolution=1.0, dt=1e-15)
+
+    assert set(seen["diagonal_permittivity"]) == {"xx", "yy", "zz"}
+    assert np.all(seen["diagonal_permittivity"]["xx"] == 2.0)
+    assert np.all(seen["diagonal_permittivity"]["yy"] == 3.0)
+    assert np.all(seen["diagonal_permittivity"]["zz"] == 4.0)
+
+
+def test_3d_mode_launch_receives_direct_yee_material_view(monkeypatch):
+    fields = _uniform_3d_fields()
+    shapes = component_shapes(fields.material_grid.shape)
+    yee_materials = {
+        name: np.full(shapes[component], value)
+        for name, component, value in (
+            ("eps_x", "Ex", 2.0),
+            ("eps_y", "Ey", 3.0),
+            ("eps_z", "Ez", 4.0),
+            ("mu_hx", "Hx", 1.0),
+            ("mu_hy", "Hy", 1.0),
+            ("mu_hz", "Hz", 1.0),
+        )
+    }
+    fields.material_grid = replace(
+        fields.material_grid,
+        yee_materials=yee_materials,
+        smoothing="farjadpour_diagonal",
+    )
+    seen = {}
+
+    def fake_solve(spec):
+        seen.update(vars(spec))
+        return _fake_discrete_mode()
+
+    monkeypatch.setattr(mode_launch_module, "solve_beamz_mode", fake_solve)
+    plan_mode_source_launch(_mode_source(), fields, resolution=1.0, dt=1e-15)
+
+    assert np.all(seen["component_permittivity"]["Ex"] == 2.0)
+    assert np.all(seen["component_permittivity"]["Ey"] == 3.0)
+    assert np.all(seen["component_permittivity"]["Ez"] == 4.0)
+
+
+def test_mode_launch_rejects_conductive_material_profile():
+    fields = _uniform_3d_fields()
+    fields.conductivity = np.full(fields.permittivity.shape, 0.1)
+
+    with pytest.raises(ValueError, match="conductive material"):
+        plan_mode_source_launch(_mode_source(), fields, resolution=1.0, dt=1e-15)
+
+
+def test_2d_mode_launch_rejects_materials_requiring_direct_yee_supports():
+    fields = _direct_yee_2d_fields((5, 6))
+    source = _mode_source(mode_spec=ModeSpec(polarization="tm"))
+
+    with pytest.raises(ValueError, match="direct Yee-support"):
+        plan_mode_source_launch(source, fields, resolution=1.0, dt=1e-15)
+
+
+def test_2d_te_mode_launch_uses_te_solver_and_te_yee_components(monkeypatch):
+    fields = compiled_grid(
+        permittivity=np.ones((7, 8), dtype=np.float32) * 2.25,
+        conductivity=np.zeros((7, 8), dtype=np.float32),
+        permeability=np.ones((7, 8), dtype=np.float32),
+        resolution=1.0,
+        polarization="te",
+    )
+    source = _mode_source(
+        center=(3.0, 3.0, 0.0),
+        size=(0.0, 4.0, 1.0),
+        mode_spec=ModeSpec(polarization=None),
+    )
+    seen = {}
+
+    def fake_solve_modes(**kwargs):
+        seen.update(kwargs)
+        count = np.asarray(kwargs["eps"]).size
+        e = np.zeros((1, 3, count), dtype=np.complex128)
+        h = np.zeros_like(e)
+        e[0, 1] = 2.0
+        h[0, 2] = 1.0
+        return np.asarray([1.5]), e, h, None
+
+    monkeypatch.setattr(mode_launch_module, "solve_modes", fake_solve_modes)
+    plan = plan_mode_source_launch(source, fields, resolution=1.0, dt=1e-15)
+
+    assert {entry.component for entry in plan.entries} == {"Ey", "Hz"}
+    assert seen["filter_pol"] == "te"
+
+
+def test_2d_mode_source_rejects_polarization_mismatch():
+    fields = compiled_grid(
+        permittivity=np.ones((7, 8), dtype=np.float32),
+        conductivity=np.zeros((7, 8), dtype=np.float32),
+        permeability=np.ones((7, 8), dtype=np.float32),
+        resolution=1.0,
+        polarization="te",
+    )
+    source = _mode_source(mode_spec=ModeSpec(polarization="tm"))
+
+    with pytest.raises(ValueError, match="does not match"):
+        plan_mode_source_launch(source, fields, resolution=1.0, dt=1e-15)
+
+
+def test_public_mode_solve_rejects_materials_requiring_direct_yee_supports():
+    fields = _direct_yee_2d_fields((5, 6))
+    simulation = SimpleNamespace(fields=fields, resolution=1.0)
+    plane = SimpleNamespace(
+        center=(2.5, 2.5, 2.5),
+        size=(0.0, 2.0, 2.0),
+        axis="x",
+    )
+
+    with pytest.raises(ValueError, match="direct Yee-support"):
+        mode_plane_context(simulation=simulation, plane=plane)
+
+
+def test_public_mode_solve_rejects_conductive_materials():
+    fields = compiled_grid(
+        permittivity=np.ones((5, 6)),
+        conductivity=np.ones((5, 6)),
+        permeability=np.ones((5, 6)),
+        resolution=1.0,
+    )
+    simulation = SimpleNamespace(
+        fields=fields,
+        resolution=1.0,
+        design=SimpleNamespace(width=6.0, height=5.0, depth=0.0),
+    )
+    plane = SimpleNamespace(center=(2.5, 2.5, 2.5), size=(0.0, 2.0, 2.0))
+
+    with pytest.raises(ValueError, match="conductive material"):
+        mode_plane_context(simulation=simulation, plane=plane)
 
 
 def test_mode_launch_recomputes_nonfinite_discrete_wave_number(monkeypatch):

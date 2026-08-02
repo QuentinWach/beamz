@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
+from typing import Literal, Mapping
 
 import jax.numpy as jnp
 import numpy as np
@@ -549,50 +549,97 @@ def component_shape_2d(
     component: str,
     grid_shape: tuple[int, ...],
     plane: str = "xy",
+    polarization: str = "tm",
 ) -> tuple[int, int]:
-    """Return the public component shape backed by the canonical TMxy lattice."""
+    """Return a public component shape on the selected canonical 2D lattice."""
     if len(grid_shape) != 2:
         raise ValueError(f"A 2D grid shape must have two dimensions: {grid_shape!r}")
     ny, nx = (int(v) for v in grid_shape)
-    canonical = canonical_component_2d(component, plane)
+    canonical = canonical_component_2d(component, plane, polarization)
     if canonical is None:
         return (1, 1)
     return {
-        "Ez": (ny + 1, nx + 1),
-        "Hx": (ny, nx + 1),
-        "Hy": (ny + 1, nx),
-    }[canonical]
+        "tm": {
+            "Ez": (ny + 1, nx + 1),
+            "Hx": (ny, nx + 1),
+            "Hy": (ny + 1, nx),
+        },
+        "te": {
+            "Ex": (ny + 1, nx),
+            "Ey": (ny, nx + 1),
+            "Hz": (ny, nx),
+        },
+    }[normalize_polarization_2d(polarization)][canonical]
 
 
-def component_shapes(grid_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
+def component_shapes(
+    grid_shape: tuple[int, ...], polarization: str = "tm"
+) -> dict[str, tuple[int, ...]]:
     """Return every canonical field support for a material-grid shape."""
-    shape_for = component_shape_3d if len(grid_shape) == 3 else component_shape_2d
+    if len(grid_shape) == 3:
+        return {
+            component: component_shape_3d(component, grid_shape)
+            for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+        }
     return {
-        component: shape_for(component, grid_shape)
+        component: component_shape_2d(component, grid_shape, "xy", polarization)
         for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
     }
 
 
-def canonical_component_2d(component: str, plane: str) -> str | None:
-    """Map a public plane/component label to the sole runtime TMxy component."""
+def normalize_polarization_2d(value: str) -> Literal["tm", "te"]:
+    """Normalize a 2D electromagnetic polarization name."""
+
+    polarization = str(value).strip().lower()
+    if polarization not in {"tm", "te"}:
+        raise ValueError("polarization must be 'tm' or 'te'.")
+    return "tm" if polarization == "tm" else "te"
+
+
+def canonical_component_2d(
+    component: str, plane: str, polarization: str = "tm"
+) -> str | None:
+    """Map a public plane component to the selected canonical xy lattice."""
     try:
-        return {
-            "xy": {"Ez": "Ez", "Hx": "Hx", "Hy": "Hy"},
-            "yz": {"Ex": "Ez", "Hy": "Hx", "Hz": "Hy"},
-            "xz": {"Ey": "Ez", "Hx": "Hx", "Hz": "Hy"},
-        }[str(plane).lower()].get(component)
+        mappings = {
+            "tm": {
+                "xy": {"Ez": "Ez", "Hx": "Hx", "Hy": "Hy"},
+                "yz": {"Ex": "Ez", "Hy": "Hx", "Hz": "Hy"},
+                "xz": {"Ey": "Ez", "Hx": "Hx", "Hz": "Hy"},
+            },
+            "te": {
+                "xy": {"Ex": "Ex", "Ey": "Ey", "Hz": "Hz"},
+                "yz": {"Ey": "Ex", "Ez": "Ey", "Hx": "Hz"},
+                "xz": {"Ex": "Ex", "Ez": "Ey", "Hy": "Hz"},
+            },
+        }
+        return mappings[normalize_polarization_2d(polarization)][
+            str(plane).lower()
+        ].get(component)
     except KeyError as exc:
         raise ValueError(f"Unsupported plane {plane!r}") from exc
 
 
-def public_component_2d(component: str, plane: str) -> tuple[str, float]:
-    """Map a canonical TMxy component back to its public physical label and sign."""
+def public_component_2d(
+    component: str, plane: str, polarization: str = "tm"
+) -> tuple[str, float]:
+    """Map a canonical 2D component back to its public label and orientation."""
     try:
-        return {
-            "xy": {"Ez": ("Ez", 1.0), "Hx": ("Hx", 1.0), "Hy": ("Hy", 1.0)},
-            "yz": {"Ez": ("Ex", 1.0), "Hx": ("Hy", 1.0), "Hy": ("Hz", 1.0)},
-            "xz": {"Ez": ("Ey", -1.0), "Hx": ("Hx", 1.0), "Hy": ("Hz", 1.0)},
-        }[str(plane).lower()][component]
+        mappings = {
+            "tm": {
+                "xy": {"Ez": ("Ez", 1.0), "Hx": ("Hx", 1.0), "Hy": ("Hy", 1.0)},
+                "yz": {"Ez": ("Ex", 1.0), "Hx": ("Hy", 1.0), "Hy": ("Hz", 1.0)},
+                "xz": {"Ez": ("Ey", -1.0), "Hx": ("Hx", 1.0), "Hy": ("Hz", 1.0)},
+            },
+            "te": {
+                "xy": {"Ex": ("Ex", 1.0), "Ey": ("Ey", 1.0), "Hz": ("Hz", 1.0)},
+                "yz": {"Ex": ("Ey", 1.0), "Ey": ("Ez", 1.0), "Hz": ("Hx", 1.0)},
+                "xz": {"Ex": ("Ex", 1.0), "Ey": ("Ez", 1.0), "Hz": ("Hy", -1.0)},
+            },
+        }
+        return mappings[normalize_polarization_2d(polarization)][str(plane).lower()][
+            component
+        ]
     except KeyError as exc:
         raise ValueError(
             f"Component {component!r} is not active in canonical 2D plane {plane!r}"
@@ -604,15 +651,23 @@ def component_coordinates_2d_um(
     grid_shape: tuple[int, ...],
     dx_um: float,
     plane: str,
+    polarization: str = "tm",
 ) -> dict[str, np.ndarray]:
-    """Return public-axis coordinates for a canonical TMxy-backed component."""
-    shape = component_shape_2d(component, grid_shape, plane)
-    canonical = canonical_component_2d(component, plane)
+    """Return public-axis coordinates for a canonical 2D Yee component."""
+    shape = component_shape_2d(component, grid_shape, plane, polarization)
+    canonical = canonical_component_2d(component, plane, polarization)
     row_axis, col_axis = {"xy": ("y", "x"), "yz": ("z", "y"), "xz": ("z", "x")}[plane]
     offsets = (
         (0.0, 0.0)
         if canonical is None
-        else {"Ez": (0.0, 0.0), "Hx": (0.5, 0.0), "Hy": (0.0, 0.5)}[canonical]
+        else {
+            "Ez": (0.0, 0.0),
+            "Hx": (0.5, 0.0),
+            "Hy": (0.0, 0.5),
+            "Ex": (0.0, 0.5),
+            "Ey": (0.5, 0.0),
+            "Hz": (0.5, 0.5),
+        }[canonical]
     )
     return {
         row_axis: (np.arange(shape[0], dtype=np.float64) + offsets[0]) * dx_um,
@@ -624,24 +679,35 @@ def sample_voxel_grid_at_component_2d(
     grid,
     component: str,
     plane: str,
+    polarization: str = "tm",
     *,
     stored_shape: tuple[int, ...] | None = None,
     region: tuple[slice, slice] | None = None,
 ):
-    """Sample a material raster on the canonical TMxy support."""
+    """Sample a material raster on the selected canonical 2D Yee support."""
     grid_np = np.asarray(grid)
-    canonical = canonical_component_2d(component, plane)
+    canonical = canonical_component_2d(component, plane, polarization)
     if canonical is None:
         return jnp.asarray(grid_np[:1, :1])
-    shape = component_shape_2d(component, tuple(int(v) for v in grid_np.shape), plane)
+    shape = component_shape_2d(
+        component,
+        tuple(int(v) for v in grid_np.shape),
+        plane,
+        polarization,
+    )
     if stored_shape is not None and tuple(int(v) for v in stored_shape) != shape:
         raise ValueError(f"stored_shape={stored_shape!r} does not match {shape!r}")
     region = region or (slice(None), slice(None))
     ny, nx = (int(v) for v in grid_np.shape)
     y_len, x_len = shape
-    y_offset, x_offset = {"Ez": (0.0, 0.0), "Hx": (0.5, 0.0), "Hy": (0.0, 0.5)}[
-        canonical
-    ]
+    y_offset, x_offset = {
+        "Ez": (0.0, 0.0),
+        "Hx": (0.5, 0.0),
+        "Hy": (0.0, 0.5),
+        "Ex": (0.0, 0.5),
+        "Ey": (0.5, 0.0),
+        "Hz": (0.5, 0.5),
+    }[canonical]
     y_idx = np.clip(np.floor(np.arange(y_len) + y_offset).astype(np.int32), 0, ny - 1)
     x_idx = np.clip(np.floor(np.arange(x_len) + x_offset).astype(np.int32), 0, nx - 1)
     sampled = jnp.asarray(grid)
@@ -774,13 +840,9 @@ def build_material_coefficients(fields):
             **_base_coefficients(total_sigma, e_terms, sigma_m, _mu_3d(fields))
         )
 
-    # Canonical 2D owns Ez/Hx/Hy; scalar placeholders keep the shared state schema fixed.
-    eps_ez = sample_voxel_grid_at_component_2d(fields.permittivity, "Ez", "xy")
-    sig_ez = (
-        total_sigma
-        if jnp.asarray(total_sigma).ndim == 0
-        else sample_voxel_grid_at_component_2d(total_sigma, "Ez", "xy")
-    )
+    # The runtime schema always contains six components; only one polarization's
+    # three supports carry full arrays in a 2D program.
+    polarization = normalize_polarization_2d(getattr(fields, "polarization_2d", "tm"))
     inactive_eps = jnp.asarray(fields.permittivity)[:1, :1]
     inactive_sig = (
         total_sigma
@@ -788,10 +850,24 @@ def build_material_coefficients(fields):
         else jnp.asarray(total_sigma)[:1, :1]
     )
     region = (slice(None), slice(None))
-    e_terms = (
-        (inactive_eps, inactive_sig, region),
-        (inactive_eps, inactive_sig, region),
-        (eps_ez, sig_ez, region),
+    active_e = ("Ez",) if polarization == "tm" else ("Ex", "Ey")
+    e_terms = tuple(
+        (
+            sample_voxel_grid_at_component_2d(
+                fields.permittivity, component, "xy", polarization
+            ),
+            (
+                total_sigma
+                if jnp.asarray(total_sigma).ndim == 0
+                else sample_voxel_grid_at_component_2d(
+                    total_sigma, component, "xy", polarization
+                )
+            ),
+            region,
+        )
+        if component in active_e
+        else (inactive_eps, inactive_sig, region)
+        for component in ("Ex", "Ey", "Ez")
     )
     if jnp.asarray(total_sigma).ndim == 0 and float(jnp.asarray(total_sigma)) == 0.0:
         sigma_m = (total_sigma,) * 3
@@ -799,18 +875,23 @@ def build_material_coefficients(fields):
         base = (
             jnp.asarray(total_sigma) * jnp.asarray(fields.permeability) * MU_0 / EPS_0
         )
-        sigma_m = (
-            sample_voxel_grid_at_component_2d(base, "Hx", "xy"),
-            sample_voxel_grid_at_component_2d(base, "Hy", "xy"),
-            jnp.asarray(base)[:1, :1],
+        active_h = ("Hx", "Hy") if polarization == "tm" else ("Hz",)
+        sigma_m = tuple(
+            sample_voxel_grid_at_component_2d(base, component, "xy", polarization)
+            if component in active_h
+            else jnp.asarray(base)[:1, :1]
+            for component in ("Hx", "Hy", "Hz")
         )
     mu_terms = (
         (fields.permeability,) * 3
         if fields.permeability.ndim == 0
-        else (
-            sample_voxel_grid_at_component_2d(fields.permeability, "Hx", "xy"),
-            sample_voxel_grid_at_component_2d(fields.permeability, "Hy", "xy"),
-            jnp.asarray(fields.permeability)[:1, :1],
+        else tuple(
+            sample_voxel_grid_at_component_2d(
+                fields.permeability, component, "xy", polarization
+            )
+            if component in (("Hx", "Hy") if polarization == "tm" else ("Hz",))
+            else jnp.asarray(fields.permeability)[:1, :1]
+            for component in ("Hx", "Hy", "Hz")
         )
     )
     return MaterialCoefficients(

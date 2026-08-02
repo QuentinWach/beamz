@@ -120,6 +120,7 @@ def _yee_coords(name, dims, shape, simulation):
                 raw_shape,
                 resolution * 1e6,
                 simulation.plane_2d,
+                getattr(simulation, "polarization_2d", "tm"),
             )
     except Exception:
         return None
@@ -356,7 +357,8 @@ def mode_data(results, name):
             mode_spec=ModeSpec(
                 mode_index=idx,
                 num_modes=num_modes,
-                polarization=monitor.mode_spec.polarization or "te",
+                polarization=monitor.mode_spec.polarization
+                or (data.coordinates.polarization_2d if not data.is_3d else "te"),
             ),
         )
         for idx in range(num_modes)

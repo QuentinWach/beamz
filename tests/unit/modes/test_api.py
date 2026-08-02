@@ -7,6 +7,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+import beamz.devices.modes.discrete as discrete_module
 from beamz.devices.modes._scipy import _pml_average_all_sides
 from beamz.devices.modes.constants import C_0
 from beamz.devices.modes.discrete import ModePlaneSpec, solve_beamz_mode
@@ -78,6 +79,32 @@ def test_mode_values_validate_and_snapshot_arrays():
     )
     assert data.selected_mode()[2] == 2.0
     assert not data.e_fields.flags.writeable
+
+
+def test_discrete_mode_solver_forwards_diagonal_material_components(monkeypatch):
+    spec = _plane_spec("x")
+    shape = spec.scalar_permittivity.shape
+    spec = replace(
+        spec,
+        diagonal_permittivity={
+            "xx": np.full(shape, 2.0),
+            "yy": np.full(shape, 3.0),
+            "zz": np.full(shape, 4.0),
+        },
+    )
+    seen = {}
+
+    def capture(**kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("captured")
+
+    monkeypatch.setattr(discrete_module, "solve_grid", capture)
+    with pytest.raises(RuntimeError, match="captured"):
+        solve_beamz_mode(spec)
+
+    assert np.all(seen["eps_xx"] == 2.0)
+    assert np.all(seen["eps_yy"] == 3.0)
+    assert np.all(seen["eps_zz"] == 4.0)
 
 
 def test_grid_solve_returns_sorted_modes_fields_and_diagnostics():

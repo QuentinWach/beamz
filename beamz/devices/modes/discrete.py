@@ -82,6 +82,8 @@ class ModePlaneSpec:
     aperture_window_alpha: float = 0.2
     component_permittivity: Mapping[str, np.ndarray] = field(default_factory=dict)
     component_permeability: Mapping[str, np.ndarray] = field(default_factory=dict)
+    diagonal_permittivity: Mapping[str, np.ndarray] = field(default_factory=dict)
+    diagonal_permeability: Mapping[str, np.ndarray] = field(default_factory=dict)
     # Guarded by joint field, power, energy, and discrete-Maxwell validation.
     yee_refinement: bool = True
 
@@ -134,7 +136,20 @@ class ModePlaneSpec:
         for name, value in (
             ("component_permittivity", self.component_permittivity),
             ("component_permeability", self.component_permeability),
+            ("diagonal_permittivity", self.diagonal_permittivity),
+            ("diagonal_permeability", self.diagonal_permeability),
         ):
+            if name.startswith("diagonal_"):
+                unknown = set(value) - {"xx", "yy", "zz"}
+                if unknown:
+                    raise ValueError(
+                        f"{name} has unknown components: {', '.join(sorted(unknown))}"
+                    )
+                for component, array in value.items():
+                    if np.asarray(array).shape != eps.shape:
+                        raise ValueError(
+                            f"{name}[{component!r}] must have shape {eps.shape}"
+                        )
             object.__setattr__(self, name, immutable_snapshot(value))
 
         if float(self.frequency) <= 0.0 or not np.isfinite(float(self.frequency)):
@@ -213,8 +228,21 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         spec.num_modes if spec.num_modes is not None else 2 * (spec.mode_index + 1) + 5
     )
 
+    diagonal_eps = {
+        name: _transpose_between_axes(values, spec.transverse_axes, solver_axes)
+        for name, values in spec.diagonal_permittivity.items()
+    }
+    diagonal_mu = {
+        name: _transpose_between_axes(values, spec.transverse_axes, solver_axes)
+        for name, values in spec.diagonal_permeability.items()
+    }
     result = solve_grid(
-        eps_xx=eps_solver,
+        eps_xx=diagonal_eps.get("xx", eps_solver),
+        eps_yy=diagonal_eps.get("yy"),
+        eps_zz=diagonal_eps.get("zz"),
+        mu_xx=diagonal_mu.get("xx"),
+        mu_yy=diagonal_mu.get("yy"),
+        mu_zz=diagonal_mu.get("zz"),
         x_edges=x_edges,
         y_edges=y_edges,
         freqs=[spec.frequency],

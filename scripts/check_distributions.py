@@ -23,7 +23,14 @@ FORBIDDEN_PARTS = {
 }
 FORBIDDEN_FILES = {".coverage", "coverage.xml", ".DS_Store"}
 REQUIRED = {
-    "sdist": {"beamz/__init__.py", "beamz/py.typed", "pyproject.toml"},
+    "sdist": {
+        "Cargo.toml",
+        "beamz/__init__.py",
+        "beamz/py.typed",
+        "pyproject.toml",
+        "rust/fdtd-raster-core/src/lib.rs",
+        "rust/fdtd-raster-py/src/lib.rs",
+    },
     "wheel": {"beamz/__init__.py", "beamz/py.typed"},
 }
 
@@ -85,6 +92,12 @@ def main(dist: Path = Path("dist")) -> int:
                 name.endswith(".dist-info/METADATA") for name in names
             ):
                 missing.append("*.dist-info/METADATA")
+            if kind == "wheel" and not any(
+                name.startswith("beamz/design/raster/_native.")
+                and name.endswith((".so", ".pyd", ".dylib"))
+                for name in names
+            ):
+                missing.append("beamz/design/raster/_native.<platform-extension>")
             if forbidden:
                 errors.append(f"{path}: forbidden entries: {', '.join(forbidden)}")
             if missing:
@@ -97,4 +110,5 @@ def main(dist: Path = Path("dist")) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("dist")
+    raise SystemExit(main(target))

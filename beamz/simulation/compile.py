@@ -25,7 +25,12 @@ from beamz.devices._boundary_compile import (
 )
 from beamz.devices.monitors.compiler import compile_monitor_specs
 from beamz.devices.sources.compiler import compile_source_specs
-from beamz.lattice import build_material_coefficients, component_shapes
+from beamz.lattice import (
+    build_material_coefficients,
+    component_shapes,
+    sample_voxel_grid_at_component_2d,
+    sample_voxel_grid_at_e_component_3d_centered,
+)
 from beamz.simulation.model import (
     BoundaryPlan,
     CompiledGrid,
@@ -62,6 +67,7 @@ class CompiledProgramKey:
     dt: float
     is_3d: bool
     plane_2d: str
+    polarization_2d: str
     loop_kind: str
     source_single_slab_dense: bool
     sharding: ShardingToken
@@ -80,6 +86,7 @@ class CompiledProgramKey:
             request.run.dt,
             request.domain.is_3d,
             request.domain.plane_2d,
+            request.domain.polarization_2d,
             request.run.loop_kind,
             request.run.source_single_slab_dense,
             request.run.sharding,
@@ -121,7 +128,9 @@ def _elide_zero_conductivity_grid(value):
     return value
 
 
-def _compile_cpml_plan(fields, *, dt, is_3d, metallic_edges) -> CpmlPlan:
+def _compile_cpml_plan(
+    fields, *, dt, is_3d, metallic_edges, polarization_2d: str = "tm"
+) -> CpmlPlan:
     """Compile every active derivative into the same packed coefficient record."""
     data = getattr(fields, "pml_data", None)
     enabled = bool(getattr(fields, "has_cpml", False) and data)
@@ -161,18 +170,28 @@ def _compile_cpml_plan(fields, *, dt, is_3d, metallic_edges) -> CpmlPlan:
         h_terms = terms_for(CPML_3D_H_DERIVATIVES)
         e_terms = terms_for(CPML_3D_E_DERIVATIVES)
     else:
-        profiles = data.get("tm_xy_cpml")
+        profiles = data.get(f"{polarization_2d}_xy_cpml")
         if profiles is None:
             return CpmlPlan(False, frozenset(metallic_edges), (), ())
         data = profiles
-        h_terms = (
-            term("Hx_y", "Hx", 0, 1.0, fields.Hx.shape),
-            term("Hy_x", "Hy", 1, -1.0, fields.Hy.shape),
-        )
-        e_terms = (
-            term("Ez_x", "Ez", 1, 1.0, fields.Ez.shape),
-            term("Ez_y", "Ez", 0, -1.0, fields.Ez.shape),
-        )
+        if polarization_2d == "tm":
+            h_terms = (
+                term("Hx_y", "Hx", 0, 1.0, fields.Hx.shape),
+                term("Hy_x", "Hy", 1, -1.0, fields.Hy.shape),
+            )
+            e_terms = (
+                term("Ez_x", "Ez", 1, 1.0, fields.Ez.shape),
+                term("Ez_y", "Ez", 0, -1.0, fields.Ez.shape),
+            )
+        else:
+            h_terms = (
+                term("Hz_x", "Hz", 1, 1.0, fields.Hz.shape),
+                term("Hz_y", "Hz", 0, -1.0, fields.Hz.shape),
+            )
+            e_terms = (
+                term("Ex_y", "Ex", 0, 1.0, fields.Ex.shape),
+                term("Ey_x", "Ey", 1, -1.0, fields.Ey.shape),
+            )
     return CpmlPlan(True, frozenset(metallic_edges), h_terms, e_terms)
 
 
@@ -233,6 +252,7 @@ def _prepare_compilation(
         },
         permittivity=logical_fields.permittivity,
         plane_2d=logical_fields.plane_2d,
+        polarization_2d=logical_fields.polarization_2d,
         _logical_component_shapes=sharding_layout.logical_shapes,
     )
     monitor_specs, _ = compile_monitor_specs(
@@ -242,6 +262,7 @@ def _prepare_compilation(
         num_steps,
         dt,
         request.domain.plane_2d,
+        request.domain.polarization_2d,
     )
     loop_aliases = {
         "fori": "fori_loop",
@@ -261,6 +282,7 @@ def _prepare_compilation(
         num_steps=num_steps,
         plane_2d=request.domain.plane_2d,
         is_3d=bool(request.domain.is_3d),
+        polarization_2d=request.domain.polarization_2d,
         loop_kind=loop_kind,
         source_single_slab_dense=bool(request.run.source_single_slab_dense),
         sharding=effective_sharding,
@@ -281,7 +303,9 @@ def _compile_grid(
     material_grid = request.materials
     material_source = boundary_data
     profiles = boundary_data.profiles
-    shapes = MappingProxyType(dict(component_shapes(material_grid.shape)))
+    shapes = MappingProxyType(
+        dict(component_shapes(material_grid.shape, request.domain.polarization_2d))
+    )
     components = {
         component: jnp.zeros(shape, dtype=jnp.float32)
         for component, shape in shapes.items()
@@ -301,6 +325,7 @@ def _compile_grid(
         "component_shapes": shapes,
         "resolution": material_grid.resolution,
         "plane_2d": "xy" if not request.domain.is_3d else request.domain.plane_2d,
+        "polarization_2d": request.domain.polarization_2d,
         "permittivity": jnp.asarray(material_source.permittivity),
         "conductivity": jnp.asarray(material_source.conductivity),
         "permeability": jnp.asarray(material_source.permeability),
@@ -316,6 +341,53 @@ def _compile_grid(
     }
     assembly = SimpleNamespace(**values)
     materials = build_material_coefficients(assembly)
+    direct = (
+        dict(boundary_data.yee_materials)
+        if material_grid.uses_direct_yee_materials
+        else {}
+    )
+    if direct:
+        values_by_name = dict(materials.items())
+        for source, target in (
+            ("eps_x", "eps_x"),
+            ("eps_y", "eps_y"),
+            ("eps_z", "eps_z"),
+            ("sig_x", "sig_x"),
+            ("sig_y", "sig_y"),
+            ("sig_z", "sig_z"),
+            ("mu_hx", "mu_hx"),
+            ("mu_hy", "mu_hy"),
+            ("mu_hz", "mu_hz"),
+        ):
+            if source in direct:
+                value = jnp.asarray(direct[source])
+                if (
+                    source.startswith("sig_")
+                    and assembly.has_pml
+                    and not assembly.has_cpml
+                ):
+                    component = {"sig_x": "Ex", "sig_y": "Ey", "sig_z": "Ez"}[source]
+                    centered = (
+                        sample_voxel_grid_at_e_component_3d_centered(
+                            assembly.conductivity,
+                            component,
+                        )
+                        if assembly.permittivity.ndim == 3
+                        else sample_voxel_grid_at_component_2d(
+                            assembly.conductivity,
+                            component,
+                            "xy",
+                            assembly.polarization_2d,
+                        )
+                    )
+                    value = value + values_by_name[target] - centered
+                values_by_name[target] = value
+        values_by_name.update(
+            eps_ex=values_by_name["eps_x"],
+            eps_ey=values_by_name["eps_y"],
+            eps_ez=values_by_name["eps_z"],
+        )
+        materials = type(materials)(**values_by_name)
     return CompiledGrid(
         **values,
         materials=materials,
@@ -327,7 +399,7 @@ def _compile_boundary(fields, cpml, boundary_data, *, is_3d: bool) -> BoundaryPl
     """Assemble canonical CPML and metallic values on the logical lattice."""
     masks = fields.metallic_masks
     return BoundaryPlan(
-        tm_metallic_edges=(frozenset() if is_3d else boundary_data.metallic_edges),
+        metallic_edges_2d=(frozenset() if is_3d else boundary_data.metallic_edges),
         cpml=cpml,
         metallic=MetallicPlan(
             masks["Ex"],
@@ -345,10 +417,11 @@ def compile_simulation(request: SimulationRequest) -> CompiledProgram:
     # 1. Lower all boundaries once, then collocate materials on the resulting lattice.
     boundary_data = lower_boundaries(
         request.materials,
-        component_shapes(request.materials.shape),
+        component_shapes(request.materials.shape, request.domain.polarization_2d),
         request.boundaries,
         request.domain.size,
         request.run.dt,
+        polarization_2d=request.domain.polarization_2d,
     )
     logical_grid = _compile_grid(request, boundary_data)
     setup = _prepare_compilation(request, logical_grid)
@@ -430,6 +503,7 @@ def compile_simulation(request: SimulationRequest) -> CompiledProgram:
         dt=dt,
         is_3d=bool(request.domain.is_3d),
         metallic_edges=boundary_data.metallic_edges,
+        polarization_2d=request.domain.polarization_2d,
     )
 
     # Assemble coefficients explicitly so renaming a planning local cannot silently

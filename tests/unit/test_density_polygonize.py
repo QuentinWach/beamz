@@ -100,12 +100,7 @@ def test_density_to_polygons_rerasterizes_with_preserved_voids():
         design += polygon
     design = design.unified_polygons()
 
-    grid = design.rasterize(
-        1.0,
-        aa_mode="stratified_jitter",
-        aa_samples=64,
-        force_recompute=True,
-    )
+    grid = design.rasterize(1.0, quality="reference", force_recompute=True)
 
     assert grid.permittivity[12, 12] == pytest.approx(EPS_CORE)
     assert grid.permittivity[24, 24] == pytest.approx(EPS_CLAD)

@@ -15,6 +15,7 @@ from beamz.lattice import (
     canonical_component_2d,
     component_axis_offsets_3d,
     component_material_at,
+    public_component_2d,
 )
 
 from .mode_launch import (
@@ -195,13 +196,14 @@ def _lower_custom_source(
     coeff = source.coeff
     target_shape = source.target_shape
     if ctx.domain is not None and not bool(ctx.domain.is_3d):
-        canonical = canonical_component_2d(component, ctx.domain.plane_2d)
+        polarization = ctx.domain.polarization_2d
+        canonical = canonical_component_2d(component, ctx.domain.plane_2d, polarization)
         if canonical is None:
             raise ValueError(
                 f"2D plane {ctx.domain.plane_2d!r} does not support {component!r}; "
-                "only the out-of-plane electric polarization is active."
+                f"only {polarization.upper()}z components are active."
             )
-        sign = -1.0 if ctx.domain.plane_2d == "xz" and component == "Ey" else 1.0
+        _, sign = public_component_2d(canonical, ctx.domain.plane_2d, polarization)
         component = canonical
         coeff = sign * np.asarray(coeff)
         target_shape = tuple(getattr(ctx.fields, canonical).shape)
@@ -403,19 +405,20 @@ def _lower_gaussian_source(
     source: GaussianSource,
     ctx: SourceLoweringContext,
 ) -> CompiledInjectionPlan:
-    try:
-        is_3d = len(source.position) >= 3
-    except TypeError:
-        is_3d = False
+    is_3d = np.asarray(ctx.fields.permittivity).ndim == 3
+    is_te = not is_3d and ctx.domain is not None and ctx.domain.polarization_2d == "te"
+    component = "Hz" if is_te else "Ez"
+    target = getattr(ctx.fields, component)
     index, profile = gaussian_spatial_profile(
         source,
-        ez_shape=ctx.fields.Ez.shape,
+        ez_shape=target.shape,
         resolution=ctx.resolution,
         is_3d=is_3d,
         plane_2d=getattr(ctx.fields, "plane_2d", None),
     )
-    eps_region = np.asarray(component_material_at(ctx.fields, "Ez", index))
-    values = -np.asarray(profile) * ctx.dt / (EPS_0 * eps_region)
+    material_region = np.asarray(component_material_at(ctx.fields, component, index))
+    constant = MU_0 if is_te else EPS_0
+    values = -np.asarray(profile) * ctx.dt / (constant * material_region)
     waveform = TemporalWaveform(
         sample_waveform(
             lambda time, step: _signal_value(source.signal, time, step),
@@ -429,12 +432,12 @@ def _lower_gaussian_source(
     return CompiledInjectionPlan(
         (
             _injection_entry(
-                component="Ez",
-                timing="pre_e",
+                component=component,
+                timing="h" if is_te else "pre_e",
                 index=index,
                 values=values,
                 waveform=waveform,
-                target_shape=tuple(ctx.fields.Ez.shape),
+                target_shape=tuple(target.shape),
             ),
         )
     )

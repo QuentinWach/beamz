@@ -225,6 +225,7 @@ def _video_data(results, recording, *, field, plane, index):
         metadata.fields.grid_shape,
         resolution_um,
         metadata.plane_2d,
+        metadata.polarization_2d,
     )
     x_extent = _axis_extent(
         coordinates[horizontal],

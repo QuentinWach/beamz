@@ -23,7 +23,6 @@ EXPECTED_EXPORTS = {
         "µm",
         "μm",
         "Material",
-        "CustomMaterial",
         "design",
         "optimization",
         "Design",
@@ -82,7 +81,6 @@ EXPECTED_EXPORTS = {
     ),
     "beamz.design": (
         "Material",
-        "CustomMaterial",
         "Design",
         "MaterialGrid",
         "build_material_grid",

@@ -5,15 +5,13 @@ Module to define the design of complex structures parametrically as well as mesh
 - `core.py`: Main design API and rasterization orchestration.
 - `discretization.py`: Design-to-`MaterialGrid` material placement API.
 - `structures.py`: Geometry primitives (rectangle, circle, ring, polygon, taper, etc.).
-- `materials.py`: Material classes (`Material`, `CustomMaterial`) for spatially constant or custom material models.
-- `meshing.py`: 2D/3D rasterization into material-property grids.
+- `materials.py`: the homogeneous `Material` value accepted by geometric designs.
+- `raster/`: Rust-backed geometry rasterization and external-format importers.
 - `gds.py`: Optional gdsfactory-backed component and GDS import/export.
 
-`CustomMaterial` infers `max_permittivity` from sampled grids. Callable
-permittivity models must declare `max_permittivity=...` when used with
-`GridSpec.auto(...)`; explicit uniform grids do not require that bound.
-Material evaluation and geometry errors abort rasterization rather than silently
-substituting fallback properties.
+Spatial coefficient arrays enter the solver through `MaterialGrid`; geometric
+designs use homogeneous materials and the Rust rasterizer. Geometry errors abort
+rasterization rather than silently substituting fallback properties.
 
 Install the optional layout dependency and import cells through the design API:
 

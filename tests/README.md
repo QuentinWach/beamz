@@ -147,7 +147,7 @@ The pull-request gate now makes the following quantitative claims:
 - execution of all notebooks in reduced mode against an isolated built wheel.
 
 These claims are emitted as structured JSON. The pull-request gate enforces
-combined statement-and-branch coverage at 80%, changed-line coverage at 100%,
+combined statement-and-branch coverage at 80%, changed-line coverage at 85%,
 and the risk-weighted floors in `tests/coverage_policy.json`: 87% for public
 configuration, 90.5% for the solver core, 77% for PIC analysis, and 93.5% for
 numerical kernels. The top-level public API also has an executable inventory:

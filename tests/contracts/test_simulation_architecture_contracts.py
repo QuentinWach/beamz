@@ -35,9 +35,7 @@ from beamz import (
     Taper,
 )
 from beamz._cache_tokens import cache_token
-from beamz.design.core import _material_signature
 from beamz.design.discretization import MaterialGrid
-from beamz.design.materials import CustomMaterial
 from beamz.devices.sources.compiler import (
     CompiledInjectionPlan,
     InjectionPlanEntry,
@@ -314,100 +312,6 @@ def test_simulation_snapshots_time_input_as_readonly_array():
     assert not sim.time.flags.writeable
     with pytest.raises(ValueError):
         sim.time[0] = 1.0
-
-
-def test_grid_material_cache_signature_uses_array_content():
-    first = CustomMaterial(
-        permittivity_grid=np.asarray([[1.0, 2.0], [2.0, 1.0]]),
-        bounds=((0.0, 1.0), (0.0, 1.0)),
-    )
-    second = CustomMaterial(
-        permittivity_grid=np.asarray([[2.0, 1.0], [1.0, 2.0]]),
-        bounds=((0.0, 1.0), (0.0, 1.0)),
-    )
-
-    assert first.permittivity == second.permittivity
-    assert _material_signature(first) != _material_signature(second)
-    assert first != second
-    assert isinstance(hash(first), int)
-
-    equivalent = CustomMaterial(
-        permittivity_grid=np.asarray([[1.0, 2.0], [2.0, 1.0]]),
-        bounds=((0.0, 1.0), (0.0, 1.0)),
-    )
-    assert first == equivalent
-    assert hash(first) == hash(equivalent)
-
-
-def _constant_permittivity(value):
-    return lambda x, y, z=None: value
-
-
-def test_callable_custom_material_requires_explicit_semantic_cache_key():
-    with pytest.raises(TypeError, match="requires an explicit cache_key"):
-        CustomMaterial(permittivity_func=_constant_permittivity(2.0))
-
-    first = CustomMaterial(
-        permittivity_func=_constant_permittivity(2.0),
-        cache_key=("constant-epsilon", 2.0),
-    )
-    second = CustomMaterial(
-        permittivity_func=_constant_permittivity(4.0),
-        cache_key=("constant-epsilon", 4.0),
-    )
-    equivalent = CustomMaterial(
-        permittivity_func=_constant_permittivity(2.0),
-        cache_key=("constant-epsilon", 2.0),
-    )
-
-    assert cache_token(first) != cache_token(second)
-    assert first != second
-    assert cache_token(first) == cache_token(equivalent)
-    assert first == equivalent
-
-
-def test_callable_material_key_change_restarts_runtime_and_discretization():
-    first = CustomMaterial(
-        permittivity_func=_constant_permittivity(2.0),
-        cache_key=("constant-epsilon", 2.0),
-    )
-    second = CustomMaterial(
-        permittivity_func=_constant_permittivity(4.0),
-        cache_key=("constant-epsilon", 4.0),
-    )
-    design = Design(width=1.0, height=1.0, material=first)
-    sim = Simulation(
-        design=design,
-        sources=[],
-        monitors=[],
-        time=np.arange(3, dtype=float),
-        resolution=0.5,
-    )
-
-    initial_fields = sim.compile().grid
-    np.testing.assert_allclose(np.asarray(initial_fields.permittivity), 2.0)
-
-    changed = sim.updated_copy(design=Design(width=1.0, height=1.0, material=second))
-    changed_fields = changed.compile().grid
-
-    assert changed is not sim
-    np.testing.assert_allclose(np.asarray(changed_fields.permittivity), 4.0)
-
-
-def test_updating_callable_material_requires_replacement_cache_key():
-    material = CustomMaterial(
-        permittivity_func=_constant_permittivity(2.0),
-        cache_key=("constant-epsilon", 2.0),
-    )
-
-    with pytest.raises(TypeError, match="requires an explicit cache_key"):
-        material.updated_copy(permittivity_func=_constant_permittivity(4.0))
-
-    changed = material.updated_copy(
-        permittivity_func=_constant_permittivity(4.0),
-        cache_key=("constant-epsilon", 4.0),
-    )
-    assert cache_token(changed) != cache_token(material)
 
 
 def test_material_grid_cache_tracks_functional_raster_material_updates():

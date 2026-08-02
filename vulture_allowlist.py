@@ -6,6 +6,8 @@ plot_mode_field_components
 plot_result_field
 view_simulation_3d
 _.discretize
+_.add_task
+_.cache_spec
 _.__path__
 _.update_grid
 _.auto
@@ -30,9 +32,17 @@ _.show3d
 total_conductivity
 eps_ex
 eps_ey
+eps_ez
 mu_hx
 mu_hy
 mu_hz
+_.removed_degenerate_triangles
+_.removed_duplicate_triangles
+_.removed_unreferenced_vertices
+_.winding_or_normals_fixed
+_.remaining_issues
+_.connected_components
+_.is_uniform
 
 # functools.singledispatch registrations are reached through lower_source.dispatch().
 _lower_custom_source

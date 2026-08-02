@@ -11,6 +11,7 @@ import numpy as np
 
 from beamz.devices.monitors.monitors import (
     FieldRecorder,
+    ModeMonitor,
     _line_integral_scale_2d,
     _line_normal_2d,
     _Monitor,
@@ -115,6 +116,7 @@ def _compile_monitor_2d_interpolation(
         tuple(int(v) for v in fields.permittivity.shape),
         float(resolution),
         plane,
+        getattr(fields, "polarization_2d", "tm"),
     )
     if "x" not in coords or "y" not in coords:
         return _empty_array(), _empty_array()
@@ -162,6 +164,7 @@ def compile_monitor_specs(
     num_steps: int,
     dt: float,
     plane_2d: str = "xy",
+    polarization_2d: str = "tm",
 ) -> tuple[tuple[CompiledMonitorSpec, ...], int]:
     """Compile request monitor specs into packed monitor descriptors.
 
@@ -184,6 +187,15 @@ def compile_monitor_specs(
         if not isinstance(monitor, _Monitor):
             raise TypeError(f"Unsupported monitor object {type(monitor).__name__!s}.")
         is_3d = np.asarray(fields.permittivity).ndim == 3
+        if (
+            not is_3d
+            and isinstance(monitor, ModeMonitor)
+            and monitor.mode_spec.polarization not in {None, polarization_2d}
+        ):
+            raise ValueError(
+                f"ModeMonitor polarization {monitor.mode_spec.polarization!r} does "
+                f"not match the Simulation polarization {polarization_2d!r}."
+            )
         interval = max(1, int(monitor.interval))
         records = int(math.ceil(num_steps / interval))
         max_records = max(max_records, records)
@@ -198,13 +210,15 @@ def compile_monitor_specs(
                         public_component_2d,
                     )
 
-                    canonical = canonical_component_2d(component, plane_2d)
+                    canonical = canonical_component_2d(
+                        component, plane_2d, polarization_2d
+                    )
                     if canonical is None:
                         raise ValueError(
                             f"FieldRecorder component {component!r} is inactive "
                             f"for the {plane_2d!r} 2D plane."
                         )
-                    _, sign = public_component_2d(canonical, plane_2d)
+                    _, sign = public_component_2d(canonical, plane_2d, polarization_2d)
                 public_components.append(component)
                 canonical_components.append(canonical)
                 signs.append(float(sign))
@@ -317,7 +331,11 @@ def compile_monitor_specs(
                 wanted = {
                     canonical
                     for component in wanted
-                    if (canonical := canonical_component_2d(component, plane_2d))
+                    if (
+                        canonical := canonical_component_2d(
+                            component, plane_2d, polarization_2d
+                        )
+                    )
                     is not None
                 }
             ordered = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
@@ -353,27 +371,26 @@ def compile_monitor_specs(
             else:
                 x_raw = np.zeros((0,), dtype=np.int32)
                 y_raw = np.zeros((0,), dtype=np.int32)
-            component_plans = []
-            for name in ("Ez", "Hx", "Hy"):
+            active_components = (
+                ("Ez", "Hx", "Hy") if polarization_2d == "tm" else ("Ex", "Ey", "Hz")
+            )
+            component_plans = {}
+            for name in active_components:
                 shape = tuple(getattr(fields, name).shape)
                 x, y, valid = _clip_indices(x_raw, y_raw, shape)
                 flat_idx, weights = _compile_monitor_2d_interpolation(
                     monitor, name, fields, resolution
                 )
-                component_plans.append(
+                component_plans[name] = (
                     (flat_idx, weights)
                     if flat_idx.size
                     else _direct_sampling_plan(x, y, valid, shape)
                 )
-            point_count = int(component_plans[0][0].shape[0])
+            point_count = int(next(iter(component_plans.values()))[0].shape[0])
             inactive = _inactive_sampling_plan(point_count)
-            sample_plans = (
-                inactive,
-                inactive,
-                component_plans[0],
-                component_plans[1],
-                component_plans[2],
-                inactive,
+            sample_plans = tuple(
+                component_plans.get(name, inactive)
+                for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
             )
             dft_plans = sample_plans
             normal_axis, normal_sign = _monitor_normal_2d(monitor, resolution)

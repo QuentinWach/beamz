@@ -58,7 +58,6 @@ RUNTIME_EXPORTS = (
 
 CONFIGURATION_CASES = (
     PublicConfigCase("Material", bz.Material),
-    PublicConfigCase("CustomMaterial", bz.CustomMaterial),
     PublicConfigCase("Design", lambda: bz.Design(width=2.0, height=2.0)),
     PublicConfigCase("Box", bz.Box),
     PublicConfigCase("Rectangle", bz.Rectangle),

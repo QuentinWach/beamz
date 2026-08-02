@@ -111,6 +111,26 @@ def test_public_2d_planes_map_to_one_canonical_tmxy_support():
             assert sign == (-1.0 if (plane, public) == ("xz", "Ey") else 1.0)
 
 
+def test_public_2d_planes_map_to_one_canonical_texy_support():
+    grid_shape = (5, 7)
+    expected = {
+        "xy": {"Ex": "Ex", "Ey": "Ey", "Hz": "Hz"},
+        "yz": {"Ey": "Ex", "Ez": "Ey", "Hx": "Hz"},
+        "xz": {"Ex": "Ex", "Ez": "Ey", "Hy": "Hz"},
+    }
+    canonical_shapes = {"Ex": (6, 7), "Ey": (5, 8), "Hz": (5, 7)}
+    for plane, mapping in expected.items():
+        for public, canonical in mapping.items():
+            assert canonical_component_2d(public, plane, "te") == canonical
+            assert (
+                component_shape_2d(public, grid_shape, plane, "te")
+                == canonical_shapes[canonical]
+            )
+            roundtrip, sign = public_component_2d(canonical, plane, "te")
+            assert roundtrip == public
+            assert sign == (-1.0 if (plane, public) == ("xz", "Hy") else 1.0)
+
+
 def test_xy_generic_h_coordinates_follow_native_tmz_offsets():
     assert component_shape_2d("Hx", (24, 24), "xy") == (24, 25)
     hy = component_coordinates_2d_um("Hy", (24, 24), 0.125, "xy")

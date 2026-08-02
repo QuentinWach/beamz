@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, ClassVar
+from typing import Any
 
 import numpy as np
 
@@ -123,7 +123,6 @@ class Structure:
     """Shared functional operations for immutable geometry specifications."""
 
     __slots__ = ()
-    raster_kind: ClassVar[str] = "volume"
 
     def updated_copy(self, **changes):
         try:
@@ -222,85 +221,9 @@ class PlanarStructure(Structure):
             ),
         )
 
-    def get_bounding_box(self):
-        if not self.vertices:
-            return (0.0,) * 6
-        coords = np.asarray(self.vertices, dtype=float)
-        minimum = coords.min(axis=0)
-        maximum = coords.max(axis=0)
-        maximum[2] = max(maximum[2], minimum[2] + self.depth)
-        expansion = self._max_taper_expansion()
-        return (
-            minimum[0] - expansion,
-            minimum[1] - expansion,
-            minimum[2],
-            maximum[0] + expansion,
-            maximum[1] + expansion,
-            maximum[2],
-        )
-
-    def has_tapered_sidewalls(self):
-        return abs(self.sidewall_angle) > 1e-12 and self.depth > 0.0
-
-    def _taper_buffer_at_z(self, z):
-        if not self.has_tapered_sidewalls():
-            return 0.0
-        reference_z = self.z + self.width_to_z * self.depth
-        return -(float(z) - reference_z) * np.tan(np.radians(self.sidewall_angle))
-
-    def _max_taper_expansion(self):
-        if not self.has_tapered_sidewalls():
-            return 0.0
-        return max(
-            0.0,
-            self._taper_buffer_at_z(self.z),
-            self._taper_buffer_at_z(self.z + self.depth),
-        )
-
-    def _base_shapely_polygon(self):
-        from shapely.geometry import Polygon as ShapelyPolygon
-
-        if len(self.vertices) < 3:
-            return None
-        polygon = ShapelyPolygon(
-            shell=[(x, y) for x, y, _ in self.vertices],
-            holes=[[(x, y) for x, y, _ in path] for path in self.interiors if path]
-            or None,
-        )
-        if not polygon.is_valid:
-            polygon = polygon.buffer(0)
-        return None if polygon.is_empty or not polygon.is_valid else polygon
-
-    def shapely_polygon_at_z(self, z):
-        z = self.z if z is None else float(z)
-        if self.depth > 0.0 and not self.z <= z <= self.z + self.depth:
-            return None
-        polygon = self._base_shapely_polygon()
-        if polygon is None or not self.has_tapered_sidewalls():
-            return polygon
-        polygon = polygon.buffer(self._taper_buffer_at_z(z), join_style="mitre")
-        if not polygon.is_valid:
-            polygon = polygon.buffer(0)
-        return None if polygon.is_empty or not polygon.is_valid else polygon
-
-    def point_in_polygon(self, x, y, z=None):
-        if (
-            z is not None
-            and self.depth > 0.0
-            and not self.z <= z <= self.z + self.depth
-        ):
-            return False
-        polygon = self.shapely_polygon_at_z(self.z if z is None else z)
-        if polygon is None:
-            return False
-        from shapely import contains_xy
-
-        return bool(contains_xy(polygon.buffer(1e-15), [float(x)], [float(y)])[0])
-
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Polygon(PlanarStructure):
-    raster_kind: ClassVar[str] = "polygon"
     vertices: Any = ()
     material: Any = None
     color: str = field(default=DEFAULT_COLOR, metadata={"beamz_cache": False})
@@ -332,7 +255,6 @@ class Polygon(PlanarStructure):
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Rectangle(PlanarStructure):
-    raster_kind: ClassVar[str] = "rectangle"
     position: Any = (0.0, 0.0, 0.0)
     width: float = 1.0
     height: float = 1.0
@@ -397,7 +319,6 @@ def _circle_vertices(position, radius, points):
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Circle(PlanarStructure):
-    raster_kind: ClassVar[str] = "circle"
     position: Any = (0.0, 0.0)
     radius: float = 1.0
     points: int = 32
@@ -432,7 +353,6 @@ class Circle(PlanarStructure):
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Ring(PlanarStructure):
-    raster_kind: ClassVar[str] = "ring"
     position: Any = (0.0, 0.0)
     inner_radius: float = 1.0
     outer_radius: float = 2.0
@@ -483,7 +403,6 @@ class Ring(PlanarStructure):
 
 @dataclass(frozen=True, eq=False, slots=True)
 class CircularBend(PlanarStructure):
-    raster_kind: ClassVar[str] = "polygon"
     position: Any = (0.0, 0.0)
     inner_radius: float = 1.0
     outer_radius: float = 2.0
@@ -570,7 +489,6 @@ class CircularBend(PlanarStructure):
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Taper(PlanarStructure):
-    raster_kind: ClassVar[str] = "polygon"
     position: Any = (0.0, 0.0)
     input_width: float = 1.0
     output_width: float = 0.5
@@ -613,7 +531,6 @@ class Taper(PlanarStructure):
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Box(Structure):
-    raster_kind: ClassVar[str] = "box"
     center: Any = (0.0, 0.0, 0.0)
     size: Any = (1.0, 1.0, 1.0)
     material: Any = None
@@ -668,22 +585,9 @@ class Box(Structure):
             material=self.material if material is None else material,
         )
 
-    def get_bounding_box(self):
-        return (*self.lower, *self.upper)
-
-    def point_in_polygon(self, x, y, z=None):
-        lower, upper = self.lower, self.upper
-        inside_xy = lower[0] <= x <= upper[0] and lower[1] <= y <= upper[1]
-        return (
-            inside_xy
-            if z is None or self.depth == 0.0
-            else inside_xy and lower[2] <= z <= upper[2]
-        )
-
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Sphere(Structure):
-    raster_kind: ClassVar[str] = "sphere"
     position: Any = (0.0, 0.0, 0.0)
     radius: float = 1.0
     material: Any = None
@@ -714,12 +618,3 @@ class Sphere(Structure):
         ):
             raise ValueError("Sphere scaling must be uniform.")
         return self.updated_copy(radius=self.radius * float(s_x))
-
-    def get_bounding_box(self):
-        x, y, z = self.position
-        r = self.radius
-        return (x - r, y - r, z - r, x + r, y + r, z + r)
-
-    def point_in_polygon(self, x, y, z=0.0):
-        cx, cy, cz = self.position
-        return (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2 <= self.radius**2
