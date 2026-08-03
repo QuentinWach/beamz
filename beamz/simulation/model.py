@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Any, Literal, NamedTuple, TypeAlias
 
 import jax.numpy as jnp
+import numpy as np
 
 from beamz.design.discretization import MaterialGrid
 from beamz.design.grid import RectilinearGrid
@@ -327,6 +328,103 @@ class ShardingConfig:
     axis: Literal["auto", "z", "y", "x"] = "auto"
     num_devices: int | None = None
     backend: Literal["cpu", "gpu"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AutoTermination:
+    """Configure bounded, chunked convergence checks for :meth:`Simulation.run`.
+
+    Parameters
+    ----------
+    field_decay : float, default=1e-5
+        Maximum integrated electromagnetic energy relative to its recorded peak.
+        Set to zero to omit the energy criterion.
+    monitor_change : float or None, default=1e-3
+        Maximum relative change of selected frequency-domain monitor values between
+        checks. ``None`` omits this criterion. It is also ignored when no applicable
+        monitors exist.
+    source_decay : float, default=1e-6
+        Maximum remaining source amplitude relative to its peak before convergence
+        checks may begin.
+    chunk_steps : int, default=256
+        Fixed number of timesteps per reusable execution chunk.
+    min_steps : int, default=0
+        Minimum absolute timestep before a successful check is allowed.
+    consecutive_checks : int, default=3
+        Number of consecutive successful checks required for convergence.
+    monitor_names : sequence of str, optional
+        Named frequency-domain monitors to inspect. An empty tuple selects every
+        applicable monitor.
+    growth_factor : float, default=1.05
+        Post-source energy increase considered a growth event.
+    growth_checks : int, default=3
+        Consecutive growth events that terminate the run as divergent.
+
+    Notes
+    -----
+    The simulation time grid remains a hard upper bound. Automatic termination never
+    extends it and never evaluates convergence while a configured source is active.
+    """
+
+    field_decay: float = 1e-5
+    monitor_change: float | None = 1e-3
+    source_decay: float = 1e-6
+    chunk_steps: int = 256
+    min_steps: int = 0
+    consecutive_checks: int = 3
+    monitor_names: tuple[str, ...] = ()
+    growth_factor: float = 1.05
+    growth_checks: int = 3
+
+    def __post_init__(self) -> None:
+        for name in ("field_decay", "source_decay"):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"AutoTermination.{name} must be finite and non-negative."
+                )
+            object.__setattr__(self, name, value)
+        monitor_change = self.monitor_change
+        if monitor_change is not None:
+            monitor_change = float(monitor_change)
+            if not np.isfinite(monitor_change) or monitor_change < 0.0:
+                raise ValueError(
+                    "AutoTermination.monitor_change must be finite, non-negative, or None."
+                )
+            object.__setattr__(self, "monitor_change", monitor_change)
+        for name, minimum in (
+            ("chunk_steps", 1),
+            ("min_steps", 0),
+            ("consecutive_checks", 1),
+            ("growth_checks", 1),
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, (bool, np.bool_))
+                or int(value) != value
+                or int(value) < minimum
+            ):
+                qualifier = "positive" if minimum else "non-negative"
+                raise ValueError(
+                    f"AutoTermination.{name} must be a {qualifier} integer."
+                )
+            object.__setattr__(self, name, int(value))
+        names = tuple(str(name) for name in self.monitor_names)
+        if any(not name for name in names) or len(set(names)) != len(names):
+            raise ValueError(
+                "AutoTermination.monitor_names must contain unique non-empty names."
+            )
+        object.__setattr__(self, "monitor_names", names)
+        growth_factor = float(self.growth_factor)
+        if not np.isfinite(growth_factor) or growth_factor <= 1.0:
+            raise ValueError(
+                "AutoTermination.growth_factor must be finite and greater than 1."
+            )
+        object.__setattr__(self, "growth_factor", growth_factor)
+        if self.field_decay == 0.0 and self.monitor_change is None:
+            raise ValueError(
+                "AutoTermination requires field_decay > 0 or monitor_change to be set."
+            )
 
 
 @dataclass(frozen=True, slots=True, eq=False)

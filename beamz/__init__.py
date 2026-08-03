@@ -58,8 +58,13 @@ from beamz.devices.sources import (
 )
 from beamz.devices.sources.time import ramped_cosine
 from beamz.simulation.api import Simulation
-from beamz.simulation.model import SimulationState
-from beamz.simulation.results import MonitorResults, SimulationResults, SimulationRun
+from beamz.simulation.model import AutoTermination, SimulationState
+from beamz.simulation.results import (
+    MonitorResults,
+    RunTermination,
+    SimulationResults,
+    SimulationRun,
+)
 
 inf = float("inf")
 
@@ -113,6 +118,8 @@ __all__ = [
     "SimulationResults",
     "SimulationRun",
     "SimulationState",
+    "AutoTermination",
+    "RunTermination",
     "PML",
     "PEC",
     "Absorber",

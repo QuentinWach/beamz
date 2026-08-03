@@ -9,6 +9,7 @@ import pytest
 
 import beamz.simulation.api as simulation_core
 from beamz import (
+    AutoTermination,
     Design,
     FieldMonitor,
     FieldRecorder,
@@ -19,6 +20,7 @@ from beamz import (
     Material,
     ModeSource,
     MonitorResults,
+    RunTermination,
     Simulation,
     SimulationResults,
     SimulationRun,
@@ -64,6 +66,71 @@ def test_simulation_rejects_conflicting_or_invalid_time_specifications():
     for run_time in (0.0, -1.0, np.nan, np.inf):
         with pytest.raises(ValueError, match="run_time.*positive and finite"):
             _simulation(time=None, run_time=run_time)
+
+
+def test_auto_termination_is_an_immutable_validated_configuration():
+    spec = AutoTermination(
+        field_decay=2e-5,
+        monitor_change=None,
+        chunk_steps=np.int64(128),
+        min_steps=64,
+        monitor_names=["output"],
+    )
+
+    assert is_dataclass(spec)
+    assert spec.field_decay == pytest.approx(2e-5)
+    assert spec.chunk_steps == 128
+    assert spec.monitor_names == ("output",)
+    with pytest.raises(FrozenInstanceError):
+        spec.chunk_steps = 32
+
+    invalid = (
+        {"field_decay": -1.0},
+        {"monitor_change": np.inf},
+        {"source_decay": np.nan},
+        {"chunk_steps": 0},
+        {"min_steps": -1},
+        {"consecutive_checks": 0},
+        {"growth_factor": 1.0},
+        {"growth_checks": 0},
+        {"monitor_names": ("m", "m")},
+        {"field_decay": 0.0, "monitor_change": None},
+    )
+    for values in invalid:
+        with pytest.raises(ValueError):
+            AutoTermination(**values)
+
+
+def test_run_termination_validates_reason_and_result_attachment():
+    fields = FieldMetadata(grid_shape=(1, 1), component_shapes={"Ez": (1, 1)})
+    metadata = SimulationMetadata(
+        dt=1.0,
+        resolution=1.0,
+        is_3d=False,
+        plane_2d="xy",
+        coordinate_offset=(0.0, 0.0, 0.0),
+        time=np.array([0.0, 1.0]),
+        width=1.0,
+        height=1.0,
+        depth=0.0,
+        fields=fields,
+    )
+    report = RunTermination(
+        reason="converged",
+        steps=12,
+        time=1.2e-15,
+        converged=True,
+        field_decay=8e-6,
+        consecutive_checks=3,
+    )
+
+    assert (
+        SimulationResults(metadata=metadata, termination=report).termination is report
+    )
+    with pytest.raises(ValueError, match="reason"):
+        RunTermination(reason="unknown", steps=0, time=0.0, converged=False)
+    with pytest.raises(TypeError, match="termination"):
+        SimulationResults(metadata=metadata, termination=object())
 
 
 def test_run_without_progress_is_silent(capsys):

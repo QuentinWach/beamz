@@ -16,6 +16,7 @@ pytestmark = pytest.mark.unit
 
 STABLE_SIMULATION_EXPORTS = {
     "Absorber",
+    "AutoTermination",
     "GaussianPulse",
     "GridSpec",
     "ModeSpec",
@@ -23,6 +24,7 @@ STABLE_SIMULATION_EXPORTS = {
     "PEC",
     "PML",
     "Port",
+    "RunTermination",
     "Simulation",
     "SimulationResults",
     "SimulationRun",
@@ -91,6 +93,8 @@ def test_public_specs_have_consistent_reexports():
 def test_public_simulation_methods_have_reference_docstrings():
     public_classes = (
         simulation.Simulation,
+        simulation.AutoTermination,
+        simulation.RunTermination,
         simulation.SimulationState,
         simulation.SimulationRun,
         simulation.SimulationResults,
