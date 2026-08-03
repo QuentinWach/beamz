@@ -28,6 +28,7 @@ from beamz.const import (
 
 # Import design-related classes and functions
 from beamz.design.core import Design
+from beamz.design.grid import Grid, RectilinearGrid
 
 # Import simulation-related classes and functions
 from beamz.design.grid_spec import GridSpec
@@ -102,6 +103,8 @@ __all__ = [
     "ramped_cosine",
     "Simulation",
     "GridSpec",
+    "Grid",
+    "RectilinearGrid",
     "GaussianPulse",
     "SampledSignal",
     "ModeSpec",
