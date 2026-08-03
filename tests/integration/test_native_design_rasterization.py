@@ -303,6 +303,28 @@ def test_rectilinear_monitors_compile_local_line_and_face_weights():
     np.testing.assert_allclose(face_spec.integration_weights, [0.06, 0.24, 0.14, 0.56])
 
 
+def test_centered_design_monitor_uses_normalized_grid_once():
+    monitor = bz.FieldMonitor(
+        center=(0.0, 0.0, 0.0),
+        size=(1.0, 1.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+    simulation = bz.Simulation(
+        domain=(1.0, 1.0, 1.0),
+        design=bz.Design(background=bz.Material()),
+        monitors=[monitor],
+        resolution=0.25,
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    program = simulation.compile()
+
+    assert simulation.coordinate_offset == (0.5, 0.5, 0.5)
+    assert program.grid.geometry.origin == (0.0, 0.0, 0.0)
+    assert program.grid.geometry.maximum == (1.0, 1.0, 1.0)
+    assert program.monitors[0].dft_point_count == 16
+
+
 def test_rectilinear_mode_monitor_is_rejected_until_mode_solver_is_metric_aware():
     grid = Grid(
         [0.0, 0.2, 1.0],

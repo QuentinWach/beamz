@@ -490,8 +490,10 @@ def compile_monitor_specs(
                 monitor, resolution, region_2d
             )
             if use_geometry and region_2d is not None:
+                assert active_grid is not None
                 tangential = "y" if normal_axis == 0 else "x"
                 interval = region_2d.axis_interval(tangential)
+                assert interval is not None
                 integration_weights = active_grid.cell_widths(tangential)[
                     int(interval.start) : int(interval.stop)
                 ]

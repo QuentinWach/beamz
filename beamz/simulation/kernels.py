@@ -138,9 +138,7 @@ def _unpack_cpml_slab(base, packed, slab):
     if middle_stop > low:
         parts.append(base[_axis_region(base.ndim, axis, low, middle_stop)])
     if high:
-        parts.append(
-            packed[_axis_region(packed.ndim, axis, low, low + high)]
-        )
+        parts.append(packed[_axis_region(packed.ndim, axis, low, low + high)])
     if logical_stop < int(base.shape[axis]):
         parts.append(
             base[_axis_region(base.ndim, axis, logical_stop, int(base.shape[axis]))]

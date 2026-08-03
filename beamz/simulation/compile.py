@@ -339,7 +339,13 @@ def _compile_grid(
     """Lower cell materials and boundary data into one frozen logical Yee lattice."""
     material_grid = request.materials
     assert material_grid.grid is not None
-    local_geometry = material_grid.grid.translated(request.domain.coordinate_offset)
+    grid_origin = material_grid.grid.origin
+    # Simulation has already shifted devices into solver-local coordinates. Normalize
+    # the realized grid from its own origin so centered-domain offsets are not applied
+    # a second time, while imported grids retain the same local frame.
+    local_geometry = material_grid.grid.translated(
+        (-grid_origin[0], -grid_origin[1], -grid_origin[2])
+    )
     material_source = boundary_data
     profiles = boundary_data.profiles
     shapes = MappingProxyType(

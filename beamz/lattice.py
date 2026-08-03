@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping
 
 import jax.numpy as jnp
 import numpy as np
@@ -346,7 +346,9 @@ def compile_yee_plane_quadrature_3d(
     )
 
 
-def yee_flux(samples, normal_axis: int, *, normal_sign=1.0, measure=1.0, phasor=False):
+def yee_flux(
+    samples, normal_axis: int, *, normal_sign=1.0, measure: Any = 1.0, phasor=False
+):
     """Integrate signed Poynting flux from six colocated Yee field samples."""
     ex, ey, ez, hx, hy, hz = (jnp.asarray(value) for value in samples)
     if phasor:
@@ -397,7 +399,9 @@ def _pad_with_boundary_ghosts(
     low_edge, high_edge = (("front", "back"), ("bottom", "top"), ("left", "right"))[
         axis
     ]
-    low = zero if low_edge in metallic_edges else jnp.take(physical, jnp.array([0]), axis)
+    low = (
+        zero if low_edge in metallic_edges else jnp.take(physical, jnp.array([0]), axis)
+    )
     high = (
         zero
         if high_edge in metallic_edges
@@ -415,7 +419,9 @@ def build_h_boundary_views_for_e_3d(
             field,
             axis,
             metallic_edges,
-            logical_size=(None if logical_shapes is None else logical_shapes[component][axis]),
+            logical_size=(
+                None if logical_shapes is None else logical_shapes[component][axis]
+            ),
         )
         for name, component, field, axis in (
             ("hz_y", "Hz", hz, 1),
@@ -806,7 +812,10 @@ def _total_conductivity(fields):
         if key in fields.pml_data:
             sigma_pml = sigma_pml + fields.pml_data[key]
     material_grid = getattr(fields, "material_grid", None)
-    if getattr(material_grid, "metric_kind", "isotropic_uniform") != "isotropic_uniform":
+    if (
+        getattr(material_grid, "metric_kind", "isotropic_uniform")
+        != "isotropic_uniform"
+    ):
         return base_sigma + sigma_pml
     return jnp.maximum(base_sigma, sigma_pml)
 

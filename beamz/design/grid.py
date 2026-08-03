@@ -113,15 +113,16 @@ class RectilinearGrid:
     ) -> RectilinearGrid:
         """Realize constant per-axis spacings from a physical lower corner."""
         counts = _positive_counts(shape)
-        spacings = (
-            (float(spacing),) * 3
-            if np.asarray(spacing).ndim == 0
-            else tuple(float(value) for value in spacing)
-        )
+        if isinstance(spacing, tuple):
+            spacings = tuple(float(value) for value in spacing)
+        else:
+            spacings = (float(spacing),) * 3
         if len(spacings) != 3 or any(
             not np.isfinite(value) or value <= 0.0 for value in spacings
         ):
             raise ValueError("Grid spacing must contain three positive finite values.")
+        spacing_x, spacing_y, spacing_z = spacings
+        spacings = (spacing_x, spacing_y, spacing_z)
         lower = tuple(float(value) for value in origin)
         if len(lower) != 3 or not np.all(np.isfinite(lower)):
             raise ValueError("Grid origin must contain three finite coordinates.")
@@ -150,11 +151,16 @@ class RectilinearGrid:
     @property
     def shape(self) -> tuple[int, int, int]:
         """Cell counts in public ``(x, y, z)`` order."""
-        return tuple(int(edges.size - 1) for edges in self.edges)  # type: ignore[return-value]
+        return (
+            int(self.x_edges.size - 1),
+            int(self.y_edges.size - 1),
+            int(self.z_edges.size - 1),
+        )
 
     @property
     def shape_zyx(self) -> tuple[int, int, int]:
-        return self.shape[::-1]
+        x_size, y_size, z_size = self.shape
+        return z_size, y_size, x_size
 
     @property
     def is_axis_uniform(self) -> bool:
@@ -183,7 +189,7 @@ class RectilinearGrid:
         self, active_axes: tuple[Axis, ...]
     ) -> Literal["isotropic_uniform", "axis_uniform", "rectilinear"]:
         """Classify derivative metrics over the axes active in a solver."""
-        axes = tuple(_axis_name(axis) for axis in active_axes)
+        axes: tuple[Axis, ...] = tuple(_axis_name(axis) for axis in active_axes)
         if not axes:
             raise ValueError("Metric classification requires at least one active axis.")
         widths = tuple(self.cell_widths(axis) for axis in axes)
@@ -294,7 +300,7 @@ class RectilinearGrid:
         *,
         active_axes: tuple[Axis, ...] = _AXES,
     ) -> float:
-        axes = tuple(_axis_name(axis) for axis in active_axes)
+        axes: tuple[Axis, ...] = tuple(_axis_name(axis) for axis in active_axes)
         if not axes:
             raise ValueError("CFL calculation requires at least one active axis.")
         inverse_metric = sum(

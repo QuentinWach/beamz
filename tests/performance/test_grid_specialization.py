@@ -80,11 +80,15 @@ def test_uniform_3d_flux_monitor_keeps_scalar_integration_path():
         freqs=np.asarray([1.0]),
     )
 
-    spec = bz.Simulation(
-        material_grid=materials,
-        monitors=[monitor],
-        time=np.asarray([0.0, 1e-16]),
-    ).compile().monitors[0]
+    spec = (
+        bz.Simulation(
+            material_grid=materials,
+            monitors=[monitor],
+            time=np.asarray([0.0, 1e-16]),
+        )
+        .compile()
+        .monitors[0]
+    )
 
     assert spec.integration_weights.size == 0
     assert spec.power_scale == 2.0

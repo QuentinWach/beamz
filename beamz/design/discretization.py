@@ -212,7 +212,11 @@ class MaterialGrid:
             required = set()
             for cell_name, support_names in active_supports.items():
                 values = np.asarray(getattr(self, cell_name))
-                if values.ndim and values.size > 1 and not np.all(values == values.flat[0]):
+                if (
+                    values.ndim
+                    and values.size > 1
+                    and not np.all(values == values.flat[0])
+                ):
                     required.update(support_names)
             missing = required - set(self.yee_materials)
             if missing:
