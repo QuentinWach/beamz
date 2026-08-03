@@ -129,3 +129,22 @@ def test_rectilinear_metrics_extend_across_sharding_padding():
     np.testing.assert_array_equal(lowered.h_to_e_x, [1, 2, 3, 4, 5, 5, 5])
     np.testing.assert_array_equal(lowered.e_to_h_y, metrics.e_to_h_y)
     np.testing.assert_array_equal(lowered.h_to_e_z, metrics.h_to_e_z)
+
+
+def test_heterogeneous_rectilinear_material_grid_requires_direct_yee_values():
+    grid = RectilinearGrid(
+        np.asarray([0.0, 0.2, 1.0, 2.0]),
+        np.asarray([0.0, 0.5, 1.5]),
+        np.asarray([0.0, 1.0]),
+    )
+    permittivity = np.asarray([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
+
+    with pytest.raises(ValueError, match="Missing: eps_z"):
+        MaterialGrid(
+            permittivity,
+            np.zeros_like(permittivity),
+            np.ones_like(permittivity),
+            grid.minimum_spacing,
+            permittivity.shape,
+            grid=grid,
+        )

@@ -187,6 +187,41 @@ class MaterialGrid:
                     raise ValueError(
                         f"{name} has shape {np.asarray(values).shape}, expected {expected}."
                     )
+        if grid.metric_kind_for(active_axes) != "isotropic_uniform":
+            active_supports = (
+                {
+                    "permittivity": {"eps_x", "eps_y", "eps_z"},
+                    "conductivity": {"sig_x", "sig_y", "sig_z"},
+                    "permeability": {"mu_hx", "mu_hy", "mu_hz"},
+                }
+                if len(shape) == 3
+                else (
+                    {
+                        "permittivity": {"eps_z"},
+                        "conductivity": {"sig_z"},
+                        "permeability": {"mu_hx", "mu_hy"},
+                    }
+                    if polarization == "tm"
+                    else {
+                        "permittivity": {"eps_x", "eps_y"},
+                        "conductivity": {"sig_x", "sig_y"},
+                        "permeability": {"mu_hz"},
+                    }
+                )
+            )
+            required = set()
+            for cell_name, support_names in active_supports.items():
+                values = np.asarray(getattr(self, cell_name))
+                if values.ndim and values.size > 1 and not np.all(values == values.flat[0]):
+                    required.update(support_names)
+            missing = required - set(self.yee_materials)
+            if missing:
+                raise ValueError(
+                    "Heterogeneous rectilinear MaterialGrid values require direct "
+                    "Yee-support materials. Missing: "
+                    f"{', '.join(sorted(missing))}. Construct the grid with "
+                    "MaterialGrid.from_raster_result() or provide yee_materials."
+                )
         unknown_tensors = set(self.tensors) - {"epsilon", "mu", "conductivity"}
         if unknown_tensors:
             raise ValueError(
