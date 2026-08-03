@@ -221,6 +221,13 @@ def monitor_dft_flux(monitor):
             "Ey"
         ) * np.conjugate(field("Hx"))
 
+    integration_weights = np.asarray(
+        getattr(monitor, "integration_weights", ()), dtype=float
+    ).reshape(-1)
+    if integration_weights.size == component.shape[1]:
+        return 0.5 * np.real(
+            np.sum(sign * component * integration_weights[None, :], axis=1)
+        )
     measure = float(monitor.power_scale)
     if not measure:
         measure = dx * dx if config.is_3d else _line_integral_scale_2d(axis, dx, dx)
@@ -506,7 +513,11 @@ def _reduce_power(samples: jnp.ndarray, spec: CompiledMonitorSpec):
             samples,
             spec.normal_axis,
             normal_sign=spec.normal_sign,
-            measure=spec.power_scale,
+            measure=(
+                spec.integration_weights
+                if spec.integration_weights.size
+                else spec.power_scale
+            ),
         ),
         dtype=jnp.float32,
     )

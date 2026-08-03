@@ -43,6 +43,11 @@ _.winding_or_normals_fixed
 _.remaining_issues
 _.connected_components
 _.is_uniform
+_.is_axis_uniform
+_.uniform_spacing
+_.coord_to_edge_index
+_.cell_volume
+_.face_area
 
 # functools.singledispatch registrations are reached through lower_source.dispatch().
 _lower_custom_source

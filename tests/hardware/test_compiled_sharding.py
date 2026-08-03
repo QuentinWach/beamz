@@ -39,6 +39,91 @@ def test_sharding_config_export_and_disabled_layout_is_shape_preserving():
     assert program.config.sharding == ShardingConfig(enabled=False)
 
 
+def test_cpu_fake_device_sharding_supports_rectilinear_metrics():
+    code = r"""
+import numpy as np
+
+import beamz as bz
+from beamz.design import MaterialGrid
+from beamz.simulation.model import ShardingConfig
+
+grid = bz.RectilinearGrid(
+    np.asarray([0.0, 0.4, 1.0, 1.8, 2.8, 4.0]),
+    np.asarray([0.0, 0.3, 0.8, 1.5, 2.5]),
+    np.asarray([0.0, 0.2, 0.7, 1.5]),
+)
+values = np.ones(grid.shape_zyx, dtype=np.float32)
+materials = MaterialGrid(
+    values,
+    np.zeros_like(values),
+    values,
+    grid.minimum_spacing,
+    values.shape,
+    grid=grid,
+)
+
+
+def make_sim(formulation):
+    return bz.Simulation(
+        material_grid=materials,
+        time=np.asarray([0.0, 1e-12, 2e-12]),
+        normalize_source=None,
+        boundaries=[bz.PML(thickness=0.2, formulation=formulation)],
+    )
+
+
+for formulation in ("sponge", "cpml"):
+    reference = make_sim(formulation)
+    sharded = make_sim(formulation)
+    rng = np.random.default_rng(7)
+    state = reference.initial_state()
+    state = state._replace(
+        **{
+            name: rng.normal(size=np.asarray(getattr(state, name)).shape).astype(
+                np.float32
+            )
+            * 1e-4
+            for name in ("ex", "ey", "ez", "hx", "hy", "hz")
+        }
+    )
+    reference_result = reference.advance(num_steps=2, state=state, progress=False)
+    for axis in ("x", "y", "z"):
+        cfg = ShardingConfig(enabled=True, axis=axis, num_devices=4, backend="cpu")
+        sharded_result = sharded.advance(
+            num_steps=2, state=state, progress=False, sharding=cfg
+        )
+        program = sharded.compile(num_steps=2, sharding=cfg)
+
+        axis_index = {"z": 0, "y": 1, "x": 2}[axis]
+        e_source = {"x": "Ey", "y": "Ex", "z": "Ex"}[axis]
+        h_source = {"x": "Hy", "y": "Hx", "z": "Hx"}[axis]
+        assert not program.boundary.cpml.metallic_edges
+        assert getattr(program.metrics, f"e_to_h_{axis}").shape == (
+            program.sharding.layout.padded_shapes[e_source][axis_index] - 1,
+        )
+        assert getattr(program.metrics, f"h_to_e_{axis}").shape == (
+            program.sharding.layout.padded_shapes[h_source][axis_index] + 1,
+        )
+        for name in ("ex", "ey", "ez", "hx", "hy", "hz"):
+            np.testing.assert_allclose(
+                np.asarray(getattr(sharded_result.state, name)),
+                np.asarray(getattr(reference_result.state, name)),
+                rtol=2e-6,
+                atol=2e-8,
+            )
+"""
+    env = os.environ.copy()
+    env["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
+    env.setdefault("JAX_PLATFORMS", "cpu")
+    subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        check=True,
+        env=env,
+        cwd=os.getcwd(),
+        timeout=90,
+    )
+
+
 def test_cpu_fake_device_sharding_matches_unsharded_compiled_run():
     code = r"""
 import numpy as np

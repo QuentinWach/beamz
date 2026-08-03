@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+import numpy as np
+
 _AXES = ("x", "y", "z")
 
 
@@ -11,13 +13,18 @@ class SnappedInterval:
     start: int
     stop: int
     step: float
+    edges: tuple[float, ...] | None = None
 
     @property
     def lower(self) -> float:
+        if self.edges is not None:
+            return float(self.edges[int(self.start)])
         return float(self.start) * float(self.step)
 
     @property
     def upper(self) -> float:
+        if self.edges is not None:
+            return float(self.edges[int(self.stop)])
         return float(self.stop) * float(self.step)
 
     @property
@@ -123,6 +130,101 @@ def snap_edge_interval(
         start = max(0, stop - need)
 
     return SnappedInterval(start=int(start), stop=int(stop), step=float(step))
+
+
+def snap_rectilinear_cell_center(coord: float, edges) -> tuple[int, float]:
+    """Snap a coordinate to the nearest physical cell center."""
+    edge_array = np.asarray(edges, dtype=np.float64)
+    centers = 0.5 * (edge_array[:-1] + edge_array[1:])
+    if centers.size == 0:
+        return 0, 0.0
+    index = int(np.argmin(np.abs(centers - float(coord))))
+    return index, float(centers[index])
+
+
+def snap_rectilinear_edge_interval(
+    lower: float,
+    upper: float,
+    edges,
+    *,
+    min_cells: int = 1,
+) -> SnappedInterval:
+    """Snap physical bounds to the overlapping rectilinear cells."""
+    edge_array = np.asarray(edges, dtype=np.float64)
+    count = max(0, edge_array.size - 1)
+    if count == 0:
+        return SnappedInterval(0, 0, 0.0, tuple(edge_array))
+    lo, hi = sorted((float(lower), float(upper)))
+    start = int(np.searchsorted(edge_array, lo, side="right") - 1)
+    stop = int(np.searchsorted(edge_array, hi, side="left"))
+    start = max(0, min(start, count))
+    stop = max(0, min(stop, count))
+    need = max(1, int(min_cells))
+    if stop - start < need:
+        cell, _ = snap_rectilinear_cell_center(0.5 * (lo + hi), edge_array)
+        start = max(0, min(cell, count - need))
+        stop = min(count, start + need)
+    representative = float(np.min(np.diff(edge_array)))
+    return SnappedInterval(
+        int(start),
+        int(stop),
+        representative,
+        tuple(float(value) for value in edge_array),
+    )
+
+
+def snap_axis_aligned_line_region_grid(
+    start: tuple[float, ...],
+    end: tuple[float, ...],
+    grid,
+) -> SnappedRegion | None:
+    """Snap a 2D line using realized x/y cell edges."""
+    x0, y0 = float(start[0]), float(start[1])
+    x1, y1 = float(end[0]), float(end[1])
+    tolerance = 1e-12 * max(*map(abs, (x0, x1, y0, y1)), grid.minimum_spacing, 1.0)
+    if abs(x0 - x1) <= tolerance:
+        index, coordinate = snap_rectilinear_cell_center(0.5 * (x0 + x1), grid.x_edges)
+        return SnappedRegion(
+            2,
+            "x",
+            index,
+            coordinate,
+            {"y": snap_rectilinear_edge_interval(y0, y1, grid.y_edges)},
+        )
+    if abs(y0 - y1) <= tolerance:
+        index, coordinate = snap_rectilinear_cell_center(0.5 * (y0 + y1), grid.y_edges)
+        return SnappedRegion(
+            2,
+            "y",
+            index,
+            coordinate,
+            {"x": snap_rectilinear_edge_interval(x0, x1, grid.x_edges)},
+        )
+    return None
+
+
+def snap_plane_region_grid(*, center, size, plane_normal: str, grid) -> SnappedRegion:
+    """Snap a center/size plane using realized rectilinear edges."""
+    center = tuple(float(value) for value in center)
+    size = tuple(float(value) for value in size)
+    axis = str(plane_normal).lower()
+    edges = {"x": grid.x_edges, "y": grid.y_edges, "z": grid.z_edges}
+    axis_index = {"x": 0, "y": 1, "z": 2}
+    plane_index, plane_coord = snap_rectilinear_cell_center(
+        center[axis_index[axis]], edges[axis]
+    )
+    intervals = {}
+    for tangential in _AXES:
+        if tangential == axis:
+            continue
+        index = axis_index[tangential]
+        half = 0.5 * size[index]
+        intervals[tangential] = snap_rectilinear_edge_interval(
+            center[index] - half,
+            center[index] + half,
+            edges[tangential],
+        )
+    return SnappedRegion(3, axis, plane_index, plane_coord, intervals)
 
 
 def snap_centered_extent(

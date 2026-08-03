@@ -10,6 +10,7 @@ from typing import Any, Literal, NamedTuple, TypeAlias
 import jax.numpy as jnp
 
 from beamz.design.discretization import MaterialGrid
+from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import immutable_snapshot
 from beamz.devices.monitors.compiler import CompiledMonitorSpec
 from beamz.devices.monitors.monitors import _Monitor
@@ -79,6 +80,7 @@ class CompiledGrid:
     # This object centralizes Yee arrays and their static material metadata; runtime
     # evolution lives in explicit state values.
     material_grid: MaterialGrid
+    geometry: RectilinearGrid
     component_shapes: Mapping[str, tuple[int, ...]]
     resolution: float
     plane_2d: str
@@ -282,11 +284,28 @@ class UpdateCoefficients(NamedTuple):
     e_inverse_offdiagonal: jnp.ndarray
 
 
+class DerivativeMetricPlan(NamedTuple):
+    """Separable inverse distances for staggered curl derivatives.
+
+    Isotropic grids retain the scalar update path and use empty leaves. Axis-uniform
+    grids store one scalar per direction; fully rectilinear grids store one vector
+    per direction and stagger.
+    """
+
+    e_to_h_x: jnp.ndarray
+    e_to_h_y: jnp.ndarray
+    e_to_h_z: jnp.ndarray
+    h_to_e_x: jnp.ndarray
+    h_to_e_y: jnp.ndarray
+    h_to_e_z: jnp.ndarray
+
+
 class CpmlPackedSlabSpec(NamedTuple):
     axis: int
     low: int
     high: int
     shape: tuple[int, ...]
+    logical_stop: int = -1
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -336,6 +355,7 @@ class RunConfig:
     num_steps: int
     plane_2d: str
     is_3d: bool
+    metric_kind: str = "isotropic_uniform"
     polarization_2d: str = "tm"
     loop_kind: str = "scan"
     source_single_slab_dense: bool = False
@@ -365,6 +385,14 @@ class BoundaryPlan:
     metallic_edges_2d: frozenset[str]
     cpml: CpmlPlan
     metallic: MetallicPlan
+    logical_component_shapes: Mapping[str, tuple[int, ...]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "logical_component_shapes",
+            MappingProxyType(dict(self.logical_component_shapes)),
+        )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -380,6 +408,7 @@ class CompiledProgram:
     grid: CompiledGrid
     config: RunConfig
     coefficients: UpdateCoefficients
+    metrics: DerivativeMetricPlan
     boundary: BoundaryPlan
     sources: tuple[CompiledSourceSpec, ...]
     monitors: tuple[CompiledMonitorSpec, ...]

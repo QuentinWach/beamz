@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from beamz.const import LIGHT_SPEED
+from beamz.design.grid import RectilinearGrid
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,9 @@ class GridSpec:
             max(float(max_index), 1.0) * float(self.min_steps_per_wvl)
         )
 
-    def resolve_time_step(self, resolution: float, *, dims: int) -> float:
+    def resolve_time_step(
+        self, resolution: float | RectilinearGrid, *, dims: int
+    ) -> float:
         """Return a Courant-limited time step in seconds.
 
         Returns
@@ -85,6 +88,12 @@ class GridSpec:
         float
             Courant-limited time step in seconds.
         """
+        if isinstance(resolution, RectilinearGrid):
+            active_axes = ("x", "y", "z") if int(dims) == 3 else ("x", "y")
+            return resolution.cfl_time_step(
+                self.courant,
+                active_axes=active_axes,
+            )
         return (
             float(self.courant)
             * float(resolution)

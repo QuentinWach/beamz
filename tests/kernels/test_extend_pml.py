@@ -6,6 +6,8 @@ auxiliary to the curl correction and leaves ordinary material conductivity
 unchanged.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -87,6 +89,29 @@ def test_sponge_pml_preserves_larger_base_conductivity():
     total_sigma = np.asarray(fields.total_conductivity, dtype=np.float64)
 
     assert total_sigma[3, 4] == pytest.approx(9.0)
+
+
+def test_uniform_sponge_pml_preserves_legacy_maximum_composition():
+    fields = _make_fields(base_sigma=2.0)
+    design = _make_design()
+    pml = PML(edges=["left"], thickness=0.2, sigma_max=4.0, formulation="sponge")
+
+    payload = _attach_pml(fields, pml, design)
+    sigma_shell = np.asarray(payload["sigma_x"] + payload["sigma_y"])
+
+    np.testing.assert_allclose(fields.total_conductivity, np.maximum(2.0, sigma_shell))
+
+
+def test_rectilinear_sponge_pml_adds_physical_conductivities():
+    fields = _make_fields(base_sigma=2.0)
+    fields.material_grid = SimpleNamespace(metric_kind="rectilinear")
+    design = _make_design()
+    pml = PML(edges=["left"], thickness=0.2, sigma_max=4.0, formulation="sponge")
+
+    payload = _attach_pml(fields, pml, design)
+    sigma_shell = np.asarray(payload["sigma_x"] + payload["sigma_y"])
+
+    np.testing.assert_allclose(fields.total_conductivity, 2.0 + sigma_shell)
 
 
 def test_cpml_auxiliary_profiles_do_not_merge_shell_into_total_conductivity():

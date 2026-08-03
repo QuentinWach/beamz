@@ -24,6 +24,14 @@ from beamz.lattice import component_axis_offsets_3d
 _COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
 
 
+def _rectilinear_geometry(fields):
+    geometry = getattr(fields, "geometry", None)
+    if geometry is None:
+        return None
+    axes = ("x", "y", "z") if fields.permittivity.ndim == 3 else ("x", "y")
+    return geometry if geometry.metric_kind_for(axes) != "isotropic_uniform" else None
+
+
 @dataclass(frozen=True, slots=True)
 class CpmlDerivativeSpec:
     """One derivative profile that Devices lowers onto a Yee component support."""
@@ -80,6 +88,13 @@ class _BoundaryGrid:
         self.conductivity = jnp.asarray(material_grid.conductivity)
         self.permeability = jnp.asarray(material_grid.permeability)
         self.polarization_2d = material_grid.polarization or "tm"
+        # Preserve the established uniform profile algebra exactly; stretched grids
+        # opt into physical-coordinate grading.
+        self.geometry = (
+            material_grid.grid
+            if material_grid.metric_kind != "isotropic_uniform"
+            else None
+        )
         self.yee_materials = {
             name: jnp.asarray(value)
             for name, value in material_grid.yee_materials.items()
@@ -442,6 +457,8 @@ class _AbsorberCompiler:
         sigma_order=None,
         kappa_order=None,
         alpha_order=None,
+        sample_coordinates=None,
+        domain_bounds=None,
     ):
         """Compute a 1D CPML profile using FDTDX-style discrete Yee offsets."""
 
@@ -495,25 +512,61 @@ class _AbsorberCompiler:
             offset, dtype=jnp.float32
         )
 
+        physical_coordinates = (
+            None
+            if sample_coordinates is None
+            else jnp.asarray(sample_coordinates, dtype=jnp.float32)
+        )
+        distance_scale = (
+            max(float(pml_cells), 1e-30)
+            if physical_coordinates is None
+            else max(float(self.spec.thickness), 1e-30)
+        )
+
         def apply_side(dist):
             mask = dist > 0.0
-            side_sigma, side_kappa, side_alpha = apply_u(
-                dist / max(float(pml_cells), 1e-30)
-            )
+            side_sigma, side_kappa, side_alpha = apply_u(dist / distance_scale)
             return mask, side_sigma, side_kappa, side_alpha
 
         # 3. Evaluate each active side from the same domain coordinate system. The
         # interface sample has zero CPML strength and remains an identity update.
+        if physical_coordinates is not None:
+            if domain_bounds is None:
+                raise ValueError(
+                    "Physical CPML sample coordinates require domain_bounds."
+                )
+            lower_bound, upper_bound = (float(value) for value in domain_bounds)
+            coords = physical_coordinates
+
         if low_active:
-            low_dist = jnp.clip(float(pml_cells) - coords, 0.0, float(pml_cells))
+            low_dist = (
+                jnp.clip(float(pml_cells) - coords, 0.0, float(pml_cells))
+                if physical_coordinates is None
+                else jnp.clip(
+                    float(self.spec.thickness) - (coords - lower_bound),
+                    0.0,
+                    float(self.spec.thickness),
+                )
+            )
             mask, side_sigma, side_kappa, side_alpha = apply_side(low_dist)
             sigma = jnp.where(mask, jnp.maximum(sigma, side_sigma), sigma)
             kappa = jnp.where(mask, jnp.maximum(kappa, side_kappa), kappa)
             alpha = jnp.where(mask, jnp.maximum(alpha, side_alpha), alpha)
 
         if high_active:
-            high_start = float(domain_cells - pml_cells)
-            high_dist = jnp.clip(coords - high_start, 0.0, float(pml_cells))
+            high_dist = (
+                jnp.clip(
+                    coords - float(domain_cells - pml_cells),
+                    0.0,
+                    float(pml_cells),
+                )
+                if physical_coordinates is None
+                else jnp.clip(
+                    coords - (upper_bound - float(self.spec.thickness)),
+                    0.0,
+                    float(self.spec.thickness),
+                )
+            )
             mask, side_sigma, side_kappa, side_alpha = apply_side(high_dist)
             sigma = jnp.where(mask, jnp.maximum(sigma, side_sigma), sigma)
             kappa = jnp.where(mask, jnp.maximum(kappa, side_kappa), kappa)
@@ -543,7 +596,12 @@ class _AbsorberCompiler:
         profiles = {f"sigma_{name}": jnp.zeros(shape) for name in "xyz"}
         mask = jnp.zeros(shape, dtype=bool)
         for name, length, axis, low_edge, high_edge in axes:
-            coords = jnp.linspace(0, length, shape[axis])
+            geometry = _rectilinear_geometry(fields)
+            coords = (
+                jnp.asarray(geometry.centers(name) - geometry.axis_edges(name)[0])
+                if geometry is not None
+                else jnp.linspace(0, length, shape[axis])
+            )
             sigma = self._compute_1d_profile(
                 coords, length, low_edge in edges, high_edge in edges
             )
@@ -570,9 +628,14 @@ class _AbsorberCompiler:
             return value[:, None] if axis == "y" else value[None, :]
 
         out: dict[str, Any] = {"formulation": "cpml"}
+        geometry = _rectilinear_geometry(fields)
         for axis, (cells, length, low, high) in axes.items():
             values = self._compute_1d_cpml_profile(
-                jnp.linspace(0, length, cells),
+                (
+                    jnp.asarray(geometry.centers(axis) - geometry.axis_edges(axis)[0])
+                    if geometry is not None
+                    else jnp.linspace(0, length, cells)
+                ),
                 length,
                 low in edges,
                 high in edges,
@@ -614,6 +677,16 @@ class _AbsorberCompiler:
                 high in edges,
                 sample_kind=kind,
                 domain_cells=cells,
+                sample_coordinates=(
+                    geometry.axis_edges(axis)
+                    if geometry is not None and kind == "E"
+                    else (geometry.centers(axis) if geometry is not None else None)
+                ),
+                domain_bounds=(
+                    (geometry.axis_edges(axis)[0], geometry.axis_edges(axis)[-1])
+                    if geometry is not None
+                    else None
+                ),
             )
             for family, value in zip(("sigma", "kappa", "alpha"), values, strict=True):
                 staggered[f"{component}_{axis}_{family}"] = jnp.broadcast_to(
@@ -638,9 +711,14 @@ class _AbsorberCompiler:
             "z": (nz, depth, "front", "back"),
         }
         out: dict[str, Any] = {"formulation": "cpml"}
+        geometry = _rectilinear_geometry(fields)
         for axis, (cells, length, low, high) in axes.items():
             values = self._compute_1d_cpml_profile(
-                jnp.linspace(0, length, cells),
+                (
+                    jnp.asarray(geometry.centers(axis) - geometry.axis_edges(axis)[0])
+                    if geometry is not None
+                    else jnp.linspace(0, length, cells)
+                ),
                 length,
                 low in edges,
                 high in edges,
@@ -672,6 +750,19 @@ class _AbsorberCompiler:
                 high_edge in edges,
                 sample_kind=sample_kind,
                 domain_cells=cells,
+                sample_coordinates=(
+                    geometry.axis_edges(axis_name)
+                    if geometry is not None and sample_kind == "E"
+                    else (geometry.centers(axis_name) if geometry is not None else None)
+                ),
+                domain_bounds=(
+                    (
+                        geometry.axis_edges(axis_name)[0],
+                        geometry.axis_edges(axis_name)[-1],
+                    )
+                    if geometry is not None
+                    else None
+                ),
             )
 
         # 3. Generate sigma/kappa/alpha for every directional curl term independently;

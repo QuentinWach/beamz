@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping
 
 import jax.numpy as jnp
 import numpy as np
@@ -111,7 +111,7 @@ def _uniform_axis_centers(lower: float, upper: float, count: int) -> np.ndarray:
     return lower + (np.arange(count, dtype=np.float64) + 0.5) * step
 
 
-def yee_plane_coordinates_3d(center, size, normal_axis: str, region):
+def yee_plane_coordinates_3d(center, size, normal_axis: str, region, grid=None):
     """Return tangential cell-center coordinates for a snapped physical plane."""
     center = tuple(float(value) for value in center)
     size = tuple(float(value) for value in size)
@@ -123,13 +123,18 @@ def yee_plane_coordinates_3d(center, size, normal_axis: str, region):
         interval = region.axis_interval(axis)
         if interval is None:
             raise ValueError(f"Plane is missing its {axis!r} tangential interval.")
-        lower = center[index] - 0.5 * size[index]
-        upper = center[index] + 0.5 * size[index]
-        coordinates.append(
-            _uniform_axis_centers(
-                lower, upper, int(interval.stop) - int(interval.start)
+        if grid is not None:
+            coordinates.append(
+                np.asarray(grid.centers(axis))[int(interval.start) : int(interval.stop)]
             )
-        )
+        else:
+            lower = center[index] - 0.5 * size[index]
+            upper = center[index] + 0.5 * size[index]
+            coordinates.append(
+                _uniform_axis_centers(
+                    lower, upper, int(interval.stop) - int(interval.start)
+                )
+            )
     return coordinates[0], coordinates[1]
 
 
@@ -175,19 +180,32 @@ def _component_plane_plan_3d(
     resolution: float,
     grid_shape: tuple[int, int, int],
     field_shape: tuple[int, int, int],
+    grid=None,
 ):
     axis0, axis1 = plane_axes_3d(normal_axis)
-    component_coords = component_coordinates_3d_um(
-        component,
-        grid_shape,
-        float(resolution / µm),
-    )
+    if grid is None:
+        component_coords = {
+            axis: values * µm
+            for axis, values in component_coordinates_3d_um(
+                component,
+                grid_shape,
+                float(resolution / µm),
+            ).items()
+        }
+    else:
+        offsets = component_axis_offsets_3d(component)
+        component_coords = {
+            axis: (
+                np.asarray(grid.axis_edges(axis))
+                if offsets[axis] == 0.0
+                else np.asarray(grid.centers(axis))
+            )
+            for axis in ("x", "y", "z")
+        }
     lengths: dict[str, int] = dict(zip(("z", "y", "x"), field_shape, strict=True))
-    source0 = np.asarray(component_coords[axis0])[: lengths[axis0]] * µm
-    source1 = np.asarray(component_coords[axis1])[: lengths[axis1]] * µm
-    source_normal = (
-        np.asarray(component_coords[normal_axis])[: lengths[normal_axis]] * µm
-    )
+    source0 = np.asarray(component_coords[axis0])[: lengths[axis0]]
+    source1 = np.asarray(component_coords[axis1])[: lengths[axis1]]
+    source_normal = np.asarray(component_coords[normal_axis])[: lengths[normal_axis]]
     grid0, grid1 = np.meshgrid(*coordinates, indexing="ij")
     target0, target1 = grid0.reshape(-1), grid1.reshape(-1)
     target_normal = np.full_like(target0, float(plane_position))
@@ -254,6 +272,7 @@ class YeePlaneQuadrature:
 
     normal_axis: int
     sample_area: float
+    integration_weights: np.ndarray
     coordinates: tuple[np.ndarray, np.ndarray]
     plans: Mapping[str, tuple[np.ndarray, np.ndarray]]
 
@@ -284,10 +303,11 @@ def compile_yee_plane_quadrature_3d(
     resolution: float,
     grid_shape: tuple[int, int, int],
     component_shapes: Mapping[str, tuple[int, int, int]],
+    grid=None,
 ) -> YeePlaneQuadrature:
     """Compile the canonical plane colocation used by monitors and sources."""
     normal_axis = str(normal_axis).lower()
-    coordinates = yee_plane_coordinates_3d(center, size, normal_axis, region)
+    coordinates = yee_plane_coordinates_3d(center, size, normal_axis, region, grid=grid)
     plane_position = float(tuple(center)[{"x": 0, "y": 1, "z": 2}[normal_axis]])
     plans = {}
     for component in _FIELD_COMPONENTS:
@@ -300,16 +320,35 @@ def compile_yee_plane_quadrature_3d(
             resolution=float(resolution),
             grid_shape=grid_shape,
             field_shape=(int(shape[0]), int(shape[1]), int(shape[2])),
+            grid=grid,
         )
+    if grid is None:
+        sample_area = plane_sample_area(coordinates, float(resolution))
+        integration_weights = np.empty((0,), dtype=np.float64)
+    else:
+        axis0, axis1 = plane_axes_3d(normal_axis)
+        interval0 = region.axis_interval(axis0)
+        interval1 = region.axis_interval(axis1)
+        widths0 = np.asarray(grid.cell_widths(axis0))[
+            int(interval0.start) : int(interval0.stop)
+        ]
+        widths1 = np.asarray(grid.cell_widths(axis1))[
+            int(interval1.start) : int(interval1.stop)
+        ]
+        integration_weights = (widths0[:, None] * widths1[None, :]).reshape(-1)
+        sample_area = float(np.mean(integration_weights))
     return YeePlaneQuadrature(
         normal_axis={"x": 0, "y": 1, "z": 2}[normal_axis],
-        sample_area=plane_sample_area(coordinates, float(resolution)),
+        sample_area=sample_area,
+        integration_weights=integration_weights,
         coordinates=coordinates,
         plans=plans,
     )
 
 
-def yee_flux(samples, normal_axis: int, *, normal_sign=1.0, measure=1.0, phasor=False):
+def yee_flux(
+    samples, normal_axis: int, *, normal_sign=1.0, measure: Any = 1.0, phasor=False
+):
     """Integrate signed Poynting flux from six colocated Yee field samples."""
     ex, ey, ez, hx, hy, hz = (jnp.asarray(value) for value in samples)
     if phasor:
@@ -321,7 +360,7 @@ def yee_flux(samples, normal_axis: int, *, normal_sign=1.0, measure=1.0, phasor=
         flux = jnp.sqrt(jnp.abs(sx) ** 2 + jnp.abs(sy) ** 2 + jnp.abs(sz) ** 2)
     else:
         flux = (sx, sy, sz)[int(normal_axis)] * float(normal_sign)
-    total = jnp.sum(flux) * float(measure)
+    total = jnp.sum(flux * jnp.asarray(measure, dtype=flux.dtype))
     return 0.5 * jnp.real(total) if phasor else total
 
 
@@ -340,33 +379,57 @@ def adjacent_difference(array, axis, resolution):
     return jnp.moveaxis((moved[1:] - moved[:-1]) / resolution, 0, axis)
 
 
-def _pad_with_boundary_ghosts(array, axis, metallic_edges):
-    shape = list(array.shape)
+def _pad_with_boundary_ghosts(
+    array, axis, metallic_edges, *, logical_size: int | None = None
+):
+    logical_size = int(array.shape[axis]) if logical_size is None else int(logical_size)
+    if logical_size <= 0 or logical_size > int(array.shape[axis]):
+        raise ValueError(
+            f"Logical boundary size {logical_size} is invalid for shape {array.shape}."
+        )
+    physical_region = [slice(None)] * array.ndim
+    physical_region[axis] = slice(0, logical_size)
+    physical = array[tuple(physical_region)]
+    storage_region = [slice(None)] * array.ndim
+    storage_region[axis] = slice(logical_size, None)
+    storage_padding = array[tuple(storage_region)]
+    shape = list(physical.shape)
     shape[axis] = 1
     zero = jnp.zeros(tuple(shape), dtype=array.dtype)
     low_edge, high_edge = (("front", "back"), ("bottom", "top"), ("left", "right"))[
         axis
     ]
-    low = zero if low_edge in metallic_edges else jnp.take(array, jnp.array([0]), axis)
+    low = (
+        zero if low_edge in metallic_edges else jnp.take(physical, jnp.array([0]), axis)
+    )
     high = (
         zero
         if high_edge in metallic_edges
-        else jnp.take(array, jnp.array([array.shape[axis] - 1]), axis)
+        else jnp.take(physical, jnp.array([logical_size - 1]), axis)
     )
-    return jnp.concatenate((low, array, high), axis=axis)
+    return jnp.concatenate((low, physical, high, storage_padding), axis=axis)
 
 
-def build_h_boundary_views_for_e_3d(hx, hy, hz, metallic_edges=frozenset()):
+def build_h_boundary_views_for_e_3d(
+    hx, hy, hz, metallic_edges=frozenset(), *, logical_shapes=None
+):
     """Create the six ghost-padded H views consumed by the 3D E curl."""
     return {
-        name: _pad_with_boundary_ghosts(field, axis, metallic_edges)
-        for name, field, axis in (
-            ("hz_y", hz, 1),
-            ("hy_z", hy, 0),
-            ("hx_z", hx, 0),
-            ("hz_x", hz, 2),
-            ("hy_x", hy, 2),
-            ("hx_y", hx, 1),
+        name: _pad_with_boundary_ghosts(
+            field,
+            axis,
+            metallic_edges,
+            logical_size=(
+                None if logical_shapes is None else logical_shapes[component][axis]
+            ),
+        )
+        for name, component, field, axis in (
+            ("hz_y", "Hz", hz, 1),
+            ("hy_z", "Hy", hy, 0),
+            ("hx_z", "Hx", hx, 0),
+            ("hz_x", "Hz", hz, 2),
+            ("hy_x", "Hy", hy, 2),
+            ("hx_y", "Hx", hx, 1),
         )
     }
 
@@ -748,6 +811,12 @@ def _total_conductivity(fields):
     for key in keys:
         if key in fields.pml_data:
             sigma_pml = sigma_pml + fields.pml_data[key]
+    material_grid = getattr(fields, "material_grid", None)
+    if (
+        getattr(material_grid, "metric_kind", "isotropic_uniform")
+        != "isotropic_uniform"
+    ):
+        return base_sigma + sigma_pml
     return jnp.maximum(base_sigma, sigma_pml)
 
 

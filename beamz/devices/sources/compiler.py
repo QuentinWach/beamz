@@ -173,6 +173,7 @@ class SourceLoweringContext:
     num_steps: int
     total_steps: int
     domain: Any | None = None
+    grid: Any | None = None
 
 
 @singledispatch
@@ -364,6 +365,7 @@ def compile_source_specs(
     t0: float,
     total_steps: int,
     domain=None,
+    grid=None,
 ) -> tuple[CompiledSourceSpec, ...]:
     """Compile immutable source request objects into packed update specs."""
     ctx = SourceLoweringContext(
@@ -374,6 +376,7 @@ def compile_source_specs(
         num_steps=num_steps,
         total_steps=total_steps,
         domain=domain,
+        grid=grid,
     )
     specs: list[CompiledSourceSpec] = []
     for source_index, source in enumerate(source_specs):
@@ -391,6 +394,11 @@ def _lower_gaussian_beam_source(
     source: GaussianBeamSource,
     ctx: SourceLoweringContext,
 ) -> CompiledInjectionPlan:
+    if _source_requires_rectilinear_operator(ctx):
+        raise NotImplementedError(
+            "GaussianBeamSource on a rectilinear grid requires a metric-aware "
+            "phasor-residual operator; use GaussianSource or a uniform grid."
+        )
     waveform = _sample_temporal_waveform(source.source_time, ctx)
     return _field_profile_injection_plan(
         gaussian_beam_field_profile(source, ctx.fields, resolution=ctx.resolution),
@@ -415,6 +423,8 @@ def _lower_gaussian_source(
         resolution=ctx.resolution,
         is_3d=is_3d,
         plane_2d=getattr(ctx.fields, "plane_2d", None),
+        component=component,
+        grid=ctx.grid,
     )
     material_region = np.asarray(component_material_at(ctx.fields, component, index))
     constant = MU_0 if is_te else EPS_0
@@ -448,6 +458,11 @@ def _lower_mode_source(
     source: ModeSource,
     ctx: SourceLoweringContext,
 ) -> CompiledInjectionPlan:
+    if _source_requires_rectilinear_operator(ctx):
+        raise NotImplementedError(
+            "ModeSource on a rectilinear grid requires a nonuniform mode operator; "
+            "use a precomputed CustomSource or a uniform grid."
+        )
     if (
         np.asarray(ctx.fields.permittivity).ndim == 3
         and source.profile_frequencies().size > 1
@@ -633,8 +648,52 @@ def gaussian_spatial_profile(
     resolution: float,
     is_3d: bool,
     plane_2d=None,
+    component: str = "Ez",
+    grid=None,
 ):
     """Compute a Gaussian source profile from semantic source data."""
+    if grid is not None:
+        offsets = (
+            component_axis_offsets_3d(component)
+            if is_3d
+            else {
+                "Ez": {"y": 0.0, "x": 0.0},
+                "Hx": {"y": 0.5, "x": 0.0},
+                "Hy": {"y": 0.0, "x": 0.5},
+                "Ex": {"y": 0.0, "x": 0.5},
+                "Ey": {"y": 0.5, "x": 0.0},
+                "Hz": {"y": 0.5, "x": 0.5},
+            }[component]
+        )
+        axes = ("z", "y", "x") if is_3d else ("y", "x")
+        positions = tuple(float(value) for value in source.position)
+        centers = dict(zip(("x", "y", "z"), positions, strict=False))
+        coordinates = {
+            axis: np.asarray(
+                grid.axis_edges(axis) if offsets[axis] == 0.0 else grid.centers(axis)
+            )
+            for axis in axes
+        }
+        slices = []
+        selected = []
+        for axis in axes:
+            values = coordinates[axis]
+            center = centers[axis]
+            active = np.flatnonzero(np.abs(values - center) <= 4.0 * source.width)
+            if active.size:
+                start, stop = int(active[0]), int(active[-1] + 1)
+            else:
+                nearest = int(np.argmin(np.abs(values - center)))
+                start, stop = nearest, nearest + 1
+            slices.append(slice(start, stop))
+            selected.append(jnp.asarray(values[start:stop]))
+        mesh = jnp.meshgrid(*selected, indexing="ij")
+        distance_sq = sum(
+            (values - centers[axis]) ** 2
+            for axis, values in zip(axes, mesh, strict=True)
+        )
+        return tuple(slices), jnp.exp(-distance_sq / (2 * source.width**2))
+
     sigma_grid = source.width / resolution
     radius_grid = int(np.ceil(4 * sigma_grid))
 
@@ -669,6 +728,14 @@ def gaussian_spatial_profile(
         distance_sq = (x - x0) ** 2 + (y - y0) ** 2
 
     return idx, jnp.exp(-distance_sq / (2 * source.width**2))
+
+
+def _source_requires_rectilinear_operator(ctx: SourceLoweringContext) -> bool:
+    if ctx.grid is None:
+        return False
+    is_3d = np.asarray(ctx.fields.permittivity).ndim == 3
+    axes = ("x", "y", "z") if is_3d else ("x", "y")
+    return ctx.grid.metric_kind_for(axes) != "isotropic_uniform"
 
 
 Direction3D = Literal["+x", "-x", "+y", "-y", "+z", "-z"]

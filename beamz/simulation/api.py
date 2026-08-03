@@ -166,7 +166,12 @@ def _time_from_run_time(time, run_time, grid_spec, resolution, dims):
         return time
     spec = grid_spec
     if spec is None:
-        spec = GridSpec.uniform(resolution)
+        representative = (
+            resolution.minimum_spacing
+            if hasattr(resolution, "minimum_spacing")
+            else resolution
+        )
+        spec = GridSpec.uniform(representative)
     dt = spec.resolve_time_step(resolution, dims=dims)
     return np.arange(0.0, float(run_time) + 0.5 * dt, dt)
 
@@ -261,11 +266,11 @@ def _prepare_material_grid(
             "already been applied."
         )
 
-    counts = tuple(reversed(material_grid.shape))
+    assert material_grid.grid is not None
     inferred_size = (
-        counts[0] * material_grid.resolution,
-        counts[1] * material_grid.resolution,
-        counts[2] * material_grid.resolution if len(counts) == 3 else 0.0,
+        material_grid.grid.extent
+        if len(material_grid.shape) == 3
+        else (*material_grid.grid.extent[:2], 0.0)
     )
     requested_size = _normalize_domain(domain, size)
     if requested_size is not None and not np.allclose(
@@ -275,8 +280,7 @@ def _prepare_material_grid(
         atol=0.0,
     ):
         raise ValueError(
-            "Simulation domain/size must match material_grid.shape * "
-            "material_grid.resolution."
+            "Simulation domain/size must match the material_grid grid extents."
         )
 
     metadata_design = Design(
@@ -290,10 +294,10 @@ def _prepare_material_grid(
         time,
         run_time,
         None,
-        material_grid.resolution,
+        material_grid.grid,
         dimensions,
     )
-    offset = tuple(-value for value in material_grid.origin)
+    offset = tuple(-value for value in material_grid.grid.origin)
     return metadata_design, material_grid.resolution, resolved_time, offset
 
 

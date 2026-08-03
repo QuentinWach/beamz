@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from beamz.design.grid import RectilinearGrid as Grid
 from beamz.design.materials import Material
 
 from . import _native  # type: ignore[attr-defined]
@@ -272,57 +273,4 @@ class Scene:
             grid,
             options=options,
             cache_directory=cache_directory,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class Grid:
-    """Explicit Cartesian edges; spacing may vary independently on every axis."""
-
-    x_edges: np.ndarray
-    y_edges: np.ndarray
-    z_edges: np.ndarray
-
-    def __post_init__(self) -> None:
-        for name in ("x_edges", "y_edges", "z_edges"):
-            values = np.array(getattr(self, name), dtype=np.float64, copy=True)
-            if values.ndim != 1 or len(values) < 2:
-                raise ValueError(f"{name} must be a one-dimensional edge array.")
-            if not np.isfinite(values).all() or np.any(np.diff(values) <= 0):
-                raise ValueError(f"{name} must be finite and strictly increasing.")
-            values.setflags(write=False)
-            object.__setattr__(self, name, values)
-
-    @classmethod
-    def uniform(
-        cls,
-        minimum: tuple[float, float, float],
-        maximum: tuple[float, float, float],
-        shape: tuple[int, int, int],
-    ) -> Grid:
-        if len(minimum) != 3 or len(maximum) != 3 or len(shape) != 3:
-            raise ValueError("Uniform-grid bounds and shape must have length 3.")
-        counts = tuple(_integer(value, "Grid shape", minimum=1) for value in shape)
-        return cls(
-            *(
-                np.linspace(
-                    float(minimum[axis]), float(maximum[axis]), counts[axis] + 1
-                )
-                for axis in range(3)
-            )
-        )
-
-    @property
-    def edges(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return self.x_edges, self.y_edges, self.z_edges
-
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return tuple(len(edges) - 1 for edges in self.edges)  # type: ignore[return-value]
-
-    @property
-    def is_uniform(self) -> bool:
-        return all(
-            np.allclose(np.diff(edges), np.diff(edges)[0], rtol=1e-12, atol=0.0)
-            for edges in self.edges
         )

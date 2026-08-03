@@ -36,6 +36,7 @@ from beamz.simulation.model import (
     CompiledGrid,
     CompiledProgram,
     CpmlPlan,
+    DerivativeMetricPlan,
     MetallicPlan,
     RunConfig,
     ShardingConfig,
@@ -49,6 +50,7 @@ from .observe import MONITOR_FIELDS, empty_monitor_values
 from .sharding import (
     build_sharding_plan,
     lower_compiled_arrays,
+    lower_derivative_metrics,
     normalize_sharding_config,
     sharding_cache_token,
 )
@@ -145,6 +147,38 @@ def _inverse_permittivity_components(values):
         xy * xz - xx * yz,
     )
     return jnp.asarray(np.stack(cofactors, axis=-1) / determinant[..., None])
+
+
+def _compile_derivative_metrics(material_grid) -> DerivativeMetricPlan:
+    """Precompute O(nx + ny + nz) staggered inverse-distance metrics."""
+    kind = material_grid.metric_kind
+    empty = jnp.zeros((0,), dtype=jnp.float32)
+    if kind == "isotropic_uniform":
+        return DerivativeMetricPlan(*(empty for _ in range(6)))
+
+    assert material_grid.grid is not None
+    active_axes = ("x", "y", "z") if len(material_grid.shape) == 3 else ("x", "y")
+    forward = {}
+    backward = {}
+    for axis in active_axes:
+        widths = material_grid.grid.cell_widths(axis)
+        if kind == "axis_uniform":
+            forward[axis] = backward[axis] = jnp.asarray(
+                1.0 / float(widths[0]), dtype=jnp.float32
+            )
+            continue
+        inverse_forward = 1.0 / widths
+        inverse_backward = np.empty(widths.size + 1, dtype=np.float64)
+        inverse_backward[0] = 1.0 / widths[0]
+        inverse_backward[-1] = 1.0 / widths[-1]
+        if widths.size > 1:
+            inverse_backward[1:-1] = 2.0 / (widths[:-1] + widths[1:])
+        forward[axis] = jnp.asarray(inverse_forward, dtype=jnp.float32)
+        backward[axis] = jnp.asarray(inverse_backward, dtype=jnp.float32)
+    return DerivativeMetricPlan(
+        *(forward.get(axis, empty) for axis in ("x", "y", "z")),
+        *(backward.get(axis, empty) for axis in ("x", "y", "z")),
+    )
 
 
 def _compile_cpml_plan(
@@ -263,6 +297,7 @@ def _prepare_compilation(
         request.run.t0,
         request.run.total_steps,
         request.domain,
+        grid=logical_fields.geometry,
     )
     monitor_fields = SimpleNamespace(
         **{
@@ -282,6 +317,7 @@ def _prepare_compilation(
         dt,
         request.domain.plane_2d,
         request.domain.polarization_2d,
+        grid=logical_fields.geometry,
     )
     loop_aliases = {
         "fori": "fori_loop",
@@ -301,6 +337,7 @@ def _prepare_compilation(
         num_steps=num_steps,
         plane_2d=request.domain.plane_2d,
         is_3d=bool(request.domain.is_3d),
+        metric_kind=request.materials.metric_kind,
         polarization_2d=request.domain.polarization_2d,
         loop_kind=loop_kind,
         source_single_slab_dense=bool(request.run.source_single_slab_dense),
@@ -320,6 +357,14 @@ def _compile_grid(
 ) -> CompiledGrid:
     """Lower cell materials and boundary data into one frozen logical Yee lattice."""
     material_grid = request.materials
+    assert material_grid.grid is not None
+    grid_origin = material_grid.grid.origin
+    # Simulation has already shifted devices into solver-local coordinates. Normalize
+    # the realized grid from its own origin so centered-domain offsets are not applied
+    # a second time, while imported grids retain the same local frame.
+    local_geometry = material_grid.grid.translated(
+        (-grid_origin[0], -grid_origin[1], -grid_origin[2])
+    )
     material_source = boundary_data
     profiles = boundary_data.profiles
     shapes = MappingProxyType(
@@ -341,6 +386,7 @@ def _compile_grid(
     )
     values = {
         "material_grid": material_grid,
+        "geometry": local_geometry,
         "component_shapes": shapes,
         "resolution": material_grid.resolution,
         "plane_2d": "xy" if not request.domain.is_3d else request.domain.plane_2d,
@@ -428,6 +474,7 @@ def _compile_boundary(fields, cpml, boundary_data, *, is_3d: bool) -> BoundaryPl
             masks["Hy"],
             masks["Hz"],
         ),
+        logical_component_shapes=fields.component_shapes,
     )
 
 
@@ -597,10 +644,14 @@ def compile_simulation(request: SimulationRequest) -> CompiledProgram:
     update_coefficients, boundary = lower_compiled_arrays(
         update_coefficients, boundary, sharding_layout
     )
+    metrics = lower_derivative_metrics(
+        _compile_derivative_metrics(request.materials), sharding_layout
+    )
     return CompiledProgram(
         grid=logical_grid,
         config=config,
         coefficients=update_coefficients,
+        metrics=metrics,
         boundary=boundary,
         sources=source_specs,
         monitors=monitor_specs,

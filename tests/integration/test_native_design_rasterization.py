@@ -166,14 +166,313 @@ def test_full_tensor_conversion_rejects_unsupported_material_couplings(
         MaterialGrid.from_raster_result(result, dimensions=dimensions)
 
 
-def test_material_grid_rejects_nonuniform_raster_results():
+def test_material_grid_preserves_nonuniform_raster_edges():
     result = rasterize(
         Scene((Material(),)),
         Grid([0.0, 0.2, 1.0], [0.0, 1.0], [0.0, 1.0]),
     )
 
-    with pytest.raises(ValueError, match="uniform spacing"):
-        MaterialGrid.from_raster_result(result)
+    material_grid = MaterialGrid.from_raster_result(result)
+
+    np.testing.assert_array_equal(material_grid.grid.x_edges, [0.0, 0.2, 1.0])
+    assert material_grid.grid.metric_kind == "rectilinear"
+    assert material_grid.resolution == pytest.approx(0.2)
+    assert material_grid.uses_direct_yee_materials
+
+
+def test_compiler_builds_separable_staggered_metrics_for_rectilinear_grid():
+    result = rasterize(
+        Scene((Material(),)),
+        Grid([0.0, 0.2, 1.0], [0.0, 0.5, 1.0], [0.0, 1.0]),
+        options=RasterOptions(components="two_dimensional_tm"),
+    )
+    material_grid = MaterialGrid.from_raster_result(result)
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    program = simulation.compile()
+
+    assert program.config.metric_kind == "rectilinear"
+    np.testing.assert_allclose(program.metrics.e_to_h_x, [5.0, 1.25])
+    np.testing.assert_allclose(program.metrics.h_to_e_x, [5.0, 2.0, 1.25])
+    np.testing.assert_allclose(program.metrics.e_to_h_y, [2.0, 2.0])
+    assert program.metrics.e_to_h_z.size == 0
+
+
+def test_uniform_compiler_keeps_metric_leaves_empty_for_scalar_fast_path():
+    simulation = bz.Simulation(
+        design=design_2d(),
+        resolution=0.25e-6,
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    program = simulation.compile()
+
+    assert program.config.metric_kind == "isotropic_uniform"
+    assert all(value.size == 0 for value in program.metrics)
+
+
+@pytest.mark.parametrize("polarization", ["tm", "te"])
+@pytest.mark.parametrize("cpml", [False, True])
+def test_rectilinear_2d_update_kernel_executes_for_both_polarizations(
+    polarization, cpml
+):
+    result = rasterize(
+        Scene((Material(),)),
+        Grid([0.0, 0.2, 0.6, 1.0], [0.0, 0.3, 1.0], [0.0, 1.0]),
+        options=RasterOptions(components=f"two_dimensional_{polarization}"),
+    )
+    material_grid = MaterialGrid.from_raster_result(result, polarization=polarization)
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        polarization=polarization,
+        time=np.asarray([0.0, 1e-16]),
+        boundaries=[bz.PML(thickness=0.2, formulation="cpml")] if cpml else None,
+    )
+    state = simulation.initial_state()
+    state = state._replace(
+        ez=np.ones_like(state.ez) if polarization == "tm" else state.ez,
+        ex=np.ones_like(state.ex) if polarization == "te" else state.ex,
+    )
+
+    advanced = simulation.step(state)
+
+    assert int(advanced.current_step) == 1
+    assert all(
+        np.isfinite(np.asarray(value)).all()
+        for value in (
+            advanced.ex,
+            advanced.ey,
+            advanced.ez,
+            advanced.hx,
+            advanced.hy,
+            advanced.hz,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("grid", "metric_kind", "cpml"),
+    [
+        (
+            Grid(
+                [0.0, 0.2, 1.0],
+                [0.0, 0.4, 1.0],
+                [0.0, 0.3, 1.0],
+            ),
+            "rectilinear",
+            False,
+        ),
+        (
+            Grid.from_spacing((2, 2, 2), (0.2, 0.3, 0.4)),
+            "axis_uniform",
+            False,
+        ),
+        (
+            Grid(
+                [0.0, 0.2, 1.0],
+                [0.0, 0.4, 1.0],
+                [0.0, 0.3, 1.0],
+            ),
+            "rectilinear",
+            True,
+        ),
+    ],
+)
+def test_nonisotropic_3d_update_kernel_executes(grid, metric_kind, cpml):
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(Scene((Material(),)), grid), dimensions=3
+    )
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        time=np.asarray([0.0, 1e-16]),
+        boundaries=[bz.PML(thickness=0.2, formulation="cpml")] if cpml else None,
+    )
+    program = simulation.compile()
+    state = simulation.initial_state()._replace(ez=np.ones_like(program.grid.Ez))
+
+    advanced = simulation.step(state)
+
+    assert program.config.metric_kind == metric_kind
+    assert int(advanced.current_step) == 1
+    assert all(
+        np.isfinite(np.asarray(value)).all()
+        for value in (
+            advanced.ex,
+            advanced.ey,
+            advanced.ez,
+            advanced.hx,
+            advanced.hy,
+            advanced.hz,
+        )
+    )
+
+
+def test_rectilinear_monitors_compile_local_line_and_face_weights():
+    grid_2d = Grid([0.0, 0.2, 1.0], [0.0, 0.3, 1.0], [0.0, 1.0])
+    material_2d = MaterialGrid.from_raster_result(
+        rasterize(
+            Scene((Material(),)),
+            grid_2d,
+            options=RasterOptions(components="two_dimensional_tm"),
+        )
+    )
+    line = bz.FieldMonitor(
+        center=(0.1, 0.5, 0.0),
+        size=(0.0, 1.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+    line_spec = (
+        bz.Simulation(
+            material_grid=material_2d,
+            monitors=[line],
+            time=np.asarray([0.0, 1e-16]),
+        )
+        .compile()
+        .monitors[0]
+    )
+
+    np.testing.assert_allclose(line_spec.integration_weights, [0.3, 0.7])
+
+    grid_3d = Grid(
+        [0.0, 0.2, 1.0],
+        [0.0, 0.3, 1.0],
+        [0.0, 0.4, 1.0],
+    )
+    material_3d = MaterialGrid.from_raster_result(
+        rasterize(Scene((Material(),)), grid_3d), dimensions=3
+    )
+    face = bz.FieldMonitor(
+        center=(0.5, 0.5, 0.2),
+        size=(1.0, 1.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+    face_spec = (
+        bz.Simulation(
+            material_grid=material_3d,
+            monitors=[face],
+            time=np.asarray([0.0, 1e-16]),
+        )
+        .compile()
+        .monitors[0]
+    )
+
+    np.testing.assert_allclose(face_spec.integration_weights, [0.06, 0.24, 0.14, 0.56])
+
+
+def test_centered_design_monitor_uses_normalized_grid_once():
+    monitor = bz.FieldMonitor(
+        center=(0.0, 0.0, 0.0),
+        size=(1.0, 1.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+    simulation = bz.Simulation(
+        domain=(1.0, 1.0, 1.0),
+        design=bz.Design(background=bz.Material()),
+        monitors=[monitor],
+        resolution=0.25,
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    program = simulation.compile()
+
+    assert simulation.coordinate_offset == (0.5, 0.5, 0.5)
+    assert program.grid.geometry.origin == (0.0, 0.0, 0.0)
+    assert program.grid.geometry.maximum == (1.0, 1.0, 1.0)
+    assert program.monitors[0].dft_point_count == 16
+
+
+def test_rectilinear_mode_monitor_is_rejected_until_mode_solver_is_metric_aware():
+    grid = Grid(
+        [0.0, 0.2, 1.0],
+        [0.0, 0.3, 1.0],
+        [0.0, 0.4, 1.0],
+    )
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(Scene((Material(),)), grid), dimensions=3
+    )
+    monitor = bz.ModeMonitor(
+        center=(0.5, 0.5, 0.4),
+        size=(1.0, 1.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        monitors=[monitor],
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    with pytest.raises(NotImplementedError, match="nonuniform mode operator"):
+        simulation.compile()
+
+
+def test_rectilinear_gaussian_source_uses_physical_edges_and_local_frame():
+    grid = Grid(
+        [2.0, 2.2, 3.0],
+        [3.0, 3.3, 4.0],
+        [4.0, 5.0],
+    )
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(
+            Scene((Material(),)),
+            grid,
+            options=RasterOptions(components="two_dimensional_tm"),
+        )
+    )
+    source = bz.GaussianSource(
+        position=(2.2, 3.3),
+        width=0.02,
+        signal=np.asarray([1.0, 0.0]),
+    )
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        sources=[source],
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    program = simulation.compile()
+    compiled_source = program.sources[0]
+
+    assert program.grid.geometry.origin == (0.0, 0.0, 0.0)
+    assert simulation.coordinate_offset == (-2.0, -3.0, -4.0)
+    assert compiled_source.slab_starts == (1, 1)
+    assert compiled_source.slab_sizes == (1, 1)
+
+
+def test_rectilinear_cpml_depth_is_graded_in_physical_distance():
+    grid = Grid(
+        [0.0, 0.1, 0.3, 0.6, 1.0],
+        [0.0, 0.4, 1.0],
+        [0.0, 1.0],
+    )
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(
+            Scene((Material(),)),
+            grid,
+            options=RasterOptions(components="two_dimensional_tm"),
+        )
+    )
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        boundaries=[
+            bz.PML(
+                edges=("left",),
+                thickness=0.25,
+                sigma_max=10.0,
+                formulation="cpml",
+            )
+        ],
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    profile = np.asarray(simulation.compile().grid.pml_data["tm_xy_cpml"]["Hy_x_sigma"])
+
+    np.testing.assert_allclose(profile[:, 0], 10.0 * 0.8**3, atol=1e-7)
+    np.testing.assert_allclose(profile[:, 1], 10.0 * 0.2**3, atol=1e-7)
+    np.testing.assert_allclose(profile[:, 2:], 0.0)
 
 
 def test_material_grid_infers_two_dimensional_tm_output():
@@ -498,6 +797,45 @@ def test_full_tensor_and_full_farjadpour_compile_onto_constitutive_supports():
             boundaries=[bz.PML(thickness=0.5, formulation="sponge")],
             run_time=2e-9,
         ).compile()
+
+
+def test_rectilinear_full_tensor_update_executes_combined_kernel():
+    result = rasterize(
+        Scene(
+            (
+                Material(
+                    epsilon_r=(
+                        (3.0, 0.2, 0.0),
+                        (0.2, 2.0, 0.0),
+                        (0.0, 0.0, 1.0),
+                    )
+                ),
+            )
+        ),
+        Grid(
+            [0.0, 0.2, 1.0],
+            [0.0, 0.4, 1.0],
+            [0.0, 0.3, 1.0],
+        ),
+        options=RasterOptions(smoothing="farjadpour_full"),
+    )
+    material_grid = MaterialGrid.from_raster_result(result)
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        time=np.asarray([0.0, 1e-16]),
+    )
+    state = simulation.initial_state()
+    state = state._replace(hx=np.ones_like(state.hx))
+
+    program = simulation.compile()
+    advanced = simulation.step(state)
+
+    assert material_grid.uses_full_permittivity
+    assert program.config.metric_kind == "rectilinear"
+    assert program.coefficients.e_inverse_offdiagonal.size > 0
+    assert all(
+        np.isfinite(getattr(advanced, name)).all() for name in ("ex", "ey", "ez")
+    )
 
 
 def test_simulation_selects_explicit_diagonal_farjadpour_policy():
