@@ -11,6 +11,7 @@ import numpy as np
 
 from beamz.simulation.model import (
     CpmlPackedSlabSpec,
+    DerivativeMetricPlan,
     ShardingConfig,
     ShardingLayout,
     ShardingPlan,
@@ -325,6 +326,40 @@ def lower_compiled_arrays(coefficients, boundary, layout: ShardingLayout):
         cpml=cpml,
         metallic=replace(boundary.metallic, **masks),
     )
+
+
+_METRIC_SOURCE_COMPONENTS = {
+    "e_to_h_x": "Ey",
+    "e_to_h_y": "Ex",
+    "e_to_h_z": "Ex",
+    "h_to_e_x": "Hy",
+    "h_to_e_y": "Hx",
+    "h_to_e_z": "Hx",
+}
+
+
+def lower_derivative_metrics(
+    metrics: DerivativeMetricPlan, layout: ShardingLayout
+) -> DerivativeMetricPlan:
+    """Extend separable metrics across storage-only cells on the sharded axis."""
+    if not layout.enabled:
+        return metrics
+
+    updates = {}
+    for name, component in _METRIC_SOURCE_COMPONENTS.items():
+        if not name.endswith(f"_{layout.axis_name}"):
+            continue
+        metric = jnp.asarray(getattr(metrics, name))
+        if metric.ndim == 0 or not metric.size:
+            continue
+        logical = layout.logical_shapes[component][layout.axis]
+        padded = layout.padded_shapes[component][layout.axis]
+        extra = int(padded) - int(logical)
+        if extra > 0:
+            updates[name] = jnp.concatenate(
+                (metric, jnp.full((extra,), metric[-1], dtype=metric.dtype))
+            )
+    return metrics._replace(**updates)
 
 
 def _replicated_sharding(mesh):

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from beamz import LIGHT_SPEED, Grid, GridSpec, RectilinearGrid
 from beamz.design import MaterialGrid
+from beamz.lattice import component_shapes
+from beamz.simulation.model import DerivativeMetricPlan, ShardingLayout
+from beamz.simulation.sharding import lower_derivative_metrics
 
 
 def test_grid_alias_and_edge_arrays_are_immutable():
@@ -93,3 +97,35 @@ def test_material_grid_realizes_uniform_legacy_inputs_and_validates_explicit_gri
     assert explicit.grid is rectilinear
     assert explicit.origin == rectilinear.origin
     assert explicit.resolution == pytest.approx(0.25)
+
+
+def test_rectilinear_metrics_extend_across_sharding_padding():
+    logical = component_shapes((3, 3, 4))
+    padded = {
+        name: (*shape[:-1], int(np.ceil(shape[-1] / 3)) * 3)
+        for name, shape in logical.items()
+    }
+    layout = ShardingLayout(
+        enabled=True,
+        axis_name="x",
+        axis=2,
+        num_devices=3,
+        backend="cpu",
+        logical_shapes=logical,
+        padded_shapes=padded,
+    )
+    metrics = DerivativeMetricPlan(
+        jnp.asarray([1.0, 2.0, 3.0, 4.0]),
+        jnp.asarray([10.0, 20.0, 30.0]),
+        jnp.asarray([100.0, 200.0, 300.0]),
+        jnp.asarray([1.0, 2.0, 3.0, 4.0, 5.0]),
+        jnp.asarray([10.0, 20.0, 30.0, 40.0]),
+        jnp.asarray([100.0, 200.0, 300.0, 400.0]),
+    )
+
+    lowered = lower_derivative_metrics(metrics, layout)
+
+    np.testing.assert_array_equal(lowered.e_to_h_x, [1, 2, 3, 4, 4])
+    np.testing.assert_array_equal(lowered.h_to_e_x, [1, 2, 3, 4, 5, 5, 5])
+    np.testing.assert_array_equal(lowered.e_to_h_y, metrics.e_to_h_y)
+    np.testing.assert_array_equal(lowered.h_to_e_z, metrics.h_to_e_z)

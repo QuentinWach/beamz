@@ -50,6 +50,7 @@ from .observe import MONITOR_FIELDS, empty_monitor_values
 from .sharding import (
     build_sharding_plan,
     lower_compiled_arrays,
+    lower_derivative_metrics,
     normalize_sharding_config,
     sharding_cache_token,
 )
@@ -579,7 +580,9 @@ def compile_simulation(request: SimulationRequest) -> CompiledProgram:
     update_coefficients, boundary = lower_compiled_arrays(
         update_coefficients, boundary, sharding_layout
     )
-    metrics = _compile_derivative_metrics(request.materials)
+    metrics = lower_derivative_metrics(
+        _compile_derivative_metrics(request.materials), sharding_layout
+    )
     return CompiledProgram(
         grid=logical_grid,
         config=config,
