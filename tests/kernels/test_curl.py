@@ -33,6 +33,22 @@ def test_yee_flux_integrates_signed_complex_poynting_component():
     assert float(backward) == -1.0
 
 
+def test_yee_flux_accepts_local_rectilinear_quadrature_weights():
+    zeros = np.zeros(2, dtype=np.complex128)
+    ey = np.ones(2, dtype=np.complex128)
+    hz = np.asarray([1.0, 2.0], dtype=np.complex128)
+    samples = (zeros, ey, zeros, zeros, zeros, hz)
+
+    flux = yee_flux(
+        samples,
+        0,
+        measure=np.asarray([0.25, 0.75]),
+        phasor=True,
+    )
+
+    assert float(flux) == pytest.approx(0.875)
+
+
 pytestmark = pytest.mark.unit
 
 

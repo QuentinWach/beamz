@@ -459,6 +459,9 @@ class MonitorResults:
     normal_axis: int = -1
     normal_sign: float = 1.0
     power_scale: float = 0.0
+    integration_weights: np.ndarray = field(
+        default_factory=lambda: np.empty(0, dtype=float)
+    )
     _raw_dft_fields: Mapping[str, np.ndarray] | None = field(
         default=None, compare=False, repr=False
     )
@@ -495,6 +498,7 @@ class MonitorResults:
             "field_steps",
             "dft_frequencies",
             "dft_weight_sum",
+            "integration_weights",
         ):
             object.__setattr__(self, name, _array_snapshot(getattr(self, name)))
         if self.field_times.shape != self.field_steps.shape:
@@ -744,6 +748,7 @@ class MonitorResults:
             normal_axis=int(spec.normal_axis),
             normal_sign=float(spec.normal_sign),
             power_scale=float(spec.power_scale),
+            integration_weights=np.asarray(spec.integration_weights),
             objective_value=None,
         )
 

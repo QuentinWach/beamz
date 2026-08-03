@@ -226,6 +226,15 @@ class RectilinearGrid:
     def extent(self) -> tuple[float, float, float]:
         return tuple(float(edges[-1] - edges[0]) for edges in self.edges)  # type: ignore[return-value]
 
+    def translated(self, offset: tuple[float, float, float]) -> RectilinearGrid:
+        """Return the same cell widths in a translated coordinate frame."""
+        shift = tuple(float(value) for value in offset)
+        if len(shift) != 3 or not np.all(np.isfinite(shift)):
+            raise ValueError("Grid translation must contain three finite values.")
+        return type(self)(
+            *(edges + shift[index] for index, edges in enumerate(self.edges))
+        )
+
     def axis_extent(
         self, axis: Axis | int, bounds: tuple[int, int] | None = None
     ) -> float:

@@ -277,6 +277,7 @@ def _prepare_compilation(
         request.run.t0,
         request.run.total_steps,
         request.domain,
+        grid=logical_fields.geometry,
     )
     monitor_fields = SimpleNamespace(
         **{
@@ -296,6 +297,7 @@ def _prepare_compilation(
         dt,
         request.domain.plane_2d,
         request.domain.polarization_2d,
+        grid=logical_fields.geometry,
     )
     loop_aliases = {
         "fori": "fori_loop",
@@ -335,6 +337,8 @@ def _compile_grid(
 ) -> CompiledGrid:
     """Lower cell materials and boundary data into one frozen logical Yee lattice."""
     material_grid = request.materials
+    assert material_grid.grid is not None
+    local_geometry = material_grid.grid.translated(request.domain.coordinate_offset)
     material_source = boundary_data
     profiles = boundary_data.profiles
     shapes = MappingProxyType(
@@ -356,7 +360,7 @@ def _compile_grid(
     )
     values = {
         "material_grid": material_grid,
-        "geometry": material_grid.grid,
+        "geometry": local_geometry,
         "component_shapes": shapes,
         "resolution": material_grid.resolution,
         "plane_2d": "xy" if not request.domain.is_3d else request.domain.plane_2d,

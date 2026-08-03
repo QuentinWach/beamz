@@ -251,6 +251,124 @@ def test_nonisotropic_3d_update_kernel_executes(grid, metric_kind, cpml):
     )
 
 
+def test_rectilinear_monitors_compile_local_line_and_face_weights():
+    grid_2d = Grid([0.0, 0.2, 1.0], [0.0, 0.3, 1.0], [0.0, 1.0])
+    material_2d = MaterialGrid.from_raster_result(
+        rasterize(
+            Scene((Material(),)),
+            grid_2d,
+            options=RasterOptions(components="two_dimensional_tm"),
+        )
+    )
+    line = bz.FieldMonitor(
+        center=(0.1, 0.5, 0.0),
+        size=(0.0, 1.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+    line_spec = (
+        bz.Simulation(
+            material_grid=material_2d,
+            monitors=[line],
+            time=np.asarray([0.0, 1e-16]),
+        )
+        .compile()
+        .monitors[0]
+    )
+
+    np.testing.assert_allclose(line_spec.integration_weights, [0.3, 0.7])
+
+    grid_3d = Grid(
+        [0.0, 0.2, 1.0],
+        [0.0, 0.3, 1.0],
+        [0.0, 0.4, 1.0],
+    )
+    material_3d = MaterialGrid.from_raster_result(
+        rasterize(Scene((Material(),)), grid_3d), dimensions=3
+    )
+    face = bz.FieldMonitor(
+        center=(0.5, 0.5, 0.2),
+        size=(1.0, 1.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+    face_spec = (
+        bz.Simulation(
+            material_grid=material_3d,
+            monitors=[face],
+            time=np.asarray([0.0, 1e-16]),
+        )
+        .compile()
+        .monitors[0]
+    )
+
+    np.testing.assert_allclose(face_spec.integration_weights, [0.06, 0.24, 0.14, 0.56])
+
+
+def test_rectilinear_gaussian_source_uses_physical_edges_and_local_frame():
+    grid = Grid(
+        [2.0, 2.2, 3.0],
+        [3.0, 3.3, 4.0],
+        [4.0, 5.0],
+    )
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(
+            Scene((Material(),)),
+            grid,
+            options=RasterOptions(components="two_dimensional_tm"),
+        )
+    )
+    source = bz.GaussianSource(
+        position=(2.2, 3.3),
+        width=0.02,
+        signal=np.asarray([1.0, 0.0]),
+    )
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        sources=[source],
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    program = simulation.compile()
+    compiled_source = program.sources[0]
+
+    assert program.grid.geometry.origin == (0.0, 0.0, 0.0)
+    assert simulation.coordinate_offset == (-2.0, -3.0, -4.0)
+    assert compiled_source.slab_starts == (1, 1)
+    assert compiled_source.slab_sizes == (1, 1)
+
+
+def test_rectilinear_cpml_depth_is_graded_in_physical_distance():
+    grid = Grid(
+        [0.0, 0.1, 0.3, 0.6, 1.0],
+        [0.0, 0.4, 1.0],
+        [0.0, 1.0],
+    )
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(
+            Scene((Material(),)),
+            grid,
+            options=RasterOptions(components="two_dimensional_tm"),
+        )
+    )
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        boundaries=[
+            bz.PML(
+                edges=("left",),
+                thickness=0.25,
+                sigma_max=10.0,
+                formulation="cpml",
+            )
+        ],
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    profile = np.asarray(simulation.compile().grid.pml_data["tm_xy_cpml"]["Hy_x_sigma"])
+
+    np.testing.assert_allclose(profile[:, 0], 10.0 * 0.8**3, atol=1e-7)
+    np.testing.assert_allclose(profile[:, 1], 10.0 * 0.2**3, atol=1e-7)
+    np.testing.assert_allclose(profile[:, 2:], 0.0)
+
+
 def test_material_grid_infers_two_dimensional_tm_output():
     result = rasterize(
         Scene((Material(),)),

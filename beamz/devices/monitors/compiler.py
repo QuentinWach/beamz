@@ -9,6 +9,11 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
+from beamz.devices._placement import (
+    line_region_points,
+    snap_axis_aligned_line_region_grid,
+    snap_plane_region_grid,
+)
 from beamz.devices.monitors.monitors import (
     FieldRecorder,
     ModeMonitor,
@@ -57,6 +62,7 @@ class CompiledMonitorSpec:
     sample_weights: tuple[jnp.ndarray, ...] = ()
     dft_flat_idx: tuple[jnp.ndarray, ...] = ()
     dft_weights: tuple[jnp.ndarray, ...] = ()
+    integration_weights: jnp.ndarray = field(default_factory=_empty_array)
     recorder_index: int = -1
     components: tuple[str, ...] = ()
     canonical_components: tuple[str, ...] = ()
@@ -75,8 +81,10 @@ def _clip_indices(x_idx: np.ndarray, y_idx: np.ndarray, shape: tuple[int, int]):
     return x, y, valid.astype(np.float32)
 
 
-def _monitor_normal_2d(monitor: _Monitor, resolution: float) -> tuple[int, float]:
-    snapped = monitor.get_snapped_region(dx=resolution, dy=resolution)
+def _monitor_normal_2d(
+    monitor: _Monitor, resolution: float, snapped=None
+) -> tuple[int, float]:
+    snapped = snapped or monitor.get_snapped_region(dx=resolution, dy=resolution)
     line_normal = _line_normal_2d(
         getattr(monitor, "start", None),
         getattr(monitor, "end", None),
@@ -101,23 +109,59 @@ def _compile_monitor_2d_interpolation(
     fields,
     resolution: float,
     field_shape=None,
+    grid=None,
+    region=None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     from beamz.lattice import component_coordinates_2d_um
 
-    line_coords = monitor._line_sample_coords_2d(
-        resolution, resolution, field_shape=field_shape
-    )
+    if grid is not None and region is not None:
+        if region.normal_axis == "x":
+            interval = region.axis_interval("y")
+            dst_y_values = np.asarray(grid.centers("y"))[
+                int(interval.start) : int(interval.stop)
+            ]
+            line_coords = (
+                np.full(dst_y_values.shape, float(region.plane_coord)),
+                dst_y_values,
+            )
+        else:
+            interval = region.axis_interval("x")
+            dst_x_values = np.asarray(grid.centers("x"))[
+                int(interval.start) : int(interval.stop)
+            ]
+            line_coords = (
+                dst_x_values,
+                np.full(dst_x_values.shape, float(region.plane_coord)),
+            )
+    else:
+        line_coords = monitor._line_sample_coords_2d(
+            resolution, resolution, field_shape=field_shape
+        )
     if line_coords is None:
         return _empty_array(), _empty_array()
 
     plane = getattr(fields, "plane_2d", "xy")
-    coords = component_coordinates_2d_um(
-        component,
-        tuple(int(v) for v in fields.permittivity.shape),
-        float(resolution),
-        plane,
-        getattr(fields, "polarization_2d", "tm"),
-    )
+    if grid is not None and plane == "xy":
+        offsets = {
+            "Ez": (0.0, 0.0),
+            "Hx": (0.5, 0.0),
+            "Hy": (0.0, 0.5),
+            "Ex": (0.0, 0.5),
+            "Ey": (0.5, 0.0),
+            "Hz": (0.5, 0.5),
+        }[component]
+        coords = {
+            "y": grid.y_edges if offsets[0] == 0.0 else grid.centers("y"),
+            "x": grid.x_edges if offsets[1] == 0.0 else grid.centers("x"),
+        }
+    else:
+        coords = component_coordinates_2d_um(
+            component,
+            tuple(int(v) for v in fields.permittivity.shape),
+            float(resolution),
+            plane,
+            getattr(fields, "polarization_2d", "tm"),
+        )
     if "x" not in coords or "y" not in coords:
         return _empty_array(), _empty_array()
 
@@ -165,6 +209,7 @@ def compile_monitor_specs(
     dt: float,
     plane_2d: str = "xy",
     polarization_2d: str = "tm",
+    grid=None,
 ) -> tuple[tuple[CompiledMonitorSpec, ...], int]:
     """Compile request monitor specs into packed monitor descriptors.
 
@@ -182,6 +227,13 @@ def compile_monitor_specs(
     max_records = 0
     recorder_count = 0
     field_buffer_count = 0
+    active_grid = grid if grid is not None else getattr(fields, "geometry", None)
+    is_3d_grid = np.asarray(fields.permittivity).ndim == 3
+    use_geometry = active_grid is not None and (
+        active_grid.metric_kind_for(("x", "y", "z") if is_3d_grid else ("x", "y"))
+        != "isotropic_uniform"
+        or active_grid.origin != (0.0, 0.0, 0.0)
+    )
 
     for mon_idx, monitor in enumerate(monitors):
         if not isinstance(monitor, _Monitor):
@@ -246,6 +298,14 @@ def compile_monitor_specs(
                         fields,
                         resolution,
                         field_shape=fields.permittivity.shape,
+                        grid=active_grid if use_geometry else None,
+                        region=(
+                            snap_axis_aligned_line_region_grid(
+                                monitor.start, monitor.end, active_grid
+                            )
+                            if use_geometry
+                            else None
+                        ),
                     )
                     if not flat_idx.size:
                         raise ValueError(
@@ -261,11 +321,20 @@ def compile_monitor_specs(
                     for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
                 }
                 base_shape = common_grid_shape_3d(fields)
-                region = monitor.get_snapped_region(
-                    dx=resolution,
-                    dy=resolution,
-                    dz=resolution,
-                    field_shape=base_shape,
+                region = (
+                    snap_plane_region_grid(
+                        center=monitor.center,
+                        size=monitor.size,
+                        plane_normal=monitor.plane_normal,
+                        grid=active_grid,
+                    )
+                    if use_geometry
+                    else monitor.get_snapped_region(
+                        dx=resolution,
+                        dy=resolution,
+                        dz=resolution,
+                        field_shape=base_shape,
+                    )
                 )
                 quadrature = compile_yee_plane_quadrature_3d(
                     center=monitor.center,
@@ -275,6 +344,7 @@ def compile_monitor_specs(
                     resolution=resolution,
                     grid_shape=base_shape,
                     component_shapes=field_shapes,
+                    grid=active_grid if use_geometry else None,
                 )
                 output_shape = tuple(
                     int(values.size) for values in quadrature.coordinates
@@ -364,7 +434,18 @@ def compile_monitor_specs(
         )
 
         if not is_3d:
-            points = monitor.get_grid_points_2d(resolution, resolution)
+            region_2d = (
+                snap_axis_aligned_line_region_grid(
+                    monitor.start, monitor.end, active_grid
+                )
+                if use_geometry
+                else None
+            )
+            points = (
+                line_region_points(region_2d)
+                if region_2d is not None
+                else monitor.get_grid_points_2d(resolution, resolution)
+            )
             if points:
                 x_raw = np.asarray([p[0] for p in points], dtype=np.int32)
                 y_raw = np.asarray([p[1] for p in points], dtype=np.int32)
@@ -379,7 +460,12 @@ def compile_monitor_specs(
                 shape = tuple(getattr(fields, name).shape)
                 x, y, valid = _clip_indices(x_raw, y_raw, shape)
                 flat_idx, weights = _compile_monitor_2d_interpolation(
-                    monitor, name, fields, resolution
+                    monitor,
+                    name,
+                    fields,
+                    resolution,
+                    grid=active_grid if use_geometry else None,
+                    region=region_2d,
                 )
                 component_plans[name] = (
                     (flat_idx, weights)
@@ -393,12 +479,23 @@ def compile_monitor_specs(
                 for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
             )
             dft_plans = sample_plans
-            normal_axis, normal_sign = _monitor_normal_2d(monitor, resolution)
-            power_scale = _line_integral_scale_2d(
-                "x" if normal_axis == 0 else "y",
-                resolution,
-                resolution,
+            normal_axis, normal_sign = _monitor_normal_2d(
+                monitor, resolution, region_2d
             )
+            if use_geometry and region_2d is not None:
+                tangential = "y" if normal_axis == 0 else "x"
+                interval = region_2d.axis_interval(tangential)
+                integration_weights = active_grid.cell_widths(tangential)[
+                    int(interval.start) : int(interval.stop)
+                ]
+                power_scale = 1.0
+            else:
+                integration_weights = np.empty((0,), dtype=np.float32)
+                power_scale = _line_integral_scale_2d(
+                    "x" if normal_axis == 0 else "y",
+                    resolution,
+                    resolution,
+                )
 
             specs.append(
                 CompiledMonitorSpec(
@@ -411,6 +508,9 @@ def compile_monitor_specs(
                     sample_weights=tuple(plan[1] for plan in sample_plans),
                     dft_flat_idx=tuple(plan[0] for plan in dft_plans),
                     dft_weights=tuple(plan[1] for plan in dft_plans),
+                    integration_weights=jnp.asarray(
+                        integration_weights, dtype=jnp.float32
+                    ),
                 )
             )
         else:
@@ -423,11 +523,20 @@ def compile_monitor_specs(
                 "Hz": tuple(fields.Hz.shape),
             }
             base_shape_3d = common_grid_shape_3d(fields)
-            region = monitor.get_snapped_region(
-                dx=resolution,
-                dy=resolution,
-                dz=resolution,
-                field_shape=base_shape_3d,
+            region = (
+                snap_plane_region_grid(
+                    center=monitor.center,
+                    size=monitor.size,
+                    plane_normal=monitor.plane_normal,
+                    grid=active_grid,
+                )
+                if use_geometry
+                else monitor.get_snapped_region(
+                    dx=resolution,
+                    dy=resolution,
+                    dz=resolution,
+                    field_shape=base_shape_3d,
+                )
             )
             quadrature = compile_yee_plane_quadrature_3d(
                 center=monitor.center,
@@ -437,6 +546,7 @@ def compile_monitor_specs(
                 resolution=resolution,
                 grid_shape=base_shape_3d,
                 component_shapes=shape_3d,
+                grid=active_grid if use_geometry else None,
             )
             point_count = quadrature.point_count
             sample_plans = []
@@ -462,6 +572,9 @@ def compile_monitor_specs(
                     sample_weights=tuple(plan[1] for plan in sample_plans),
                     dft_flat_idx=tuple(plan[0] for plan in dft_plans),
                     dft_weights=tuple(plan[1] for plan in dft_plans),
+                    integration_weights=jnp.asarray(
+                        quadrature.integration_weights, dtype=jnp.float32
+                    ),
                 )
             )
 
