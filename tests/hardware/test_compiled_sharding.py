@@ -72,8 +72,6 @@ def make_sim(formulation):
     )
 
 
-cfg = ShardingConfig(enabled=True, axis="x", num_devices=2, backend="cpu")
-
 for formulation in ("sponge", "cpml"):
     reference = make_sim(formulation)
     sharded = make_sim(formulation)
@@ -89,24 +87,33 @@ for formulation in ("sponge", "cpml"):
         }
     )
     reference_result = reference.advance(num_steps=2, state=state, progress=False)
-    sharded_result = sharded.advance(
-        num_steps=2, state=state, progress=False, sharding=cfg
-    )
-    program = sharded.compile(num_steps=2, sharding=cfg)
-
-    assert not program.boundary.cpml.metallic_edges
-    assert program.metrics.e_to_h_x.shape == (5,)
-    assert program.metrics.h_to_e_x.shape == (7,)
-    for name in ("ex", "ey", "ez", "hx", "hy", "hz"):
-        np.testing.assert_allclose(
-            np.asarray(getattr(sharded_result.state, name)),
-            np.asarray(getattr(reference_result.state, name)),
-            rtol=2e-6,
-            atol=2e-8,
+    for axis in ("x", "y", "z"):
+        cfg = ShardingConfig(enabled=True, axis=axis, num_devices=4, backend="cpu")
+        sharded_result = sharded.advance(
+            num_steps=2, state=state, progress=False, sharding=cfg
         )
+        program = sharded.compile(num_steps=2, sharding=cfg)
+
+        axis_index = {"z": 0, "y": 1, "x": 2}[axis]
+        e_source = {"x": "Ey", "y": "Ex", "z": "Ex"}[axis]
+        h_source = {"x": "Hy", "y": "Hx", "z": "Hx"}[axis]
+        assert not program.boundary.cpml.metallic_edges
+        assert getattr(program.metrics, f"e_to_h_{axis}").shape == (
+            program.sharding.layout.padded_shapes[e_source][axis_index] - 1,
+        )
+        assert getattr(program.metrics, f"h_to_e_{axis}").shape == (
+            program.sharding.layout.padded_shapes[h_source][axis_index] + 1,
+        )
+        for name in ("ex", "ey", "ez", "hx", "hy", "hz"):
+            np.testing.assert_allclose(
+                np.asarray(getattr(sharded_result.state, name)),
+                np.asarray(getattr(reference_result.state, name)),
+                rtol=2e-6,
+                atol=2e-8,
+            )
 """
     env = os.environ.copy()
-    env["XLA_FLAGS"] = "--xla_force_host_platform_device_count=2"
+    env["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
     env.setdefault("JAX_PLATFORMS", "cpu")
     subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],

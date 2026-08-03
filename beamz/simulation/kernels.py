@@ -124,23 +124,28 @@ def _pack_cpml_slab(arr, slab):
 
 
 def _unpack_cpml_slab(base, packed, slab):
-    """Scatter a packed low/high correction back onto its derivative."""
+    """Rebuild a derivative with its packed low/high CPML corrections."""
     axis, low, high = int(slab.axis), int(slab.low), int(slab.high)
-    out = base
-    if low:
-        out = out.at[_axis_region(out.ndim, axis, 0, low)].set(
-            packed[_axis_region(packed.ndim, axis, 0, low)]
-        )
+    if not low and not high:
+        return base
     logical_stop = (
-        int(out.shape[axis]) if int(slab.logical_stop) < 0 else int(slab.logical_stop)
+        int(base.shape[axis]) if int(slab.logical_stop) < 0 else int(slab.logical_stop)
     )
+    parts = []
+    if low:
+        parts.append(packed[_axis_region(packed.ndim, axis, 0, low)])
+    middle_stop = logical_stop - high
+    if middle_stop > low:
+        parts.append(base[_axis_region(base.ndim, axis, low, middle_stop)])
     if high:
-        out = out.at[
-            _axis_region(out.ndim, axis, logical_stop - high, logical_stop)
-        ].set(
+        parts.append(
             packed[_axis_region(packed.ndim, axis, low, low + high)]
         )
-    return out
+    if logical_stop < int(base.shape[axis]):
+        parts.append(
+            base[_axis_region(base.ndim, axis, logical_stop, int(base.shape[axis]))]
+        )
+    return parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=axis)
 
 
 def _active_slab_counts(a, inv_kappa, axis):
