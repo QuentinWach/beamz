@@ -14,6 +14,39 @@ Axis = Literal["x", "y", "z"]
 _AXES: tuple[Axis, Axis, Axis] = ("x", "y", "z")
 
 
+@dataclass(frozen=True, slots=True)
+class AxisGridQuality:
+    """Cell-size and grading diagnostics for one rectilinear axis."""
+
+    cell_count: int
+    minimum_spacing: float
+    maximum_spacing: float
+    mean_spacing: float
+    max_adjacent_ratio: float
+    worst_pair_index: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class GridQualityReport:
+    """Per-axis quality diagnostics for a realized rectilinear grid."""
+
+    x: AxisGridQuality
+    y: AxisGridQuality
+    z: AxisGridQuality
+
+    def axis(self, axis: Axis | int) -> AxisGridQuality:
+        return getattr(self, _axis_name(axis))
+
+    def satisfies_max_scale(
+        self,
+        max_scale: float,
+        *,
+        active_axes: tuple[Axis, ...] = _AXES,
+    ) -> bool:
+        limit = float(max_scale)
+        return all(self.axis(axis).max_adjacent_ratio <= limit for axis in active_axes)
+
+
 def _axis_name(axis: Axis | int) -> Axis:
     if isinstance(axis, (int, np.integer)):
         if int(axis) not in range(3):
@@ -143,6 +176,29 @@ class RectilinearGrid:
 
     def cell_widths(self, axis: Axis | int) -> np.ndarray:
         return np.diff(self.axis_edges(axis))
+
+    def axis_quality(self, axis: Axis | int) -> AxisGridQuality:
+        """Return spacing and adjacent-cell grading diagnostics for one axis."""
+        widths = self.cell_widths(axis)
+        if widths.size < 2:
+            ratio = 1.0
+            worst = None
+        else:
+            ratios = np.maximum(widths[1:] / widths[:-1], widths[:-1] / widths[1:])
+            worst = int(np.argmax(ratios))
+            ratio = float(ratios[worst])
+        return AxisGridQuality(
+            cell_count=int(widths.size),
+            minimum_spacing=float(np.min(widths)),
+            maximum_spacing=float(np.max(widths)),
+            mean_spacing=float(np.mean(widths)),
+            max_adjacent_ratio=ratio,
+            worst_pair_index=worst,
+        )
+
+    def quality_report(self) -> GridQualityReport:
+        """Return immutable quality diagnostics for all three grid axes."""
+        return GridQualityReport(*(self.axis_quality(axis) for axis in _AXES))
 
     def centers(self, axis: Axis | int) -> np.ndarray:
         edges = self.axis_edges(axis)
@@ -332,4 +388,10 @@ class RectilinearGrid:
 Grid = RectilinearGrid
 
 
-__all__ = ["Axis", "Grid", "RectilinearGrid"]
+__all__ = [
+    "Axis",
+    "AxisGridQuality",
+    "Grid",
+    "GridQualityReport",
+    "RectilinearGrid",
+]
