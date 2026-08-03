@@ -24,6 +24,14 @@ from beamz.lattice import component_axis_offsets_3d
 _COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
 
 
+def _rectilinear_geometry(fields):
+    geometry = getattr(fields, "geometry", None)
+    if geometry is None:
+        return None
+    axes = ("x", "y", "z") if fields.permittivity.ndim == 3 else ("x", "y")
+    return geometry if geometry.metric_kind_for(axes) != "isotropic_uniform" else None
+
+
 @dataclass(frozen=True, slots=True)
 class CpmlDerivativeSpec:
     """One derivative profile that Devices lowers onto a Yee component support."""
@@ -588,7 +596,7 @@ class _AbsorberCompiler:
         profiles = {f"sigma_{name}": jnp.zeros(shape) for name in "xyz"}
         mask = jnp.zeros(shape, dtype=bool)
         for name, length, axis, low_edge, high_edge in axes:
-            geometry = getattr(fields, "geometry", None)
+            geometry = _rectilinear_geometry(fields)
             coords = (
                 jnp.asarray(geometry.centers(name) - geometry.axis_edges(name)[0])
                 if geometry is not None
@@ -620,7 +628,7 @@ class _AbsorberCompiler:
             return value[:, None] if axis == "y" else value[None, :]
 
         out: dict[str, Any] = {"formulation": "cpml"}
-        geometry = getattr(fields, "geometry", None)
+        geometry = _rectilinear_geometry(fields)
         for axis, (cells, length, low, high) in axes.items():
             values = self._compute_1d_cpml_profile(
                 (
@@ -703,7 +711,7 @@ class _AbsorberCompiler:
             "z": (nz, depth, "front", "back"),
         }
         out: dict[str, Any] = {"formulation": "cpml"}
-        geometry = getattr(fields, "geometry", None)
+        geometry = _rectilinear_geometry(fields)
         for axis, (cells, length, low, high) in axes.items():
             values = self._compute_1d_cpml_profile(
                 (

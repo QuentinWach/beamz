@@ -149,7 +149,18 @@ class MaterialGrid:
         active_spacings = (
             grid.min_spacings if len(shape) == 3 else grid.min_spacings[:2]
         )
-        object.__setattr__(self, "resolution", min(active_spacings))
+        active_axes = ("x", "y", "z") if len(shape) == 3 else ("x", "y")
+        realized_resolution = min(active_spacings)
+        if grid.metric_kind_for(active_axes) == "isotropic_uniform" and np.isclose(
+            resolution,
+            realized_resolution,
+            rtol=1e-12,
+            atol=0.0,
+        ):
+            # Preserve the caller's exact scalar on the legacy uniform path. Edge
+            # differencing may differ from it by a few floating-point ulps.
+            realized_resolution = resolution
+        object.__setattr__(self, "resolution", realized_resolution)
         allowed_yee = {
             "eps_x": "Ex",
             "eps_y": "Ey",
@@ -197,6 +208,7 @@ class MaterialGrid:
         *,
         dimensions: Literal[2, 3] | None = None,
         polarization: Literal["tm", "te"] = "tm",
+        resolution: float | None = None,
     ) -> MaterialGrid:
         """Convert a uniform raster result into the current 2D or 3D solver grid.
 
@@ -281,7 +293,9 @@ class MaterialGrid:
                 f"RasterResult omits solver components: {', '.join(sorted(missing))}."
             )
         grid = RectilinearGrid(*(np.asarray(axis, dtype=float) for axis in edges))
-        resolution = grid.minimum_spacing
+        representative_resolution = (
+            grid.minimum_spacing if resolution is None else float(resolution)
+        )
         smoothing = str(getattr(result, "smoothing", "volume"))
         if smoothing == "farjadpour_full":
             raise ValueError(
@@ -356,7 +370,7 @@ class MaterialGrid:
             epsilon,
             conductivity,
             permeability,
-            resolution,
+            representative_resolution,
             tuple(int(value) for value in epsilon.shape),
             materials,
             tensors,

@@ -126,4 +126,5 @@ def _rasterize_design(
         result,
         dimensions=3 if kind == "3d" else 2,
         polarization=polarization,
+        resolution=resolution,
     )
