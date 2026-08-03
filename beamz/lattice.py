@@ -785,7 +785,10 @@ def _total_conductivity(fields):
     for key in keys:
         if key in fields.pml_data:
             sigma_pml = sigma_pml + fields.pml_data[key]
-    return base_sigma + sigma_pml
+    material_grid = getattr(fields, "material_grid", None)
+    if getattr(material_grid, "metric_kind", "isotropic_uniform") != "isotropic_uniform":
+        return base_sigma + sigma_pml
+    return jnp.maximum(base_sigma, sigma_pml)
 
 
 def _mu_3d(fields):
