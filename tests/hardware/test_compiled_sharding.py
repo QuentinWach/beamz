@@ -63,42 +63,47 @@ materials = MaterialGrid(
 )
 
 
-def make_sim():
+def make_sim(formulation):
     return bz.Simulation(
         material_grid=materials,
         time=np.asarray([0.0, 1e-12, 2e-12]),
         normalize_source=None,
+        boundaries=[bz.PML(thickness=0.2, formulation=formulation)],
     )
 
 
-reference = make_sim()
-sharded = make_sim()
-rng = np.random.default_rng(7)
-state = reference.initial_state()
-state = state._replace(
-    **{
-        name: rng.normal(size=np.asarray(getattr(state, name)).shape).astype(np.float32)
-        * 1e-4
-        for name in ("ex", "ey", "ez", "hx", "hy", "hz")
-    }
-)
 cfg = ShardingConfig(enabled=True, axis="x", num_devices=2, backend="cpu")
 
-reference_result = reference.advance(num_steps=2, state=state, progress=False)
-sharded_result = sharded.advance(
-    num_steps=2, state=state, progress=False, sharding=cfg
-)
-program = sharded.compile(num_steps=2, sharding=cfg)
-
-assert program.metrics.e_to_h_x.shape == (5,)
-assert program.metrics.h_to_e_x.shape == (7,)
-for name in ("ex", "ey", "ez", "hx", "hy", "hz"):
-    np.testing.assert_allclose(
-        np.asarray(getattr(sharded_result.state, name)),
-        np.asarray(getattr(reference_result.state, name)),
-        rtol=3e-6,
-        atol=3e-6,
+for formulation in ("sponge", "cpml"):
+    reference = make_sim(formulation)
+    sharded = make_sim(formulation)
+    rng = np.random.default_rng(7)
+    state = reference.initial_state()
+    state = state._replace(
+        **{
+            name: rng.normal(size=np.asarray(getattr(state, name)).shape).astype(
+                np.float32
+            )
+            * 1e-4
+            for name in ("ex", "ey", "ez", "hx", "hy", "hz")
+        }
     )
+    reference_result = reference.advance(num_steps=2, state=state, progress=False)
+    sharded_result = sharded.advance(
+        num_steps=2, state=state, progress=False, sharding=cfg
+    )
+    program = sharded.compile(num_steps=2, sharding=cfg)
+
+    assert not program.boundary.cpml.metallic_edges
+    assert program.metrics.e_to_h_x.shape == (5,)
+    assert program.metrics.h_to_e_x.shape == (7,)
+    for name in ("ex", "ey", "ez", "hx", "hy", "hz"):
+        np.testing.assert_allclose(
+            np.asarray(getattr(sharded_result.state, name)),
+            np.asarray(getattr(reference_result.state, name)),
+            rtol=2e-6,
+            atol=2e-8,
+        )
 """
     env = os.environ.copy()
     env["XLA_FLAGS"] = "--xla_force_host_platform_device_count=2"

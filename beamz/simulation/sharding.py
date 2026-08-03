@@ -292,7 +292,13 @@ def _lower_cpml_term(term, layout: ShardingLayout):
     target_shape = list(layout.padded_shapes[term.component])
     target_shape[term.axis] = term.slab.low + term.slab.high
     target_shape = tuple(target_shape)
-    slab = CpmlPackedSlabSpec(term.axis, term.slab.low, term.slab.high, target_shape)
+    slab = CpmlPackedSlabSpec(
+        term.axis,
+        term.slab.low,
+        term.slab.high,
+        target_shape,
+        term.slab.logical_stop,
+    )
     return replace(
         term,
         a=_pad_high_to_shape(term.a, target_shape, pad_value=0.0),

@@ -377,33 +377,53 @@ def adjacent_difference(array, axis, resolution):
     return jnp.moveaxis((moved[1:] - moved[:-1]) / resolution, 0, axis)
 
 
-def _pad_with_boundary_ghosts(array, axis, metallic_edges):
-    shape = list(array.shape)
+def _pad_with_boundary_ghosts(
+    array, axis, metallic_edges, *, logical_size: int | None = None
+):
+    logical_size = int(array.shape[axis]) if logical_size is None else int(logical_size)
+    if logical_size <= 0 or logical_size > int(array.shape[axis]):
+        raise ValueError(
+            f"Logical boundary size {logical_size} is invalid for shape {array.shape}."
+        )
+    physical_region = [slice(None)] * array.ndim
+    physical_region[axis] = slice(0, logical_size)
+    physical = array[tuple(physical_region)]
+    storage_region = [slice(None)] * array.ndim
+    storage_region[axis] = slice(logical_size, None)
+    storage_padding = array[tuple(storage_region)]
+    shape = list(physical.shape)
     shape[axis] = 1
     zero = jnp.zeros(tuple(shape), dtype=array.dtype)
     low_edge, high_edge = (("front", "back"), ("bottom", "top"), ("left", "right"))[
         axis
     ]
-    low = zero if low_edge in metallic_edges else jnp.take(array, jnp.array([0]), axis)
+    low = zero if low_edge in metallic_edges else jnp.take(physical, jnp.array([0]), axis)
     high = (
         zero
         if high_edge in metallic_edges
-        else jnp.take(array, jnp.array([array.shape[axis] - 1]), axis)
+        else jnp.take(physical, jnp.array([logical_size - 1]), axis)
     )
-    return jnp.concatenate((low, array, high), axis=axis)
+    return jnp.concatenate((low, physical, high, storage_padding), axis=axis)
 
 
-def build_h_boundary_views_for_e_3d(hx, hy, hz, metallic_edges=frozenset()):
+def build_h_boundary_views_for_e_3d(
+    hx, hy, hz, metallic_edges=frozenset(), *, logical_shapes=None
+):
     """Create the six ghost-padded H views consumed by the 3D E curl."""
     return {
-        name: _pad_with_boundary_ghosts(field, axis, metallic_edges)
-        for name, field, axis in (
-            ("hz_y", hz, 1),
-            ("hy_z", hy, 0),
-            ("hx_z", hx, 0),
-            ("hz_x", hz, 2),
-            ("hy_x", hy, 2),
-            ("hx_y", hx, 1),
+        name: _pad_with_boundary_ghosts(
+            field,
+            axis,
+            metallic_edges,
+            logical_size=(None if logical_shapes is None else logical_shapes[component][axis]),
+        )
+        for name, component, field, axis in (
+            ("hz_y", "Hz", hz, 1),
+            ("hy_z", "Hy", hy, 0),
+            ("hx_z", "Hx", hx, 0),
+            ("hz_x", "Hz", hz, 2),
+            ("hy_x", "Hy", hy, 2),
+            ("hx_y", "Hx", hx, 1),
         )
     }
 

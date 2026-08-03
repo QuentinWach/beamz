@@ -197,6 +197,26 @@ def test_curl_h_to_e_3d_linear_field_has_constant_y_component():
     np.testing.assert_allclose(np.asarray(curl_hz)[:, 1:-1, 1:-1], 0.0, atol=1e-6)
 
 
+def test_h_boundary_views_insert_high_ghost_before_storage_padding():
+    hx = jnp.asarray([[[1.0, 2.0, 3.0, 4.0, 5.0, 0.0]]])
+    hy = 2.0 * hx
+    hz = 3.0 * hx
+    logical_shapes = {name: (1, 1, 5) for name in ("Hx", "Hy", "Hz")}
+
+    views = build_h_boundary_views_for_e_3d(
+        hx,
+        hy,
+        hz,
+        frozenset(),
+        logical_shapes=logical_shapes,
+    )
+
+    np.testing.assert_array_equal(
+        np.diff(np.asarray(views["hy_x"]), axis=2).reshape(-1)[:6],
+        [0.0, 2.0, 2.0, 2.0, 2.0, 0.0],
+    )
+
+
 def test_fields_do_not_expose_obsolete_low_level_update_methods():
     material = np.ones((5, 6), dtype=np.float32)
     fields = compiled_grid(material, np.zeros_like(material), material, resolution=0.2)

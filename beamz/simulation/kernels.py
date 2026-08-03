@@ -113,8 +113,13 @@ def _pack_cpml_slab(arr, slab):
     parts = []
     if low:
         parts.append(arr[_axis_region(arr.ndim, axis, 0, low)])
+    logical_stop = (
+        int(arr.shape[axis]) if int(slab.logical_stop) < 0 else int(slab.logical_stop)
+    )
     if high:
-        parts.append(arr[_axis_region(arr.ndim, axis, arr.shape[axis] - high, None)])
+        parts.append(
+            arr[_axis_region(arr.ndim, axis, logical_stop - high, logical_stop)]
+        )
     return parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=axis)
 
 
@@ -126,8 +131,13 @@ def _unpack_cpml_slab(base, packed, slab):
         out = out.at[_axis_region(out.ndim, axis, 0, low)].set(
             packed[_axis_region(packed.ndim, axis, 0, low)]
         )
+    logical_stop = (
+        int(out.shape[axis]) if int(slab.logical_stop) < 0 else int(slab.logical_stop)
+    )
     if high:
-        out = out.at[_axis_region(out.ndim, axis, out.shape[axis] - high, None)].set(
+        out = out.at[
+            _axis_region(out.ndim, axis, logical_stop - high, logical_stop)
+        ].set(
             packed[_axis_region(packed.ndim, axis, low, low + high)]
         )
     return out
@@ -151,7 +161,9 @@ def compile_cpml_term(*, component, axis, sign, sigma, kappa, alpha, dt, full_sh
     low, high = _active_slab_counts(a, inv_kappa, int(axis))
     shape = list(full_shape)
     shape[int(axis)] = low + high
-    slab = CpmlPackedSlabSpec(int(axis), low, high, tuple(shape))
+    slab = CpmlPackedSlabSpec(
+        int(axis), low, high, tuple(shape), int(full_shape[int(axis)])
+    )
     return CpmlTerm(
         str(component),
         int(axis),
@@ -445,9 +457,12 @@ def cpml_update_e_from_h_3d(
     dt,
     conductivities,
     inverse_permittivities,
+    logical_shapes=None,
 ):
     """Advance 3D E fields and their six packed CPML memories."""
-    views = build_h_boundary_views_for_e_3d(hx, hy, hz, metallic_edges)
+    views = build_h_boundary_views_for_e_3d(
+        hx, hy, hz, metallic_edges, logical_shapes=logical_shapes
+    )
     derivatives = (
         ("hz_y", 1, ex.shape),
         ("hy_z", 0, ex.shape),
@@ -505,9 +520,12 @@ def cpml_update_e_from_h_3d_metric(
     dt,
     conductivities,
     inverse_permittivities,
+    logical_shapes=None,
 ):
     """Advance 3D E/CPML using physical center-to-center distances."""
-    views = build_h_boundary_views_for_e_3d(hx, hy, hz, metallic_edges)
+    views = build_h_boundary_views_for_e_3d(
+        hx, hy, hz, metallic_edges, logical_shapes=logical_shapes
+    )
     derivatives = (
         ("hz_y", 1, metrics.h_to_e_y, ex.shape),
         ("hy_z", 0, metrics.h_to_e_z, ex.shape),
@@ -979,6 +997,7 @@ def update_e_3d_cpml(eng, ctx, coeffs):
             coeffs.e_conductivity_z,
         ),
         inverse_permittivities=(inv_x, inv_y, inv_z),
+        logical_shapes=ctx.boundary.logical_component_shapes,
     )
     # 3. Replace E and packed 3D memory atomically, leaving unrelated carry fields intact.
     return _replace_e(
@@ -1011,7 +1030,11 @@ def update_h_3d_yee(eng, ctx, coeffs):
 def update_e_3d_yee(eng, ctx, coeffs):
     # Return a new SimulationState so the timestep remains a pure JAX transformation.
     boundary_views = build_h_boundary_views_for_e_3d(
-        eng.hx, eng.hy, eng.hz, ctx.boundary.cpml.metallic_edges
+        eng.hx,
+        eng.hy,
+        eng.hz,
+        ctx.boundary.cpml.metallic_edges,
+        logical_shapes=ctx.boundary.logical_component_shapes,
     )
     ex, ey, ez = fused_update_e_lossy_3d_material(
         eng.hx,
@@ -1210,6 +1233,7 @@ def update_e_3d_cpml_metric(eng, ctx, coeffs):
             jnp.reciprocal(coeffs.e_permittivity_y),
             jnp.reciprocal(coeffs.e_permittivity_z),
         ),
+        logical_shapes=ctx.boundary.logical_component_shapes,
     )
     return _replace_e(eng, ex, ey, ez, cpml_e=psi_e)
 
@@ -1233,7 +1257,11 @@ def update_h_3d_yee_metric(eng, ctx, coeffs):
 
 def update_e_3d_yee_metric(eng, ctx, coeffs):
     boundary_views = build_h_boundary_views_for_e_3d(
-        eng.hx, eng.hy, eng.hz, ctx.boundary.cpml.metallic_edges
+        eng.hx,
+        eng.hy,
+        eng.hz,
+        ctx.boundary.cpml.metallic_edges,
+        logical_shapes=ctx.boundary.logical_component_shapes,
     )
     ex, ey, ez = fused_update_e_lossy_3d_material_metric(
         eng.hx,

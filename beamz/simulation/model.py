@@ -301,6 +301,7 @@ class CpmlPackedSlabSpec(NamedTuple):
     low: int
     high: int
     shape: tuple[int, ...]
+    logical_stop: int = -1
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -380,6 +381,14 @@ class BoundaryPlan:
     metallic_edges_2d: frozenset[str]
     cpml: CpmlPlan
     metallic: MetallicPlan
+    logical_component_shapes: Mapping[str, tuple[int, ...]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "logical_component_shapes",
+            MappingProxyType(dict(self.logical_component_shapes)),
+        )
 
 
 @dataclass(frozen=True, slots=True, eq=False)

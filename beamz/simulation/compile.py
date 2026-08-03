@@ -449,6 +449,7 @@ def _compile_boundary(fields, cpml, boundary_data, *, is_3d: bool) -> BoundaryPl
             masks["Hy"],
             masks["Hz"],
         ),
+        logical_component_shapes=fields.component_shapes,
     )
 
 
