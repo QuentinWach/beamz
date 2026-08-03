@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+_RUST_WORKSPACE_PACKAGES = ("fdtd-raster-core", "fdtd-raster-py")
+
 
 def update_version_in_file(filepath, version, pattern, replacement_template):
     """Update version in a file using regex pattern."""
@@ -26,6 +28,60 @@ def update_version_in_file(filepath, version, pattern, replacement_template):
     else:
         print(f"No change needed in {filepath}")
         return False
+
+
+def update_cargo_workspace_version(filepath, version):
+    """Update the version inherited by every package in the Rust workspace."""
+    filepath = Path(filepath)
+    if not filepath.exists():
+        raise FileNotFoundError(
+            f"Required Rust workspace manifest {filepath} is missing"
+        )
+
+    content = filepath.read_text()
+    pattern = re.compile(
+        r'(^\[workspace\.package\]\n(?:(?!^\[).)*?^version\s*=\s*)"[^"]+"',
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    new_content, replacements = pattern.subn(rf'\g<1>"{version}"', content, count=1)
+    if replacements != 1:
+        raise RuntimeError(
+            f"Could not find exactly one [workspace.package] version in {filepath}"
+        )
+    if content == new_content:
+        print(f"No change needed in {filepath}")
+        return False
+    filepath.write_text(new_content)
+    print(f"Updated version in {filepath}")
+    return True
+
+
+def update_cargo_lock_versions(filepath, version, package_names):
+    """Update only BeamZ-owned workspace package versions in Cargo.lock."""
+    filepath = Path(filepath)
+    if not filepath.exists():
+        raise FileNotFoundError(f"Required Rust lockfile {filepath} is missing")
+
+    content = filepath.read_text()
+    new_content = content
+    for package_name in package_names:
+        pattern = re.compile(
+            rf'(^\[\[package\]\]\nname = "{re.escape(package_name)}"\nversion = )"[^"]+"',
+            flags=re.MULTILINE,
+        )
+        new_content, replacements = pattern.subn(
+            rf'\g<1>"{version}"', new_content, count=1
+        )
+        if replacements != 1:
+            raise RuntimeError(
+                f"Could not find exactly one {package_name!r} package in {filepath}"
+            )
+    if content == new_content:
+        print(f"No change needed in {filepath}")
+        return False
+    filepath.write_text(new_content)
+    print(f"Updated version in {filepath}")
+    return True
 
 
 def update_version(version):
@@ -49,12 +105,24 @@ def update_version(version):
         )
     )
 
+    # Keep the native extension metadata and raster-cache engine identity in sync
+    # with the Python distribution version.
+    changes.append(update_cargo_workspace_version("Cargo.toml", version))
+    changes.append(
+        update_cargo_lock_versions("Cargo.lock", version, _RUST_WORKSPACE_PACKAGES)
+    )
+
     return any(changes)
 
 
 def commit_version_changes(version):
     """Commit the version changes to git."""
-    files_to_add = ["pyproject.toml", "beamz/__init__.py"]
+    files_to_add = [
+        "pyproject.toml",
+        "beamz/__init__.py",
+        "Cargo.toml",
+        "Cargo.lock",
+    ]
     for f in files_to_add:
         if os.path.exists(f):
             subprocess.run(["git", "add", f], check=True)

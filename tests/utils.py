@@ -27,6 +27,7 @@ def compiled_grid(
     permeability,
     resolution,
     plane_2d="xy",
+    polarization="tm",
 ):
     """Build a compiled lattice directly from test material arrays."""
     material_grid = MaterialGrid(
@@ -35,6 +36,7 @@ def compiled_grid(
         permeability,
         resolution,
         np.asarray(permittivity).shape,
+        polarization=polarization if np.asarray(permittivity).ndim == 2 else None,
     )
     shape = material_grid.shape
     is_3d = len(shape) == 3
@@ -45,14 +47,19 @@ def compiled_grid(
     )
     request = SimulationRequest(
         RunSpec(1.0, 1, 1, 0.0, "scan", False, (False, "auto", None, None)),
-        DomainSpec(size, is_3d, plane_2d, (0.0, 0.0, 0.0)),
+        DomainSpec(size, is_3d, plane_2d, (0.0, 0.0, 0.0), polarization),
         material_grid,
         (),
         (),
         (),
     )
     boundary_data = lower_boundaries(
-        material_grid, component_shapes(shape), (), size, 1.0
+        material_grid,
+        component_shapes(shape, polarization),
+        (),
+        size,
+        1.0,
+        polarization_2d=polarization,
     )
     grid = _compile_grid(request, boundary_data)
     # Boundary-lowering unit tests need a mutable setup object; production compilation

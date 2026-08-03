@@ -50,6 +50,7 @@ class _RunConfigLike(Protocol):
     resolution: float
     is_3d: bool
     plane_2d: str
+    polarization_2d: str
 
 
 def _array_snapshot(value: Any, dtype=None) -> np.ndarray:
@@ -215,6 +216,8 @@ class SimulationMetadata:
         Whether the source simulation used a three-dimensional lattice.
     plane_2d : {"xy", "xz", "yz"}
         Physical plane represented by two-dimensional field arrays.
+    polarization_2d : {"tm", "te"}
+        Polarization used to interpret two-dimensional field arrays.
     coordinate_offset : tuple of float
         Translation from normalized domain coordinates to public coordinates.
     time : numpy.ndarray
@@ -241,6 +244,7 @@ class SimulationMetadata:
     height: float
     depth: float
     fields: FieldMetadata
+    polarization_2d: str = "tm"
 
     def __post_init__(self):
         if not isinstance(self.fields, FieldMetadata):
@@ -256,6 +260,9 @@ class SimulationMetadata:
         plane_2d = str(self.plane_2d).lower()
         if plane_2d not in {"xy", "xz", "yz"}:
             raise ValueError("SimulationMetadata.plane_2d must be 'xy', 'xz', or 'yz'.")
+        polarization_2d = str(self.polarization_2d).lower()
+        if polarization_2d not in {"tm", "te"}:
+            raise ValueError("SimulationMetadata.polarization_2d must be 'tm' or 'te'.")
         for name in ("dt", "resolution", "width", "height", "depth"):
             value = float(getattr(self, name))
             if not np.isfinite(value):
@@ -263,6 +270,7 @@ class SimulationMetadata:
             object.__setattr__(self, name, value)
         object.__setattr__(self, "is_3d", bool(self.is_3d))
         object.__setattr__(self, "plane_2d", plane_2d)
+        object.__setattr__(self, "polarization_2d", polarization_2d)
         object.__setattr__(self, "coordinate_offset", offset)
         object.__setattr__(self, "time", time)
 
@@ -279,6 +287,7 @@ class SimulationMetadata:
             self.resolution,
             self.is_3d,
             self.plane_2d,
+            self.polarization_2d,
             self.coordinate_offset,
             self.time,
             self.width,
@@ -345,7 +354,9 @@ class SimulationMetadata:
             canonical = (
                 name
                 if simulation.is_3d
-                else canonical_component_2d(name, simulation.plane_2d)
+                else canonical_component_2d(
+                    name, simulation.plane_2d, simulation.polarization
+                )
             )
             component = None if canonical is None else getattr(fields, canonical, None)
             component_shapes[name] = (
@@ -376,6 +387,7 @@ class SimulationMetadata:
                 component_shapes=component_shapes,
                 materials=materials,
             ),
+            polarization_2d=simulation.polarization,
         )
 
 
@@ -691,8 +703,14 @@ class MonitorResults:
                     continue
                 re = np.asarray(state.dft_vec_re[i, comp_i, :fc, :pc], dtype=np.float64)
                 im = np.asarray(state.dft_vec_im[i, comp_i, :fc, :pc], dtype=np.float64)
-                if not bool(config.is_3d) and comp_name in {"Ez", "Hx", "Hy"}:
-                    public_name, sign = public_component_2d(comp_name, config.plane_2d)
+                if not bool(config.is_3d) and comp_name in (
+                    {"Ez", "Hx", "Hy"}
+                    if config.polarization_2d == "tm"
+                    else {"Ex", "Ey", "Hz"}
+                ):
+                    public_name, sign = public_component_2d(
+                        comp_name, config.plane_2d, config.polarization_2d
+                    )
                     dft_fields[public_name] = sign * (re + 1j * im)
                 else:
                     dft_fields[comp_name] = re + 1j * im

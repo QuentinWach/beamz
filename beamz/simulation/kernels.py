@@ -454,6 +454,72 @@ def tm_xy_cpml_curl_h_to_e_2d(
     return curl.astype(hx.dtype), tuple(item[1] for item in corrected)
 
 
+def te_xy_curl_e_to_h_2d(ex, ey, resolution, hz_shape):
+    """Differentiate in-plane E onto the canonical Hz support."""
+    resolution = _scalar_like(resolution, ex.dtype)
+    curl = (ey[:, 1:] - ey[:, :-1]) / resolution - (ex[1:, :] - ex[:-1, :]) / resolution
+    if curl.shape != hz_shape:
+        raise ValueError(f"curl(E) shape {curl.shape} does not match Hz {hz_shape}")
+    return curl
+
+
+def _te_xy_h_derivatives(hz, resolution, metallic_edges):
+    """Return padded Hz derivatives on the complete Ex and Ey supports."""
+    resolution = _scalar_like(resolution, hz.dtype)
+    bottom, top = hz[:1, :], hz[-1:, :]
+    left, right = hz[:, :1], hz[:, -1:]
+    if "bottom" in metallic_edges:
+        bottom = jnp.zeros_like(bottom)
+    if "top" in metallic_edges:
+        top = jnp.zeros_like(top)
+    if "left" in metallic_edges:
+        left = jnp.zeros_like(left)
+    if "right" in metallic_edges:
+        right = jnp.zeros_like(right)
+    padded_y = jnp.concatenate((bottom, hz, top), axis=0)
+    padded_x = jnp.concatenate((left, hz, right), axis=1)
+    return (
+        (padded_y[1:, :] - padded_y[:-1, :]) / resolution,
+        (padded_x[:, 1:] - padded_x[:, :-1]) / resolution,
+    )
+
+
+def te_xy_curl_h_to_e_2d(hz, resolution, ex_shape, ey_shape, metallic_edges):
+    """Differentiate Hz onto the canonical Ex and Ey supports."""
+    d_hz_dy, d_hz_dx = _te_xy_h_derivatives(hz, resolution, metallic_edges)
+    curls = d_hz_dy, -d_hz_dx
+    if curls[0].shape != ex_shape or curls[1].shape != ey_shape:
+        raise ValueError(
+            f"curl(H) shapes {(curls[0].shape, curls[1].shape)} do not match "
+            f"Ex/Ey {(ex_shape, ey_shape)}"
+        )
+    return curls
+
+
+def te_xy_cpml_curl_e_to_h_2d(ex, ey, resolution, *, terms, psi_h_terms):
+    """Correct the two in-plane E derivatives used by the Hz update."""
+    resolution = _scalar_like(resolution, ex.dtype)
+    derivatives = (
+        (ey[:, 1:] - ey[:, :-1]) / resolution,
+        (ex[1:, :] - ex[:-1, :]) / resolution,
+    )
+    corrected = tuple(
+        correct_cpml_term(derivative, psi, term)
+        for derivative, psi, term in zip(derivatives, psi_h_terms, terms, strict=True)
+    )
+    return corrected[0][0] + corrected[1][0], tuple(item[1] for item in corrected)
+
+
+def te_xy_cpml_curl_h_to_e_2d(hz, resolution, metallic_edges, *, terms, psi_e_terms):
+    """Correct the Hz derivatives used by the Ex and Ey updates."""
+    derivatives = _te_xy_h_derivatives(hz, resolution, metallic_edges)
+    corrected = tuple(
+        correct_cpml_term(derivative, psi, term)
+        for derivative, psi, term in zip(derivatives, psi_e_terms, terms, strict=True)
+    )
+    return (corrected[0][0], corrected[1][0]), tuple(item[1] for item in corrected)
+
+
 def as_array(value) -> jnp.ndarray:
     # Make dtype conversion explicit to prevent promotion from changing JAX
     # signatures.
@@ -646,7 +712,7 @@ def update_h_2d_tm_xy(eng, ctx, coeffs):
         ctx.resolution,
         eng.hx.shape,
         eng.hy.shape,
-        ctx.boundary.tm_metallic_edges,
+        ctx.boundary.metallic_edges_2d,
     )
     return _update_h_tm_from_curls(eng, ctx, coeffs, curl_hx, curl_hy)
 
@@ -684,7 +750,7 @@ def update_e_2d_tm_xy(eng, ctx, coeffs):
         eng.hy,
         ctx.resolution,
         eng.ez.shape,
-        ctx.boundary.tm_metallic_edges,
+        ctx.boundary.metallic_edges_2d,
     )
     return _update_e_tm_from_curl(eng, ctx, coeffs, curl_ez)
 
@@ -697,11 +763,66 @@ def update_e_2d_tm_xy_cpml(eng, ctx, coeffs):
         eng.hy,
         ctx.resolution,
         eng.ez.shape,
-        ctx.boundary.tm_metallic_edges,
+        ctx.boundary.metallic_edges_2d,
         terms=cpml.e_terms,
         psi_e_terms=eng.cpml_psi_e_terms,
     )
     return _update_e_tm_from_curl(eng, ctx, coeffs, curl_ez, psi_e=psi_e)
+
+
+def _update_h_te_from_curl(eng, coeffs, curl_hz, psi_h=None):
+    hz = advance_h_from_coefficients(
+        eng.hz, curl_hz, coeffs.h_decay_z, coeffs.h_source_z
+    )
+    return _replace_h(eng, eng.hx, eng.hy, hz, cpml_h=psi_h)
+
+
+def update_h_2d_te_xy(eng, ctx, coeffs):
+    curl_hz = te_xy_curl_e_to_h_2d(eng.ex, eng.ey, ctx.resolution, eng.hz.shape)
+    return _update_h_te_from_curl(eng, coeffs, curl_hz)
+
+
+def update_h_2d_te_xy_cpml(eng, ctx, coeffs):
+    curl_hz, psi_h = te_xy_cpml_curl_e_to_h_2d(
+        eng.ex,
+        eng.ey,
+        ctx.resolution,
+        terms=ctx.boundary.cpml.h_terms,
+        psi_h_terms=eng.cpml_psi_h_terms,
+    )
+    return _update_h_te_from_curl(eng, coeffs, curl_hz, psi_h=psi_h)
+
+
+def _update_e_te_from_curls(eng, coeffs, curls, psi_e=None):
+    ex = advance_e_from_coefficients(
+        eng.ex, curls[0], coeffs.e_decay_x, coeffs.e_source_x
+    )
+    ey = advance_e_from_coefficients(
+        eng.ey, curls[1], coeffs.e_decay_y, coeffs.e_source_y
+    )
+    return _replace_e(eng, ex, ey, eng.ez, cpml_e=psi_e)
+
+
+def update_e_2d_te_xy(eng, ctx, coeffs):
+    curls = te_xy_curl_h_to_e_2d(
+        eng.hz,
+        ctx.resolution,
+        eng.ex.shape,
+        eng.ey.shape,
+        ctx.boundary.metallic_edges_2d,
+    )
+    return _update_e_te_from_curls(eng, coeffs, curls)
+
+
+def update_e_2d_te_xy_cpml(eng, ctx, coeffs):
+    curls, psi_e = te_xy_cpml_curl_h_to_e_2d(
+        eng.hz,
+        ctx.resolution,
+        ctx.boundary.metallic_edges_2d,
+        terms=ctx.boundary.cpml.e_terms,
+        psi_e_terms=eng.cpml_psi_e_terms,
+    )
+    return _update_e_te_from_curls(eng, coeffs, curls, psi_e=psi_e)
 
 
 @dataclass(frozen=True)
@@ -750,19 +871,33 @@ def select_update_kernel(ctx: CompiledStepContext) -> StepUpdateKernel:
         ),  # fmt: skip
         (ctx.is_3d, "yee_3d", update_h_3d_yee, update_e_3d_yee),
         (
-            (not ctx.is_3d) and boundary.cpml.enabled,
+            (not ctx.is_3d)
+            and ctx.config.polarization_2d == "tm"
+            and boundary.cpml.enabled,
             "physical_tm_xy_cpml",
             update_h_2d_tm_xy_cpml,
             update_e_2d_tm_xy_cpml,
         ),  # fmt: skip
         (
-            not ctx.is_3d,
+            (not ctx.is_3d) and ctx.config.polarization_2d == "tm",
             "physical_tm_xy",
             update_h_2d_tm_xy,
             update_e_2d_tm_xy,
         ),  # fmt: skip
+        (
+            (not ctx.is_3d) and boundary.cpml.enabled,
+            "physical_te_xy_cpml",
+            update_h_2d_te_xy_cpml,
+            update_e_2d_te_xy_cpml,
+        ),  # fmt: skip
+        (
+            not ctx.is_3d,
+            "physical_te_xy",
+            update_h_2d_te_xy,
+            update_e_2d_te_xy,
+        ),  # fmt: skip
     )
 
-    # 2. Every supported runtime is either canonical 3D or canonical TMxy 2D.
+    # 2. Every supported runtime is canonical 3D, TMxy, or TExy.
     _, kind, update_h, update_e = next(variant for variant in variants if variant[0])
     return StepUpdateKernel(kind, update_h, update_e)

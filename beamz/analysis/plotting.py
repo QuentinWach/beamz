@@ -287,59 +287,6 @@ def plot_design(
     return fig, ax
 
 
-def _grid_array(grid, *, field, z_index=None, z_position=None):
-    if getattr(grid, "is_3d", False):
-        return np.asarray(
-            grid.get_2d_slice(z_index=z_index, z_position=z_position)[field]
-        )
-    value = getattr(grid, field, None)
-    if value is None:
-        raise RuntimeError(f"Grid field {field!r} is not available.")
-    arr = np.asarray(value)
-    if arr.shape == ():
-        arr = np.full(tuple(int(v) for v in grid.shape), float(arr))
-    return arr
-
-
-def plot_grid(
-    grid,
-    *,
-    field="permittivity",
-    z_index=None,
-    z_position=None,
-    ax=None,
-    figsize=None,
-    cmap="Grays",
-    show=True,
-    colorbar=True,
-    overlay=False,
-):
-    """Plot a rasterized grid field or a 3D grid slice."""
-    arr = _grid_array(grid, field=field, z_index=z_index, z_position=z_position)
-    if figsize is None:
-        width = max(float(grid.design.width), 1e-30)
-        figsize = (6.0, max(2.0, 6.0 * float(grid.design.height) / width))
-    fig, ax = _figure_axes(ax, figsize=figsize)
-    im, _view = plot_field_view(
-        ax,
-        arr,
-        extent=(0.0, float(grid.design.width), 0.0, float(grid.design.height)),
-        cmap=cmap,
-    )
-    if colorbar:
-        fig.colorbar(im, ax=ax, label=field)
-    if overlay:
-        for index, structure in enumerate(getattr(grid.design, "structures", ())):
-            _draw_polygon(
-                ax, structure, index=index, fill=False, alpha=0.5, edgecolor="0.35"
-            )
-    ax.set_title(f"Rasterized {field}")
-    _axis_labels(ax, width=grid.design.width, height=grid.design.height)
-    fig.tight_layout()
-    _maybe_show(fig, show=show)
-    return fig, ax
-
-
 def _index_from_position(position, *, step, count, default):
     if position is None:
         return int(default)

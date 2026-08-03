@@ -41,6 +41,7 @@ class DomainSpec:
     is_3d: bool
     plane_2d: str
     coordinate_offset: tuple[float, float, float]
+    polarization_2d: str = "tm"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,7 @@ class CompiledGrid:
     component_shapes: Mapping[str, tuple[int, ...]]
     resolution: float
     plane_2d: str
+    polarization_2d: str
     permittivity: jnp.ndarray
     conductivity: jnp.ndarray
     permeability: jnp.ndarray
@@ -330,6 +332,7 @@ class RunConfig:
     num_steps: int
     plane_2d: str
     is_3d: bool
+    polarization_2d: str = "tm"
     loop_kind: str = "scan"
     source_single_slab_dense: bool = False
     sharding: ShardingConfig = ShardingConfig()
@@ -355,7 +358,7 @@ class CpmlPlan:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class BoundaryPlan:
-    tm_metallic_edges: frozenset[str]
+    metallic_edges_2d: frozenset[str]
     cpml: CpmlPlan
     metallic: MetallicPlan
 

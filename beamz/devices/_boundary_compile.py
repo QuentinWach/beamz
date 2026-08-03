@@ -59,6 +59,7 @@ class BoundaryData:
     permittivity: Any
     conductivity: Any
     permeability: Any
+    yee_materials: Mapping[str, Any]
     profiles: Mapping[str, Any] | None
     masks: Mapping[str, Any]
     metallic_edges: frozenset[str]
@@ -78,6 +79,11 @@ class _BoundaryGrid:
         self.permittivity = jnp.asarray(material_grid.permittivity)
         self.conductivity = jnp.asarray(material_grid.conductivity)
         self.permeability = jnp.asarray(material_grid.permeability)
+        self.polarization_2d = material_grid.polarization or "tm"
+        self.yee_materials = {
+            name: jnp.asarray(value)
+            for name, value in material_grid.yee_materials.items()
+        }
         for component, shape in component_shapes.items():
             setattr(self, component, _ComponentSupport(shape))
 
@@ -95,7 +101,7 @@ def resolve_metallic_edges(boundaries, is_3d: bool) -> frozenset[str]:
 
 
 def compile_metallic_masks(
-    component_shapes, material_shape, boundaries
+    component_shapes, material_shape, boundaries, *, polarization_2d: str = "tm"
 ) -> dict[str, jnp.ndarray]:
     """Compile boundary specifications into component-aligned PEC masks."""
     masks = {
@@ -114,12 +120,21 @@ def compile_metallic_masks(
             "right": (2, -1, ("Ey", "Ez", "Hx")),
         }
         if is_3d
-        else {
-            "bottom": (0, 0, ("Ez", "Hy")),
-            "top": (0, -1, ("Ez", "Hy")),
-            "left": (1, 0, ("Ez", "Hx")),
-            "right": (1, -1, ("Ez", "Hx")),
-        }
+        else (
+            {
+                "bottom": (0, 0, ("Ez", "Hy")),
+                "top": (0, -1, ("Ez", "Hy")),
+                "left": (1, 0, ("Ez", "Hx")),
+                "right": (1, -1, ("Ez", "Hx")),
+            }
+            if polarization_2d == "tm"
+            else {
+                "bottom": (0, 0, ("Ex",)),
+                "top": (0, -1, ("Ex",)),
+                "left": (1, 0, ("Ey",)),
+                "right": (1, -1, ("Ey",)),
+            }
+        )
     )
     for edge in metallic_edges:
         axis, index, components = wall_specs[edge]
@@ -313,6 +328,28 @@ class _AbsorberCompiler:
                     material[tuple(ref_sel)], axis=axis
                 )
             setattr(fields, attr, jnp.asarray(material, dtype=source_arr.dtype))
+        for name, source in getattr(fields, "yee_materials", {}).items():
+            source_arr = np.asarray(source)
+            material = np.array(source_arr, copy=True)
+            for _edge, axis, side, count in self._pml_material_edge_counts(
+                np.asarray(fields.permittivity), pml_data
+            ):
+                if count <= 0 or count >= material.shape[axis]:
+                    continue
+                if side == "low":
+                    destination = [slice(None)] * material.ndim
+                    destination[axis] = slice(0, count)
+                    reference = [slice(None)] * material.ndim
+                    reference[axis] = count
+                else:
+                    destination = [slice(None)] * material.ndim
+                    destination[axis] = slice(material.shape[axis] - count, None)
+                    reference = [slice(None)] * material.ndim
+                    reference[axis] = material.shape[axis] - count - 1
+                material[tuple(destination)] = np.expand_dims(
+                    material[tuple(reference)], axis=axis
+                )
+            fields.yee_materials[name] = jnp.asarray(material, dtype=source_arr.dtype)
 
     @staticmethod
     def _pml_edge_material_varies(material, axis: int, side: str, count: int) -> bool:
@@ -520,7 +557,7 @@ class _AbsorberCompiler:
     def _create_cpml_profiles_2d(self, fields, domain_size):
         """Create sigma/kappa/alpha CPML profiles for 2D."""
         # Public planes are already canonical y/x, so one axis table can drive both
-        # cell-centered diagnostics and the exact Ez/Hx/Hy staggered profiles.
+        # cell-centered diagnostics and the selected polarization's Yee profiles.
         ny, nx = fields.permittivity.shape
         width, height, _ = domain_size
         edges = set(self._get_edges_for_dimensionality(False))
@@ -551,13 +588,23 @@ class _AbsorberCompiler:
         )
         out["mask"] = (out["sigma_x"] > 0) | (out["sigma_y"] > 0)
 
-        staggered = {}
+        polarization = fields.polarization_2d
         supports = (
-            ("Ez", "x", nx + 1, "E", (ny + 1, nx + 1)),
-            ("Ez", "y", ny + 1, "E", (ny + 1, nx + 1)),
-            ("Hx", "y", ny, "H", (ny, nx + 1)),
-            ("Hy", "x", nx, "H", (ny + 1, nx)),
+            (
+                ("Ez", "x", nx + 1, "E", (ny + 1, nx + 1)),
+                ("Ez", "y", ny + 1, "E", (ny + 1, nx + 1)),
+                ("Hx", "y", ny, "H", (ny, nx + 1)),
+                ("Hy", "x", nx, "H", (ny + 1, nx)),
+            )
+            if polarization == "tm"
+            else (
+                ("Hz", "x", nx, "H", (ny, nx)),
+                ("Hz", "y", ny, "H", (ny, nx)),
+                ("Ex", "y", ny + 1, "E", (ny + 1, nx)),
+                ("Ey", "x", nx + 1, "E", (ny, nx + 1)),
+            )
         )
+        staggered = {}
         for component, axis, samples, kind, target_shape in supports:
             cells, length, low, high = axes[axis]
             values = self._compute_fdtdx_staggered_profile_1d(
@@ -572,7 +619,7 @@ class _AbsorberCompiler:
                 staggered[f"{component}_{axis}_{family}"] = jnp.broadcast_to(
                     expand(axis, value), target_shape
                 )
-        out["tm_xy_cpml"] = staggered
+        out[f"{polarization}_xy_cpml"] = staggered
         return out
 
     def _create_cpml_profiles_3d(self, fields, domain_size):
@@ -660,6 +707,8 @@ def lower_boundaries(
     boundaries,
     domain_size,
     dt: float,
+    *,
+    polarization_2d: str = "tm",
 ) -> BoundaryData:
     """Lower the complete boundary tuple once for Simulation compilation."""
     boundaries = normalize_boundaries(boundaries)
@@ -684,7 +733,13 @@ def lower_boundaries(
         workspace.permittivity,
         workspace.conductivity,
         workspace.permeability,
+        workspace.yee_materials,
         profiles,
-        compile_metallic_masks(component_shapes, material_grid.shape, boundaries),
+        compile_metallic_masks(
+            component_shapes,
+            material_grid.shape,
+            boundaries,
+            polarization_2d=polarization_2d,
+        ),
         resolve_metallic_edges(boundaries, len(material_grid.shape) == 3),
     )

@@ -21,6 +21,7 @@ from beamz.lattice import (
 )
 
 from . import planar_tfsf
+from .solve import _require_cell_mode_materials
 from .specs import FieldProfile3D, ModeSource
 
 logger = logging.getLogger(__name__)
@@ -168,7 +169,9 @@ def _make_1d_window(width_cells, alpha=0.3):
     return np.ones(max(1, width_cells))
 
 
-def _solve_2d_mode(source: ModeSource, eps_profile, omega, resolution, axis):
+def _solve_2d_mode(
+    source: ModeSource, eps_profile, omega, resolution, axis, polarization: str
+):
     mode_spec = source.mode_spec
     eps_profile_arr = np.asarray(eps_profile)
     n_local_max = float(np.sqrt(max(float(np.max(np.real(eps_profile_arr))), 1e-12)))
@@ -191,7 +194,7 @@ def _solve_2d_mode(source: ModeSource, eps_profile, omega, resolution, axis):
             Literal["+x", "-x", "+y", "-y", "+z", "-z"],
             source.signed_direction,
         ),
-        filter_pol=cast(Literal["te", "tm"] | None, mode_spec.polarization),
+        filter_pol=cast(Literal["te", "tm"], polarization),
         target_neff=target_neff,
         return_fields=True,
     )
@@ -215,7 +218,16 @@ def _plane_index(axis, normal_index, support):
 
 
 def _plan_2d_entries(
-    source, e_mode, h_mode, neff, center_idx, offset_idx, snapped, shape, resolution
+    source,
+    e_mode,
+    h_mode,
+    neff,
+    center_idx,
+    offset_idx,
+    snapped,
+    shape,
+    resolution,
+    polarization,
 ):
     axis = source.axis
     transverse_axis = "y" if axis == "x" else "x"
@@ -224,7 +236,7 @@ def _plan_2d_entries(
     dir_sign = 1.0 if source.direction == "+" else -1.0
     z_target = np.sqrt(MU_0 / EPS_0) / max(np.real(neff), 1e-6)
 
-    if source.mode_spec.polarization == "tm":
+    if polarization == "tm":
         h_raw = np.squeeze(h_mode[1 if axis == "x" else 0])
         e_raw = np.squeeze(e_mode[2])
         phase_ref = np.angle(h_raw.flatten()[np.argmax(np.abs(h_raw))])
@@ -317,6 +329,22 @@ def _plan_2d_mode_source(
     resolution: float,
     dt: float | None,
 ) -> Mode2DLaunchPlan:
+    polarization = str(getattr(fields, "polarization_2d", "tm"))
+    requested = source.mode_spec.polarization
+    if requested is not None and requested != polarization:
+        raise ValueError(
+            f"ModeSource polarization {requested!r} does not match the "
+            f"Simulation polarization {polarization!r}."
+        )
+    if np.any(np.asarray(fields.conductivity) != 0.0):
+        raise ValueError(
+            "ModeSource does not yet support conductive material profiles; the "
+            "mode solve would not match lossy FDTD propagation."
+        )
+    _require_cell_mode_materials(
+        getattr(fields, "material_grid", None),
+        operation="2D ModeSource",
+    )
     permittivity = np.asarray(fields.permittivity)
     ny, nx = permittivity.shape
     axis = source.axis
@@ -342,7 +370,9 @@ def _plan_2d_mode_source(
         permittivity[:, center_idx] if axis == "x" else permittivity[center_idx, :]
     )
     omega = 2.0 * np.pi * source.frequency
-    neff, e_mode, h_mode = _solve_2d_mode(source, eps_profile, omega, resolution, axis)
+    neff, e_mode, h_mode = _solve_2d_mode(
+        source, eps_profile, omega, resolution, axis, polarization
+    )
     entries = _plan_2d_entries(
         source,
         e_mode,
@@ -353,6 +383,7 @@ def _plan_2d_mode_source(
         snapped,
         (ny, nx),
         resolution,
+        polarization,
     )
     return Mode2DLaunchPlan(entries=entries)
 
@@ -363,6 +394,11 @@ def _plan_3d_mode_source(
     resolution: float,
     dt: float | None,
 ) -> Mode3DLaunchPlan:
+    if np.any(np.asarray(fields.conductivity) != 0.0):
+        raise ValueError(
+            "ModeSource does not yet support conductive material profiles; the "
+            "mode solve would not match lossy FDTD propagation."
+        )
     permittivity = np.asarray(fields.permittivity)
     nz, ny, nx = permittivity.shape
     axis = source.axis
@@ -386,6 +422,12 @@ def _plan_3d_mode_source(
     discrete_mode = solve_mode_plane_3d(
         permittivity,
         np.asarray(fields.permeability),
+        material_tensors=getattr(fields.material_grid, "tensors", None),
+        yee_materials=(
+            getattr(fields.material_grid, "yee_materials", None)
+            if fields.material_grid.uses_direct_yee_materials
+            else None
+        ),
         frequency=source.frequency,
         resolution=resolution,
         dt=dt,

@@ -7,7 +7,6 @@
       "files": [
         "beamz/design/core.py",
         "beamz/design/materials.py",
-        "beamz/design/meshing.py",
         "beamz/design/structures.py",
         "beamz/devices/boundaries.py",
         "beamz/devices/modes/specs.py",

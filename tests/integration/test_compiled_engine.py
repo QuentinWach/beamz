@@ -110,6 +110,24 @@ def _material_values(fields, name, index, target_shape):
     return np.asarray(value[index], dtype=np.float32)
 
 
+def test_compile_validates_loop_configuration(monkeypatch):
+    simulation = Simulation(
+        domain=(1.0, 1.0),
+        resolution=0.5,
+        time=np.array((0.0, 1e-10)),
+    )
+
+    with pytest.raises(ValueError, match="num_steps must be > 0"):
+        simulation.compile(num_steps=0)
+
+    monkeypatch.setenv("BEAMZ_COMPILED_LOOP_KIND", "fori")
+    assert simulation.compile(num_steps=1).config.loop_kind == "fori_loop"
+
+    monkeypatch.setenv("BEAMZ_COMPILED_LOOP_KIND", "invalid")
+    with pytest.raises(ValueError, match="Invalid BEAMZ_COMPILED_LOOP_KIND"):
+        simulation.compile(num_steps=1)
+
+
 def test_advance_supports_3d_custom_current_source():
     class _CurrentSource:
         def __init__(self, signal, voxel_indices, voxel_weights):

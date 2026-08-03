@@ -12,6 +12,17 @@ from beamz.devices.modes.specs import ModeData, ModeSpec
 from .specs import plane_axis_and_spans
 
 
+def _require_cell_mode_materials(material_grid, *, operation: str) -> None:
+    """Reject material grids whose propagation coefficients cannot be reproduced."""
+
+    if material_grid is not None and material_grid.uses_direct_yee_materials:
+        raise ValueError(
+            f"{operation} cannot yet reproduce direct Yee-support material "
+            "coefficients. Use volume-averaged isotropic materials or solve the "
+            "mode with a Yee-aware path."
+        )
+
+
 def _profile_crop_slices(eps_profile, *, profile_axes, center, size, resolution):
     grid_axis_to_coord_index = {0: 2, 1: 1, 2: 0}
     slices = []
@@ -33,7 +44,14 @@ def _profile_crop_slices(eps_profile, *, profile_axes, center, size, resolution)
 def _simulation_grid_view(simulation):
     fields = getattr(simulation, "fields", None)
     if fields is None or not hasattr(fields, "permittivity"):
-        return simulation.design.rasterize(resolution=simulation.resolution)
+        grid = simulation.design.rasterize(resolution=simulation.resolution)
+        _require_cell_mode_materials(grid, operation="ModeSource.solve_modes()")
+        return grid
+    material_grid = getattr(fields, "material_grid", None)
+    _require_cell_mode_materials(
+        material_grid,
+        operation="ModeSource.solve_modes()",
+    )
     return SimpleNamespace(
         permittivity=fields.permittivity,
         conductivity=getattr(fields, "conductivity", None),
@@ -44,6 +62,7 @@ def _simulation_grid_view(simulation):
         width=float(getattr(simulation.design, "width", 0.0) or 0.0),
         height=float(getattr(simulation.design, "height", 0.0) or 0.0),
         depth=float(getattr(simulation.design, "depth", 0.0) or 0.0),
+        tensors=getattr(material_grid, "tensors", {}),
     )
 
 
@@ -75,10 +94,18 @@ class ModePlaneContext:
     grid_index: int
     eps_profile_full: np.ndarray
     crop_slices: tuple[slice, ...]
+    diagonal_permittivity: dict[str, np.ndarray]
+    diagonal_permeability: dict[str, np.ndarray]
 
 
 def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
     grid = _simulation_grid_view(simulation)
+    conductivity = getattr(grid, "conductivity", None)
+    if conductivity is not None and np.any(np.asarray(conductivity) != 0.0):
+        raise ValueError(
+            "Mode solving does not yet support conductive material profiles; "
+            "the solved mode would not match lossy FDTD propagation."
+        )
     eps = np.asarray(grid.permittivity)
     axis, center, _spans = plane_axis_and_spans(plane)
     offset = getattr(simulation, "coordinate_offset", (0.0, 0.0, 0.0))
@@ -102,6 +129,27 @@ def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
     )
     if len(center) != 3:
         raise ValueError(f"Mode-plane centers require three coordinates: {center!r}")
+    tensors = dict(getattr(grid, "tensors", {}))
+
+    def diagonal_profiles(name):
+        if name not in tensors:
+            return {}
+        tensor = np.asarray(tensors[name])
+        if (
+            tensor.ndim != eps.ndim + 1
+            or tensor.shape[0] not in (1, 3, 6)
+            or tensor.shape[1:] != eps.shape
+        ):
+            raise ValueError(f"{name} tensor has invalid compact shape {tensor.shape}")
+        return {
+            component: np.take(
+                tensor[0 if tensor.shape[0] == 1 else index],
+                grid_index,
+                axis=axis_index,
+            )
+            for index, component in enumerate(("xx", "yy", "zz"))
+        }
+
     return ModePlaneContext(
         eps=eps,
         axis=axis,
@@ -110,6 +158,8 @@ def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
         grid_index=grid_index,
         eps_profile_full=eps_profile_full,
         crop_slices=crop_slices,
+        diagonal_permittivity=diagonal_profiles("epsilon"),
+        diagonal_permeability=diagonal_profiles("mu"),
     )
 
 
@@ -123,8 +173,14 @@ def solve_mode_plane(
         raise ValueError("Mode solving requires at least one frequency.")
 
     context = mode_plane_context(simulation=simulation, plane=plane)
-    eps_profile = context.eps_profile_full[context.crop_slices]
+    eps_profile_full = context.diagonal_permittivity.get("xx", context.eps_profile_full)
+    eps_profile = eps_profile_full[context.crop_slices]
     solver_direction = _resolve_solver_direction(context.axis, direction)
+
+    def cropped(mapping, component):
+        values = mapping.get(component)
+        return None if values is None else values[context.crop_slices]
+
     solved = [
         solve_modes(
             eps=eps_profile,
@@ -135,6 +191,11 @@ def solve_mode_plane(
             filter_pol=cast(Literal["te", "tm"] | None, spec.polarization),
             target_neff=spec.target_neff,
             return_fields=True,
+            eps_yy=cropped(context.diagonal_permittivity, "yy"),
+            eps_zz=cropped(context.diagonal_permittivity, "zz"),
+            mu_xx=cropped(context.diagonal_permeability, "xx"),
+            mu_yy=cropped(context.diagonal_permeability, "yy"),
+            mu_zz=cropped(context.diagonal_permeability, "zz"),
         )
         for frequency in frequencies
     ]
@@ -145,7 +206,7 @@ def solve_mode_plane(
         h_fields=np.asarray([item[2] for item in solved]),
         eps_profiles=np.repeat(eps_profile[None, ...], len(frequencies), axis=0),
         eps_profile_fulls=np.repeat(
-            context.eps_profile_full[None, ...], len(frequencies), axis=0
+            eps_profile_full[None, ...], len(frequencies), axis=0
         ),
         resolution=float(simulation.resolution),
         solver_direction=solver_direction,

@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+/target/
 build/
 develop-eggs/
 dist/
@@ -73,6 +74,7 @@ validation-results.json
 /tmp/
 /wip/
 /benchmarks/results/
+/benchmarks/*-results.json
 /validation-results/
 
 # Local scratch files

@@ -41,6 +41,12 @@ def solve_modes(
     filter_pol: Literal["te", "tm"] | None = None,
     return_fields: Literal[True] = True,
     target_neff: float | None = None,
+    *,
+    eps_yy: np.ndarray | None = None,
+    eps_zz: np.ndarray | None = None,
+    mu_xx: np.ndarray | None = None,
+    mu_yy: np.ndarray | None = None,
+    mu_zz: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]: ...
 
 
@@ -55,6 +61,12 @@ def solve_modes(
     filter_pol: Literal["te", "tm"] | None = None,
     return_fields: Literal[False] = False,
     target_neff: float | None = None,
+    *,
+    eps_yy: np.ndarray | None = None,
+    eps_zz: np.ndarray | None = None,
+    mu_xx: np.ndarray | None = None,
+    mu_yy: np.ndarray | None = None,
+    mu_zz: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]: ...
 
 
@@ -68,6 +80,12 @@ def solve_modes(
     filter_pol: Literal["te", "tm"] | None = None,
     return_fields: bool = False,
     target_neff: float | None = None,
+    *,
+    eps_yy: np.ndarray | None = None,
+    eps_zz: np.ndarray | None = None,
+    mu_xx: np.ndarray | None = None,
+    mu_yy: np.ndarray | None = None,
+    mu_zz: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """Solve a one- or two-dimensional BeamZ material profile."""
     eps_array = np.asarray(eps, dtype=np.complex128)
@@ -96,8 +114,24 @@ def solve_modes(
         tuple(np.arange(size + 1, dtype=float) * float(dL) / 1e-6)
         for size in plane.shape
     )
+
+    def solver_plane(value):
+        if value is None:
+            return None
+        array = np.asarray(value, dtype=np.complex128)
+        if array.shape != eps_array.shape:
+            raise ValueError(
+                f"tensor material component has shape {array.shape}, expected {eps_array.shape}"
+            )
+        return array[:, None] if not is_plane else array.T
+
     result = solve_grid(
         eps_xx=plane,
+        eps_yy=solver_plane(eps_yy),
+        eps_zz=solver_plane(eps_zz),
+        mu_xx=solver_plane(mu_xx),
+        mu_yy=solver_plane(mu_yy),
+        mu_zz=solver_plane(mu_zz),
         x_edges=edges[0],
         y_edges=edges[1],
         freqs=[float(omega) / (2.0 * np.pi)],
@@ -316,6 +350,8 @@ def solve_mode_plane_3d(
     permittivity,
     permeability,
     *,
+    material_tensors=None,
+    yee_materials=None,
     frequency,
     resolution,
     dt,
@@ -367,7 +403,17 @@ def solve_mode_plane_3d(
         )
     )
     component_permittivity, component_permeability = _local_component_materials(
-        permittivity, permeability, sampling_plane
+        permittivity,
+        permeability,
+        sampling_plane,
+        yee_materials=yee_materials,
+    )
+    diagonal_permittivity, diagonal_permeability = _local_diagonal_materials(
+        material_tensors,
+        local_plane,
+        axis=axis,
+        plane_index=plane_index,
+        material_origin_zyx=material_origin_zyx,
     )
     mode = solver(
         ModePlaneSpec(
@@ -384,6 +430,8 @@ def solve_mode_plane_3d(
             grid_shape=local_plane["grid_shape"],
             component_permittivity=component_permittivity,
             component_permeability=component_permeability,
+            diagonal_permittivity=diagonal_permittivity,
+            diagonal_permeability=diagonal_permeability,
             center=local_plane["center"],
             width=float(width),
             height=float(height),
@@ -405,10 +453,96 @@ def solve_mode_plane_3d(
     )
 
 
-def _local_component_materials(permittivity, permeability, local_plane):
+def _local_diagonal_materials(
+    tensors,
+    local_plane,
+    *,
+    axis,
+    plane_index,
+    material_origin_zyx,
+):
+    if not tensors:
+        return {}, {}
+    axis_position = {"z": 0, "y": 1, "x": 2}
+    normal_axis = axis_position[str(axis)]
+    profile_index = int(plane_index) - int(material_origin_zyx[normal_axis])
+    transverse_axes = _TRANSVERSE_AXES_3D[str(axis)]
+    origin = dict(zip(("z", "y", "x"), local_plane["origin_zyx"], strict=True))
+    material_origin = dict(zip(("z", "y", "x"), material_origin_zyx, strict=True))
+    counts = _axis_counts_from_grid_shape(local_plane["grid_shape"])
+    crop = tuple(
+        slice(
+            int(origin[name]) - int(material_origin[name]),
+            int(origin[name]) - int(material_origin[name]) + int(counts[name]),
+        )
+        for name in transverse_axes
+    )
+
+    def profiles(property_name):
+        tensor = np.asarray(tensors[property_name])
+        if tensor.ndim != 4 or tensor.shape[0] not in (1, 3, 6):
+            raise ValueError(
+                f"{property_name} tensor must have compact shape (1|3|6, z, y, x)"
+            )
+        return {
+            component: np.take(
+                tensor[0 if tensor.shape[0] == 1 else index],
+                profile_index,
+                axis=normal_axis,
+            )[crop]
+            for index, component in enumerate(("xx", "yy", "zz"))
+        }
+
+    return profiles("epsilon"), profiles("mu")
+
+
+def _local_component_materials(
+    permittivity, permeability, local_plane, *, yee_materials=None
+):
     """Sample local voxel materials on the six Yee component lattices."""
     origin = tuple(int(value) for value in local_plane["origin_zyx"])
     grid_shape = tuple(int(value) for value in local_plane["grid_shape"])
+    shapes = local_plane["component_shapes"]
+    if yee_materials:
+
+        def crop(name, component):
+            values = np.asarray(yee_materials[name])
+            selection = tuple(
+                slice(start, start + count)
+                for start, count in zip(origin, shapes[component], strict=True)
+            )
+            result = values[selection]
+            if result.shape != shapes[component]:
+                raise ValueError(
+                    f"Local {name} crop has shape {result.shape}, expected "
+                    f"{shapes[component]}."
+                )
+            return result
+
+        required = {"eps_x", "eps_y", "eps_z", "mu_hx", "mu_hy", "mu_hz"}
+        missing = required - set(yee_materials)
+        if missing:
+            raise ValueError(
+                f"Mode plane is missing Yee materials: {', '.join(sorted(missing))}."
+            )
+        return (
+            {
+                component: crop(name, component)
+                for component, name in zip(
+                    ("Ex", "Ey", "Ez"),
+                    ("eps_x", "eps_y", "eps_z"),
+                    strict=True,
+                )
+            },
+            {
+                component: crop(name, component)
+                for component, name in zip(
+                    ("Hx", "Hy", "Hz"),
+                    ("mu_hx", "mu_hy", "mu_hz"),
+                    strict=True,
+                )
+            },
+        )
     region = tuple(
         slice(start, start + count)
         for start, count in zip(origin, grid_shape, strict=True)
@@ -422,7 +556,6 @@ def _local_component_materials(permittivity, permeability, local_plane):
         mu_grid = np.broadcast_to(mu_grid, eps_grid.shape)
     eps_local = eps_grid[region]
     mu_local = mu_grid[region]
-    shapes = local_plane["component_shapes"]
     component_permittivity = {
         component: np.asarray(
             sample_voxel_grid_at_e_component_3d_centered(

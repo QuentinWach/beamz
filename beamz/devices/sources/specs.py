@@ -202,8 +202,9 @@ class ModeSource:
 class GaussianSource:
     """Inject a Gaussian spatial profile into an FDTD simulation.
 
-    The source primarily excites ``Ez`` in 2D and compatible electric components
-    in 3D. Position and width remain differentiable through JAX.
+    In 2D it excites the active out-of-plane component: ``Ez`` for TMz and
+    ``Hz`` for TEz. In 3D it retains the existing compatible electric-component
+    behavior. Position and width remain differentiable through JAX.
 
     Parameters
     ----------

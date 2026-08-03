@@ -13,7 +13,6 @@ from beamz._cache_tokens import cache_token
 # or import at top level if safe. design shouldn't depend on optimization.
 from beamz.design.core import Design
 from beamz.design.materials import Material
-from beamz.design.meshing import RegularGrid
 from beamz.design.structures import Structure
 
 from .autodiff import compute_parameter_gradient_vjp, transform_density
@@ -406,8 +405,9 @@ def create_optimization_mask(grid, region_structure):
         raise TypeError("Optimization regions must be canonical Structure objects.")
     temp_design += region_structure.with_material(marker)
 
-    # Rasterize
-    temp_grid = RegularGrid(temp_design, resolution=grid.dx)
+    # Use the production Rust rasterizer so optimization masks follow the same
+    # geometry classification as the solver material grid.
+    temp_grid = temp_design.rasterize(resolution=grid.dx)
 
     # Mask is where permittivity > background
     # Use a safe threshold to include any partial fill

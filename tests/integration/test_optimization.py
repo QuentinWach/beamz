@@ -10,12 +10,13 @@ Tests verify:
 """
 
 from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from beamz import Design, Material
+from beamz import Design, Material, Rectangle
 from beamz.optimization.autodiff import (
     compute_parameter_gradient_vjp,
     generate_conic_kernel,
@@ -28,6 +29,7 @@ from beamz.optimization.topology import (
     TopologySpec,
     TopologyState,
     compute_overlap_gradient,
+    create_optimization_mask,
     fold_high_side_yee_padding_to_shape,
 )
 
@@ -545,6 +547,29 @@ class TestMaskHandling:
         # Results should differ (context affects filtering)
         assert not jnp.allclose(filtered_with_context, filtered_no_context), (
             "Fixed structure mask had no effect on filtering"
+        )
+
+    def test_geometry_mask_uses_solver_rasterization(self):
+        grid = SimpleNamespace(width=4.0, height=4.0, dx=1.0)
+        region = Rectangle(
+            position=(1.0, 1.0),
+            width=2.0,
+            height=2.0,
+            depth=0.0,
+        )
+
+        mask = create_optimization_mask(grid, region)
+
+        np.testing.assert_array_equal(
+            mask,
+            np.asarray(
+                [
+                    [False, False, False, False],
+                    [False, True, True, False],
+                    [False, True, True, False],
+                    [False, False, False, False],
+                ]
+            ),
         )
 
 

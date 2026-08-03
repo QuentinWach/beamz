@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
 
 [project]
 name = "beamz"
@@ -48,9 +48,16 @@ gds = [
     "gdsfactory>=8.0; python_version < '3.14'",
     "gdsfactory>=9.0; python_version >= '3.14'",
 ]
+mesh = [
+    "meshio>=5.3",
+    "trimesh>=4.5",
+]
 dev = [
     "ipykernel>=6.29.0",
+    "maturin>=1.9,<2",
+    "meshio>=5.3",
     "nbconvert>=7.16.0",
+    "trimesh>=4.5",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "myst-parser>=2.0.0",
@@ -103,36 +110,8 @@ strict = [
 [tool.ruff.lint.mccabe]
 max-complexity = 35
 
-[tool.hatch.build]
-ignore-vcs = true
-exclude = [
-    "**/.cache",
-    "**/.beamz_cache",
-    "**/__pycache__",
-    "**/.pytest_cache",
-    "**/.ruff_cache",
-    "**/.mypy_cache",
-    "**/.ipynb_checkpoints",
-    "**/.tox",
-    "**/.venv",
-    "**/*.egg-info",
-    "**/*.py[cod]",
-    "**/.coverage*",
-    "**/.DS_Store",
-    "**/coverage.xml",
-    "**/htmlcov",
-    "**/site",
-    "**/build",
-    "**/dist",
-]
-
-[tool.hatch.build.targets.wheel]
-packages = ["beamz"]
-include = [
-    "beamz/py.typed",
-]
-
-[tool.hatch.build.targets.sdist]
-only-include = [
-    "beamz",
-]
+[tool.maturin]
+manifest-path = "rust/fdtd-raster-py/Cargo.toml"
+python-source = "."
+module-name = "beamz.design.raster._native"
+features = ["pyo3/extension-module"]

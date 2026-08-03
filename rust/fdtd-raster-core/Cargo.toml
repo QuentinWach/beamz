@@ -1,0 +1,21 @@
+[package]
+name = "fdtd-raster-core"
+description = "Geometry integration and material lowering for BeamZ FDTD grids"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blake3.workspace = true
+geo.workspace = true
+parry3d-f64.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+approx = "0.5"
+proptest = "1.8"

@@ -9,7 +9,6 @@ import pytest
 
 import beamz.simulation.api as simulation_core
 from beamz import (
-    CustomMaterial,
     Design,
     FieldMonitor,
     FieldRecorder,
@@ -83,62 +82,6 @@ def test_monitor_interval_must_be_a_positive_integer(interval):
         FieldRecorder(interval=interval)
 
     assert FieldRecorder(interval=np.int64(2)).interval == 2
-
-
-@pytest.mark.parametrize(
-    ("material", "max_permittivity"),
-    [
-        (
-            CustomMaterial(
-                permittivity_grid=np.full((2, 2), 12.0),
-                bounds=((0.0, 1.0), (0.0, 1.0)),
-            ),
-            12.0,
-        ),
-        (
-            CustomMaterial(
-                permittivity_func=lambda x, y: 16.0,
-                cache_key="constant-16",
-                max_permittivity=16.0,
-            ),
-            16.0,
-        ),
-    ],
-)
-def test_auto_grid_uses_custom_material_maximum(material, max_permittivity):
-    wavelength = 1.0
-    sim = Simulation(
-        design=Design(width=1.0, height=1.0, background=material),
-        grid_spec=GridSpec.auto(wavelength=wavelength, min_steps_per_wvl=10),
-        time=_time_axis(),
-    )
-
-    assert material.max_permittivity == pytest.approx(max_permittivity)
-    assert sim.resolution == pytest.approx(
-        wavelength / (np.sqrt(max_permittivity) * 10)
-    )
-
-
-def test_auto_grid_requires_callable_material_maximum():
-    material = CustomMaterial(
-        permittivity_func=lambda x, y: 12.0,
-        cache_key="constant-12",
-    )
-    design = Design(width=1.0, height=1.0, background=material)
-
-    with pytest.raises(ValueError, match="GridSpec.auto.*max_permittivity"):
-        Simulation(
-            design=design,
-            grid_spec=GridSpec.auto(wavelength=1.0),
-            time=_time_axis(),
-        )
-
-    explicit = Simulation(
-        design=design,
-        grid_spec=GridSpec.uniform(0.1),
-        time=_time_axis(),
-    )
-    assert explicit.resolution == pytest.approx(0.1)
 
 
 def test_simulation_is_a_deeply_immutable_configuration_value():

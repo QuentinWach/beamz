@@ -4,7 +4,6 @@ import numpy as np
 from beamz import (
     LIGHT_SPEED,
     PML,
-    CustomMaterial,
     Design,
     FieldRecorder,
     FluxMonitor,
@@ -109,31 +108,6 @@ def normalize_gradient_in_mask(grad, region_mask, percentile=95.0):
     return grad / scale, scale
 
 
-def canonical_design_from_grid(grid):
-    """Wrap an updated topology grid in the canonical geometry API."""
-
-    material = CustomMaterial(
-        permittivity_grid=grid.permittivity,
-        bounds=((DX / 2, W - DX / 2), (DX / 2, H - DX / 2)),
-        interpolation="nearest",
-        default_permittivity=N_CLAD**2,
-        default_permeability=float(grid.permeability),
-        default_conductivity=float(grid.conductivity),
-    )
-    return Design(
-        width=W,
-        height=H,
-        material=Material(permittivity=N_CLAD**2),
-    ).with_structure(
-        Rectangle(
-            position=(0.0, 0.0),
-            width=W,
-            height=H,
-            material=material,
-        )
-    )
-
-
 # Design & Materials
 design = Design(width=W, height=H, material=Material(permittivity=N_CLAD**2))
 design += Rectangle(
@@ -213,7 +187,6 @@ for step in range(STEPS):
     permittivity = np.array(base_eps, copy=True)
     permittivity[mask] = opt.eps_min + phys_density[mask] * (opt.eps_max - opt.eps_min)
     grid = grid.updated_copy(permittivity=permittivity)
-    simulation_design = canonical_design_from_grid(grid)
 
     # Forward Simulation (only output monitor)
     # Setup monitors for input and output power measurement
@@ -236,7 +209,7 @@ for step in range(STEPS):
 
     # Run forward simulation with output monitor
     sim_fwd = Simulation(
-        design=simulation_design,
+        material_grid=grid,
         sources=[src_fwd],
         monitors=[
             monitor_input_flux,
@@ -274,7 +247,7 @@ for step in range(STEPS):
     )
 
     sim_adj = Simulation(
-        design=simulation_design,
+        material_grid=grid,
         sources=[src_adj],
         monitors=[
             monitor_back_flux,
@@ -416,7 +389,7 @@ for wl_val in wavelengths:
 
     # Simulation
     sim_sweep = Simulation(
-        design=simulation_design,
+        material_grid=grid,
         sources=[src_sweep],
         monitors=[mon_in, mon_out],
         boundaries=[PML(edges="all", thickness=1 * µm, formulation=PML_FORMULATION_2D)],
@@ -477,7 +450,7 @@ mon_out_final = FluxMonitor(
 )
 
 sim_final = Simulation(
-    design=simulation_design,
+    material_grid=grid,
     sources=[src_final],
     monitors=[
         mon_in_final,
