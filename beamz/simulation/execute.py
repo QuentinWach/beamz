@@ -8,19 +8,21 @@ import platform
 import sys
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from beamz._helpers import _finish_inline_progress, _print_inline_progress
+from beamz.const import EPS_0, MU_0
 from beamz.devices.sources.compiler import (
     BatchedSlabGroup,
     CompiledSourceSpec,
     batch_slab_specs,
 )
 from beamz.simulation.model import (
+    AutoTermination,
     CompiledProgram,
     SimulationState,
     UpdateCoefficients,
@@ -29,7 +31,7 @@ from beamz.simulation.model import (
 from . import kernels as update_runtime
 from . import observe as monitor_runtime
 from . import sharding as sharding_runtime
-from .results import MonitorResults, SimulationResults, SimulationRun
+from .results import MonitorResults, RunTermination, SimulationResults, SimulationRun
 
 SOURCE_PHASE_COMPONENTS = {
     "pre_e": ("Ex", "Ey", "Ez"),
@@ -43,6 +45,205 @@ SourceBatchMap = dict[
     tuple[str, str],
     tuple[BatchedSlabGroup | None, tuple[CompiledSourceSpec, ...]],
 ]
+
+
+_COMPONENT_OFFSETS_2D = {
+    "Ex": (0.0, 0.5),
+    "Ey": (0.5, 0.0),
+    "Ez": (0.0, 0.0),
+    "Hx": (0.5, 0.0),
+    "Hy": (0.0, 0.5),
+    "Hz": (0.5, 0.5),
+}
+
+
+def _axis_integration_weights(edges, offset: float, count: int) -> np.ndarray:
+    """Return control-volume widths for one edge- or center-aligned Yee axis."""
+    edges = np.asarray(edges, dtype=np.float64)
+    widths = np.diff(edges)
+    count = int(count)
+    if offset == 0.5:
+        if count != widths.size:
+            raise ValueError("Center-aligned Yee support does not match the grid.")
+        return widths
+    if offset != 0.0 or count != edges.size:
+        raise ValueError("Edge-aligned Yee support does not match the grid.")
+    out = np.empty(count, dtype=np.float64)
+    out[0] = 0.5 * widths[0]
+    out[-1] = 0.5 * widths[-1]
+    if count > 2:
+        out[1:-1] = 0.5 * (widths[:-1] + widths[1:])
+    return out
+
+
+def _component_integration_weights(program: CompiledProgram, component: str):
+    """Return physical integration weights on one native Yee support."""
+    shape = tuple(int(value) for value in getattr(program.grid, component).shape)
+    geometry = program.grid.geometry
+    if program.config.is_3d:
+        from beamz.lattice import component_axis_offsets_3d
+
+        offsets = component_axis_offsets_3d(component)
+        z = _axis_integration_weights(geometry.z_edges, offsets["z"], shape[0])
+        y = _axis_integration_weights(geometry.y_edges, offsets["y"], shape[1])
+        x = _axis_integration_weights(geometry.x_edges, offsets["x"], shape[2])
+        return jnp.asarray(z[:, None, None] * y[None, :, None] * x[None, None, :])
+    y_offset, x_offset = _COMPONENT_OFFSETS_2D[component]
+    y = _axis_integration_weights(geometry.y_edges, y_offset, shape[0])
+    x = _axis_integration_weights(geometry.x_edges, x_offset, shape[1])
+    return jnp.asarray(y[:, None] * x[None, :])
+
+
+def _energy_terms(program: CompiledProgram):
+    """Precompute field, material, and measure names for energy diagnostics."""
+    active = (
+        {"Ex", "Ey", "Ez", "Hx", "Hy", "Hz"}
+        if program.config.is_3d
+        else (
+            {"Ez", "Hx", "Hy"}
+            if program.config.polarization_2d == "tm"
+            else {"Ex", "Ey", "Hz"}
+        )
+    )
+    extent = program.grid.geometry.extent
+    domain_measure = float(
+        extent[0] * extent[1] * (extent[2] if program.config.is_3d else 1.0)
+    )
+    terms = tuple(
+        (
+            component.lower(),
+            getattr(program.grid, material),
+            _component_integration_weights(program, component) / domain_measure,
+            constant,
+        )
+        for component, material, constant in (
+            ("Ex", "eps_ex", EPS_0),
+            ("Ey", "eps_ey", EPS_0),
+            ("Ez", "eps_ez", EPS_0),
+            ("Hx", "mu_hx", MU_0),
+            ("Hy", "mu_hy", MU_0),
+            ("Hz", "mu_hz", MU_0),
+        )
+        if component in active
+    )
+    return terms, domain_measure
+
+
+def _field_diagnostics(state: SimulationState, plan) -> tuple[float, float, bool]:
+    """Compute integrated electromagnetic energy, maximum field, and finiteness."""
+    terms, domain_measure = plan
+    energy_density = jnp.asarray(0.0, dtype=jnp.float32)
+    max_field = jnp.asarray(0.0, dtype=jnp.float32)
+    finite = jnp.asarray(True)
+    for field_name, material, measure, constant in terms:
+        values = jnp.asarray(getattr(state, field_name))
+        finite = finite & jnp.all(jnp.isfinite(values))
+        max_field = jnp.maximum(max_field, jnp.max(jnp.abs(values), initial=0.0))
+        density = jnp.asarray(material) * values * values
+        energy_density = energy_density + 0.5 * float(constant) * jnp.sum(
+            density * jnp.asarray(measure)
+        )
+    return float(energy_density) * domain_measure, float(max_field), bool(finite)
+
+
+def _remaining_source_activity(program: CompiledProgram) -> np.ndarray:
+    """Return the maximum future source amplitude relative to each term's peak."""
+    total_steps = max(
+        (int(np.asarray(spec.waveform).size) for spec in program.sources), default=0
+    )
+    activity = np.zeros(total_steps, dtype=np.float64)
+    for source in program.sources:
+        waveform = np.abs(np.asarray(source.waveform, dtype=np.float64).reshape(-1))
+        peak = float(np.max(waveform, initial=0.0))
+        if peak > 0.0:
+            activity[: waveform.size] = np.maximum(
+                activity[: waveform.size], waveform / peak
+            )
+    return np.maximum.accumulate(activity[::-1])[::-1] if activity.size else activity
+
+
+def _source_residual(remaining_activity: np.ndarray, current_step: int) -> float:
+    """Return the largest normalized source drive at or after ``current_step``."""
+    index = int(current_step)
+    if index < 0:
+        raise ValueError("current_step must be non-negative.")
+    return float(remaining_activity[index]) if index < remaining_activity.size else 0.0
+
+
+def _selected_monitor_names(program: CompiledProgram, policy: AutoTermination):
+    available = {spec.name for spec in program.monitors if spec.dft_enabled}
+    if policy.monitor_names:
+        missing = set(policy.monitor_names) - available
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise ValueError(
+                f"Automatic termination monitors must be frequency-domain monitors: {names}."
+            )
+        return policy.monitor_names
+    return tuple(spec.name for spec in program.monitors if spec.dft_enabled)
+
+
+def _monitor_vector(results: SimulationResults, names: tuple[str, ...]) -> np.ndarray:
+    """Flatten selected raw DFT accumulators into one convergence vector."""
+    values = []
+    for name in names:
+        monitor = results.monitors[name]
+        fields = monitor._raw_dft_fields or monitor.dft_fields
+        values.extend(
+            np.asarray(fields[component], dtype=np.complex128).reshape(-1)
+            for component in sorted(fields)
+        )
+    return np.concatenate(values) if values else np.empty(0, dtype=np.complex128)
+
+
+def _relative_monitor_change(current: np.ndarray, previous: np.ndarray | None):
+    """Return a scale-safe relative L2 change for cumulative monitor values."""
+    if previous is None:
+        return None
+    if current.shape != previous.shape:
+        raise ValueError("Automatic termination monitor values changed shape.")
+    numerator = float(np.linalg.norm(current - previous))
+    denominator = max(float(np.linalg.norm(current)), float(np.linalg.norm(previous)))
+    if denominator <= np.finfo(float).tiny:
+        return 0.0 if numerator <= np.finfo(float).tiny else np.inf
+    return numerator / denominator
+
+
+def _configured_dft_weight_sum(simulation, spec) -> float:
+    """Return a monitor's DFT window weight through the configured time limit."""
+    steps = np.arange(int(simulation.num_steps), dtype=np.int64)
+    times = float(simulation.time[0]) + (steps.astype(np.float64) + 1.0) * float(
+        simulation.dt
+    )
+    selected = (
+        (steps % max(1, int(spec.dft_record_interval)) == 0)
+        & (times >= float(spec.dft_t_start))
+        & (times <= float(spec.dft_t_end))
+    )
+    if not np.any(selected):
+        return 0.0
+    if int(spec.dft_window_code) != 1 or not np.isfinite(spec.dft_t_end):
+        return float(np.count_nonzero(selected))
+    span = max(float(spec.dft_t_end) - float(spec.dft_t_start), 1e-30)
+    tau = np.clip((times[selected] - float(spec.dft_t_start)) / span, 0.0, 1.0)
+    return float(np.sum(0.5 * (1.0 - np.cos(2.0 * np.pi * tau))))
+
+
+def _complete_converged_dft_weights(
+    results: SimulationResults, simulation, program: CompiledProgram
+) -> SimulationResults:
+    """Normalize converged DFTs as though their negligible tail had been sampled."""
+    monitors = dict(results.monitors)
+    for spec in program.monitors:
+        if not spec.dft_enabled or spec.freq_count <= 0:
+            continue
+        monitor = simulation.monitors[int(spec.monitor_index)]
+        name = str(getattr(monitor, "name", None) or f"monitor_{spec.monitor_index}")
+        result = monitors[name]
+        total_weight = _configured_dft_weight_sum(simulation, spec)
+        weights = np.full(result.dft_weight_sum.shape, total_weight, dtype=np.float64)
+        monitors[name] = replace(result, dft_weight_sum=weights)
+    return replace(results, monitors=monitors)
 
 
 def compiled_source_batches(
@@ -672,6 +873,140 @@ def run_simulation_program(
         ),
     )
     return SimulationRun(results=results, state=state)
+
+
+def run_until_terminated(
+    simulation,
+    policy: AutoTermination,
+    *,
+    progress: bool,
+    store_full_materials: bool,
+    sharding,
+) -> SimulationResults:
+    """Run reusable chunks until convergence, failure, or the configured time limit."""
+    if not isinstance(policy, AutoTermination):
+        raise TypeError("termination must be an AutoTermination instance or None.")
+    chunk_steps = min(int(policy.chunk_steps), int(simulation.num_steps))
+    first_program = simulation.compile(
+        num_steps=chunk_steps, sharding=sharding, progress=progress
+    )
+    monitor_names = _selected_monitor_names(first_program, policy)
+    use_monitor = policy.monitor_change is not None and bool(monitor_names)
+    if policy.field_decay == 0.0 and not use_monitor:
+        raise ValueError(
+            "Automatic termination has no applicable field or monitor criterion."
+        )
+
+    source_activity = _remaining_source_activity(first_program)
+    terms = _energy_terms(first_program)
+    state = SimulationState.initial(first_program.grid, t=float(simulation.time[0]))
+    previous_energy: float | None = None
+    previous_monitor: np.ndarray | None = None
+    energy = peak_energy = max_field = 0.0
+    field_decay = monitor_change = None
+    source_decay = _source_residual(source_activity, 0)
+    successful_checks = growth_checks = 0
+    reason = "time_limit"
+    last_run: SimulationRun | None = None
+
+    try:
+        while int(state.current_step) < int(simulation.num_steps):
+            current_step = int(state.current_step)
+            remaining = int(simulation.num_steps) - current_step
+            steps = min(chunk_steps, remaining)
+            program = (
+                first_program
+                if steps == chunk_steps
+                else simulation.compile(
+                    num_steps=steps, sharding=sharding, progress=False
+                )
+            )
+            last_run = run_simulation_program(
+                simulation,
+                program,
+                state,
+                progress=False,
+                store_full_materials=store_full_materials,
+                monitor_steps=remaining,
+                donate_state=True,
+            )
+            state = last_run.state
+            current_step = int(state.current_step)
+            if progress:
+                _print_inline_progress(current_step, int(simulation.num_steps))
+
+            energy, max_field, fields_finite = _field_diagnostics(state, terms)
+            current_monitor = _monitor_vector(last_run.results, monitor_names)
+            monitors_finite = bool(
+                np.isfinite(current_monitor.real).all()
+                and np.isfinite(current_monitor.imag).all()
+            )
+            if not fields_finite or not np.isfinite(energy) or not monitors_finite:
+                reason = "nonfinite"
+                break
+
+            peak_energy = max(peak_energy, energy)
+            field_decay = (
+                energy / peak_energy if peak_energy > np.finfo(float).tiny else 0.0
+            )
+            source_decay = _source_residual(source_activity, current_step)
+            source_off = source_decay <= policy.source_decay
+            monitor_change = _relative_monitor_change(current_monitor, previous_monitor)
+
+            if (
+                source_off
+                and previous_energy is not None
+                and previous_energy > np.finfo(float).tiny
+                and energy > policy.growth_factor * previous_energy
+            ):
+                growth_checks += 1
+            else:
+                growth_checks = 0
+            if growth_checks >= policy.growth_checks:
+                reason = "diverged"
+                break
+
+            eligible = source_off and current_step >= policy.min_steps
+            energy_stable = (
+                policy.field_decay == 0.0 or field_decay <= policy.field_decay
+            )
+            monitor_stable = not use_monitor or (
+                monitor_change is not None
+                and monitor_change <= float(policy.monitor_change)
+            )
+            if eligible and energy_stable and monitor_stable:
+                successful_checks += 1
+            else:
+                successful_checks = 0
+            if successful_checks >= policy.consecutive_checks:
+                reason = "converged"
+                break
+
+            previous_energy = energy
+            previous_monitor = current_monitor
+    finally:
+        if progress:
+            _finish_inline_progress()
+
+    if last_run is None:
+        raise RuntimeError("Automatic termination executed no simulation steps.")
+    report = RunTermination(
+        reason=reason,
+        steps=int(state.current_step),
+        time=float(state.t),
+        converged=reason == "converged",
+        field_decay=field_decay,
+        monitor_change=monitor_change if use_monitor else None,
+        source_decay=source_decay,
+        energy=energy,
+        peak_energy=peak_energy,
+        max_field=max_field,
+        consecutive_checks=successful_checks,
+    )
+    results = last_run.results
+    if reason == "converged":
+        results = _complete_converged_dft_weights(results, simulation, first_program)
+    return replace(results, termination=report)
 
 
 _init_persistent_cache()

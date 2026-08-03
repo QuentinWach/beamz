@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import beamz.simulation.api as simulation_core
+import beamz.simulation.execute as execution_runtime
 from beamz import (
     AutoTermination,
     Design,
@@ -141,6 +142,141 @@ def test_run_without_progress_is_silent(capsys):
 
     captured = capsys.readouterr()
     assert captured.out == captured.err == ""
+
+
+def test_run_can_stop_after_consecutive_field_decay_checks():
+    sim = _simulation(time=np.arange(20, dtype=float) * 1e-16)
+
+    result = sim.run(
+        termination=AutoTermination(
+            chunk_steps=2,
+            consecutive_checks=2,
+            monitor_change=None,
+        )
+    )
+
+    assert result.termination is not None
+    assert result.termination.reason == "converged"
+    assert result.termination.converged
+    assert result.termination.steps == 4
+    assert result.termination.field_decay == pytest.approx(0.0)
+    assert result.termination.source_decay == pytest.approx(0.0)
+
+
+def test_run_monitor_stability_requires_a_previous_check():
+    monitor = FieldMonitor(
+        center=(um, um, 0.0),
+        size=(0.0, um, 0.0),
+        freqs=(2e14,),
+        name="output",
+    )
+    sim = _simulation(
+        time=np.arange(20, dtype=float) * 1e-16,
+        monitors=(monitor,),
+    )
+
+    result = sim.run(
+        termination=AutoTermination(
+            field_decay=0.0,
+            monitor_change=1e-8,
+            chunk_steps=2,
+            consecutive_checks=2,
+            monitor_names=("output",),
+        )
+    )
+
+    assert result.termination is not None
+    assert result.termination.reason == "converged"
+    assert result.termination.steps == 6
+    assert result.termination.monitor_change == pytest.approx(0.0)
+    np.testing.assert_allclose(result.monitors["output"].dft_weight_sum, [20.0])
+
+
+def test_run_never_converges_while_a_source_remains_active():
+    time = np.arange(12, dtype=float) * 1e-16
+    source = GaussianSource(
+        position=(um, um), width=0.2 * um, signal=np.ones(time.size)
+    )
+    sim = _simulation(time=time, sources=(source,))
+
+    result = sim.run(
+        termination=AutoTermination(
+            chunk_steps=2,
+            consecutive_checks=2,
+            monitor_change=None,
+            field_decay=1.0,
+        )
+    )
+
+    assert result.termination is not None
+    assert result.termination.reason == "time_limit"
+    assert not result.termination.converged
+    assert result.termination.steps == time.size
+
+
+def test_run_reports_nonfinite_fields(monkeypatch):
+    sim = _simulation(time=np.arange(6, dtype=float) * 1e-16)
+    monkeypatch.setattr(
+        execution_runtime,
+        "_field_diagnostics",
+        lambda state, plan: (np.nan, np.inf, False),
+    )
+
+    result = sim.run(
+        termination=AutoTermination(
+            chunk_steps=2,
+            consecutive_checks=2,
+            monitor_change=None,
+        )
+    )
+
+    assert result.termination is not None
+    assert result.termination.reason == "nonfinite"
+    assert not result.termination.converged
+    assert result.termination.steps == 2
+
+
+def test_run_reports_consecutive_post_source_energy_growth(monkeypatch):
+    sim = _simulation(time=np.arange(8, dtype=float) * 1e-16)
+    energies = iter((1.0, 2.0, 4.0))
+
+    def increasing_energy(state, plan):
+        del state, plan
+        energy = next(energies)
+        return energy, energy, True
+
+    monkeypatch.setattr(execution_runtime, "_field_diagnostics", increasing_energy)
+
+    result = sim.run(
+        termination=AutoTermination(
+            field_decay=1e-12,
+            monitor_change=None,
+            chunk_steps=1,
+            consecutive_checks=2,
+            growth_factor=1.1,
+            growth_checks=2,
+        )
+    )
+
+    assert result.termination is not None
+    assert result.termination.reason == "diverged"
+    assert not result.termination.converged
+    assert result.termination.steps == 3
+    assert result.termination.energy == pytest.approx(4.0)
+
+
+def test_run_rejects_invalid_automatic_termination_inputs():
+    sim = _simulation()
+    sim.clear_compiled_cache()
+    with pytest.raises(TypeError, match="AutoTermination"):
+        sim.run(termination=object())
+    with pytest.raises(ValueError, match="frequency-domain"):
+        sim.run(
+            termination=AutoTermination(
+                monitor_names=("missing",),
+                chunk_steps=1,
+            )
+        )
 
 
 @pytest.mark.parametrize("interval", (0, -3, 1.9, True))
