@@ -61,3 +61,30 @@ def test_rectilinear_grid_selects_metric_kernel_with_linear_metric_storage():
     metric_elements = sum(int(value.size) for value in program.metrics)
     assert metric_elements == 2 * 32 + 1 + 2 * 24 + 1
     assert metric_elements < 4 * (32 * 24)
+
+
+def test_uniform_3d_flux_monitor_keeps_scalar_integration_path():
+    grid = bz.RectilinearGrid.from_spacing((4, 3, 2), 1.0)
+    values = np.ones(grid.shape_zyx, dtype=np.float32)
+    materials = MaterialGrid(
+        values,
+        np.zeros_like(values),
+        values,
+        1.0,
+        values.shape,
+        grid=grid,
+    )
+    monitor = bz.FluxMonitor(
+        center=(2.0, 1.5, 1.0),
+        size=(4.0, 3.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+
+    spec = bz.Simulation(
+        material_grid=materials,
+        monitors=[monitor],
+        time=np.asarray([0.0, 1e-16]),
+    ).compile().monitors[0]
+
+    assert spec.integration_weights.size == 0
+    assert spec.power_scale == 2.0

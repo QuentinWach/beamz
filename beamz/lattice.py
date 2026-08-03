@@ -323,11 +323,8 @@ def compile_yee_plane_quadrature_3d(
             grid=grid,
         )
     if grid is None:
-        integration_weights = np.full(
-            coordinates[0].size * coordinates[1].size,
-            plane_sample_area(coordinates, float(resolution)),
-            dtype=np.float64,
-        )
+        sample_area = plane_sample_area(coordinates, float(resolution))
+        integration_weights = np.empty((0,), dtype=np.float64)
     else:
         axis0, axis1 = plane_axes_3d(normal_axis)
         interval0 = region.axis_interval(axis0)
@@ -339,9 +336,10 @@ def compile_yee_plane_quadrature_3d(
             int(interval1.start) : int(interval1.stop)
         ]
         integration_weights = (widths0[:, None] * widths1[None, :]).reshape(-1)
+        sample_area = float(np.mean(integration_weights))
     return YeePlaneQuadrature(
         normal_axis={"x": 0, "y": 1, "z": 2}[normal_axis],
-        sample_area=float(np.mean(integration_weights)),
+        sample_area=sample_area,
         integration_weights=integration_weights,
         coordinates=coordinates,
         plans=plans,
