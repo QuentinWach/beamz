@@ -155,6 +155,102 @@ def test_uniform_compiler_keeps_metric_leaves_empty_for_scalar_fast_path():
     assert all(value.size == 0 for value in program.metrics)
 
 
+@pytest.mark.parametrize("polarization", ["tm", "te"])
+@pytest.mark.parametrize("cpml", [False, True])
+def test_rectilinear_2d_update_kernel_executes_for_both_polarizations(
+    polarization, cpml
+):
+    result = rasterize(
+        Scene((Material(),)),
+        Grid([0.0, 0.2, 0.6, 1.0], [0.0, 0.3, 1.0], [0.0, 1.0]),
+        options=RasterOptions(components=f"two_dimensional_{polarization}"),
+    )
+    material_grid = MaterialGrid.from_raster_result(result, polarization=polarization)
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        polarization=polarization,
+        time=np.asarray([0.0, 1e-16]),
+        boundaries=[bz.PML(thickness=0.2, formulation="cpml")] if cpml else None,
+    )
+    state = simulation.initial_state()
+    state = state._replace(
+        ez=np.ones_like(state.ez) if polarization == "tm" else state.ez,
+        ex=np.ones_like(state.ex) if polarization == "te" else state.ex,
+    )
+
+    advanced = simulation.step(state)
+
+    assert int(advanced.current_step) == 1
+    assert all(
+        np.isfinite(np.asarray(value)).all()
+        for value in (
+            advanced.ex,
+            advanced.ey,
+            advanced.ez,
+            advanced.hx,
+            advanced.hy,
+            advanced.hz,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("grid", "metric_kind", "cpml"),
+    [
+        (
+            Grid(
+                [0.0, 0.2, 1.0],
+                [0.0, 0.4, 1.0],
+                [0.0, 0.3, 1.0],
+            ),
+            "rectilinear",
+            False,
+        ),
+        (
+            Grid.from_spacing((2, 2, 2), (0.2, 0.3, 0.4)),
+            "axis_uniform",
+            False,
+        ),
+        (
+            Grid(
+                [0.0, 0.2, 1.0],
+                [0.0, 0.4, 1.0],
+                [0.0, 0.3, 1.0],
+            ),
+            "rectilinear",
+            True,
+        ),
+    ],
+)
+def test_nonisotropic_3d_update_kernel_executes(grid, metric_kind, cpml):
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(Scene((Material(),)), grid), dimensions=3
+    )
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        time=np.asarray([0.0, 1e-16]),
+        boundaries=[bz.PML(thickness=0.2, formulation="cpml")] if cpml else None,
+    )
+    program = simulation.compile()
+    state = simulation.initial_state()._replace(ez=np.ones_like(program.grid.Ez))
+
+    advanced = simulation.step(state)
+
+    assert program.config.metric_kind == metric_kind
+    assert int(advanced.current_step) == 1
+    assert all(
+        np.isfinite(np.asarray(value)).all()
+        for value in (
+            advanced.ex,
+            advanced.ey,
+            advanced.ez,
+            advanced.hx,
+            advanced.hy,
+            advanced.hz,
+        )
+    )
+
+
 def test_material_grid_infers_two_dimensional_tm_output():
     result = rasterize(
         Scene((Material(),)),

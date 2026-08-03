@@ -2,13 +2,22 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from beamz import MU_0
 from beamz.lattice import (
     build_h_boundary_views_for_e_3d,
     curl_e_to_h_3d,
     curl_h_to_e_3d,
     yee_flux,
 )
-from beamz.simulation.kernels import compile_cpml_term, cpml_coefficients
+from beamz.simulation.kernels import (
+    compile_cpml_term,
+    cpml_coefficients,
+    fused_update_h_lossy_3d_material_metric,
+    tm_xy_curl_e_to_h_2d,
+    tm_xy_curl_e_to_h_2d_metric,
+    tm_xy_curl_h_to_e_2d_metric,
+)
+from beamz.simulation.model import DerivativeMetricPlan
 from tests.utils import compiled_grid
 
 
@@ -25,6 +34,103 @@ def test_yee_flux_integrates_signed_complex_poynting_component():
 
 
 pytestmark = pytest.mark.unit
+
+
+def _metrics_2d(dx, dy):
+    empty = jnp.zeros((0,), dtype=jnp.float32)
+    dx = np.asarray(dx, dtype=np.float32)
+    dy = np.asarray(dy, dtype=np.float32)
+
+    def backward(widths):
+        result = np.empty(widths.size + 1, dtype=np.float32)
+        result[0] = 1.0 / widths[0]
+        result[-1] = 1.0 / widths[-1]
+        result[1:-1] = 2.0 / (widths[:-1] + widths[1:])
+        return jnp.asarray(result)
+
+    return DerivativeMetricPlan(
+        jnp.asarray(1.0 / dx),
+        jnp.asarray(1.0 / dy),
+        empty,
+        backward(dx),
+        backward(dy),
+        empty,
+    )
+
+
+def test_rectilinear_tm_curl_uses_physical_staggered_distances():
+    x_edges = np.asarray([0.0, 1.0, 3.0], dtype=np.float32)
+    y_edges = np.asarray([0.0, 2.0, 5.0], dtype=np.float32)
+    metrics = _metrics_2d(np.diff(x_edges), np.diff(y_edges))
+    ez = jnp.asarray(2.0 * x_edges[None, :] + 3.0 * y_edges[:, None])
+
+    curl_hx, curl_hy = tm_xy_curl_e_to_h_2d_metric(ez, metrics)
+
+    np.testing.assert_allclose(curl_hx, 3.0)
+    np.testing.assert_allclose(curl_hy, -2.0)
+
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    hy = jnp.broadcast_to(4.0 * x_centers[None, :], (3, 2))
+    hx = jnp.zeros((2, 3), dtype=jnp.float32)
+    curl_ez = tm_xy_curl_h_to_e_2d_metric(hx, hy, metrics, ez.shape, frozenset())
+    np.testing.assert_allclose(curl_ez[:, 1:-1], 4.0)
+
+
+def test_uniform_metric_curl_matches_legacy_scalar_algebra():
+    ez = jnp.arange(20, dtype=jnp.float32).reshape(4, 5)
+    metrics = DerivativeMetricPlan(
+        jnp.asarray(2.0),
+        jnp.asarray(2.0),
+        jnp.zeros((0,), dtype=jnp.float32),
+        jnp.asarray(2.0),
+        jnp.asarray(2.0),
+        jnp.zeros((0,), dtype=jnp.float32),
+    )
+
+    expected = tm_xy_curl_e_to_h_2d(ez, 0.5, (3, 5), (4, 4), frozenset())
+    actual = tm_xy_curl_e_to_h_2d_metric(ez, metrics)
+
+    for lhs, rhs in zip(actual, expected, strict=True):
+        np.testing.assert_array_equal(lhs, rhs)
+
+
+def test_rectilinear_3d_h_update_differentiates_physical_coordinates():
+    x_edges = np.asarray([0.0, 1.0, 3.0], dtype=np.float32)
+    y_edges = np.asarray([0.0, 2.0, 5.0], dtype=np.float32)
+    z_edges = np.asarray([0.0, 4.0, 6.0], dtype=np.float32)
+    empty = jnp.zeros((0,), dtype=jnp.float32)
+    metrics = DerivativeMetricPlan(
+        jnp.asarray(1.0 / np.diff(x_edges)),
+        jnp.asarray(1.0 / np.diff(y_edges)),
+        jnp.asarray(1.0 / np.diff(z_edges)),
+        empty,
+        empty,
+        empty,
+    )
+    ex = jnp.zeros((3, 3, 2), dtype=jnp.float32)
+    ey = jnp.zeros((3, 2, 3), dtype=jnp.float32)
+    ez = jnp.broadcast_to(jnp.asarray(x_edges)[None, None, :], (2, 3, 3))
+    hx = jnp.zeros((2, 2, 3), dtype=jnp.float32)
+    hy = jnp.zeros((2, 3, 2), dtype=jnp.float32)
+    hz = jnp.zeros((3, 2, 2), dtype=jnp.float32)
+
+    next_hx, next_hy, next_hz = fused_update_h_lossy_3d_material_metric(
+        ex,
+        ey,
+        ez,
+        hx,
+        hy,
+        hz,
+        0.0,
+        0.0,
+        0.0,
+        MU_0,
+        metrics,
+    )
+
+    np.testing.assert_allclose(next_hx, 0.0)
+    np.testing.assert_allclose(next_hy, 1.0)
+    np.testing.assert_allclose(next_hz, 0.0)
 
 
 def test_curl_e_to_h_3d_linear_field_has_constant_z_component():
