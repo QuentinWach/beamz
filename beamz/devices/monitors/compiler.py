@@ -229,15 +229,22 @@ def compile_monitor_specs(
     field_buffer_count = 0
     active_grid = grid if grid is not None else getattr(fields, "geometry", None)
     is_3d_grid = np.asarray(fields.permittivity).ndim == 3
+    active_axes = ("x", "y", "z") if is_3d_grid else ("x", "y")
+    requires_metric_operator = active_grid is not None and (
+        active_grid.metric_kind_for(active_axes) != "isotropic_uniform"
+    )
     use_geometry = active_grid is not None and (
-        active_grid.metric_kind_for(("x", "y", "z") if is_3d_grid else ("x", "y"))
-        != "isotropic_uniform"
-        or active_grid.origin != (0.0, 0.0, 0.0)
+        requires_metric_operator or active_grid.origin != (0.0, 0.0, 0.0)
     )
 
     for mon_idx, monitor in enumerate(monitors):
         if not isinstance(monitor, _Monitor):
             raise TypeError(f"Unsupported monitor object {type(monitor).__name__!s}.")
+        if isinstance(monitor, ModeMonitor) and requires_metric_operator:
+            raise NotImplementedError(
+                "ModeMonitor on a rectilinear grid requires a nonuniform mode "
+                "operator; use a FluxMonitor or a uniform grid."
+            )
         is_3d = np.asarray(fields.permittivity).ndim == 3
         if (
             not is_3d

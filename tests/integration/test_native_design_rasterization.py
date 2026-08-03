@@ -303,6 +303,31 @@ def test_rectilinear_monitors_compile_local_line_and_face_weights():
     np.testing.assert_allclose(face_spec.integration_weights, [0.06, 0.24, 0.14, 0.56])
 
 
+def test_rectilinear_mode_monitor_is_rejected_until_mode_solver_is_metric_aware():
+    grid = Grid(
+        [0.0, 0.2, 1.0],
+        [0.0, 0.3, 1.0],
+        [0.0, 0.4, 1.0],
+    )
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(Scene((Material(),)), grid), dimensions=3
+    )
+    monitor = bz.ModeMonitor(
+        center=(0.5, 0.5, 0.4),
+        size=(1.0, 1.0, 0.0),
+        freqs=np.asarray([1.0]),
+    )
+
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        monitors=[monitor],
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    with pytest.raises(NotImplementedError, match="nonuniform mode operator"):
+        simulation.compile()
+
+
 def test_rectilinear_gaussian_source_uses_physical_edges_and_local_frame():
     grid = Grid(
         [2.0, 2.2, 3.0],
