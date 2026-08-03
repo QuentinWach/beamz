@@ -256,6 +256,7 @@ def build_scan(program, *, donate_state: bool = False):
         config=cfg,
         boundary=boundary,
         source_batches=source_batches,
+        metrics=program.metrics,
         resolution=resolution,
         dt=dt,
         dt_scalar=dt_scalar,

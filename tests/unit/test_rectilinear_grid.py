@@ -3,7 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from beamz import LIGHT_SPEED, Grid, RectilinearGrid
+from beamz import LIGHT_SPEED, Grid, GridSpec, RectilinearGrid
+from beamz.design import MaterialGrid
 
 
 def test_grid_alias_and_edge_arrays_are_immutable():
@@ -66,3 +67,29 @@ def test_cfl_uses_minimum_spacing_on_each_active_axis():
     assert grid.cfl_time_step(0.99, active_axes=("x", "y")) == pytest.approx(
         expected_2d
     )
+    assert GridSpec.uniform(123.0).resolve_time_step(grid, dims=2) == pytest.approx(
+        expected_2d
+    )
+
+
+def test_material_grid_realizes_uniform_legacy_inputs_and_validates_explicit_grid():
+    values = np.ones((2, 3))
+    uniform = MaterialGrid(values, values, values, 0.5, values.shape)
+    assert uniform.grid == RectilinearGrid.from_spacing((3, 2, 1), 0.5)
+
+    rectilinear = RectilinearGrid(
+        np.asarray([2.0, 2.25, 3.0, 4.0]),
+        np.asarray([-1.0, -0.5, 1.0]),
+        np.asarray([4.0, 5.0]),
+    )
+    explicit = MaterialGrid(
+        values,
+        values,
+        values,
+        999.0,
+        values.shape,
+        grid=rectilinear,
+    )
+    assert explicit.grid is rectilinear
+    assert explicit.origin == rectilinear.origin
+    assert explicit.resolution == pytest.approx(0.25)

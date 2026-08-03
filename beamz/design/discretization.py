@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 
 from beamz._cache_tokens import cache_token
+from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import readonly_array
 from beamz.lattice import normalize_polarization_2d
 
@@ -45,7 +46,8 @@ class MaterialGrid:
     permeability : array-like
         Relative-permeability samples matching ``permittivity``.
     resolution : float
-        Uniform spatial cell size in metres.
+        Legacy representative cell size in metres. Numerical consumers use
+        ``grid``; for rectilinear grids this is the smallest active-axis spacing.
     shape : tuple of int
         Material array shape. It must follow array storage order, not public
         coordinate order.
@@ -60,6 +62,9 @@ class MaterialGrid:
     polarization : {"tm", "te"}, optional
         Active component family for a two-dimensional solver grid. Three-dimensional
         grids leave this unset.
+    grid : RectilinearGrid, optional
+        Realized physical cell edges. When omitted, a uniform grid is constructed
+        from ``shape``, ``resolution``, and ``origin``.
 
     Notes
     -----
@@ -76,6 +81,7 @@ class MaterialGrid:
     smoothing: str = "volume"
     origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
     polarization: Literal["tm", "te"] | None = None
+    grid: RectilinearGrid | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "permittivity", readonly_array(self.permittivity))
@@ -117,7 +123,33 @@ class MaterialGrid:
         origin = tuple(float(value) for value in self.origin)
         if len(origin) != 3 or not np.all(np.isfinite(origin)):
             raise ValueError("MaterialGrid origin must contain three finite values.")
-        object.__setattr__(self, "origin", origin)
+        grid = self.grid
+        if grid is None:
+            xyz_shape = (
+                (shape[1], shape[0], 1)
+                if len(shape) == 2
+                else (shape[2], shape[1], shape[0])
+            )
+            grid = RectilinearGrid.from_spacing(
+                xyz_shape,
+                resolution,
+                origin=origin,
+            )
+        elif not isinstance(grid, RectilinearGrid):
+            raise TypeError("MaterialGrid grid must be a RectilinearGrid or None.")
+        expected_shape = (
+            (grid.shape[1], grid.shape[0]) if len(shape) == 2 else grid.shape_zyx
+        )
+        if shape != expected_shape or (len(shape) == 2 and grid.shape[2] != 1):
+            raise ValueError(
+                f"MaterialGrid grid has storage shape {expected_shape}, expected {shape}."
+            )
+        object.__setattr__(self, "grid", grid)
+        object.__setattr__(self, "origin", grid.origin)
+        active_spacings = (
+            grid.min_spacings if len(shape) == 3 else grid.min_spacings[:2]
+        )
+        object.__setattr__(self, "resolution", min(active_spacings))
         allowed_yee = {
             "eps_x": "Ex",
             "eps_y": "Ey",
@@ -248,16 +280,8 @@ class MaterialGrid:
             raise ValueError(
                 f"RasterResult omits solver components: {', '.join(sorted(missing))}."
             )
-        spacings = tuple(np.diff(np.asarray(axis, dtype=float)) for axis in edges)
-        resolution = float(spacings[0][0])
-        active_axes = spacings if dimensions == 3 else spacings[:2]
-        if any(
-            not np.allclose(axis, resolution, rtol=1e-12, atol=0.0)
-            for axis in active_axes
-        ):
-            raise ValueError(
-                "BeamZ Simulation requires one uniform spacing on every active axis."
-            )
+        grid = RectilinearGrid(*(np.asarray(axis, dtype=float) for axis in edges))
+        resolution = grid.minimum_spacing
         smoothing = str(getattr(result, "smoothing", "volume"))
         if smoothing == "farjadpour_full":
             raise ValueError(
@@ -343,6 +367,7 @@ class MaterialGrid:
                 float(np.asarray(edges[2])[0]),
             ),
             polarization if dimensions == 2 else None,
+            grid,
         )
 
     def field_arrays(self) -> tuple[npt.ArrayLike, npt.ArrayLike, npt.ArrayLike]:
@@ -350,11 +375,22 @@ class MaterialGrid:
         return self.permittivity, self.conductivity, self.permeability
 
     @property
+    def metric_kind(
+        self,
+    ) -> Literal["isotropic_uniform", "axis_uniform", "rectilinear"]:
+        """Return the derivative specialization required by active solver axes."""
+        assert self.grid is not None
+        active_axes = ("x", "y", "z") if len(self.shape) == 3 else ("x", "y")
+        return self.grid.metric_kind_for(active_axes)
+
+    @property
     def uses_direct_yee_materials(self) -> bool:
         """Return whether propagation must consume the retained Yee arrays."""
 
         if not self.yee_materials:
             return False
+        if self.metric_kind != "isotropic_uniform":
+            return True
         if self.smoothing == "farjadpour_diagonal":
             return True
         for name in ("epsilon", "conductivity"):
@@ -372,12 +408,11 @@ class MaterialGrid:
         """Return values defining material-grid cache identity."""
         return (
             *self.field_arrays(),
-            self.resolution,
+            self.grid,
             self.shape,
             self.yee_materials,
             self.tensors,
             self.smoothing,
-            self.origin,
             self.polarization,
         )
 

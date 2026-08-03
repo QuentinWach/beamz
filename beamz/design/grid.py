@@ -177,9 +177,26 @@ class RectilinearGrid:
     def metric_kind(
         self,
     ) -> Literal["isotropic_uniform", "axis_uniform", "rectilinear"]:
-        if self.is_uniform:
+        return self.metric_kind_for(_AXES)
+
+    def metric_kind_for(
+        self, active_axes: tuple[Axis, ...]
+    ) -> Literal["isotropic_uniform", "axis_uniform", "rectilinear"]:
+        """Classify derivative metrics over the axes active in a solver."""
+        axes = tuple(_axis_name(axis) for axis in active_axes)
+        if not axes:
+            raise ValueError("Metric classification requires at least one active axis.")
+        widths = tuple(self.cell_widths(axis) for axis in axes)
+        reference = float(widths[0][0])
+        if all(
+            _widths_are_equal(values, reference, self.axis_edges(axis))
+            for axis, values in zip(axes, widths, strict=True)
+        ):
             return "isotropic_uniform"
-        if self.is_axis_uniform:
+        if all(
+            _widths_are_equal(values, float(values[0]), self.axis_edges(axis))
+            for axis, values in zip(axes, widths, strict=True)
+        ):
             return "axis_uniform"
         return "rectilinear"
 

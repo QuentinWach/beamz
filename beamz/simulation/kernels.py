@@ -835,6 +835,7 @@ class CompiledStepContext:
     config: RunConfig
     boundary: BoundaryPlan
     source_batches: Any
+    metrics: Any
     resolution: float
     dt: float
     dt_scalar: jnp.ndarray

@@ -107,14 +107,52 @@ def test_simulation_conversion_rejects_nonunit_permeability():
         MaterialGrid.from_raster_result(result)
 
 
-def test_material_grid_rejects_nonuniform_raster_results():
+def test_material_grid_preserves_nonuniform_raster_edges():
     result = rasterize(
         Scene((Material(),)),
         Grid([0.0, 0.2, 1.0], [0.0, 1.0], [0.0, 1.0]),
     )
 
-    with pytest.raises(ValueError, match="uniform spacing"):
-        MaterialGrid.from_raster_result(result)
+    material_grid = MaterialGrid.from_raster_result(result)
+
+    np.testing.assert_array_equal(material_grid.grid.x_edges, [0.0, 0.2, 1.0])
+    assert material_grid.grid.metric_kind == "rectilinear"
+    assert material_grid.resolution == pytest.approx(0.2)
+    assert material_grid.uses_direct_yee_materials
+
+
+def test_compiler_builds_separable_staggered_metrics_for_rectilinear_grid():
+    result = rasterize(
+        Scene((Material(),)),
+        Grid([0.0, 0.2, 1.0], [0.0, 0.5, 1.0], [0.0, 1.0]),
+        options=RasterOptions(components="two_dimensional_tm"),
+    )
+    material_grid = MaterialGrid.from_raster_result(result)
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    program = simulation.compile()
+
+    assert program.config.metric_kind == "rectilinear"
+    np.testing.assert_allclose(program.metrics.e_to_h_x, [5.0, 1.25])
+    np.testing.assert_allclose(program.metrics.h_to_e_x, [5.0, 2.0, 1.25])
+    np.testing.assert_allclose(program.metrics.e_to_h_y, [2.0, 2.0])
+    assert program.metrics.e_to_h_z.size == 0
+
+
+def test_uniform_compiler_keeps_metric_leaves_empty_for_scalar_fast_path():
+    simulation = bz.Simulation(
+        design=design_2d(),
+        resolution=0.25e-6,
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    program = simulation.compile()
+
+    assert program.config.metric_kind == "isotropic_uniform"
+    assert all(value.size == 0 for value in program.metrics)
 
 
 def test_material_grid_infers_two_dimensional_tm_output():
