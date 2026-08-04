@@ -309,7 +309,12 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         spec.grid,
     )
     omega = 2.0 * np.pi * spec.frequency
-    k_num = _numeric_wave_number(omega, spec.dt, spec.resolution, selected["neff"])
+    normal_spacing = (
+        float(spec.grid.cell_widths(spec.axis)[spec.plane_index])
+        if spec.grid is not None
+        else spec.resolution
+    )
+    k_num = _numeric_wave_number(omega, spec.dt, normal_spacing, selected["neff"])
     boundary_neff = _boundary_refractive_index(spec.scalar_permittivity)
     yee_refinement_eligible = (
         spec.axis == "x"

@@ -88,6 +88,7 @@ class ModePlanEntry:
 @dataclass(frozen=True)
 class Mode2DLaunchPlan:
     entries: tuple[ModePlanEntry, ...]
+    normal_spacing: float | None = None
 
 
 @dataclass(frozen=True)
@@ -440,7 +441,12 @@ def _plan_2d_mode_source(
         polarization,
         measure=measure,
     )
-    return Mode2DLaunchPlan(entries=entries)
+    normal_spacing = (
+        float(grid.cell_widths(axis)[center_idx])
+        if grid is not None and grid.metric_kind != "isotropic_uniform"
+        else None
+    )
+    return Mode2DLaunchPlan(entries=entries, normal_spacing=normal_spacing)
 
 
 def _plan_3d_mode_source(

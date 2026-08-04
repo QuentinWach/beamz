@@ -589,13 +589,14 @@ def _mode_launch_injection_plan(
 ) -> CompiledInjectionPlan:
     if isinstance(plan, Mode2DLaunchPlan):
         entries = []
+        normal_spacing = float(plan.normal_spacing or ctx.resolution)
         for entry in plan.entries:
             component = entry.component
             material_scale = MU_0 if component.startswith("H") else EPS_0
             denominator = (
                 material_scale
                 * np.asarray(component_material_at(ctx.fields, component, entry.index))
-                * ctx.resolution
+                * normal_spacing
             )
             target = np.asarray(getattr(ctx.fields, component)[entry.index])
             values = (
