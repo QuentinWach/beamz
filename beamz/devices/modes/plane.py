@@ -8,6 +8,7 @@ from typing import Literal, cast, overload
 
 import numpy as np
 
+from beamz.design.grid import RectilinearGrid
 from beamz.devices._placement import snap_centered_extent
 from beamz.lattice import (
     component_shape_3d,
@@ -86,6 +87,7 @@ def solve_modes(
     mu_xx: np.ndarray | None = None,
     mu_yy: np.ndarray | None = None,
     mu_zz: np.ndarray | None = None,
+    grid_edges: tuple[np.ndarray, ...] | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """Solve a one- or two-dimensional BeamZ material profile."""
     eps_array = np.asarray(eps, dtype=np.complex128)
@@ -110,10 +112,19 @@ def solve_modes(
     # BeamZ stores 3D arrays in (z, y, x) order, so a normal slice retains the
     # reverse of the solver's Cartesian tangential-axis order.
     plane = eps_array[:, None] if not is_plane else eps_array.T
-    edges = tuple(
-        tuple(np.arange(size + 1, dtype=float) * float(dL) / 1e-6)
-        for size in plane.shape
-    )
+    if grid_edges is None:
+        edges = tuple(
+            tuple(np.arange(size + 1, dtype=float) * float(dL) / 1e-6)
+            for size in plane.shape
+        )
+    else:
+        supplied = tuple(np.asarray(values, dtype=float) for values in grid_edges)
+        if len(supplied) != eps_array.ndim:
+            raise ValueError("grid_edges must provide one edge array per profile axis")
+        supplied = supplied if not is_plane else supplied[::-1]
+        if any(values.size != size + 1 for values, size in zip(supplied, plane.shape, strict=True)):
+            raise ValueError("grid_edges lengths must match the permittivity profile")
+        edges = tuple(tuple(values / 1e-6) for values in supplied)
 
     def solver_plane(value):
         if value is None:
@@ -259,6 +270,7 @@ def _local_mode_plane_spec(
     snapped_region=None,
     aperture_pad_cells=2,
     material_origin_zyx=(0, 0, 0),
+    grid=None,
 ):
     """Build a compact local mode plane and metadata to shift it globally."""
     axis = str(axis).lower()
@@ -323,9 +335,27 @@ def _local_mode_plane_spec(
         int(local_counts["y"]),
         int(local_counts["x"]),
     )
+    if grid is None:
+        axis_origins = {
+            name: float(origin[name]) * float(resolution) for name in ("x", "y", "z")
+        }
+        local_grid = None
+    else:
+        axis_origins = {
+            name: float(grid.axis_edges(name)[origin[name]])
+            for name in ("x", "y", "z")
+        }
+        local_grid = RectilinearGrid(
+            *(
+                np.asarray(grid.axis_edges(name))[
+                    origin[name] : origin[name] + local_counts[name] + 1
+                ]
+                - axis_origins[name]
+                for name in ("x", "y", "z")
+            )
+        )
     local_center = tuple(
-        float(centers[name]) - float(origin[name]) * float(resolution)
-        for name in ("x", "y", "z")
+        float(centers[name]) - axis_origins[name] for name in ("x", "y", "z")
     )
     component_shapes = {
         component: component_shape_3d(component, local_grid_shape)
@@ -338,6 +368,8 @@ def _local_mode_plane_spec(
         "center": local_center,
         "plane_index": int(local_plane_index),
         "offset_index": int(local_offset_index),
+        "grid": local_grid,
+        "axis_origins": axis_origins,
         "origin_zyx": (
             int(origin["z"]),
             int(origin["y"]),
@@ -371,6 +403,7 @@ def solve_mode_plane_3d(
     solver_direction=None,
     material_origin_zyx=(0, 0, 0),
     solver=solve_beamz_mode,
+    grid=None,
 ) -> DiscreteMode:
     """Solve one finite 3D mode plane and return globally indexed fields."""
     axis_index = _AXIS_POS_3D[axis]
@@ -389,6 +422,7 @@ def solve_mode_plane_3d(
         snapped_region=snapped_region,
         aperture_pad_cells=mode_plane_outer_pad_cells(width, height, resolution),
         material_origin_zyx=material_origin_zyx,
+        grid=grid,
     )
     target = target_neff
     if target is None:
@@ -443,6 +477,7 @@ def solve_mode_plane_3d(
             num_modes=int(num_modes),
             aperture_pad_cells=MODE_PLANE_APERTURE_PAD_CELLS,
             aperture_window_alpha=MODE_PLANE_APERTURE_WINDOW_ALPHA,
+            grid=local_plane["grid"],
         )
     )
     return _shift_discrete_mode_to_global(
@@ -450,6 +485,7 @@ def solve_mode_plane_3d(
         origin_zyx=local_plane["origin_zyx"],
         axis=axis,
         resolution=resolution,
+        axis_offset=local_plane["axis_origins"][axis],
     )
 
 
@@ -593,14 +629,15 @@ def _shift_3d_index(index, origin_zyx):
 
 
 def _shift_discrete_mode_to_global(
-    discrete_mode: DiscreteMode, *, origin_zyx, axis, resolution
+    discrete_mode: DiscreteMode, *, origin_zyx, axis, resolution, axis_offset=None
 ) -> DiscreteMode:
     """Shift a mode result solved on a local crop back to global indices."""
     component_indices = {
         name: _shift_3d_index(index, origin_zyx)
         for name, index in discrete_mode.component_indices.items()
     }
-    axis_offset = float(origin_zyx[_AXIS_POS_3D[str(axis).lower()]]) * float(resolution)
+    if axis_offset is None:
+        axis_offset = float(origin_zyx[_AXIS_POS_3D[str(axis).lower()]]) * float(resolution)
     return replace(
         discrete_mode,
         component_indices=component_indices,

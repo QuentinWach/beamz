@@ -14,6 +14,7 @@ from typing import Any, Literal, TypedDict, cast
 
 import numpy as np
 
+from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import immutable_snapshot, readonly_array
 
 from ._yee import refine_x_mode_at_fixed_beta, validate_x_mode_refinement
@@ -86,6 +87,7 @@ class ModePlaneSpec:
     diagonal_permeability: Mapping[str, np.ndarray] = field(default_factory=dict)
     # Guarded by joint field, power, energy, and discrete-Maxwell validation.
     yee_refinement: bool = True
+    grid: RectilinearGrid | None = None
 
     def __post_init__(self) -> None:
         eps = readonly_array(self.scalar_permittivity, dtype=np.complex128)
@@ -132,6 +134,13 @@ class ModePlaneSpec:
         if len(grid_shape) != 3 or any(v <= 1 for v in grid_shape):
             raise ValueError("grid_shape must contain three dimensions larger than one")
         object.__setattr__(self, "grid_shape", grid_shape)
+        if self.grid is not None:
+            if not isinstance(self.grid, RectilinearGrid):
+                raise TypeError("grid must be a RectilinearGrid or None")
+            if self.grid.shape_zyx != grid_shape:
+                raise ValueError(
+                    f"grid shape {self.grid.shape_zyx} does not match {grid_shape}"
+                )
 
         for name, value in (
             ("component_permittivity", self.component_permittivity),
@@ -221,9 +230,20 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
     eps_solver = _transpose_between_axes(
         spec.scalar_permittivity, spec.transverse_axes, solver_axes
     )
-    dx_um = spec.resolution / 1e-6
-    x_edges = tuple(float(v) for v in np.arange(eps_solver.shape[0] + 1) * dx_um)
-    y_edges = tuple(float(v) for v in np.arange(eps_solver.shape[1] + 1) * dx_um)
+    if spec.grid is None:
+        dx_um = spec.resolution / 1e-6
+        solver_edges = {
+            axis: np.arange(spec.grid_shape[{"z": 0, "y": 1, "x": 2}[axis]] + 1)
+            * dx_um
+            for axis in spec.transverse_axes
+        }
+    else:
+        solver_edges = {
+            axis: np.asarray(spec.grid.axis_edges(axis), dtype=float) / 1e-6
+            for axis in spec.transverse_axes
+        }
+    x_edges = tuple(float(v) for v in solver_edges[solver_axes[0]])
+    y_edges = tuple(float(v) for v in solver_edges[solver_axes[1]])
     mode_count = (
         spec.num_modes if spec.num_modes is not None else 2 * (spec.mode_index + 1) + 5
     )
@@ -278,6 +298,7 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         _axis_index(indices.get(phase_component), spec.axis),
         spec.axis,
         spec.resolution,
+        spec.grid,
     )
     omega = 2.0 * np.pi * spec.frequency
     k_num = _numeric_wave_number(omega, spec.dt, spec.resolution, selected["neff"])
@@ -286,6 +307,7 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         spec.axis == "x"
         and bool(spec.component_permittivity)
         and float(np.real(selected["neff"])) > boundary_neff
+        and (spec.grid is None or spec.grid.is_uniform)
     )
     yee_refinement_requested = bool(spec.yee_refinement)
     yee_refinement_attempted = yee_refinement_requested and yee_refinement_eligible
@@ -352,12 +374,13 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         profiles,
         indices,
         axis=spec.axis,
-        d_area=spec.resolution * spec.resolution,
+        d_area=_profile_integration_weights(spec, profiles, indices),
         direction_sign=_direction_sign(spec.direction),
         omega=omega,
         k_num=k_num,
         ref_coord=phase_ref_coord,
         resolution=spec.resolution,
+        grid=spec.grid,
     )
     profiles = _runtime_oriented_profiles(
         profiles, spec.axis, _direction_sign(spec.direction)
@@ -403,7 +426,15 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         transverse_axes=spec.transverse_axes,
         phase_reference_component=phase_component,
         phase_reference_coord=float(phase_ref_coord),
-        phase_plane_coord=float((spec.plane_index + 0.5) * spec.resolution),
+        phase_plane_coord=float(
+            _axis_coordinate(
+                "Ey" if spec.axis == "x" else "Ex",
+                spec.plane_index,
+                spec.axis,
+                spec.resolution,
+                spec.grid,
+            )
+        ),
         k_num_axis=float(k_num),
         power_scale=float(power_scale),
         diagnostics=diagnostics,
@@ -533,17 +564,19 @@ def _build_x_profiles(
     spec: ModePlaneSpec,
 ) -> tuple[dict[str, np.ndarray], dict[str, ComponentIndex], dict[str, float]]:
     ex_s = fields["Ex"]
-    ey_s = _stagger_half(fields["Ey"], axis=1)
-    ez_s = _stagger_half(fields["Ez"], axis=0)
-    hx_s = _stagger_both(fields["Hx"])
-    hy_s = _stagger_half(fields["Hy"], axis=0)
-    hz_s = _stagger_half(fields["Hz"], axis=1)
+    ey_s = _stagger_half(fields["Ey"], axis=1, coordinates=_axis_sampling(spec, "y"))
+    ez_s = _stagger_half(fields["Ez"], axis=0, coordinates=_axis_sampling(spec, "z"))
+    hx_s = _stagger_both(fields["Hx"], spec=spec)
+    hy_s = _stagger_half(fields["Hy"], axis=0, coordinates=_axis_sampling(spec, "z"))
+    hz_s = _stagger_half(fields["Hz"], axis=1, coordinates=_axis_sampling(spec, "y"))
     nz, ny, _nx = spec.grid_shape
     y_start, y_end = _padded_bounds(
-        spec.center[1], spec.width, spec.resolution, ny, spec.aperture_pad_cells
+        spec.center[1], spec.width, spec.resolution, ny, spec.aperture_pad_cells,
+        edges=_axis_edges(spec, "y"),
     )
     z_start, z_end = _padded_bounds(
-        spec.center[2], spec.height, spec.resolution, nz, spec.aperture_pad_cells
+        spec.center[2], spec.height, spec.resolution, nz, spec.aperture_pad_cells,
+        edges=_axis_edges(spec, "z"),
     )
     staggered = {"Ex": ex_s, "Ey": ey_s, "Ez": ez_s, "Hx": hx_s, "Hy": hy_s, "Hz": hz_s}
     indices: dict[str, ComponentIndex] = {
@@ -578,7 +611,7 @@ def _build_x_profiles(
     initial_power = _normalize_profiles(
         profiles,
         axis="x",
-        measure=spec.resolution**2,
+        measure=_profile_integration_weights(spec, profiles, indices),
         direction_sign=_direction_sign(spec.direction),
     )
     return profiles, indices, {"initial_power": initial_power}
@@ -588,18 +621,20 @@ def _build_y_profiles(
     fields: dict[str, np.ndarray],
     spec: ModePlaneSpec,
 ) -> tuple[dict[str, np.ndarray], dict[str, ComponentIndex], dict[str, float]]:
-    ex_s = _stagger_half(fields["Ex"], axis=1)
+    ex_s = _stagger_half(fields["Ex"], axis=1, coordinates=_axis_sampling(spec, "x"))
     ey_s = fields["Ey"]
-    ez_s = _stagger_half(fields["Ez"], axis=0)
-    hx_s = _stagger_half(fields["Hx"], axis=0)
-    hy_s = _stagger_both(fields["Hy"])
-    hz_s = _stagger_half(fields["Hz"], axis=1)
+    ez_s = _stagger_half(fields["Ez"], axis=0, coordinates=_axis_sampling(spec, "z"))
+    hx_s = _stagger_half(fields["Hx"], axis=0, coordinates=_axis_sampling(spec, "z"))
+    hy_s = _stagger_both(fields["Hy"], spec=spec)
+    hz_s = _stagger_half(fields["Hz"], axis=1, coordinates=_axis_sampling(spec, "x"))
     nz, _ny, nx = spec.grid_shape
     x_start, x_end = _padded_bounds(
-        spec.center[0], spec.width, spec.resolution, nx, spec.aperture_pad_cells
+        spec.center[0], spec.width, spec.resolution, nx, spec.aperture_pad_cells,
+        edges=_axis_edges(spec, "x"),
     )
     z_start, z_end = _padded_bounds(
-        spec.center[2], spec.height, spec.resolution, nz, spec.aperture_pad_cells
+        spec.center[2], spec.height, spec.resolution, nz, spec.aperture_pad_cells,
+        edges=_axis_edges(spec, "z"),
     )
     staggered = {"Ex": ex_s, "Ey": ey_s, "Ez": ez_s, "Hx": hx_s, "Hy": hy_s, "Hz": hz_s}
     indices: dict[str, ComponentIndex] = {
@@ -638,7 +673,7 @@ def _build_y_profiles(
     initial_power = _normalize_profiles(
         profiles,
         axis="y",
-        measure=spec.resolution**2,
+        measure=_profile_integration_weights(spec, profiles, indices),
         direction_sign=_direction_sign(spec.direction),
     )
     return profiles, indices, {"initial_power": initial_power}
@@ -648,18 +683,20 @@ def _build_z_profiles(
     fields: dict[str, np.ndarray],
     spec: ModePlaneSpec,
 ) -> tuple[dict[str, np.ndarray], dict[str, ComponentIndex], dict[str, float]]:
-    ex_s = _stagger_half(fields["Ex"], axis=1)
-    ey_s = _stagger_half(fields["Ey"], axis=0)
+    ex_s = _stagger_half(fields["Ex"], axis=1, coordinates=_axis_sampling(spec, "x"))
+    ey_s = _stagger_half(fields["Ey"], axis=0, coordinates=_axis_sampling(spec, "y"))
     ez_s = fields["Ez"]
-    hx_s = _stagger_half(fields["Hx"], axis=0)
-    hy_s = _stagger_half(fields["Hy"], axis=1)
-    hz_s = _stagger_both(fields["Hz"])
+    hx_s = _stagger_half(fields["Hx"], axis=0, coordinates=_axis_sampling(spec, "y"))
+    hy_s = _stagger_half(fields["Hy"], axis=1, coordinates=_axis_sampling(spec, "x"))
+    hz_s = _stagger_both(fields["Hz"], spec=spec)
     nz, ny, nx = spec.grid_shape
     x_start, x_end = _padded_bounds(
-        spec.center[0], spec.width, spec.resolution, nx, spec.aperture_pad_cells
+        spec.center[0], spec.width, spec.resolution, nx, spec.aperture_pad_cells,
+        edges=_axis_edges(spec, "x"),
     )
     y_start, y_end = _padded_bounds(
-        spec.center[1], spec.height, spec.resolution, ny, spec.aperture_pad_cells
+        spec.center[1], spec.height, spec.resolution, ny, spec.aperture_pad_cells,
+        edges=_axis_edges(spec, "y"),
     )
     e_z_idx = int(np.clip(spec.plane_index, 0, nz - 1))
     h_z_idx = int(np.clip(spec.offset_index, 0, max(nz - 2, 0)))
@@ -698,7 +735,7 @@ def _build_z_profiles(
     initial_power = _normalize_profiles(
         profiles,
         axis="z",
-        measure=spec.resolution**2,
+        measure=_profile_integration_weights(spec, profiles, indices),
         direction_sign=_direction_sign(spec.direction),
     )
     return profiles, indices, {"initial_power": initial_power}
@@ -722,20 +759,50 @@ def _solver_axes_for_axis(axis: AxisName) -> tuple[AxisName, AxisName]:
     )
 
 
-def _stagger_half(field: np.ndarray, axis: int) -> np.ndarray:
+def _axis_edges(spec: ModePlaneSpec, axis: AxisName) -> np.ndarray:
+    count = spec.grid_shape[{"z": 0, "y": 1, "x": 2}[axis]]
+    if spec.grid is None:
+        return np.arange(count + 1, dtype=float) * float(spec.resolution)
+    return np.asarray(spec.grid.axis_edges(axis), dtype=float)
+
+
+def _axis_sampling(spec: ModePlaneSpec, axis: AxisName) -> tuple[np.ndarray, np.ndarray]:
+    edges = _axis_edges(spec, axis)
+    return 0.5 * (edges[:-1] + edges[1:]), edges[1:-1]
+
+
+def _stagger_half(
+    field: np.ndarray,
+    axis: int,
+    coordinates: tuple[np.ndarray, np.ndarray] | None = None,
+) -> np.ndarray:
     if field.shape[axis] <= 1:
         return field
-    if axis == 0:
-        return 0.5 * (field[:-1, :] + field[1:, :])
-    return 0.5 * (field[:, :-1] + field[:, 1:])
+    low = np.take(field, np.arange(field.shape[axis] - 1), axis=axis)
+    high = np.take(field, np.arange(1, field.shape[axis]), axis=axis)
+    if coordinates is None:
+        alpha = np.full(field.shape[axis] - 1, 0.5, dtype=float)
+    else:
+        source, target = coordinates
+        source = np.asarray(source, dtype=float)[: field.shape[axis]]
+        target = np.asarray(target, dtype=float)[: field.shape[axis] - 1]
+        alpha = (target - source[:-1]) / np.maximum(
+            source[1:] - source[:-1], np.finfo(float).tiny
+        )
+    shape = [1] * field.ndim
+    shape[axis] = alpha.size
+    weights = alpha.reshape(shape)
+    return (1.0 - weights) * low + weights * high
 
 
-def _stagger_both(field: np.ndarray) -> np.ndarray:
+def _stagger_both(field: np.ndarray, *, spec: ModePlaneSpec | None = None) -> np.ndarray:
     out = field
+    sampling1 = None if spec is None else _axis_sampling(spec, spec.transverse_axes[1])
+    sampling0 = None if spec is None else _axis_sampling(spec, spec.transverse_axes[0])
     if out.shape[1] > 1:
-        out = 0.5 * (out[:, :-1] + out[:, 1:])
+        out = _stagger_half(out, 1, sampling1)
     if out.shape[0] > 1:
-        out = 0.5 * (out[:-1, :] + out[1:, :])
+        out = _stagger_half(out, 0, sampling0)
     return out
 
 
@@ -745,7 +812,22 @@ def _padded_bounds(
     resolution: float,
     limit: int,
     pad_cells: int,
+    *,
+    edges: np.ndarray | None = None,
 ) -> tuple[int, int]:
+    if edges is not None:
+        edge_array = np.asarray(edges, dtype=float)
+        lower = float(center_value) - 0.5 * float(extent)
+        upper = float(center_value) + 0.5 * float(extent)
+        start = int(np.searchsorted(edge_array, lower, side="right") - 1)
+        stop = int(np.searchsorted(edge_array, upper, side="left"))
+        start = max(0, start - max(0, int(pad_cells)))
+        stop = min(int(limit), stop + max(0, int(pad_cells)))
+        if stop - start < 2:
+            center_idx = int(np.argmin(np.abs(0.5 * (edge_array[:-1] + edge_array[1:]) - center_value)))
+            start = max(0, center_idx - 1)
+            stop = min(int(limit), start + 2)
+        return start, stop
     padded = float(extent) + 2.0 * max(0, int(pad_cells)) * float(resolution)
     center_idx = round(float(center_value) / float(resolution))
     half = max(1, round(0.5 * padded / float(resolution)))
@@ -808,6 +890,53 @@ def _crop_window_all(
     return profiles
 
 
+def _component_axis_measure(
+    spec: ModePlaneSpec,
+    component: str,
+    axis: AxisName,
+    selector: slice | int,
+) -> np.ndarray:
+    widths = np.diff(_axis_edges(spec, axis))
+    if _YEE_OFFSETS_3D[component][axis] == 0.5:
+        values = widths
+    else:
+        values = np.empty(widths.size + 1, dtype=float)
+        values[0], values[-1] = 0.5 * widths[0], 0.5 * widths[-1]
+        if widths.size > 1:
+            values[1:-1] = 0.5 * (widths[:-1] + widths[1:])
+    if isinstance(selector, slice):
+        return np.asarray(values[selector], dtype=float)
+    return np.asarray([values[int(selector)]], dtype=float)
+
+
+def _profile_integration_weights(
+    spec: ModePlaneSpec,
+    profiles: Mapping[str, np.ndarray],
+    indices: Mapping[str, ComponentIndex],
+) -> dict[str, np.ndarray]:
+    """Return component-staggered transverse area weights for modal flux."""
+    weights = {}
+    row_axis, col_axis = {
+        "x": ("z", "y"),
+        "y": ("z", "x"),
+        "z": ("y", "x"),
+    }[spec.axis]
+    axis_pos = {"z": 0, "y": 1, "x": 2}
+    for component in _COMPONENTS:
+        if component not in profiles or component not in indices:
+            continue
+        index = indices[component]
+        row = _component_axis_measure(
+            spec, component, row_axis, index[axis_pos[row_axis]]
+        )
+        col = _component_axis_measure(
+            spec, component, col_axis, index[axis_pos[col_axis]]
+        )
+        shape = np.atleast_2d(np.asarray(profiles[component])).shape
+        weights[component] = row[: shape[0], None] * col[None, : shape[1]]
+    return weights
+
+
 def _tukey2d(shape: tuple[int, int], alpha: float) -> np.ndarray:
     rows, cols = shape
     return _tukey(rows, alpha)[:, None] * _tukey(cols, alpha)[None, :]
@@ -830,12 +959,13 @@ def _normalize_profiles_by_phase_referenced_flux(
     indices: dict[str, ComponentIndex],
     *,
     axis: AxisName,
-    d_area: float,
+    d_area,
     direction_sign: float,
     omega: float,
     k_num: float,
     ref_coord: float,
     resolution: float,
+    grid=None,
 ) -> tuple[dict[str, np.ndarray], float, float]:
     referenced = _phase_reference_profiles(
         profiles,
@@ -845,6 +975,7 @@ def _normalize_profiles_by_phase_referenced_flux(
         k_num=k_num,
         ref_coord=ref_coord,
         resolution=resolution,
+        grid=grid,
     )
     flux = _modal_power(
         referenced,
@@ -874,11 +1005,12 @@ def _phase_reference_profiles(
     k_num: float,
     ref_coord: float,
     resolution: float,
+    grid=None,
 ) -> dict[str, np.ndarray]:
     out = {}
     for component, value in profiles.items():
         axis_idx = _axis_index(indices.get(component), axis)
-        coord = _axis_coordinate(component, axis_idx, axis, resolution)
+        coord = _axis_coordinate(component, axis_idx, axis, resolution, grid)
         delay = _phase_delay(omega, k_num, coord - ref_coord)
         out[component] = np.asarray(value, dtype=np.complex128) * np.exp(
             -1j * omega * delay

@@ -36,10 +36,18 @@ def _axis_coordinate(
     index: int | None,
     axis: str,
     resolution: float,
+    grid=None,
 ) -> float:
     if index is None:
         return 0.0
     offset = 1.0 if component in _STAGGERED_ALONG_AXIS[axis] else 0.5
+    if grid is not None:
+        coordinates = (
+            np.asarray(grid.axis_edges(axis), dtype=float)
+            if offset == 1.0
+            else np.asarray(grid.centers(axis), dtype=float)
+        )
+        return float(coordinates[int(np.clip(index, 0, coordinates.size - 1))])
     return (int(index) + offset) * float(resolution)
 
 
@@ -69,40 +77,56 @@ def _modal_overlap(
     fields: Mapping[str, np.ndarray],
     mode: Mapping[str, np.ndarray],
     axis: str,
-    measure: float,
+    measure,
     direction_sign: float = 1.0,
 ) -> np.complex128:
     names = _TANGENTIAL_COMPONENTS[axis]
-    sizes = [
-        np.asarray(profiles[name]).size
-        for name in names
-        for profiles in (fields, mode)
-        if name in profiles and np.asarray(profiles[name]).size
-    ]
-    if not sizes:
-        return np.complex128(0.0)
-    size = min(sizes)
+    def paired_term(e_name, h_name, sign):
+        entries = tuple(
+            (profiles, name)
+            for profiles, name in (
+            (fields, e_name),
+            (mode, h_name),
+            (mode, e_name),
+            (fields, h_name),
+            )
+        )
+        present = [
+            np.asarray(profiles[name], dtype=np.complex128).reshape(-1)
+            for profiles, name in entries
+            if name in profiles and np.asarray(profiles[name]).size
+        ]
+        if not present:
+            return np.complex128(0.0)
+        size = min(array.size for array in present)
+        if size <= 0:
+            return np.complex128(0.0)
+        arrays = [
+            np.asarray(profiles[name], dtype=np.complex128).reshape(-1)[:size]
+            if name in profiles
+            else np.zeros(size, dtype=np.complex128)
+            for profiles, name in entries
+        ]
+        ef, hm, em, hf = (array[:size] for array in arrays)
+        if isinstance(measure, Mapping):
+            weights = np.asarray(measure[e_name], dtype=float).reshape(-1)[:size]
+        else:
+            raw = np.asarray(measure, dtype=float)
+            weights = raw if raw.ndim == 0 else raw.reshape(-1)[:size]
+        return np.complex128(
+            np.sum(weights * sign * (ef * np.conjugate(hm) + np.conjugate(em) * hf))
+        )
 
-    def component(profiles, name):
-        if name not in profiles:
-            return np.zeros(size, dtype=np.complex128)
-        return np.asarray(profiles[name], dtype=np.complex128).reshape(-1)[:size]
-
-    ef1, ef2, hf1, hf2 = (component(fields, name) for name in names)
-    em1, em2, hm1, hm2 = (component(mode, name) for name in names)
-    overlap = 0.25 * np.sum(
-        ef1 * np.conjugate(hm1)
-        - ef2 * np.conjugate(hm2)
-        + np.conjugate(em1) * hf1
-        - np.conjugate(em2) * hf2
+    overlap = paired_term(names[0], names[2], 1.0) + paired_term(
+        names[1], names[3], -1.0
     )
-    return np.complex128(float(direction_sign) * float(measure) * overlap)
+    return np.complex128(0.25 * float(direction_sign) * overlap)
 
 
 def _modal_power(
     profiles: Mapping[str, np.ndarray],
     axis: str,
-    measure: float,
+    measure,
     direction_sign: float = 1.0,
 ) -> float:
     return float(
@@ -113,7 +137,7 @@ def _modal_power(
 def _normalize_profiles(
     profiles: dict[str, np.ndarray],
     axis: str,
-    measure: float,
+    measure,
     direction_sign: float = 1.0,
     *,
     max_scale: float | None = None,
