@@ -108,6 +108,17 @@ def test_grid_spec_auto_is_nonuniform_and_uniform_is_explicit():
         bz.GridSpec().realize(design)
 
 
+def test_uniform_realization_preserves_requested_isotropic_spacing():
+    design = bz.Design(width=1.0, height=0.8)
+
+    grid = bz.GridSpec.uniform(0.3).realize(design)
+
+    assert grid.extent == pytest.approx((1.2, 0.9, 1.0))
+    assert grid.metric_kind_for(("x", "y")) == "isotropic_uniform"
+    np.testing.assert_allclose(grid.cell_widths("x"), 0.3)
+    np.testing.assert_allclose(grid.cell_widths("y"), 0.3)
+
+
 def test_explicit_resolution_takes_precedence_over_automatic_fields():
     design = bz.Design(width=2.0, height=1.0)
     spec = bz.GridSpec(resolution=0.2, wavelength=1.55)

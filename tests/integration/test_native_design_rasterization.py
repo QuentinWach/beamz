@@ -195,6 +195,24 @@ def test_design_rasterize_accepts_realized_rectilinear_grid():
     assert material_grid.uses_direct_yee_materials
 
 
+def test_uniform_grid_spec_preview_matches_simulation_and_rasterization():
+    design = bz.Design(width=1.0e-6, height=0.8e-6)
+    spec = bz.GridSpec.uniform(0.3e-6)
+    preview = spec.realize(design)
+
+    simulation = bz.Simulation(
+        design=design,
+        grid_spec=spec,
+        time=np.asarray([0.0, 1e-16]),
+    )
+    direct = design.rasterize(preview)
+
+    assert preview == simulation.grid
+    assert preview == simulation._material_grid().grid
+    assert preview == direct.grid
+    assert preview.extent == pytest.approx((1.2e-6, 0.9e-6, 1.0))
+
+
 def test_automatic_grid_subpixel_ring_recovers_analytic_material_area():
     n_clad, n_core = 1.44, 2.0
     inner_radius, outer_radius = 0.75e-6, 1.05e-6

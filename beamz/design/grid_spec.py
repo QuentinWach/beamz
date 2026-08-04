@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -249,21 +250,7 @@ class GridSpec:
             if self.wavelength is None:
                 raise ValueError("GridSpec.auto requires wavelength.")
             return _realize_graded_grid(design, self)
-        resolution = (
-            self._target_spacing()
-            if self.resolution is not None
-            else self._target_spacing(max_index=_maximum_design_index(design))
-        )
-        extents = _design_extents(design)
-        shape = tuple(
-            1
-            if axis == 2 and float(design.depth) == 0.0
-            else max(1, int(np.ceil(value / resolution)))
-            for axis, value in enumerate(extents)
-        )
-        return RectilinearGrid.uniform(
-            (0.0, 0.0, 0.0), extents, cast(tuple[int, int, int], shape)
-        )
+        return _realize_uniform_grid(design, self._target_spacing())
 
     def resolve_time_step(
         self, resolution: float | RectilinearGrid, *, dims: int
@@ -306,19 +293,36 @@ def _material_index(material: Any) -> float:
     return float(np.sqrt(max(value, 1.0)))
 
 
-def _maximum_design_index(design: Any) -> float:
-    materials = [design.background]
-    materials.extend(
-        structure.material
-        for structure in getattr(design, "structures", ())
-        if getattr(structure, "material", None) is not None
-    )
-    return max(_material_index(material) for material in materials)
-
-
 def _design_extents(design: Any) -> tuple[float, float, float]:
     depth = float(design.depth)
     return float(design.width), float(design.height), depth if depth > 0.0 else 1.0
+
+
+def _realize_uniform_grid(design: Any, resolution: float) -> RectilinearGrid:
+    """Cover a design with the exact isotropic spacing used by scalar rasterization."""
+    spacing = float(resolution)
+    if not np.isfinite(spacing) or spacing <= 0.0:
+        raise ValueError("Uniform grid resolution must be positive and finite.")
+
+    def count(extent: float) -> int:
+        ratio = float(extent) / spacing
+        tolerance = 16.0 * np.finfo(float).eps * max(1.0, abs(ratio))
+        return max(1, math.ceil(ratio - tolerance))
+
+    extents = _design_extents(design)
+    nx, ny = count(extents[0]), count(extents[1])
+    if float(design.depth) > 0.0:
+        nz = count(extents[2])
+        return RectilinearGrid.uniform(
+            (0.0, 0.0, 0.0),
+            (nx * spacing, ny * spacing, nz * spacing),
+            (nx, ny, nz),
+        )
+    return RectilinearGrid.uniform(
+        (0.0, 0.0, 0.0),
+        (nx * spacing, ny * spacing, 1.0),
+        (nx, ny, 1),
+    )
 
 
 def _design_coordinate_offset(design: Any) -> AxisValues:

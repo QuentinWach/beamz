@@ -69,18 +69,22 @@ def _rasterize_design(
             raise ValueError("A 2D design requires exactly one z cell.")
         if not np.allclose(native_grid.origin, (0.0, 0.0, 0.0), rtol=0.0, atol=0.0):
             raise ValueError("Design raster grids must start at the design origin.")
-        expected_extent = (
+        design_extent = (
             (float(design.width), float(design.height), float(design.depth))
             if dimensions == 3
             else (float(design.width), float(design.height), native_grid.extent[2])
         )
-        if not np.allclose(
-            native_grid.extent,
-            expected_extent,
-            rtol=64.0 * np.finfo(float).eps,
-            atol=0.0,
+        for axis, (actual, required) in enumerate(
+            zip(native_grid.extent, design_extent, strict=True)
         ):
-            raise ValueError("Design raster-grid extents must match the design domain.")
+            tolerance = 64.0 * np.finfo(float).eps * max(1.0, abs(required))
+            padding = actual - required
+            maximum_padding = float(np.max(native_grid.cell_widths(axis)))
+            if padding < -tolerance or padding >= maximum_padding + tolerance:
+                raise ValueError(
+                    "Design raster grids must cover the design with less than one "
+                    "terminal cell of padding per active axis."
+                )
         representative_resolution = min(native_grid.min_spacings[:dimensions])
         if dimensions == 3:
             scene = from_beamz(design, padded_size=native_grid.extent)

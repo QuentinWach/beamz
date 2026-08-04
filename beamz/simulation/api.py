@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -22,7 +21,7 @@ from beamz.const import µm
 from beamz.design.core import Design
 from beamz.design.discretization import MaterialGrid, build_material_grid
 from beamz.design.grid import RectilinearGrid
-from beamz.design.grid_spec import GridSpec
+from beamz.design.grid_spec import GridSpec, _realize_uniform_grid
 from beamz.design.materials import Material, MaterialProtocol
 from beamz.design.structures import Box
 from beamz.devices.boundaries import normalize_boundaries
@@ -157,28 +156,6 @@ def _resolve_grid_resolution(grid_spec, background, structures) -> float:
     return positive_float(resolution, name="Simulation resolution")
 
 
-def _uniform_grid_for_design(design, resolution: float) -> RectilinearGrid:
-    """Return the exact grid produced by legacy scalar rasterization."""
-    spacing = positive_float(resolution, name="Simulation resolution")
-
-    def count(extent: float) -> int:
-        ratio = float(extent) / spacing
-        tolerance = 16.0 * np.finfo(float).eps * max(1.0, abs(ratio))
-        return max(1, math.ceil(ratio - tolerance))
-
-    nx, ny = count(design.width), count(design.height)
-    if _design_is_3d(design):
-        nz = count(design.depth)
-        return RectilinearGrid.uniform(
-            (0.0, 0.0, 0.0),
-            (nx * spacing, ny * spacing, nz * spacing),
-            (nx, ny, nz),
-        )
-    return RectilinearGrid.uniform(
-        (0.0, 0.0, 0.0), (nx * spacing, ny * spacing, 1.0), (nx, ny, 1)
-    )
-
-
 def _devices_require_uniform_grid(sources, monitors) -> bool:
     """Return whether current device operators require isotropic spacing."""
     return any(
@@ -233,7 +210,11 @@ def _resolve_design_time_and_grid(
             resolution = _resolve_grid_resolution(
                 grid_spec, design.background, list(design.structures)
             )
-        grid = _uniform_grid_for_design(design, resolution)
+        grid = (
+            grid_spec.realize(design)
+            if grid_spec is not None and not grid_spec.is_automatic
+            else _realize_uniform_grid(design, resolution)
+        )
     dims = 3 if _design_is_3d(design) else 2
     time = _time_from_run_time(time, run_time, grid_spec, grid, dims)
     return resolution, grid, time, use_realized_grid
