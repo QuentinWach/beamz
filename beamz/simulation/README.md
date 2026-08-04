@@ -24,6 +24,7 @@ buffers, or an executable cache.
 The supported `beamz.simulation` surface is intentionally small:
 
 - `Simulation`, `SimulationState`, `SimulationRun`, `SimulationResults`, `MonitorResults`
+- `AutoTermination`, `RunTermination`
 - `GridSpec`, `GaussianPulse`, `ModeSpec`
 - `Absorber`, `PML`, `PEC`, `Port`
 
@@ -35,13 +36,20 @@ than forming a second public solver API.
 
 | Method | Intended use | Return value | Input-state ownership |
 | --- | --- | --- | --- |
-| `run()` | Normal complete simulation | `SimulationResults` | State is internal and safely donated |
+| `run()` | Normal complete or convergence-bounded simulation | `SimulationResults` | State is internal and safely donated |
 | `advance()` | Chunking, continuation, checkpointing, or branching | `SimulationRun(results, state)` | Preserved by default; donation is explicit |
 | `step()` | Single-timestep debugging and numerical verification | `SimulationState` | Preserved by default; donation is explicit |
 
 All three methods use the same lazily compiled JAX engine. `compile()` is optional
 and intended for advanced inspection or prewarming; there is no separate
 "uncompiled" execution path.
+
+Pass `AutoTermination` to `run(termination=...)` when the configured time grid
+should be a maximum rather than a mandatory duration. Execution reuses a fixed
+chunk program, waits for all sources to become inactive, and then requires the
+configured energy and frequency-monitor residuals to pass for consecutive checks.
+`SimulationResults.termination` contains the executed step count, stop reason,
+and final diagnostics. It remains `None` for an ordinary full-grid run.
 
 ## Ownership
 

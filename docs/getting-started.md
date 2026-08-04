@@ -91,6 +91,31 @@ assert np.isfinite(ez_frames).all()
 returns detached, immutable `SimulationResults`. Compilation happens lazily, so
 there is no separate compilation step for ordinary use.
 
+The time grid can instead act as a hard upper bound while the solver checks for
+convergence in reusable chunks:
+
+```python
+termination = bz.AutoTermination(
+    field_decay=1e-5,
+    monitor_change=None,
+    source_decay=1e-6,
+    chunk_steps=simulation.num_steps if docs_test_mode else 256,
+    min_steps=0,
+    consecutive_checks=3,
+)
+bounded_results = simulation.run(termination=termination)
+report = bounded_results.termination
+assert report.reason in {"converged", "time_limit", "nonfinite", "diverged"}
+```
+
+`field_decay` compares integrated electromagnetic energy with the peak energy
+observed at chunk boundaries. Set `monitor_change` to a relative tolerance to
+also require consecutive stabilization of frequency-domain monitors; use
+`monitor_names=("output",)` to select specific monitors. Convergence checks do
+not begin until every source is below `source_decay` and `min_steps` has elapsed.
+The report records the stop reason, executed steps, final residuals, energy, and
+maximum field. A full-grid run leaves `results.termination` as `None`.
+
 Use `advance()` only when you need the runtime state for chunking, checkpointing,
 or branching:
 
