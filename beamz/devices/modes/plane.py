@@ -122,6 +122,8 @@ def solve_modes(
         if len(supplied) != eps_array.ndim:
             raise ValueError("grid_edges must provide one edge array per profile axis")
         supplied = supplied if not is_plane else supplied[::-1]
+        if not is_plane:
+            supplied = (*supplied, np.asarray([0.0, float(dL)]))
         if any(values.size != size + 1 for values, size in zip(supplied, plane.shape, strict=True)):
             raise ValueError("grid_edges lengths must match the permittivity profile")
         edges = tuple(tuple(values / 1e-6) for values in supplied)

@@ -39,7 +39,6 @@ from beamz.devices.monitors.monitors import (
 from beamz.devices.sources import (
     CANONICAL_SOURCE_TYPES,
     GaussianBeamSource,
-    ModeSource,
 )
 from beamz.lattice import (
     grid_vector_to_physical_2d,
@@ -167,9 +166,8 @@ def _resolve_grid_resolution(grid_spec, background, structures) -> float:
 
 def _devices_require_uniform_grid(sources, monitors) -> bool:
     """Return whether current device operators require isotropic spacing."""
-    return any(
-        isinstance(source, (GaussianBeamSource, ModeSource)) for source in sources or ()
-    ) or any(isinstance(monitor, ModeMonitor) for monitor in monitors or ())
+    del monitors
+    return any(isinstance(source, GaussianBeamSource) for source in sources or ())
 
 
 def _normalize_plane_2d(plane) -> str:

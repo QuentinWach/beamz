@@ -141,6 +141,14 @@ class ModePlaneSpec:
                 raise ValueError(
                     f"grid shape {self.grid.shape_zyx} does not match {grid_shape}"
                 )
+            expected_profile_shape = tuple(
+                self.grid.shape[{"x": 0, "y": 1, "z": 2}[name]]
+                for name in transverse_axes
+            )
+            if eps.shape != expected_profile_shape:
+                raise ValueError(
+                    "scalar_permittivity shape must match the grid's transverse cells"
+                )
 
         for name, value in (
             ("component_permittivity", self.component_permittivity),

@@ -10,6 +10,7 @@ from scipy import linalg as scipy_linalg
 from scipy import sparse
 from scipy.sparse import linalg as spla
 
+from beamz.design.grid import RectilinearGrid
 from beamz.devices.modes import _scipy, _yee
 from beamz.devices.modes import discrete as discrete_module
 from beamz.devices.modes import plane as plane_module
@@ -78,6 +79,52 @@ def _component_materials(profiles):
     }
     indices = {name: (slice(None), slice(None)) for name in profiles}
     return electric, magnetic, indices
+
+
+def test_discrete_mode_solver_receives_exact_rectilinear_transverse_edges(monkeypatch):
+    grid = RectilinearGrid(
+        [0.0, 0.1e-6, 0.3e-6, 0.6e-6, 1.0e-6, 1.5e-6],
+        [0.0, 0.2e-6, 0.5e-6, 0.9e-6],
+        [0.0, 0.15e-6, 0.4e-6, 0.8e-6],
+    )
+    captured = {}
+    fields = {
+        name: np.ones((3, 3), dtype=np.complex128)
+        for name in discrete_module._COMPONENTS
+    }
+    profiles = _component_profiles()
+    indices = {
+        name: (slice(0, values.shape[0]), slice(0, values.shape[1]), 1)
+        for name, values in profiles.items()
+    }
+
+    def fake_solve_grid(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(solver_info={})
+
+    monkeypatch.setattr(discrete_module, "solve_grid", fake_solve_grid)
+    monkeypatch.setattr(
+        discrete_module,
+        "_candidate_modes",
+        lambda *_args: [{"neff": 2.0 + 0.0j, "fields": fields}],
+    )
+    monkeypatch.setattr(
+        discrete_module,
+        "_build_profiles",
+        lambda *_args: (profiles, indices, {"initial_power": 1.0}),
+    )
+
+    discrete_module.solve_beamz_mode(
+        _mode_plane_spec(
+            scalar_permittivity=np.ones((3, 3)),
+            grid_shape=grid.shape_zyx,
+            grid=grid,
+            yee_refinement=False,
+        )
+    )
+
+    np.testing.assert_allclose(captured["x_edges"], grid.y_edges / 1e-6)
+    np.testing.assert_allclose(captured["y_edges"], grid.z_edges / 1e-6)
 
 
 @pytest.mark.parametrize(

@@ -311,7 +311,7 @@ def test_automatic_grid_simulation_copy_and_result_metadata_keep_exact_grid():
     assert results.metadata.grid == copied.grid
 
 
-def test_automatic_grid_uses_compatible_uniform_mesh_for_mode_devices():
+def test_automatic_grid_keeps_rectilinear_mesh_for_mode_devices():
     monitor = bz.ModeMonitor(
         center=(0.5e-6, 0.5e-6, 0.0),
         size=(0.0, 0.5e-6, 1.0),
@@ -327,7 +327,7 @@ def test_automatic_grid_uses_compatible_uniform_mesh_for_mode_devices():
         monitors=[monitor],
     )
 
-    assert simulation.grid.metric_kind_for(("x", "y")) == "isotropic_uniform"
+    assert simulation.grid.metric_kind_for(("x", "y")) == "rectilinear"
     assert simulation._material_grid().grid == simulation.grid
     simulation.compile()
 
@@ -546,7 +546,7 @@ def test_centered_design_monitor_uses_normalized_grid_once():
     assert program.monitors[0].dft_point_count == 16
 
 
-def test_rectilinear_mode_monitor_is_rejected_until_mode_solver_is_metric_aware():
+def test_rectilinear_mode_monitor_compiles_with_exact_integration_weights():
     grid = Grid(
         [0.0, 0.2, 1.0],
         [0.0, 0.3, 1.0],
@@ -567,8 +567,61 @@ def test_rectilinear_mode_monitor_is_rejected_until_mode_solver_is_metric_aware(
         time=np.asarray([0.0, 1e-16]),
     )
 
-    with pytest.raises(NotImplementedError, match="nonuniform mode operator"):
-        simulation.compile()
+    program = simulation.compile()
+
+    assert program.config.metric_kind == "rectilinear"
+    expected = np.outer(grid.cell_widths("y"), grid.cell_widths("x")).reshape(-1)
+    np.testing.assert_allclose(program.monitors[0].integration_weights, expected)
+
+
+def test_rectilinear_2d_mode_source_and_monitor_compile_on_auto_grid():
+    wavelength = 1.55 * bz.um
+    frequency = bz.LIGHT_SPEED / wavelength
+    design = bz.Design(
+        width=2.0 * bz.um,
+        height=1.5 * bz.um,
+        material=bz.Material(permittivity=1.0),
+    ).with_structure(
+        bz.Rectangle(
+            position=(0.0, 0.55 * bz.um),
+            width=2.0 * bz.um,
+            height=0.4 * bz.um,
+            material=bz.Material(permittivity=4.0),
+        )
+    )
+    mode_spec = bz.ModeSpec(polarization="tm", target_neff=1.8)
+    source = bz.ModeSource(
+        center=(0.4 * bz.um, 0.75 * bz.um, 0.0),
+        size=(0.0, 1.2 * bz.um, 1.0),
+        source_time=bz.GaussianPulse(freq0=frequency, fwidth=0.1 * frequency),
+        direction="+",
+        mode_spec=mode_spec,
+    )
+    monitor = bz.ModeMonitor(
+        center=(1.4 * bz.um, 0.75 * bz.um, 0.0),
+        size=(0.0, 1.2 * bz.um, 1.0),
+        freqs=[frequency],
+        mode_spec=mode_spec,
+        name="mode",
+    )
+    simulation = bz.Simulation(
+        design=design,
+        grid_spec=bz.GridSpec.auto(
+            wavelength=wavelength,
+            min_steps_per_wvl=8,
+            max_scale=1.2,
+        ),
+        run_time=1e-15,
+        sources=[source],
+        monitors=[monitor],
+    )
+
+    program = simulation.compile()
+
+    assert simulation.grid.metric_kind_for(("x", "y")) == "rectilinear"
+    assert program.config.metric_kind == "rectilinear"
+    assert {spec.component for spec in program.sources} == {"Ez", "Hy"}
+    assert np.asarray(program.monitors[0].integration_weights).size > 1
 
 
 @pytest.mark.parametrize(

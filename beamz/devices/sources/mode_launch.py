@@ -390,7 +390,11 @@ def _plan_2d_mode_source(
         raise ValueError("A mode source launch needs a companion Yee plane.")
     offset_idx = int(snapped.companion_index)
     material_grid = getattr(fields, "material_grid", None)
-    if material_grid is not None and material_grid.uses_direct_yee_materials:
+    if (
+        material_grid is not None
+        and material_grid.uses_direct_yee_materials
+        and (grid is None or grid.metric_kind == "isotropic_uniform")
+    ):
         component = (
             "eps_z" if polarization == "tm" else ("eps_y" if axis == "x" else "eps_x")
         )
