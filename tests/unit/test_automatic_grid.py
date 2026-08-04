@@ -183,3 +183,35 @@ def test_min_feature_cells_resolves_tapers_and_explicit_polygons(structure):
     )
 
     assert output_cells >= 10
+
+
+def test_polygon_feature_target_is_invariant_to_curve_tessellation():
+    material = bz.Material(permittivity=1.0)
+    counts = []
+    minimum_spacings = []
+    for points in (32, 64, 128, 256, 512):
+        ellipse = bz.Circle(
+            position=(2.0, 2.0),
+            radius=1.0,
+            points=points,
+            material=material,
+        ).scale(1.0, 0.8)
+        design = bz.Design(
+            width=4.0,
+            height=4.0,
+            background=material,
+            structures=(ellipse,),
+        )
+
+        grid = bz.GridSpec.auto(
+            wavelength=10.0,
+            min_steps_per_wvl=10,
+            min_steps_per_sim_size=10,
+            min_feature_cells=10,
+        ).realize(design)
+        counts.append(grid.shape[:2])
+        minimum_spacings.append(grid.minimum_spacing)
+
+    assert max(x for x, _y in counts) - min(x for x, _y in counts) <= 2
+    assert max(y for _x, y in counts) - min(y for _x, y in counts) <= 2
+    assert max(minimum_spacings) / min(minimum_spacings) < 1.02

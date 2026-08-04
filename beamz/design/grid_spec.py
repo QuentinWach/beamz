@@ -358,17 +358,99 @@ def _structure_bounds(
     return cast(AxisValues, (*lower, z)), cast(AxisValues, (*upper, z + depth))
 
 
-def _polygon_clearance(structure: Polygon) -> float | None:
-    """Return a conservative local width for an explicitly polygonal structure."""
+def _polygon_opposing_width(structure: Polygon) -> float | None:
+    """Return the narrowest reliable distance between opposing material faces.
+
+    Boundary vertex spacing is deliberately excluded: refining a curved polygon's
+    tessellation must not change its physical mesh target.
+    """
+    from shapely.geometry import LineString
     from shapely.geometry import Polygon as ShapelyPolygon
+    from shapely.geometry.polygon import orient
+    from shapely.ops import nearest_points
 
     shell = [(float(x), float(y)) for x, y, _z in structure.vertices]
     holes = [
         [(float(x), float(y)) for x, y, _z in path] for path in structure.interiors
     ]
-    geometry = ShapelyPolygon(shell, holes=holes)
-    clearance = float(geometry.minimum_clearance)
-    return clearance if np.isfinite(clearance) and clearance > 0.0 else None
+    geometry = orient(ShapelyPolygon(shell, holes=holes), sign=1.0)
+    if geometry.is_empty or not geometry.is_valid:
+        return None
+    if not geometry.interiors and geometry.equals(geometry.convex_hull):
+        coordinates = np.asarray(geometry.exterior.coords[:-1], dtype=np.float64)
+        edges = np.roll(coordinates, -1, axis=0) - coordinates
+        edge_lengths = np.linalg.norm(edges, axis=1)
+        normals = np.column_stack((-edges[:, 1], edges[:, 0])) / edge_lengths[:, None]
+        width = min(float(np.ptp(coordinates @ normal)) for normal in normals)
+        return width if np.isfinite(width) and width > 0.0 else None
+
+    starts: list[np.ndarray] = []
+    ends: list[np.ndarray] = []
+    ring_ids: list[int] = []
+    local_ids: list[int] = []
+    ring_sizes: list[int] = []
+    rings = (geometry.exterior, *geometry.interiors)
+    for ring_id, ring in enumerate(rings):
+        coordinates = np.asarray(ring.coords, dtype=np.float64)
+        ring_sizes.append(coordinates.shape[0] - 1)
+        for local_id, (start, end) in enumerate(
+            zip(coordinates[:-1], coordinates[1:], strict=True)
+        ):
+            if np.linalg.norm(end - start) <= np.finfo(float).tiny:
+                continue
+            starts.append(start)
+            ends.append(end)
+            ring_ids.append(ring_id)
+            local_ids.append(local_id)
+    if len(starts) < 2:
+        return None
+
+    start_array = np.asarray(starts)
+    end_array = np.asarray(ends)
+    vectors = end_array - start_array
+    lengths = np.linalg.norm(vectors, axis=1)
+    tangents = vectors / lengths[:, None]
+    # Oriented exterior and interior rings both keep material on their left.
+    inward_normals = np.column_stack((-tangents[:, 1], tangents[:, 0]))
+    midpoints = 0.5 * (start_array + end_array)
+    ring_ids_array = np.asarray(ring_ids)
+    local_ids_array = np.asarray(local_ids)
+    tolerance = 128.0 * np.finfo(float).eps * max(1.0, *geometry.bounds)
+    best = np.inf
+
+    for index in range(len(starts)):
+        delta = midpoints - midpoints[index]
+        distances = np.linalg.norm(delta, axis=1)
+        valid = np.arange(len(starts)) > index
+        same_ring = ring_ids_array == ring_ids_array[index]
+        local_delta = np.abs(local_ids_array - local_ids_array[index])
+        ring_size = ring_sizes[ring_ids[index]]
+        adjacent = same_ring & ((local_delta <= 1) | (local_delta >= ring_size - 1))
+        valid &= ~adjacent
+        valid &= np.einsum("ij,j->i", inward_normals, inward_normals[index]) < -0.95
+        nonzero = distances > tolerance
+        valid &= nonzero
+        safe_distances = np.where(nonzero, distances, 1.0)
+        valid &= (
+            np.einsum("ij,j->i", delta, inward_normals[index]) / safe_distances > 0.8
+        )
+        valid &= np.einsum("ij,ij->i", -delta, inward_normals) / safe_distances > 0.8
+        candidates = np.flatnonzero(valid)
+        if candidates.size == 0:
+            continue
+        candidates = candidates[np.argsort(distances[candidates])[:8]]
+        first = LineString((start_array[index], end_array[index]))
+        for other in candidates:
+            second = LineString((start_array[other], end_array[other]))
+            point_a, point_b = nearest_points(first, second)
+            distance = float(point_a.distance(point_b))
+            if not tolerance < distance < best:
+                continue
+            connector = LineString((point_a, point_b))
+            if geometry.covers(connector):
+                best = distance
+
+    return float(best) if np.isfinite(best) and best > 0.0 else None
 
 
 def _feature_sizes(
@@ -389,7 +471,7 @@ def _feature_sizes(
         depth = float(structure.depth)
         return float(structure.length), transverse, depth if depth > 0.0 else None
     if isinstance(structure, Polygon) and detect_polygon_features:
-        clearance = _polygon_clearance(structure)
+        clearance = _polygon_opposing_width(structure)
         depth = float(structure.depth)
         return clearance, clearance, depth if depth > 0.0 else None
     width = getattr(structure, "width", None)
