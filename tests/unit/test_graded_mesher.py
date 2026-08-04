@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from beamz.design.grid import RectilinearGrid
 from beamz.design.mesher import GradedMesher
@@ -71,5 +73,45 @@ def test_grid_quality_report_identifies_worst_adjacent_pair():
     assert report.x.max_adjacent_ratio == pytest.approx(2.0)
     assert report.x.worst_pair_index == 0
     assert report.y.max_adjacent_ratio == 1.0
+    assert report.max_adjacent_ratio == pytest.approx(2.0)
     assert report.satisfies_max_scale(2.0, active_axes=("x", "y"))
     assert not report.satisfies_max_scale(1.5, active_axes=("x", "y"))
+
+
+@settings(max_examples=100, deadline=None)
+@given(
+    interval_lengths=st.lists(
+        st.floats(min_value=0.02, max_value=2.0, allow_nan=False),
+        min_size=1,
+        max_size=8,
+    ),
+    interval_limits=st.data(),
+    max_scale=st.floats(min_value=1.05, max_value=1.5, allow_nan=False),
+)
+def test_graded_mesher_randomized_quality_invariants(
+    interval_lengths: list[float],
+    interval_limits: st.DataObject,
+    max_scale: float,
+):
+    """Every generated axis must honor hard boundaries, caps, and grading."""
+    limits = np.asarray(
+        interval_limits.draw(
+            st.lists(
+                st.floats(min_value=0.02, max_value=0.6, allow_nan=False),
+                min_size=len(interval_lengths),
+                max_size=len(interval_lengths),
+            )
+        )
+    )
+    coordinates = np.concatenate(([0.0], np.cumsum(interval_lengths)))
+
+    edges = GradedMesher(max_scale=max_scale).make_axis_edges(coordinates, limits)
+    widths = np.diff(edges)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    interval_indices = np.searchsorted(coordinates[1:], centers, side="right")
+    interval_indices = np.minimum(interval_indices, limits.size - 1)
+
+    assert np.all(np.diff(edges) > 0.0)
+    assert all(np.any(edges == coordinate) for coordinate in coordinates)
+    assert np.all(widths <= limits[interval_indices] * (1.0 + 1e-11))
+    assert _max_ratio(edges) <= max_scale * (1.0 + 1e-11)

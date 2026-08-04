@@ -34,6 +34,11 @@ class GridQualityReport:
     y: AxisGridQuality
     z: AxisGridQuality
 
+    @property
+    def max_adjacent_ratio(self) -> float:
+        """Return the worst neighboring-cell ratio over all three axes."""
+        return max(axis.max_adjacent_ratio for axis in (self.x, self.y, self.z))
+
     def axis(self, axis: Axis | int) -> AxisGridQuality:
         return getattr(self, _axis_name(axis))
 

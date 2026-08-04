@@ -195,6 +195,49 @@ def test_design_rasterize_accepts_realized_rectilinear_grid():
     assert material_grid.uses_direct_yee_materials
 
 
+def test_graded_grid_subpixel_ring_recovers_analytic_material_area():
+    n_clad, n_core = 1.44, 2.0
+    inner_radius, outer_radius = 0.75e-6, 1.05e-6
+    design = bz.Design(
+        width=3.0e-6,
+        height=3.0e-6,
+        background=bz.Material(permittivity=n_clad**2),
+        structures=(
+            bz.Ring(
+                position=(1.5e-6, 1.5e-6),
+                inner_radius=inner_radius,
+                outer_radius=outer_radius,
+                material=bz.Material(permittivity=n_core**2),
+            ),
+        ),
+    )
+    grid = bz.GridSpec.graded(
+        wavelength=1.55e-6,
+        min_steps_per_wvl=14,
+        min_feature_cells=6,
+        max_scale=1.15,
+    ).realize(design)
+
+    material_grid = design.rasterize(
+        grid,
+        quality="balanced",
+        smoothing="farjadpour_full",
+        polarization="tm",
+    )
+    epsilon = np.asarray(material_grid.permittivity)
+    fill_fraction = (epsilon - n_clad**2) / (n_core**2 - n_clad**2)
+    cell_areas = np.diff(grid.y_edges)[:, None] * np.diff(grid.x_edges)[None, :]
+    raster_area = float(np.sum(fill_fraction * cell_areas))
+    analytic_area = float(np.pi * (outer_radius**2 - inner_radius**2))
+    partial_cells = (fill_fraction > 1e-5) & (fill_fraction < 1.0 - 1e-5)
+
+    assert np.count_nonzero(partial_cells) > 100
+    assert raster_area == pytest.approx(analytic_area, rel=2e-3)
+    assert grid.quality_report().satisfies_max_scale(
+        1.15 * (1.0 + 1e-12), active_axes=("x", "y")
+    )
+
+
 def test_simulation_realizes_and_rasterizes_geometry_aware_grid_spec():
     design = design_2d()
     grid_spec = bz.GridSpec.graded(
