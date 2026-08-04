@@ -262,6 +262,130 @@ def test_min_feature_cells_resolves_tapers_and_explicit_polygons(structure):
     assert output_cells >= 10
 
 
+def test_polygon_neck_refinement_stays_local_and_axis_aware():
+    material = bz.Material(permittivity=1.0)
+    dumbbell = bz.Polygon(
+        vertices=(
+            (10.0, 30.0),
+            (40.0, 30.0),
+            (40.0, 49.95),
+            (60.0, 49.95),
+            (60.0, 30.0),
+            (90.0, 30.0),
+            (90.0, 70.0),
+            (60.0, 70.0),
+            (60.0, 50.05),
+            (40.0, 50.05),
+            (40.0, 70.0),
+            (10.0, 70.0),
+        ),
+        material=material,
+    )
+    design = bz.Design(
+        width=100.0,
+        height=100.0,
+        background=material,
+        structures=(dumbbell,),
+    )
+
+    grid = bz.GridSpec.auto(
+        wavelength=100.0,
+        min_steps_per_wvl=10,
+        min_steps_per_sim_size=10,
+        min_feature_cells=10,
+    ).realize(design)
+
+    neck_cells = np.count_nonzero(
+        (grid.centers("y") > 49.95) & (grid.centers("y") < 50.05)
+    )
+    fine_y_cells = grid.centers("y")[grid.cell_widths("y") < 0.02]
+    assert neck_cells >= 10
+    assert fine_y_cells.size < 40
+    assert np.all((fine_y_cells > 49.8) & (fine_y_cells < 50.2))
+    assert grid.shape[0] < 100
+
+
+@pytest.mark.parametrize(
+    ("polygon", "axis", "lower", "upper"),
+    (
+        (
+            bz.Polygon(
+                vertices=(
+                    (20.0, 20.0),
+                    (80.0, 20.0),
+                    (80.0, 90.0),
+                    (50.05, 90.0),
+                    (50.05, 40.0),
+                    (49.95, 40.0),
+                    (49.95, 90.0),
+                    (20.0, 90.0),
+                ),
+                material=bz.Material(permittivity=1.0),
+            ),
+            "x",
+            49.95,
+            50.05,
+        ),
+        (
+            bz.Polygon(
+                vertices=(
+                    (20.0, 20.0),
+                    (80.0, 20.0),
+                    (80.0, 30.0),
+                    (30.0, 30.0),
+                    (30.0, 90.0),
+                    (20.0, 90.0),
+                ),
+                material=bz.Material(permittivity=1.0),
+            ),
+            "x",
+            20.0,
+            30.0,
+        ),
+        (
+            bz.Polygon(
+                vertices=((20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0)),
+                interiors=(
+                    (
+                        (20.1, 20.1),
+                        (79.9, 20.1),
+                        (79.9, 79.9),
+                        (20.1, 79.9),
+                    ),
+                ),
+                material=bz.Material(permittivity=1.0),
+            ),
+            "y",
+            20.0,
+            20.1,
+        ),
+    ),
+    ids=("u-slot", "l-arm", "polygon-ring-wall"),
+)
+def test_polygon_local_features_resolve_slots_arms_and_hole_walls(
+    polygon, axis, lower, upper
+):
+    material = bz.Material(permittivity=1.0)
+    grid = bz.GridSpec.auto(
+        wavelength=100.0,
+        min_steps_per_wvl=10,
+        min_steps_per_sim_size=10,
+        min_feature_cells=10,
+    ).realize(
+        bz.Design(
+            width=100.0,
+            height=100.0,
+            background=material,
+            structures=(polygon,),
+        )
+    )
+
+    feature_cells = np.count_nonzero(
+        (grid.centers(axis) > lower) & (grid.centers(axis) < upper)
+    )
+    assert feature_cells >= 10
+
+
 def test_polygon_feature_target_is_invariant_to_curve_tessellation():
     material = bz.Material(permittivity=1.0)
     counts = []

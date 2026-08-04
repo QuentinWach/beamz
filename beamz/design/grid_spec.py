@@ -316,6 +316,27 @@ class _Region:
     enforced: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _MeshFeatureRegion:
+    """Localized, axis-aware spacing constraint produced by geometry analysis."""
+
+    lower: AxisValues
+    upper: AxisValues
+    spacing: OptionalAxisValues
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _OpposingFeature:
+    """A reliable local distance between opposing polygon boundary faces."""
+
+    lower: tuple[float, float]
+    upper: tuple[float, float]
+    width: float
+    normal: tuple[float, float]
+    reason: str
+
+
 def _validate_grid_budget(
     grid: RectilinearGrid, spec: GridSpec, *, dimensions: int
 ) -> RectilinearGrid:
@@ -465,8 +486,8 @@ def _structure_bounds(
     return cast(AxisValues, (*lower, z)), cast(AxisValues, (*upper, z + depth))
 
 
-def _polygon_opposing_width(structure: Polygon) -> float | None:
-    """Return the narrowest reliable distance between opposing material faces.
+def _polygon_opposing_features(structure: Polygon) -> list[_OpposingFeature]:
+    """Return reliable local distances between opposing material faces.
 
     Boundary vertex spacing is deliberately excluded: refining a curved polygon's
     tessellation must not change its physical mesh target.
@@ -482,14 +503,27 @@ def _polygon_opposing_width(structure: Polygon) -> float | None:
     ]
     geometry = orient(ShapelyPolygon(shell, holes=holes), sign=1.0)
     if geometry.is_empty or not geometry.is_valid:
-        return None
+        return []
     if not geometry.interiors and geometry.equals(geometry.convex_hull):
         coordinates = np.asarray(geometry.exterior.coords[:-1], dtype=np.float64)
         edges = np.roll(coordinates, -1, axis=0) - coordinates
         edge_lengths = np.linalg.norm(edges, axis=1)
         normals = np.column_stack((-edges[:, 1], edges[:, 0])) / edge_lengths[:, None]
-        width = min(float(np.ptp(coordinates @ normal)) for normal in normals)
-        return width if np.isfinite(width) and width > 0.0 else None
+        widths = np.asarray([float(np.ptp(coordinates @ normal)) for normal in normals])
+        index = int(np.argmin(widths))
+        width = float(widths[index])
+        if not np.isfinite(width) or width <= 0.0:
+            return []
+        bounds = tuple(map(float, geometry.bounds))
+        return [
+            _OpposingFeature(
+                (bounds[0], bounds[1]),
+                (bounds[2], bounds[3]),
+                width,
+                (float(normals[index, 0]), float(normals[index, 1])),
+                "minimum convex Feret width",
+            )
+        ]
 
     starts: list[np.ndarray] = []
     ends: list[np.ndarray] = []
@@ -510,7 +544,7 @@ def _polygon_opposing_width(structure: Polygon) -> float | None:
             ring_ids.append(ring_id)
             local_ids.append(local_id)
     if len(starts) < 2:
-        return None
+        return []
 
     start_array = np.asarray(starts)
     end_array = np.asarray(ends)
@@ -523,12 +557,12 @@ def _polygon_opposing_width(structure: Polygon) -> float | None:
     ring_ids_array = np.asarray(ring_ids)
     local_ids_array = np.asarray(local_ids)
     tolerance = 128.0 * np.finfo(float).eps * max(1.0, *geometry.bounds)
-    best = np.inf
+    features = []
 
     for index in range(len(starts)):
         delta = midpoints - midpoints[index]
         distances = np.linalg.norm(delta, axis=1)
-        valid = np.arange(len(starts)) > index
+        valid = np.arange(len(starts)) != index
         same_ring = ring_ids_array == ring_ids_array[index]
         local_delta = np.abs(local_ids_array - local_ids_array[index])
         ring_size = ring_sizes[ring_ids[index]]
@@ -539,34 +573,183 @@ def _polygon_opposing_width(structure: Polygon) -> float | None:
         valid &= nonzero
         safe_distances = np.where(nonzero, distances, 1.0)
         valid &= (
-            np.einsum("ij,j->i", delta, inward_normals[index]) / safe_distances > 0.8
+            np.abs(np.einsum("ij,j->i", delta, inward_normals[index]) / safe_distances)
+            > 0.8
         )
-        valid &= np.einsum("ij,ij->i", -delta, inward_normals) / safe_distances > 0.8
+        valid &= (
+            np.abs(np.einsum("ij,ij->i", -delta, inward_normals) / safe_distances) > 0.8
+        )
         candidates = np.flatnonzero(valid)
         if candidates.size == 0:
             continue
-        candidates = candidates[np.argsort(distances[candidates])[:8]]
+        candidates = candidates[np.argsort(distances[candidates])[:32]]
         first = LineString((start_array[index], end_array[index]))
         for other in candidates:
             second = LineString((start_array[other], end_array[other]))
             point_a, point_b = nearest_points(first, second)
             distance = float(point_a.distance(point_b))
-            if not tolerance < distance < best:
+            if distance <= tolerance:
                 continue
             connector = LineString((point_a, point_b))
-            if geometry.covers(connector):
-                best = distance
+            midpoint = connector.interpolate(0.5, normalized=True)
+            material_between = geometry.covers(connector)
+            gap_between = not geometry.covers(midpoint)
+            if material_between or gap_between:
+                first_point = np.asarray(point_a.coords[0], dtype=np.float64)
+                second_point = np.asarray(point_b.coords[0], dtype=np.float64)
+                direction = second_point - first_point
+                normal_length = float(np.linalg.norm(direction))
+                if normal_length <= tolerance:
+                    continue
+                normal = direction / normal_length
+                padding = 0.5 * distance
+                lower = np.minimum(first_point, second_point) - padding
+                upper = np.maximum(first_point, second_point) + padding
+                features.append(
+                    _OpposingFeature(
+                        (float(lower[0]), float(lower[1])),
+                        (float(upper[0]), float(upper[1])),
+                        distance,
+                        (float(normal[0]), float(normal[1])),
+                        (
+                            "opposing polygon faces"
+                            if material_between
+                            else "opposing polygon gap faces"
+                        ),
+                    )
+                )
+                # Only the nearest reliable opposing face is a local feature for
+                # this segment. Farther faces describe bulk polygon dimensions
+                # and introduce tessellation-dependent constraint boundaries.
+                break
 
-    return float(best) if np.isfinite(best) and best > 0.0 else None
+    return features
+
+
+def _merge_mesh_feature_regions(
+    regions: list[_MeshFeatureRegion],
+) -> list[_MeshFeatureRegion]:
+    """Canonicalize overlapping local corridors into a 1D spacing envelope."""
+    if not regions:
+        return []
+    global_lower = tuple(
+        min(region.lower[axis] for region in regions) for axis in range(3)
+    )
+    global_upper = tuple(
+        max(region.upper[axis] for region in regions) for axis in range(3)
+    )
+    result = []
+    for axis in range(2):
+        selected = [region for region in regions if region.spacing[axis] is not None]
+        if not selected:
+            continue
+
+        def active_spacing(
+            region: _MeshFeatureRegion, selected_axis: int = axis
+        ) -> float:
+            value = region.spacing[selected_axis]
+            assert value is not None
+            return float(value)
+
+        raw_coordinates = sorted(
+            {
+                value
+                for region in selected
+                for value in (region.lower[axis], region.upper[axis])
+            }
+        )
+        smallest_spacing = min(active_spacing(region) for region in selected)
+        coordinate_clusters: list[list[float]] = []
+        for value in raw_coordinates:
+            if (
+                not coordinate_clusters
+                or value - coordinate_clusters[-1][-1] >= smallest_spacing
+            ):
+                coordinate_clusters.append([value])
+            else:
+                coordinate_clusters[-1].append(value)
+        coordinates = [float(np.mean(cluster)) for cluster in coordinate_clusters]
+        intervals: list[tuple[float, float, float, str]] = []
+        for lower, upper in zip(coordinates[:-1], coordinates[1:], strict=True):
+            if upper <= lower:
+                continue
+            midpoint = 0.5 * (lower + upper)
+            covering = [
+                region
+                for region in selected
+                if region.lower[axis] <= midpoint <= region.upper[axis]
+            ]
+            if not covering:
+                continue
+            spacing = min(active_spacing(region) for region in covering)
+            reason = "; ".join(sorted({region.reason for region in covering}))
+            if intervals:
+                old_lower, old_upper, old_spacing, old_reason = intervals[-1]
+                ratio = max(old_spacing, spacing) / min(old_spacing, spacing)
+                if old_upper == lower and ratio <= 1.25:
+                    intervals[-1] = (
+                        old_lower,
+                        upper,
+                        min(old_spacing, spacing),
+                        f"{old_reason}; {reason}",
+                    )
+                    continue
+            intervals.append((lower, upper, spacing, reason))
+        for lower, upper, spacing, reason in intervals:
+            region_lower = list(global_lower)
+            region_upper = list(global_upper)
+            region_lower[axis], region_upper[axis] = lower, upper
+            axis_spacing: list[float | None] = [None, None, None]
+            axis_spacing[axis] = spacing
+            result.append(
+                _MeshFeatureRegion(
+                    cast(AxisValues, tuple(region_lower)),
+                    cast(AxisValues, tuple(region_upper)),
+                    cast(OptionalAxisValues, tuple(axis_spacing)),
+                    reason,
+                )
+            )
+    return result
+
+
+def _polygon_mesh_feature_regions(
+    structure: Polygon,
+    *,
+    material_spacing: float,
+    spec: GridSpec,
+) -> list[_MeshFeatureRegion]:
+    """Convert opposing polygon faces into local, axis-specific constraints."""
+    depth = float(structure.depth)
+    z_lower = float(structure.z)
+    z_upper = z_lower + depth if depth > 0.0 else 1.0
+    regions = []
+    for feature in _polygon_opposing_features(structure):
+        target = _clamp_spacing(feature.width / spec.min_feature_cells, spec)
+        if target >= material_spacing * (1.0 - 64.0 * np.finfo(float).eps):
+            continue
+        direction = np.abs(np.asarray(feature.normal, dtype=np.float64))
+        active = direction >= 0.25
+        if not np.any(active):
+            active[int(np.argmax(direction))] = True
+        for axis in np.flatnonzero(active):
+            spacing = cast(
+                OptionalAxisValues,
+                tuple(target if index == int(axis) else None for index in range(3)),
+            )
+            regions.append(
+                _MeshFeatureRegion(
+                    (feature.lower[0], feature.lower[1], z_lower),
+                    (feature.upper[0], feature.upper[1], z_upper),
+                    spacing,
+                    f"{feature.reason} ({feature.width:.6g})",
+                )
+            )
+    return _merge_mesh_feature_regions(regions)
 
 
 def _feature_sizes(
-    structure: Any, *, detect_polygon_features: bool
+    structure: Any,
 ) -> tuple[float | None, float | None, float | None]:
-    if isinstance(structure, Polygon) and detect_polygon_features:
-        clearance = _polygon_opposing_width(structure)
-        depth = float(structure.depth)
-        return clearance, clearance, depth if depth > 0.0 else None
     semantic = structure._mesh_feature_sizes()
     if semantic is not None:
         return cast(
@@ -612,6 +795,7 @@ def _geometry_regions(
     wavelength = float(spec.wavelength)
     two_dimensional = float(design.depth) == 0.0
     regions = []
+    material_regions = []
     for structure in getattr(design, "structures", ()):
         raw_lower, raw_upper = _structure_bounds(
             structure, two_dimensional=two_dimensional
@@ -637,9 +821,7 @@ def _geometry_regions(
             wavelength / (_material_index(structure.material) * spec.min_steps_per_wvl),
             spec,
         )
-        features = _feature_sizes(
-            structure, detect_polygon_features=spec.min_feature_cells > 1.0
-        )
+        features = _feature_sizes(structure)
         spacing = tuple(
             _clamp_spacing(
                 min(material_spacing, feature / spec.min_feature_cells)
@@ -649,11 +831,62 @@ def _geometry_regions(
             )
             for feature in features
         )
-        regions.append(_Region(lower, upper, cast(OptionalAxisValues, spacing)))
+        material_region = _Region(lower, upper, cast(OptionalAxisValues, spacing))
+        regions.append(material_region)
+        material_regions.append(material_region)
+        if isinstance(structure, Polygon) and spec.min_feature_cells > 1.0:
+            for feature_region in _polygon_mesh_feature_regions(
+                structure,
+                material_spacing=material_spacing,
+                spec=spec,
+            ):
+                feature_lower = cast(
+                    AxisValues,
+                    tuple(
+                        max(
+                            0.0,
+                            feature_region.lower[axis] + coordinate_offset[axis],
+                        )
+                        for axis in range(3)
+                    ),
+                )
+                feature_upper = cast(
+                    AxisValues,
+                    tuple(
+                        min(
+                            extents[axis],
+                            feature_region.upper[axis] + coordinate_offset[axis],
+                        )
+                        for axis in range(3)
+                    ),
+                )
+                snapped_lower = list(feature_lower)
+                snapped_upper = list(feature_upper)
+                for axis, feature_spacing in enumerate(feature_region.spacing):
+                    if feature_spacing is None:
+                        continue
+                    if abs(snapped_lower[axis] - lower[axis]) < feature_spacing:
+                        snapped_lower[axis] = lower[axis]
+                    if abs(snapped_upper[axis] - upper[axis]) < feature_spacing:
+                        snapped_upper[axis] = upper[axis]
+                feature_lower = cast(AxisValues, tuple(snapped_lower))
+                feature_upper = cast(AxisValues, tuple(snapped_upper))
+                if any(
+                    feature_upper[axis] <= feature_lower[axis]
+                    for axis in range(2 if two_dimensional else 3)
+                ):
+                    continue
+                regions.append(
+                    _Region(
+                        feature_lower,
+                        feature_upper,
+                        feature_region.spacing,
+                    )
+                )
 
     active_count = 2 if two_dimensional else 3
-    for first_index, first in enumerate(tuple(regions)):
-        for second in tuple(regions)[first_index + 1 :]:
+    for first_index, first in enumerate(material_regions):
+        for second in material_regions[first_index + 1 :]:
             for axis in range(active_count):
                 transverse = tuple(
                     index for index in range(active_count) if index != axis
