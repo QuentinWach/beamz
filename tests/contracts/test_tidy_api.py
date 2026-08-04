@@ -371,8 +371,9 @@ def test_design_background_and_material_geometry_builds_design_and_time():
     assert sim.design.width == 4 * bz.um
     assert sim.domain == (4 * bz.um, 3 * bz.um, 2 * bz.um)
     assert sim.design.depth == 2 * bz.um
-    assert isinstance(sim.resolution, bz.RectilinearGrid)
-    assert sim.resolution.minimum_spacing < 1.55 * bz.um / 10
+    assert isinstance(sim.grid, bz.RectilinearGrid)
+    assert sim.grid.minimum_spacing < 1.55 * bz.um / 10
+    assert sim.resolution == pytest.approx(sim.grid.minimum_spacing)
     assert sim.time.size >= 2
 
 

@@ -116,6 +116,11 @@ class GridSpec:
     overrides: tuple[MeshOverride, ...] = ()
     snapping_points: tuple[tuple[float | None, ...], ...] = ()
 
+    @property
+    def is_automatic(self) -> bool:
+        """Return whether this policy realizes a geometry-aware grid."""
+        return bool(self.nonuniform)
+
     def __post_init__(self) -> None:
         positive = {
             "min_steps_per_wvl": self.min_steps_per_wvl,

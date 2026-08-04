@@ -262,12 +262,34 @@ def test_simulation_realizes_and_rasterizes_geometry_aware_grid_spec():
     material_grid = simulation._material_grid()
     program = simulation.compile()
 
-    assert isinstance(simulation.resolution, bz.RectilinearGrid)
-    assert material_grid.grid == simulation.resolution
+    assert isinstance(simulation.resolution, float)
+    assert material_grid.grid == simulation.grid
     assert material_grid.metric_kind == "rectilinear"
     assert program.config.metric_kind == "rectilinear"
-    expected_dt = grid_spec.resolve_time_step(simulation.resolution, dims=2)
+    expected_dt = grid_spec.resolve_time_step(simulation.grid, dims=2)
     assert simulation.dt == pytest.approx(expected_dt)
+
+
+def test_automatic_grid_simulation_copy_and_result_metadata_keep_exact_grid():
+    simulation = bz.Simulation(
+        design=design_2d(),
+        grid_spec=bz.GridSpec.auto(wavelength=1.55e-6, max_scale=1.2),
+        run_time=2e-15,
+        sources=[],
+        monitors=[],
+    )
+
+    copied = simulation.updated_copy(monitors=())
+    program = copied.compile()
+    results = bz.SimulationResults.from_run(
+        copied,
+        runtime_fields=program.grid,
+        monitor_results={},
+    )
+
+    assert copied.grid == simulation.grid
+    assert copied.resolution == pytest.approx(simulation.grid.minimum_spacing)
+    assert results.metadata.resolution == pytest.approx(copied.resolution)
 
 
 def test_compiler_builds_separable_staggered_metrics_for_rectilinear_grid():
