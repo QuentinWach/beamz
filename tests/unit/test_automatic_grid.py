@@ -41,6 +41,7 @@ def _ring_design():
 
 def test_geometry_aware_grid_resolves_ring_bus_and_coupling_gap():
     design, wavelength, bus_y, ring_center, outer_radius, gap = _ring_design()
+    symmetric = bz.GridSpec.auto(wavelength=2.0).realize(design)
     spec = bz.GridSpec.auto(
         wavelength=wavelength,
         min_steps_per_wvl=16,
@@ -101,8 +102,48 @@ def test_grid_spec_auto_is_nonuniform_and_uniform_is_explicit():
 
     assert uniform.metric_kind_for(("x", "y")) == "isotropic_uniform"
     assert uniform.shape[2] == 1
-    assert automatic_spec.nonuniform
+    assert automatic_spec.is_automatic
     assert isinstance(automatic, bz.RectilinearGrid)
     assert not hasattr(bz.GridSpec, "graded")
     with pytest.raises(ValueError, match="GridSpec.auto requires wavelength"):
-        bz.GridSpec(nonuniform=True).realize(design)
+        bz.GridSpec().realize(design)
+
+
+def test_explicit_resolution_takes_precedence_over_automatic_fields():
+    design = bz.Design(width=2.0, height=1.0)
+    spec = bz.GridSpec(resolution=0.2, wavelength=1.55)
+
+    grid = spec.realize(design)
+
+    assert not spec.is_automatic
+    assert np.allclose(grid.cell_widths("x"), 0.2)
+    assert np.allclose(grid.cell_widths("y"), 0.2)
+
+
+def test_centered_design_geometry_overrides_and_snapping_are_translated():
+    material = bz.Material(permittivity=4.0)
+    design = bz.Design(background=bz.Material(permittivity=1.0))
+    design += bz.Box(
+        center=(0.0, 0.0, 0.0),
+        size=(2.0 * bz.um, 2.0 * bz.um, 1.0 * bz.um),
+        material=material,
+    )
+    symmetric = bz.GridSpec.auto(wavelength=2.0 * bz.um).realize(design)
+    spec = bz.GridSpec.auto(
+        wavelength=2.0 * bz.um,
+        overrides=(
+            bz.MeshOverride(
+                center=(-1.5 * bz.um, 0.0),
+                size=(0.2 * bz.um, 1.0 * bz.um),
+                dl=0.02 * bz.um,
+            ),
+        ),
+        snapping_points=((1.5 * bz.um, None),),
+    )
+
+    grid = spec.realize(design)
+
+    assert np.allclose(symmetric.cell_widths("x"), symmetric.cell_widths("x")[::-1])
+    assert np.any(np.isclose(grid.x_edges, 0.4 * bz.um, rtol=1e-12, atol=0.0))
+    assert np.any(np.isclose(grid.x_edges, 0.6 * bz.um, rtol=1e-12, atol=0.0))
+    assert np.any(np.isclose(grid.x_edges, 3.5 * bz.um, rtol=1e-12, atol=0.0))

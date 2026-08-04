@@ -292,6 +292,27 @@ def test_automatic_grid_simulation_copy_and_result_metadata_keep_exact_grid():
     assert results.metadata.resolution == pytest.approx(copied.resolution)
 
 
+def test_automatic_grid_uses_compatible_uniform_mesh_for_mode_devices():
+    monitor = bz.ModeMonitor(
+        center=(0.5e-6, 0.5e-6, 0.0),
+        size=(0.0, 0.5e-6, 1.0),
+        freqs=[2.0e14],
+        mode_spec=bz.ModeSpec(polarization="tm"),
+        name="mode",
+    )
+    simulation = bz.Simulation(
+        design=design_2d(),
+        grid_spec=bz.GridSpec.auto(wavelength=1.55e-6),
+        run_time=2e-15,
+        sources=[],
+        monitors=[monitor],
+    )
+
+    assert simulation.grid.metric_kind_for(("x", "y")) == "isotropic_uniform"
+    assert simulation._material_grid().grid == simulation.grid
+    simulation.compile()
+
+
 def test_compiler_builds_separable_staggered_metrics_for_rectilinear_grid():
     result = rasterize(
         Scene((Material(),)),

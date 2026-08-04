@@ -275,7 +275,7 @@ class GradedMesher:
                             np.max(widths[selected] / target_limits[selected])
                         )
                         counts[interval] = _refined_cell_count(
-                            counts[interval], required_factor
+                            int(counts[interval]), required_factor
                         )
                     continue
                 if widths.size < 2:
@@ -297,8 +297,7 @@ class GradedMesher:
                     smaller_cell = pair + 1 if larger_cell == pair else pair
                     interval = int(owners[larger_cell])
                     required_factor = float(
-                        widths[larger_cell]
-                        / (self.max_scale * widths[smaller_cell])
+                        widths[larger_cell] / (self.max_scale * widths[smaller_cell])
                     )
                     refinement_factors[interval] = max(
                         refinement_factors.get(interval, 1.0), required_factor

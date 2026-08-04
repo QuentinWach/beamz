@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
 from beamz.const import LIGHT_SPEED
 from beamz.design.grid import RectilinearGrid
 from beamz.design.mesher import GradedMesher
+
+AxisValues = tuple[float, float, float]
+OptionalAxisValues = tuple[float | None, float | None, float | None]
 
 
 def _xyz(values, name: str, *, fill: float) -> tuple[float, float, float]:
@@ -43,14 +46,18 @@ class MeshOverride:
         if any(np.isnan(value) or value <= 0.0 for value in size):
             raise ValueError("MeshOverride size must contain positive values.")
         if np.isscalar(self.dl):
-            spacing: tuple[float | None, ...] = (float(self.dl),) * 3  # type: ignore[arg-type]
+            scalar = float(cast(float, self.dl))
+            spacing: OptionalAxisValues = (scalar, scalar, scalar)
         else:
-            raw = tuple(self.dl)
+            raw = tuple(cast(tuple[float | None, ...], self.dl))
             if len(raw) == 2:
                 raw = (*raw, None)
             if len(raw) != 3:
                 raise ValueError("MeshOverride dl must contain two or three values.")
-            spacing = tuple(None if value is None else float(value) for value in raw)
+            spacing = cast(
+                OptionalAxisValues,
+                tuple(None if value is None else float(value) for value in raw),
+            )
         if all(value is None for value in spacing) or any(
             value is not None and (not np.isfinite(value) or value <= 0.0)
             for value in spacing
@@ -84,9 +91,6 @@ class GridSpec:
         over ``wavelength`` and ``min_steps_per_wvl``.
     courant : float, default=0.99
         Fraction of the dimensional Courant stability limit used for time steps.
-    nonuniform : bool, default=False
-        Generate a geometry-aware rectilinear grid instead of a uniform grid.
-        :meth:`auto` enables this automatically; :meth:`uniform` disables it.
     max_scale : float, default=1.3
         Hard maximum ratio between neighboring cell widths on a graded axis.
     min_steps_per_sim_size : float, default=10.0
@@ -107,7 +111,6 @@ class GridSpec:
     wavelength: float | None = None
     resolution: float | None = None
     courant: float = 0.99
-    nonuniform: bool = False
     max_scale: float = 1.3
     min_steps_per_sim_size: float = 10.0
     min_feature_cells: float = 1.0
@@ -119,7 +122,7 @@ class GridSpec:
     @property
     def is_automatic(self) -> bool:
         """Return whether this policy realizes a geometry-aware grid."""
-        return bool(self.nonuniform)
+        return self.resolution is None
 
     def __post_init__(self) -> None:
         positive = {
@@ -134,10 +137,8 @@ class GridSpec:
                 raise ValueError(f"GridSpec {name} must be finite and positive.")
         if float(self.courant) > 1.0:
             raise ValueError("GridSpec courant cannot exceed one.")
-        if self.nonuniform and not 1.0 < float(self.max_scale) < 2.0:
-            raise ValueError(
-                "A nonuniform GridSpec max_scale must be strictly between 1 and 2."
-            )
+        if not 1.0 < float(self.max_scale) < 2.0:
+            raise ValueError("GridSpec max_scale must be strictly between 1 and 2.")
         for name in ("wavelength", "resolution", "dl_min", "dl_max"):
             value = getattr(self, name)
             if value is not None and (not np.isfinite(value) or float(value) <= 0.0):
@@ -197,7 +198,6 @@ class GridSpec:
             min_steps_per_wvl=float(min_steps_per_wvl),
             wavelength=wavelength,
             courant=float(courant),
-            nonuniform=True,
             max_scale=float(max_scale),
             min_steps_per_sim_size=float(min_steps_per_sim_size),
             min_feature_cells=float(min_feature_cells),
@@ -216,18 +216,10 @@ class GridSpec:
         GridSpec
             Immutable uniform-grid policy.
         """
-        return cls(
-            resolution=float(resolution), courant=float(courant), nonuniform=False
-        )
+        return cls(resolution=float(resolution), courant=float(courant))
 
-    def resolve_resolution(self, *, max_index: float = 1.0) -> float:
-        """Return the explicit or wavelength-derived cell size in metres.
-
-        Returns
-        -------
-        float
-            Uniform cell size in metres.
-        """
+    def _target_spacing(self, *, max_index: float = 1.0) -> float:
+        """Return the explicit or wavelength-derived target spacing."""
         if self.resolution is not None:
             return float(self.resolution)
         if self.wavelength is None:
@@ -246,14 +238,14 @@ class GridSpec:
         RectilinearGrid
             Physical grid edges satisfying this policy for ``design``.
         """
-        if self.nonuniform:
+        if self.is_automatic:
             if self.wavelength is None:
                 raise ValueError("GridSpec.auto requires wavelength.")
             return _realize_graded_grid(design, self)
         resolution = (
-            self.resolve_resolution()
+            self._target_spacing()
             if self.resolution is not None
-            else self.resolve_resolution(max_index=_maximum_design_index(design))
+            else self._target_spacing(max_index=_maximum_design_index(design))
         )
         extents = _design_extents(design)
         shape = tuple(
@@ -262,7 +254,9 @@ class GridSpec:
             else max(1, int(np.ceil(value / resolution)))
             for axis, value in enumerate(extents)
         )
-        return RectilinearGrid.uniform((0.0, 0.0, 0.0), extents, shape)
+        return RectilinearGrid.uniform(
+            (0.0, 0.0, 0.0), extents, cast(tuple[int, int, int], shape)
+        )
 
     def resolve_time_step(
         self, resolution: float | RectilinearGrid, *, dims: int
@@ -289,9 +283,9 @@ class GridSpec:
 
 @dataclass(frozen=True, slots=True)
 class _Region:
-    lower: tuple[float, float, float]
-    upper: tuple[float, float, float]
-    spacing: tuple[float | None, float | None, float | None]
+    lower: AxisValues
+    upper: AxisValues
+    spacing: OptionalAxisValues
     enforced: bool = False
 
 
@@ -320,28 +314,41 @@ def _design_extents(design: Any) -> tuple[float, float, float]:
     return float(design.width), float(design.height), depth if depth > 0.0 else 1.0
 
 
+def _design_coordinate_offset(design: Any) -> AxisValues:
+    """Translate centered public geometry into the positive raster domain."""
+    if not bool(getattr(design, "_centered_coordinates", False)):
+        return (0.0, 0.0, 0.0)
+    extents = _design_extents(design)
+    return (
+        0.5 * extents[0],
+        0.5 * extents[1],
+        0.5 * extents[2] if float(design.depth) > 0.0 else 0.0,
+    )
+
+
 def _structure_bounds(
     structure: Any, *, two_dimensional: bool
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     if hasattr(structure, "lower") and hasattr(structure, "upper"):
-        return tuple(map(float, structure.lower)), tuple(map(float, structure.upper))
+        return cast(AxisValues, tuple(map(float, structure.lower))), cast(
+            AxisValues, tuple(map(float, structure.upper))
+        )
     if hasattr(structure, "radius") and not getattr(structure, "vertices", ()):
         center = tuple(map(float, structure.center))
         radius = float(structure.radius)
-        return (
-            tuple(value - radius for value in center),
-            tuple(value + radius for value in center),
-        )  # type: ignore[return-value]
+        return cast(AxisValues, tuple(value - radius for value in center)), cast(
+            AxisValues, tuple(value + radius for value in center)
+        )
     vertices = np.asarray(getattr(structure, "vertices", ()), dtype=np.float64)
     if vertices.ndim != 2 or vertices.shape[0] < 3:
         raise TypeError(f"Cannot derive meshing bounds for {type(structure).__name__}.")
     lower = [float(np.min(vertices[:, 0])), float(np.min(vertices[:, 1]))]
     upper = [float(np.max(vertices[:, 0])), float(np.max(vertices[:, 1]))]
     if two_dimensional:
-        return (*lower, 0.0), (*upper, 1.0)
+        return cast(AxisValues, (*lower, 0.0)), cast(AxisValues, (*upper, 1.0))
     z = float(getattr(structure, "z", np.min(vertices[:, 2])))
     depth = float(getattr(structure, "depth", 0.0))
-    return (*lower, z), (*upper, z + depth)
+    return cast(AxisValues, (*lower, z)), cast(AxisValues, (*upper, z + depth))
 
 
 def _feature_sizes(structure: Any) -> tuple[float | None, float | None, float | None]:
@@ -380,23 +387,38 @@ def _overlap(first: _Region, second: _Region, transverse_axes: tuple[int, ...]) 
     )
 
 
-def _geometry_regions(design: Any, spec: GridSpec) -> list[_Region]:
+def _geometry_regions(
+    design: Any, spec: GridSpec, coordinate_offset: AxisValues
+) -> list[_Region]:
     extents = _design_extents(design)
+    if spec.wavelength is None:
+        raise ValueError("GridSpec.auto requires wavelength.")
+    wavelength = float(spec.wavelength)
     two_dimensional = float(design.depth) == 0.0
     regions = []
     for structure in getattr(design, "structures", ()):
         raw_lower, raw_upper = _structure_bounds(
             structure, two_dimensional=two_dimensional
         )
-        lower = tuple(max(0.0, raw_lower[axis]) for axis in range(3))
-        upper = tuple(min(extents[axis], raw_upper[axis]) for axis in range(3))
+        lower = cast(
+            AxisValues,
+            tuple(
+                max(0.0, raw_lower[axis] + coordinate_offset[axis]) for axis in range(3)
+            ),
+        )
+        upper = cast(
+            AxisValues,
+            tuple(
+                min(extents[axis], raw_upper[axis] + coordinate_offset[axis])
+                for axis in range(3)
+            ),
+        )
         if any(
             upper[axis] <= lower[axis] for axis in range(2 if two_dimensional else 3)
         ):
             continue
         material_spacing = _clamp_spacing(
-            float(spec.wavelength)
-            / (_material_index(structure.material) * spec.min_steps_per_wvl),
+            wavelength / (_material_index(structure.material) * spec.min_steps_per_wvl),
             spec,
         )
         features = _feature_sizes(structure)
@@ -409,7 +431,7 @@ def _geometry_regions(design: Any, spec: GridSpec) -> list[_Region]:
             )
             for feature in features
         )
-        regions.append(_Region(lower, upper, spacing))
+        regions.append(_Region(lower, upper, cast(OptionalAxisValues, spacing)))
 
     active_count = 2 if two_dimensional else 3
     for first_index, first in enumerate(tuple(regions)):
@@ -433,25 +455,43 @@ def _geometry_regions(design: Any, spec: GridSpec) -> list[_Region]:
                 lower[axis], upper[axis] = gap_lower, gap_upper
                 regions.append(
                     _Region(
-                        tuple(lower),
-                        tuple(upper),
-                        tuple(
-                            gap_spacing if index == axis else None for index in range(3)
+                        cast(AxisValues, tuple(lower)),
+                        cast(AxisValues, tuple(upper)),
+                        cast(
+                            OptionalAxisValues,
+                            tuple(
+                                gap_spacing if index == axis else None
+                                for index in range(3)
+                            ),
                         ),
                     )
                 )
 
     for override in spec.overrides:
         raw_lower, raw_upper = override.bounds
-        lower = tuple(max(0.0, raw_lower[axis]) for axis in range(3))
-        upper = tuple(min(extents[axis], raw_upper[axis]) for axis in range(3))
+        lower = cast(
+            AxisValues,
+            tuple(
+                max(0.0, raw_lower[axis] + coordinate_offset[axis]) for axis in range(3)
+            ),
+        )
+        upper = cast(
+            AxisValues,
+            tuple(
+                min(extents[axis], raw_upper[axis] + coordinate_offset[axis])
+                for axis in range(3)
+            ),
+        )
         if any(upper[axis] <= lower[axis] for axis in range(active_count)):
             continue
+        override_spacing = cast(OptionalAxisValues, override.dl)
         spacing = tuple(
             None if value is None else _clamp_spacing(value, spec)
-            for value in override.dl
+            for value in override_spacing
         )
-        regions.append(_Region(lower, upper, spacing, override.enforced))
+        regions.append(
+            _Region(lower, upper, cast(OptionalAxisValues, spacing), override.enforced)
+        )
     return regions
 
 
@@ -471,6 +511,7 @@ def _axis_constraints(
     background_spacing: float,
     regions: list[_Region],
     spec: GridSpec,
+    coordinate_offset: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     coordinates = [0.0, extent]
     effective_regions = []
@@ -480,8 +521,11 @@ def _axis_constraints(
         coordinates.extend((region.lower[axis], region.upper[axis]))
         effective_regions.append(region)
     for point in spec.snapping_points:
-        if point[axis] is not None and 0.0 < point[axis] < extent:
-            coordinates.append(float(point[axis]))
+        value = point[axis]
+        if value is not None:
+            value = float(value) + coordinate_offset
+        if value is not None and 0.0 < value < extent:
+            coordinates.append(value)
     coords = _unique_coordinates(coordinates, extent)
     limits = np.empty(coords.size - 1, dtype=np.float64)
     for index, midpoint in enumerate(0.5 * (coords[:-1] + coords[1:])):
@@ -500,11 +544,14 @@ def _axis_constraints(
 
 
 def _realize_graded_grid(design: Any, spec: GridSpec) -> RectilinearGrid:
+    if spec.wavelength is None:
+        raise ValueError("GridSpec.auto requires wavelength.")
+    wavelength = float(spec.wavelength)
     extents = _design_extents(design)
-    regions = _geometry_regions(design, spec)
+    coordinate_offset = _design_coordinate_offset(design)
+    regions = _geometry_regions(design, spec, coordinate_offset)
     background_spacing = _clamp_spacing(
-        float(spec.wavelength)
-        / (_material_index(design.background) * spec.min_steps_per_wvl),
+        wavelength / (_material_index(design.background) * spec.min_steps_per_wvl),
         spec,
     )
     mesher = GradedMesher(max_scale=spec.max_scale)
@@ -518,6 +565,7 @@ def _realize_graded_grid(design: Any, spec: GridSpec) -> RectilinearGrid:
             min(background_spacing, domain_limit),
             regions,
             spec,
+            coordinate_offset[axis],
         )
         edges.append(mesher.make_axis_edges(coords, limits))
     if active_count == 2:

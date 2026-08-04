@@ -149,9 +149,9 @@ def _max_index_for_specs(background, structures) -> float:
 
 def _resolve_grid_resolution(grid_spec, background, structures) -> float:
     if grid_spec.resolution is not None:
-        resolution = grid_spec.resolve_resolution()
+        resolution = grid_spec._target_spacing()
     else:
-        resolution = grid_spec.resolve_resolution(
+        resolution = grid_spec._target_spacing(
             max_index=_max_index_for_specs(background, structures)
         )
     return positive_float(resolution, name="Simulation resolution")
@@ -169,8 +169,14 @@ def _uniform_grid_for_design(design, resolution: float) -> RectilinearGrid:
     nx, ny = count(design.width), count(design.height)
     if _design_is_3d(design):
         nz = count(design.depth)
-        return RectilinearGrid.from_spacing((nx, ny, nz), spacing)
-    return RectilinearGrid.from_spacing((nx, ny, 1), (spacing, spacing, 1.0))
+        return RectilinearGrid.uniform(
+            (0.0, 0.0, 0.0),
+            (nx * spacing, ny * spacing, nz * spacing),
+            (nx, ny, nz),
+        )
+    return RectilinearGrid.uniform(
+        (0.0, 0.0, 0.0), (nx * spacing, ny * spacing, 1.0), (nx, ny, 1)
+    )
 
 
 def _devices_require_uniform_grid(sources, monitors) -> bool:
@@ -219,6 +225,7 @@ def _resolve_design_time_and_grid(
         grid_spec is not None and grid_spec.is_automatic and not require_uniform_grid
     )
     if use_realized_grid:
+        assert grid_spec is not None
         grid = grid_spec.realize(design)
         resolution = grid.minimum_spacing
     else:
