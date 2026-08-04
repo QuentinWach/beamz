@@ -21,6 +21,17 @@ def _cell_count(value: float) -> int:
     return max(1, int(np.ceil(value - tolerance)))
 
 
+def _refined_cell_count(current: int, required_factor: float) -> int:
+    """Increase an interval count without overshooting a coupled boundary."""
+    # An interval participates in constraints at both ends. Jumping directly by
+    # the apparent boundary-width ratio can reverse the violation and make the
+    # neighboring interval over-refine in response. A bounded proportional step
+    # converges much faster than +1 on long intervals while remaining well damped.
+    fractional_growth = min(max(float(required_factor) - 1.0, 0.0), 0.05)
+    increment = max(1, int(np.ceil(int(current) * fractional_growth)))
+    return int(current) + increment
+
+
 @dataclass(frozen=True, slots=True)
 class _SpacingProfile:
     """Piecewise-linear spacing profile and its integrated cell density."""
@@ -247,13 +258,25 @@ class GradedMesher:
                 [_cell_count(profile.total_density) for profile in profiles],
                 dtype=np.int64,
             )
+            # Keep a mandatory interval as one cell when it already satisfies its
+            # hard cap. Its profile density can be just above one because the
+            # envelope also grades neighboring cells; blindly taking ceil would
+            # split it into the new sliver that this propagation is meant to avoid.
+            interval_lengths = np.diff(coords)
+            counts[interval_lengths <= caps * (1.0 + target_tolerance)] = 1
             for _refinement_pass in range(self.max_refinement_passes):
                 edges, owners = self._realize(profiles, counts)
                 widths = np.diff(edges)
                 target_limits = caps[owners]
                 if np.any(widths > target_limits * (1.0 + target_tolerance)):
-                    violating = np.unique(owners[widths > target_limits])
-                    counts[violating] += 1
+                    for interval in np.unique(owners[widths > target_limits]):
+                        selected = owners == interval
+                        required_factor = float(
+                            np.max(widths[selected] / target_limits[selected])
+                        )
+                        counts[interval] = _refined_cell_count(
+                            counts[interval], required_factor
+                        )
                     continue
                 if widths.size < 2:
                     return edges
@@ -264,18 +287,28 @@ class GradedMesher:
                 if violating_pairs.size == 0:
                     return edges
                 internal_violation = False
-                intervals_to_refine = set()
+                refinement_factors: dict[int, float] = {}
                 for pair in violating_pairs:
                     left_owner, right_owner = owners[pair : pair + 2]
                     if left_owner == right_owner:
                         internal_violation = True
                         break
                     larger_cell = pair if widths[pair] > widths[pair + 1] else pair + 1
-                    intervals_to_refine.add(int(owners[larger_cell]))
+                    smaller_cell = pair + 1 if larger_cell == pair else pair
+                    interval = int(owners[larger_cell])
+                    required_factor = float(
+                        widths[larger_cell]
+                        / (self.max_scale * widths[smaller_cell])
+                    )
+                    refinement_factors[interval] = max(
+                        refinement_factors.get(interval, 1.0), required_factor
+                    )
                 if internal_violation:
                     break
-                for interval in intervals_to_refine:
-                    counts[interval] += 1
+                for interval, required_factor in refinement_factors.items():
+                    counts[interval] = _refined_cell_count(
+                        counts[interval], required_factor
+                    )
             slope *= 0.65
 
         raise RuntimeError(

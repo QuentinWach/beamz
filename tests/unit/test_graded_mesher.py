@@ -44,6 +44,28 @@ def test_graded_mesher_propagates_a_snapped_sliver_into_neighboring_cells():
     assert _max_ratio(edges) <= 1.25 * (1.0 + 1e-12)
 
 
+def test_short_mandatory_interval_is_not_split_into_a_new_sliver():
+    coordinates = np.asarray([0.0, 2.0, 2.02163663779975054])
+    limits = np.asarray([0.021484375, 0.5])
+
+    edges = GradedMesher(max_scale=1.125).make_axis_edges(coordinates, limits)
+
+    assert np.count_nonzero(edges >= coordinates[-2]) == 2
+    assert _max_ratio(edges) <= 1.125 * (1.0 + 1e-12)
+
+
+def test_constrained_terminal_interval_grades_into_long_neighbor():
+    coordinates = np.asarray([0.0, 1.0, 3.0, 3.021484375])
+    limits = np.asarray([0.5, 0.0234375, 0.02])
+
+    edges = GradedMesher(max_scale=1.0625).make_axis_edges(coordinates, limits)
+    widths = np.diff(edges)
+    owners = np.searchsorted(coordinates[1:], 0.5 * (edges[:-1] + edges[1:]))
+
+    assert np.all(widths <= limits[owners] * (1.0 + 1e-12))
+    assert _max_ratio(edges) <= 1.0625 * (1.0 + 1e-12)
+
+
 def test_graded_mesher_is_deterministic_and_validates_inputs():
     mesher = GradedMesher(max_scale=1.3)
     first = mesher.make_axis_edges([0.0, 1.0, 3.0], [0.1, 0.5])
@@ -78,7 +100,7 @@ def test_grid_quality_report_identifies_worst_adjacent_pair():
     assert not report.satisfies_max_scale(1.5, active_axes=("x", "y"))
 
 
-@settings(max_examples=100, deadline=None)
+@settings(max_examples=500, deadline=None)
 @given(
     interval_lengths=st.lists(
         st.floats(min_value=0.02, max_value=2.0, allow_nan=False),
