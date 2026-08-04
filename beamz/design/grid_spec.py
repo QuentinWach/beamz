@@ -10,7 +10,7 @@ import numpy as np
 from beamz.const import LIGHT_SPEED
 from beamz.design.grid import RectilinearGrid
 from beamz.design.mesher import _GradedMesher
-from beamz.design.structures import Polygon, Taper
+from beamz.design.structures import Polygon
 
 AxisValues = tuple[float, float, float]
 OptionalAxisValues = tuple[float | None, float | None, float | None]
@@ -456,24 +456,21 @@ def _polygon_opposing_width(structure: Polygon) -> float | None:
 def _feature_sizes(
     structure: Any, *, detect_polygon_features: bool
 ) -> tuple[float | None, float | None, float | None]:
-    if hasattr(structure, "inner_radius") and hasattr(structure, "outer_radius"):
-        wall = float(structure.outer_radius) - float(structure.inner_radius)
-        return wall, wall, float(getattr(structure, "depth", 0.0)) or None
-    if hasattr(structure, "size"):
-        size = tuple(float(value) for value in structure.size)
-        if len(size) == 2:
-            size = (*size, 0.0)
-        return tuple(
-            value if np.isfinite(value) and value > 0.0 else None for value in size
-        )  # type: ignore[return-value]
-    if isinstance(structure, Taper):
-        transverse = min(float(structure.input_width), float(structure.output_width))
-        depth = float(structure.depth)
-        return float(structure.length), transverse, depth if depth > 0.0 else None
     if isinstance(structure, Polygon) and detect_polygon_features:
         clearance = _polygon_opposing_width(structure)
         depth = float(structure.depth)
         return clearance, clearance, depth if depth > 0.0 else None
+    semantic = structure._mesh_feature_sizes()
+    if semantic is not None:
+        return cast(
+            tuple[float | None, float | None, float | None],
+            tuple(
+                value
+                if value is None
+                else (float(value) if np.isfinite(value) and value > 0.0 else None)
+                for value in semantic
+            ),
+        )
     width = getattr(structure, "width", None)
     height = getattr(structure, "height", None)
     depth = getattr(structure, "depth", None)

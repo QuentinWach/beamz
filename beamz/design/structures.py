@@ -142,6 +142,10 @@ class Structure:
     def copy(self):
         return self
 
+    def _mesh_feature_sizes(self):
+        """Return optional axis-specific physical sizes for automatic meshing."""
+        return None
+
 
 class PlanarStructure(Structure):
     """Geometry operations shared by polygon-backed structures."""
@@ -302,6 +306,9 @@ class Rectangle(PlanarStructure):
             depth=self.depth * float(s_z),
         )
 
+    def _mesh_feature_sizes(self):
+        return self.width, self.height, self.depth or None
+
 
 def _circle_vertices(position, radius, points):
     if int(points) < 3:
@@ -349,6 +356,10 @@ class Circle(PlanarStructure):
         if s_y is not None and not np.isclose(float(s_x), float(s_y)):
             return PlanarStructure.scale(self, s_x, s_y, s_z)
         return self.updated_copy(radius=self.radius * float(s_x))
+
+    def _mesh_feature_sizes(self):
+        diameter = 2.0 * self.radius
+        return diameter, diameter, self.depth or None
 
 
 @dataclass(frozen=True, eq=False, slots=True)
@@ -399,6 +410,10 @@ class Ring(PlanarStructure):
             inner_radius=self.inner_radius * float(s_x),
             outer_radius=self.outer_radius * float(s_x),
         )
+
+    def _mesh_feature_sizes(self):
+        wall = self.outer_radius - self.inner_radius
+        return wall, wall, self.depth or None
 
 
 @dataclass(frozen=True, eq=False, slots=True)
@@ -486,6 +501,10 @@ class CircularBend(PlanarStructure):
             outer_radius=self.outer_radius * float(s_x),
         )
 
+    def _mesh_feature_sizes(self):
+        wall = self.outer_radius - self.inner_radius
+        return wall, wall, self.depth or None
+
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Taper(PlanarStructure):
@@ -527,6 +546,13 @@ class Taper(PlanarStructure):
         ):
             object.__setattr__(self, name, value)
         _normalize_common(self)
+
+    def _mesh_feature_sizes(self):
+        return (
+            self.length,
+            min(self.input_width, self.output_width),
+            self.depth or None,
+        )
 
 
 @dataclass(frozen=True, eq=False, slots=True)
@@ -585,6 +611,9 @@ class Box(Structure):
             material=self.material if material is None else material,
         )
 
+    def _mesh_feature_sizes(self):
+        return tuple(value if value > 0.0 else None for value in self.size)
+
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Sphere(Structure):
@@ -618,3 +647,7 @@ class Sphere(Structure):
         ):
             raise ValueError("Sphere scaling must be uniform.")
         return self.updated_copy(radius=self.radius * float(s_x))
+
+    def _mesh_feature_sizes(self):
+        diameter = 2.0 * self.radius
+        return diameter, diameter, diameter

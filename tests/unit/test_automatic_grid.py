@@ -215,3 +215,48 @@ def test_polygon_feature_target_is_invariant_to_curve_tessellation():
     assert max(x for x, _y in counts) - min(x for x, _y in counts) <= 2
     assert max(y for _x, y in counts) - min(y for _x, y in counts) <= 2
     assert max(minimum_spacings) / min(minimum_spacings) < 1.02
+
+
+@pytest.mark.parametrize(
+    ("structure", "dimensions"),
+    (
+        (
+            bz.Circle(
+                position=(5.0, 5.0),
+                radius=0.05,
+                material=bz.Material(permittivity=1.0),
+            ),
+            2,
+        ),
+        (
+            bz.Sphere(
+                position=(5.0, 5.0, 5.0),
+                radius=0.05,
+                material=bz.Material(permittivity=1.0),
+            ),
+            3,
+        ),
+    ),
+)
+def test_min_feature_cells_resolves_circular_primitives(structure, dimensions):
+    material = bz.Material(permittivity=1.0)
+    design = bz.Design(
+        width=10.0,
+        height=10.0,
+        depth=10.0 if dimensions == 3 else 0.0,
+        background=material,
+        structures=(structure,),
+    )
+
+    grid = bz.GridSpec.auto(
+        wavelength=100.0,
+        min_steps_per_wvl=10,
+        min_steps_per_sim_size=10,
+        min_feature_cells=10,
+    ).realize(design)
+
+    for axis in "xyz"[:dimensions]:
+        feature_cells = np.count_nonzero(
+            (grid.centers(axis) > 4.95) & (grid.centers(axis) < 5.05)
+        )
+        assert feature_cells >= 10
