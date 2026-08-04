@@ -6,7 +6,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from beamz.design.grid import RectilinearGrid
-from beamz.design.mesher import GradedMesher
+from beamz.design.mesher import _GradedMesher
 
 
 def _max_ratio(edges: np.ndarray) -> float:
@@ -20,7 +20,7 @@ def test_graded_mesher_preserves_constraints_and_smooths_large_step_change():
     coords = np.asarray([0.0, 4.0, 6.0, 10.0])
     limits = np.asarray([1.0, 0.2, 1.0])
 
-    edges = GradedMesher(max_scale=1.2).make_axis_edges(coords, limits)
+    edges = _GradedMesher(max_scale=1.2).make_axis_edges(coords, limits)
     widths = np.diff(edges)
     centers = 0.5 * (edges[:-1] + edges[1:])
     local_limits = np.select(
@@ -37,7 +37,7 @@ def test_graded_mesher_preserves_constraints_and_smooths_large_step_change():
 
 def test_graded_mesher_propagates_a_snapped_sliver_into_neighboring_cells():
     coords = np.asarray([0.0, 1.0, 1.01, 2.0])
-    edges = GradedMesher(max_scale=1.25).make_axis_edges(coords, [0.2, 0.2, 0.2])
+    edges = _GradedMesher(max_scale=1.25).make_axis_edges(coords, [0.2, 0.2, 0.2])
 
     assert np.any(edges == 1.0)
     assert np.any(edges == 1.01)
@@ -48,7 +48,7 @@ def test_short_mandatory_interval_is_not_split_into_a_new_sliver():
     coordinates = np.asarray([0.0, 2.0, 2.02163663779975054])
     limits = np.asarray([0.021484375, 0.5])
 
-    edges = GradedMesher(max_scale=1.125).make_axis_edges(coordinates, limits)
+    edges = _GradedMesher(max_scale=1.125).make_axis_edges(coordinates, limits)
 
     assert np.count_nonzero(edges >= coordinates[-2]) == 2
     assert _max_ratio(edges) <= 1.125 * (1.0 + 1e-12)
@@ -58,7 +58,7 @@ def test_constrained_terminal_interval_grades_into_long_neighbor():
     coordinates = np.asarray([0.0, 1.0, 3.0, 3.021484375])
     limits = np.asarray([0.5, 0.0234375, 0.02])
 
-    edges = GradedMesher(max_scale=1.0625).make_axis_edges(coordinates, limits)
+    edges = _GradedMesher(max_scale=1.0625).make_axis_edges(coordinates, limits)
     widths = np.diff(edges)
     owners = np.searchsorted(coordinates[1:], 0.5 * (edges[:-1] + edges[1:]))
 
@@ -67,7 +67,7 @@ def test_constrained_terminal_interval_grades_into_long_neighbor():
 
 
 def test_graded_mesher_is_deterministic_and_validates_inputs():
-    mesher = GradedMesher(max_scale=1.3)
+    mesher = _GradedMesher(max_scale=1.3)
     first = mesher.make_axis_edges([0.0, 1.0, 3.0], [0.1, 0.5])
     second = mesher.make_axis_edges([0.0, 1.0, 3.0], [0.1, 0.5])
 
@@ -77,7 +77,7 @@ def test_graded_mesher_is_deterministic_and_validates_inputs():
     with pytest.raises(ValueError, match="one value"):
         mesher.make_axis_edges([0.0, 1.0, 2.0], [0.1])
     with pytest.raises(ValueError, match="between 1 and 2"):
-        GradedMesher(max_scale=2.0)
+        _GradedMesher(max_scale=2.0)
 
 
 def test_grid_quality_report_identifies_worst_adjacent_pair():
@@ -127,7 +127,7 @@ def test_graded_mesher_randomized_quality_invariants(
     )
     coordinates = np.concatenate(([0.0], np.cumsum(interval_lengths)))
 
-    edges = GradedMesher(max_scale=max_scale).make_axis_edges(coordinates, limits)
+    edges = _GradedMesher(max_scale=max_scale).make_axis_edges(coordinates, limits)
     widths = np.diff(edges)
     centers = 0.5 * (edges[:-1] + edges[1:])
     interval_indices = np.searchsorted(coordinates[1:], centers, side="right")

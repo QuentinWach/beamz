@@ -9,7 +9,7 @@ import numpy as np
 
 from beamz.const import LIGHT_SPEED
 from beamz.design.grid import RectilinearGrid
-from beamz.design.mesher import GradedMesher
+from beamz.design.mesher import _GradedMesher
 from beamz.design.structures import Polygon, Taper
 
 AxisValues = tuple[float, float, float]
@@ -122,7 +122,13 @@ class GridSpec:
 
     @property
     def is_automatic(self) -> bool:
-        """Return whether this policy realizes a geometry-aware grid."""
+        """Return whether this policy realizes a geometry-aware grid.
+
+        Returns
+        -------
+        bool
+            ``True`` when no explicit uniform resolution was supplied.
+        """
         return self.resolution is None
 
     def __post_init__(self) -> None:
@@ -580,7 +586,7 @@ def _realize_graded_grid(design: Any, spec: GridSpec) -> RectilinearGrid:
         wavelength / (_material_index(design.background) * spec.min_steps_per_wvl),
         spec,
     )
-    mesher = GradedMesher(max_scale=spec.max_scale)
+    mesher = _GradedMesher(max_scale=spec.max_scale)
     active_count = 2 if float(design.depth) == 0.0 else 3
     edges = []
     for axis in range(active_count):

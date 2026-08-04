@@ -116,7 +116,7 @@ class _SpacingProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class GradedMesher:
+class _GradedMesher:
     """Generate smoothly graded cell edges across constrained 1D intervals.
 
     Parameters
@@ -199,7 +199,7 @@ class GradedMesher:
         # length as an additional local spacing constraint so a tiny interval
         # grades smoothly into its neighbors instead of creating a sliver cell.
         effective_caps = np.minimum(caps, lengths)
-        boundary_spacings = GradedMesher._boundary_spacings(
+        boundary_spacings = _GradedMesher._boundary_spacings(
             lengths, effective_caps, slope
         )
         return [
@@ -317,4 +317,4 @@ class GradedMesher:
         )
 
 
-__all__ = ["GradedMesher"]
+__all__: list[str] = []

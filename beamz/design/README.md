@@ -29,6 +29,10 @@ print(grid.quality_report())
 material_grid = design.rasterize(grid, smoothing="farjadpour_full")
 ```
 
+`Simulation.grid` exposes the exact realized grid used for rasterization and
+propagation. `Simulation.resolution` remains the scalar representative spacing
+used by compatibility APIs.
+
 The policy snaps structure boundaries, resolves wavelength in each material and
 small geometric features, and grades the spacing without exceeding `max_scale`
 between neighboring cells. `MeshOverride` and `snapping_points` provide local

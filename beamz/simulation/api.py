@@ -517,7 +517,8 @@ class Simulation:
         Domain boundary conditions. An all-edge PEC boundary is used when omitted.
     resolution : float, default=0.02 * um
         Uniform cell spacing in metres when ``grid_spec`` does not override it.
-        Geometry-aware specifications realize an internal ``RectilinearGrid``.
+        Geometry-aware specifications expose their exact mesh through ``grid``;
+        this attribute remains a representative scalar for compatibility.
     time : numpy.ndarray, optional
         One-dimensional, uniformly spaced time samples in seconds. Exactly one of
         ``time`` and ``run_time`` may be supplied.

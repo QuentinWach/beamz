@@ -134,9 +134,10 @@ conductivity, full permittivity combined with conductivity, and non-unit
 permeability fail with a capability-specific message. Conductive diagonal
 materials propagate in FDTD but are rejected for `ModeSource` until the mode
 bridge represents their frequency-dependent complex permittivity. The current
-mode-source and mode-monitor bridge also rejects nonuniform rectilinear grids;
-`GaussianSource`, `CustomSource`, and field/flux monitors work on them, while
-`GaussianBeamSource` still requires a uniform grid. The current 2D and public
+mode-source and mode-monitor bridge rejects explicitly supplied nonuniform
+rectilinear grids. `GridSpec.auto()` selects a compatible uniform grid when a
+mode source, mode monitor, or Gaussian beam is present. `GaussianSource`,
+`CustomSource`, and field/flux monitors work on graded grids. The current 2D and public
 convenience mode solvers use the cell-tensor approximation for diagonal
 Farjadpour grids and reject full off-diagonal coupling; the 3D launch planner
 retains its Yee-aware refinement path.

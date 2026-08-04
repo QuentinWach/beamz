@@ -48,6 +48,12 @@ _.uniform_spacing
 _.coord_to_edge_index
 _.cell_volume
 _.face_area
+_.is_automatic
+_.quality_report
+_.satisfies_max_scale
+maximum_spacing
+mean_spacing
+worst_pair_index
 
 # functools.singledispatch registrations are reached through lower_source.dispatch().
 _lower_custom_source

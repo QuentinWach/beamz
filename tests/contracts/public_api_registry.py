@@ -149,7 +149,6 @@ CONFIGURATION_CASES = (
         "MeshOverride",
         lambda: bz.MeshOverride(center=(0.0, 0.0), size=(1.0, 1.0), dl=0.1),
     ),
-    PublicConfigCase("GradedMesher", bz.GradedMesher),
     PublicConfigCase(
         "Grid",
         lambda: bz.Grid.from_spacing((1, 1, 1), 1.0),

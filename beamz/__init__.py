@@ -33,7 +33,6 @@ from beamz.design.grid import AxisGridQuality, Grid, GridQualityReport, Rectilin
 # Import simulation-related classes and functions
 from beamz.design.grid_spec import GridSpec, MeshOverride
 from beamz.design.materials import Material
-from beamz.design.mesher import GradedMesher
 from beamz.design.structures import (
     Box,
     Circle,
@@ -105,7 +104,6 @@ __all__ = [
     "Simulation",
     "GridSpec",
     "MeshOverride",
-    "GradedMesher",
     "Grid",
     "RectilinearGrid",
     "AxisGridQuality",

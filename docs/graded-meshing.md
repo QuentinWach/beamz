@@ -30,6 +30,7 @@ simulation = bz.Simulation(
     monitors=monitors,
     run_time=2e-12,
 )
+assert simulation.grid == grid
 ```
 
 `GridSpec.auto()` is the canonical automatic meshing constructor and produces a
@@ -134,10 +135,12 @@ single attractive mesh plot is not a convergence study.
 ## Current boundary
 
 `GaussianSource`, `CustomSource`, and field/flux monitors work on graded grids.
-The mode-source and mode-monitor bridge currently requires a uniform grid and
-will raise a capability-specific error; `GaussianBeamSource` also awaits its
-metric-aware phasor-residual operator. The core FDTD propagation, rasterizer,
-CPML, and CFL calculation all consume rectilinear metrics directly.
+When an automatic policy is combined with a mode source, mode monitor, or
+Gaussian beam, `Simulation` currently selects an isotropic uniform grid at the
+same material-wavelength target because those device operators still require
+constant spacing. Explicit nonuniform material grids continue to raise a
+capability-specific error for those devices. The core FDTD propagation,
+rasterizer, CPML, and CFL calculation all consume rectilinear metrics directly.
 
 ## References
 
