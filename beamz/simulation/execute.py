@@ -891,7 +891,10 @@ def run_until_terminated(
         num_steps=chunk_steps, sharding=sharding, progress=progress
     )
     monitor_names = _selected_monitor_names(first_program, policy)
-    use_monitor = policy.monitor_change is not None and bool(monitor_names)
+    monitor_tolerance = (
+        None if policy.monitor_change is None else float(policy.monitor_change)
+    )
+    use_monitor = monitor_tolerance is not None and bool(monitor_names)
     if policy.field_decay == 0.0 and not use_monitor:
         raise ValueError(
             "Automatic termination has no applicable field or monitor criterion."
@@ -937,10 +940,7 @@ def run_until_terminated(
 
             energy, max_field, fields_finite = _field_diagnostics(state, terms)
             current_monitor = _monitor_vector(last_run.results, monitor_names)
-            monitors_finite = bool(
-                np.isfinite(current_monitor.real).all()
-                and np.isfinite(current_monitor.imag).all()
-            )
+            monitors_finite = bool(np.isfinite(current_monitor).all())
             if not fields_finite or not np.isfinite(energy) or not monitors_finite:
                 reason = "nonfinite"
                 break
@@ -972,7 +972,8 @@ def run_until_terminated(
             )
             monitor_stable = not use_monitor or (
                 monitor_change is not None
-                and monitor_change <= float(policy.monitor_change)
+                and monitor_tolerance is not None
+                and monitor_change <= monitor_tolerance
             )
             if eligible and energy_stable and monitor_stable:
                 successful_checks += 1
