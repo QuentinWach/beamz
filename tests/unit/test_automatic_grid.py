@@ -465,6 +465,49 @@ def test_polygon_hole_refinement_is_invariant_to_ring_vertex_order():
         np.testing.assert_array_equal(grid.y_edges, grids[0].y_edges)
 
 
+def test_polygon_hole_refinement_is_stable_across_curve_tessellations():
+    material = bz.Material(permittivity=1.0)
+    spec = bz.GridSpec.auto(
+        wavelength=10.0,
+        min_steps_per_wvl=10,
+        min_steps_per_sim_size=10,
+        min_feature_cells=8,
+    )
+    grids = []
+    for points in (32, 64, 128, 256, 512):
+        outer = bz.Circle(
+            position=(2.0, 2.0), radius=1.0, points=points, material=material
+        )
+        inner = bz.Circle(
+            position=(2.0, 2.0), radius=0.8, points=points, material=material
+        )
+        polygon = bz.Polygon(
+            vertices=outer.vertices,
+            interiors=(inner.vertices,),
+            material=material,
+        )
+        grids.append(
+            spec.realize(
+                bz.Design(
+                    width=4.0,
+                    height=4.0,
+                    background=material,
+                    structures=(polygon,),
+                )
+            )
+        )
+
+    assert len({grid.shape[:2] for grid in grids}) == 1
+    minimum_spacings = [grid.minimum_spacing for grid in grids]
+    assert max(minimum_spacings) / min(minimum_spacings) < 1.03
+    for grid in grids:
+        np.testing.assert_array_equal(grid.x_edges, grid.y_edges)
+        wall_cells = np.count_nonzero(
+            (grid.centers("x") > 2.8) & (grid.centers("x") < 3.0)
+        )
+        assert wall_cells >= 8
+
+
 @pytest.mark.parametrize(
     ("structure", "dimensions"),
     (
