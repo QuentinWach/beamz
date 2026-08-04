@@ -8,14 +8,13 @@ from typing import Any
 
 import numpy as np
 
-from beamz.devices._placement import snap_plane_region_grid
+from beamz.analysis._coordinates import monitor_plane_coordinates_3d
 from beamz.lattice import (
     component_coordinates_2d_um,
     component_coordinates_3d_um,
     component_coordinates_rectilinear,
     coordinates_in_public_frame,
     plane_axes_3d,
-    yee_plane_coordinates_3d,
 )
 from beamz.simulation.results import MonitorResults, SimulationResults
 
@@ -108,17 +107,6 @@ def _axis_extent(values, *, fallback_step):
     )
 
 
-def _common_component_shape(metadata):
-    shapes = [
-        tuple(int(value) for value in shape)
-        for shape in metadata.fields.component_shapes.values()
-        if len(shape) == 3
-    ]
-    if not shapes:
-        raise ValueError("3D recorder metadata has no three-dimensional fields.")
-    return tuple(max(shape[axis] for shape in shapes) for axis in range(3))
-
-
 def _video_data(results, recording, *, field, plane, index):
     metadata = results.metadata
     frames = np.asarray(recording.fields[field])
@@ -141,29 +129,11 @@ def _video_data(results, recording, *, field, plane, index):
             )
         normal = monitor.plane_normal
         vertical, horizontal = plane_axes_3d(normal)
-        region = recording.sample_region
-        if region is None and metadata.grid is not None:
-            region = snap_plane_region_grid(
-                center=monitor.center,
-                size=monitor.size,
-                plane_normal=normal,
-                grid=metadata.grid,
-            )
-        if region is not None:
-            coord0, coord1 = yee_plane_coordinates_3d(
-                monitor.center,
-                monitor.size,
-                normal,
-                region,
-                grid=metadata.grid,
-            )
-        else:
-            coord0, coord1 = monitor.get_analysis_plane_coords_3d(
-                dx=metadata.resolution,
-                dy=metadata.resolution,
-                dz=metadata.resolution,
-                field_shape=_common_component_shape(metadata),
-            )
+        region, coord0, coord1 = monitor_plane_coordinates_3d(
+            metadata,
+            monitor,
+            region=recording.sample_region,
+        )
         if frames.shape[1:] != (coord0.size, coord1.size):
             raise ValueError(
                 f"Recorded {field!r} frame shape {frames.shape[1:]} does not match "

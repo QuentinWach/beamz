@@ -10,9 +10,9 @@ from typing import Any
 import numpy as np
 
 from beamz._helpers import get_si_scale_and_label
+from beamz.analysis._coordinates import monitor_plane_coordinates_3d
 from beamz.analysis.data import AnalysisData, analysis_inputs, static_fields
 from beamz.devices.visualization import visual_spec_from_device
-from beamz.lattice import common_grid_shape_3d
 from beamz.simulation.observe import source_field_amplitude_normalization
 
 _UM = 1e-6
@@ -1108,43 +1108,26 @@ def _monitor_dft_values(data, field_name, *, frequency=None, val="real"):
 
 def _monitor_plane_shape_and_coords(simulation, monitor):
     plane_shape = getattr(monitor, "_compiled_dft_shape_3d", None)
-    fields = getattr(simulation, "fields", None)
-    if getattr(fields, "component_shapes", None):
-        # The 3D monitor compiler collocates every Yee component on a plane
-        # derived from the largest staggered component shape, not from the
-        # smaller material grid. Reconstruct the same target grid for detached
-        # results so its dimensions match the flattened DFT buffers.
-        base_shape = common_grid_shape_3d(fields)
-    else:
-        base_shape = tuple(
-            int(v)
-            for v in getattr(
-                fields,
-                "grid_shape",
-                np.asarray(getattr(fields, "permittivity", ())).shape,
-            )
-        )
-    coords0, coords1 = monitor.get_analysis_plane_coords_3d(
-        dx=float(simulation.resolution),
-        dy=float(simulation.resolution),
-        dz=float(simulation.resolution),
-        field_shape=base_shape,
-    )
-    coords0 = np.asarray(coords0, dtype=float)
-    coords1 = np.asarray(coords1, dtype=float)
+    region, coords0, coords1 = monitor_plane_coordinates_3d(simulation, monitor)
     if plane_shape is None:
         plane_shape = (int(coords0.size), int(coords1.size))
     else:
         plane_shape = tuple(int(v) for v in plane_shape)
         coords0 = coords0[: plane_shape[0]]
         coords1 = coords1[: plane_shape[1]]
-    return plane_shape, coords0, coords1
+    return plane_shape, coords0, coords1, region
 
 
 def _reshape_dft_plane(values, f_idx, plane_shape):
-    return np.asarray(values[f_idx], dtype=np.complex128).reshape(
-        tuple(int(v) for v in plane_shape)
-    )
+    shape = tuple(int(v) for v in plane_shape)
+    samples = np.asarray(values[f_idx], dtype=np.complex128)
+    expected = int(np.prod(shape))
+    if samples.size != expected:
+        raise ValueError(
+            f"Recorded DFT plane has {samples.size} samples, but its exact "
+            f"rectilinear coordinates require shape {shape} ({expected} samples)."
+        )
+    return samples.reshape(shape)
 
 
 def _dft_plane_components(data, field, frequency_index, plane_shape):
@@ -1322,7 +1305,7 @@ def plot_dft_field(
 
     field_key = str(field)
     coordinate_context = data.coordinates if data is not None else simulation
-    plane_shape, target0, target1 = _monitor_plane_shape_and_coords(
+    plane_shape, target0, target1, sample_region = _monitor_plane_shape_and_coords(
         coordinate_context, monitor
     )
     components, vector = _dft_plane_components(data, field_key, f_idx, plane_shape)
@@ -1340,13 +1323,28 @@ def plot_dft_field(
         origin = _tidy3d_origin_for_simulation(coordinate_context)
     ox, oy, oz = (float(v) for v in origin)
     origin_by_axis = {"x": ox, "y": oy, "z": oz}
-    extent = _coordinate_extent(
-        target0,
-        target1,
-        origin0=origin_by_axis[axis0],
-        origin1=origin_by_axis[axis1],
-        fallback_step=simulation.resolution,
-    )
+    grid = getattr(coordinate_context, "grid", None)
+    if grid is not None:
+        interval0 = sample_region.axis_interval(axis0)
+        interval1 = sample_region.axis_interval(axis1)
+        if interval0 is None or interval1 is None:
+            raise ValueError("A 3D DFT monitor is missing a tangential grid interval.")
+        edges0 = grid.axis_edges(axis0)
+        edges1 = grid.axis_edges(axis1)
+        extent = (
+            (edges1[interval1.start] - origin_by_axis[axis1]) / _UM,
+            (edges1[interval1.stop] - origin_by_axis[axis1]) / _UM,
+            (edges0[interval0.start] - origin_by_axis[axis0]) / _UM,
+            (edges0[interval0.stop] - origin_by_axis[axis0]) / _UM,
+        )
+    else:
+        extent = _coordinate_extent(
+            target0,
+            target1,
+            origin0=origin_by_axis[axis0],
+            origin1=origin_by_axis[axis1],
+            fallback_step=simulation.resolution,
+        )
     fig, ax = _figure_axes(ax, figsize=figsize)
     im, _ = plot_field_view(
         ax,

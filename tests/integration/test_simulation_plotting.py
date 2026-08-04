@@ -8,6 +8,8 @@ import pytest
 
 import beamz as bz
 from beamz.analysis.plotting import extract_axis_aligned_slice, plot_field_view
+from beamz.design import MaterialGrid
+from beamz.design.raster import Grid, Material, Scene, rasterize
 
 
 def test_generic_slice_and_field_primitives_preserve_axis_coordinates():
@@ -252,6 +254,61 @@ def test_monitor_dft_field_plot_restores_tidy_plane_view():
         assert ax.get_ylabel() == "y (um)"
         assert ax.get_xlim() == (-2.0, 2.0)
         assert ax.get_ylim() == (-2.0, 2.0)
+    finally:
+        plt.close(fig)
+
+
+def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates():
+    grid = Grid(
+        np.asarray([0.0, 0.2, 1.0]) * bz.um,
+        np.asarray([0.0, 0.3, 1.0]) * bz.um,
+        np.asarray([0.0, 0.4, 1.0]) * bz.um,
+    )
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(Scene((Material(),)), grid), dimensions=3
+    )
+    monitor = bz.FieldMonitor(
+        center=(0.5 * bz.um, 0.5 * bz.um, 0.2 * bz.um),
+        size=(1.0 * bz.um, 1.0 * bz.um, 0.0),
+        freqs=[1.0],
+        fields=("Ez",),
+        name="field",
+    )
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        monitors=[monitor],
+        time=np.asarray([0.0, 1e-16]),
+    )
+    program = simulation.compile()
+    spec = program.monitors[0]
+    result = bz.MonitorResults(
+        monitor=simulation.monitors[0],
+        fields={},
+        power_history=np.empty(0),
+        power_timestamps=np.empty(0),
+        power_spectrum=np.empty(0, dtype=np.complex64),
+        dft_fields={"Ez": np.ones((1, spec.dft_point_count), dtype=np.complex128)},
+        dft_frequencies=np.asarray([1.0]),
+        dft_weight_sum=np.ones(1),
+        resolution=simulation.resolution,
+        sample_region=spec.sample_region,
+    )
+    results = bz.SimulationResults.from_run(
+        simulation,
+        runtime_fields=program.grid,
+        monitor_results={"field": result},
+    )
+
+    fig, ax = results.plot_field(
+        field_monitor_name="field",
+        field_name="Ez",
+        show=False,
+    )
+
+    try:
+        assert ax.images[0].get_array().shape == (2, 2)
+        assert ax.get_xlim() == pytest.approx((0.0, 1.0))
+        assert ax.get_ylim() == pytest.approx((0.0, 1.0))
     finally:
         plt.close(fig)
 
