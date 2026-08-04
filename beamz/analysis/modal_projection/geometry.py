@@ -8,7 +8,13 @@ import numpy as np
 
 from beamz.analysis.data import AnalysisData, static_fields
 from beamz.const import LIGHT_SPEED, µm
-from beamz.lattice import component_coordinates_3d_um, plane_sample_area
+from beamz.devices._placement import snap_plane_region_grid
+from beamz.lattice import (
+    component_coordinates_3d_um,
+    component_coordinates_rectilinear,
+    plane_sample_area,
+    yee_plane_coordinates_3d,
+)
 
 
 def _grid_shape(sim):
@@ -19,6 +25,16 @@ def _grid_shape(sim):
     if shape is not None:
         return tuple(int(v) for v in shape)
     return tuple(int(v) for v in np.asarray(fields.permittivity).shape)
+
+
+def _analysis_grid(sim):
+    if isinstance(sim, AnalysisData):
+        return sim.coordinates.grid
+    try:
+        fields = static_fields(sim)
+    except TypeError:
+        return None
+    return getattr(fields, "geometry", None)
 
 
 def _monitor_projection_phase(component, frequencies, dt):
@@ -72,7 +88,15 @@ def _modal_projection_plane_delay_s(sim, spec, frequency, mode_neff):
         return 0.0
     if (not np.isfinite(neff)) or neff <= 0.0:
         return 0.0
-    d_axis = float(getattr(sim, "resolution", 0.0) or 0.0)
+    grid = _analysis_grid(sim)
+    if grid is not None and grid.metric_kind_for(("x", "y")) != "isotropic_uniform":
+        axis = str(getattr(spec, "axis", "x"))
+        center = tuple(float(value) for value in getattr(spec, "center", (0.0, 0.0, 0.0)))
+        coordinate = center[{"x": 0, "y": 1, "z": 2}[axis]]
+        index = int(np.argmin(np.abs(np.asarray(grid.centers(axis)) - coordinate)))
+        d_axis = float(grid.cell_widths(axis)[index])
+    else:
+        d_axis = float(getattr(sim, "resolution", 0.0) or 0.0)
     if (not np.isfinite(d_axis)) or d_axis <= 0.0:
         return 0.0
 
@@ -182,6 +206,20 @@ def _monitor_analysis_plane_3d(
     monitor,
     axis: str,
 ) -> tuple[np.ndarray, np.ndarray]:
+    grid = _analysis_grid(sim)
+    if grid is not None and grid.metric_kind != "isotropic_uniform":
+        snapped = snap_plane_region_grid(
+            center=monitor.center,
+            size=monitor.size,
+            plane_normal=axis,
+            grid=grid,
+        )
+        return tuple(
+            np.asarray(values, dtype=np.float64)
+            for values in yee_plane_coordinates_3d(
+                monitor.center, monitor.size, axis, snapped, grid=grid
+            )
+        )
     coordinate_method = getattr(monitor, "get_analysis_plane_coords_3d", None)
     if callable(coordinate_method):
         coord0, coord1 = cast(Any, coordinate_method)(
@@ -224,6 +262,9 @@ def _monitor_component_plane_coords_3d(
     component: str,
     axis: str,
 ) -> tuple[np.ndarray, np.ndarray]:
+    grid = _analysis_grid(sim)
+    if grid is not None and grid.metric_kind != "isotropic_uniform":
+        return _monitor_analysis_plane_3d(sim, monitor, axis)
     coordinate_method = getattr(monitor, "get_analysis_plane_coords_3d", None)
     if callable(coordinate_method):
         return _monitor_analysis_plane_3d(sim, monitor, axis)
@@ -236,12 +277,18 @@ def _monitor_component_plane_coords_3d(
         _clamp_monitor_grid_index(index, limit)
         for index, limit in zip(indices, field_shape, strict=True)
     )
-    coords_um = component_coordinates_3d_um(
-        component, _grid_shape(sim), float(sim.resolution / µm)
-    )
+    if grid is None:
+        coords = {
+            name: values * float(µm)
+            for name, values in component_coordinates_3d_um(
+                component, _grid_shape(sim), float(sim.resolution / µm)
+            ).items()
+        }
+    else:
+        coords = component_coordinates_rectilinear(component, grid)
     axis0, axis1 = _plane_axes_for_port_axis(axis)
     axis_slices: dict[str, Any] = dict(zip(("z", "y", "x"), indices, strict=True))
     common0, common1 = _monitor_common_plane_shape_3d(sim, monitor)
-    coord0 = np.asarray(coords_um[axis0][axis_slices[axis0]], dtype=np.float64)
-    coord1 = np.asarray(coords_um[axis1][axis_slices[axis1]], dtype=np.float64)
-    return coord0[:common0] * float(µm), coord1[:common1] * float(µm)
+    coord0 = np.asarray(coords[axis0][axis_slices[axis0]], dtype=np.float64)
+    coord1 = np.asarray(coords[axis1][axis_slices[axis1]], dtype=np.float64)
+    return coord0[:common0], coord1[:common1]

@@ -13,6 +13,11 @@ from beamz.analysis.modal_projection.geometry import (
     _mode_components_for_port,
     _monitor_analysis_plane_3d,
 )
+from beamz.devices._placement import (
+    line_region_points,
+    snap_axis_aligned_line_region_grid,
+    snap_plane_region_grid,
+)
 from beamz.devices.modes.discrete import DISCRETE_MODE_CONTRACT, solve_beamz_mode
 from beamz.devices.modes.fields import _modal_overlap, _normalize_profiles
 from beamz.devices.modes.plane import solve_mode_plane_3d, solve_modes
@@ -84,6 +89,35 @@ def _monitor_profile_slice(sim, monitor, axis, pad_cells):
         return eps_slice, local_idx, d_area
     if perm.ndim != 2:
         raise NotImplementedError("Modal extraction supports 2D or 3D only.")
+    grid = sim.coordinates.grid
+    if grid is not None and grid.metric_kind_for(("x", "y")) != "isotropic_uniform":
+        snapped = snap_axis_aligned_line_region_grid(monitor.start, monitor.end, grid)
+        if snapped is None:
+            raise ValueError(f"Monitor '{monitor.name}' is not axis aligned.")
+        points = line_region_points(snapped)
+        if not points:
+            raise ValueError(f"Monitor '{monitor.name}' contains no sample points.")
+        if axis == "x":
+            plane = int(snapped.plane_index)
+            eps_profile_full = perm[:, plane - origin[1]]
+            sample_idx = np.asarray([point[1] - origin[0] for point in points], dtype=int)
+            transverse_axis = "y"
+        else:
+            plane = int(snapped.plane_index)
+            eps_profile_full = perm[plane - origin[0], :]
+            sample_idx = np.asarray([point[0] - origin[1] for point in points], dtype=int)
+            transverse_axis = "x"
+        lo = max(0, int(np.min(sample_idx)) - int(pad_cells))
+        hi = min(len(eps_profile_full), int(np.max(sample_idx)) + int(pad_cells) + 1)
+        local_idx = np.clip(sample_idx - lo, 0, max(hi - lo - 1, 0))
+        edges = np.asarray(grid.axis_edges(transverse_axis))[lo : hi + 1]
+        weights = np.asarray(grid.cell_widths(transverse_axis))[sample_idx + (origin[0] if axis == "x" else origin[1])]
+        return (
+            np.asarray(eps_profile_full[lo:hi], dtype=np.complex128),
+            local_idx,
+            weights,
+            edges,
+        )
     points = monitor.get_grid_points_2d(sim.resolution, sim.resolution)
     if not points:
         raise ValueError(f"Monitor '{monitor.name}' contains no sample points.")
@@ -111,7 +145,12 @@ def _monitor_profile_slice(sim, monitor, axis, pad_cells):
     else:
         dl = float(sim.resolution)
     dl = max(dl, float(sim.resolution) * 1e-9)
-    return np.asarray(eps_profile_full[lo:hi], dtype=np.complex128), local_idx, dl
+    return (
+        np.asarray(eps_profile_full[lo:hi], dtype=np.complex128),
+        local_idx,
+        dl,
+        None,
+    )
 
 
 def _build_discrete_port_projection_3d(
@@ -139,30 +178,47 @@ def _build_discrete_port_projection_3d(
 
     axis = parts["axis"]
     axis_index = {"z": 0, "y": 1, "x": 2}[axis]
-    z_idx, y_idx, x_idx = monitor.get_grid_slice_3d(
-        sim.resolution,
-        sim.resolution,
-        sim.resolution,
-        full_shape,
-    )
-
-    normal_index = {"z": z_idx, "y": y_idx, "x": x_idx}[axis]
-    if isinstance(normal_index, slice):
-        start = 0 if normal_index.start is None else int(normal_index.start)
-        stop = (
-            full_shape[axis_index]
-            if normal_index.stop is None
-            else int(normal_index.stop)
+    grid = sim.coordinates.grid
+    if grid is not None and grid.metric_kind != "isotropic_uniform":
+        snapped_region = snap_plane_region_grid(
+            center=monitor.center,
+            size=monitor.size,
+            plane_normal=axis,
+            grid=grid,
         )
-        plane_index = int(
-            np.clip(
-                (start + max(start + 1, stop) - 1) // 2,
-                0,
-                full_shape[axis_index] - 1,
-            )
-        )
+        plane_index = int(snapped_region.plane_index)
     else:
-        plane_index = int(np.clip(int(normal_index), 0, full_shape[axis_index] - 1))
+        z_idx, y_idx, x_idx = monitor.get_grid_slice_3d(
+            sim.resolution,
+            sim.resolution,
+            sim.resolution,
+            full_shape,
+        )
+        normal_index = {"z": z_idx, "y": y_idx, "x": x_idx}[axis]
+        if isinstance(normal_index, slice):
+            start = 0 if normal_index.start is None else int(normal_index.start)
+            stop = (
+                full_shape[axis_index]
+                if normal_index.stop is None
+                else int(normal_index.stop)
+            )
+            plane_index = int(
+                np.clip(
+                    (start + max(start + 1, stop) - 1) // 2,
+                    0,
+                    full_shape[axis_index] - 1,
+                )
+            )
+        else:
+            plane_index = int(
+                np.clip(int(normal_index), 0, full_shape[axis_index] - 1)
+            )
+        snapped_region = monitor.get_snapped_region(
+            dx=float(sim.resolution),
+            dy=float(sim.resolution),
+            dz=float(sim.resolution),
+            field_shape=full_shape,
+        )
     if direction_sign > 0.0:
         offset_index = max(0, plane_index - 1)
     else:
@@ -184,12 +240,6 @@ def _build_discrete_port_projection_3d(
     else:
         width, height = size[0], size[1]
 
-    snapped_region = monitor.get_snapped_region(
-        dx=float(sim.resolution),
-        dy=float(sim.resolution),
-        dz=float(sim.resolution),
-        field_shape=full_shape,
-    )
     discrete_mode = solve_mode_plane_3d(
         perm,
         permeability,
@@ -211,6 +261,7 @@ def _build_discrete_port_projection_3d(
         snapped_region=snapped_region,
         material_origin_zyx=origin,
         solver=solve_beamz_mode,
+        grid=grid if grid is not None and grid.metric_kind != "isotropic_uniform" else None,
     )
     proj_components = tuple(parts.get("projection_components_3d", ()))
     if not proj_components:
@@ -220,6 +271,23 @@ def _build_discrete_port_projection_3d(
         analysis_coords1,
         float(sim.resolution),
     )
+    if grid is not None and grid.metric_kind != "isotropic_uniform":
+        transverse_axes = {
+            "x": ("z", "y"),
+            "y": ("z", "x"),
+            "z": ("y", "x"),
+        }[axis]
+        interval0 = snapped_region.axis_interval(transverse_axes[0])
+        interval1 = snapped_region.axis_interval(transverse_axes[1])
+        weights0 = np.asarray(grid.cell_widths(transverse_axes[0]))[
+            int(interval0.start) : int(interval0.stop)
+        ]
+        weights1 = np.asarray(grid.cell_widths(transverse_axes[1]))[
+            int(interval1.start) : int(interval1.stop)
+        ]
+        integration_weights = (weights0[:, None] * weights1[None, :]).reshape(-1)
+    else:
+        integration_weights = float(d_area)
     _, plus_components = _discrete_mode_projection_grids_3d(
         sim,
         discrete_mode,
@@ -265,14 +333,14 @@ def _build_discrete_port_projection_3d(
     _normalize_profiles(
         plus_components,
         axis=axis,
-        measure=float(d_area),
+        measure=integration_weights,
         direction_sign=float(direction_sign),
         max_scale=1e6,
     )
     _normalize_profiles(
         minus_components,
         axis=axis,
-        measure=float(d_area),
+        measure=integration_weights,
         direction_sign=float(direction_sign),
         max_scale=1e6,
     )
@@ -283,14 +351,14 @@ def _build_discrete_port_projection_3d(
                     plus_components,
                     plus_components,
                     axis,
-                    float(d_area),
+                    integration_weights,
                     direction_sign=direction_sign,
                 ),
                 _modal_overlap(
                     plus_components,
                     minus_components,
                     axis,
-                    float(d_area),
+                    integration_weights,
                     direction_sign=direction_sign,
                 ),
             ],
@@ -299,14 +367,14 @@ def _build_discrete_port_projection_3d(
                     minus_components,
                     plus_components,
                     axis,
-                    float(d_area),
+                    integration_weights,
                     direction_sign=direction_sign,
                 ),
                 _modal_overlap(
                     minus_components,
                     minus_components,
                     axis,
-                    float(d_area),
+                    integration_weights,
                     direction_sign=direction_sign,
                 ),
             ],
@@ -336,6 +404,7 @@ def _build_discrete_port_projection_3d(
         "axis": axis,
         "direction_sign": float(direction_sign),
         "d_area": float(d_area),
+        "integration_weights": integration_weights,
         "discrete_contract": DISCRETE_MODE_CONTRACT,
         "analysis_coords0": np.asarray(analysis_coords0, dtype=np.float64),
         "analysis_coords1": np.asarray(analysis_coords1, dtype=np.float64),
@@ -358,9 +427,12 @@ def _build_port_projection_2d(
     parts,
     mode_pad_cells,
 ):
-    eps_profile, local_idx, dl = _monitor_profile_slice(
-        sim, monitor, parts["axis"], mode_pad_cells
-    )
+    profile_slice = _monitor_profile_slice(sim, monitor, parts["axis"], mode_pad_cells)
+    if len(profile_slice) == 3:
+        eps_profile, local_idx, dl = profile_slice
+        grid_edges = None
+    else:
+        eps_profile, local_idx, dl, grid_edges = profile_slice
     eps_profile = np.asarray(eps_profile, dtype=np.complex128)
     target_neff = 0.98 * np.sqrt(max(float(np.max(np.real(eps_profile))), 1e-12))
     mode_count = int(spec.mode_index) + 1
@@ -373,6 +445,7 @@ def _build_port_projection_2d(
         filter_pol=spec.polarization,
         target_neff=target_neff,
         return_fields=True,
+        **({"grid_edges": (grid_edges,)} if grid_edges is not None else {}),
     )
     if len(neffs) <= int(spec.mode_index):
         raise ValueError(
@@ -396,8 +469,10 @@ def _build_port_projection_2d(
     e_profile = e_profile[local_idx]
     h_profile = h_profile[local_idx]
 
+    measure = np.asarray(dl, dtype=float)
+    weights = measure if measure.ndim == 0 else measure.reshape(-1)[: e_profile.size]
     power = 0.5 * np.real(
-        np.sum(parts["signed_flux_sign"] * e_profile * np.conjugate(h_profile)) * dl
+        np.sum(weights * parts["signed_flux_sign"] * e_profile * np.conjugate(h_profile))
     )
     normalization = np.sqrt(max(abs(power), 1e-30))
     e_forward = e_profile / normalization
@@ -408,13 +483,20 @@ def _build_port_projection_2d(
             np.concatenate([e_forward, -h_forward]),
         ]
     )
+    projection_weights = np.concatenate(
+        [
+            np.broadcast_to(np.sqrt(weights), e_forward.shape),
+            np.broadcast_to(np.sqrt(weights), h_forward.shape),
+        ]
+    )
     projection = {
         "e_component": parts["e_component"],
         "h_component": parts["h_component"],
         "components": (parts["e_component"], parts["h_component"]),
         "mode_matrix": mode_matrix,
         "condition_number": float(np.linalg.cond(mode_matrix)),
-        "pinv": np.linalg.pinv(mode_matrix),
+        "pinv": np.linalg.pinv(projection_weights[:, None] * mode_matrix),
+        "projection_weights": projection_weights,
         "mode_neff": float(np.real(np.asarray(neffs[mode_index]))),
     }
     projection["modal_plane_delay_s"] = _modal_projection_plane_delay_s(
@@ -477,7 +559,7 @@ def _project_modal_coefficients_3d_group(field_components, projections):
     first = projections[0]
     components = tuple(first.get("components", ()))
     axis = str(first.get("axis", "")).lower()
-    d_area = float(first.get("d_area", 1.0))
+    d_area = first.get("integration_weights", first.get("d_area", 1.0))
     direction_sign = float(first.get("direction_sign", 1.0))
     if len(components) == 0 or axis not in {"x", "y", "z"}:
         raise ValueError("3D modal group projection is missing components or axis.")

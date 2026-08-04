@@ -9,7 +9,7 @@ import numpy as np
 
 from beamz.analysis.data import AnalysisData, static_fields
 from beamz.const import µm
-from beamz.lattice import component_coordinates_3d_um
+from beamz.lattice import component_coordinates_3d_um, component_coordinates_rectilinear
 
 from .geometry import _monitor_component_plane_coords_3d, _plane_axes_for_port_axis
 
@@ -130,21 +130,29 @@ def _colocate_field_components_to_projection_3d(
 def _component_index_plane_coords_3d(sim, component, index, axis):
     if isinstance(sim, AnalysisData):
         grid_shape = sim.coordinates.fields.grid_shape
+        grid = sim.coordinates.grid
     else:
         fields = static_fields(sim)
+        grid = getattr(fields, "geometry", None)
         grid_shape = getattr(fields, "grid_shape", None)
         if grid_shape is None:
             grid_shape = np.asarray(fields.permittivity).shape
-    coords_um = component_coordinates_3d_um(
-        component,
-        tuple(int(v) for v in grid_shape),
-        float(sim.resolution / µm),
-    )
+    if grid is None or grid.metric_kind == "isotropic_uniform":
+        coords = {
+            name: values * float(µm)
+            for name, values in component_coordinates_3d_um(
+                component,
+                tuple(int(v) for v in grid_shape),
+                float(sim.resolution / µm),
+            ).items()
+        }
+    else:
+        coords = component_coordinates_rectilinear(component, grid)
     axis0, axis1 = _plane_axes_for_port_axis(axis)
     axis_indices = {"z": index[0], "y": index[1], "x": index[2]}
-    coord0 = np.asarray(coords_um[axis0][axis_indices[axis0]], dtype=np.float64)
-    coord1 = np.asarray(coords_um[axis1][axis_indices[axis1]], dtype=np.float64)
-    return coord0.reshape(-1) * float(µm), coord1.reshape(-1) * float(µm)
+    coord0 = np.asarray(coords[axis0][axis_indices[axis0]], dtype=np.float64)
+    coord1 = np.asarray(coords[axis1][axis_indices[axis1]], dtype=np.float64)
+    return coord0.reshape(-1), coord1.reshape(-1)
 
 
 def _discrete_mode_projection_grids_3d(

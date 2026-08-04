@@ -385,7 +385,11 @@ def _extract_port_waves_dft(
                     for component in proj_components
                 ]
             )
-            coeff = proj["pinv"] @ field_vec
+            projection_weights = np.asarray(
+                proj.get("projection_weights", np.ones(field_vec.size)),
+                dtype=float,
+            )
+            coeff = proj["pinv"] @ (projection_weights * field_vec)
             values["plus"][idx], values["minus"][idx] = coeff[:2]
             values["projection_residual"][idx] = (
                 _modal_projection_reconstruction_residual(field_vec, proj, coeff)

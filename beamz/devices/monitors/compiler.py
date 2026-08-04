@@ -267,11 +267,6 @@ def compile_monitor_specs(
     for mon_idx, monitor in enumerate(monitors):
         if not isinstance(monitor, _Monitor):
             raise TypeError(f"Unsupported monitor object {type(monitor).__name__!s}.")
-        if isinstance(monitor, ModeMonitor) and requires_metric_operator:
-            raise NotImplementedError(
-                "ModeMonitor on a rectilinear grid requires a nonuniform mode "
-                "operator; use a FluxMonitor or a uniform grid."
-            )
         is_3d = np.asarray(fields.permittivity).ndim == 3
         if (
             not is_3d
