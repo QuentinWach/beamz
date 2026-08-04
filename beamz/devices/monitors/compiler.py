@@ -39,7 +39,12 @@ def _compact_sample_region(region: SnappedRegion | None) -> SnappedRegion | None
     if region is None:
         return None
     intervals = {
-        axis: SnappedInterval(interval.start, interval.stop, interval.step)
+        axis: SnappedInterval(
+            interval.start,
+            interval.stop,
+            interval.step,
+            physical_bounds=(interval.lower, interval.upper),
+        )
         for axis, interval in region.intervals.items()
     }
     return SnappedRegion(

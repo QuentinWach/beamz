@@ -17,6 +17,18 @@ def test_snapped_interval_snapshots_rectilinear_edges():
     assert interval.size == 1.0
 
 
+def test_compact_snapped_interval_retains_exact_physical_bounds():
+    interval = SnappedInterval(0, 2, 0.2, physical_bounds=(0.0, 1.0))
+
+    assert interval.lower == 0.0
+    assert interval.upper == 1.0
+    assert interval.center == 0.5
+    assert interval.size == 1.0
+
+    with pytest.raises(ValueError, match="nondecreasing"):
+        SnappedInterval(0, 2, 0.2, physical_bounds=(1.0, 0.0))
+
+
 def test_snapped_region_snapshots_and_freezes_intervals():
     intervals = {"X": SnappedInterval(0, 2, 0.2)}
     region = SnappedRegion(2, "Y", 1, 0.3, intervals)

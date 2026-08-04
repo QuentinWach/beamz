@@ -520,6 +520,8 @@ def test_rectilinear_monitors_compile_local_line_and_face_weights():
     assert interval_x.edges is None and interval_y.edges is None
     assert (interval_x.start, interval_x.stop) == (0, 2)
     assert (interval_y.start, interval_y.stop) == (0, 2)
+    assert (interval_x.lower, interval_x.upper) == pytest.approx((0.0, 1.0))
+    assert (interval_y.lower, interval_y.upper) == pytest.approx((0.0, 1.0))
 
 
 def test_centered_design_monitor_uses_normalized_grid_once():

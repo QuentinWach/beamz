@@ -16,6 +16,7 @@ class SnappedInterval:
     stop: int
     step: float
     edges: tuple[float, ...] | None = None
+    physical_bounds: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "start", int(self.start))
@@ -25,17 +26,33 @@ class SnappedInterval:
             object.__setattr__(
                 self, "edges", tuple(float(value) for value in self.edges)
             )
+        if self.physical_bounds is not None:
+            raw_bounds = tuple(float(value) for value in self.physical_bounds)
+            if len(raw_bounds) != 2 or not np.all(np.isfinite(raw_bounds)):
+                raise ValueError(
+                    "SnappedInterval physical_bounds must contain two finite values."
+                )
+            bounds = (raw_bounds[0], raw_bounds[1])
+            if bounds[1] < bounds[0]:
+                raise ValueError(
+                    "SnappedInterval physical_bounds must be nondecreasing."
+                )
+            object.__setattr__(self, "physical_bounds", bounds)
 
     @property
     def lower(self) -> float:
         if self.edges is not None:
             return float(self.edges[int(self.start)])
+        if self.physical_bounds is not None:
+            return self.physical_bounds[0]
         return float(self.start) * float(self.step)
 
     @property
     def upper(self) -> float:
         if self.edges is not None:
             return float(self.edges[int(self.stop)])
+        if self.physical_bounds is not None:
+            return self.physical_bounds[1]
         return float(self.stop) * float(self.step)
 
     @property
