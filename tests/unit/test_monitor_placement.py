@@ -14,6 +14,7 @@ def test_snapped_interval_snapshots_rectilinear_edges():
     edges[1] = 0.5
 
     assert interval.edges == (0.0, 0.2, 1.0)
+    assert interval.size == 1.0
 
 
 def test_snapped_region_snapshots_and_freezes_intervals():
@@ -35,3 +36,6 @@ def test_snapped_region_rejects_invalid_interval_values():
 
     with pytest.raises(ValueError, match="axis"):
         SnappedRegion(2, "y", 1, 0.3, {"time": SnappedInterval(0, 1, 0.2)})
+
+    with pytest.raises(ValueError, match="normal axis"):
+        SnappedRegion(2, "time", 1, 0.3)

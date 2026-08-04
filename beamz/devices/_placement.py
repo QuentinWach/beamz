@@ -44,7 +44,7 @@ class SnappedInterval:
 
     @property
     def size(self) -> float:
-        return max(0, int(self.stop) - int(self.start)) * float(self.step)
+        return max(0.0, self.upper - self.lower)
 
     def as_slice(self) -> slice:
         return slice(int(self.start), int(self.stop))
@@ -61,6 +61,12 @@ class SnappedRegion:
     companion_coord: float | None = None
 
     def __post_init__(self) -> None:
+        normal_axis = str(self.normal_axis).lower()
+        if normal_axis not in _AXES:
+            raise ValueError(
+                f"Snapped region normal axis must be one of {_AXES}; "
+                f"got {self.normal_axis!r}."
+            )
         intervals = {}
         for axis, interval in self.intervals.items():
             normalized_axis = str(axis).lower()
@@ -74,7 +80,7 @@ class SnappedRegion:
                 )
             intervals[normalized_axis] = interval
         object.__setattr__(self, "ndim", int(self.ndim))
-        object.__setattr__(self, "normal_axis", str(self.normal_axis).lower())
+        object.__setattr__(self, "normal_axis", normal_axis)
         object.__setattr__(self, "plane_index", int(self.plane_index))
         object.__setattr__(self, "plane_coord", float(self.plane_coord))
         object.__setattr__(self, "intervals", MappingProxyType(intervals))
