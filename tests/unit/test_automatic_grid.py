@@ -41,7 +41,7 @@ def _ring_design():
 
 def test_geometry_aware_grid_resolves_ring_bus_and_coupling_gap():
     design, wavelength, bus_y, ring_center, outer_radius, gap = _ring_design()
-    spec = bz.GridSpec.graded(
+    spec = bz.GridSpec.auto(
         wavelength=wavelength,
         min_steps_per_wvl=16,
         min_feature_cells=6,
@@ -73,7 +73,7 @@ def test_geometry_aware_grid_resolves_ring_bus_and_coupling_gap():
 
 def test_mesh_override_refines_selected_axis_and_preserves_snapping_point():
     design = bz.Design(width=4.0, height=3.0)
-    spec = bz.GridSpec.graded(
+    spec = bz.GridSpec.auto(
         wavelength=2.0,
         min_steps_per_wvl=4,
         max_scale=1.25,
@@ -92,14 +92,17 @@ def test_mesh_override_refines_selected_axis_and_preserves_snapping_point():
     assert np.allclose(grid.cell_widths("y"), grid.cell_widths("y")[0])
 
 
-def test_grid_spec_auto_remains_uniform_by_default_and_can_opt_into_grading():
+def test_grid_spec_auto_is_nonuniform_and_uniform_is_explicit():
     design = bz.Design(width=2.0, height=1.0)
 
-    uniform = bz.GridSpec.auto(wavelength=1.0).realize(design)
-    graded = bz.GridSpec.auto(wavelength=1.0, nonuniform=True).realize(design)
+    automatic_spec = bz.GridSpec.auto(wavelength=1.0)
+    automatic = automatic_spec.realize(design)
+    uniform = bz.GridSpec.uniform(0.1).realize(design)
 
     assert uniform.metric_kind_for(("x", "y")) == "isotropic_uniform"
     assert uniform.shape[2] == 1
-    assert graded.is_axis_uniform
-    with pytest.raises(ValueError, match="requires wavelength"):
+    assert automatic_spec.nonuniform
+    assert isinstance(automatic, bz.RectilinearGrid)
+    assert not hasattr(bz.GridSpec, "graded")
+    with pytest.raises(ValueError, match="GridSpec.auto requires wavelength"):
         bz.GridSpec(nonuniform=True).realize(design)

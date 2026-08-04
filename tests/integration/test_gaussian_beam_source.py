@@ -318,11 +318,7 @@ def test_gaussian_beam_source_flux_normalizes_by_sampled_waveform():
         sources=[source],
         monitors=monitors,
         boundaries=[PML(thickness=0.6 * um)],
-        grid_spec=GridSpec.auto(
-            min_steps_per_wvl=8,
-            wavelength=wavelength,
-            courant=0.48,
-        ),
+        grid_spec=GridSpec.uniform(wavelength / 8, courant=0.48),
         run_time=260e-15,
     )
 

@@ -102,7 +102,7 @@ def create_grid(
         + 0.5 * params["waveguide_width"]
         + 0.5 * params["coupling_gap"]
     )
-    spec = bz.GridSpec.graded(
+    spec = bz.GridSpec.auto(
         wavelength=WAVELENGTH,
         min_steps_per_wvl=settings.min_steps_per_wvl,
         min_feature_cells=settings.min_feature_cells,

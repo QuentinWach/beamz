@@ -163,7 +163,7 @@ def beamz_grid(case: GridParityCase) -> bz.RectilinearGrid:
         tuple(None if value is None else value * bz.um for value in point)
         for point in case.snapping_points
     )
-    return bz.GridSpec.graded(
+    return bz.GridSpec.auto(
         wavelength=case.wavelength * bz.um,
         min_steps_per_wvl=case.min_steps_per_wvl,
         max_scale=case.max_scale,

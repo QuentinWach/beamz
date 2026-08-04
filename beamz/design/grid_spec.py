@@ -86,7 +86,7 @@ class GridSpec:
         Fraction of the dimensional Courant stability limit used for time steps.
     nonuniform : bool, default=False
         Generate a geometry-aware rectilinear grid instead of a uniform grid.
-        Prefer :meth:`graded` when constructing this policy directly.
+        :meth:`auto` enables this automatically; :meth:`uniform` disables it.
     max_scale : float, default=1.3
         Hard maximum ratio between neighboring cell widths on a graded axis.
     min_steps_per_sim_size : float, default=10.0
@@ -173,7 +173,6 @@ class GridSpec:
         min_steps_per_wvl: float = 10.0,
         wavelength: float | None = None,
         courant: float = 0.99,
-        nonuniform: bool = False,
         max_scale: float = 1.3,
         min_steps_per_sim_size: float = 10.0,
         min_feature_cells: float = 1.0,
@@ -182,7 +181,7 @@ class GridSpec:
         overrides: tuple[MeshOverride, ...] = (),
         snapping_points: tuple[tuple[float | None, ...], ...] = (),
     ) -> GridSpec:
-        """Create a wavelength-driven automatic grid specification.
+        """Create a wavelength- and geometry-aware nonuniform grid policy.
 
         Returns
         -------
@@ -193,46 +192,10 @@ class GridSpec:
             min_steps_per_wvl=float(min_steps_per_wvl),
             wavelength=wavelength,
             courant=float(courant),
-            nonuniform=bool(nonuniform),
+            nonuniform=True,
             max_scale=float(max_scale),
             min_steps_per_sim_size=float(min_steps_per_sim_size),
             min_feature_cells=float(min_feature_cells),
-            dl_min=dl_min,
-            dl_max=dl_max,
-            overrides=overrides,
-            snapping_points=snapping_points,
-        )
-
-    @classmethod
-    def graded(
-        cls,
-        *,
-        wavelength: float,
-        min_steps_per_wvl: float = 10.0,
-        max_scale: float = 1.3,
-        min_steps_per_sim_size: float = 10.0,
-        min_feature_cells: float = 1.0,
-        dl_min: float | None = None,
-        dl_max: float | None = None,
-        overrides: tuple[MeshOverride, ...] = (),
-        snapping_points: tuple[tuple[float | None, ...], ...] = (),
-        courant: float = 0.99,
-    ) -> GridSpec:
-        """Create a geometry-aware, smoothly graded rectilinear grid policy.
-
-        Returns
-        -------
-        GridSpec
-            Immutable geometry-aware grid policy.
-        """
-        return cls.auto(
-            wavelength=wavelength,
-            min_steps_per_wvl=min_steps_per_wvl,
-            courant=courant,
-            nonuniform=True,
-            max_scale=max_scale,
-            min_steps_per_sim_size=min_steps_per_sim_size,
-            min_feature_cells=min_feature_cells,
             dl_min=dl_min,
             dl_max=dl_max,
             overrides=overrides,
@@ -248,7 +211,9 @@ class GridSpec:
         GridSpec
             Immutable uniform-grid policy.
         """
-        return cls(resolution=float(resolution), courant=float(courant))
+        return cls(
+            resolution=float(resolution), courant=float(courant), nonuniform=False
+        )
 
     def resolve_resolution(self, *, max_index: float = 1.0) -> float:
         """Return the explicit or wavelength-derived cell size in metres.
@@ -278,7 +243,7 @@ class GridSpec:
         """
         if self.nonuniform:
             if self.wavelength is None:
-                raise ValueError("GridSpec.graded requires wavelength.")
+                raise ValueError("GridSpec.auto requires wavelength.")
             return _realize_graded_grid(design, self)
         resolution = (
             self.resolve_resolution()

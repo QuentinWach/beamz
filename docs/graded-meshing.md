@@ -12,7 +12,7 @@ the Yee updates, CPML, and the CFL calculation.
 ```python
 import beamz as bz
 
-spec = bz.GridSpec.graded(
+spec = bz.GridSpec.auto(
     wavelength=1.55 * bz.um,
     min_steps_per_wvl=16,
     min_feature_cells=6,
@@ -32,8 +32,9 @@ simulation = bz.Simulation(
 )
 ```
 
-`GridSpec.auto()` remains uniform by default for backward compatibility. Pass
-`nonuniform=True`, or use the clearer `GridSpec.graded()` constructor, to opt in.
+`GridSpec.auto()` is the canonical automatic meshing constructor and produces a
+geometry-aware nonuniform grid. Use `GridSpec.uniform()` when equal cell widths
+are required explicitly.
 
 ## How the policy is resolved
 
@@ -95,7 +96,7 @@ fall back to volume tensor averaging and are counted in raster diagnostics.
 Refine a region without changing the physical design:
 
 ```python
-spec = bz.GridSpec.graded(
+spec = bz.GridSpec.auto(
     wavelength=1.55 * bz.um,
     overrides=(
         bz.MeshOverride(

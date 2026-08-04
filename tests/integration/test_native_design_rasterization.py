@@ -195,7 +195,7 @@ def test_design_rasterize_accepts_realized_rectilinear_grid():
     assert material_grid.uses_direct_yee_materials
 
 
-def test_graded_grid_subpixel_ring_recovers_analytic_material_area():
+def test_automatic_grid_subpixel_ring_recovers_analytic_material_area():
     n_clad, n_core = 1.44, 2.0
     inner_radius, outer_radius = 0.75e-6, 1.05e-6
     design = bz.Design(
@@ -211,7 +211,7 @@ def test_graded_grid_subpixel_ring_recovers_analytic_material_area():
             ),
         ),
     )
-    grid = bz.GridSpec.graded(
+    grid = bz.GridSpec.auto(
         wavelength=1.55e-6,
         min_steps_per_wvl=14,
         min_feature_cells=6,
@@ -240,7 +240,7 @@ def test_graded_grid_subpixel_ring_recovers_analytic_material_area():
 
 def test_simulation_realizes_and_rasterizes_geometry_aware_grid_spec():
     design = design_2d()
-    grid_spec = bz.GridSpec.graded(
+    grid_spec = bz.GridSpec.auto(
         wavelength=1.55e-6,
         min_steps_per_wvl=10,
         max_scale=1.2,
