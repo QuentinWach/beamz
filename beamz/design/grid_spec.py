@@ -84,6 +84,21 @@ class GridSpec:
         over ``wavelength`` and ``min_steps_per_wvl``.
     courant : float, default=0.99
         Fraction of the dimensional Courant stability limit used for time steps.
+    nonuniform : bool, default=False
+        Generate a geometry-aware rectilinear grid instead of a uniform grid.
+        Prefer :meth:`graded` when constructing this policy directly.
+    max_scale : float, default=1.3
+        Hard maximum ratio between neighboring cell widths on a graded axis.
+    min_steps_per_sim_size : float, default=10.0
+        Minimum number of cells across each active simulation dimension.
+    min_feature_cells : float, default=4.0
+        Minimum target cells across detected structure thicknesses and gaps.
+    dl_min, dl_max : float, optional
+        Global lower and upper bounds for local automatic cell-width targets.
+    overrides : tuple[MeshOverride, ...]
+        Rectangular regions that refine or replace automatic spacing targets.
+    snapping_points : tuple[tuple[float | None, ...], ...]
+        User coordinates that must be grid edges along the selected axes.
     """
 
     min_steps_per_wvl: float = 10.0

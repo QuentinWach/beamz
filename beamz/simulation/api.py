@@ -444,15 +444,14 @@ class Simulation:
         Physical geometry and material distribution. Supply exactly one of
         ``design``, ``material_grid``, or ``scene``.
     material_grid : MaterialGrid, optional
-        A compatible uniform solver grid, such as one produced by
+        A compatible uniform or rectilinear solver grid, such as one produced by
         ``MaterialGrid.from_raster_result()``. This is the simulation bridge for
         imported GDS, STL, Gmsh, and raw-mesh scenes.
     scene : beamz.design.raster.Scene, optional
         Reusable scene produced by an importer. Supply it with ``raster_grid``;
         BeamZ rasterizes and validates it during simulation setup.
     raster_grid : beamz.design.raster.Grid, optional
-        Explicit uniform solver grid for ``scene``. Standalone scene
-        rasterization may still use nonuniform grids.
+        Explicit uniform or nonuniform rectilinear solver grid for ``scene``.
     sources : sequence, optional
         Immutable source specifications to inject during execution.
     monitors : sequence of monitor specifications, optional

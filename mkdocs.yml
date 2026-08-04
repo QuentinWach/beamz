@@ -9,6 +9,7 @@ theme:
 
 nav:
   - Getting Started: getting-started.md
+  - Automatic Graded Meshing: graded-meshing.md
 
 markdown_extensions:
   - admonition

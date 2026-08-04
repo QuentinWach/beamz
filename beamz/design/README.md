@@ -13,6 +13,27 @@ Spatial coefficient arrays enter the solver through `MaterialGrid`; geometric
 designs use homogeneous materials and the Rust rasterizer. Geometry errors abort
 rasterization rather than silently substituting fallback properties.
 
+Create a material- and geometry-aware rectilinear grid with `GridSpec.graded()`:
+
+```python
+from beamz.design import GridSpec
+
+grid_spec = GridSpec.graded(
+    wavelength=1.55e-6,
+    min_steps_per_wvl=16,
+    min_feature_cells=6,
+    max_scale=1.2,
+)
+grid = grid_spec.realize(design)
+print(grid.quality_report())
+material_grid = design.rasterize(grid, smoothing="farjadpour_full")
+```
+
+The policy snaps structure boundaries, resolves wavelength in each material and
+small geometric features, and grades the spacing without exceeding `max_scale`
+between neighboring cells. `MeshOverride` and `snapping_points` provide local
+control. See the automatic graded meshing guide for the full behavior.
+
 Install the optional layout dependency and import cells through the design API:
 
 ```python

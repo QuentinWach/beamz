@@ -77,12 +77,14 @@ corrupt-cache recovery.
 ## Standalone versus simulation use
 
 Standalone rasterization accepts uniform and nonuniform rectilinear grids.
-BeamZ's FDTD engine requires a single uniform resolution. It extracts the target
-diagonal from each electric support tensor. For `farjadpour_full`, it compiles
-the inverse diagonal at each E support and the inverse cross terms at shared
-grid nodes, then uses the paper's average-multiply-average coupling. Full
-coupling currently requires zero electric conductivity and unit permeability;
-use CPML rather than a conductive sponge PML with that mode.
+BeamZ's FDTD engine accepts the same realized rectilinear grid and applies the
+local Yee edge, face, and volume metrics in its curl updates and CFL limit. It
+extracts the target diagonal from each electric support tensor. For
+`farjadpour_full`, it compiles the inverse diagonal at each E support and the
+inverse cross terms at shared grid nodes, then uses the paper's
+average-multiply-average coupling. Full coupling currently requires zero
+electric conductivity and unit permeability; use CPML rather than a conductive
+sponge PML with that mode.
 
 Imported scenes use the same simulation workflow as BeamZ designs; the
 solver-specific conversion stays internal:
@@ -101,8 +103,8 @@ simulation = beamz.Simulation(
 )
 ```
 
-The simulation domain is inferred from the grid shape and resolution, while the
-raster origin is retained for source and monitor coordinates.
+The simulation domain and physical coordinates are taken directly from the
+grid's edge arrays.
 
 For standalone inspection, `scene.rasterize(raster_grid)` returns the general
 `RasterResult`. `MaterialGrid.from_raster_result()` remains an advanced explicit
@@ -127,14 +129,17 @@ simulation = beamz.Simulation(
 )
 ```
 
-The compiler consumes those native Yee arrays directly. Nonuniform grids,
-full-tensor conductivity, full permittivity combined with conductivity, and
-non-unit permeability fail with a capability-specific message. Conductive
-diagonal materials propagate in FDTD but are rejected for `ModeSource` until
-the mode bridge represents their frequency-dependent complex permittivity. The
-current 2D and public convenience mode solvers use the cell-tensor approximation
-for diagonal Farjadpour grids and reject full off-diagonal coupling; the 3D
-launch planner retains its Yee-aware refinement path.
+The compiler consumes those native Yee arrays directly. Full-tensor
+conductivity, full permittivity combined with conductivity, and non-unit
+permeability fail with a capability-specific message. Conductive diagonal
+materials propagate in FDTD but are rejected for `ModeSource` until the mode
+bridge represents their frequency-dependent complex permittivity. The current
+mode-source and mode-monitor bridge also rejects nonuniform rectilinear grids;
+`GaussianSource`, `CustomSource`, and field/flux monitors work on them, while
+`GaussianBeamSource` still requires a uniform grid. The current 2D and public
+convenience mode solvers use the cell-tensor approximation for diagonal
+Farjadpour grids and reject full off-diagonal coupling; the 3D launch planner
+retains its Yee-aware refinement path.
 
 ## Importers
 
