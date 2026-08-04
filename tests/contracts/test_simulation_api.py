@@ -308,6 +308,24 @@ def test_run_rejects_invalid_automatic_termination_inputs():
             )
         )
 
+    inactive_monitor = FieldMonitor(
+        center=(um, um, 0.0),
+        size=(0.0, um, 0.0),
+        freqs=(2e14,),
+        fields=("Ex",),
+        name="inactive",
+    )
+    inactive_sim = _simulation(monitors=(inactive_monitor,))
+    with pytest.raises(ValueError, match="applicable frequency-domain"):
+        inactive_sim.run(
+            termination=AutoTermination(
+                field_decay=0.0,
+                monitor_change=1e-8,
+                monitor_names=("inactive",),
+                chunk_steps=1,
+            )
+        )
+
 
 @pytest.mark.parametrize("interval", (0, -3, 1.9, True))
 def test_monitor_interval_must_be_a_positive_integer(interval):

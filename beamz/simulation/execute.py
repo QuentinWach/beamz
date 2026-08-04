@@ -176,16 +176,24 @@ def _source_residual(remaining_activity: np.ndarray, current_step: int) -> float
 
 
 def _selected_monitor_names(program: CompiledProgram, policy: AutoTermination):
-    available = {spec.name for spec in program.monitors if spec.dft_enabled}
+    available = {
+        spec.name
+        for spec in program.monitors
+        if spec.dft_enabled
+        and spec.freq_count > 0
+        and spec.dft_point_count > 0
+        and np.any(np.asarray(spec.dft_component_mask) > 0.0)
+    }
     if policy.monitor_names:
         missing = set(policy.monitor_names) - available
         if missing:
             names = ", ".join(sorted(missing))
             raise ValueError(
-                f"Automatic termination monitors must be frequency-domain monitors: {names}."
+                "Automatic termination monitors must be applicable "
+                f"frequency-domain monitors: {names}."
             )
         return policy.monitor_names
-    return tuple(spec.name for spec in program.monitors if spec.dft_enabled)
+    return tuple(spec.name for spec in program.monitors if spec.name in available)
 
 
 def _monitor_vector(results: SimulationResults, names: tuple[str, ...]) -> np.ndarray:
