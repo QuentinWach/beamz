@@ -37,6 +37,13 @@ assert simulation.grid == grid
 geometry-aware nonuniform grid. Use `GridSpec.uniform()` when equal cell widths
 are required explicitly.
 
+An explicit uniform spacing is retained exactly on every active axis. When a
+domain extent is not divisible by that spacing, the computational grid is
+padded by less than one terminal cell. Consequently, the requested design size
+and realized computational extent can differ slightly, while
+`spec.realize(design)`, `simulation.grid`, and the rasterized material grid
+remain identical.
+
 ## How the policy is resolved
 
 For each active axis, BeamZ:
@@ -72,6 +79,12 @@ resolution is primarily set by wavelength in material, while a narrow feature
 or gap is guaranteed at least one cell. Increase it explicitly when a coupling
 gap or thin film needs more cells for a convergence study; this is deliberate
 extra refinement rather than part of cross-solver parity.
+
+Semantic primitives report physical dimensions directly: circle and sphere
+diameters, ring and bend wall thicknesses, taper output widths, and box sizes.
+For explicit polygons, BeamZ measures distances between opposing material
+boundaries. Adjacent vertex spacing is never interpreted as a feature size, so
+adding more points to a curved boundary does not force a finer mesh.
 
 ## Geometry treatment
 
@@ -114,6 +127,32 @@ A normal override only refines the automatic material target. Set
 `enforced=True` to replace that target inside the override. `dl_min` is a global
 lower bound on requested refinement and `dl_max` is a global upper bound on
 automatic cell width.
+
+## Allocation safety
+
+Automatic refinement is checked before material or field arrays are allocated.
+The defaults permit at most 200,000 cells on one active axis and 20,000,000
+active Cartesian cells. Tighten these limits for interactive work or raise them
+explicitly for a deliberately large production run:
+
+```python
+spec = bz.GridSpec.auto(
+    wavelength=1.55 * bz.um,
+    max_cells_per_axis=50_000,
+    max_total_cells=20_000_000,
+)
+```
+
+An exceeded budget reports the realized shape, a conservative setup-memory
+estimate, and the violated limit. Prefer raising `dl_min` or relaxing a local
+override before increasing a budget.
+
+## Result coordinates
+
+Compiled field arrays use a solver-local grid, while analysis results expose
+public physical coordinates. Imported grids with nonzero origins and centered
+domains are translated through the same `coordinate_offset` contract in xarray,
+plots, and videos; the offset is never applied twice.
 
 ## Quality checks
 

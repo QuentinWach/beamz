@@ -107,6 +107,10 @@ class GridSpec:
         Rectangular regions that refine or replace automatic spacing targets.
     snapping_points : tuple[tuple[float | None, ...], ...]
         User coordinates that must be grid edges along the selected axes.
+    max_cells_per_axis : int, optional
+        Safety limit for realized cells along any active axis. ``None`` disables it.
+    max_total_cells : int, optional
+        Safety limit for the active Cartesian cell product. ``None`` disables it.
     """
 
     min_steps_per_wvl: float = 10.0
@@ -120,6 +124,8 @@ class GridSpec:
     dl_max: float | None = None
     overrides: tuple[MeshOverride, ...] = ()
     snapping_points: tuple[tuple[float | None, ...], ...] = ()
+    max_cells_per_axis: int | None = 200_000
+    max_total_cells: int | None = 20_000_000
 
     @property
     def is_automatic(self) -> bool:
@@ -151,6 +157,14 @@ class GridSpec:
             value = getattr(self, name)
             if value is not None and (not np.isfinite(value) or float(value) <= 0.0):
                 raise ValueError(f"GridSpec {name} must be positive and finite.")
+        for name in ("max_cells_per_axis", "max_total_cells"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            integer = int(value)
+            if isinstance(value, (bool, np.bool_)) or integer != value or integer <= 0:
+                raise ValueError(f"GridSpec {name} must be a positive integer or None.")
+            object.__setattr__(self, name, integer)
         if (
             self.dl_min is not None
             and self.dl_max is not None
@@ -194,6 +208,8 @@ class GridSpec:
         dl_max: float | None = None,
         overrides: tuple[MeshOverride, ...] = (),
         snapping_points: tuple[tuple[float | None, ...], ...] = (),
+        max_cells_per_axis: int | None = 200_000,
+        max_total_cells: int | None = 20_000_000,
     ) -> GridSpec:
         """Create a wavelength- and geometry-aware nonuniform grid policy.
 
@@ -213,10 +229,19 @@ class GridSpec:
             dl_max=dl_max,
             overrides=overrides,
             snapping_points=snapping_points,
+            max_cells_per_axis=max_cells_per_axis,
+            max_total_cells=max_total_cells,
         )
 
     @classmethod
-    def uniform(cls, resolution: float, *, courant: float = 0.99) -> GridSpec:
+    def uniform(
+        cls,
+        resolution: float,
+        *,
+        courant: float = 0.99,
+        max_cells_per_axis: int | None = 200_000,
+        max_total_cells: int | None = 20_000_000,
+    ) -> GridSpec:
         """Create a grid specification with an explicit uniform cell size.
 
         Returns
@@ -224,7 +249,12 @@ class GridSpec:
         GridSpec
             Immutable uniform-grid policy.
         """
-        return cls(resolution=float(resolution), courant=float(courant))
+        return cls(
+            resolution=float(resolution),
+            courant=float(courant),
+            max_cells_per_axis=max_cells_per_axis,
+            max_total_cells=max_total_cells,
+        )
 
     def _target_spacing(self, *, max_index: float = 1.0) -> float:
         """Return the explicit or wavelength-derived target spacing."""
@@ -249,8 +279,11 @@ class GridSpec:
         if self.is_automatic:
             if self.wavelength is None:
                 raise ValueError("GridSpec.auto requires wavelength.")
-            return _realize_graded_grid(design, self)
-        return _realize_uniform_grid(design, self._target_spacing())
+            grid = _realize_graded_grid(design, self)
+        else:
+            grid = _realize_uniform_grid(design, self._target_spacing())
+        dimensions = 3 if float(design.depth) > 0.0 else 2
+        return _validate_grid_budget(grid, self, dimensions=dimensions)
 
     def resolve_time_step(
         self, resolution: float | RectilinearGrid, *, dims: int
@@ -281,6 +314,43 @@ class _Region:
     upper: AxisValues
     spacing: OptionalAxisValues
     enforced: bool = False
+
+
+def _validate_grid_budget(
+    grid: RectilinearGrid, spec: GridSpec, *, dimensions: int
+) -> RectilinearGrid:
+    """Reject a realized grid before material and field arrays can exhaust memory."""
+    dims = 3 if int(dimensions) == 3 else 2
+    shape = grid.shape[:dims]
+    total_cells = math.prod(shape)
+    violations = []
+    if spec.max_cells_per_axis is not None:
+        oversized = [
+            f"{'xyz'[axis]}={count:,}"
+            for axis, count in enumerate(shape)
+            if count > spec.max_cells_per_axis
+        ]
+        if oversized:
+            violations.append(
+                "axis limit "
+                f"{spec.max_cells_per_axis:,} exceeded by {', '.join(oversized)}"
+            )
+    if spec.max_total_cells is not None and total_cells > spec.max_total_cells:
+        violations.append(
+            f"total limit {spec.max_total_cells:,} exceeded by {total_cells:,} cells"
+        )
+    if violations:
+        # This includes a conservative allowance for fields, Yee materials,
+        # coefficient arrays, and temporary setup storage.
+        bytes_per_cell = 128 if dims == 3 else 64
+        estimated_gib = total_cells * bytes_per_cell / 1024**3
+        raise ValueError(
+            f"Grid budget exceeded for active shape {shape} "
+            f"(estimated setup storage {estimated_gib:.2f} GiB): "
+            f"{'; '.join(violations)}. Increase the matching GridSpec budget "
+            "explicitly, raise dl_min, or relax local refinement."
+        )
+    return grid
 
 
 def _material_index(material: Any) -> float:

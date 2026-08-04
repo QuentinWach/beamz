@@ -21,7 +21,11 @@ from beamz.const import µm
 from beamz.design.core import Design
 from beamz.design.discretization import MaterialGrid, build_material_grid
 from beamz.design.grid import RectilinearGrid
-from beamz.design.grid_spec import GridSpec, _realize_uniform_grid
+from beamz.design.grid_spec import (
+    GridSpec,
+    _realize_uniform_grid,
+    _validate_grid_budget,
+)
 from beamz.design.materials import Material, MaterialProtocol
 from beamz.design.structures import Box
 from beamz.devices.boundaries import normalize_boundaries
@@ -216,6 +220,8 @@ def _resolve_design_time_and_grid(
             else _realize_uniform_grid(design, resolution)
         )
     dims = 3 if _design_is_3d(design) else 2
+    if grid_spec is not None:
+        grid = _validate_grid_budget(grid, grid_spec, dimensions=dims)
     time = _time_from_run_time(time, run_time, grid_spec, grid, dims)
     return resolution, grid, time, use_realized_grid
 

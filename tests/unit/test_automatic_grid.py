@@ -119,6 +119,34 @@ def test_uniform_realization_preserves_requested_isotropic_spacing():
     np.testing.assert_allclose(grid.cell_widths("y"), 0.3)
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"max_cells_per_axis": 0},
+        {"max_cells_per_axis": 1.5},
+        {"max_total_cells": True},
+    ),
+)
+def test_grid_budget_limits_must_be_positive_integers(kwargs):
+    with pytest.raises(ValueError, match="positive integer or None"):
+        bz.GridSpec.auto(wavelength=1.0, **kwargs)
+
+
+def test_grid_budget_rejects_runaway_refinement_before_rasterization():
+    design = bz.Design(width=4.0, height=4.0)
+    spec = bz.GridSpec.auto(
+        wavelength=1.0,
+        max_cells_per_axis=20,
+        max_total_cells=200,
+    )
+
+    with pytest.raises(ValueError, match="Grid budget exceeded") as error:
+        spec.realize(design)
+
+    assert "estimated setup storage" in str(error.value)
+    assert "raise dl_min" in str(error.value)
+
+
 def test_explicit_resolution_takes_precedence_over_automatic_fields():
     design = bz.Design(width=2.0, height=1.0)
     spec = bz.GridSpec(resolution=0.2, wavelength=1.55)
