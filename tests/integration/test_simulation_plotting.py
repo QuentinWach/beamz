@@ -258,7 +258,17 @@ def test_monitor_dft_field_plot_restores_tidy_plane_view():
         plt.close(fig)
 
 
-def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates():
+@pytest.mark.parametrize(
+    ("normal", "center", "size", "expected_x_edges", "expected_y_edges"),
+    (
+        ("x", (0.1, 0.5, 0.5), (0.0, 1.0, 1.0), (0.0, 0.3, 1.0), (0.0, 0.4, 1.0)),
+        ("y", (0.5, 0.15, 0.5), (1.0, 0.0, 1.0), (0.0, 0.2, 1.0), (0.0, 0.4, 1.0)),
+        ("z", (0.5, 0.5, 0.2), (1.0, 1.0, 0.0), (0.0, 0.2, 1.0), (0.0, 0.3, 1.0)),
+    ),
+)
+def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates(
+    normal, center, size, expected_x_edges, expected_y_edges
+):
     grid = Grid(
         np.asarray([0.0, 0.2, 1.0]) * bz.um,
         np.asarray([0.0, 0.3, 1.0]) * bz.um,
@@ -268,8 +278,8 @@ def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates():
         rasterize(Scene((Material(),)), grid), dimensions=3
     )
     monitor = bz.FieldMonitor(
-        center=(0.5 * bz.um, 0.5 * bz.um, 0.2 * bz.um),
-        size=(1.0 * bz.um, 1.0 * bz.um, 0.0),
+        center=tuple(value * bz.um for value in center),
+        size=tuple(value * bz.um for value in size),
         freqs=[1.0],
         fields=("Ez",),
         name="field",
@@ -281,6 +291,8 @@ def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates():
     )
     program = simulation.compile()
     spec = program.monitors[0]
+    from beamz.simulation.results import material_region_for_monitor
+
     result = bz.MonitorResults(
         monitor=simulation.monitors[0],
         fields={},
@@ -292,6 +304,11 @@ def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates():
         dft_weight_sum=np.ones(1),
         resolution=simulation.resolution,
         sample_region=spec.sample_region,
+        material_region=material_region_for_monitor(
+            simulation,
+            simulation.monitors[0],
+            runtime_fields=program.grid,
+        ),
     )
     results = bz.SimulationResults.from_run(
         simulation,
@@ -306,7 +323,13 @@ def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates():
     )
 
     try:
-        assert ax.images[0].get_array().shape == (2, 2)
+        assert not ax.images
+        assert len(ax.collections) == 2
+        for mesh in ax.collections:
+            assert mesh.get_array().shape[:2] == (2, 2)
+            coordinates = mesh.get_coordinates()
+            np.testing.assert_allclose(coordinates[0, :, 0], expected_x_edges)
+            np.testing.assert_allclose(coordinates[:, 0, 1], expected_y_edges)
         assert ax.get_xlim() == pytest.approx((0.0, 1.0))
         assert ax.get_ylim() == pytest.approx((0.0, 1.0))
     finally:
