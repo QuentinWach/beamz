@@ -146,19 +146,24 @@ def _field_diagnostics(state: SimulationState, plan) -> tuple[float, float, bool
     return float(energy_density) * domain_measure, float(max_field), bool(finite)
 
 
-def _remaining_source_activity(program: CompiledProgram) -> np.ndarray:
+def _remaining_source_activity(
+    program: CompiledProgram, total_steps: int
+) -> np.ndarray:
     """Return the maximum future source amplitude relative to each term's peak."""
-    total_steps = max(
-        (int(np.asarray(spec.waveform).size) for spec in program.sources), default=0
-    )
+    total_steps = int(total_steps)
     activity = np.zeros(total_steps, dtype=np.float64)
     for source in program.sources:
         waveform = np.abs(np.asarray(source.waveform, dtype=np.float64).reshape(-1))
+        if waveform.size == 0:
+            continue
         peak = float(np.max(waveform, initial=0.0))
         if peak > 0.0:
-            activity[: waveform.size] = np.maximum(
-                activity[: waveform.size], waveform / peak
-            )
+            sampled = np.empty(total_steps, dtype=np.float64)
+            copied = min(total_steps, waveform.size)
+            sampled[:copied] = waveform[:copied]
+            if copied < total_steps:
+                sampled[copied:] = waveform[-1]
+            activity = np.maximum(activity, sampled / peak)
     return np.maximum.accumulate(activity[::-1])[::-1] if activity.size else activity
 
 
@@ -900,7 +905,7 @@ def run_until_terminated(
             "Automatic termination has no applicable field or monitor criterion."
         )
 
-    source_activity = _remaining_source_activity(first_program)
+    source_activity = _remaining_source_activity(first_program, simulation.num_steps)
     terms = _energy_terms(first_program)
     state = SimulationState.initial(first_program.grid, t=float(simulation.time[0]))
     previous_energy: float | None = None

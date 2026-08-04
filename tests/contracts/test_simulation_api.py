@@ -11,6 +11,7 @@ import beamz.simulation.api as simulation_core
 import beamz.simulation.execute as execution_runtime
 from beamz import (
     AutoTermination,
+    CustomSource,
     Design,
     FieldMonitor,
     FieldRecorder,
@@ -211,6 +212,35 @@ def test_run_never_converges_while_a_source_remains_active():
     assert result.termination is not None
     assert result.termination.reason == "time_limit"
     assert not result.termination.converged
+    assert result.termination.steps == time.size
+
+
+def test_run_treats_a_short_custom_waveform_like_the_runtime_kernel():
+    time = np.arange(8, dtype=float) * 1e-16
+    base = _simulation(time=time)
+    shape = tuple(base.initial_state().ez.shape)
+    source = CustomSource(
+        component="Ez",
+        timing="e",
+        index=(slice(None), slice(None)),
+        coeff=np.full(shape, 1e-3),
+        waveform=np.ones(2),
+        target_shape=shape,
+    )
+    sim = base.updated_copy(sources=(source,))
+
+    result = sim.run(
+        termination=AutoTermination(
+            field_decay=1.0,
+            monitor_change=None,
+            chunk_steps=1,
+            consecutive_checks=2,
+            growth_checks=10,
+        )
+    )
+
+    assert result.termination is not None
+    assert result.termination.reason == "time_limit"
     assert result.termination.steps == time.size
 
 
