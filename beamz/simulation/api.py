@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import math
+import os
 from collections import OrderedDict
 from collections.abc import Sequence
 from contextlib import nullcontext

@@ -41,7 +41,6 @@ def _ring_design():
 
 def test_geometry_aware_grid_resolves_ring_bus_and_coupling_gap():
     design, wavelength, bus_y, ring_center, outer_radius, gap = _ring_design()
-    symmetric = bz.GridSpec.auto(wavelength=2.0).realize(design)
     spec = bz.GridSpec.auto(
         wavelength=wavelength,
         min_steps_per_wvl=16,
