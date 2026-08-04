@@ -507,6 +507,8 @@ def test_compiled_3d_field_recorder_uses_logical_component_shape():
     expected_plane_shape = tuple(np.asarray(axis).size for axis in plane_shape)
     assert plane.fields["Ez"].shape == (2, *expected_plane_shape)
     assert plane.fields["Hx"].shape == (2, *expected_plane_shape)
+    assert plane.sample_region == program.monitors[1].sample_region
+    assert plane.sample_region is not None
 
 
 def test_compiled_3d_sponge_pml_uses_material_coefficients():

@@ -13,6 +13,7 @@ import numpy as np
 from beamz._cache_tokens import cache_token
 from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import immutable_snapshot, readonly_array
+from beamz.devices._placement import SnappedRegion
 from beamz.devices.monitors.compiler import CompiledMonitorSpec
 from beamz.devices.monitors.monitors import _Monitor
 from beamz.lattice import canonical_component_2d
@@ -462,6 +463,8 @@ class MonitorResults:
         Optional scalar objective associated with this acquisition.
     material_region : MaterialRegion or None
         Material snapshot colocated with the monitor for downstream modal analysis.
+    sample_region : SnappedRegion or None
+        Exact grid-aware spatial region retained from monitor compilation.
 
     Examples
     --------
@@ -508,6 +511,7 @@ class MonitorResults:
     material_region: MaterialRegion | None = field(
         default=None, compare=False, repr=False
     )
+    sample_region: SnappedRegion | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         if not isinstance(self.monitor, _Monitor):
@@ -517,6 +521,12 @@ class MonitorResults:
         ):
             raise TypeError(
                 "MonitorResults.material_region must be a MaterialRegion or None."
+            )
+        if self.sample_region is not None and not isinstance(
+            self.sample_region, SnappedRegion
+        ):
+            raise TypeError(
+                "MonitorResults.sample_region must be a SnappedRegion or None."
             )
         if not isinstance(self.fields, Mapping) or not isinstance(
             self.dft_fields, Mapping
@@ -730,6 +740,7 @@ class MonitorResults:
                     state.recorded_steps[spec.recorder_index][:recorder_count],
                     dtype=int,
                 ).copy(),
+                sample_region=spec.sample_region,
             )
         dft_fields: dict[str, np.ndarray] = {}
         if spec.dft_enabled and fc > 0 and pc > 0:
@@ -784,6 +795,7 @@ class MonitorResults:
             power_scale=float(spec.power_scale),
             integration_weights=np.asarray(spec.integration_weights),
             objective_value=None,
+            sample_region=spec.sample_region,
         )
 
 

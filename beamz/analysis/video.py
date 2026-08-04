@@ -8,12 +8,14 @@ from typing import Any
 
 import numpy as np
 
+from beamz.devices._placement import snap_plane_region_grid
 from beamz.lattice import (
     component_coordinates_2d_um,
     component_coordinates_3d_um,
     component_coordinates_rectilinear,
     coordinates_in_public_frame,
     plane_axes_3d,
+    yee_plane_coordinates_3d,
 )
 from beamz.simulation.results import MonitorResults, SimulationResults
 
@@ -139,30 +141,76 @@ def _video_data(results, recording, *, field, plane, index):
             )
         normal = monitor.plane_normal
         vertical, horizontal = plane_axes_3d(normal)
-        coord0, coord1 = monitor.get_analysis_plane_coords_3d(
-            dx=metadata.resolution,
-            dy=metadata.resolution,
-            dz=metadata.resolution,
-            field_shape=_common_component_shape(metadata),
-        )
+        region = recording.sample_region
+        if region is None and metadata.grid is not None:
+            region = snap_plane_region_grid(
+                center=monitor.center,
+                size=monitor.size,
+                plane_normal=normal,
+                grid=metadata.grid,
+            )
+        if region is not None:
+            coord0, coord1 = yee_plane_coordinates_3d(
+                monitor.center,
+                monitor.size,
+                normal,
+                region,
+                grid=metadata.grid,
+            )
+        else:
+            coord0, coord1 = monitor.get_analysis_plane_coords_3d(
+                dx=metadata.resolution,
+                dy=metadata.resolution,
+                dz=metadata.resolution,
+                field_shape=_common_component_shape(metadata),
+            )
         if frames.shape[1:] != (coord0.size, coord1.size):
             raise ValueError(
                 f"Recorded {field!r} frame shape {frames.shape[1:]} does not match "
                 f"the monitor plane {(coord0.size, coord1.size)}."
             )
-        x_extent = _axis_extent(
-            coord1 / _UM - offset_by_axis[horizontal],
-            fallback_step=resolution_um,
+        if region is not None and metadata.grid is not None:
+            horizontal_interval = region.axis_interval(horizontal)
+            vertical_interval = region.axis_interval(vertical)
+            assert horizontal_interval is not None and vertical_interval is not None
+            horizontal_edges = metadata.grid.axis_edges(horizontal)
+            vertical_edges = metadata.grid.axis_edges(vertical)
+            x_extent = (
+                horizontal_edges[int(horizontal_interval.start)] / _UM
+                - offset_by_axis[horizontal],
+                horizontal_edges[int(horizontal_interval.stop)] / _UM
+                - offset_by_axis[horizontal],
+            )
+            y_extent = (
+                vertical_edges[int(vertical_interval.start)] / _UM
+                - offset_by_axis[vertical],
+                vertical_edges[int(vertical_interval.stop)] / _UM
+                - offset_by_axis[vertical],
+            )
+        else:
+            x_extent = _axis_extent(
+                coord1 / _UM - offset_by_axis[horizontal],
+                fallback_step=resolution_um,
+            )
+            y_extent = _axis_extent(
+                coord0 / _UM - offset_by_axis[vertical],
+                fallback_step=resolution_um,
+            )
+        plane_position = (
+            float(region.plane_coord)
+            if region is not None
+            else float(monitor.plane_position)
         )
-        y_extent = _axis_extent(
-            coord0 / _UM - offset_by_axis[vertical],
-            fallback_step=resolution_um,
-        )
-        position_um = monitor.plane_position / _UM - offset_by_axis[normal]
+        position_um = plane_position / _UM - offset_by_axis[normal]
         return _VideoData(
             frames,
             times,
-            (*x_extent, *y_extent),
+            (
+                float(x_extent[0]),
+                float(x_extent[1]),
+                float(y_extent[0]),
+                float(y_extent[1]),
+            ),
             horizontal,
             vertical,
             f"{normal}={position_um:.3g} um",

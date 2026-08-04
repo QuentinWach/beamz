@@ -512,6 +512,13 @@ def test_rectilinear_monitors_compile_local_line_and_face_weights():
     )
 
     np.testing.assert_allclose(face_spec.integration_weights, [0.06, 0.24, 0.14, 0.56])
+    assert face_spec.sample_region is not None
+    assert face_spec.sample_region.plane_coord == pytest.approx(0.2)
+    interval_x = face_spec.sample_region.axis_interval("x")
+    interval_y = face_spec.sample_region.axis_interval("y")
+    assert interval_x is not None and interval_y is not None
+    assert interval_x.edges == tuple(grid_3d.x_edges)
+    assert interval_y.edges == tuple(grid_3d.y_edges)
 
 
 def test_centered_design_monitor_uses_normalized_grid_once():

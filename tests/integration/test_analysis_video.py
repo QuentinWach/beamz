@@ -12,6 +12,7 @@ from matplotlib.colors import LinearSegmentedColormap
 
 import beamz as bz
 from beamz.analysis import video as video_module
+from beamz.devices._placement import snap_plane_region_grid
 from beamz.simulation.results import FieldMetadata, SimulationMetadata
 
 
@@ -208,6 +209,63 @@ def test_save_field_video_selects_a_full_domain_3d_slice(monkeypatch):
         results["volume"].fields["Ez"][1, :, 1, :],
     )
     assert _FakeWriter.captured[1]["title"].endswith(", y=0.5 um")
+
+
+@pytest.mark.parametrize("retain_compiled_region", (True, False))
+def test_slice_video_uses_exact_rectilinear_extents_and_snapped_position(
+    retain_compiled_region,
+):
+    grid = bz.RectilinearGrid(
+        np.asarray([0.0, 0.2, 1.0]) * bz.um,
+        np.asarray([0.0, 0.3, 1.0]) * bz.um,
+        np.asarray([0.0, 0.1, 0.4, 1.0]) * bz.um,
+    )
+    monitor = bz.FieldRecorder(
+        ("Ez",),
+        interval=1,
+        name="slice",
+        center=(0.5 * bz.um, 0.26 * bz.um, 0.5 * bz.um),
+        size=(1.0 * bz.um, 0.0, 1.0 * bz.um),
+    )
+    region = snap_plane_region_grid(
+        center=monitor.center,
+        size=monitor.size,
+        plane_normal="y",
+        grid=grid,
+    )
+    metadata = SimulationMetadata(
+        dt=0.25e-15,
+        resolution=0.1 * bz.um,
+        is_3d=True,
+        plane_2d="xy",
+        coordinate_offset=(-2.0 * bz.um, -3.0 * bz.um, -4.0 * bz.um),
+        time=np.asarray([0.0, 0.25e-15]),
+        width=1.0 * bz.um,
+        height=1.0 * bz.um,
+        depth=1.0 * bz.um,
+        fields=FieldMetadata((3, 2, 2), {"Ez": (3, 3, 3)}),
+        grid=grid,
+    )
+    recording = bz.MonitorResults(
+        monitor=monitor,
+        fields={"Ez": np.zeros((1, 3, 2), dtype=np.float32)},
+        power_history=np.empty(0),
+        power_timestamps=np.empty(0),
+        power_spectrum=np.empty(0, dtype=np.complex64),
+        field_times=np.asarray([0.25e-15]),
+        field_steps=np.asarray([1]),
+        sample_region=region if retain_compiled_region else None,
+    )
+    results = bz.SimulationResults(metadata, {"slice": recording})
+
+    data = video_module._video_data(
+        results, recording, field="Ez", plane="z", index=None
+    )
+
+    assert data.extent == pytest.approx((2.0, 3.0, 4.0, 5.0))
+    assert data.horizontal == "x"
+    assert data.vertical == "z"
+    assert data.slice_label == "y=3.15 um"
 
 
 def test_save_field_video_rejects_conflicting_color_limits():

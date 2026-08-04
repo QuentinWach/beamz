@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.devices._placement import (
+    SnappedRegion,
     line_region_points,
     snap_axis_aligned_line_region_grid,
     snap_plane_region_grid,
@@ -71,6 +72,7 @@ class CompiledMonitorSpec:
     field_shapes: tuple[tuple[int, ...], ...] = ()
     field_interp_flat_idx: tuple[jnp.ndarray, ...] = ()
     field_interp_weights: tuple[jnp.ndarray, ...] = ()
+    sample_region: SnappedRegion | None = None
 
 
 def _clip_indices(x_idx: np.ndarray, y_idx: np.ndarray, shape: tuple[int, int]):
@@ -285,6 +287,7 @@ def compile_monitor_specs(
             shapes: list[tuple[int, ...]] = []
             interp_indices: list[jnp.ndarray] = []
             interp_weights: list[jnp.ndarray] = []
+            sample_region = None
             if monitor.region == "domain":
                 logical_shapes = getattr(fields, "_logical_component_shapes", {})
                 for canonical in canonical_components:
@@ -343,6 +346,7 @@ def compile_monitor_specs(
                         field_shape=base_shape,
                     )
                 )
+                sample_region = region
                 quadrature = compile_yee_plane_quadrature_3d(
                     center=monitor.center,
                     size=monitor.size,
@@ -379,6 +383,7 @@ def compile_monitor_specs(
                     field_shapes=tuple(shapes),
                     field_interp_flat_idx=tuple(interp_indices),
                     field_interp_weights=tuple(interp_weights),
+                    sample_region=sample_region,
                 )
             )
             recorder_count += 1
@@ -520,6 +525,7 @@ def compile_monitor_specs(
                     integration_weights=jnp.asarray(
                         integration_weights, dtype=jnp.float32
                     ),
+                    sample_region=region_2d,
                 )
             )
         else:
@@ -584,6 +590,7 @@ def compile_monitor_specs(
                     integration_weights=jnp.asarray(
                         quadrature.integration_weights, dtype=jnp.float32
                     ),
+                    sample_region=region,
                 )
             )
 
