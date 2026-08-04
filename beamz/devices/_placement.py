@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 import numpy as np
 
@@ -14,6 +16,15 @@ class SnappedInterval:
     stop: int
     step: float
     edges: tuple[float, ...] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "start", int(self.start))
+        object.__setattr__(self, "stop", int(self.stop))
+        object.__setattr__(self, "step", float(self.step))
+        if self.edges is not None:
+            object.__setattr__(
+                self, "edges", tuple(float(value) for value in self.edges)
+            )
 
     @property
     def lower(self) -> float:
@@ -45,9 +56,32 @@ class SnappedRegion:
     normal_axis: str
     plane_index: int
     plane_coord: float
-    intervals: dict[str, SnappedInterval] = field(default_factory=dict)
+    intervals: Mapping[str, SnappedInterval] = field(default_factory=dict)
     companion_index: int | None = None
     companion_coord: float | None = None
+
+    def __post_init__(self) -> None:
+        intervals = {}
+        for axis, interval in self.intervals.items():
+            normalized_axis = str(axis).lower()
+            if normalized_axis not in _AXES:
+                raise ValueError(
+                    f"Snapped interval axis must be one of {_AXES}; got {axis!r}."
+                )
+            if not isinstance(interval, SnappedInterval):
+                raise TypeError(
+                    "SnappedRegion intervals must be SnappedInterval values."
+                )
+            intervals[normalized_axis] = interval
+        object.__setattr__(self, "ndim", int(self.ndim))
+        object.__setattr__(self, "normal_axis", str(self.normal_axis).lower())
+        object.__setattr__(self, "plane_index", int(self.plane_index))
+        object.__setattr__(self, "plane_coord", float(self.plane_coord))
+        object.__setattr__(self, "intervals", MappingProxyType(intervals))
+        if self.companion_index is not None:
+            object.__setattr__(self, "companion_index", int(self.companion_index))
+        if self.companion_coord is not None:
+            object.__setattr__(self, "companion_coord", float(self.companion_coord))
 
     def axis_interval(self, axis: str) -> SnappedInterval | None:
         return self.intervals.get(str(axis).lower())
