@@ -12,6 +12,7 @@ from beamz.lattice import (
     component_coordinates_2d_um,
     component_coordinates_3d_um,
     component_coordinates_rectilinear,
+    coordinates_in_public_frame,
     plane_axes_3d,
 )
 from beamz.simulation.results import MonitorResults, SimulationResults
@@ -90,8 +91,8 @@ def _select_recording(results, *, monitor_name, field) -> MonitorResults:
     return matches[0]
 
 
-def _axis_extent(values, *, offset, fallback_step):
-    coordinates = np.asarray(values, dtype=float) - float(offset)
+def _axis_extent(values, *, fallback_step):
+    coordinates = np.asarray(values, dtype=float)
     if coordinates.size == 0:
         raise ValueError("Recorded field coordinates are empty.")
     step = (
@@ -125,10 +126,8 @@ def _video_data(results, recording, *, field, plane, index):
             f"Recorder {recording.monitor.name!r} has no complete {field!r} frames."
         )
 
-    offsets_um = {
-        axis: value / _UM
-        for axis, value in zip("xyz", metadata.coordinate_offset, strict=True)
-    }
+    offsets_um = tuple(value / _UM for value in metadata.coordinate_offset)
+    offset_by_axis = dict(zip("xyz", offsets_um, strict=True))
     resolution_um = metadata.resolution / _UM
     monitor = recording.monitor
 
@@ -152,16 +151,14 @@ def _video_data(results, recording, *, field, plane, index):
                 f"the monitor plane {(coord0.size, coord1.size)}."
             )
         x_extent = _axis_extent(
-            coord1 / _UM,
-            offset=offsets_um[horizontal],
+            coord1 / _UM - offset_by_axis[horizontal],
             fallback_step=resolution_um,
         )
         y_extent = _axis_extent(
-            coord0 / _UM,
-            offset=offsets_um[vertical],
+            coord0 / _UM - offset_by_axis[vertical],
             fallback_step=resolution_um,
         )
-        position_um = monitor.plane_position / _UM - offsets_um[normal]
+        position_um = monitor.plane_position / _UM - offset_by_axis[normal]
         return _VideoData(
             frames,
             times,
@@ -188,7 +185,7 @@ def _video_data(results, recording, *, field, plane, index):
             )
         selected_index %= frames.shape[frame_axis]
         frames = np.take(frames, selected_index, axis=frame_axis)
-        coordinates = (
+        local_coordinates = (
             {
                 axis: values / _UM
                 for axis, values in component_coordinates_rectilinear(
@@ -202,18 +199,17 @@ def _video_data(results, recording, *, field, plane, index):
                 resolution_um,
             )
         )
+        coordinates = coordinates_in_public_frame(local_coordinates, offsets_um)
         vertical, horizontal = plane_axes_3d(normal)
         x_extent = _axis_extent(
             coordinates[horizontal],
-            offset=offsets_um[horizontal],
             fallback_step=resolution_um,
         )
         y_extent = _axis_extent(
             coordinates[vertical],
-            offset=offsets_um[vertical],
             fallback_step=resolution_um,
         )
-        position_um = coordinates[normal][selected_index] - offsets_um[normal]
+        position_um = coordinates[normal][selected_index]
         return _VideoData(
             frames,
             times,
@@ -230,7 +226,7 @@ def _video_data(results, recording, *, field, plane, index):
         "xz": ("z", "x"),
         "yz": ("z", "y"),
     }[metadata.plane_2d]
-    coordinates = (
+    local_coordinates = (
         {
             axis: values / _UM
             for axis, values in component_coordinates_rectilinear(
@@ -249,14 +245,13 @@ def _video_data(results, recording, *, field, plane, index):
             metadata.polarization_2d,
         )
     )
+    coordinates = coordinates_in_public_frame(local_coordinates, offsets_um)
     x_extent = _axis_extent(
         coordinates[horizontal],
-        offset=offsets_um[horizontal],
         fallback_step=resolution_um,
     )
     y_extent = _axis_extent(
         coordinates[vertical],
-        offset=offsets_um[vertical],
         fallback_step=resolution_um,
     )
     return _VideoData(

@@ -975,7 +975,11 @@ def view_simulation_3d(sim, *, mode="auto", open_browser=True, show=False, **kwa
 
 
 def _coord_extent_um(da, *, sim=None):
-    offset = getattr(sim, "coordinate_offset", (0.0, 0.0, 0.0))
+    offset = (
+        (0.0, 0.0, 0.0)
+        if da.attrs.get("coordinate_frame") == "public"
+        else getattr(sim, "coordinate_offset", (0.0, 0.0, 0.0))
+    )
     offset_by_dim = {"x": offset[0], "y": offset[1], "z": offset[2]}
     dims = [dim for dim in da.dims if dim in {"x", "y", "z", "s"}]
     if len(dims) < 2:

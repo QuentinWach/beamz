@@ -576,6 +576,57 @@ def test_rectilinear_gaussian_source_uses_physical_edges_and_local_frame():
     assert compiled_source.slab_sizes == (1, 1)
 
 
+def test_imported_grid_results_keep_local_metadata_and_public_coordinates():
+    grid = Grid(
+        [2.0, 2.2, 3.0],
+        [3.0, 3.3, 4.0],
+        [4.0, 5.0],
+    )
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(
+            Scene((Material(),)),
+            grid,
+            options=RasterOptions(components="two_dimensional_tm"),
+        )
+    )
+    recorder = bz.FieldRecorder(("Ez",), interval=1, name="fields")
+    simulation = bz.Simulation(
+        material_grid=material_grid,
+        monitors=[recorder],
+        time=np.asarray([0.0, 1e-16]),
+    )
+    program = simulation.compile()
+    monitor_result = bz.MonitorResults(
+        monitor=recorder,
+        fields={
+            "Ez": np.zeros((1, *program.grid.component_shapes["Ez"]), dtype=np.float32)
+        },
+        power_history=np.empty(0),
+        power_timestamps=np.empty(0),
+        power_spectrum=np.empty(0, dtype=np.complex64),
+        field_times=np.asarray([1e-16]),
+        field_steps=np.asarray([1]),
+    )
+
+    results = bz.SimulationResults.from_run(
+        simulation,
+        runtime_fields=program.grid,
+        monitor_results={"fields": monitor_result},
+    )
+    dataset = bz.analysis.to_xarray(results)
+
+    from beamz.analysis.plotting import _coord_extent_um
+
+    assert results.metadata.grid == program.grid.geometry
+    assert results.metadata.grid.origin == (0.0, 0.0, 0.0)
+    assert dataset.attrs["coordinate_frame"] == "public"
+    np.testing.assert_allclose(dataset.coords["x"], grid.x_edges)
+    np.testing.assert_allclose(dataset.coords["y"], grid.y_edges)
+    assert _coord_extent_um(dataset["Ez"], sim=results.metadata) == _coord_extent_um(
+        dataset["Ez"], sim=None
+    )
+
+
 def test_rectilinear_cpml_depth_is_graded_in_physical_distance():
     grid = Grid(
         [0.0, 0.1, 0.3, 0.6, 1.0],

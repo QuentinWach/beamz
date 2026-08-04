@@ -140,6 +140,12 @@ def _yee_coords(name, dims, shape, simulation):
                 dim: np.asarray(values, dtype=float) * 1e-6
                 for dim, values in coords_um.items()
             }
+        from beamz.lattice import coordinates_in_public_frame
+
+        coords_m = coordinates_in_public_frame(
+            coords_m,
+            getattr(simulation, "coordinate_offset", (0.0, 0.0, 0.0)),
+        )
     except Exception:
         return None
     if any(
@@ -172,6 +178,7 @@ def _field_data_array(values, *, name, simulation, times=None, steps=None):
     coords.update(spatial_coords or _axis_coords(spatial_dims, shape, resolution))
     attrs: dict[str, object] = {
         "component": str(name),
+        "coordinate_frame": "public",
         "units": _FIELD_UNITS.get(str(name), ""),
         "design_width": simulation.width,
         "design_height": simulation.height,
@@ -221,6 +228,7 @@ def to_xarray(results):
         data_vars=data_vars,
         attrs={
             "beamz_kind": "SimulationResults",
+            "coordinate_frame": "public",
             "resolution": data.resolution,
             "plane_2d": data.plane_2d,
             "design_width": width,

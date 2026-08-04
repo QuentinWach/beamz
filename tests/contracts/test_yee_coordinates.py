@@ -11,6 +11,7 @@ from beamz.lattice import (
     component_material_at,
     component_shape_2d,
     component_shape_3d,
+    coordinates_in_public_frame,
     material_for_component,
     public_component_2d,
 )
@@ -78,6 +79,15 @@ def test_rectilinear_component_coordinates_use_exact_edges_and_centers():
     np.testing.assert_allclose(hx["y"], [1.0, 3.5])
     np.testing.assert_allclose(hy_2d["x"], [0.5, 2.0])
     np.testing.assert_allclose(hy_2d["y"], grid.y_edges)
+
+
+def test_component_coordinates_translate_from_solver_local_to_public_frame():
+    coordinates = {"x": np.asarray([0.0, 0.2, 1.0]), "y": np.asarray([0.0, 1.0])}
+
+    public = coordinates_in_public_frame(coordinates, (-2.0, -3.0, -4.0))
+
+    np.testing.assert_allclose(public["x"], [2.0, 2.2, 3.0])
+    np.testing.assert_allclose(public["y"], [3.0, 4.0])
 
 
 def test_component_coordinates_2d_follow_standard_xy_offsets():

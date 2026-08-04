@@ -243,7 +243,7 @@ class SimulationMetadata:
     polarization_2d : {"tm", "te"}
         Polarization used to interpret two-dimensional field arrays.
     coordinate_offset : tuple of float
-        Translation from normalized domain coordinates to public coordinates.
+        Translation added to public coordinates to obtain solver-local coordinates.
     time : numpy.ndarray
         Complete immutable simulation time grid in seconds.
     width, height, depth : float
@@ -419,7 +419,9 @@ class SimulationMetadata:
                 materials=materials,
             ),
             polarization_2d=simulation.polarization,
-            grid=simulation.grid,
+            # Field arrays are indexed on the compiler's normalized geometry. Imported
+            # material grids may retain a nonzero public origin on ``simulation.grid``.
+            grid=runtime_fields.geometry,
         )
 
 

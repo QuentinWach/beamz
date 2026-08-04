@@ -102,6 +102,23 @@ def component_coordinates_rectilinear(
     }
 
 
+def coordinates_in_public_frame(
+    coordinates: Mapping[str, Any],
+    coordinate_offset: tuple[float, float, float],
+) -> dict[str, np.ndarray]:
+    """Translate solver-local axis coordinates into the public coordinate frame.
+
+    Simulation devices are lowered according to ``local = public + offset``.
+    Analysis therefore applies the inverse translation to exact Yee coordinates.
+    """
+
+    offsets = dict(zip("xyz", map(float, coordinate_offset), strict=True))
+    return {
+        axis: np.asarray(values, dtype=np.float64) - offsets.get(axis, 0.0)
+        for axis, values in coordinates.items()
+    }
+
+
 _FIELD_COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
 
 
