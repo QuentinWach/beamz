@@ -15,9 +15,9 @@ import beamz as bz
 
 WAVELENGTH = 1.55 * bz.um
 MIN_STEPS_PER_WVL = 10
-MIN_FEATURE_CELLS = 12
+MIN_FEATURE_CELLS = 16
 MAX_SCALE = 1.08
-COUPLING_DX = 30 * bz.nm
+COUPLING_DX = 20 * bz.nm
 
 
 def create_design() -> tuple[bz.Design, dict[str, float]]:
@@ -195,11 +195,11 @@ def plot_grid(
         - 0.5 * params["waveguide_width"]
     ) / bz.um
     zoom_ax.set(
-        xlim=(cx - 1.65, cx + 1.65),
-        ylim=(bus_y - 0.55, ring_bottom + 1.15),
+        xlim=(cx - 1.80, cx - 0.35),
+        ylim=(bus_y - 0.60, ring_bottom + 0.68),
         xlabel="x (µm)",
         ylabel="y (µm)",
-        title="Coupling region — every grid cell",
+        title="Intersecting x/y transitions — every cell",
     )
     zoom_ax.set_aspect("equal", adjustable="box")
 
