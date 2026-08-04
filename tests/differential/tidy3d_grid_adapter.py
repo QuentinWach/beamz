@@ -168,7 +168,6 @@ def beamz_grid(case: GridParityCase) -> bz.RectilinearGrid:
         min_steps_per_wvl=case.min_steps_per_wvl,
         max_scale=case.max_scale,
         min_steps_per_sim_size=case.min_steps_per_sim_size,
-        min_feature_cells=1,
         overrides=overrides,
         snapping_points=snapping_points,
     ).realize(design)

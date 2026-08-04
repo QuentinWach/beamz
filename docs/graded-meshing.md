@@ -57,10 +57,19 @@ isolated sliver.
 This follows the same broad engineering policy exposed by Tidy3D's `AutoGrid`:
 material wavelength targets, a maximum consecutive-cell scale, lower spacing
 bounds, and override structures. BeamZ's spacing-envelope implementation is
-independent and is not intended to reproduce another solver's edge coordinates
-bit for bit. Tidy3D documents a default `max_scale` of 1.4; BeamZ defaults to
-1.3, while 1.1–1.2 is a useful conservative range for especially gentle
-transitions.
+independent, so behavioral parity does not require edge coordinates to match
+bit for bit. A pinned differential suite compares BeamZ with Tidy3D 2.12.0 over
+homogeneous, dielectric, coupled-gap, ring, override, and snapping cases. It
+gates cell count within 4%, normalized spacing-profile error within 8%, domain
+bounds, explicit snapping, and the requested adjacent-cell ratio. Tidy3D
+documents a default `max_scale` of 1.4; BeamZ defaults to 1.3, while 1.1–1.2 is
+a useful conservative range for especially gentle transitions.
+
+The default `min_feature_cells=1` matches Tidy3D-like automatic behavior: local
+resolution is primarily set by wavelength in material, while a narrow feature
+or gap is guaranteed at least one cell. Increase it explicitly when a coupling
+gap or thin film needs more cells for a convergence study; this is deliberate
+extra refinement rather than part of cross-solver parity.
 
 ## Geometry treatment
 

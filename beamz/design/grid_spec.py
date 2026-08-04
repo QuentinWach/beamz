@@ -91,8 +91,10 @@ class GridSpec:
         Hard maximum ratio between neighboring cell widths on a graded axis.
     min_steps_per_sim_size : float, default=10.0
         Minimum number of cells across each active simulation dimension.
-    min_feature_cells : float, default=4.0
+    min_feature_cells : float, default=1.0
         Minimum target cells across detected structure thicknesses and gaps.
+        Values above one opt into additional geometry-driven refinement beyond
+        the material-wavelength target.
     dl_min, dl_max : float, optional
         Global lower and upper bounds for local automatic cell-width targets.
     overrides : tuple[MeshOverride, ...]
@@ -108,7 +110,7 @@ class GridSpec:
     nonuniform: bool = False
     max_scale: float = 1.3
     min_steps_per_sim_size: float = 10.0
-    min_feature_cells: float = 4.0
+    min_feature_cells: float = 1.0
     dl_min: float | None = None
     dl_max: float | None = None
     overrides: tuple[MeshOverride, ...] = ()
@@ -174,7 +176,7 @@ class GridSpec:
         nonuniform: bool = False,
         max_scale: float = 1.3,
         min_steps_per_sim_size: float = 10.0,
-        min_feature_cells: float = 4.0,
+        min_feature_cells: float = 1.0,
         dl_min: float | None = None,
         dl_max: float | None = None,
         overrides: tuple[MeshOverride, ...] = (),
@@ -209,7 +211,7 @@ class GridSpec:
         min_steps_per_wvl: float = 10.0,
         max_scale: float = 1.3,
         min_steps_per_sim_size: float = 10.0,
-        min_feature_cells: float = 4.0,
+        min_feature_cells: float = 1.0,
         dl_min: float | None = None,
         dl_max: float | None = None,
         overrides: tuple[MeshOverride, ...] = (),
