@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from beamz import (
+    EPS_0,
     LIGHT_SPEED,
     PML,
     AutoTermination,
@@ -15,8 +16,44 @@ from beamz import (
     calc_optimal_fdtd_params,
     um,
 )
+from beamz.design.discretization import MaterialGrid
+from beamz.design.raster import Grid as RasterGrid
+from beamz.design.raster import Material as RasterMaterial
+from beamz.design.raster import RasterOptions, Scene, rasterize
+from beamz.simulation.execute import _energy_terms, _field_diagnostics
 
 pytestmark = [pytest.mark.compiled, pytest.mark.component]
+
+
+def test_full_tensor_energy_includes_offdiagonal_coupling():
+    """Integrated energy must use the full supported electric constitutive tensor."""
+    permittivity = np.asarray(((3.0, 0.2, 0.0), (0.2, 2.0, 0.0), (0.0, 0.0, 1.0)))
+    material_grid = MaterialGrid.from_raster_result(
+        rasterize(
+            Scene((RasterMaterial(epsilon_r=permittivity),)),
+            RasterGrid.uniform((0, 0, 0), (1, 1, 1), (2, 2, 2)),
+            options=RasterOptions(smoothing="farjadpour_full"),
+        )
+    )
+    simulation = Simulation(
+        material_grid=material_grid,
+        time=np.asarray([0.0, 1e-16]),
+    )
+    program = simulation.compile(num_steps=1)
+    initial = simulation.initial_state()
+    state = initial._replace(
+        ex=np.ones_like(initial.ex),
+        ey=np.ones_like(initial.ey),
+        ez=np.ones_like(initial.ez),
+    )
+
+    energy, max_field, finite = _field_diagnostics(state, _energy_terms(program))
+
+    electric_field = np.ones(3)
+    expected = 0.5 * EPS_0 * (electric_field @ permittivity @ electric_field)
+    assert finite
+    assert max_field == pytest.approx(1.0)
+    assert energy == pytest.approx(expected, rel=2e-6)
 
 
 def test_pulse_convergence_preserves_frequency_domain_result():

@@ -94,6 +94,19 @@ def _component_integration_weights(program: CompiledProgram, component: str):
     return jnp.asarray(y[:, None] * x[None, :])
 
 
+def _node_integration_weights(program: CompiledProgram, shape: tuple[int, ...]):
+    """Return physical integration weights on the shared Yee-node support."""
+    geometry = program.grid.geometry
+    if program.config.is_3d:
+        z = _axis_integration_weights(geometry.z_edges, 0.0, shape[0])
+        y = _axis_integration_weights(geometry.y_edges, 0.0, shape[1])
+        x = _axis_integration_weights(geometry.x_edges, 0.0, shape[2])
+        return jnp.asarray(z[:, None, None] * y[None, :, None] * x[None, None, :])
+    y = _axis_integration_weights(geometry.y_edges, 0.0, shape[0])
+    x = _axis_integration_weights(geometry.x_edges, 0.0, shape[1])
+    return jnp.asarray(y[:, None] * x[None, :])
+
+
 def _energy_terms(program: CompiledProgram):
     """Precompute field, material, and measure names for energy diagnostics."""
     active = (
@@ -126,12 +139,34 @@ def _energy_terms(program: CompiledProgram):
         )
         if component in active
     )
-    return terms, domain_measure
+    cross_terms = ()
+    material_grid = program.grid.material_grid
+    if material_grid.uses_full_permittivity:
+        node_tensor = np.asarray(material_grid.yee_tensors["eps_node"])
+        node_shape = tuple(int(value) for value in node_tensor.shape[1:])
+        node_measure = _node_integration_weights(program, node_shape) / domain_measure
+        cross_terms = tuple(
+            (
+                left.lower(),
+                left,
+                right.lower(),
+                right,
+                jnp.asarray(node_tensor[tensor_index]),
+                node_measure,
+            )
+            for left, right, tensor_index in (
+                ("Ex", "Ey", 3),
+                ("Ex", "Ez", 4),
+                ("Ey", "Ez", 5),
+            )
+            if left in active and right in active
+        )
+    return terms, cross_terms, domain_measure
 
 
 def _field_diagnostics(state: SimulationState, plan) -> tuple[float, float, bool]:
     """Compute integrated electromagnetic energy, maximum field, and finiteness."""
-    terms, domain_measure = plan
+    terms, cross_terms, domain_measure = plan
     energy_density = jnp.asarray(0.0, dtype=jnp.float32)
     max_field = jnp.asarray(0.0, dtype=jnp.float32)
     finite = jnp.asarray(True)
@@ -142,6 +177,30 @@ def _field_diagnostics(state: SimulationState, plan) -> tuple[float, float, bool
         density = jnp.asarray(material) * values * values
         energy_density = energy_density + 0.5 * float(constant) * jnp.sum(
             density * jnp.asarray(measure)
+        )
+    centered = {}
+    for (
+        left_name,
+        left_component,
+        right_name,
+        right_component,
+        material,
+        measure,
+    ) in cross_terms:
+        node_shape = tuple(int(value) for value in material.shape)
+        for field_name, component in (
+            (left_name, left_component),
+            (right_name, right_component),
+        ):
+            if component not in centered:
+                centered[component] = update_runtime.collocate_yee_component(
+                    getattr(state, field_name), component, "Node", node_shape
+                )
+        energy_density = energy_density + float(EPS_0) * jnp.sum(
+            material
+            * centered[left_component]
+            * centered[right_component]
+            * jnp.asarray(measure)
         )
     return float(energy_density) * domain_measure, float(max_field), bool(finite)
 
