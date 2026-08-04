@@ -216,7 +216,13 @@ class GridSpec:
         snapping_points: tuple[tuple[float | None, ...], ...] = (),
         courant: float = 0.99,
     ) -> GridSpec:
-        """Create a geometry-aware, smoothly graded rectilinear grid policy."""
+        """Create a geometry-aware, smoothly graded rectilinear grid policy.
+
+        Returns
+        -------
+        GridSpec
+            Immutable geometry-aware grid policy.
+        """
         return cls.auto(
             wavelength=wavelength,
             min_steps_per_wvl=min_steps_per_wvl,
@@ -261,7 +267,13 @@ class GridSpec:
         )
 
     def realize(self, design: Any) -> RectilinearGrid:
-        """Realize this policy for a concrete design domain and material stack."""
+        """Realize this policy for a concrete design domain and material stack.
+
+        Returns
+        -------
+        RectilinearGrid
+            Physical grid edges satisfying this policy for ``design``.
+        """
         if self.nonuniform:
             if self.wavelength is None:
                 raise ValueError("GridSpec.graded requires wavelength.")
