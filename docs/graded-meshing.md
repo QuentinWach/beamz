@@ -82,9 +82,14 @@ extra refinement rather than part of cross-solver parity.
 
 Semantic primitives report physical dimensions directly: circle and sphere
 diameters, ring and bend wall thicknesses, taper output widths, and box sizes.
-For explicit polygons, BeamZ measures distances between opposing material
-boundaries. Adjacent vertex spacing is never interpreted as a feature size, so
-adding more points to a curved boundary does not force a finer mesh.
+For explicit polygons, BeamZ measures distances between opposing material or
+gap boundaries. It retains the nearest reliable face pair, builds a local
+normal-direction refinement corridor, and merges overlapping corridors into a
+one-dimensional spacing envelope. A narrow neck therefore refines the axis
+normal to that neck near the feature instead of forcing the finest spacing over
+the polygon's whole bounding box. Adjacent vertex spacing is never interpreted
+as a feature size, so adding more points to a curved boundary does not force a
+finer mesh.
 
 ## Geometry treatment
 
@@ -143,16 +148,26 @@ spec = bz.GridSpec.auto(
 )
 ```
 
-An exceeded budget reports the realized shape, a conservative setup-memory
-estimate, and the violated limit. Prefer raising `dl_min` or relaxing a local
-override before increasing a budget.
+Uniform cell counts and conservative graded-axis lower bounds are checked before
+edge generation. The graded mesher then rechecks its exact count before every
+temporary edge/owner allocation and after refinement passes; the active
+Cartesian product is rechecked as each axis is finalized. An exceeded budget
+reports the predicted shape or offending axis, the smallest requested spacing,
+the limiting interval when available, a conservative memory estimate, and the
+violated limit. Prefer raising `dl_min` or relaxing a local override before
+increasing a budget.
 
 ## Result coordinates
 
 Compiled field arrays use a solver-local grid, while analysis results expose
 public physical coordinates. Imported grids with nonzero origins and centered
 domains are translated through the same `coordinate_offset` contract in xarray,
-plots, and videos; the offset is never applied twice.
+plots, and videos; the offset is never applied twice. For 2D `xy`, `xz`, and
+`yz` simulations, stored raster axes are mapped explicitly into physical XYZ
+before offsets are applied, including two-coordinate sources and three-coordinate
+monitors. Three-dimensional slice results retain their exact compiled sample
+region, so videos use the actual nonuniform tangential edges and snapped plane
+position rather than reconstructing them from one scalar resolution.
 
 ## Quality checks
 

@@ -663,7 +663,7 @@ def _merge_mesh_feature_regions(
         for value in raw_coordinates:
             if (
                 not coordinate_clusters
-                or value - coordinate_clusters[-1][-1] >= smallest_spacing
+                or value - coordinate_clusters[-1][0] >= smallest_spacing
             ):
                 coordinate_clusters.append([value])
             else:
@@ -682,7 +682,8 @@ def _merge_mesh_feature_regions(
             if not covering:
                 continue
             spacing = min(active_spacing(region) for region in covering)
-            reason = "; ".join(sorted({region.reason for region in covering}))
+            finest = min(covering, key=active_spacing)
+            reason = finest.reason
             if intervals:
                 old_lower, old_upper, old_spacing, old_reason = intervals[-1]
                 ratio = max(old_spacing, spacing) / min(old_spacing, spacing)
@@ -691,7 +692,7 @@ def _merge_mesh_feature_regions(
                         old_lower,
                         upper,
                         min(old_spacing, spacing),
-                        f"{old_reason}; {reason}",
+                        old_reason if old_spacing <= spacing else reason,
                     )
                     continue
             intervals.append((lower, upper, spacing, reason))

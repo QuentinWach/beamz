@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from beamz.devices._placement import (
+    SnappedInterval,
     SnappedRegion,
     line_region_points,
     snap_axis_aligned_line_region_grid,
@@ -31,6 +32,25 @@ from beamz.lattice import (
 
 def _empty_array() -> jnp.ndarray:
     return jnp.empty(0, dtype=jnp.float32)
+
+
+def _compact_sample_region(region: SnappedRegion | None) -> SnappedRegion | None:
+    """Retain exact indices and plane coordinates without duplicating grid edges."""
+    if region is None:
+        return None
+    intervals = {
+        axis: SnappedInterval(interval.start, interval.stop, interval.step)
+        for axis, interval in region.intervals.items()
+    }
+    return SnappedRegion(
+        region.ndim,
+        region.normal_axis,
+        region.plane_index,
+        region.plane_coord,
+        intervals,
+        region.companion_index,
+        region.companion_coord,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -346,7 +366,7 @@ def compile_monitor_specs(
                         field_shape=base_shape,
                     )
                 )
-                sample_region = region
+                sample_region = _compact_sample_region(region)
                 quadrature = compile_yee_plane_quadrature_3d(
                     center=monitor.center,
                     size=monitor.size,
@@ -525,7 +545,7 @@ def compile_monitor_specs(
                     integration_weights=jnp.asarray(
                         integration_weights, dtype=jnp.float32
                     ),
-                    sample_region=region_2d,
+                    sample_region=_compact_sample_region(region_2d),
                 )
             )
         else:
@@ -590,7 +610,7 @@ def compile_monitor_specs(
                     integration_weights=jnp.asarray(
                         quadrature.integration_weights, dtype=jnp.float32
                     ),
-                    sample_region=region,
+                    sample_region=_compact_sample_region(region),
                 )
             )
 
