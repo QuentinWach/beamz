@@ -11,6 +11,7 @@ import numpy as np
 
 from beamz._helpers import env_bool
 from beamz.design.discretization import MaterialGrid
+from beamz.design.grid import RectilinearGrid
 from beamz.lattice import normalize_polarization_2d
 
 from .engine import RasterOptions, rasterize
@@ -39,7 +40,7 @@ def _grid_kind(design: Any, grid_type: str) -> str:
 
 def _rasterize_design(
     design: Any,
-    resolution: float,
+    resolution: float | RectilinearGrid,
     *,
     grid_type: str = "auto",
     force_recompute: bool = False,
@@ -58,47 +59,76 @@ def _rasterize_design(
     arrays enter simulation through ``MaterialGrid`` without geometry resampling.
     """
 
-    resolution = float(resolution)
-    if not np.isfinite(resolution) or resolution <= 0:
-        raise ValueError("Resolution must be finite and positive.")
     kind = _grid_kind(design, grid_type)
-    resolution_z = resolution if resolution_z is None else float(resolution_z)
-    if not np.isfinite(resolution_z) or resolution_z <= 0:
-        raise ValueError("resolution_z must be finite and positive.")
-
-    if kind == "3d" and not math.isclose(
-        resolution_z,
-        resolution,
-        rel_tol=32.0 * np.finfo(float).eps,
-        abs_tol=0.0,
-    ):
-        raise ValueError(
-            "BeamZ's current FDTD solver requires the same spacing on x, y, and z. "
-            "Use the standalone rasterizer for nonuniform grids."
+    if isinstance(resolution, RectilinearGrid):
+        native_grid = resolution
+        if resolution_z is not None:
+            raise ValueError("resolution_z cannot be combined with a realized grid.")
+        dimensions = 3 if kind == "3d" else 2
+        if dimensions == 2 and native_grid.shape[2] != 1:
+            raise ValueError("A 2D design requires exactly one z cell.")
+        if not np.allclose(native_grid.origin, (0.0, 0.0, 0.0), rtol=0.0, atol=0.0):
+            raise ValueError("Design raster grids must start at the design origin.")
+        expected_extent = (
+            (float(design.width), float(design.height), float(design.depth))
+            if dimensions == 3
+            else (float(design.width), float(design.height), native_grid.extent[2])
         )
-
-    nx = _cell_count(design.width, resolution)
-    ny = _cell_count(design.height, resolution)
-    if kind == "3d":
-        nz = _cell_count(design.depth, resolution_z)
-        z_max = nz * resolution_z
-        scene = from_beamz(
-            design,
-            padded_size=(nx * resolution, ny * resolution, z_max),
-        )
+        if not np.allclose(
+            native_grid.extent,
+            expected_extent,
+            rtol=64.0 * np.finfo(float).eps,
+            atol=0.0,
+        ):
+            raise ValueError("Design raster-grid extents must match the design domain.")
+        representative_resolution = min(native_grid.min_spacings[:dimensions])
+        if dimensions == 3:
+            scene = from_beamz(design, padded_size=native_grid.extent)
+        else:
+            scene = from_beamz(
+                design,
+                two_dimensional_depth=native_grid.extent[2],
+                padded_size=(native_grid.extent[0], native_grid.extent[1], 0.0),
+            )
     else:
-        nz = 1
-        z_max = 1.0
-        scene = from_beamz(
-            design,
-            two_dimensional_depth=z_max,
-            padded_size=(nx * resolution, ny * resolution, 0.0),
+        resolution = float(resolution)
+        if not np.isfinite(resolution) or resolution <= 0:
+            raise ValueError("Resolution must be finite and positive.")
+        resolution_z = resolution if resolution_z is None else float(resolution_z)
+        if not np.isfinite(resolution_z) or resolution_z <= 0:
+            raise ValueError("resolution_z must be finite and positive.")
+        if kind == "3d" and not math.isclose(
+            resolution_z,
+            resolution,
+            rel_tol=32.0 * np.finfo(float).eps,
+            abs_tol=0.0,
+        ):
+            raise ValueError(
+                "Scalar design rasterization requires the same x, y, and z spacing."
+            )
+        nx = _cell_count(design.width, resolution)
+        ny = _cell_count(design.height, resolution)
+        if kind == "3d":
+            nz = _cell_count(design.depth, resolution_z)
+            z_max = nz * resolution_z
+            scene = from_beamz(
+                design,
+                padded_size=(nx * resolution, ny * resolution, z_max),
+            )
+        else:
+            nz = 1
+            z_max = 1.0
+            scene = from_beamz(
+                design,
+                two_dimensional_depth=z_max,
+                padded_size=(nx * resolution, ny * resolution, 0.0),
+            )
+        native_grid = Grid.uniform(
+            (0.0, 0.0, 0.0),
+            (nx * resolution, ny * resolution, z_max),
+            (nx, ny, nz),
         )
-    native_grid = Grid.uniform(
-        (0.0, 0.0, 0.0),
-        (nx * resolution, ny * resolution, z_max),
-        (nx, ny, nz),
-    )
+        representative_resolution = resolution
 
     if progress:
         print(
@@ -126,5 +156,5 @@ def _rasterize_design(
         result,
         dimensions=3 if kind == "3d" else 2,
         polarization=polarization,
-        resolution=resolution,
+        resolution=representative_resolution,
     )

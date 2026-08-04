@@ -20,6 +20,7 @@ from beamz._helpers import env_bool, positive_float
 from beamz.const import µm
 from beamz.design.core import Design
 from beamz.design.discretization import MaterialGrid, build_material_grid
+from beamz.design.grid import RectilinearGrid
 from beamz.design.grid_spec import GridSpec
 from beamz.design.materials import Material, MaterialProtocol
 from beamz.design.structures import Box
@@ -179,8 +180,13 @@ def _time_from_run_time(time, run_time, grid_spec, resolution, dims):
 def _resolve_design_time_and_grid(design, *, grid_spec, resolution, time, run_time):
     # Compute and cache the authoritative setup value so later stages do not repeat expensive work.
     if grid_spec is not None:
-        structures = list(design.structures)
-        resolution = _resolve_grid_resolution(grid_spec, design.background, structures)
+        resolution = (
+            grid_spec.realize(design)
+            if grid_spec.nonuniform
+            else _resolve_grid_resolution(
+                grid_spec, design.background, list(design.structures)
+            )
+        )
     dims = 3 if _design_is_3d(design) else 2
     time = _time_from_run_time(time, run_time, grid_spec, resolution, dims)
     return resolution, time
@@ -227,10 +233,12 @@ def _prepare_design(design, *, domain, size, background, grid_spec, resolution, 
         new_design += _structure_to_domain(structure, offset, sim_size)
     # 4. Resolve adaptive spacing from the rebuilt material set, derive the final time
     # grid, and return the offset needed to shift sources and monitors consistently.
-    if grid_spec is not None:
-        resolution = _resolve_grid_resolution(grid_spec, background, source_structures)
-    time = _time_from_run_time(
-        time, run_time, grid_spec, resolution, 3 if sim_size[2] > 0 else 2
+    resolution, time = _resolve_design_time_and_grid(
+        new_design,
+        grid_spec=grid_spec,
+        resolution=resolution,
+        time=time,
+        run_time=run_time,
     )
     return new_design, resolution, time, offset
 
@@ -453,6 +461,7 @@ class Simulation:
         Domain boundary conditions. An all-edge PEC boundary is used when omitted.
     resolution : float, default=0.02 * um
         Uniform cell spacing in metres when ``grid_spec`` does not override it.
+        Geometry-aware specifications realize an internal ``RectilinearGrid``.
     time : numpy.ndarray, optional
         One-dimensional, uniformly spaced time samples in seconds. Exactly one of
         ``time`` and ``run_time`` may be supplied.
@@ -527,7 +536,7 @@ class Simulation:
     sources: tuple[object, ...]
     monitors: tuple[_Monitor, ...]
     boundaries: tuple[object, ...]
-    resolution: float
+    resolution: float | RectilinearGrid
     time: np.ndarray
     plane_2d: str
     polarization: str

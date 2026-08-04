@@ -411,13 +411,13 @@ class Design:
 
     def rasterize(
         self,
-        resolution: float,
+        resolution,
         grid_type: str = "auto",
         force_recompute: bool = False,
         progress: bool = False,
         **kwargs,
     ):
-        """Rasterize this design into the solver's immutable material grid."""
+        """Rasterize this design on a scalar spacing or realized grid."""
         from beamz.design.raster.integration import _rasterize_design
 
         return _rasterize_design(

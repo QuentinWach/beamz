@@ -539,7 +539,7 @@ class MaterialGrid:
 
 def build_material_grid(
     design,
-    resolution: float,
+    resolution,
     *,
     grid_type: str = "auto",
     force_recompute: bool = False,
@@ -552,8 +552,8 @@ def build_material_grid(
     ----------
     design : Design
         Immutable geometry and material specification to rasterize.
-    resolution : float
-        Uniform spatial cell size in metres.
+    resolution : float or RectilinearGrid
+        Uniform spatial cell size or explicit physical cell edges.
     grid_type : str, default="auto"
         Dimensionality policy: ``"auto"``, ``"2d"``, or ``"3d"``.
     force_recompute : bool, default=False

@@ -180,6 +180,53 @@ def test_material_grid_preserves_nonuniform_raster_edges():
     assert material_grid.uses_direct_yee_materials
 
 
+def test_design_rasterize_accepts_realized_rectilinear_grid():
+    design = design_2d()
+    grid = Grid(
+        [0.0, 0.2e-6, 0.5e-6, 1.0e-6],
+        [0.0, 0.25e-6, 0.6e-6, 1.0e-6],
+        [0.0, 1.0],
+    )
+
+    material_grid = design.rasterize(grid)
+
+    assert material_grid.grid == grid
+    assert material_grid.metric_kind == "rectilinear"
+    assert material_grid.uses_direct_yee_materials
+
+
+def test_simulation_realizes_and_rasterizes_geometry_aware_grid_spec():
+    design = design_2d()
+    grid_spec = bz.GridSpec.graded(
+        wavelength=1.55e-6,
+        min_steps_per_wvl=10,
+        max_scale=1.2,
+    )
+    simulation = bz.Simulation(
+        design=design,
+        grid_spec=grid_spec,
+        run_time=2e-15,
+        sources=[
+            bz.GaussianSource(
+                position=(0.25e-6, 0.5e-6),
+                width=0.2e-6,
+                signal=np.ones(8),
+            )
+        ],
+        monitors=[bz.FieldRecorder(("Ez",), interval=2, name="fields")],
+    )
+
+    material_grid = simulation._material_grid()
+    program = simulation.compile()
+
+    assert isinstance(simulation.resolution, bz.RectilinearGrid)
+    assert material_grid.grid == simulation.resolution
+    assert material_grid.metric_kind == "rectilinear"
+    assert program.config.metric_kind == "rectilinear"
+    expected_dt = grid_spec.resolve_time_step(simulation.resolution, dims=2)
+    assert simulation.dt == pytest.approx(expected_dt)
+
+
 def test_compiler_builds_separable_staggered_metrics_for_rectilinear_grid():
     result = rasterize(
         Scene((Material(),)),

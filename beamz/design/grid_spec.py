@@ -119,7 +119,7 @@ class GridSpec:
         for name in ("wavelength", "resolution", "dl_min", "dl_max"):
             value = getattr(self, name)
             if value is not None and (not np.isfinite(value) or float(value) <= 0.0):
-                raise ValueError(f"GridSpec {name} must be finite and positive.")
+                raise ValueError(f"GridSpec {name} must be positive and finite.")
         if (
             self.dl_min is not None
             and self.dl_max is not None
