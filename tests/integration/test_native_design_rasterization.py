@@ -290,6 +290,7 @@ def test_automatic_grid_simulation_copy_and_result_metadata_keep_exact_grid():
     assert copied.grid == simulation.grid
     assert copied.resolution == pytest.approx(simulation.grid.minimum_spacing)
     assert results.metadata.resolution == pytest.approx(copied.resolution)
+    assert results.metadata.grid == copied.grid
 
 
 def test_automatic_grid_uses_compatible_uniform_mesh_for_mode_devices():

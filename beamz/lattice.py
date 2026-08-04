@@ -62,6 +62,46 @@ def component_coordinates_3d_um(
     }
 
 
+def component_coordinates_rectilinear(
+    component: str,
+    grid,
+    *,
+    plane: str | None = None,
+    polarization: str = "tm",
+) -> dict[str, np.ndarray]:
+    """Return exact physical Yee coordinates from rectilinear grid edges."""
+
+    def samples(axis: str, offset: float) -> np.ndarray:
+        edges = np.asarray(grid.axis_edges(axis), dtype=np.float64)
+        return edges if offset == 0.0 else 0.5 * (edges[:-1] + edges[1:])
+
+    if plane is None:
+        offsets = component_axis_offsets_3d(component)
+        return {axis: samples(axis, offsets[axis]) for axis in ("z", "y", "x")}
+
+    normalized_plane = str(plane).lower()
+    canonical = canonical_component_2d(component, normalized_plane, polarization)
+    if canonical is None:
+        return {}
+    row_offset, column_offset = {
+        "Ez": (0.0, 0.0),
+        "Hx": (0.5, 0.0),
+        "Hy": (0.0, 0.5),
+        "Ex": (0.0, 0.5),
+        "Ey": (0.5, 0.0),
+        "Hz": (0.5, 0.5),
+    }[canonical]
+    row_axis, column_axis = {
+        "xy": ("y", "x"),
+        "yz": ("z", "y"),
+        "xz": ("z", "x"),
+    }[normalized_plane]
+    return {
+        row_axis: samples("y", row_offset),
+        column_axis: samples("x", column_offset),
+    }
+
+
 _FIELD_COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
 
 

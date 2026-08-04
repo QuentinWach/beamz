@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from beamz import RectilinearGrid
 from beamz.lattice import (
     canonical_component_2d,
     component_coordinates_2d_um,
     component_coordinates_3d_um,
+    component_coordinates_rectilinear,
     component_material_at,
     component_shape_2d,
     component_shape_3d,
@@ -57,6 +59,25 @@ def test_component_coordinates_3d_follow_standard_yee_offsets():
     np.testing.assert_allclose(ey["x"][-1], 3.0)
     np.testing.assert_allclose(ez["x"][-1], 3.0)
     np.testing.assert_allclose(hx["x"][-1], 3.0)
+
+
+def test_rectilinear_component_coordinates_use_exact_edges_and_centers():
+    grid = RectilinearGrid(
+        np.asarray([0.0, 1.0, 3.0]),
+        np.asarray([0.0, 2.0, 5.0]),
+        np.asarray([0.0, 4.0, 6.0]),
+    )
+
+    ex = component_coordinates_rectilinear("Ex", grid)
+    hx = component_coordinates_rectilinear("Hx", grid)
+    hy_2d = component_coordinates_rectilinear("Hy", grid, plane="xy")
+
+    np.testing.assert_allclose(ex["x"], [0.5, 2.0])
+    np.testing.assert_allclose(ex["y"], grid.y_edges)
+    np.testing.assert_allclose(hx["z"], [2.0, 5.0])
+    np.testing.assert_allclose(hx["y"], [1.0, 3.5])
+    np.testing.assert_allclose(hy_2d["x"], [0.5, 2.0])
+    np.testing.assert_allclose(hy_2d["y"], grid.y_edges)
 
 
 def test_component_coordinates_2d_follow_standard_xy_offsets():

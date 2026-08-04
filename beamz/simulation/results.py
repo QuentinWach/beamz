@@ -11,6 +11,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from beamz._cache_tokens import cache_token
+from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import immutable_snapshot, readonly_array
 from beamz.devices.monitors.compiler import CompiledMonitorSpec
 from beamz.devices.monitors.monitors import _Monitor
@@ -91,13 +92,28 @@ def material_region_for_monitor(simulation, monitor: _Monitor, *, runtime_fields
     permeability = np.asarray(runtime_fields.permeability)
     full_shape = tuple(int(value) for value in permittivity.shape)
 
+    grid = runtime_fields.geometry
     if permittivity.ndim == 3:
-        indices = monitor.get_grid_slice_3d(
-            simulation.resolution,
-            simulation.resolution,
-            simulation.resolution,
-            full_shape,
+        from beamz.devices._placement import snap_plane_region_grid
+
+        snapped_region = snap_plane_region_grid(
+            center=monitor.center,
+            size=monitor.size,
+            plane_normal=monitor.plane_normal,
+            grid=grid,
         )
+        if snapped_region is None:
+            return None
+
+        def axis_index(axis):
+            if axis == snapped_region.normal_axis:
+                return snapped_region.plane_index
+            interval = snapped_region.axis_interval(axis)
+            if interval is None:
+                raise RuntimeError(f"Monitor region omits transverse axis {axis!r}.")
+            return interval.as_slice()
+
+        indices = tuple(axis_index(axis) for axis in ("z", "y", "x"))
         dim = {"z": 0, "y": 1, "x": 2}[axis]
         normal = indices[dim]
         if isinstance(normal, slice):
@@ -107,9 +123,17 @@ def material_region_for_monitor(simulation, monitor: _Monitor, *, runtime_fields
         else:
             plane = int(normal)
     elif permittivity.ndim == 2:
-        points = monitor.get_grid_points_2d(
-            simulation.resolution, simulation.resolution
+        from beamz.devices._placement import (
+            line_region_points,
+            snap_axis_aligned_line_region_grid,
         )
+
+        snapped_region = snap_axis_aligned_line_region_grid(
+            monitor.start, monitor.end, grid
+        )
+        if snapped_region is None:
+            return None
+        points = line_region_points(snapped_region)
         if not points:
             return None
         if axis not in {"x", "y"}:
@@ -127,15 +151,15 @@ def material_region_for_monitor(simulation, monitor: _Monitor, *, runtime_fields
 
     plane = int(np.clip(plane, 0, full_shape[dim] - 1))
     start, stop = max(0, plane - 2), min(full_shape[dim], plane + 3)
-    region = [slice(None)] * permittivity.ndim
-    region[dim] = slice(start, stop)
+    crop = [slice(None)] * permittivity.ndim
+    crop[dim] = slice(start, stop)
     origin = [0] * permittivity.ndim
     origin[dim] = start
     permeability_region = (
-        permeability if permeability.ndim == 0 else permeability[tuple(region)]
+        permeability if permeability.ndim == 0 else permeability[tuple(crop)]
     )
     return MaterialRegion(
-        permittivity[tuple(region)],
+        permittivity[tuple(crop)],
         permeability_region,
         tuple(origin),
         full_shape,
@@ -226,6 +250,9 @@ class SimulationMetadata:
         Domain extents in metres.
     fields : FieldMetadata
         Field shapes and optional material information.
+    grid : RectilinearGrid, optional
+        Exact physical grid used by the simulation. Older manually constructed
+        metadata may omit it and fall back to ``resolution``.
 
     Notes
     -----
@@ -245,10 +272,13 @@ class SimulationMetadata:
     depth: float
     fields: FieldMetadata
     polarization_2d: str = "tm"
+    grid: RectilinearGrid | None = None
 
     def __post_init__(self):
         if not isinstance(self.fields, FieldMetadata):
             raise TypeError("SimulationMetadata.fields must be FieldMetadata.")
+        if self.grid is not None and not isinstance(self.grid, RectilinearGrid):
+            raise TypeError("SimulationMetadata.grid must be RectilinearGrid or None.")
         offset = tuple(float(value) for value in self.coordinate_offset)
         if len(offset) != 3:
             raise ValueError(
@@ -294,6 +324,7 @@ class SimulationMetadata:
             self.height,
             self.depth,
             self.fields,
+            self.grid,
         )
 
     def __eq__(self, other):
@@ -388,6 +419,7 @@ class SimulationMetadata:
                 materials=materials,
             ),
             polarization_2d=simulation.polarization,
+            grid=simulation.grid,
         )
 
 

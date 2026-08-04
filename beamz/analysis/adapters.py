@@ -106,12 +106,26 @@ def _yee_coords(name, dims, shape, simulation):
     resolution = simulation.resolution
     raw_shape = simulation.fields.grid_shape
     try:
-        if len(shape) == 3:
+        grid = getattr(simulation, "grid", None)
+        if grid is not None:
+            from beamz.lattice import component_coordinates_rectilinear
+
+            coords_m = component_coordinates_rectilinear(
+                name,
+                grid,
+                plane=None if len(shape) == 3 else simulation.plane_2d,
+                polarization=getattr(simulation, "polarization_2d", "tm"),
+            )
+        elif len(shape) == 3:
             from beamz.lattice import component_coordinates_3d_um
 
             coords_um = component_coordinates_3d_um(
                 name, raw_shape if len(raw_shape) == 3 else shape, resolution * 1e6
             )
+            coords_m = {
+                dim: np.asarray(values, dtype=float) * 1e-6
+                for dim, values in coords_um.items()
+            }
         else:
             from beamz.lattice import component_coordinates_2d_um
 
@@ -122,15 +136,19 @@ def _yee_coords(name, dims, shape, simulation):
                 simulation.plane_2d,
                 getattr(simulation, "polarization_2d", "tm"),
             )
+            coords_m = {
+                dim: np.asarray(values, dtype=float) * 1e-6
+                for dim, values in coords_um.items()
+            }
     except Exception:
         return None
     if any(
-        dim not in coords_um or len(coords_um[dim]) != length
+        dim not in coords_m or len(coords_m[dim]) != length
         for dim, length in zip(dims, shape, strict=True)
     ):
         return None
     return {
-        dim: (dim, np.asarray(coords_um[dim], dtype=float) * 1e-6, {"units": "m"})
+        dim: (dim, np.asarray(coords_m[dim], dtype=float), {"units": "m"})
         for dim in dims
     }
 
