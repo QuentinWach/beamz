@@ -473,9 +473,34 @@ def curl_e_to_h_3d(ex, ey, ez, resolution):
     )
 
 
+def _rectilinear_inverse_distances(grid, axis: str, *, backward: bool) -> np.ndarray:
+    widths = np.asarray(grid.cell_widths(axis), dtype=np.float64)
+    if not backward:
+        return 1.0 / widths
+    inverse = np.empty(widths.size + 1, dtype=np.float64)
+    inverse[0], inverse[-1] = 1.0 / widths[0], 1.0 / widths[-1]
+    if widths.size > 1:
+        inverse[1:-1] = 2.0 / (widths[:-1] + widths[1:])
+    return inverse
+
+
+def curl_e_to_h_3d_metric(ex, ey, ez, grid):
+    """Differentiate electric fields using exact rectilinear cell widths."""
+    ix = _rectilinear_inverse_distances(grid, "x", backward=False)
+    iy = _rectilinear_inverse_distances(grid, "y", backward=False)
+    iz = _rectilinear_inverse_distances(grid, "z", backward=False)
+    return (
+        adjacent_difference(ez, 1, iy) - adjacent_difference(ey, 0, iz),
+        adjacent_difference(ex, 0, iz) - adjacent_difference(ez, 2, ix),
+        adjacent_difference(ey, 2, ix) - adjacent_difference(ex, 1, iy),
+    )
+
+
 def adjacent_difference(array, axis, resolution):
     resolution = jnp.asarray(resolution, dtype=array.dtype)
     moved = jnp.moveaxis(array, axis, 0)
+    if resolution.ndim == 1:
+        resolution = resolution.reshape((resolution.size,) + (1,) * (moved.ndim - 1))
     return jnp.moveaxis((moved[1:] - moved[:-1]) / resolution, 0, axis)
 
 
@@ -559,6 +584,43 @@ def curl_h_to_e_3d(
         - adjacent_difference(boundary_views["hz_x"], 2, resolution),
         adjacent_difference(boundary_views["hy_x"], 2, resolution)
         - adjacent_difference(boundary_views["hx_y"], 1, resolution),
+    )
+    expected = (ex_shape, ey_shape, ez_shape)
+    if any(curl.shape != shape for curl, shape in zip(curls, expected, strict=True)):
+        raise ValueError(
+            f"curl(H) shapes {tuple(curl.shape for curl in curls)} do not match {expected}"
+        )
+    return curls
+
+
+def curl_h_to_e_3d_metric(
+    hx,
+    hy,
+    hz,
+    grid,
+    ex_shape=None,
+    ey_shape=None,
+    ez_shape=None,
+    *,
+    boundary_views,
+):
+    """Differentiate magnetic fields using exact dual-grid distances."""
+    if ex_shape is None:
+        ex_shape = (hz.shape[0], hz.shape[1] + 1, hz.shape[2])
+    if ey_shape is None:
+        ey_shape = (hx.shape[0] + 1, hx.shape[1], hx.shape[2])
+    if ez_shape is None:
+        ez_shape = (hy.shape[0], hy.shape[1], hy.shape[2] + 1)
+    ix = _rectilinear_inverse_distances(grid, "x", backward=True)
+    iy = _rectilinear_inverse_distances(grid, "y", backward=True)
+    iz = _rectilinear_inverse_distances(grid, "z", backward=True)
+    curls = (
+        adjacent_difference(boundary_views["hz_y"], 1, iy)
+        - adjacent_difference(boundary_views["hy_z"], 0, iz),
+        adjacent_difference(boundary_views["hx_z"], 0, iz)
+        - adjacent_difference(boundary_views["hz_x"], 2, ix),
+        adjacent_difference(boundary_views["hy_x"], 2, ix)
+        - adjacent_difference(boundary_views["hx_y"], 1, iy),
     )
     expected = (ex_shape, ey_shape, ez_shape)
     if any(curl.shape != shape for curl, shape in zip(curls, expected, strict=True)):

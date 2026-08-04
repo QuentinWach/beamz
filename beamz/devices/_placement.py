@@ -371,6 +371,57 @@ def snap_mode_source_region(
     )
 
 
+def snap_mode_source_region_grid(
+    *,
+    center: tuple[float, ...],
+    width: float,
+    height: float | None,
+    axis: str,
+    direction_sign: float,
+    grid,
+    is_3d: bool,
+) -> SnappedRegion:
+    """Snap a mode launch to the realized rectilinear Yee grid."""
+    axis = str(axis).lower()
+    edges = {name: np.asarray(grid.axis_edges(name)) for name in _AXES}
+    plane_index, plane_coord = snap_rectilinear_cell_center(
+        center[_axis_pos(axis)], edges[axis]
+    )
+    counts = {name: int(values.size - 1) for name, values in edges.items()}
+    companion_max = max(counts[axis] - 2, 0)
+    companion_index = (
+        max(0, plane_index - 1)
+        if direction_sign > 0.0
+        else min(companion_max, plane_index + 1)
+    )
+    companion_coord = float(edges[axis][companion_index + 1])
+
+    extents = {
+        "x": {"y": float(width), "z": float(height if height is not None else width)},
+        "y": {"x": float(width), "z": float(height if height is not None else width)},
+        "z": {"x": float(width), "y": float(height if height is not None else width)},
+    }[axis]
+    intervals = {}
+    for transverse, extent in extents.items():
+        if not is_3d and transverse == "z":
+            continue
+        coord = float(center[_axis_pos(transverse)])
+        intervals[transverse] = snap_rectilinear_edge_interval(
+            coord - 0.5 * extent,
+            coord + 0.5 * extent,
+            edges[transverse],
+        )
+    return SnappedRegion(
+        ndim=3 if is_3d else 2,
+        normal_axis=axis,
+        plane_index=plane_index,
+        plane_coord=plane_coord,
+        intervals=intervals,
+        companion_index=companion_index,
+        companion_coord=companion_coord,
+    )
+
+
 def snap_axis_aligned_line_region(
     start: tuple[float, ...],
     end: tuple[float, ...],

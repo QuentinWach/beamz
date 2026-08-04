@@ -9,6 +9,7 @@ from typing import cast
 import jax.numpy as jnp
 import numpy as np
 
+from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import readonly_array
 from beamz.devices.modes.fields import _axis_coordinate, _axis_index, _phase_delay
 from beamz.lattice import (
@@ -17,7 +18,9 @@ from beamz.lattice import (
     build_h_boundary_views_for_e_3d,
     component_axis_offsets_3d,
     curl_e_to_h_3d,
+    curl_e_to_h_3d_metric,
     curl_h_to_e_3d,
+    curl_h_to_e_3d_metric,
 )
 
 from .specs import FieldProfile3D
@@ -84,6 +87,13 @@ def _field_arrays_like(fields, *, dtype) -> dict[str, np.ndarray]:
     }
 
 
+def _component_axis_coordinate(fields, component, axis, index, resolution) -> float:
+    grid = getattr(fields, "geometry", None)
+    if grid is None or grid.metric_kind == "isotropic_uniform":
+        return _axis_coordinate(component, index, axis, resolution)
+    return _axis_coordinate(component, index, axis, resolution, grid)
+
+
 def build_incident_3d_phasor_state(
     field_profile: FieldProfile3D,
     fields,
@@ -100,7 +110,6 @@ def build_incident_3d_phasor_state(
     omega = float(field_profile.omega)
     plane_coord = float(field_profile.phase_plane_coord)
     ref_coord = float(field_profile.phase_ref_coord)
-    d_axis = float(resolution)
     direction_sign = float(field_profile.direction_sign)
     max_shift = int(max(1, max_shift))
 
@@ -112,8 +121,6 @@ def build_incident_3d_phasor_state(
         if idx is None:
             continue
 
-        base_axis_idx = _axis_index(idx, axis)
-        base_coord = _axis_coordinate(comp_name, base_axis_idx, axis, resolution)
         profile_arr = np.asarray(profile, dtype=np.complex128)
         base_time = float(t_e if comp_name.startswith("E") else t_h)
 
@@ -124,7 +131,10 @@ def build_incident_3d_phasor_state(
             if shifted_idx is None:
                 continue
 
-            coord = float(base_coord + shift * d_axis)
+            shifted_axis_idx = _axis_index(shifted_idx, axis)
+            coord = _component_axis_coordinate(
+                fields, comp_name, axis, shifted_axis_idx, resolution
+            )
             if masked:
                 mask_coord = (
                     ref_coord
@@ -163,7 +173,13 @@ def deembed_3d_phasor_profiles(
             continue
         values = np.asarray(state[component], dtype=np.complex128)
         axis_idx = _axis_index(idx, axis)
-        coord = _axis_coordinate(component, axis_idx, axis, resolution)
+        coord = _component_axis_coordinate(
+            SimpleNamespace(geometry=getattr(field_profile, "grid", None)),
+            component,
+            axis,
+            axis_idx,
+            resolution,
+        )
         base_time = float(t_e if component.startswith("E") else t_h)
         delay = _phase_delay(omega, k_num, coord - ref_coord)
         phase = omega * (base_time - delay)
@@ -180,10 +196,25 @@ def launched_side_component_mask_3d(
 ) -> np.ndarray:
     """Return a broadcast mask for the component-local launched side."""
     axis = field_profile.axis
-    d_axis = float(resolution)
     axis_pos = _AXIS_POS_3D[axis]
-    offset = 1.0 if component in _STAGGERED_ALONG_AXIS[axis] else 0.5
-    coord = (np.arange(int(shape[axis_pos]), dtype=np.float64) + offset) * d_axis
+    grid = getattr(field_profile, "grid", None)
+    if grid is None or grid.metric_kind == "isotropic_uniform":
+        offset = 1.0 if component in _STAGGERED_ALONG_AXIS[axis] else 0.5
+        coord = (
+            np.arange(int(shape[axis_pos]), dtype=np.float64) + offset
+        ) * float(resolution)
+    else:
+        base = (
+            np.asarray(grid.axis_edges(axis))[1:]
+            if component in _STAGGERED_ALONG_AXIS[axis]
+            else np.asarray(grid.centers(axis))
+        )
+        count = int(shape[axis_pos])
+        if base.size < count:
+            widths = np.asarray(grid.cell_widths(axis))
+            extra = base[-1] + widths[-1] * np.arange(1, count - base.size + 1)
+            base = np.concatenate((base, extra))
+        coord = base[:count]
     mask_coord = (
         float(field_profile.phase_ref_coord)
         if component in _STAGGERED_ALONG_AXIS[axis]
@@ -346,6 +377,12 @@ def local_3d_phasor_context(
     resolution: float,
     max_shift: int,
 ):
+    geometry = getattr(fields, "geometry", None)
+    if geometry is not None and geometry.metric_kind != "isotropic_uniform":
+        # A cropped component support may omit one outer edge, while derivative
+        # metrics are cell based. Keep the exact full-grid metric alignment for
+        # rectilinear launches; compact uniform launches retain the fast path.
+        return None
     axis = field_profile.axis
     axis_pos = _AXIS_POS_3D[axis]
     field_shapes = {
@@ -415,6 +452,28 @@ def local_3d_phasor_context(
         boundaries=getattr(fields, "boundaries", None),
         permittivity=np.empty(cell_shape, dtype=fields.permittivity.dtype),
     )
+    candidate_grid = getattr(fields, "geometry", None)
+    global_grid = (
+        candidate_grid
+        if candidate_grid is not None
+        and candidate_grid.metric_kind != "isotropic_uniform"
+        else None
+    )
+    if global_grid is not None:
+        bounds_by_axis = dict(zip(("z", "y", "x"), cell_bounds, strict=True))
+        origins = {
+            name: float(global_grid.axis_edges(name)[bounds_by_axis[name][0]])
+            for name in ("x", "y", "z")
+        }
+        local_fields.geometry = RectilinearGrid(
+            *(
+                np.asarray(global_grid.axis_edges(name))[
+                    bounds_by_axis[name][0] : bounds_by_axis[name][1] + 1
+                ]
+                - origins[name]
+                for name in ("x", "y", "z")
+            )
+        )
 
     def local_material_attr(
         attr: str,
@@ -465,7 +524,11 @@ def local_3d_phasor_context(
             local_material_attr(attr, component_slices[component]),
         )
 
-    offset = float(cell_bounds[axis_pos][0]) * float(resolution)
+    offset = (
+        float(global_grid.axis_edges(axis)[cell_bounds[axis_pos][0]])
+        if global_grid is not None
+        else float(cell_bounds[axis_pos][0]) * float(resolution)
+    )
     local_indices = {
         component: shift_3d_component_index_to_local(
             index,
@@ -484,6 +547,7 @@ def local_3d_phasor_context(
         k_axis=field_profile.k_axis,
         phase_ref_coord=float(field_profile.phase_ref_coord) - offset,
         phase_plane_coord=float(field_profile.phase_plane_coord) - offset,
+        grid=getattr(local_fields, "geometry", None),
     )
     return local_profile, local_fields, component_slices
 
@@ -521,7 +585,12 @@ def advance_incident_h_3d(fields, state, dt, *, resolution: float):
     hx = jnp.asarray(state["Hx"])
     hy = jnp.asarray(state["Hy"])
     hz = jnp.asarray(state["Hz"])
-    curl_hx, curl_hy, curl_hz = curl_e_to_h_3d(ex, ey, ez, resolution)
+    grid = getattr(fields, "geometry", None)
+    curl_hx, curl_hy, curl_hz = (
+        curl_e_to_h_3d(ex, ey, ez, resolution)
+        if grid is None or grid.metric_kind == "isotropic_uniform"
+        else curl_e_to_h_3d_metric(ex, ey, ez, grid)
+    )
     return {
         "Hx": np.asarray(
             advance_h_field(hx, curl_hx, fields.sigma_m_hx, dt),
@@ -549,15 +618,17 @@ def advance_incident_e_3d(fields, state, h_next, dt, *, resolution: float):
     boundary_views = build_h_boundary_views_for_e_3d(
         hx, hy, hz, frozenset(resolve_metallic_edges(boundaries, is_3d=True))
     )
-    curl_hx, curl_hy, curl_hz = curl_h_to_e_3d(
-        hx,
-        hy,
-        hz,
-        resolution,
+    grid = getattr(fields, "geometry", None)
+    curl_kwargs = dict(
         ex_shape=ex.shape,
         ey_shape=ey.shape,
         ez_shape=ez.shape,
         boundary_views=boundary_views,
+    )
+    curl_hx, curl_hy, curl_hz = (
+        curl_h_to_e_3d(hx, hy, hz, resolution, **curl_kwargs)
+        if grid is None or grid.metric_kind == "isotropic_uniform"
+        else curl_h_to_e_3d_metric(hx, hy, hz, grid, **curl_kwargs)
     )
     return {
         "Ex": np.asarray(

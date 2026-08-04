@@ -458,11 +458,6 @@ def _lower_mode_source(
     source: ModeSource,
     ctx: SourceLoweringContext,
 ) -> CompiledInjectionPlan:
-    if _source_requires_rectilinear_operator(ctx):
-        raise NotImplementedError(
-            "ModeSource on a rectilinear grid requires a nonuniform mode operator; "
-            "use a precomputed CustomSource or a uniform grid."
-        )
     if (
         np.asarray(ctx.fields.permittivity).ndim == 3
         and source.profile_frequencies().size > 1
@@ -474,6 +469,7 @@ def _lower_mode_source(
         ctx.fields,
         resolution=ctx.resolution,
         dt=ctx.dt,
+        **({"grid": ctx.grid} if ctx.grid is not None else {}),
     )
     is_3d = isinstance(launch_plan, Mode3DLaunchPlan) or hasattr(
         launch_plan, "residuals"
@@ -544,6 +540,7 @@ def _lower_broadband_mode_source(
             ctx.fields,
             resolution=ctx.resolution,
             dt=ctx.dt,
+            **({"grid": ctx.grid} if ctx.grid is not None else {}),
         )
         plans.append(plan)
 

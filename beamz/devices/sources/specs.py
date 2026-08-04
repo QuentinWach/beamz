@@ -39,6 +39,7 @@ class FieldProfile3D:
     k_axis: float | None
     phase_ref_coord: float
     phase_plane_coord: float
+    grid: Any | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "components", immutable_snapshot(self.components))
