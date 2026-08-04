@@ -147,3 +147,40 @@ def test_centered_design_geometry_overrides_and_snapping_are_translated():
     assert np.any(np.isclose(grid.x_edges, 0.4 * bz.um, rtol=1e-12, atol=0.0))
     assert np.any(np.isclose(grid.x_edges, 0.6 * bz.um, rtol=1e-12, atol=0.0))
     assert np.any(np.isclose(grid.x_edges, 3.5 * bz.um, rtol=1e-12, atol=0.0))
+
+
+@pytest.mark.parametrize(
+    "structure",
+    [
+        bz.Taper(
+            position=(2.0, 5.0),
+            input_width=1.0,
+            output_width=0.1,
+            length=4.0,
+            material=bz.Material(permittivity=1.0),
+        ),
+        bz.Polygon(
+            vertices=((2.0, 4.95), (6.0, 4.95), (6.0, 5.05), (2.0, 5.05)),
+            material=bz.Material(permittivity=1.0),
+        ),
+    ],
+)
+def test_min_feature_cells_resolves_tapers_and_explicit_polygons(structure):
+    design = bz.Design(
+        width=10.0,
+        height=10.0,
+        background=bz.Material(permittivity=1.0),
+        structures=(structure,),
+    )
+    grid = bz.GridSpec.auto(
+        wavelength=100.0,
+        min_steps_per_wvl=10,
+        min_steps_per_sim_size=10,
+        min_feature_cells=10,
+    ).realize(design)
+
+    output_cells = np.count_nonzero(
+        (grid.centers("y") > 4.95) & (grid.centers("y") < 5.05)
+    )
+
+    assert output_cells >= 10

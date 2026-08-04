@@ -10,6 +10,7 @@ import numpy as np
 from beamz.const import LIGHT_SPEED
 from beamz.design.grid import RectilinearGrid
 from beamz.design.mesher import GradedMesher
+from beamz.design.structures import Polygon, Taper
 
 AxisValues = tuple[float, float, float]
 OptionalAxisValues = tuple[float | None, float | None, float | None]
@@ -351,7 +352,22 @@ def _structure_bounds(
     return cast(AxisValues, (*lower, z)), cast(AxisValues, (*upper, z + depth))
 
 
-def _feature_sizes(structure: Any) -> tuple[float | None, float | None, float | None]:
+def _polygon_clearance(structure: Polygon) -> float | None:
+    """Return a conservative local width for an explicitly polygonal structure."""
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    shell = [(float(x), float(y)) for x, y, _z in structure.vertices]
+    holes = [
+        [(float(x), float(y)) for x, y, _z in path] for path in structure.interiors
+    ]
+    geometry = ShapelyPolygon(shell, holes=holes)
+    clearance = float(geometry.minimum_clearance)
+    return clearance if np.isfinite(clearance) and clearance > 0.0 else None
+
+
+def _feature_sizes(
+    structure: Any, *, detect_polygon_features: bool
+) -> tuple[float | None, float | None, float | None]:
     if hasattr(structure, "inner_radius") and hasattr(structure, "outer_radius"):
         wall = float(structure.outer_radius) - float(structure.inner_radius)
         return wall, wall, float(getattr(structure, "depth", 0.0)) or None
@@ -362,6 +378,14 @@ def _feature_sizes(structure: Any) -> tuple[float | None, float | None, float | 
         return tuple(
             value if np.isfinite(value) and value > 0.0 else None for value in size
         )  # type: ignore[return-value]
+    if isinstance(structure, Taper):
+        transverse = min(float(structure.input_width), float(structure.output_width))
+        depth = float(structure.depth)
+        return float(structure.length), transverse, depth if depth > 0.0 else None
+    if isinstance(structure, Polygon) and detect_polygon_features:
+        clearance = _polygon_clearance(structure)
+        depth = float(structure.depth)
+        return clearance, clearance, depth if depth > 0.0 else None
     width = getattr(structure, "width", None)
     height = getattr(structure, "height", None)
     depth = getattr(structure, "depth", None)
@@ -421,7 +445,9 @@ def _geometry_regions(
             wavelength / (_material_index(structure.material) * spec.min_steps_per_wvl),
             spec,
         )
-        features = _feature_sizes(structure)
+        features = _feature_sizes(
+            structure, detect_polygon_features=spec.min_feature_cells > 1.0
+        )
         spacing = tuple(
             _clamp_spacing(
                 min(material_spacing, feature / spec.min_feature_cells)
