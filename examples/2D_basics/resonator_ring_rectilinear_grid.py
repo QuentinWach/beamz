@@ -14,7 +14,10 @@ from matplotlib.colors import LinearSegmentedColormap
 import beamz as bz
 
 WAVELENGTH = 1.55 * bz.um
-MAX_SCALE = 1.05
+MIN_STEPS_PER_WVL = 10
+MIN_FEATURE_CELLS = 12
+MAX_SCALE = 1.08
+COUPLING_DX = 30 * bz.nm
 
 
 def create_design() -> tuple[bz.Design, dict[str, float]]:
@@ -61,13 +64,27 @@ def create_design() -> tuple[bz.Design, dict[str, float]]:
     return design, params
 
 
-def create_grid(design: bz.Design) -> tuple[bz.GridSpec, bz.RectilinearGrid]:
-    """Resolve a material- and geometry-aware grid with gentle grading."""
+def create_grid(
+    design: bz.Design, params: dict[str, float]
+) -> tuple[bz.GridSpec, bz.RectilinearGrid]:
+    """Resolve an automatic grid with an x-only coupling-region override."""
+    gap_center_y = (
+        params["bus_center_y"]
+        + 0.5 * params["waveguide_width"]
+        + 0.5 * params["coupling_gap"]
+    )
     spec = bz.GridSpec.graded(
         wavelength=WAVELENGTH,
-        min_steps_per_wvl=16,
-        min_feature_cells=6,
+        min_steps_per_wvl=MIN_STEPS_PER_WVL,
+        min_feature_cells=MIN_FEATURE_CELLS,
         max_scale=MAX_SCALE,
+        overrides=(
+            bz.MeshOverride(
+                center=(params["ring_center_x"], gap_center_y),
+                size=(2.0 * bz.um, 1.5 * bz.um),
+                dl=(COUPLING_DX, None),
+            ),
+        ),
     )
     return spec, spec.realize(design)
 
@@ -99,16 +116,24 @@ def plot_grid(
     cmap = LinearSegmentedColormap.from_list(
         "ring_materials", ("#0f2742", "#2d7897", "#f59e0b")
     )
-    figure = plt.figure(figsize=(15.0, 8.6), layout="constrained")
+    figure = plt.figure(figsize=(15.0, 8.6))
     layout = figure.add_gridspec(
         2,
         2,
         width_ratios=(1.38, 1.0),
         height_ratios=(1.0, 0.72),
+        left=0.055,
+        right=0.89,
+        bottom=0.085,
+        top=0.90,
+        wspace=0.18,
+        hspace=0.30,
     )
     full_ax = figure.add_subplot(layout[:, 0])
     zoom_ax = figure.add_subplot(layout[0, 1])
-    spacing_ax = figure.add_subplot(layout[1, 1])
+    spacing_layout = layout[1, 1].subgridspec(1, 2, wspace=0.40)
+    x_spacing_ax = figure.add_subplot(spacing_layout[0, 0])
+    y_spacing_ax = figure.add_subplot(spacing_layout[0, 1])
 
     image_options = {
         "shading": "flat",
@@ -119,17 +144,17 @@ def plot_grid(
     full_mesh = full_ax.pcolormesh(x_um, y_um, epsilon, **image_options)
     _draw_exact_outlines(full_ax, design)
 
-    # A representative subset avoids hiding the device under 85,000 grid cells.
-    for edge in x_um[::8]:
-        full_ax.axvline(edge, color="white", linewidth=0.28, alpha=0.24)
-    for edge in y_um[::6]:
-        full_ax.axhline(edge, color="white", linewidth=0.28, alpha=0.24)
+    # Draw every edge: this example is deliberately tuned to expose the grading.
+    for edge in x_um:
+        full_ax.axvline(edge, color="white", linewidth=0.22, alpha=0.24)
+    for edge in y_um:
+        full_ax.axhline(edge, color="white", linewidth=0.22, alpha=0.24)
     full_ax.set(
         xlim=(x_um[0], x_um[-1]),
         ylim=(y_um[0], y_um[-1]),
         xlabel="x (µm)",
         ylabel="y (µm)",
-        title="Full device — representative grid lines",
+        title="Full device — every grid line",
     )
     full_ax.set_aspect("equal", adjustable="box")
     full_ax.text(
@@ -139,6 +164,8 @@ def plot_grid(
             f"{grid.shape[0]:,} × {grid.shape[1]:,} cells\n"
             f"Δx = {dx_nm.min():.1f}–{dx_nm.max():.1f} nm\n"
             f"Δy = {dy_nm.min():.1f}–{dy_nm.max():.1f} nm\n"
+            f"scale range: x {dx_nm.max() / dx_nm.min():.1f}×, "
+            f"y {dy_nm.max() / dy_nm.min():.1f}×\n"
             f"worst adjacent ratio = {quality.max_adjacent_ratio:.3f}"
         ),
         transform=full_ax.transAxes,
@@ -176,37 +203,57 @@ def plot_grid(
     )
     zoom_ax.set_aspect("equal", adjustable="box")
 
+    x_centers = grid.centers("x") / bz.um
     y_centers = grid.centers("y") / bz.um
-    spacing_ax.plot(
+    x_spacing_ax.plot(
+        x_centers,
+        dx_nm,
+        color="#c45c06",
+        marker="o",
+        markersize=2.3,
+        linewidth=1.3,
+    )
+    x_spacing_ax.set(
+        xlabel="x coordinate (µm)",
+        ylabel="Δx (nm)",
+        title="x grading: coupling override",
+        xlim=(5.5, 10.5),
+    )
+
+    y_spacing_ax.plot(
         y_centers,
         dy_nm,
         color="#157d96",
         marker="o",
-        markersize=2.5,
-        label="Δy (one marker per cell)",
-        linewidth=1.35,
+        markersize=2.3,
+        linewidth=1.3,
     )
-    spacing_ax.axhline(
-        WAVELENGTH / params["n_core"] / 16 / bz.nm,
+    y_spacing_ax.axhline(
+        WAVELENGTH / params["n_core"] / MIN_STEPS_PER_WVL / bz.nm,
         color="#344054",
         linestyle="--",
         linewidth=1.0,
-        label="λ/(16 n₍core₎)",
+        label=f"λ/({MIN_STEPS_PER_WVL} n₍core₎)",
     )
-    spacing_ax.set(
+    y_spacing_ax.set(
         xlabel="y coordinate (µm)",
-        ylabel="cell width Δy (nm)",
-        title=f"Resolved lower transition (max scale = {MAX_SCALE})",
+        ylabel="Δy (nm)",
+        title="y grading: features + gap",
         xlim=(1.45, 4.45),
     )
-    spacing_ax.grid(color="#98a2b3", alpha=0.25, linewidth=0.7)
-    spacing_ax.legend(loc="upper right", frameon=False, ncols=2, fontsize=9)
+    for spacing_ax in (x_spacing_ax, y_spacing_ax):
+        spacing_ax.grid(color="#98a2b3", alpha=0.25, linewidth=0.7)
+        spacing_ax.tick_params(labelsize=8)
+        spacing_ax.title.set_fontsize(10)
+    y_spacing_ax.legend(loc="upper right", frameon=False, fontsize=7)
 
-    colorbar = figure.colorbar(full_mesh, ax=(full_ax, zoom_ax), shrink=0.8, pad=0.02)
+    colorbar_ax = figure.add_axes((0.92, 0.17, 0.022, 0.68))
+    colorbar = figure.colorbar(full_mesh, cax=colorbar_ax)
     colorbar.set_label("Relative permittivity εᵣ")
     figure.suptitle(
-        "Geometry-aware graded rectilinear mesh for a 2D ring resonator",
+        f"Geometry-aware graded ring mesh — adjacent scale ≤ {MAX_SCALE}",
         fontsize=15,
+        y=0.965,
     )
     figure.savefig(output, dpi=220, facecolor="white")
     plt.close(figure)
@@ -214,7 +261,7 @@ def plot_grid(
 
 def main() -> None:
     design, params = create_design()
-    _spec, grid = create_grid(design)
+    _spec, grid = create_grid(design, params)
     material_grid = design.rasterize(
         grid,
         quality="balanced",
