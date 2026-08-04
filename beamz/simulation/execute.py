@@ -196,30 +196,48 @@ def _selected_monitor_names(program: CompiledProgram, policy: AutoTermination):
     return tuple(spec.name for spec in program.monitors if spec.name in available)
 
 
-def _monitor_vector(results: SimulationResults, names: tuple[str, ...]) -> np.ndarray:
-    """Flatten selected raw DFT accumulators into one convergence vector."""
-    values = []
+def _monitor_vectors(
+    results: SimulationResults, names: tuple[str, ...]
+) -> dict[tuple[str, str, int], np.ndarray]:
+    """Return one raw DFT convergence vector per monitor, component, and frequency."""
+    values = {}
     for name in names:
         monitor = results.monitors[name]
         fields = monitor._raw_dft_fields or monitor.dft_fields
-        values.extend(
-            np.asarray(fields[component], dtype=np.complex128).reshape(-1)
-            for component in sorted(fields)
-        )
-    return np.concatenate(values) if values else np.empty(0, dtype=np.complex128)
+        for component in sorted(fields):
+            field = np.asarray(fields[component], dtype=np.complex128)
+            for frequency, vector in enumerate(field.reshape(field.shape[0], -1)):
+                values[(name, component, frequency)] = vector
+    if names and not values:
+        raise ValueError("Automatic termination monitors produced no DFT data.")
+    return values
 
 
-def _relative_monitor_change(current: np.ndarray, previous: np.ndarray | None):
-    """Return a scale-safe relative L2 change for cumulative monitor values."""
+def _relative_monitor_change(
+    current: dict[tuple[str, str, int], np.ndarray],
+    previous: dict[tuple[str, str, int], np.ndarray] | None,
+):
+    """Return the largest scale-safe change among cumulative monitor values."""
     if previous is None:
         return None
-    if current.shape != previous.shape:
-        raise ValueError("Automatic termination monitor values changed shape.")
-    numerator = float(np.linalg.norm(current - previous))
-    denominator = max(float(np.linalg.norm(current)), float(np.linalg.norm(previous)))
-    if denominator <= np.finfo(float).tiny:
-        return 0.0 if numerator <= np.finfo(float).tiny else np.inf
-    return numerator / denominator
+    if current.keys() != previous.keys():
+        raise ValueError("Automatic termination monitor values changed structure.")
+    changes = []
+    for key, current_value in current.items():
+        previous_value = previous[key]
+        if current_value.shape != previous_value.shape:
+            raise ValueError("Automatic termination monitor values changed shape.")
+        numerator = float(np.linalg.norm(current_value - previous_value))
+        denominator = max(
+            float(np.linalg.norm(current_value)),
+            float(np.linalg.norm(previous_value)),
+        )
+        changes.append(
+            0.0
+            if denominator <= np.finfo(float).tiny and numerator <= np.finfo(float).tiny
+            else numerator / denominator
+        )
+    return max(changes, default=0.0)
 
 
 def _configured_dft_weight_sum(simulation, spec) -> float:
@@ -917,7 +935,7 @@ def run_until_terminated(
     terms = _energy_terms(first_program)
     state = SimulationState.initial(first_program.grid, t=float(simulation.time[0]))
     previous_energy: float | None = None
-    previous_monitor: np.ndarray | None = None
+    previous_monitor: dict[tuple[str, str, int], np.ndarray] | None = None
     energy = peak_energy = max_field = 0.0
     field_decay = monitor_change = None
     source_decay = _source_residual(source_activity, 0)
@@ -952,8 +970,10 @@ def run_until_terminated(
                 _print_inline_progress(current_step, int(simulation.num_steps))
 
             energy, max_field, fields_finite = _field_diagnostics(state, terms)
-            current_monitor = _monitor_vector(last_run.results, monitor_names)
-            monitors_finite = bool(np.isfinite(current_monitor).all())
+            current_monitor = _monitor_vectors(last_run.results, monitor_names)
+            monitors_finite = all(
+                np.isfinite(value).all() for value in current_monitor.values()
+            )
             if not fields_finite or not np.isfinite(energy) or not monitors_finite:
                 reason = "nonfinite"
                 break

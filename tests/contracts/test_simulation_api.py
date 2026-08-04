@@ -193,6 +193,21 @@ def test_run_monitor_stability_requires_a_previous_check():
     np.testing.assert_allclose(result.monitors["output"].dft_weight_sum, [20.0])
 
 
+def test_monitor_stability_requires_every_selected_value_to_stabilize():
+    previous = {
+        ("dominant", "Ez", 0): np.array([1e6 + 0j]),
+        ("changing", "Ez", 0): np.array([1.0 + 0j]),
+    }
+    current = {
+        ("dominant", "Ez", 0): np.array([1e6 + 0j]),
+        ("changing", "Ez", 0): np.array([2.0 + 0j]),
+    }
+
+    change = execution_runtime._relative_monitor_change(current, previous)
+
+    assert change == pytest.approx(0.5)
+
+
 def test_run_never_converges_while_a_source_remains_active():
     time = np.arange(12, dtype=float) * 1e-16
     source = GaussianSource(
