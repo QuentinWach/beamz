@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -14,10 +15,36 @@ from matplotlib.colors import LinearSegmentedColormap
 import beamz as bz
 
 WAVELENGTH = 1.55 * bz.um
-MIN_STEPS_PER_WVL = 10
-MIN_FEATURE_CELLS = 16
-MAX_SCALE = 1.08
-COUPLING_DX = 20 * bz.nm
+
+
+@dataclass(frozen=True, slots=True)
+class MeshSettings:
+    """Named meshing policy used to render one comparison figure."""
+
+    label: str
+    suffix: str
+    min_steps_per_wvl: int
+    min_feature_cells: int
+    max_scale: float
+    coupling_dx: float
+
+
+DETAILED_MESH = MeshSettings(
+    label="Detailed graded ring mesh",
+    suffix="",
+    min_steps_per_wvl=10,
+    min_feature_cells=16,
+    max_scale=1.08,
+    coupling_dx=20 * bz.nm,
+)
+COARSE_MESH = MeshSettings(
+    label="Intentionally coarse graded ring mesh",
+    suffix="_coarse",
+    min_steps_per_wvl=4,
+    min_feature_cells=6,
+    max_scale=1.15,
+    coupling_dx=60 * bz.nm,
+)
 
 
 def create_design() -> tuple[bz.Design, dict[str, float]]:
@@ -65,7 +92,9 @@ def create_design() -> tuple[bz.Design, dict[str, float]]:
 
 
 def create_grid(
-    design: bz.Design, params: dict[str, float]
+    design: bz.Design,
+    params: dict[str, float],
+    settings: MeshSettings = DETAILED_MESH,
 ) -> tuple[bz.GridSpec, bz.RectilinearGrid]:
     """Resolve an automatic grid with an x-only coupling-region override."""
     gap_center_y = (
@@ -75,14 +104,14 @@ def create_grid(
     )
     spec = bz.GridSpec.graded(
         wavelength=WAVELENGTH,
-        min_steps_per_wvl=MIN_STEPS_PER_WVL,
-        min_feature_cells=MIN_FEATURE_CELLS,
-        max_scale=MAX_SCALE,
+        min_steps_per_wvl=settings.min_steps_per_wvl,
+        min_feature_cells=settings.min_feature_cells,
+        max_scale=settings.max_scale,
         overrides=(
             bz.MeshOverride(
                 center=(params["ring_center_x"], gap_center_y),
                 size=(2.0 * bz.um, 1.5 * bz.um),
-                dl=(COUPLING_DX, None),
+                dl=(settings.coupling_dx, None),
             ),
         ),
     )
@@ -104,6 +133,7 @@ def plot_grid(
     grid: bz.RectilinearGrid,
     material_grid: bz.MaterialGrid,
     output: Path,
+    settings: MeshSettings = DETAILED_MESH,
 ) -> None:
     """Plot the structure, coupling cells, and smooth spacing transition."""
     epsilon = np.asarray(material_grid.permittivity)
@@ -229,11 +259,11 @@ def plot_grid(
         linewidth=1.3,
     )
     y_spacing_ax.axhline(
-        WAVELENGTH / params["n_core"] / MIN_STEPS_PER_WVL / bz.nm,
+        WAVELENGTH / params["n_core"] / settings.min_steps_per_wvl / bz.nm,
         color="#344054",
         linestyle="--",
         linewidth=1.0,
-        label=f"λ/({MIN_STEPS_PER_WVL} n₍core₎)",
+        label=f"λ/({settings.min_steps_per_wvl} n₍core₎)",
     )
     y_spacing_ax.set(
         xlabel="y coordinate (µm)",
@@ -251,7 +281,7 @@ def plot_grid(
     colorbar = figure.colorbar(full_mesh, cax=colorbar_ax)
     colorbar.set_label("Relative permittivity εᵣ")
     figure.suptitle(
-        f"Geometry-aware graded ring mesh — adjacent scale ≤ {MAX_SCALE}",
+        f"{settings.label} — adjacent scale ≤ {settings.max_scale}",
         fontsize=15,
         y=0.965,
     )
@@ -261,20 +291,22 @@ def plot_grid(
 
 def main() -> None:
     design, params = create_design()
-    _spec, grid = create_grid(design, params)
-    material_grid = design.rasterize(
-        grid,
-        quality="balanced",
-        smoothing="farjadpour_full",
-        polarization="tm",
-    )
-    output = Path(__file__).with_suffix(".png")
-    plot_grid(design, params, grid, material_grid, output)
+    script = Path(__file__)
+    for settings in (DETAILED_MESH, COARSE_MESH):
+        _spec, grid = create_grid(design, params, settings)
+        material_grid = design.rasterize(
+            grid,
+            quality="balanced",
+            smoothing="farjadpour_full",
+            polarization="tm",
+        )
+        output = script.with_name(f"{script.stem}{settings.suffix}.png")
+        plot_grid(design, params, grid, material_grid, output, settings)
 
-    report = grid.quality_report()
-    print(f"Saved {output}")
-    print(f"Grid shape: {grid.shape}")
-    print(f"Worst adjacent-cell ratio: {report.max_adjacent_ratio:.4f}")
+        report = grid.quality_report()
+        print(f"Saved {output}")
+        print(f"Grid shape: {grid.shape}")
+        print(f"Worst adjacent-cell ratio: {report.max_adjacent_ratio:.4f}")
 
 
 if __name__ == "__main__":
