@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 
 import beamz as bz
+from beamz.design.grid import RectilinearGrid
+from beamz.design.mesher import _GradedMesher
 
 
 def _ring_design():
@@ -145,6 +147,42 @@ def test_grid_budget_rejects_runaway_refinement_before_rasterization():
 
     assert "estimated setup storage" in str(error.value)
     assert "raise dl_min" in str(error.value)
+
+
+def test_uniform_budget_fails_before_edge_allocation(monkeypatch):
+    design = bz.Design(width=1.0, height=1.0)
+    spec = bz.GridSpec.uniform(1e-9, max_cells_per_axis=100)
+
+    def unexpected_allocation(*_args, **_kwargs):
+        raise AssertionError("uniform edge allocation must not start")
+
+    monkeypatch.setattr(RectilinearGrid, "uniform", unexpected_allocation)
+
+    with pytest.raises(ValueError, match="uniform spacing preflight") as error:
+        spec.realize(design)
+
+    assert "smallest requested spacing" in str(error.value)
+    assert "x=1,000,000,000" in str(error.value)
+
+
+def test_graded_total_budget_fails_before_axis_allocation(monkeypatch):
+    design = bz.Design(width=4.0, height=4.0)
+    spec = bz.GridSpec.auto(
+        wavelength=1.0,
+        max_cells_per_axis=None,
+        max_total_cells=200,
+    )
+
+    def unexpected_allocation(*_args, **_kwargs):
+        raise AssertionError("graded edge allocation must not start")
+
+    monkeypatch.setattr(_GradedMesher, "make_axis_edges", unexpected_allocation)
+
+    with pytest.raises(ValueError, match="lower-bound preflight") as error:
+        spec.realize(design)
+
+    assert "predicted active shape" in str(error.value)
+    assert "total limit" in str(error.value)
 
 
 def test_explicit_resolution_takes_precedence_over_automatic_fields():

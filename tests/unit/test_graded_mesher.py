@@ -80,6 +80,28 @@ def test_graded_mesher_is_deterministic_and_validates_inputs():
         _GradedMesher(max_scale=2.0)
 
 
+def test_graded_mesher_budget_fails_before_realization_allocation(monkeypatch):
+    mesher = _GradedMesher(max_scale=1.2)
+
+    def unexpected_allocation(*_args, **_kwargs):
+        raise AssertionError("axis realization allocation must not start")
+
+    monkeypatch.setattr(_GradedMesher, "_realize", unexpected_allocation)
+
+    with pytest.raises(ValueError, match="x axis before allocation") as error:
+        mesher.make_axis_edges(
+            [0.0, 1.0],
+            [1e-9],
+            max_cells=100,
+            axis_name="x",
+        )
+
+    message = str(error.value)
+    assert "temporary edge/owner arrays" in message
+    assert "smallest requested spacing" in message
+    assert "[0, 1]" in message
+
+
 def test_grid_quality_report_identifies_worst_adjacent_pair():
     grid = RectilinearGrid(
         np.asarray([0.0, 0.125, 0.375, 0.875]),

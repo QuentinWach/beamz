@@ -145,6 +145,34 @@ class _GradedMesher:
     max_refinement_passes: int = 64
     max_slope_passes: int = 12
 
+    @staticmethod
+    def _check_cell_budget(
+        counts,
+        *,
+        max_cells: int | None,
+        axis_name: str | None,
+        coords: np.ndarray,
+        caps: np.ndarray,
+        reason: str,
+    ) -> None:
+        if max_cells is None:
+            return
+        estimated = sum(int(value) for value in counts)
+        if estimated <= int(max_cells):
+            return
+        limiting = int(np.argmin(caps))
+        estimated_mib = estimated * 16 / 1024**2
+        label = "axis" if axis_name is None else f"{axis_name} axis"
+        raise ValueError(
+            f"Grid budget exceeded on {label} before allocation: estimated "
+            f"{estimated:,} cells exceeds the {int(max_cells):,}-cell axis limit "
+            f"({estimated_mib:.2f} MiB for temporary edge/owner arrays). The "
+            f"smallest requested spacing is {caps[limiting]:.6g} in interval "
+            f"[{coords[limiting]:.6g}, {coords[limiting + 1]:.6g}] ({reason}). "
+            "Increase max_cells_per_axis explicitly, raise dl_min, or relax "
+            "local refinement."
+        )
+
     def __post_init__(self) -> None:
         max_scale = float(self.max_scale)
         transition_safety = float(self.transition_safety)
@@ -230,7 +258,14 @@ class _GradedMesher:
             owners.extend([interval] * int(count))
         return np.concatenate(pieces), np.asarray(owners, dtype=np.int64)
 
-    def make_axis_edges(self, interval_coords, max_spacings) -> np.ndarray:
+    def make_axis_edges(
+        self,
+        interval_coords,
+        max_spacings,
+        *,
+        max_cells: int | None = None,
+        axis_name: str | None = None,
+    ) -> np.ndarray:
         """Return graded edges satisfying interval and neighbor constraints."""
         coords = np.asarray(interval_coords, dtype=np.float64)
         if (
@@ -254,10 +289,18 @@ class _GradedMesher:
 
         for _slope_pass in range(self.max_slope_passes):
             profiles = self._profiles(coords, caps, slope)
-            counts = np.asarray(
-                [_cell_count(profile.total_density) for profile in profiles],
-                dtype=np.int64,
+            initial_counts = [
+                _cell_count(profile.total_density) for profile in profiles
+            ]
+            self._check_cell_budget(
+                initial_counts,
+                max_cells=max_cells,
+                axis_name=axis_name,
+                coords=coords,
+                caps=caps,
+                reason="initial graded-spacing envelope",
             )
+            counts = np.asarray(initial_counts, dtype=np.int64)
             # Keep a mandatory interval as one cell when it already satisfies its
             # hard cap. Its profile density can be just above one because the
             # envelope also grades neighboring cells; blindly taking ceil would
@@ -265,6 +308,14 @@ class _GradedMesher:
             interval_lengths = np.diff(coords)
             counts[interval_lengths <= caps * (1.0 + target_tolerance)] = 1
             for _refinement_pass in range(self.max_refinement_passes):
+                self._check_cell_budget(
+                    counts,
+                    max_cells=max_cells,
+                    axis_name=axis_name,
+                    coords=coords,
+                    caps=caps,
+                    reason="neighbor-ratio refinement",
+                )
                 edges, owners = self._realize(profiles, counts)
                 widths = np.diff(edges)
                 target_limits = caps[owners]
@@ -277,6 +328,14 @@ class _GradedMesher:
                         counts[interval] = _refined_cell_count(
                             int(counts[interval]), required_factor
                         )
+                    self._check_cell_budget(
+                        counts,
+                        max_cells=max_cells,
+                        axis_name=axis_name,
+                        coords=coords,
+                        caps=caps,
+                        reason="hard-spacing refinement",
+                    )
                     continue
                 if widths.size < 2:
                     return edges
@@ -308,6 +367,14 @@ class _GradedMesher:
                     counts[interval] = _refined_cell_count(
                         counts[interval], required_factor
                     )
+                self._check_cell_budget(
+                    counts,
+                    max_cells=max_cells,
+                    axis_name=axis_name,
+                    coords=coords,
+                    caps=caps,
+                    reason="neighbor-ratio refinement",
+                )
             slope *= 0.65
 
         raise RuntimeError(

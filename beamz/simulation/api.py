@@ -222,7 +222,7 @@ def _resolve_design_time_and_grid(
         grid = (
             grid_spec.realize(design)
             if grid_spec is not None and not grid_spec.is_automatic
-            else _realize_uniform_grid(design, resolution)
+            else _realize_uniform_grid(design, resolution, spec=grid_spec)
         )
     dims = 3 if _design_is_3d(design) else 2
     if grid_spec is not None:
