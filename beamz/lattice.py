@@ -102,6 +102,49 @@ def component_coordinates_rectilinear(
     }
 
 
+def grid_axes_in_physical_frame_2d(plane: str) -> tuple[str, str, str]:
+    """Map stored rectilinear ``(x, y, z)`` axes to physical axes for a 2D plane."""
+    try:
+        return {
+            "xy": ("x", "y", "z"),
+            "xz": ("x", "z", "y"),
+            "yz": ("y", "z", "x"),
+        }[str(plane).lower()]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported 2D plane {plane!r}.") from exc
+
+
+def grid_vector_to_physical_2d(
+    values: tuple[float, float, float], plane: str
+) -> tuple[float, float, float]:
+    """Permute a stored-grid vector into public physical ``(x, y, z)`` order."""
+    stored = tuple(float(value) for value in values)
+    if len(stored) != 3:
+        raise ValueError("A stored-grid vector must contain three values.")
+    physical = dict.fromkeys("xyz", 0.0)
+    for axis, value in zip(grid_axes_in_physical_frame_2d(plane), stored, strict=True):
+        physical[axis] = value
+    return physical["x"], physical["y"], physical["z"]
+
+
+def physical_vector_to_grid_2d(
+    values: tuple[float, float, float], plane: str
+) -> tuple[float, float, float]:
+    """Permute a public physical vector into stored-grid ``(x, y, z)`` order."""
+    physical = dict(zip("xyz", map(float, values), strict=True))
+    grid_x, grid_y, grid_z = grid_axes_in_physical_frame_2d(plane)
+    return physical[grid_x], physical[grid_y], physical[grid_z]
+
+
+def in_plane_vector_2d(
+    values: tuple[float, float, float], plane: str
+) -> tuple[float, float]:
+    """Select the public offsets corresponding to stored grid ``(x, y)`` order."""
+    physical = dict(zip("xyz", map(float, values), strict=True))
+    grid_x, grid_y, _ = grid_axes_in_physical_frame_2d(plane)
+    return physical[grid_x], physical[grid_y]
+
+
 def coordinates_in_public_frame(
     coordinates: Mapping[str, Any],
     coordinate_offset: tuple[float, float, float],

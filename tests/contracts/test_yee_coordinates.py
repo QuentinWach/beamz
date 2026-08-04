@@ -12,7 +12,11 @@ from beamz.lattice import (
     component_shape_2d,
     component_shape_3d,
     coordinates_in_public_frame,
+    grid_axes_in_physical_frame_2d,
+    grid_vector_to_physical_2d,
+    in_plane_vector_2d,
     material_for_component,
+    physical_vector_to_grid_2d,
     public_component_2d,
 )
 from tests.utils import compiled_grid
@@ -88,6 +92,18 @@ def test_component_coordinates_translate_from_solver_local_to_public_frame():
 
     np.testing.assert_allclose(public["x"], [2.0, 2.2, 3.0])
     np.testing.assert_allclose(public["y"], [3.0, 4.0])
+
+
+def test_two_dimensional_grid_vectors_map_to_physical_plane_axes():
+    assert grid_axes_in_physical_frame_2d("xy") == ("x", "y", "z")
+    assert grid_axes_in_physical_frame_2d("xz") == ("x", "z", "y")
+    assert grid_axes_in_physical_frame_2d("yz") == ("y", "z", "x")
+    assert grid_vector_to_physical_2d((2.0, 3.0, 4.0), "xz") == (2.0, 4.0, 3.0)
+    assert grid_vector_to_physical_2d((2.0, 3.0, 4.0), "yz") == (4.0, 2.0, 3.0)
+    assert physical_vector_to_grid_2d((2.0, 4.0, 3.0), "xz") == (2.0, 3.0, 4.0)
+    assert physical_vector_to_grid_2d((4.0, 2.0, 3.0), "yz") == (2.0, 3.0, 4.0)
+    assert in_plane_vector_2d((2.0, 4.0, 3.0), "xz") == (2.0, 3.0)
+    assert in_plane_vector_2d((4.0, 2.0, 3.0), "yz") == (2.0, 3.0)
 
 
 def test_component_coordinates_2d_follow_standard_xy_offsets():

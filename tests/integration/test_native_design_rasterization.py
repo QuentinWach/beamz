@@ -561,7 +561,17 @@ def test_rectilinear_mode_monitor_is_rejected_until_mode_solver_is_metric_aware(
         simulation.compile()
 
 
-def test_rectilinear_gaussian_source_uses_physical_edges_and_local_frame():
+@pytest.mark.parametrize(
+    ("plane", "expected_offset"),
+    (
+        ("xy", (-2.0, -3.0, -4.0)),
+        ("xz", (-2.0, -4.0, -3.0)),
+        ("yz", (-4.0, -2.0, -3.0)),
+    ),
+)
+def test_rectilinear_gaussian_source_uses_physical_edges_and_local_frame(
+    plane, expected_offset
+):
     grid = Grid(
         [2.0, 2.2, 3.0],
         [3.0, 3.3, 4.0],
@@ -582,6 +592,7 @@ def test_rectilinear_gaussian_source_uses_physical_edges_and_local_frame():
     simulation = bz.Simulation(
         material_grid=material_grid,
         sources=[source],
+        plane_2d=plane,
         time=np.asarray([0.0, 1e-16]),
     )
 
@@ -589,12 +600,26 @@ def test_rectilinear_gaussian_source_uses_physical_edges_and_local_frame():
     compiled_source = program.sources[0]
 
     assert program.grid.geometry.origin == (0.0, 0.0, 0.0)
-    assert simulation.coordinate_offset == (-2.0, -3.0, -4.0)
+    assert simulation.coordinate_offset == expected_offset
+    np.testing.assert_allclose(simulation.sources[0].position, (0.2, 0.3))
     assert compiled_source.slab_starts == (1, 1)
     assert compiled_source.slab_sizes == (1, 1)
 
 
-def test_imported_grid_results_keep_local_metadata_and_public_coordinates():
+@pytest.mark.parametrize(
+    ("plane", "polarization", "component", "expected_axes", "expected_offset"),
+    (
+        ("xy", "tm", "Ez", ("x", "y"), (-2.0, -3.0, -4.0)),
+        ("xz", "tm", "Ey", ("x", "z"), (-2.0, -4.0, -3.0)),
+        ("yz", "tm", "Ex", ("y", "z"), (-4.0, -2.0, -3.0)),
+        ("xy", "te", "Hz", ("x", "y"), (-2.0, -3.0, -4.0)),
+        ("xz", "te", "Hy", ("x", "z"), (-2.0, -4.0, -3.0)),
+        ("yz", "te", "Hx", ("y", "z"), (-4.0, -2.0, -3.0)),
+    ),
+)
+def test_imported_grid_results_keep_local_metadata_and_public_coordinates(
+    plane, polarization, component, expected_axes, expected_offset
+):
     grid = Grid(
         [2.0, 2.2, 3.0],
         [3.0, 3.3, 4.0],
@@ -604,20 +629,38 @@ def test_imported_grid_results_keep_local_metadata_and_public_coordinates():
         rasterize(
             Scene((Material(),)),
             grid,
-            options=RasterOptions(components="two_dimensional_tm"),
-        )
+            options=RasterOptions(components=f"two_dimensional_{polarization}"),
+        ),
+        polarization=polarization,
     )
-    recorder = bz.FieldRecorder(("Ez",), interval=1, name="fields")
+    recorder = bz.FieldRecorder((component,), interval=1, name="fields")
     simulation = bz.Simulation(
         material_grid=material_grid,
         monitors=[recorder],
+        plane_2d=plane,
+        polarization=polarization,
         time=np.asarray([0.0, 1e-16]),
     )
     program = simulation.compile()
+    from beamz.lattice import component_coordinates_rectilinear
+
+    local_coordinates = component_coordinates_rectilinear(
+        component,
+        program.grid.geometry,
+        plane=plane,
+        polarization=polarization,
+    )
     monitor_result = bz.MonitorResults(
         monitor=recorder,
         fields={
-            "Ez": np.zeros((1, *program.grid.component_shapes["Ez"]), dtype=np.float32)
+            component: np.zeros(
+                (
+                    1,
+                    len(local_coordinates[expected_axes[1]]),
+                    len(local_coordinates[expected_axes[0]]),
+                ),
+                dtype=np.float32,
+            )
         },
         power_history=np.empty(0),
         power_timestamps=np.empty(0),
@@ -637,12 +680,57 @@ def test_imported_grid_results_keep_local_metadata_and_public_coordinates():
 
     assert results.metadata.grid == program.grid.geometry
     assert results.metadata.grid.origin == (0.0, 0.0, 0.0)
+    assert results.metadata.coordinate_offset == expected_offset
     assert dataset.attrs["coordinate_frame"] == "public"
-    np.testing.assert_allclose(dataset.coords["x"], grid.x_edges)
-    np.testing.assert_allclose(dataset.coords["y"], grid.y_edges)
-    assert _coord_extent_um(dataset["Ez"], sim=results.metadata) == _coord_extent_um(
-        dataset["Ez"], sim=None
+    expected_x = (
+        grid.x_edges
+        if polarization == "tm"
+        else 0.5 * (grid.x_edges[:-1] + grid.x_edges[1:])
     )
+    expected_y = (
+        grid.y_edges
+        if polarization == "tm"
+        else 0.5 * (grid.y_edges[:-1] + grid.y_edges[1:])
+    )
+    np.testing.assert_allclose(dataset.coords[expected_axes[0]], expected_x)
+    np.testing.assert_allclose(dataset.coords[expected_axes[1]], expected_y)
+    assert _coord_extent_um(
+        dataset[component], sim=results.metadata
+    ) == _coord_extent_um(dataset[component], sim=None)
+
+
+@pytest.mark.parametrize(
+    ("plane", "expected_offset"),
+    (
+        ("xy", (1.0, 2.0, 0.0)),
+        ("xz", (1.0, 0.0, 2.0)),
+        ("yz", (0.0, 1.0, 2.0)),
+    ),
+)
+@pytest.mark.parametrize("polarization", ("tm", "te"))
+def test_centered_2d_devices_round_trip_through_plane_aware_offsets(
+    plane, expected_offset, polarization
+):
+    signal = np.asarray([1.0, 0.0])
+    simulation = bz.Simulation(
+        domain=(2.0, 4.0),
+        sources=[bz.GaussianSource(position=(0.0, 0.0), width=0.1, signal=signal)],
+        plane_2d=plane,
+        polarization=polarization,
+        time=np.asarray([0.0, 1e-16]),
+    )
+
+    assert simulation.coordinate_offset == expected_offset
+    assert simulation.sources[0].position == (1.0, 2.0)
+
+    replacement = bz.GaussianSource(position=(0.25, -0.5), width=0.1, signal=signal)
+    updated = simulation.updated_copy(sources=[replacement])
+    assert updated.coordinate_offset == expected_offset
+    assert updated.sources[0].position == (1.25, 1.5)
+
+    changed_plane = simulation.updated_copy(plane_2d="xz")
+    assert changed_plane.coordinate_offset == (1.0, 0.0, 2.0)
+    assert changed_plane.sources[0].position == (1.0, 2.0)
 
 
 def test_rectilinear_cpml_depth_is_graded_in_physical_distance():
