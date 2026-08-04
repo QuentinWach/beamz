@@ -525,24 +525,46 @@ def _polygon_opposing_features(structure: Polygon) -> list[_OpposingFeature]:
             )
         ]
 
-    starts: list[np.ndarray] = []
-    ends: list[np.ndarray] = []
-    ring_ids: list[int] = []
-    local_ids: list[int] = []
-    ring_sizes: list[int] = []
-    rings = (geometry.exterior, *geometry.interiors)
-    for ring_id, ring in enumerate(rings):
-        coordinates = np.asarray(ring.coords, dtype=np.float64)
-        ring_sizes.append(coordinates.shape[0] - 1)
-        for local_id, (start, end) in enumerate(
-            zip(coordinates[:-1], coordinates[1:], strict=True)
-        ):
+    def canonical_ring(ring) -> np.ndarray:
+        coordinates = np.asarray(ring.coords[:-1], dtype=np.float64)
+        if coordinates.shape[0] < 2:
+            return coordinates
+        start = min(
+            range(coordinates.shape[0]),
+            key=lambda index: (
+                *coordinates[index],
+                *coordinates[(index + 1) % coordinates.shape[0]],
+                *coordinates[index - 1],
+            ),
+        )
+        return np.roll(coordinates, -start, axis=0)
+
+    exterior = canonical_ring(geometry.exterior)
+    interiors = sorted(
+        (canonical_ring(ring) for ring in geometry.interiors),
+        key=lambda coordinates: tuple(coordinates.reshape(-1)),
+    )
+    rings = (exterior, *interiors)
+    segments = []
+    ring_sizes = [coordinates.shape[0] for coordinates in rings]
+    for ring_id, coordinates in enumerate(rings):
+        for local_id, start in enumerate(coordinates):
+            end = coordinates[(local_id + 1) % coordinates.shape[0]]
             if np.linalg.norm(end - start) <= np.finfo(float).tiny:
                 continue
-            starts.append(start)
-            ends.append(end)
-            ring_ids.append(ring_id)
-            local_ids.append(local_id)
+            segments.append((start, end, ring_id, local_id))
+    segments.sort(
+        key=lambda segment: (
+            *segment[0],
+            *segment[1],
+            segment[2],
+            segment[3],
+        )
+    )
+    starts = [segment[0] for segment in segments]
+    ends = [segment[1] for segment in segments]
+    ring_ids = [segment[2] for segment in segments]
+    local_ids = [segment[3] for segment in segments]
     if len(starts) < 2:
         return []
 

@@ -418,6 +418,53 @@ def test_polygon_feature_target_is_invariant_to_curve_tessellation():
     assert max(minimum_spacings) / min(minimum_spacings) < 1.02
 
 
+def test_polygon_hole_refinement_is_invariant_to_ring_vertex_order():
+    material = bz.Material(permittivity=1.0)
+    outer = list(
+        bz.Circle(
+            position=(2.0, 2.0), radius=1.0, points=32, material=material
+        ).vertices
+    )
+    inner = list(
+        bz.Circle(
+            position=(2.0, 2.0), radius=0.8, points=32, material=material
+        ).vertices
+    )
+    variants = (
+        (outer, inner),
+        (outer[2:] + outer[:2], inner),
+        (outer, inner[7:] + inner[:7]),
+        (list(reversed(outer)), list(reversed(inner))),
+    )
+    spec = bz.GridSpec.auto(
+        wavelength=10.0,
+        min_steps_per_wvl=10,
+        min_steps_per_sim_size=10,
+        min_feature_cells=8,
+    )
+    grids = [
+        spec.realize(
+            bz.Design(
+                width=4.0,
+                height=4.0,
+                background=material,
+                structures=(
+                    bz.Polygon(
+                        vertices=shell,
+                        interiors=(hole,),
+                        material=material,
+                    ),
+                ),
+            )
+        )
+        for shell, hole in variants
+    ]
+
+    for grid in grids[1:]:
+        np.testing.assert_array_equal(grid.x_edges, grids[0].x_edges)
+        np.testing.assert_array_equal(grid.y_edges, grids[0].y_edges)
+
+
 @pytest.mark.parametrize(
     ("structure", "dimensions"),
     (
