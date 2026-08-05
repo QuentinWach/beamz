@@ -1,6 +1,6 @@
 {
-  "schema": "beamz.tidy3d-grid-reference/v1",
-  "tidy3d_version": "2.12.0",
+  "schema": "beamz.rectilinear-grid-reference/v1",
+  "reference_revision": "v1",
   "length_unit": "um",
   "cases": {
     "homogeneous": {

@@ -1,15 +1,14 @@
-"""Solver-neutral rectilinear grid cases shared by BeamZ and Tidy3D."""
+"""Solver-neutral rectilinear-grid cases for pinned-reference tests."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 
 import beamz as bz
 
-TIDY3D_REFERENCE_VERSION = "2.12.0"
+REFERENCE_SCHEMA = "beamz.rectilinear-grid-reference/v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,91 +172,6 @@ def beamz_grid(case: GridParityCase) -> bz.RectilinearGrid:
     ).realize(design)
 
 
-def tidy3d_edges(case: GridParityCase, td: Any) -> dict[str, np.ndarray]:
-    """Build one case with a caller-provided Tidy3D module."""
-    offset = np.asarray(case.size) / 2
-    background = td.Medium(permittivity=case.background_index**2)
-    structures = []
-    for rectangle in case.rectangles:
-        center = np.asarray(rectangle.lower) + np.asarray(rectangle.size) / 2 - offset
-        structures.append(
-            td.Structure(
-                geometry=td.Box(
-                    center=(*center, 0.0),
-                    size=(*rectangle.size, td.inf),
-                ),
-                medium=td.Medium(permittivity=rectangle.refractive_index**2),
-            )
-        )
-    for ring in case.rings:
-        center = np.asarray(ring.center) - offset
-        structures.extend(
-            (
-                td.Structure(
-                    geometry=td.Cylinder(
-                        center=(*center, 0.0),
-                        radius=ring.outer_radius,
-                        length=td.inf,
-                        axis=2,
-                    ),
-                    medium=td.Medium(permittivity=ring.refractive_index**2),
-                ),
-                td.Structure(
-                    geometry=td.Cylinder(
-                        center=(*center, 0.0),
-                        radius=ring.inner_radius,
-                        length=td.inf,
-                        axis=2,
-                    ),
-                    medium=background,
-                ),
-            )
-        )
-    overrides = []
-    for override in case.overrides:
-        center = np.asarray(override.center) - offset
-        overrides.append(
-            td.MeshOverrideStructure(
-                geometry=td.Box(
-                    center=(*center, 0.0),
-                    size=(*override.size, td.inf),
-                ),
-                dl=(*override.dl, None),
-                enforce=override.enforced,
-                shadow=override.enforced,
-            )
-        )
-    snapping_points = tuple(
-        (
-            None if point[0] is None else point[0] - offset[0],
-            None if point[1] is None else point[1] - offset[1],
-            None,
-        )
-        for point in case.snapping_points
-    )
-    simulation = td.Simulation(
-        center=(0.0, 0.0, 0.0),
-        size=(*case.size, 0.0),
-        medium=background,
-        structures=structures,
-        grid_spec=td.GridSpec.auto(
-            wavelength=case.wavelength,
-            min_steps_per_wvl=case.min_steps_per_wvl,
-            max_scale=case.max_scale,
-            min_steps_per_sim_size=case.min_steps_per_sim_size,
-            override_structures=overrides,
-            snapping_points=snapping_points,
-        ),
-        boundary_spec=td.BoundarySpec.all_sides(td.PECBoundary()),
-        run_time=1e-12,
-    )
-    return {
-        axis: np.asarray(getattr(simulation.grid.boundaries, axis), dtype=np.float64)
-        - float(getattr(simulation.grid.boundaries, axis)[0])
-        for axis in "xy"
-    }
-
-
 def normalized_spacing_profile(edges: np.ndarray, samples: int = 2001) -> np.ndarray:
     """Sample a piecewise-constant cell-width profile on normalized position."""
     values = np.asarray(edges, dtype=np.float64)
@@ -270,9 +184,8 @@ def normalized_spacing_profile(edges: np.ndarray, samples: int = 2001) -> np.nda
 
 __all__ = [
     "GridParityCase",
-    "TIDY3D_REFERENCE_VERSION",
+    "REFERENCE_SCHEMA",
     "beamz_grid",
     "normalized_spacing_profile",
     "parity_cases",
-    "tidy3d_edges",
 ]

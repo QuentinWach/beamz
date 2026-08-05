@@ -63,22 +63,21 @@ The realization is deterministic. Even a tiny snapped interval is treated as a
 local spacing constraint and graded into its neighbors rather than left as an
 isolated sliver.
 
-This follows the same broad engineering policy exposed by Tidy3D's `AutoGrid`:
-material wavelength targets, a maximum consecutive-cell scale, lower spacing
-bounds, and override structures. BeamZ's spacing-envelope implementation is
-independent, so behavioral parity does not require edge coordinates to match
-bit for bit. A pinned differential suite compares BeamZ with Tidy3D 2.12.0 over
+The policy combines material-wavelength targets, a maximum consecutive-cell
+scale, lower spacing bounds, and regional overrides. BeamZ's spacing-envelope
+implementation is independent, so behavioral parity does not require edge
+coordinates to match bit for bit. A pinned differential suite covers
 homogeneous, dielectric, coupled-gap, ring, override, and snapping cases. It
 gates cell count within 4%, normalized spacing-profile error within 8%, domain
-bounds, explicit snapping, and the requested adjacent-cell ratio. Tidy3D
-documents a default `max_scale` of 1.4; BeamZ defaults to 1.3, while 1.1–1.2 is
-a useful conservative range for especially gentle transitions.
+bounds, explicit snapping, and the requested adjacent-cell ratio. BeamZ defaults
+to `max_scale=1.3`; 1.1–1.2 is a useful conservative range for especially gentle
+transitions.
 
-The default `min_feature_cells=1` matches Tidy3D-like automatic behavior: local
-resolution is primarily set by wavelength in material, while a narrow feature
-or gap is guaranteed at least one cell. Increase it explicitly when a coupling
-gap or thin film needs more cells for a convergence study; this is deliberate
-extra refinement rather than part of cross-solver parity.
+With the default `min_feature_cells=1`, local resolution is primarily set by
+wavelength in material, while a narrow feature or gap is guaranteed at least
+one cell. Increase it explicitly when a coupling gap or thin film needs more
+cells for a convergence study; this is deliberate extra refinement rather than
+part of cross-solver parity.
 
 Semantic primitives report physical dimensions directly: circle and sphere
 diameters, ring and bend wall thicknesses, taper output widths, and box sizes.
@@ -188,17 +187,16 @@ single attractive mesh plot is not a convergence study.
 
 ## Current boundary
 
-`GaussianSource`, `CustomSource`, and field/flux monitors work on graded grids.
-When an automatic policy is combined with a mode source, mode monitor, or
-Gaussian beam, `Simulation` currently selects an isotropic uniform grid at the
-same material-wavelength target because those device operators still require
-constant spacing. Explicit nonuniform material grids continue to raise a
-capability-specific error for those devices. The core FDTD propagation,
-rasterizer, CPML, and CFL calculation all consume rectilinear metrics directly.
+`GaussianSource`, `CustomSource`, `ModeSource`, and field, flux, and mode
+monitors work on graded grids. Mode solving, source launch, monitor colocation,
+and modal projection consume the realized transverse coordinates and local
+integration weights. A Gaussian beam still selects an isotropic uniform grid
+at the same material-wavelength target because that operator requires constant
+spacing. The core FDTD propagation, rasterizer, CPML, and CFL calculation all
+consume rectilinear metrics directly.
 
 ## References
 
-- [Tidy3D `AutoGrid` documentation](https://docs.flexcompute.com/projects/tidy3d/en/latest/api/_autosummary/tidy3d.AutoGrid.html)
 - A. Farjadpour et al., [“Improving accuracy by subpixel smoothing in the finite-difference time domain”](https://doi.org/10.1364/OL.31.002972), *Optics Letters* 31, 2972–2974 (2006).
 - C. Kottke, A. Farjadpour, and S. G. Johnson, [“Perturbation theory for anisotropic dielectric interfaces, and application to subpixel smoothing of discretized numerical methods”](https://arxiv.org/abs/0708.1031) (2007).
 - A. Spanakis-Misirlis, [“Efficient Non-Uniform Structured Mesh Generation Algorithm for Computational Electromagnetics”](https://arxiv.org/abs/2209.10260) (2022).
