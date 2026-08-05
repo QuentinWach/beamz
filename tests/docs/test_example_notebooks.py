@@ -195,6 +195,10 @@ def test_modal_notebook_projects_modes_from_results():
     assert "sim_jct_bb.num_steps" in source
     assert "bz.GridSpec.auto(" in source
     assert 'sim0.grid.metric_kind == "rectilinear"' in source
+    assert "raw_single = sim_data_single.renormalize(None)" in source
+    assert "flux_single_response * single_power_scale" in source
+    assert "flux_single_raw * pulse_power_scale" in source
+    assert "source_time.spectrum(" not in source
     assert ".state.current_step" not in source
 
 
