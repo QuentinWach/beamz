@@ -76,7 +76,7 @@ class ModeSource:
     """Inject a solved waveguide mode through a finite plane.
 
     The zero extent in ``size`` selects the injection axis. ``direction`` is
-    ``"+"`` or ``"-"`` along that axis, matching Tidy3D's modal source API.
+    ``"+"`` or ``"-"`` along that axis.
     Temporal behavior belongs exclusively to ``source_time``; sampled drives
     use :class:`~beamz.SampledSignal`.
     """

@@ -461,7 +461,7 @@ def plot_field_view(
     return image, view
 
 
-def _tidy3d_origin_for_simulation(sim):
+def _simulation_origin(sim):
     offset = getattr(sim, "coordinate_offset", None)
     if offset is not None:
         values = tuple(float(v) for v in offset)
@@ -492,7 +492,7 @@ def _material_category_array(
     return np.where(eps >= core_mid, 2, np.where(eps >= sub_mid, 1, 0))
 
 
-def _tidy3d_material_cmap():
+def _material_cmap():
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
     cmap = ListedColormap(["#f5f5f5", "#83abc0", "#d86c96"])
@@ -517,7 +517,7 @@ def _field_permittivity(sim):
     return np.asarray(()) if value is None else np.asarray(value)
 
 
-def _tidy3d_material_levels(sim):
+def _material_levels(sim):
     eps = _field_permittivity(sim)
     finite = np.real(eps[np.isfinite(eps)]) if eps.size else np.asarray(())
     if finite.size == 0:
@@ -528,7 +528,7 @@ def _tidy3d_material_levels(sim):
     return core, substrate
 
 
-def _tidy3d_pml_thickness(sim):
+def _pml_thickness(sim):
     for boundary in getattr(sim, "boundaries", ()) or ():
         thickness = getattr(boundary, "thickness", None)
         if thickness is not None:
@@ -605,7 +605,7 @@ def _draw_field_eps_overlay(
     )
 
 
-def _tidy3d_field_display_scale_and_units(field):
+def _field_display_scale_and_units(field):
     family = str(field)[:1].upper()
     if family == "E":
         return _UM, "V/um"
@@ -762,7 +762,7 @@ def _plot_simulation_slices(
         for axis, position in (("z", z), ("y", y))
     ]
     if categorical:
-        core_eps, substrate_eps = _tidy3d_material_levels(sim)
+        core_eps, substrate_eps = _material_levels(sim)
         xy, xz = (
             _material_category_array(
                 item.values,
@@ -778,7 +778,7 @@ def _plot_simulation_slices(
         xz = np.where((z_coords > substrate_height)[:, None] & (xz == 1), 0, xz)
         xz = np.where((z_coords <= substrate_height)[:, None] & (xz == 0), 1, xz)
         values = (xy, xz)
-        cmap, norm = _tidy3d_material_cmap()
+        cmap, norm = _material_cmap()
     else:
         values, norm = (item.values for item in slices), None
 
@@ -808,7 +808,7 @@ def _plot_simulation_slices(
             source_markers=source_markers,
             monitor_markers=monitor_markers,
         )
-        thickness = _tidy3d_pml_thickness(sim)
+        thickness = _pml_thickness(sim)
         if thickness is not None and thickness > 0.0:
             style = dict(
                 facecolor="#9a9a9a",
@@ -915,7 +915,7 @@ def _plot_3d_cross_sections(
     zlim=None,
 ):
     if origin is None:
-        origin = _tidy3d_origin_for_simulation(sim)
+        origin = _simulation_origin(sim)
     return _plot_simulation_slices(
         sim,
         z=z,
@@ -941,7 +941,7 @@ def plot_simulation(
     *,
     z=None,
     y=None,
-    tidy3d=None,
+    categorical_cross_sections=True,
     source_markers=True,
     monitor_markers=True,
     width_ratios=None,
@@ -955,11 +955,11 @@ def plot_simulation(
     title="Simulation Layout",
     **_kwargs,
 ):
-    """Plot a simulation layout or Tidy3D-style 3D cross sections."""
+    """Plot a simulation layout or styled 3D cross sections."""
     if bool(getattr(sim, "is_3d", False)) and (z is not None or y is not None):
         if ax is not None:
             raise ValueError("3D cross-section plots create their own axes.")
-        if tidy3d is False:
+        if not categorical_cross_sections:
             return _plot_3d_material_cross_sections(
                 sim,
                 z=z,
@@ -1002,7 +1002,7 @@ def view_simulation_3d(sim, *, mode="auto", open_browser=True, show=False, **kwa
     """Return a static view for notebooks without restoring the old viewer stack."""
     del mode, open_browser
     if bool(getattr(sim, "is_3d", False)):
-        origin = _tidy3d_origin_for_simulation(sim)
+        origin = _simulation_origin(sim)
         if any(abs(value) > 0.0 for value in origin):
             kwargs.setdefault("z", 0.0)
             kwargs.setdefault("y", 0.0)
@@ -1432,12 +1432,12 @@ def plot_dft_field(
             components, source_normalization, f_idx, freqs.size
         )
 
-    field_scale, field_units = _tidy3d_field_display_scale_and_units(field_key)
+    field_scale, field_units = _field_display_scale_and_units(field_key)
     components = [component * field_scale for component in components]
     view = _field_view(components if vector else components[0], val=val, vector=vector)
 
     if origin is None:
-        origin = _tidy3d_origin_for_simulation(coordinate_context)
+        origin = _simulation_origin(coordinate_context)
     ox, oy, oz = (float(v) for v in origin)
     origin_by_axis = {"x": ox, "y": oy, "z": oz}
     grid = getattr(coordinate_context, "grid", None)

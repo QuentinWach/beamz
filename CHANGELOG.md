@@ -173,12 +173,12 @@ second = simulation.advance(state=first.state, num_steps=100)
 ### Added
 - Added modal port workflows with `Port` and `ModeMonitor` support.
 - Added xarray-backed result accessors and plotting conveniences for simulation data.
-- Added matplotlib visualization helpers for snapshots, fields, layouts, mode fields, and Tidy3D-style DFT views.
+- Added matplotlib visualization helpers for snapshots, fields, layouts, mode fields, and styled DFT views.
 - Added UBC PDK support and improved gdsfactory component handling.
 - Added broader 2D/3D physics, monitor, source, and engine-equivalence test coverage.
 
 ### Changed
-- Replaced the Tidy3D mode-solver dependency path with `micromode`.
+- Replaced the external mode-solver dependency path with `micromode`.
 - Improved 3D mode-source normalization, source quadrature handling, Yee phase-plane calibration, and monitor DFT/modal projection behavior.
 - Refactored CPML/PML handling, including sponge-style absorbing layers and compatibility through `AbsorbingLayer`.
 - Improved material sampling on Yee components, full-PEC 3D sampling, and source scattering/S-parameter calculations.

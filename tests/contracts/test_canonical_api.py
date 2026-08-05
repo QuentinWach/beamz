@@ -11,7 +11,7 @@ from beamz.simulation.observe import source_normalization as _source_normalizati
 from beamz.simulation.results import FieldMetadata, SimulationMetadata
 
 
-def test_gaussian_pulse_spectrum_uses_tidy3d_fwidth_convention():
+def test_gaussian_pulse_spectrum_uses_fwidth_standard_deviation():
     pulse = bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13)
 
     rel = np.abs(
