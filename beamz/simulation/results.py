@@ -937,10 +937,10 @@ class SimulationResults:
     def launched_power(self, source: int = 0) -> float:
         """Return the internally calibrated net power leaving a mode source.
 
-        The reconstructed source fields are colocated and integrated with the
-        same Yee-grid Poynting convention as a 3D flux monitor, after applying
-        the compiler's launch-amplitude correction. It does not require an
-        additional runtime monitor or reference simulation.
+        The solved source mode is integrated with the mode solver's exact
+        component-staggered transverse metric after applying the compiler's
+        launch-amplitude correction. It does not require an additional runtime
+        monitor or reference simulation.
 
         Parameters
         ----------

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import numpy as np
@@ -13,17 +13,10 @@ from beamz.devices._immutable import readonly_array
 from beamz.devices._placement import (
     snap_mode_source_region,
     snap_mode_source_region_grid,
-    snap_plane_region,
-    snap_plane_region_grid,
 )
 from beamz.devices.modes.discrete import solve_beamz_mode
-from beamz.devices.modes.fields import _numeric_wave_number
+from beamz.devices.modes.fields import _modal_power, _numeric_wave_number
 from beamz.devices.modes.plane import solve_mode_plane_3d, solve_modes
-from beamz.lattice import (
-    common_grid_shape_3d,
-    compile_yee_plane_quadrature_3d,
-    yee_flux,
-)
 
 from . import planar_tfsf
 from .solve import _require_cell_mode_materials
@@ -576,6 +569,7 @@ def _plan_3d_mode_source(
         phase_ref_coord=float(discrete_mode.phase_reference_coord),
         phase_plane_coord=float(discrete_mode.phase_plane_coord),
         grid=metric_grid,
+        power_weights=discrete_mode.integration_weights,
     )
     residuals = (
         *planar_tfsf.compute_discrete_3d_h_phasor_residuals(
@@ -622,62 +616,6 @@ def _launch_amplitude_scale(launch_power_ratio: float | None) -> float:
     return float(1.0 / np.sqrt(ratio))
 
 
-def _reconstructed_3d_launch_phasor_state(
-    field_profile: FieldProfile3D,
-    residuals: tuple[planar_tfsf.ModeSource3DResidual, ...],
-    fields,
-    *,
-    resolution: float,
-    dt: float,
-) -> dict[str, np.ndarray]:
-    full_prev = planar_tfsf.build_incident_3d_phasor_state(
-        field_profile,
-        fields,
-        resolution=resolution,
-        t_e=0.0,
-        t_h=-0.5 * dt,
-        masked=False,
-        max_shift=12,
-    )
-    masked_prev = planar_tfsf.build_incident_3d_phasor_state(
-        field_profile,
-        fields,
-        resolution=resolution,
-        t_e=0.0,
-        t_h=-0.5 * dt,
-        masked=True,
-        max_shift=12,
-    )
-    h_full_next = planar_tfsf.advance_incident_h_3d(
-        fields, full_prev, dt, resolution=resolution
-    )
-    h_target_next = planar_tfsf.mask_incident_3d_state_to_launched_side(
-        field_profile,
-        h_full_next,
-        resolution=resolution,
-    )
-    h_mask_next = planar_tfsf.advance_incident_h_3d(
-        fields, masked_prev, dt, resolution=resolution
-    )
-    h_delta = planar_tfsf.expand_3d_residuals(residuals, fields, ("Hx", "Hy", "Hz"))
-    e_mask_next = planar_tfsf.advance_incident_e_3d(
-        fields,
-        masked_prev,
-        h_target_next,
-        dt,
-        resolution=resolution,
-    )
-    e_delta = planar_tfsf.expand_3d_residuals(residuals, fields, ("Ex", "Ey", "Ez"))
-    return {
-        "Ex": e_mask_next["Ex"] + e_delta["Ex"],
-        "Ey": e_mask_next["Ey"] + e_delta["Ey"],
-        "Ez": e_mask_next["Ez"] + e_delta["Ez"],
-        "Hx": h_mask_next["Hx"] + h_delta["Hx"],
-        "Hy": h_mask_next["Hy"] + h_delta["Hy"],
-        "Hz": h_mask_next["Hz"] + h_delta["Hz"],
-    }
-
-
 def _launch_power_diagnostics_3d(
     source: ModeSource,
     field_profile: FieldProfile3D,
@@ -688,110 +626,24 @@ def _launch_power_diagnostics_3d(
     dt: float | None,
     requested_power: float,
 ) -> tuple[float | None, float | None]:
-    if dt is None or float(dt) <= 0.0:
-        return None, None
+    del source, residuals, fields, resolution, dt
     if (not np.isfinite(requested_power)) or requested_power <= 1e-30:
         return None, None
-    try:
-        state = _reconstructed_3d_launch_phasor_state(
-            field_profile,
-            residuals,
-            fields,
-            resolution=float(resolution),
-            dt=float(dt),
-        )
-        field_profiles = planar_tfsf.deembed_3d_phasor_profiles(
-            field_profile,
-            state,
-            resolution=float(resolution),
-            t_e=float(dt),
-            t_h=0.5 * float(dt),
-        )
-        launched_power = _yee_plane_power_3d(
-            source,
-            replace(field_profile, components=field_profiles),
-            fields,
-            resolution=float(resolution),
-        )
-    except Exception:
+    weights = field_profile.power_weights
+    if not weights:
         return None, None
-
-    # Calibrate against the shared colocated Yee-grid Poynting integral. A modal
-    # overlap is useful for diagnosing launch purity, but
-    # its component-grid quadrature is not the power contract exposed to users.
-    # Mixing the two conventions produced a few-percent source/monitor mismatch.
+    launched_power = _modal_power(
+        field_profile.components,
+        axis=field_profile.axis,
+        measure=weights,
+        direction_sign=float(field_profile.direction_sign),
+    )
     ratio = float(launched_power / float(requested_power))
     if (not np.isfinite(ratio)) or ratio <= 1e-24:
         ratio = None
     if (not np.isfinite(launched_power)) or launched_power <= 1e-24:
         launched_power = None
     return ratio, launched_power
-
-
-def _yee_plane_power_3d(
-    source: ModeSource,
-    field_profile: FieldProfile3D,
-    fields,
-    *,
-    resolution: float,
-) -> float:
-    """Measure an incident mode with the canonical Yee-plane quadrature."""
-    component_shapes = {
-        component: tuple(getattr(fields, component).shape)
-        for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
-    }
-    grid_shape = common_grid_shape_3d(fields)
-    axis_index = {"x": 0, "y": 1, "z": 2}[source.axis]
-    lower = np.asarray(source.center) - 0.5 * np.asarray(source.size)
-    upper = np.asarray(source.center) + 0.5 * np.asarray(source.size)
-    lower[axis_index] = upper[axis_index] = source.center[axis_index]
-    grid = getattr(fields, "geometry", None)
-    region = (
-        snap_plane_region_grid(
-            center=source.center,
-            size=source.size,
-            plane_normal=source.axis,
-            grid=grid,
-        )
-        if grid is not None
-        else snap_plane_region(
-            start=tuple(lower),
-            end=tuple(upper),
-            plane_normal=source.axis,
-            size=None,
-            dx=float(resolution),
-            dy=float(resolution),
-            dz=float(resolution),
-            shape=grid_shape,
-        )
-    )
-    quadrature = compile_yee_plane_quadrature_3d(
-        center=source.center,
-        size=source.size,
-        normal_axis=source.axis,
-        region=region,
-        resolution=float(resolution),
-        grid_shape=grid_shape,
-        component_shapes=component_shapes,
-        grid=grid,
-    )
-    state = planar_tfsf.build_incident_3d_phasor_state(
-        field_profile,
-        fields,
-        resolution=float(resolution),
-        t_e=0.0,
-        t_h=0.0,
-        masked=False,
-        max_shift=12,
-    )
-    power = yee_flux(
-        quadrature.sample(state),
-        quadrature.normal_axis,
-        normal_sign=float(field_profile.direction_sign),
-        measure=quadrature.sample_area,
-        phasor=True,
-    )
-    return float(np.asarray(power))
 
 
 def plan_mode_source_launch(

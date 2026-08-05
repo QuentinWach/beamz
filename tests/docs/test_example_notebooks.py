@@ -50,7 +50,7 @@ def test_cosine_crossing_notebook_uses_internal_launch_power_normalization():
     assert "source_power = sim_data.launched_power(source=0)" in source
     assert "T_through = safe_power_ratio(flux_through, source_power)" in source
     assert "T_cross = safe_power_ratio(flux_cross, source_power)" in source
-    assert "same Yee-grid Poynting convention" in source
+    assert "exact component-staggered transverse metric" in source
     assert "flux_input" not in source
     assert "sim_reference" not in source
     assert "flux_reference" not in source
@@ -198,6 +198,9 @@ def test_modal_notebook_projects_modes_from_results():
     assert "raw_single = sim_data_single.renormalize(None)" in source
     assert "flux_single_response * single_power_scale" in source
     assert "flux_single_raw * pulse_power_scale" in source
+    assert "single_power_scale = scalar_power_scale(" in source
+    assert "bb_power_scale = spectral_power_scale(" in source
+    assert "np.testing.assert_allclose(flux_bb, mode_source_bb.power" in source
     assert "source_time.spectrum(" not in source
     assert ".state.current_step" not in source
 

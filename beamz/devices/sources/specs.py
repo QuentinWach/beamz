@@ -40,10 +40,12 @@ class FieldProfile3D:
     phase_ref_coord: float
     phase_plane_coord: float
     grid: Any | None = None
+    power_weights: Mapping[str, np.ndarray] = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, "components", immutable_snapshot(self.components))
         object.__setattr__(self, "indices", immutable_snapshot(self.indices))
+        object.__setattr__(self, "power_weights", immutable_snapshot(self.power_weights))
 
 
 SourceDirection = Literal["+", "-"]

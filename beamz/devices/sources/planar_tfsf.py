@@ -551,6 +551,7 @@ def local_3d_phasor_context(
         phase_ref_coord=float(field_profile.phase_ref_coord) - offset,
         phase_plane_coord=float(field_profile.phase_plane_coord) - offset,
         grid=getattr(local_fields, "geometry", None),
+        power_weights=field_profile.power_weights,
     )
     return local_profile, local_fields, component_slices
 

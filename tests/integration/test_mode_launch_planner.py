@@ -482,7 +482,7 @@ def test_mode_launch_amplitude_scale_normalizes_measured_launch_power():
     assert _launch_amplitude_scale(0.0) == pytest.approx(1.0)
 
 
-def test_launch_diagnostics_use_yee_plane_power_contract(monkeypatch):
+def test_launch_diagnostics_use_mode_profile_power_contract():
     fields = _uniform_3d_fields()
     source = _mode_source(power=2.0)
     profile = np.ones((2, 2), dtype=np.complex128)
@@ -498,21 +498,7 @@ def test_launch_diagnostics_use_yee_plane_power_contract(monkeypatch):
         k_axis=1.0,
         phase_ref_coord=1.5,
         phase_plane_coord=1.5,
-    )
-    monkeypatch.setattr(
-        mode_launch_module,
-        "_reconstructed_3d_launch_phasor_state",
-        lambda *args, **kwargs: {},
-    )
-    monkeypatch.setattr(
-        mode_launch_module.planar_tfsf,
-        "deembed_3d_phasor_profiles",
-        lambda *args, **kwargs: field_profile.components,
-    )
-    monkeypatch.setattr(
-        mode_launch_module,
-        "_yee_plane_power_3d",
-        lambda *args, **kwargs: 2.12,
+        power_weights={"Ey": np.ones((2, 2))},
     )
 
     ratio, power = _launch_power_diagnostics_3d(
@@ -525,8 +511,8 @@ def test_launch_diagnostics_use_yee_plane_power_contract(monkeypatch):
         requested_power=2.0,
     )
 
-    assert power == pytest.approx(2.12)
-    assert ratio == pytest.approx(1.06)
+    assert power == pytest.approx(2.0)
+    assert ratio == pytest.approx(1.0)
 
 
 def test_mode_launch_plan_reports_scaled_net_launched_power():

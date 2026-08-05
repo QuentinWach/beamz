@@ -219,6 +219,7 @@ class DiscreteMode:
     k_num_axis: float
     power_scale: float
     diagnostics: dict[str, object]
+    integration_weights: dict[str, np.ndarray] = field(default_factory=dict)
 
     def component(self, name: str) -> np.ndarray:
         """Return one component profile."""
@@ -382,11 +383,12 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
             profiles = seed_profiles
             k_num = seed_k_num
             yee_refinement_rejection_reason = f"{type(exc).__name__}: {exc}"
+    integration_weights = _profile_integration_weights(spec, profiles, indices)
     profiles, power_scale, signed_power = _normalize_profiles_by_phase_referenced_flux(
         profiles,
         indices,
         axis=spec.axis,
-        d_area=_profile_integration_weights(spec, profiles, indices),
+        d_area=integration_weights,
         direction_sign=_direction_sign(spec.direction),
         omega=omega,
         k_num=k_num,
@@ -450,6 +452,7 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         k_num_axis=float(k_num),
         power_scale=float(power_scale),
         diagnostics=diagnostics,
+        integration_weights=integration_weights,
     )
 
 
