@@ -4,6 +4,7 @@ import pytest
 
 from beamz import MU_0, RectilinearGrid
 from beamz.lattice import (
+    adjacent_difference,
     build_h_boundary_views_for_e_3d,
     curl_e_to_h_3d,
     curl_e_to_h_3d_metric,
@@ -275,6 +276,14 @@ def test_rectilinear_curls_apply_inverse_physical_distances():
     np.testing.assert_allclose(curl_e[0][:, 1:-1, :], 1.0, rtol=2e-7)
     np.testing.assert_allclose(curl_e[1][1:-1, :, :], 1.0, rtol=2e-7)
     np.testing.assert_allclose(curl_e[2][:, :, 1:-1], 1.0, rtol=2e-7)
+
+
+def test_adjacent_difference_accepts_axis_specific_spacing():
+    values = jnp.asarray([[0.0, 0.0], [1.0, 2.0], [3.0, 6.0]])
+
+    difference = adjacent_difference(values, 0, jnp.asarray([1.0, 2.0]))
+
+    np.testing.assert_allclose(difference, [[1.0, 2.0], [1.0, 2.0]])
 
 
 def test_h_boundary_views_insert_high_ghost_before_storage_padding():

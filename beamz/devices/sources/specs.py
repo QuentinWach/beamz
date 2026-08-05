@@ -45,7 +45,9 @@ class FieldProfile3D:
     def __post_init__(self):
         object.__setattr__(self, "components", immutable_snapshot(self.components))
         object.__setattr__(self, "indices", immutable_snapshot(self.indices))
-        object.__setattr__(self, "power_weights", immutable_snapshot(self.power_weights))
+        object.__setattr__(
+            self, "power_weights", immutable_snapshot(self.power_weights)
+        )
 
 
 SourceDirection = Literal["+", "-"]

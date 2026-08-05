@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from beamz import RectilinearGrid
 from beamz.lattice import (
@@ -83,6 +84,23 @@ def test_rectilinear_component_coordinates_use_exact_edges_and_centers():
     np.testing.assert_allclose(hx["y"], [1.0, 3.5])
     np.testing.assert_allclose(hy_2d["x"], [0.5, 2.0])
     np.testing.assert_allclose(hy_2d["y"], grid.y_edges)
+
+
+def test_rectilinear_coordinate_helpers_reject_invalid_inputs():
+    grid = RectilinearGrid(
+        np.asarray([0.0, 1.0]),
+        np.asarray([0.0, 1.0]),
+        np.asarray([0.0, 1.0]),
+    )
+
+    assert (
+        component_coordinates_rectilinear("Ez", grid, plane="xy", polarization="te")
+        == {}
+    )
+    with pytest.raises(ValueError, match="Unsupported 2D plane"):
+        grid_axes_in_physical_frame_2d("invalid")
+    with pytest.raises(ValueError, match="must contain three values"):
+        grid_vector_to_physical_2d((1.0, 2.0), "xy")  # type: ignore[arg-type]
 
 
 def test_component_coordinates_translate_from_solver_local_to_public_frame():

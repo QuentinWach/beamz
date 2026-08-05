@@ -28,7 +28,6 @@ from beamz.devices.sources.planar_tfsf import (
     advance_incident_e_3d,
     advance_incident_h_3d,
     build_incident_3d_phasor_state,
-    expand_3d_residuals,
     launched_side_component_mask_3d,
     mask_incident_3d_state_to_launched_side,
 )
@@ -78,6 +77,17 @@ def _pulse(wavelength):
         offset=0.0,
         remove_dc_component=False,
     )
+
+
+def _expand_residuals(residuals, fields, components):
+    expanded = {
+        component: np.zeros_like(getattr(fields, component), dtype=np.complex128)
+        for component in components
+    }
+    for residual in residuals:
+        if residual.component in expanded:
+            expanded[residual.component][residual.index] += residual.residual
+    return expanded
 
 
 def test_gaussian_beam_source_emits_compiled_planar_tfsf_specs():
@@ -226,8 +236,8 @@ def test_gaussian_beam_source_has_low_source_plane_residual_error():
         resolution=resolution,
         max_shift=source.max_shift,
     )
-    h_delta = expand_3d_residuals(residuals, fields, ("Hx", "Hy", "Hz"))
-    e_delta = expand_3d_residuals(residuals, fields, ("Ex", "Ey", "Ez"))
+    h_delta = _expand_residuals(residuals, fields, ("Hx", "Hy", "Hz"))
+    e_delta = _expand_residuals(residuals, fields, ("Ex", "Ey", "Ez"))
 
     for component in ("Hx", "Hy", "Hz"):
         np.testing.assert_allclose(

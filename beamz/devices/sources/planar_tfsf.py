@@ -9,7 +9,6 @@ from typing import cast
 import jax.numpy as jnp
 import numpy as np
 
-from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import readonly_array
 from beamz.devices.modes.discrete import ComponentIndex
 from beamz.devices.modes.fields import _axis_coordinate, _axis_index, _phase_delay
@@ -154,40 +153,6 @@ def build_incident_3d_phasor_state(
             ] + profile_arr * np.exp(1j * phase)
 
     return field_arrays
-
-
-def deembed_3d_phasor_profiles(
-    field_profile: FieldProfile3D,
-    state: dict[str, np.ndarray],
-    *,
-    resolution: float,
-    t_e,
-    t_h,
-) -> dict[str, np.ndarray]:
-    """Return local source-plane phasors in the source profile gauge."""
-    axis = field_profile.axis
-    k_num = _require_k_axis(field_profile)
-    omega = float(field_profile.omega)
-    ref_coord = float(field_profile.phase_ref_coord)
-    out: dict[str, np.ndarray] = {}
-    for component in _FIELD_COMPONENTS_3D:
-        idx = field_profile.indices.get(component)
-        if idx is None or component not in state:
-            continue
-        values = np.asarray(state[component], dtype=np.complex128)
-        axis_idx = _axis_index(idx, axis)
-        coord = _component_axis_coordinate(
-            SimpleNamespace(geometry=getattr(field_profile, "grid", None)),
-            component,
-            axis,
-            axis_idx,
-            resolution,
-        )
-        base_time = float(t_e if component.startswith("E") else t_h)
-        delay = _phase_delay(omega, k_num, coord - ref_coord)
-        phase = omega * (base_time - delay)
-        out[component] = values[idx] * np.exp(-1j * phase)
-    return out
 
 
 def launched_side_component_mask_3d(
@@ -455,28 +420,6 @@ def local_3d_phasor_context(
         boundaries=getattr(fields, "boundaries", None),
         permittivity=np.empty(cell_shape, dtype=fields.permittivity.dtype),
     )
-    candidate_grid = getattr(fields, "geometry", None)
-    global_grid = (
-        candidate_grid
-        if candidate_grid is not None
-        and candidate_grid.metric_kind != "isotropic_uniform"
-        else None
-    )
-    if global_grid is not None:
-        bounds_by_axis = dict(zip(("z", "y", "x"), cell_bounds, strict=True))
-        origins = {
-            name: float(global_grid.axis_edges(name)[bounds_by_axis[name][0]])
-            for name in ("x", "y", "z")
-        }
-        local_fields.geometry = RectilinearGrid(
-            *(
-                np.asarray(global_grid.axis_edges(name))[
-                    bounds_by_axis[name][0] : bounds_by_axis[name][1] + 1
-                ]
-                - origins[name]
-                for name in ("x", "y", "z")
-            )
-        )
 
     def local_material_attr(
         attr: str,
@@ -527,11 +470,7 @@ def local_3d_phasor_context(
             local_material_attr(attr, component_slices[component]),
         )
 
-    offset = (
-        float(global_grid.axis_edges(axis)[cell_bounds[axis_pos][0]])
-        if global_grid is not None
-        else float(cell_bounds[axis_pos][0]) * float(resolution)
-    )
+    offset = float(cell_bounds[axis_pos][0]) * float(resolution)
     local_indices = {
         component: shift_3d_component_index_to_local(
             index,
@@ -827,24 +766,3 @@ def compute_discrete_3d_e_phasor_residuals(
         dt=dt,
         component_indices=component_slices,
     )
-
-
-def expand_3d_residuals(
-    residuals: tuple[ModeSource3DResidual, ...],
-    fields,
-    components: tuple[str, ...],
-) -> dict[str, np.ndarray]:
-    expanded = {
-        component: np.zeros(
-            tuple(int(v) for v in getattr(fields, component).shape),
-            dtype=np.complex128,
-        )
-        for component in components
-    }
-    for residual in residuals:
-        if residual.component in expanded:
-            expanded[residual.component][residual.index] += np.asarray(
-                residual.residual,
-                dtype=np.complex128,
-            )
-    return expanded
