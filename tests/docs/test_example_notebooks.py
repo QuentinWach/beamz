@@ -190,6 +190,8 @@ def test_modal_notebook_projects_modes_from_results():
     assert "mode_source_request.mode_spec, num_freqs=1" in source
     assert "np.testing.assert_allclose(single_profile_freqs, [freq0])" in source
     assert "sim_jct_bb.num_steps" in source
+    assert "bz.GridSpec.auto(" in source
+    assert 'sim0.grid.metric_kind == "rectilinear"' in source
     assert ".state.current_step" not in source
 
 
