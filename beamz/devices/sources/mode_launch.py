@@ -369,6 +369,11 @@ def _plan_2d_mode_source(
         raise ValueError(
             "direction '+z'/'-z' requires a 3D permittivity grid; received 2D data"
         )
+    metric_grid = (
+        grid
+        if grid is not None and grid.metric_kind_for(("x", "y")) != "isotropic_uniform"
+        else None
+    )
     snap_kwargs = dict(
         center=tuple(float(v) for v in source.center),
         width=float(source.transverse_size[0]),
@@ -378,8 +383,8 @@ def _plan_2d_mode_source(
         is_3d=False,
     )
     snapped = (
-        snap_mode_source_region_grid(**snap_kwargs, grid=grid)
-        if grid is not None and grid.metric_kind != "isotropic_uniform"
+        snap_mode_source_region_grid(**snap_kwargs, grid=metric_grid)
+        if metric_grid is not None
         else snap_mode_source_region(
             **snap_kwargs,
             grid_shape=(ny, nx),
@@ -394,7 +399,7 @@ def _plan_2d_mode_source(
     if (
         material_grid is not None
         and material_grid.uses_direct_yee_materials
-        and (grid is None or grid.metric_kind == "isotropic_uniform")
+        and metric_grid is None
     ):
         component = (
             "eps_z" if polarization == "tm" else ("eps_y" if axis == "x" else "eps_x")
@@ -410,10 +415,10 @@ def _plan_2d_mode_source(
         )
     omega = 2.0 * np.pi * source.frequency
     interval = snapped.axis_interval("y" if axis == "x" else "x")
-    if grid is not None and grid.metric_kind != "isotropic_uniform":
+    if metric_grid is not None:
         transverse_axis = "y" if axis == "x" else "x"
-        grid_edges = np.asarray(grid.axis_edges(transverse_axis))
-        measure = np.asarray(grid.cell_widths(transverse_axis))[
+        grid_edges = np.asarray(metric_grid.axis_edges(transverse_axis))
+        measure = np.asarray(metric_grid.cell_widths(transverse_axis))[
             int(interval.start) : int(interval.stop)
         ]
     else:
@@ -442,8 +447,8 @@ def _plan_2d_mode_source(
         measure=measure,
     )
     normal_spacing = (
-        float(grid.cell_widths(axis)[center_idx])
-        if grid is not None and grid.metric_kind != "isotropic_uniform"
+        float(metric_grid.cell_widths(axis)[center_idx])
+        if metric_grid is not None
         else None
     )
     return Mode2DLaunchPlan(entries=entries, normal_spacing=normal_spacing)
@@ -465,9 +470,7 @@ def _plan_3d_mode_source(
     nz, ny, nx = permittivity.shape
     axis = source.axis
     metric_grid = (
-        grid
-        if grid is not None and grid.metric_kind != "isotropic_uniform"
-        else None
+        grid if grid is not None and grid.metric_kind != "isotropic_uniform" else None
     )
     width, height = source.transverse_size
     snap_kwargs = dict(

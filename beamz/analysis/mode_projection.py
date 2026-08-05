@@ -100,18 +100,24 @@ def _monitor_profile_slice(sim, monitor, axis, pad_cells):
         if axis == "x":
             plane = int(snapped.plane_index)
             eps_profile_full = perm[:, plane - origin[1]]
-            sample_idx = np.asarray([point[1] - origin[0] for point in points], dtype=int)
+            sample_idx = np.asarray(
+                [point[1] - origin[0] for point in points], dtype=int
+            )
             transverse_axis = "y"
         else:
             plane = int(snapped.plane_index)
             eps_profile_full = perm[plane - origin[0], :]
-            sample_idx = np.asarray([point[0] - origin[1] for point in points], dtype=int)
+            sample_idx = np.asarray(
+                [point[0] - origin[1] for point in points], dtype=int
+            )
             transverse_axis = "x"
         lo = max(0, int(np.min(sample_idx)) - int(pad_cells))
         hi = min(len(eps_profile_full), int(np.max(sample_idx)) + int(pad_cells) + 1)
         local_idx = np.clip(sample_idx - lo, 0, max(hi - lo - 1, 0))
         edges = np.asarray(grid.axis_edges(transverse_axis))[lo : hi + 1]
-        weights = np.asarray(grid.cell_widths(transverse_axis))[sample_idx + (origin[0] if axis == "x" else origin[1])]
+        weights = np.asarray(grid.cell_widths(transverse_axis))[
+            sample_idx + (origin[0] if axis == "x" else origin[1])
+        ]
         return (
             np.asarray(eps_profile_full[lo:hi], dtype=np.complex128),
             local_idx,
@@ -210,9 +216,7 @@ def _build_discrete_port_projection_3d(
                 )
             )
         else:
-            plane_index = int(
-                np.clip(int(normal_index), 0, full_shape[axis_index] - 1)
-            )
+            plane_index = int(np.clip(int(normal_index), 0, full_shape[axis_index] - 1))
         snapped_region = monitor.get_snapped_region(
             dx=float(sim.resolution),
             dy=float(sim.resolution),
@@ -261,7 +265,9 @@ def _build_discrete_port_projection_3d(
         snapped_region=snapped_region,
         material_origin_zyx=origin,
         solver=solve_beamz_mode,
-        grid=grid if grid is not None and grid.metric_kind != "isotropic_uniform" else None,
+        grid=grid
+        if grid is not None and grid.metric_kind != "isotropic_uniform"
+        else None,
     )
     proj_components = tuple(parts.get("projection_components_3d", ()))
     if not proj_components:
@@ -472,7 +478,9 @@ def _build_port_projection_2d(
     measure = np.asarray(dl, dtype=float)
     weights = measure if measure.ndim == 0 else measure.reshape(-1)[: e_profile.size]
     power = 0.5 * np.real(
-        np.sum(weights * parts["signed_flux_sign"] * e_profile * np.conjugate(h_profile))
+        np.sum(
+            weights * parts["signed_flux_sign"] * e_profile * np.conjugate(h_profile)
+        )
     )
     normalization = np.sqrt(max(abs(power), 1e-30))
     e_forward = e_profile / normalization
@@ -483,22 +491,32 @@ def _build_port_projection_2d(
             np.concatenate([e_forward, -h_forward]),
         ]
     )
-    projection_weights = np.concatenate(
-        [
-            np.broadcast_to(np.sqrt(weights), e_forward.shape),
-            np.broadcast_to(np.sqrt(weights), h_forward.shape),
-        ]
-    )
+    if np.ndim(weights) == 0:
+        # Preserve the established uniform-grid solve exactly.  Multiplying both
+        # sides by a tiny constant measure is algebraically redundant, but it can
+        # move the SVD pseudoinverse across a numerical rank threshold because E
+        # and H use very different SI scales.
+        projection_weights = None
+        pinv = np.linalg.pinv(mode_matrix)
+    else:
+        projection_weights = np.concatenate(
+            [
+                np.broadcast_to(np.sqrt(weights), e_forward.shape),
+                np.broadcast_to(np.sqrt(weights), h_forward.shape),
+            ]
+        )
+        pinv = np.linalg.pinv(projection_weights[:, None] * mode_matrix)
     projection = {
         "e_component": parts["e_component"],
         "h_component": parts["h_component"],
         "components": (parts["e_component"], parts["h_component"]),
         "mode_matrix": mode_matrix,
         "condition_number": float(np.linalg.cond(mode_matrix)),
-        "pinv": np.linalg.pinv(projection_weights[:, None] * mode_matrix),
-        "projection_weights": projection_weights,
+        "pinv": pinv,
         "mode_neff": float(np.real(np.asarray(neffs[mode_index]))),
     }
+    if projection_weights is not None:
+        projection["projection_weights"] = projection_weights
     projection["modal_plane_delay_s"] = _modal_projection_plane_delay_s(
         sim,
         spec,

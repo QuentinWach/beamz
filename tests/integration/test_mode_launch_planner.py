@@ -279,6 +279,8 @@ def test_2d_te_mode_launch_uses_te_solver_and_te_yee_components(monkeypatch):
 
     assert {entry.component for entry in plan.entries} == {"Ey", "Hz"}
     assert seen["filter_pol"] == "te"
+    assert seen["grid_edges"] is None
+    assert plan.normal_spacing is None
 
 
 def test_2d_mode_source_rejects_polarization_mismatch():
