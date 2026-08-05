@@ -118,6 +118,7 @@ class ModePlaneContext:
     diagonal_permittivity: dict[str, np.ndarray]
     diagonal_permeability: dict[str, np.ndarray]
     profile_edges: tuple[np.ndarray, ...] | None
+    transverse_axes: tuple[str, ...]
 
 
 def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
@@ -153,6 +154,8 @@ def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
         )
     eps_profile_full = np.take(eps, grid_index, axis=axis_index)
     profile_axes = tuple(index for index in range(eps.ndim) if index != axis_index)
+    storage_axis = {0: "z", 1: "y", 2: "x"}
+    transverse_axes = tuple(storage_axis[int(index)] for index in profile_axes)
     crop_kwargs = dict(
         eps_profile=eps_profile_full,
         profile_axes=profile_axes,
@@ -169,7 +172,6 @@ def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
     if geometry is None:
         profile_edges = None
     else:
-        storage_axis = {0: "z", 1: "y", 2: "x"}
         profile_edges = []
         for profile_axis, selector in zip(profile_axes, crop_slices, strict=True):
             edges = np.asarray(geometry.axis_edges(storage_axis[int(profile_axis)]))
@@ -211,6 +213,7 @@ def mode_plane_context(*, simulation, plane) -> ModePlaneContext:
         diagonal_permittivity=diagonal_profiles("epsilon"),
         diagonal_permeability=diagonal_profiles("mu"),
         profile_edges=profile_edges,
+        transverse_axes=transverse_axes,
     )
 
 
@@ -224,6 +227,10 @@ def solve_mode_plane(
         raise ValueError("Mode solving requires at least one frequency.")
 
     context = mode_plane_context(simulation=simulation, plane=plane)
+    coordinate_offset = tuple(
+        float(value)
+        for value in getattr(simulation, "coordinate_offset", (0.0, 0.0, 0.0))
+    )
     eps_profile_full = context.diagonal_permittivity.get("xx", context.eps_profile_full)
     eps_profile = eps_profile_full[context.crop_slices]
     solver_direction = _resolve_solver_direction(context.axis, direction)
@@ -263,7 +270,23 @@ def solve_mode_plane(
         resolution=float(simulation.resolution),
         solver_direction=solver_direction,
         axis=context.axis,
-        center=context.center,
+        center=(
+            context.center[0] - coordinate_offset[0],
+            context.center[1] - coordinate_offset[1],
+            context.center[2] - coordinate_offset[2],
+        ),
         plane=plane,
         crop_slices=context.crop_slices,
+        grid_edges=(
+            None
+            if context.profile_edges is None
+            else tuple(
+                np.asarray(edges, dtype=float)
+                - coordinate_offset[{"x": 0, "y": 1, "z": 2}[axis]]
+                for axis, edges in zip(
+                    context.transverse_axes, context.profile_edges, strict=True
+                )
+            )
+        ),
+        transverse_axes=context.transverse_axes,
     )

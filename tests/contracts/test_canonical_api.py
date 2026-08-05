@@ -1,4 +1,5 @@
 from dataclasses import fields
+from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -661,6 +662,90 @@ def test_mode_source_solves_modes_and_analysis_plots(monkeypatch):
     np.testing.assert_allclose(neffs, [2.4 + 0.0j, 1.8 + 0.0j])
     np.testing.assert_allclose(modes.neffs[0], [2.4 + 0.0j, 1.8 + 0.0j])
     plt.close(fig)
+
+
+def test_mode_field_plot_uses_physical_rectilinear_cell_edges():
+    z_edges = np.asarray([-0.6, -0.2, 0.0, 0.5]) * bz.um
+    y_edges = np.asarray([-1.0, -0.7, 0.1]) * bz.um
+    fields = np.ones((1, 1, 3, 3, 2), dtype=np.complex128)
+    modes = bz.ModeData(
+        frequencies=np.asarray([2.0e14]),
+        neffs=np.asarray([[2.4 + 0.0j]]),
+        e_fields=fields,
+        h_fields=fields,
+        eps_profiles=np.ones((1, 3, 2)),
+        resolution=0.1 * bz.um,
+        grid_edges=(z_edges, y_edges),
+        transverse_axes=("z", "y"),
+    )
+    from beamz.analysis.plotting import plot_mode_field_components
+
+    fig, axes, _neffs = plot_mode_field_components(
+        modes,
+        field_names=("Ey",),
+        mode_indices=(0,),
+        show=False,
+    )
+
+    ax = axes[0, 0]
+    coordinates = ax.collections[0].get_coordinates()
+    np.testing.assert_allclose(coordinates[0, :, 0], y_edges / bz.um)
+    np.testing.assert_allclose(coordinates[:, 0, 1], z_edges / bz.um)
+    assert not ax.images
+    assert ax.get_xlabel() == "y (um)"
+    assert ax.get_ylabel() == "z (um)"
+    plt.close(fig)
+
+
+def test_mode_source_preserves_public_rectilinear_coordinates(monkeypatch):
+    coordinate_offset = np.asarray([0.5, 0.4, 0.6]) * bz.um
+    grid = bz.RectilinearGrid(
+        np.asarray([0.0, 0.2, 1.0]) * bz.um,
+        np.asarray([0.0, 0.1, 0.4, 0.8]) * bz.um,
+        np.asarray([0.0, 0.2, 0.5, 1.2]) * bz.um,
+    )
+    eps = np.ones(grid.shape_zyx)
+    fields = SimpleNamespace(
+        permittivity=eps,
+        conductivity=np.zeros_like(eps),
+        permeability=np.ones_like(eps),
+        geometry=grid,
+        material_grid=None,
+    )
+    simulation = SimpleNamespace(
+        fields=fields,
+        resolution=0.1 * bz.um,
+        coordinate_offset=tuple(coordinate_offset),
+        design=SimpleNamespace(width=1.0, height=0.8, depth=1.2),
+    )
+    source = bz.ModeSource(
+        center=(0.0, 0.0, 0.0),
+        size=(0.0, 0.8 * bz.um, 1.2 * bz.um),
+        direction="+",
+        source_time=bz.GaussianPulse(freq0=2.0e14, fwidth=2.0e13),
+    )
+    captured = {}
+
+    def fake_solve_modes(**kwargs):
+        captured.update(kwargs)
+        profile = np.asarray(kwargs["eps"])
+        mode_fields = np.ones((1, 3, *profile.shape), dtype=np.complex128)
+        return np.asarray([2.0 + 0.0j]), mode_fields, mode_fields, 0
+
+    monkeypatch.setattr("beamz.devices.sources.solve.solve_modes", fake_solve_modes)
+
+    modes = source.solve_modes(simulation)
+
+    assert modes.transverse_axes == ("z", "y")
+    np.testing.assert_allclose(captured["grid_edges"], (grid.z_edges, grid.y_edges))
+    np.testing.assert_allclose(
+        modes.grid_edges,
+        (
+            grid.z_edges - coordinate_offset[2],
+            grid.y_edges - coordinate_offset[1],
+        ),
+    )
+    np.testing.assert_allclose(modes.center, source.center)
 
 
 def test_mode_source_samples_source_time_without_precomputed_signal():

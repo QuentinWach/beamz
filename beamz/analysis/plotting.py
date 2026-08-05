@@ -1663,7 +1663,7 @@ def plot_mode_field_components(
     cmap=None,
     show=True,
 ):
-    """Plot selected electric or magnetic components from solved mode data."""
+    """Plot selected electric or magnetic components on their physical grid."""
     import matplotlib.pyplot as plt
 
     value_kind = str(val).lower()
@@ -1679,6 +1679,8 @@ def plot_mode_field_components(
         fig = axes.flat[0].figure
     component_index = {name: idx for idx, name in enumerate(("Ex", "Ey", "Ez"))}
     component_index.update({name: idx for idx, name in enumerate(("Hx", "Hy", "Hz"))})
+    grid_edges = getattr(modes, "grid_edges", None)
+    transverse_axes = getattr(modes, "transverse_axes", None)
     neffs = []
     for row, mode_index in enumerate(selected_modes):
         neff = np.asarray(modes.neffs)[f_idx, mode_index]
@@ -1695,16 +1697,51 @@ def plot_mode_field_components(
                 if value_kind == "phase"
                 else "magma"
             )
+            raw_field = np.asarray(values)
+            field = (
+                raw_field
+                if grid_edges is not None and raw_field.ndim == len(grid_edges)
+                else np.squeeze(raw_field)
+            )
+            plot_edges = None
+            if grid_edges is not None and len(grid_edges) == field.ndim:
+                plot_edges = tuple(
+                    np.asarray(edge, dtype=float) / _UM for edge in grid_edges
+                )
+            if field.ndim == 2 and plot_edges is not None:
+                y_edges, x_edges = plot_edges
+                y_axis, x_axis = (
+                    tuple(transverse_axes)
+                    if transverse_axes is not None and len(transverse_axes) == 2
+                    else ("axis 0", "axis 1")
+                )
+                xlabel = f"{x_axis} (um)"
+                ylabel = f"{y_axis} (um)"
+            elif field.ndim == 1 and plot_edges is not None:
+                x_edges = plot_edges[0]
+                y_edges = np.asarray([-0.5, 0.5])
+                x_axis = (
+                    str(transverse_axes[0])
+                    if transverse_axes is not None and len(transverse_axes) == 1
+                    else "axis 0"
+                )
+                xlabel = f"{x_axis} (um)"
+                ylabel = ""
+            else:
+                x_edges = y_edges = None
+                xlabel = ylabel = "grid index"
             plot_field_view(
                 axes[row, col],
-                np.squeeze(values),
+                field,
                 val=value_kind,
                 cmap=cmap or default_cmap,
+                x_edges=x_edges,
+                y_edges=y_edges,
             )
             axes[row, col].set(
                 title=f"{field_name} mode {mode_index}, n_eff={np.real(neff):.4g}",
-                xlabel="grid index",
-                ylabel="grid index",
+                xlabel=xlabel,
+                ylabel=ylabel,
             )
     fig.suptitle(f"Mode fields at f={float(modes.frequencies[f_idx]):.6g} Hz")
     fig.tight_layout()

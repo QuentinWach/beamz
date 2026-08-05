@@ -87,6 +87,11 @@ class ModeData:
         Slices locating the solved aperture inside the full material plane.
     eps_profile_fulls : array-like, optional
         Full uncropped relative-permittivity planes for later analysis.
+    grid_edges : tuple of array-like, optional
+        Physical cell-edge coordinates for each transverse field axis, in metres.
+        The arrays follow the storage order of the trailing modal-field axes.
+    transverse_axes : tuple of str, optional
+        Physical axis names corresponding to ``grid_edges``.
 
     Notes
     -----
@@ -109,6 +114,12 @@ class ModeData:
     eps_profile_fulls: np.ndarray | None = field(
         default=None, compare=False, hash=False, repr=False
     )
+    grid_edges: tuple[np.ndarray, ...] | None = field(
+        default=None, compare=False, hash=False, repr=False
+    )
+    transverse_axes: tuple[str, ...] | None = field(
+        default=None, compare=False, hash=False
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -128,6 +139,35 @@ class ModeData:
             object.__setattr__(
                 self, "eps_profile_fulls", readonly_array(self.eps_profile_fulls)
             )
+        if self.grid_edges is not None:
+            edges = tuple(
+                readonly_array(values, dtype=float) for values in self.grid_edges
+            )
+            if not edges:
+                raise ValueError("grid_edges must contain at least one edge array.")
+            field_shape = self.e_fields.shape[-len(edges) :]
+            for index, (values, cell_count) in enumerate(
+                zip(edges, field_shape, strict=True)
+            ):
+                if values.ndim != 1 or values.size != int(cell_count) + 1:
+                    raise ValueError(
+                        "grid_edges must have one more entry than their modal-field "
+                        f"axis; axis {index} has {values.shape} for {cell_count} cells."
+                    )
+                if not np.all(np.isfinite(values)) or np.any(np.diff(values) <= 0.0):
+                    raise ValueError(
+                        "grid_edges must be finite and strictly increasing."
+                    )
+            object.__setattr__(self, "grid_edges", edges)
+        if self.transverse_axes is not None:
+            axes = tuple(str(axis).lower() for axis in self.transverse_axes)
+            if any(axis not in {"x", "y", "z"} for axis in axes):
+                raise ValueError("transverse_axes entries must be 'x', 'y', or 'z'.")
+            if self.grid_edges is not None and len(axes) != len(self.grid_edges):
+                raise ValueError(
+                    "transverse_axes must provide one name per grid edge array."
+                )
+            object.__setattr__(self, "transverse_axes", axes)
         if self.center is not None:
             object.__setattr__(self, "center", tuple(float(v) for v in self.center[:3]))
 

@@ -81,6 +81,40 @@ def test_mode_values_validate_and_snapshot_arrays():
     assert not data.e_fields.flags.writeable
 
 
+def test_mode_data_validates_and_snapshots_rectilinear_plot_coordinates():
+    z_edges = np.asarray([-0.6, -0.2, 0.0, 0.5])
+    y_edges = np.asarray([-1.0, -0.7, 0.1])
+    data = ModeData(
+        frequencies=np.asarray([1.0]),
+        neffs=np.asarray([[2.0]]),
+        e_fields=np.ones((1, 1, 3, 3, 2)),
+        h_fields=np.ones((1, 1, 3, 3, 2)),
+        eps_profiles=np.ones((1, 3, 2)),
+        resolution=0.1,
+        grid_edges=(z_edges, y_edges),
+        transverse_axes=("z", "y"),
+    )
+
+    z_edges[0] = -2.0
+    y_edges[-1] = 2.0
+
+    np.testing.assert_allclose(data.grid_edges[0], [-0.6, -0.2, 0.0, 0.5])
+    np.testing.assert_allclose(data.grid_edges[1], [-1.0, -0.7, 0.1])
+    assert all(not edge.flags.writeable for edge in data.grid_edges)
+    assert data.transverse_axes == ("z", "y")
+
+    with pytest.raises(ValueError, match="one more entry"):
+        ModeData(
+            frequencies=np.asarray([1.0]),
+            neffs=np.asarray([[2.0]]),
+            e_fields=np.ones((1, 1, 3, 3, 2)),
+            h_fields=np.ones((1, 1, 3, 3, 2)),
+            eps_profiles=np.ones((1, 3, 2)),
+            resolution=0.1,
+            grid_edges=(np.arange(3.0), np.arange(3.0)),
+        )
+
+
 def test_discrete_mode_solver_forwards_diagonal_material_components(monkeypatch):
     spec = _plane_spec("x")
     shape = spec.scalar_permittivity.shape
