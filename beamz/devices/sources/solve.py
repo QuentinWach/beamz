@@ -40,9 +40,7 @@ def _profile_crop_slices(eps_profile, *, profile_axes, center, size, resolution)
     return tuple(slices)
 
 
-def _profile_crop_slices_grid(
-    eps_profile, *, profile_axes, center, size, grid
-):
+def _profile_crop_slices_grid(eps_profile, *, profile_axes, center, size, grid):
     storage_axis = {0: "z", 1: "y", 2: "x"}
     public_coord = {"x": 0, "y": 1, "z": 2}
     slices = []

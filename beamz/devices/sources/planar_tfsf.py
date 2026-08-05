@@ -200,9 +200,9 @@ def launched_side_component_mask_3d(
     grid = getattr(field_profile, "grid", None)
     if grid is None or grid.metric_kind == "isotropic_uniform":
         offset = 1.0 if component in _STAGGERED_ALONG_AXIS[axis] else 0.5
-        coord = (
-            np.arange(int(shape[axis_pos]), dtype=np.float64) + offset
-        ) * float(resolution)
+        coord = (np.arange(int(shape[axis_pos]), dtype=np.float64) + offset) * float(
+            resolution
+        )
     else:
         base = (
             np.asarray(grid.axis_edges(axis))[1:]

@@ -91,7 +91,9 @@ def _modal_projection_plane_delay_s(sim, spec, frequency, mode_neff):
     grid = _analysis_grid(sim)
     if grid is not None and grid.metric_kind_for(("x", "y")) != "isotropic_uniform":
         axis = str(getattr(spec, "axis", "x"))
-        center = tuple(float(value) for value in getattr(spec, "center", (0.0, 0.0, 0.0)))
+        center = tuple(
+            float(value) for value in getattr(spec, "center", (0.0, 0.0, 0.0))
+        )
         coordinate = center[{"x": 0, "y": 1, "z": 2}[axis]]
         index = int(np.argmin(np.abs(np.asarray(grid.centers(axis)) - coordinate)))
         d_axis = float(grid.cell_widths(axis)[index])

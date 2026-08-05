@@ -241,8 +241,7 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
     if spec.grid is None:
         dx_um = spec.resolution / 1e-6
         solver_edges = {
-            axis: np.arange(spec.grid_shape[{"z": 0, "y": 1, "x": 2}[axis]] + 1)
-            * dx_um
+            axis: np.arange(spec.grid_shape[{"z": 0, "y": 1, "x": 2}[axis]] + 1) * dx_um
             for axis in spec.transverse_axes
         }
     else:
@@ -584,11 +583,19 @@ def _build_x_profiles(
     hz_s = _stagger_half(fields["Hz"], axis=1, coordinates=_axis_sampling(spec, "y"))
     nz, ny, _nx = spec.grid_shape
     y_start, y_end = _padded_bounds(
-        spec.center[1], spec.width, spec.resolution, ny, spec.aperture_pad_cells,
+        spec.center[1],
+        spec.width,
+        spec.resolution,
+        ny,
+        spec.aperture_pad_cells,
         edges=_axis_edges(spec, "y"),
     )
     z_start, z_end = _padded_bounds(
-        spec.center[2], spec.height, spec.resolution, nz, spec.aperture_pad_cells,
+        spec.center[2],
+        spec.height,
+        spec.resolution,
+        nz,
+        spec.aperture_pad_cells,
         edges=_axis_edges(spec, "z"),
     )
     staggered = {"Ex": ex_s, "Ey": ey_s, "Ez": ez_s, "Hx": hx_s, "Hy": hy_s, "Hz": hz_s}
@@ -642,11 +649,19 @@ def _build_y_profiles(
     hz_s = _stagger_half(fields["Hz"], axis=1, coordinates=_axis_sampling(spec, "x"))
     nz, _ny, nx = spec.grid_shape
     x_start, x_end = _padded_bounds(
-        spec.center[0], spec.width, spec.resolution, nx, spec.aperture_pad_cells,
+        spec.center[0],
+        spec.width,
+        spec.resolution,
+        nx,
+        spec.aperture_pad_cells,
         edges=_axis_edges(spec, "x"),
     )
     z_start, z_end = _padded_bounds(
-        spec.center[2], spec.height, spec.resolution, nz, spec.aperture_pad_cells,
+        spec.center[2],
+        spec.height,
+        spec.resolution,
+        nz,
+        spec.aperture_pad_cells,
         edges=_axis_edges(spec, "z"),
     )
     staggered = {"Ex": ex_s, "Ey": ey_s, "Ez": ez_s, "Hx": hx_s, "Hy": hy_s, "Hz": hz_s}
@@ -704,11 +719,19 @@ def _build_z_profiles(
     hz_s = _stagger_both(fields["Hz"], spec=spec)
     nz, ny, nx = spec.grid_shape
     x_start, x_end = _padded_bounds(
-        spec.center[0], spec.width, spec.resolution, nx, spec.aperture_pad_cells,
+        spec.center[0],
+        spec.width,
+        spec.resolution,
+        nx,
+        spec.aperture_pad_cells,
         edges=_axis_edges(spec, "x"),
     )
     y_start, y_end = _padded_bounds(
-        spec.center[1], spec.height, spec.resolution, ny, spec.aperture_pad_cells,
+        spec.center[1],
+        spec.height,
+        spec.resolution,
+        ny,
+        spec.aperture_pad_cells,
         edges=_axis_edges(spec, "y"),
     )
     e_z_idx = int(np.clip(spec.plane_index, 0, nz - 1))
@@ -779,7 +802,9 @@ def _axis_edges(spec: ModePlaneSpec, axis: AxisName) -> np.ndarray:
     return np.asarray(spec.grid.axis_edges(axis), dtype=float)
 
 
-def _axis_sampling(spec: ModePlaneSpec, axis: AxisName) -> tuple[np.ndarray, np.ndarray]:
+def _axis_sampling(
+    spec: ModePlaneSpec, axis: AxisName
+) -> tuple[np.ndarray, np.ndarray]:
     edges = _axis_edges(spec, axis)
     return 0.5 * (edges[:-1] + edges[1:]), edges[1:-1]
 
@@ -808,7 +833,9 @@ def _stagger_half(
     return (1.0 - weights) * low + weights * high
 
 
-def _stagger_both(field: np.ndarray, *, spec: ModePlaneSpec | None = None) -> np.ndarray:
+def _stagger_both(
+    field: np.ndarray, *, spec: ModePlaneSpec | None = None
+) -> np.ndarray:
     out = field
     sampling1 = None if spec is None else _axis_sampling(spec, spec.transverse_axes[1])
     sampling0 = None if spec is None else _axis_sampling(spec, spec.transverse_axes[0])
@@ -837,7 +864,11 @@ def _padded_bounds(
         start = max(0, start - max(0, int(pad_cells)))
         stop = min(int(limit), stop + max(0, int(pad_cells)))
         if stop - start < 2:
-            center_idx = int(np.argmin(np.abs(0.5 * (edge_array[:-1] + edge_array[1:]) - center_value)))
+            center_idx = int(
+                np.argmin(
+                    np.abs(0.5 * (edge_array[:-1] + edge_array[1:]) - center_value)
+                )
+            )
             start = max(0, center_idx - 1)
             stop = min(int(limit), start + 2)
         return start, stop

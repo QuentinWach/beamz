@@ -124,7 +124,10 @@ def solve_modes(
         supplied = supplied if not is_plane else supplied[::-1]
         if not is_plane:
             supplied = (*supplied, np.asarray([0.0, float(dL)]))
-        if any(values.size != size + 1 for values, size in zip(supplied, plane.shape, strict=True)):
+        if any(
+            values.size != size + 1
+            for values, size in zip(supplied, plane.shape, strict=True)
+        ):
             raise ValueError("grid_edges lengths must match the permittivity profile")
         edges = tuple(tuple(values / 1e-6) for values in supplied)
 
@@ -344,8 +347,7 @@ def _local_mode_plane_spec(
         local_grid = None
     else:
         axis_origins = {
-            name: float(grid.axis_edges(name)[origin[name]])
-            for name in ("x", "y", "z")
+            name: float(grid.axis_edges(name)[origin[name]]) for name in ("x", "y", "z")
         }
         local_grid = RectilinearGrid(
             *(
@@ -639,7 +641,9 @@ def _shift_discrete_mode_to_global(
         for name, index in discrete_mode.component_indices.items()
     }
     if axis_offset is None:
-        axis_offset = float(origin_zyx[_AXIS_POS_3D[str(axis).lower()]]) * float(resolution)
+        axis_offset = float(origin_zyx[_AXIS_POS_3D[str(axis).lower()]]) * float(
+            resolution
+        )
     return replace(
         discrete_mode,
         component_indices=component_indices,

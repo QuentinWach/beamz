@@ -81,14 +81,15 @@ def _modal_overlap(
     direction_sign: float = 1.0,
 ) -> np.complex128:
     names = _TANGENTIAL_COMPONENTS[axis]
+
     def paired_term(e_name, h_name, sign):
         entries = tuple(
             (profiles, name)
             for profiles, name in (
-            (fields, e_name),
-            (mode, h_name),
-            (mode, e_name),
-            (fields, h_name),
+                (fields, e_name),
+                (mode, h_name),
+                (mode, e_name),
+                (fields, h_name),
             )
         )
         present = [
