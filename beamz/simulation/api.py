@@ -57,11 +57,13 @@ from beamz.simulation.execute import (
     clear_execution_cache,
     execute_step,
     run_simulation_program,
+    run_until_terminated,
 )
 from beamz.simulation.execute import (
     compiled_xla_memory_analysis as analyze_compiled_xla_memory,
 )
 from beamz.simulation.model import (
+    AutoTermination,
     CompiledProgram,
     DomainSpec,
     RunSpec,
@@ -1418,6 +1420,7 @@ class Simulation:
         progress=False,
         store_full_materials=False,
         sharding=None,
+        termination: AutoTermination | None = None,
     ) -> SimulationResults:
         """Execute the complete simulation and return immutable analysis results.
 
@@ -1430,6 +1433,10 @@ class Simulation:
             material regions needed by configured analysis monitors.
         sharding : ShardingConfig or compatible value, optional
             Runtime device-sharding policy.
+        termination : AutoTermination, optional
+            Bounded convergence policy. When supplied, BeamZ executes reusable
+            chunks and may stop before the end of the time grid after sources are
+            inactive and the requested field and monitor residuals stabilize.
 
         Returns
         -------
@@ -1442,6 +1449,12 @@ class Simulation:
         >>> results = sim.run(progress=True)
         >>> field_data = results["fields"]
 
+        Enable bounded automatic termination:
+
+        >>> results = sim.run(termination=AutoTermination(chunk_steps=200))
+        >>> results.termination.reason in {"converged", "time_limit"}
+        True
+
         Notes
         -----
         This is the normal user-facing execution method. Compilation is automatic.
@@ -1452,6 +1465,14 @@ class Simulation:
         final :class:`SimulationState` is required. Use :meth:`step` only for
         state-only single-timestep debugging.
         """
+        if termination is not None:
+            return run_until_terminated(
+                self,
+                termination,
+                progress=bool(progress),
+                store_full_materials=bool(store_full_materials),
+                sharding=sharding,
+            )
         # The initial state is private to this call, so donating it is always safe and
         # avoids retaining a second full set of device buffers during execution.
         return self.advance(

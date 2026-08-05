@@ -55,6 +55,75 @@ class _RunConfigLike(Protocol):
     polarization_2d: str
 
 
+@dataclass(frozen=True, slots=True)
+class RunTermination:
+    """Describe why a bounded simulation run stopped and its final residuals.
+
+    Attributes
+    ----------
+    reason : {"converged", "time_limit", "nonfinite", "diverged"}
+        Terminal condition reached by the execution controller.
+    steps : int
+        Number of timesteps executed.
+    time : float
+        Physical time of the final runtime state, in seconds.
+    converged : bool
+        Whether every applicable convergence criterion passed.
+    field_decay, monitor_change, source_decay : float or None
+        Final normalized field-energy, monitor-change, and remaining-source residuals.
+    energy, peak_energy, max_field : float or None
+        Final integrated energy, recorded peak energy, and maximum absolute field.
+    consecutive_checks : int
+        Number of successful checks accumulated at termination.
+    """
+
+    reason: str
+    steps: int
+    time: float
+    converged: bool
+    field_decay: float | None = None
+    monitor_change: float | None = None
+    source_decay: float | None = None
+    energy: float | None = None
+    peak_energy: float | None = None
+    max_field: float | None = None
+    consecutive_checks: int = 0
+
+    def __post_init__(self) -> None:
+        reasons = {"converged", "time_limit", "nonfinite", "diverged"}
+        reason = str(self.reason)
+        if reason not in reasons:
+            raise ValueError(f"RunTermination.reason must be one of {sorted(reasons)}.")
+        object.__setattr__(self, "reason", reason)
+        for name in ("steps", "consecutive_checks"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, (bool, np.bool_))
+                or int(value) != value
+                or int(value) < 0
+            ):
+                raise ValueError(
+                    f"RunTermination.{name} must be a non-negative integer."
+                )
+            object.__setattr__(self, name, int(value))
+        time = float(self.time)
+        if not np.isfinite(time):
+            raise ValueError("RunTermination.time must be finite.")
+        object.__setattr__(self, "time", time)
+        object.__setattr__(self, "converged", bool(self.converged))
+        for name in (
+            "field_decay",
+            "monitor_change",
+            "source_decay",
+            "energy",
+            "peak_energy",
+            "max_field",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, float(value))
+
+
 def _array_snapshot(value: Any, dtype=None) -> np.ndarray:
     # Copy only analysis-required data so results remain reproducible without live
     # simulation ownership.
@@ -853,6 +922,7 @@ class SimulationResults:
     source_launch_powers: tuple[float | None, ...] = field(
         default_factory=tuple, repr=False
     )
+    termination: RunTermination | None = None
 
     def __post_init__(self):
         if not isinstance(self.metadata, SimulationMetadata):
@@ -889,6 +959,12 @@ class SimulationResults:
                     f"normalization source {source} is invalid for {len(self.sources)} sources."
                 )
         object.__setattr__(self, "normalization_source", source)
+        if self.termination is not None and not isinstance(
+            self.termination, RunTermination
+        ):
+            raise TypeError(
+                "SimulationResults.termination must be RunTermination or None."
+            )
 
     def __getitem__(self, name):
         """Return a named monitor result.

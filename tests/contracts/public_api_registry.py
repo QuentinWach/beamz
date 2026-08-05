@@ -50,6 +50,7 @@ FUNCTION_EXPORTS = (
 RUNTIME_EXPORTS = (
     "ModeData",
     "MonitorResults",
+    "RunTermination",
     "SimulationResults",
     "SimulationRun",
     "SimulationState",
@@ -57,6 +58,7 @@ RUNTIME_EXPORTS = (
 )
 
 CONFIGURATION_CASES = (
+    PublicConfigCase("AutoTermination", bz.AutoTermination),
     PublicConfigCase("Material", bz.Material),
     PublicConfigCase("Design", lambda: bz.Design(width=2.0, height=2.0)),
     PublicConfigCase("Box", bz.Box),

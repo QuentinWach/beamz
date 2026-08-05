@@ -6,8 +6,13 @@ from beamz.devices.modes.specs import ModeSpec
 from beamz.devices.ports import Port
 from beamz.devices.sources.time import GaussianPulse
 from beamz.simulation.api import Simulation
-from beamz.simulation.model import SimulationState
-from beamz.simulation.results import MonitorResults, SimulationResults, SimulationRun
+from beamz.simulation.model import AutoTermination, SimulationState
+from beamz.simulation.results import (
+    MonitorResults,
+    RunTermination,
+    SimulationResults,
+    SimulationRun,
+)
 
 # Keep this facade deliberately small: importing ``beamz.simulation`` should expose
 # stable user concepts without pulling private compiler implementation names into API docs.
@@ -20,6 +25,8 @@ __all__ = [
     "SimulationResults",
     "SimulationRun",
     "SimulationState",
+    "AutoTermination",
+    "RunTermination",
     "GridSpec",
     "GaussianPulse",
     "ModeSpec",
