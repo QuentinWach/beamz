@@ -1394,7 +1394,7 @@ def plot_dft_field(
     core_permittivity=None,
     xlim=None,
     ylim=None,
-    show_grid=None,
+    show_grid=False,
     grid_color="black",
     grid_linewidth=0.2,
     grid_alpha=0.18,
@@ -1403,8 +1403,8 @@ def plot_dft_field(
 ):
     """Plot a frequency-domain scalar or vector field on a monitor plane.
 
-    Nonuniform grid edges are drawn automatically. Pass ``show_grid=False`` to
-    hide them, or ``show_grid=True`` to draw cell edges on any grid.
+    Pass ``show_grid=True`` to draw the physical cell edges; grid lines are
+    hidden by default.
     """
     if not isinstance(simulation, AnalysisData):
         raise TypeError("plot_dft_field requires AnalysisData.")
@@ -1505,7 +1505,7 @@ def plot_dft_field(
             sample_region=sample_region if plot_x_edges is not None else None,
         )
 
-    draw_grid = plot_x_edges is not None if show_grid is None else bool(show_grid)
+    draw_grid = bool(show_grid)
     if draw_grid and grid_x_edges is not None and grid_y_edges is not None:
         ax.vlines(
             grid_x_edges,
@@ -1600,7 +1600,7 @@ def plot_result_field(
     vmax=None,
     xlim=None,
     ylim=None,
-    show_grid=None,
+    show_grid=False,
     grid_color="black",
     grid_linewidth=0.2,
     grid_alpha=0.18,

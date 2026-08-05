@@ -321,6 +321,17 @@ def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates(
         field_name="Ez",
         show=False,
     )
+    try:
+        assert len(ax.collections) == 2
+    finally:
+        plt.close(fig)
+
+    fig, ax = results.plot_field(
+        field_monitor_name="field",
+        field_name="Ez",
+        show_grid=True,
+        show=False,
+    )
 
     try:
         assert not ax.images
