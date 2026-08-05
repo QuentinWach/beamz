@@ -448,19 +448,29 @@ def _build_port_projection_2d(
     eps_profile = np.asarray(eps_profile, dtype=np.complex128)
     target_neff = 0.98 * np.sqrt(max(float(np.max(np.real(eps_profile))), 1e-12))
     mode_count = int(spec.mode_index) + 1
-    neffs, e_fields, h_fields, _ = solve_modes(
-        eps=eps_profile,
-        omega=2.0 * np.pi * float(frequency),
-        dL=float(sim.resolution),
-        m=mode_count,
-        direction=spec.projection_direction,
-        filter_pol=spec.polarization,
-        target_neff=target_neff,
-        return_fields=True,
-        grid_edges=(
-            None if grid_edges is None else (np.asarray(grid_edges, dtype=np.float64),)
-        ),
-    )
+    if grid_edges is None:
+        neffs, e_fields, h_fields, _ = solve_modes(
+            eps=eps_profile,
+            omega=2.0 * np.pi * float(frequency),
+            dL=float(sim.resolution),
+            m=mode_count,
+            direction=spec.projection_direction,
+            filter_pol=spec.polarization,
+            target_neff=target_neff,
+            return_fields=True,
+        )
+    else:
+        neffs, e_fields, h_fields, _ = solve_modes(
+            eps=eps_profile,
+            omega=2.0 * np.pi * float(frequency),
+            dL=float(sim.resolution),
+            m=mode_count,
+            direction=spec.projection_direction,
+            filter_pol=spec.polarization,
+            target_neff=target_neff,
+            return_fields=True,
+            grid_edges=(np.asarray(grid_edges, dtype=np.float64),),
+        )
     if len(neffs) <= int(spec.mode_index):
         raise ValueError(
             f"Mode solver returned {len(neffs)} modes for requested "
