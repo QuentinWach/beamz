@@ -48,6 +48,7 @@ def solve_modes(
     mu_xx: np.ndarray | None = None,
     mu_yy: np.ndarray | None = None,
     mu_zz: np.ndarray | None = None,
+    grid_edges: tuple[np.ndarray, ...] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]: ...
 
 
@@ -68,6 +69,7 @@ def solve_modes(
     mu_xx: np.ndarray | None = None,
     mu_yy: np.ndarray | None = None,
     mu_zz: np.ndarray | None = None,
+    grid_edges: tuple[np.ndarray, ...] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]: ...
 
 

@@ -107,6 +107,9 @@ def test_example_notebook_executes_in_reduced_mode(path):
         "BEAMZ_DOCS_TEST": "1",
         "JAX_PLATFORMS": "cpu",
         "MPLBACKEND": "Agg",
+        "PYTHONPATH": os.pathsep.join(
+            value for value in (str(ROOT), os.environ.get("PYTHONPATH", "")) if value
+        ),
     }
 
     subprocess.run(

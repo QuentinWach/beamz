@@ -11,6 +11,7 @@ import numpy as np
 
 from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import readonly_array
+from beamz.devices.modes.discrete import ComponentIndex
 from beamz.devices.modes.fields import _axis_coordinate, _axis_index, _phase_delay
 from beamz.lattice import (
     advance_e_field,
@@ -36,7 +37,9 @@ _STAGGERED_ALONG_AXIS = {
 }
 
 
-def _shift_component_indices_along_axis(indices, axis, shift, field_shape):
+def _shift_component_indices_along_axis(
+    indices: ComponentIndex | None, axis, shift, field_shape
+) -> ComponentIndex | None:
     """Shift component support by integer cells along the propagation axis."""
     if indices is None:
         return None
@@ -49,7 +52,7 @@ def _shift_component_indices_along_axis(indices, axis, shift, field_shape):
     if plane_new < 0 or plane_new >= int(field_shape[axis_pos]):
         return None
     out[axis_pos] = plane_new
-    return tuple(out)
+    return cast(ComponentIndex, tuple(out))
 
 
 def _shape3(shape) -> tuple[int, int, int]:

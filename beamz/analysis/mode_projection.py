@@ -278,6 +278,8 @@ def _build_discrete_port_projection_3d(
         float(sim.resolution),
     )
     if grid is not None and grid.metric_kind != "isotropic_uniform":
+        if snapped_region is None:
+            raise RuntimeError("Rectilinear mode projection requires a snapped region.")
         transverse_axes = {
             "x": ("z", "y"),
             "y": ("z", "x"),
@@ -285,6 +287,10 @@ def _build_discrete_port_projection_3d(
         }[axis]
         interval0 = snapped_region.axis_interval(transverse_axes[0])
         interval1 = snapped_region.axis_interval(transverse_axes[1])
+        if interval0 is None or interval1 is None:
+            raise RuntimeError(
+                "Rectilinear mode projection is missing a transverse interval."
+            )
         weights0 = np.asarray(grid.cell_widths(transverse_axes[0]))[
             int(interval0.start) : int(interval0.stop)
         ]
@@ -451,7 +457,9 @@ def _build_port_projection_2d(
         filter_pol=spec.polarization,
         target_neff=target_neff,
         return_fields=True,
-        **({"grid_edges": (grid_edges,)} if grid_edges is not None else {}),
+        grid_edges=(
+            None if grid_edges is None else (np.asarray(grid_edges, dtype=np.float64),)
+        ),
     )
     if len(neffs) <= int(spec.mode_index):
         raise ValueError(

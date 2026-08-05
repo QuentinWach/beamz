@@ -960,11 +960,12 @@ def _profile_integration_weights(
 ) -> dict[str, np.ndarray]:
     """Return component-staggered transverse area weights for modal flux."""
     weights = {}
-    row_axis, col_axis = {
+    transverse_axes: dict[AxisName, tuple[AxisName, AxisName]] = {
         "x": ("z", "y"),
         "y": ("z", "x"),
         "z": ("y", "x"),
-    }[spec.axis]
+    }
+    row_axis, col_axis = transverse_axes[spec.axis]
     axis_pos = {"z": 0, "y": 1, "x": 2}
     for component in _COMPONENTS:
         if component not in profiles or component not in indices:

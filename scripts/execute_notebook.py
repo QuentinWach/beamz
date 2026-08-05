@@ -5,11 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def code_cells(path: Path) -> tuple[str, ...]:
@@ -48,10 +45,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("notebook", type=Path)
     args = parser.parse_args()
-    # Prefer the checkout containing this executor over an editable installation
-    # from another worktree.  This mirrors how the notebooks are published and
-    # makes their execution test validate the code under review.
-    sys.path.insert(0, str(ROOT))
     execute_notebook(args.notebook)
     return 0
 

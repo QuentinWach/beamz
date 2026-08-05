@@ -8,6 +8,7 @@ import numpy as np
 
 from beamz.analysis.data import AnalysisData, static_fields
 from beamz.const import LIGHT_SPEED, µm
+from beamz.design.grid import Axis
 from beamz.devices._placement import snap_plane_region_grid
 from beamz.lattice import (
     component_coordinates_3d_um,
@@ -90,7 +91,7 @@ def _modal_projection_plane_delay_s(sim, spec, frequency, mode_neff):
         return 0.0
     grid = _analysis_grid(sim)
     if grid is not None and grid.metric_kind_for(("x", "y")) != "isotropic_uniform":
-        axis = str(getattr(spec, "axis", "x"))
+        axis = cast(Axis, str(getattr(spec, "axis", "x")))
         center = tuple(
             float(value) for value in getattr(spec, "center", (0.0, 0.0, 0.0))
         )
@@ -216,11 +217,12 @@ def _monitor_analysis_plane_3d(
             plane_normal=axis,
             grid=grid,
         )
-        return tuple(
-            np.asarray(values, dtype=np.float64)
-            for values in yee_plane_coordinates_3d(
-                monitor.center, monitor.size, axis, snapped, grid=grid
-            )
+        coord0, coord1 = yee_plane_coordinates_3d(
+            monitor.center, monitor.size, axis, snapped, grid=grid
+        )
+        return (
+            np.asarray(coord0, dtype=np.float64),
+            np.asarray(coord1, dtype=np.float64),
         )
     coordinate_method = getattr(monitor, "get_analysis_plane_coords_3d", None)
     if callable(coordinate_method):

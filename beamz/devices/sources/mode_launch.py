@@ -180,12 +180,13 @@ def _make_1d_window(width_cells, alpha=0.3):
 def _solve_2d_mode(
     source: ModeSource,
     eps_profile,
-    omega,
-    resolution,
-    axis,
+    omega: float,
+    resolution: float,
+    axis: str,
     polarization: str,
-    grid_edges=None,
+    grid_edges: np.ndarray | None = None,
 ):
+    del axis
     mode_spec = source.mode_spec
     eps_profile_arr = np.asarray(eps_profile)
     n_local_max = float(np.sqrt(max(float(np.max(np.real(eps_profile_arr))), 1e-12)))
@@ -374,23 +375,30 @@ def _plan_2d_mode_source(
         if grid is not None and grid.metric_kind_for(("x", "y")) != "isotropic_uniform"
         else None
     )
-    snap_kwargs = dict(
-        center=tuple(float(v) for v in source.center),
-        width=float(source.transverse_size[0]),
-        height=None,
-        axis=axis,
-        direction_sign=1.0 if source.direction == "+" else -1.0,
-        is_3d=False,
-    )
-    snapped = (
-        snap_mode_source_region_grid(**snap_kwargs, grid=metric_grid)
-        if metric_grid is not None
-        else snap_mode_source_region(
-            **snap_kwargs,
+    source_center = tuple(float(v) for v in source.center)
+    source_width = float(source.transverse_size[0])
+    direction_sign = 1.0 if source.direction == "+" else -1.0
+    if metric_grid is not None:
+        snapped = snap_mode_source_region_grid(
+            center=source_center,
+            width=source_width,
+            height=None,
+            axis=axis,
+            direction_sign=direction_sign,
+            is_3d=False,
+            grid=metric_grid,
+        )
+    else:
+        snapped = snap_mode_source_region(
+            center=source_center,
+            width=source_width,
+            height=None,
+            axis=axis,
+            direction_sign=direction_sign,
+            is_3d=False,
             grid_shape=(ny, nx),
             resolution=float(resolution),
         )
-    )
     center_idx = int(snapped.plane_index)
     if snapped.companion_index is None:
         raise ValueError("A mode source launch needs a companion Yee plane.")
@@ -415,6 +423,8 @@ def _plan_2d_mode_source(
         )
     omega = 2.0 * np.pi * source.frequency
     interval = snapped.axis_interval("y" if axis == "x" else "x")
+    if interval is None:
+        raise RuntimeError("A 2D mode source is missing its transverse interval.")
     if metric_grid is not None:
         transverse_axis = "y" if axis == "x" else "x"
         grid_edges = np.asarray(metric_grid.axis_edges(transverse_axis))
@@ -473,23 +483,31 @@ def _plan_3d_mode_source(
         grid if grid is not None and grid.metric_kind != "isotropic_uniform" else None
     )
     width, height = source.transverse_size
-    snap_kwargs = dict(
-        center=tuple(float(v) for v in source.center),
-        width=float(width),
-        height=float(height),
-        axis=axis,
-        direction_sign=1.0 if source.direction == "+" else -1.0,
-        is_3d=True,
-    )
-    snapped = (
-        snap_mode_source_region_grid(**snap_kwargs, grid=grid)
-        if grid is not None
-        else snap_mode_source_region(
-            **snap_kwargs,
+    source_center = tuple(float(v) for v in source.center)
+    source_width = float(width)
+    source_height = float(height)
+    direction_sign = 1.0 if source.direction == "+" else -1.0
+    if grid is not None:
+        snapped = snap_mode_source_region_grid(
+            center=source_center,
+            width=source_width,
+            height=source_height,
+            axis=axis,
+            direction_sign=direction_sign,
+            is_3d=True,
+            grid=grid,
+        )
+    else:
+        snapped = snap_mode_source_region(
+            center=source_center,
+            width=source_width,
+            height=source_height,
+            axis=axis,
+            direction_sign=direction_sign,
+            is_3d=True,
             grid_shape=(nz, ny, nx),
             resolution=float(resolution),
         )
-    )
     center_idx = int(snapped.plane_index)
     if snapped.companion_index is None:
         raise ValueError("A mode source launch needs a companion Yee plane.")
