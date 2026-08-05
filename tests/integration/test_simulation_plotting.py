@@ -324,8 +324,14 @@ def test_monitor_dft_field_plot_uses_exact_nonuniform_plane_coordinates(
 
     try:
         assert not ax.images
-        assert len(ax.collections) == 2
-        for mesh in ax.collections:
+        meshes = [
+            collection
+            for collection in ax.collections
+            if hasattr(collection, "get_coordinates")
+        ]
+        assert len(meshes) == 2
+        assert len(ax.collections) == 4
+        for mesh in meshes:
             assert mesh.get_array().shape[:2] == (2, 2)
             coordinates = mesh.get_coordinates()
             np.testing.assert_allclose(coordinates[0, :, 0], expected_x_edges)

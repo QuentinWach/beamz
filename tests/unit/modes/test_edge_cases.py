@@ -351,6 +351,14 @@ def test_refinement_failure_preserves_seed_mode(monkeypatch, raises):
 def test_shared_field_helpers_cover_missing_and_physical_fallbacks():
     assert _axis_index(None, "x") is None
     assert _axis_coordinate("Ex", None, "x", 1.0) == 0.0
+    grid = RectilinearGrid(
+        [0.0, 0.2, 0.5],
+        [0.0, 0.3, 0.7],
+        [0.0, 0.4, 0.9],
+    )
+    assert _axis_coordinate("Ey", 0, "x", 1.0, grid) == pytest.approx(0.1)
+    assert _axis_coordinate("Hz", 0, "x", 1.0, grid) == pytest.approx(0.2)
+    assert _axis_coordinate("Hz", 1, "x", 1.0, grid) == pytest.approx(0.5)
     assert _numeric_wave_number(2.0, None, 1.0, 1.5) > 0.0
     physical = _numeric_wave_number(2.0, np.nan, 1.0, 1.5)
     assert np.isfinite(physical)

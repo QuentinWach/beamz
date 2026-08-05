@@ -43,7 +43,7 @@ def _axis_coordinate(
     offset = 1.0 if component in _STAGGERED_ALONG_AXIS[axis] else 0.5
     if grid is not None:
         coordinates = (
-            np.asarray(grid.axis_edges(axis), dtype=float)
+            np.asarray(grid.axis_edges(axis), dtype=float)[1:]
             if offset == 1.0
             else np.asarray(grid.centers(axis), dtype=float)
         )

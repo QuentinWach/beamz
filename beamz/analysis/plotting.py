@@ -1394,10 +1394,18 @@ def plot_dft_field(
     core_permittivity=None,
     xlim=None,
     ylim=None,
+    show_grid=None,
+    grid_color="black",
+    grid_linewidth=0.2,
+    grid_alpha=0.18,
     show_units=True,
     show=True,
 ):
-    """Plot a frequency-domain scalar or vector field on a monitor plane."""
+    """Plot a frequency-domain scalar or vector field on a monitor plane.
+
+    Nonuniform grid edges are drawn automatically. Pass ``show_grid=False`` to
+    hide them, or ``show_grid=True`` to draw cell edges on any grid.
+    """
     if not isinstance(simulation, AnalysisData):
         raise TypeError("plot_dft_field requires AnalysisData.")
     data = simulation
@@ -1443,6 +1451,8 @@ def plot_dft_field(
     grid = getattr(coordinate_context, "grid", None)
     plot_x_edges = None
     plot_y_edges = None
+    grid_x_edges = None
+    grid_y_edges = None
     if grid is not None:
         interval0 = sample_region.axis_interval(axis0)
         interval1 = sample_region.axis_interval(axis1)
@@ -1456,6 +1466,7 @@ def plot_dft_field(
         y_edges = (
             edges0[interval0.start : interval0.stop + 1] - origin_by_axis[axis0]
         ) / _UM
+        grid_x_edges, grid_y_edges = x_edges, y_edges
         extent = (x_edges[0], x_edges[-1], y_edges[0], y_edges[-1])
         if not _edges_are_uniform(x_edges) or not _edges_are_uniform(y_edges):
             plot_x_edges, plot_y_edges = x_edges, y_edges
@@ -1492,6 +1503,25 @@ def plot_dft_field(
             alpha=eps_alpha,
             core_permittivity=core_permittivity,
             sample_region=sample_region if plot_x_edges is not None else None,
+        )
+
+    draw_grid = plot_x_edges is not None if show_grid is None else bool(show_grid)
+    if draw_grid and grid_x_edges is not None and grid_y_edges is not None:
+        ax.vlines(
+            grid_x_edges,
+            grid_y_edges[0],
+            grid_y_edges[-1],
+            colors=grid_color,
+            linewidths=float(grid_linewidth),
+            alpha=float(grid_alpha),
+        )
+        ax.hlines(
+            grid_y_edges,
+            grid_x_edges[0],
+            grid_x_edges[-1],
+            colors=grid_color,
+            linewidths=float(grid_linewidth),
+            alpha=float(grid_alpha),
         )
 
     cbar_label = _field_colorbar_label(
@@ -1570,6 +1600,10 @@ def plot_result_field(
     vmax=None,
     xlim=None,
     ylim=None,
+    show_grid=None,
+    grid_color="black",
+    grid_linewidth=0.2,
+    grid_alpha=0.18,
     **_kwargs,
 ):
     """Plot saved simulation fields or a monitor DFT field."""
@@ -1607,6 +1641,10 @@ def plot_result_field(
                     vmax=vmax,
                     xlim=xlim,
                     ylim=ylim,
+                    show_grid=show_grid,
+                    grid_color=grid_color,
+                    grid_linewidth=grid_linewidth,
+                    grid_alpha=grid_alpha,
                     colorbar=colorbar,
                 )
         values, freq = _monitor_dft_values(

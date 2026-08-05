@@ -490,9 +490,9 @@ def curl_e_to_h_3d_metric(ex, ey, ez, grid):
     iy = _rectilinear_inverse_distances(grid, "y", backward=False)
     iz = _rectilinear_inverse_distances(grid, "z", backward=False)
     return (
-        adjacent_difference(ez, 1, iy) - adjacent_difference(ey, 0, iz),
-        adjacent_difference(ex, 0, iz) - adjacent_difference(ez, 2, ix),
-        adjacent_difference(ey, 2, ix) - adjacent_difference(ex, 1, iy),
+        metric_adjacent_difference(ez, 1, iy) - metric_adjacent_difference(ey, 0, iz),
+        metric_adjacent_difference(ex, 0, iz) - metric_adjacent_difference(ez, 2, ix),
+        metric_adjacent_difference(ey, 2, ix) - metric_adjacent_difference(ex, 1, iy),
     )
 
 
@@ -502,6 +502,22 @@ def adjacent_difference(array, axis, resolution):
     if resolution.ndim == 1:
         resolution = resolution.reshape((resolution.size,) + (1,) * (moved.ndim - 1))
     return jnp.moveaxis((moved[1:] - moved[:-1]) / resolution, 0, axis)
+
+
+def metric_adjacent_difference(array, axis, inverse_distance):
+    """Apply an adjacent difference scaled by a precomputed inverse distance."""
+    values = jnp.asarray(array)
+    inverse_distance = jnp.asarray(inverse_distance, dtype=values.dtype)
+    moved = jnp.moveaxis(values, axis, 0)
+    if inverse_distance.ndim == 1:
+        inverse_distance = inverse_distance.reshape(
+            (inverse_distance.size,) + (1,) * (moved.ndim - 1)
+        )
+    return jnp.moveaxis(
+        (moved[1:] - moved[:-1]) * inverse_distance,
+        0,
+        axis,
+    )
 
 
 def _pad_with_boundary_ghosts(
@@ -615,12 +631,12 @@ def curl_h_to_e_3d_metric(
     iy = _rectilinear_inverse_distances(grid, "y", backward=True)
     iz = _rectilinear_inverse_distances(grid, "z", backward=True)
     curls = (
-        adjacent_difference(boundary_views["hz_y"], 1, iy)
-        - adjacent_difference(boundary_views["hy_z"], 0, iz),
-        adjacent_difference(boundary_views["hx_z"], 0, iz)
-        - adjacent_difference(boundary_views["hz_x"], 2, ix),
-        adjacent_difference(boundary_views["hy_x"], 2, ix)
-        - adjacent_difference(boundary_views["hx_y"], 1, iy),
+        metric_adjacent_difference(boundary_views["hz_y"], 1, iy)
+        - metric_adjacent_difference(boundary_views["hy_z"], 0, iz),
+        metric_adjacent_difference(boundary_views["hx_z"], 0, iz)
+        - metric_adjacent_difference(boundary_views["hz_x"], 2, ix),
+        metric_adjacent_difference(boundary_views["hy_x"], 2, ix)
+        - metric_adjacent_difference(boundary_views["hx_y"], 1, iy),
     )
     expected = (ex_shape, ey_shape, ez_shape)
     if any(curl.shape != shape for curl, shape in zip(curls, expected, strict=True)):

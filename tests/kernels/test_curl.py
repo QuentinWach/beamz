@@ -6,6 +6,7 @@ from beamz import MU_0, RectilinearGrid
 from beamz.lattice import (
     build_h_boundary_views_for_e_3d,
     curl_e_to_h_3d,
+    curl_e_to_h_3d_metric,
     curl_h_to_e_3d,
     curl_h_to_e_3d_metric,
     yee_flux,
@@ -235,6 +236,45 @@ def test_rectilinear_curl_h_to_e_infers_yee_shapes_and_rejects_mismatch():
             ez_shape=(1, 1, 1),
             boundary_views=boundary_views,
         )
+
+
+def test_rectilinear_curls_apply_inverse_physical_distances():
+    grid = RectilinearGrid(
+        np.asarray([0.0, 0.5, 1.5, 3.0]),
+        np.asarray([0.0, 0.4, 1.1, 2.1]),
+        np.asarray([0.0, 0.3, 0.9, 2.0]),
+    )
+    z_nodes = grid.z_edges[:, None, None]
+    y_nodes = grid.y_edges[None, :, None]
+    x_nodes = grid.x_edges[None, None, :]
+    ex = np.broadcast_to(z_nodes, (4, 4, 3))
+    ey = np.broadcast_to(x_nodes, (4, 3, 4))
+    ez = np.broadcast_to(y_nodes, (3, 4, 4))
+
+    curl_h = curl_e_to_h_3d_metric(ex, ey, ez, grid)
+
+    for component in curl_h:
+        np.testing.assert_allclose(component, 1.0, rtol=2e-7)
+
+    z_centers = grid.centers("z")[:, None, None]
+    y_centers = grid.centers("y")[None, :, None]
+    x_centers = grid.centers("x")[None, None, :]
+    hx = np.broadcast_to(z_centers, (3, 3, 4)).astype(np.float32)
+    hy = np.broadcast_to(x_centers, (3, 4, 3)).astype(np.float32)
+    hz = np.broadcast_to(y_centers, (4, 3, 3)).astype(np.float32)
+    boundary_views = build_h_boundary_views_for_e_3d(hx, hy, hz)
+
+    curl_e = curl_h_to_e_3d_metric(
+        hx,
+        hy,
+        hz,
+        grid,
+        boundary_views=boundary_views,
+    )
+
+    np.testing.assert_allclose(curl_e[0][:, 1:-1, :], 1.0, rtol=2e-7)
+    np.testing.assert_allclose(curl_e[1][1:-1, :, :], 1.0, rtol=2e-7)
+    np.testing.assert_allclose(curl_e[2][:, :, 1:-1], 1.0, rtol=2e-7)
 
 
 def test_h_boundary_views_insert_high_ghost_before_storage_padding():

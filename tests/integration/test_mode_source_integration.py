@@ -4,8 +4,11 @@ import pytest
 from beamz import (
     LIGHT_SPEED,
     PML,
+    Box,
     Design,
     FluxMonitor,
+    GaussianPulse,
+    GridSpec,
     Material,
     ModeMonitor,
     ModeSource,
@@ -21,6 +24,75 @@ from beamz.analysis import sparameters as sp
 from tests.utils import TEST_WAVELENGTH
 
 pytestmark = [pytest.mark.integration, pytest.mark.simulation]
+
+
+@pytest.mark.compiled
+@pytest.mark.parametrize("grid_kind", ("uniform", "rectilinear"))
+def test_3d_mode_source_suppresses_counterpropagating_power_on_both_grids(
+    grid_kind,
+):
+    wavelength = 1.55e-6
+    frequency = LIGHT_SPEED / wavelength
+    core_index = 3.48
+    domain = (4.0e-6, 3.0e-6, 2.5e-6)
+    source_x = -0.8e-6
+    plane_size = (0.0, 1.5e-6, 1.2e-6)
+    design = Design(background=Material(permittivity=1.0))
+    design += Box(
+        center=(0.0, 0.0, 0.0),
+        size=(np.inf, 0.45e-6, 0.22e-6),
+        material=Material(permittivity=core_index**2),
+    )
+    grid_spec = (
+        GridSpec.uniform(0.07e-6)
+        if grid_kind == "uniform"
+        else GridSpec.auto(
+            wavelength=wavelength,
+            min_steps_per_wvl=6,
+            max_scale=1.25,
+        )
+    )
+    source = ModeSource(
+        center=(source_x, 0.0, 0.0),
+        size=plane_size,
+        direction="+",
+        source_time=GaussianPulse(
+            freq0=frequency,
+            fwidth=0.1 * frequency,
+            offset=0.5,
+        ),
+        mode_spec=ModeSpec(num_modes=1, target_neff=0.98 * core_index),
+    )
+    monitors = [
+        FluxMonitor(
+            center=(source_x - 0.45e-6, 0.0, 0.0),
+            size=plane_size,
+            freqs=[frequency],
+            name="counter",
+        ),
+        FluxMonitor(
+            center=(source_x + 0.45e-6, 0.0, 0.0),
+            size=plane_size,
+            freqs=[frequency],
+            name="forward",
+        ),
+    ]
+    simulation = Simulation(
+        domain=domain,
+        grid_spec=grid_spec,
+        design=design,
+        sources=[source],
+        monitors=monitors,
+        boundaries=[PML(thickness=0.45e-6, formulation="cpml")],
+        run_time=6.0 / frequency,
+    )
+
+    result = simulation.run(progress=False)
+    counter_power = abs(float(result["counter"].flux[0]))
+    forward_power = abs(float(result["forward"].flux[0]))
+
+    assert forward_power > 0.0
+    assert counter_power / forward_power < 0.05
 
 
 @pytest.mark.compiled
