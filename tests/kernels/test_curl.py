@@ -2,11 +2,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from beamz import MU_0
+from beamz import MU_0, RectilinearGrid
 from beamz.lattice import (
     build_h_boundary_views_for_e_3d,
     curl_e_to_h_3d,
     curl_h_to_e_3d,
+    curl_h_to_e_3d_metric,
     yee_flux,
 )
 from beamz.simulation.kernels import (
@@ -195,6 +196,45 @@ def test_curl_h_to_e_3d_linear_field_has_constant_y_component():
     np.testing.assert_allclose(np.asarray(curl_hx)[1:-1, 1:-1, :], 0.0, atol=1e-6)
     np.testing.assert_allclose(np.asarray(curl_hy)[1:-1, :, 1:-1], 2.0, atol=1e-6)
     np.testing.assert_allclose(np.asarray(curl_hz)[:, 1:-1, 1:-1], 0.0, atol=1e-6)
+
+
+def test_rectilinear_curl_h_to_e_infers_yee_shapes_and_rejects_mismatch():
+    nz = ny = nx = 4
+    hx = jnp.arange(nz * ny * (nx + 1), dtype=jnp.float32).reshape(nz, ny, nx + 1)
+    hy = jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32)
+    hz = jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32)
+    grid = RectilinearGrid(
+        np.asarray([0.0, 0.8, 1.9, 3.3, 5.0]),
+        np.asarray([0.0, 1.2, 2.1, 3.5, 5.4]),
+        np.asarray([0.0, 0.7, 1.8, 3.2, 5.1]),
+    )
+    boundary_views = build_h_boundary_views_for_e_3d(hx, hy, hz)
+
+    curls = curl_h_to_e_3d_metric(
+        hx,
+        hy,
+        hz,
+        grid,
+        boundary_views=boundary_views,
+    )
+
+    assert tuple(curl.shape for curl in curls) == (
+        (nz + 1, ny + 1, nx),
+        (nz + 1, ny, nx + 1),
+        (nz, ny + 1, nx + 1),
+    )
+    assert all(np.all(np.isfinite(np.asarray(curl))) for curl in curls)
+    with pytest.raises(ValueError, match=r"curl\(H\) shapes"):
+        curl_h_to_e_3d_metric(
+            hx,
+            hy,
+            hz,
+            grid,
+            ex_shape=(1, 1, 1),
+            ey_shape=(1, 1, 1),
+            ez_shape=(1, 1, 1),
+            boundary_views=boundary_views,
+        )
 
 
 def test_h_boundary_views_insert_high_ghost_before_storage_padding():
