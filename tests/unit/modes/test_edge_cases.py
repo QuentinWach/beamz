@@ -127,6 +127,70 @@ def test_discrete_mode_solver_receives_exact_rectilinear_transverse_edges(monkey
     np.testing.assert_allclose(captured["y_edges"], grid.z_edges / 1e-6)
 
 
+def test_rectilinear_mode_uses_yee_refinement_when_normal_axis_is_uniform(
+    monkeypatch,
+):
+    grid = RectilinearGrid(
+        np.linspace(0.0, 0.5e-6, 6),
+        [0.0, 0.1e-6, 0.3e-6, 0.6e-6],
+        [0.0, 0.15e-6, 0.4e-6],
+    )
+    fields = {
+        name: np.ones((3, 3), dtype=np.complex128)
+        for name in discrete_module._COMPONENTS
+    }
+    profiles = _component_profiles()
+    indices = {
+        name: (slice(0, values.shape[0]), slice(0, values.shape[1]), 1)
+        for name, values in profiles.items()
+    }
+    captured = {}
+
+    monkeypatch.setattr(
+        discrete_module,
+        "solve_grid",
+        lambda **_kwargs: SimpleNamespace(solver_info={}),
+    )
+    monkeypatch.setattr(
+        discrete_module,
+        "_candidate_modes",
+        lambda *_args: [{"neff": 2.0 + 0.0j, "fields": fields}],
+    )
+    monkeypatch.setattr(
+        discrete_module,
+        "_build_profiles",
+        lambda *_args: (profiles, indices, {"initial_power": 1.0}),
+    )
+
+    def fake_refinement(*_args, **kwargs):
+        captured.update(kwargs)
+        return profiles, 0.0, 1.0, 2.0, 1.0
+
+    monkeypatch.setattr(discrete_module, "refine_x_mode_at_fixed_beta", fake_refinement)
+    monkeypatch.setattr(
+        discrete_module,
+        "validate_x_mode_refinement",
+        lambda *_args, **_kwargs: (True, {"rejection_reason": ""}),
+    )
+
+    result = discrete_module.solve_beamz_mode(
+        _mode_plane_spec(
+            scalar_permittivity=np.ones((2, 3)),
+            grid_shape=grid.shape_zyx,
+            grid=grid,
+            component_permittivity={"Ex": np.ones(1)},
+            component_permeability={"Hx": np.ones(1)},
+        )
+    )
+
+    assert result.diagnostics["yee_refinement_eligible"]
+    assert result.diagnostics["yee_refinement_accepted"]
+    assert captured["normal_spacing"] == pytest.approx(0.1e-6)
+    z_coordinates, y_coordinates = captured["transverse_coordinates"]
+    np.testing.assert_allclose(z_coordinates, grid.z_edges)
+    np.testing.assert_allclose(y_coordinates, grid.y_edges)
+
+
 @pytest.mark.parametrize(
     ("changes", "match"),
     [

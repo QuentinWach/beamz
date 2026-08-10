@@ -25,6 +25,8 @@ def refine_x_mode_at_fixed_beta(
     resolution,
     k_num,
     direction_sign,
+    normal_spacing=None,
+    transverse_coordinates=None,
     _correct_beta=True,
 ):
     """Refine E at the selected beta, then reconstruct H from Faraday's law."""
@@ -35,7 +37,7 @@ def refine_x_mode_at_fixed_beta(
         name: np.asarray(value, dtype=np.complex128) for name, value in profiles.items()
     }
     nz, ny = out["Ex"].shape
-    d = float(resolution)
+    d = float(resolution if normal_spacing is None else normal_spacing)
     sign = 1.0 if float(direction_sign) >= 0.0 else -1.0
     delta = -2j * sign * np.sin(0.5 * float(k_num) * d) / d
     curl_e, curl_h, curl_e_beta, curl_h_beta = _yee_curl_operators(
@@ -43,6 +45,7 @@ def refine_x_mode_at_fixed_beta(
         out,
         resolution=d,
         delta=delta,
+        transverse_coordinates=transverse_coordinates,
     )
     eps, mu = _component_material_vectors(
         out,
@@ -99,7 +102,11 @@ def refine_x_mode_at_fixed_beta(
     eigenvalue = float(np.real(values[selected]))
     frequency_ratio = float(np.sqrt(max(eigenvalue / target, 0.0)))
     frequency_ratio_initial = frequency_ratio
-    if _correct_beta:
+    if _correct_beta is True:
+        correction_steps = 2 if transverse_coordinates is not None else 1
+    else:
+        correction_steps = int(_correct_beta)
+    if correction_steps > 0:
         q_axis = 2.0 * np.sin(0.5 * float(k_num) * d) / d
         q_probe = 0.98 * q_axis
         delta_probe = -1j * sign * q_probe
@@ -119,7 +126,13 @@ def refine_x_mode_at_fixed_beta(
         q_corrected = np.sqrt(max(q_axis**2 - (eigenvalue - target) / slope, 0.0))
         k_corrected = 2.0 * np.arcsin(np.clip(0.5 * q_corrected * d, -1.0, 1.0)) / d
         if np.isfinite(k_corrected) and k_corrected > 0.0:
-            refined, residual, frequency_ratio, _, _ = refine_x_mode_at_fixed_beta(
+            (
+                refined,
+                residual,
+                frequency_ratio,
+                refined_k_num,
+                _,
+            ) = refine_x_mode_at_fixed_beta(
                 out,
                 indices,
                 component_permittivity=component_permittivity,
@@ -129,13 +142,15 @@ def refine_x_mode_at_fixed_beta(
                 resolution=resolution,
                 k_num=k_corrected,
                 direction_sign=direction_sign,
-                _correct_beta=False,
+                normal_spacing=d,
+                transverse_coordinates=transverse_coordinates,
+                _correct_beta=correction_steps - 1,
             )
             return (
                 refined,
                 residual,
                 frequency_ratio,
-                float(k_corrected),
+                float(refined_k_num),
                 frequency_ratio_initial,
             )
     return out, float(residual), frequency_ratio, float(k_num), frequency_ratio
@@ -197,6 +212,8 @@ def validate_x_mode_refinement(
     resolution,
     k_num,
     direction_sign,
+    normal_spacing=None,
+    transverse_coordinates=None,
     minimum_electric_overlap=None,
     minimum_magnetic_overlap=0.5,
     maximum_impedance_change=4.0,
@@ -255,23 +272,29 @@ def validate_x_mode_refinement(
     )
 
     seed_power = _signed_x_power(
-        seed, resolution=resolution, direction_sign=direction_sign
+        seed,
+        resolution=resolution,
+        direction_sign=direction_sign,
+        transverse_coordinates=transverse_coordinates,
     )
     candidate_power = _signed_x_power(
-        candidate, resolution=resolution, direction_sign=direction_sign
+        candidate,
+        resolution=resolution,
+        direction_sign=direction_sign,
+        transverse_coordinates=transverse_coordinates,
     )
     diagnostics["seed_signed_power"] = seed_power
     diagnostics["candidate_signed_power"] = candidate_power
 
     sign = 1.0 if float(direction_sign) >= 0.0 else -1.0
-    delta = (
-        -2j * sign * np.sin(0.5 * float(k_num) * float(resolution)) / float(resolution)
-    )
+    d = float(resolution if normal_spacing is None else normal_spacing)
+    delta = -2j * sign * np.sin(0.5 * float(k_num) * d) / d
     curl_e, curl_h, _curl_e_beta, _curl_h_beta = _yee_curl_operators(
         sparse,
         candidate,
         resolution=float(resolution),
         delta=delta,
+        transverse_coordinates=transverse_coordinates,
     )
     omega_d = (
         float(omega)
@@ -313,11 +336,30 @@ def validate_x_mode_refinement(
     return not rejection_reasons, diagnostics
 
 
-def _yee_curl_operators(sparse, profiles, *, resolution, delta):
+def _yee_curl_operators(
+    sparse,
+    profiles,
+    *,
+    resolution,
+    delta,
+    transverse_coordinates=None,
+):
     nz, ny = profiles["Ex"].shape
-    dz = _forward_difference(sparse, nz, resolution)
-    dy = _forward_difference(sparse, ny, resolution)
-    bz, by = -dz.T, -dy.T
+    if transverse_coordinates is None:
+        dz = _forward_difference(sparse, nz, resolution)
+        dy = _forward_difference(sparse, ny, resolution)
+        bz, by = -dz.T, -dy.T
+    else:
+        z_coordinates, y_coordinates = _validated_transverse_coordinates(
+            transverse_coordinates,
+            shape=(nz, ny),
+        )
+        z_widths = np.diff(z_coordinates)
+        y_widths = np.diff(y_coordinates)
+        dz = _forward_difference_from_widths(sparse, z_widths)
+        dy = _forward_difference_from_widths(sparse, y_widths)
+        bz = _backward_difference_from_widths(sparse, z_widths)
+        by = _backward_difference_from_widths(sparse, y_widths)
     iz = sparse.eye(nz, format="csc")
     iy = sparse.eye(ny, format="csc")
     izm = sparse.eye(nz - 1, format="csc")
@@ -441,10 +483,102 @@ def _ratio_change(candidate, seed):
     return float(max(candidate / seed, seed / candidate))
 
 
-def _signed_x_power(profiles, *, resolution, direction_sign):
-    flux = np.vdot(profiles["Hz"].reshape(-1), profiles["Ey"].reshape(-1))
-    flux -= np.vdot(profiles["Hy"].reshape(-1), profiles["Ez"].reshape(-1))
-    return float(0.5 * float(direction_sign) * np.real(flux) * float(resolution) ** 2)
+def _signed_x_power(
+    profiles,
+    *,
+    resolution,
+    direction_sign,
+    transverse_coordinates=None,
+):
+    ey = np.asarray(profiles["Ey"])
+    ez = np.asarray(profiles["Ez"])
+    hy = np.asarray(profiles["Hy"])
+    hz = np.asarray(profiles["Hz"])
+    if transverse_coordinates is None:
+        flux = np.vdot(hz.reshape(-1), ey.reshape(-1))
+        flux -= np.vdot(hy.reshape(-1), ez.reshape(-1))
+        flux *= float(resolution) ** 2
+    else:
+        z_coordinates, y_coordinates = _validated_transverse_coordinates(
+            transverse_coordinates,
+            shape=profiles["Ex"].shape,
+        )
+        z_widths = np.diff(z_coordinates)
+        y_widths = np.diff(y_coordinates)
+        z_edges = _edge_measures(z_widths)
+        y_edges = _edge_measures(y_widths)
+        ey_hz_weights = z_edges[:, None] * y_widths[None, :]
+        ez_hy_weights = z_widths[:, None] * y_edges[None, :]
+        flux = np.sum(ey * np.conjugate(hz) * ey_hz_weights)
+        flux -= np.sum(ez * np.conjugate(hy) * ez_hy_weights)
+    return float(0.5 * float(direction_sign) * np.real(flux))
+
+
+def _validated_transverse_coordinates(coordinates, *, shape):
+    values = tuple(np.asarray(axis, dtype=float) for axis in coordinates)
+    if len(values) != 2:
+        raise ValueError("transverse_coordinates must contain z and y coordinates")
+    for name, axis, count in zip(("z", "y"), values, shape, strict=True):
+        if axis.ndim != 1 or axis.size != int(count):
+            raise ValueError(
+                f"{name} transverse coordinates must have shape ({int(count)},)"
+            )
+        if not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0.0):
+            raise ValueError(
+                f"{name} transverse coordinates must be finite and increasing"
+            )
+    return values
+
+
+def _forward_difference_from_widths(sparse, widths):
+    values = np.asarray(widths, dtype=float)
+    count = int(values.size + 1)
+    rows = np.repeat(np.arange(count - 1), 2)
+    columns = np.column_stack((np.arange(count - 1), np.arange(1, count))).reshape(-1)
+    data = np.column_stack((-1.0 / values, 1.0 / values)).reshape(-1)
+    return sparse.csc_matrix((data, (rows, columns)), shape=(count - 1, count))
+
+
+def _backward_difference_from_widths(sparse, widths):
+    values = np.asarray(widths, dtype=float)
+    count = int(values.size + 1)
+    inverse = np.empty(count, dtype=float)
+    inverse[0], inverse[-1] = 1.0 / values[0], 1.0 / values[-1]
+    if values.size > 1:
+        inverse[1:-1] = 2.0 / (values[:-1] + values[1:])
+    rows = np.concatenate(
+        (
+            np.asarray([0]),
+            np.repeat(np.arange(1, count - 1), 2),
+            np.asarray([count - 1]),
+        )
+    )
+    columns = np.concatenate(
+        (
+            np.asarray([0]),
+            np.column_stack((np.arange(count - 2), np.arange(1, count - 1))).reshape(
+                -1
+            ),
+            np.asarray([count - 2]),
+        )
+    )
+    data = np.concatenate(
+        (
+            np.asarray([inverse[0]]),
+            np.column_stack((-inverse[1:-1], inverse[1:-1])).reshape(-1),
+            np.asarray([-inverse[-1]]),
+        )
+    )
+    return sparse.csc_matrix((data, (rows, columns)), shape=(count, count - 1))
+
+
+def _edge_measures(widths):
+    values = np.asarray(widths, dtype=float)
+    measures = np.empty(values.size + 1, dtype=float)
+    measures[0], measures[-1] = 0.5 * values[0], 0.5 * values[-1]
+    if values.size > 1:
+        measures[1:-1] = 0.5 * (values[:-1] + values[1:])
+    return measures
 
 
 def _relative_pair_residual(left, right):

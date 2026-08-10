@@ -82,6 +82,41 @@ def test_refinement_validator_accepts_balanced_maxwell_mode():
     assert diagnostics["ampere_residual"] < 5e-3
 
 
+def test_fixed_beta_refinement_uses_rectilinear_transverse_metrics():
+    _shapes, profiles, indices, kwargs = _refinement_fixture()
+    nz, ny = profiles["Ex"].shape
+    z_coordinates = np.concatenate(
+        ([0.0], np.cumsum(np.linspace(50.0e-9, 110.0e-9, nz - 1)))
+    )
+    y_coordinates = np.concatenate(
+        ([0.0], np.cumsum(np.linspace(60.0e-9, 100.0e-9, ny - 1)))
+    )
+    metric_kwargs = {
+        "normal_spacing": 72.0e-9,
+        "transverse_coordinates": (z_coordinates, y_coordinates),
+    }
+
+    refined, residual, ratio, k_num, initial_ratio = refine_x_mode_at_fixed_beta(
+        profiles,
+        indices,
+        **kwargs,
+        **metric_kwargs,
+    )
+    accepted, diagnostics = validate_x_mode_refinement(
+        profiles,
+        refined,
+        indices,
+        **{**kwargs, "k_num": k_num},
+        **metric_kwargs,
+    )
+
+    assert residual < 1e-8
+    assert abs(ratio - 1.0) < abs(initial_ratio - 1.0)
+    assert accepted
+    assert diagnostics["faraday_residual"] < 1e-12
+    assert diagnostics["ampere_residual"] < 5e-3
+
+
 def test_refinement_validator_rejects_broken_e_h_balance():
     _shapes, profiles, indices, kwargs = _refinement_fixture()
     refined, _residual, _ratio, k_num, _initial_ratio = refine_x_mode_at_fixed_beta(

@@ -316,11 +316,16 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
     )
     k_num = _numeric_wave_number(omega, spec.dt, normal_spacing, selected["neff"])
     boundary_neff = _boundary_refractive_index(spec.scalar_permittivity)
+    transverse_coordinates = _x_refinement_transverse_coordinates(
+        spec,
+        profiles,
+        indices,
+    )
     yee_refinement_eligible = (
         spec.axis == "x"
         and bool(spec.component_permittivity)
         and float(np.real(selected["neff"])) > boundary_neff
-        and (spec.grid is None or spec.grid.is_uniform)
+        and _normal_axis_is_uniform(spec)
     )
     yee_refinement_requested = bool(spec.yee_refinement)
     yee_refinement_attempted = yee_refinement_requested and yee_refinement_eligible
@@ -357,6 +362,8 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
                 resolution=spec.resolution,
                 k_num=seed_k_num,
                 direction_sign=_direction_sign(spec.direction),
+                normal_spacing=normal_spacing,
+                transverse_coordinates=transverse_coordinates,
             )
             yee_refinement_accepted, yee_validation = validate_x_mode_refinement(
                 seed_profiles,
@@ -369,6 +376,8 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
                 resolution=spec.resolution,
                 k_num=candidate_k_num,
                 direction_sign=_direction_sign(spec.direction),
+                normal_spacing=normal_spacing,
+                transverse_coordinates=transverse_coordinates,
             )
             yee_refinement_rejection_reason = str(
                 yee_validation.get("rejection_reason", "")
@@ -463,6 +472,51 @@ def _boundary_refractive_index(permittivity: np.ndarray) -> float:
         return 0.0
     boundary = np.concatenate((eps[0], eps[-1], eps[1:-1, 0], eps[1:-1, -1]))
     return float(np.sqrt(max(float(np.max(np.real(boundary))), 0.0)))
+
+
+def _normal_axis_is_uniform(spec: ModePlaneSpec) -> bool:
+    """Whether fixed-beta translation is valid along the propagation axis."""
+    if spec.grid is None:
+        return True
+    widths = np.asarray(spec.grid.cell_widths(spec.axis), dtype=float)
+    if widths.size == 0:
+        return False
+    scale = max(float(np.max(np.abs(spec.grid.axis_edges(spec.axis)))), 1.0)
+    return bool(
+        np.allclose(
+            widths,
+            widths[0],
+            rtol=1e-10,
+            atol=16.0 * np.finfo(float).eps * scale,
+        )
+    )
+
+
+def _x_refinement_transverse_coordinates(
+    spec: ModePlaneSpec,
+    profiles: Mapping[str, np.ndarray],
+    indices: Mapping[str, ComponentIndex],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return cropped Ex-site coordinates for the x-normal Yee operators."""
+    if spec.axis != "x" or spec.grid is None:
+        return None
+    ex_index = indices["Ex"]
+    coordinates = []
+    for axis, position, count in (
+        ("z", 0, profiles["Ex"].shape[0]),
+        ("y", 1, profiles["Ex"].shape[1]),
+    ):
+        selector = ex_index[position]
+        if not isinstance(selector, slice):
+            raise ValueError(f"x-normal Ex support must use a transverse {axis} slice")
+        values = np.asarray(spec.grid.axis_edges(axis)[selector], dtype=float)
+        if values.size != int(count):
+            raise ValueError(
+                f"x-normal Ex {axis} coordinates have size {values.size}, "
+                f"expected {int(count)}"
+            )
+        coordinates.append(values)
+    return cast(tuple[np.ndarray, np.ndarray], tuple(coordinates))
 
 
 def _candidate_modes(result, spec: ModePlaneSpec) -> list[_ModeCandidate]:
