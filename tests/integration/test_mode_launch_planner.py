@@ -482,7 +482,7 @@ def test_mode_launch_amplitude_scale_normalizes_measured_launch_power():
     assert _launch_amplitude_scale(0.0) == pytest.approx(1.0)
 
 
-def test_launch_diagnostics_use_mode_profile_power_contract():
+def test_launch_diagnostics_fall_back_to_mode_profile_power_contract():
     fields = _uniform_3d_fields()
     source = _mode_source(power=2.0)
     profile = np.ones((2, 2), dtype=np.complex128)
@@ -513,6 +513,62 @@ def test_launch_diagnostics_use_mode_profile_power_contract():
 
     assert power == pytest.approx(2.0)
     assert ratio == pytest.approx(1.0)
+
+
+def test_launch_diagnostics_prefer_reconstructed_yee_plane_power(monkeypatch):
+    fields = _uniform_3d_fields()
+    source = _mode_source(power=2.0)
+    profile = np.ones((2, 2), dtype=np.complex128)
+    field_profile = FieldProfile3D(
+        components={"Ey": profile, "Hz": profile},
+        indices={
+            "Ey": (slice(1, 3), slice(1, 3), 1),
+            "Hz": (slice(1, 3), slice(1, 3), 1),
+        },
+        axis="x",
+        direction_sign=1.0,
+        omega=2.0,
+        k_axis=1.0,
+        phase_ref_coord=1.5,
+        phase_plane_coord=1.5,
+        power_weights={"Ey": np.ones((2, 2))},
+    )
+    residual = ModeSource3DResidual(
+        component="Ey",
+        timing="pre_e",
+        index=(slice(1, 3), slice(1, 3), 1),
+        residual=profile,
+    )
+    state = {"Ey": np.ones_like(fields.Ey)}
+
+    monkeypatch.setattr(
+        mode_launch_module,
+        "_reconstructed_3d_launch_phasor_state",
+        lambda *args, **kwargs: state,
+    )
+    monkeypatch.setattr(
+        mode_launch_module.planar_tfsf,
+        "deembed_3d_phasor_profiles",
+        lambda *args, **kwargs: field_profile.components,
+    )
+    monkeypatch.setattr(
+        mode_launch_module,
+        "_yee_plane_power_3d",
+        lambda *args, **kwargs: 2.5,
+    )
+
+    ratio, power = _launch_power_diagnostics_3d(
+        source,
+        field_profile,
+        (residual,),
+        fields,
+        resolution=1.0,
+        dt=0.1,
+        requested_power=2.0,
+    )
+
+    assert power == pytest.approx(2.5)
+    assert ratio == pytest.approx(1.25)
 
 
 def test_mode_launch_plan_reports_scaled_net_launched_power():

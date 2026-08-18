@@ -87,6 +87,18 @@ def test_3d_mode_source_suppresses_counterpropagating_power_on_both_grids(
         run_time=6.0 / frequency,
     )
 
+    program = simulation.compile()
+    if grid_kind == "uniform":
+        assert program.grid.geometry.metric_kind == "isotropic_uniform"
+    else:
+        assert program.grid.geometry.metric_kind != "isotropic_uniform"
+    launch_powers = {
+        float(spec.launched_power)
+        for spec in program.sources
+        if spec.launched_power is not None
+    }
+    assert sorted(launch_powers) == pytest.approx([source.power], rel=1e-6)
+
     result = simulation.run(progress=False)
     counter_power = abs(float(result["counter"].flux[0]))
     forward_power = abs(float(result["forward"].flux[0]))

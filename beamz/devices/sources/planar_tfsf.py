@@ -155,6 +155,37 @@ def build_incident_3d_phasor_state(
     return field_arrays
 
 
+def deembed_3d_phasor_profiles(
+    field_profile: FieldProfile3D,
+    state: dict[str, np.ndarray],
+    fields,
+    *,
+    resolution: float,
+    t_e,
+    t_h,
+) -> dict[str, np.ndarray]:
+    """Return local source-plane phasors in the source profile gauge."""
+    axis = field_profile.axis
+    k_num = _require_k_axis(field_profile)
+    omega = float(field_profile.omega)
+    ref_coord = float(field_profile.phase_ref_coord)
+    out: dict[str, np.ndarray] = {}
+    for component in _FIELD_COMPONENTS_3D:
+        idx = field_profile.indices.get(component)
+        if idx is None or component not in state:
+            continue
+        values = np.asarray(state[component], dtype=np.complex128)
+        axis_idx = _axis_index(idx, axis)
+        coord = _component_axis_coordinate(
+            fields, component, axis, axis_idx, resolution
+        )
+        base_time = float(t_e if component.startswith("E") else t_h)
+        delay = _phase_delay(omega, k_num, coord - ref_coord)
+        phase = omega * (base_time - delay)
+        out[component] = values[idx] * np.exp(-1j * phase)
+    return out
+
+
 def launched_side_component_mask_3d(
     field_profile: FieldProfile3D,
     component: str,
