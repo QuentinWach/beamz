@@ -182,14 +182,31 @@ def _normalize_plane_2d(plane) -> str:
     return plane
 
 
-def _normalize_symmetry(symmetry, *, is_3d: bool, plane_2d: str) -> tuple[int, int, int]:
+def _normalize_symmetry(
+    symmetry, *, is_3d: bool, plane_2d: str
+) -> tuple[int, int, int]:
     """Validate physical-axis reflection parity for one simulation domain."""
     try:
-        values = tuple(int(value) for value in symmetry)
+        raw_values = tuple(symmetry)
     except (TypeError, ValueError) as exc:
-        raise ValueError("Simulation symmetry must contain exactly three values in {-1, 0, 1}.") from exc
-    if len(values) != 3 or any(value not in {-1, 0, 1} for value in values):
-        raise ValueError("Simulation symmetry must contain exactly three values in {-1, 0, 1}.")
+        raise ValueError(
+            "Simulation symmetry must contain exactly three values in {-1, 0, 1}."
+        ) from exc
+    try:
+        valid = len(raw_values) == 3 and all(
+            not isinstance(value, (bool, np.bool_))
+            and np.isfinite(value)
+            and int(value) == value
+            and int(value) in {-1, 0, 1}
+            for value in raw_values
+        )
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not valid:
+        raise ValueError(
+            "Simulation symmetry must contain exactly three values in {-1, 0, 1}."
+        )
+    values = tuple(int(value) for value in raw_values)
     if not is_3d:
         inactive = ({"x", "y", "z"} - set(plane_2d)).pop()
         inactive_index = {"x": 0, "y": 1, "z": 2}[inactive]
@@ -655,7 +672,11 @@ class Simulation:
         run_time: float | None = None,
         setup_device: Literal["auto", "cpu", "default"] | None = None,
         normalize_source: int | None = 0,
-        symmetry: tuple[Literal[-1, 0, 1], Literal[-1, 0, 1], Literal[-1, 0, 1]] = (0, 0, 0),
+        symmetry: tuple[Literal[-1, 0, 1], Literal[-1, 0, 1], Literal[-1, 0, 1]] = (
+            0,
+            0,
+            0,
+        ),
         raster_options=None,
     ):
         polarization = normalize_polarization_2d(polarization)

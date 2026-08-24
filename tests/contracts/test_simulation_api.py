@@ -69,7 +69,14 @@ def test_simulation_symmetry_is_immutable_validated_and_part_of_request():
     assert sim.updated_copy(symmetry=(0, 1, 0)).symmetry == (0, 1, 0)
     assert sim != _simulation(symmetry=(0, 0, 0))
 
-    for invalid in ((0, 0), (0, 0, 0, 0), (0, 2, 0), "bad"):
+    for invalid in (
+        (0, 0),
+        (0, 0, 0, 0),
+        (0, 2, 0),
+        (0, 0.5, 0),
+        (0, True, 0),
+        "bad",
+    ):
         with pytest.raises(ValueError, match="symmetry.*three values"):
             _simulation(symmetry=invalid)
 

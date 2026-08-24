@@ -16,7 +16,11 @@ from beamz.devices._immutable import immutable_snapshot, readonly_array
 from beamz.devices._placement import SnappedRegion
 from beamz.devices.monitors.compiler import CompiledMonitorSpec
 from beamz.devices.monitors.monitors import FieldRecorder, _Monitor
-from beamz.lattice import canonical_component_2d, component_shapes
+from beamz.lattice import (
+    canonical_component_2d,
+    component_shapes,
+    grid_axes_in_physical_frame_2d,
+)
 
 from .model import CompiledGrid, SimulationState
 from .observe import (
@@ -271,6 +275,65 @@ def material_region_for_monitor(simulation, monitor: _Monitor, *, runtime_fields
         permeability_region,
         tuple(origin),
         full_shape,
+    )
+
+
+def _expand_2d_monitor_dft(
+    result: MonitorResults,
+    metadata: SimulationMetadata,
+) -> MonitorResults:
+    """Expand a full-span 2D line monitor's colocated DFT samples."""
+    if metadata.is_3d or not result.dft_fields:
+        return result
+    monitor = result.monitor
+    normal_axis = monitor.plane_normal
+    active_axes = tuple(metadata.plane_2d)
+    tangent_axes = tuple(axis for axis in active_axes if axis != normal_axis)
+    if len(tangent_axes) != 1:
+        return result
+    physical_axis = tangent_axes[0]
+    axis_index = {"x": 0, "y": 1, "z": 2}[physical_axis]
+    parity = metadata.symmetry[axis_index]
+    if not parity:
+        return result
+    extent = (metadata.width, metadata.height, metadata.depth)[axis_index]
+    plane = 0.5 * extent
+    lower = monitor.center[axis_index] - 0.5 * monitor.size[axis_index]
+    upper = monitor.center[axis_index] + 0.5 * monitor.size[axis_index]
+    tolerance = 1e-12 * max(abs(extent), 1.0)
+    if not (lower < plane + tolerance and upper > plane - tolerance):
+        return result
+    full_grid = metadata.full_grid or metadata.grid
+    if full_grid is None:
+        return result
+    grid_x, grid_y, _ = grid_axes_in_physical_frame_2d(metadata.plane_2d)
+    grid_axis = {grid_x: "x", grid_y: "y"}[physical_axis]
+    spacing = float(np.min(full_grid.cell_widths(grid_axis)))
+    desired_count = int(round(float(monitor.size[axis_index]) / spacing)) + 1
+    retained_count = desired_count // 2 + 1
+
+    from beamz.simulation.symmetry import reflection_sign
+
+    def expand_mapping(mapping):
+        expanded = {}
+        for component, values in mapping.items():
+            array = np.asarray(values)
+            if array.shape[-1] == desired_count:
+                retained = array[..., :retained_count]
+            elif array.shape[-1] == retained_count:
+                retained = array
+            else:
+                expanded[component] = array
+                continue
+            reflected = np.flip(retained[..., :-1], axis=-1)
+            reflected = reflection_sign(component, physical_axis, parity) * reflected
+            expanded[component] = np.concatenate((retained, reflected), axis=-1)
+        return expanded
+
+    return replace(
+        result,
+        dft_fields=expand_mapping(result.dft_fields),
+        _raw_dft_fields=expand_mapping(result._raw_dft_fields or result.dft_fields),
     )
 
 
@@ -1151,6 +1214,7 @@ class SimulationResults:
                     for component, values in result.fields.items()
                 }
                 result = replace(result, fields=fields)
+            result = _expand_2d_monitor_dft(result, self.metadata)
             expanded_monitors[name] = result
 
         full_grid = self.metadata.full_grid or self.metadata.grid

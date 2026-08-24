@@ -23,6 +23,7 @@ from beamz.devices._boundary_compile import (
     BoundaryData,
     lower_boundaries,
 )
+from beamz.devices.boundaries import PMC
 from beamz.devices.monitors.compiler import compile_monitor_specs
 from beamz.devices.sources.compiler import compile_source_specs
 from beamz.lattice import (
@@ -864,9 +865,12 @@ def compile_program(
             "CUDA execution currently supports one GPU; use backend='jax' for "
             "multi-device sharding."
         )
-    if requested_backend not in {"auto", "jax"} and any(simulation.symmetry):
+    has_pmc = any(isinstance(boundary, PMC) for boundary in simulation.boundaries)
+    if requested_backend not in {"auto", "jax"} and (
+        any(simulation.symmetry) or has_pmc
+    ):
         raise CudaBackendUnavailable(
-            "CUDA execution does not yet support reduced-domain symmetry; "
+            "CUDA execution does not yet support PMC or reduced-domain symmetry; "
             "use backend='jax'."
         )
     cuda_problem_supported = (
@@ -874,6 +878,7 @@ def compile_program(
         and cuda_material_supported
         and cuda_sharding_supported
         and not any(simulation.symmetry)
+        and not has_pmc
     )
     resolved_backend = (
         "jax"
