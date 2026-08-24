@@ -1193,6 +1193,25 @@ class Simulation:
         """
         # 1. Resolve Design's material raster; numerical boundary lowering belongs to compile.py.
         material_grid = self._material_grid(progress=progress)
+        boundaries = self.boundaries
+        if any(self.symmetry):
+            from beamz.simulation.symmetry import (
+                reduce_material_grid,
+                symmetry_boundaries,
+            )
+
+            material_grid = reduce_material_grid(
+                material_grid,
+                self.symmetry,
+                is_3d=self.is_3d,
+                plane_2d=self.plane_2d,
+            )
+            boundaries = symmetry_boundaries(
+                boundaries,
+                self.symmetry,
+                is_3d=self.is_3d,
+                plane_2d=self.plane_2d,
+            )
         requested_steps = int(self.num_steps if num_steps is None else num_steps)
         # 2. Snapshot grid, run, and domain controls into immutable value objects, then
         # attach normalized sources, monitors, boundaries, and sharding configuration.
@@ -1218,7 +1237,7 @@ class Simulation:
             material_grid,
             tuple(self.sources),
             tuple(self.monitors),
-            tuple(self.boundaries),
+            tuple(boundaries),
             compiler_sharding,
         )
 

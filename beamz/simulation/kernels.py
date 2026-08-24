@@ -563,6 +563,7 @@ def cpml_update_e_from_h_3d(
     terms,
     psi_terms,
     metallic_edges,
+    pmc_edges=frozenset(),
     dt,
     conductivities,
     inverse_permittivities,
@@ -572,7 +573,7 @@ def cpml_update_e_from_h_3d(
 ):
     """Advance 3D E fields and their six packed CPML memories."""
     views = build_h_boundary_views_for_e_3d(
-        hx, hy, hz, metallic_edges, logical_shapes=logical_shapes
+        hx, hy, hz, metallic_edges, pmc_edges, logical_shapes=logical_shapes
     )
     derivatives = (
         ("hz_y", 1, ex.shape),
@@ -638,6 +639,7 @@ def cpml_update_e_from_h_3d_metric(
     terms,
     psi_terms,
     metallic_edges,
+    pmc_edges=frozenset(),
     dt,
     conductivities,
     inverse_permittivities,
@@ -647,7 +649,7 @@ def cpml_update_e_from_h_3d_metric(
 ):
     """Advance 3D E/CPML using physical center-to-center distances."""
     views = build_h_boundary_views_for_e_3d(
-        hx, hy, hz, metallic_edges, logical_shapes=logical_shapes
+        hx, hy, hz, metallic_edges, pmc_edges, logical_shapes=logical_shapes
     )
     derivatives = (
         ("hz_y", 1, metrics.h_to_e_y, ex.shape),
@@ -738,7 +740,9 @@ def tm_xy_curl_e_to_h_2d(ez, resolution, hx_shape, hy_shape, metallic_edges):
     )
 
 
-def _tm_xy_h_derivatives(hx, hy, resolution, metallic_edges):
+def _tm_xy_h_derivatives(
+    hx, hy, resolution, metallic_edges, pmc_edges=frozenset()
+):
     """Return padded H derivatives on the complete Ez node lattice."""
     resolution = _scalar_like(resolution, hy.dtype)
     left, right = hy[:, :1], hy[:, -1:]
@@ -751,6 +755,14 @@ def _tm_xy_h_derivatives(hx, hy, resolution, metallic_edges):
         bottom = jnp.zeros_like(bottom)
     if "top" in metallic_edges:
         top = jnp.zeros_like(top)
+    if "left" in pmc_edges:
+        left = -left
+    if "right" in pmc_edges:
+        right = -right
+    if "bottom" in pmc_edges:
+        bottom = -bottom
+    if "top" in pmc_edges:
+        top = -top
     padded_hy = jnp.concatenate((left, hy, right), axis=1)
     padded_hx = jnp.concatenate((bottom, hx, top), axis=0)
     d_hy_dx = (padded_hy[:, 1:] - padded_hy[:, :-1]) / resolution
@@ -758,9 +770,18 @@ def _tm_xy_h_derivatives(hx, hy, resolution, metallic_edges):
     return d_hy_dx, d_hx_dy
 
 
-def tm_xy_curl_h_to_e_2d(hx, hy, resolution, ez_shape, metallic_edges=frozenset()):
+def tm_xy_curl_h_to_e_2d(
+    hx,
+    hy,
+    resolution,
+    ez_shape,
+    metallic_edges=frozenset(),
+    pmc_edges=frozenset(),
+):
     """Differentiate Hx and Hy onto the native Ez support."""
-    d_hy_dx, d_hx_dy = _tm_xy_h_derivatives(hx, hy, resolution, metallic_edges)
+    d_hy_dx, d_hx_dy = _tm_xy_h_derivatives(
+        hx, hy, resolution, metallic_edges, pmc_edges
+    )
     curl = d_hy_dx - d_hx_dy
     if curl.shape != ez_shape:
         raise ValueError(f"curl(H) shape {curl.shape} does not match Ez {ez_shape}")
@@ -793,12 +814,15 @@ def tm_xy_cpml_curl_h_to_e_2d(
     resolution,
     ez_shape,
     metallic_edges,
+    pmc_edges=frozenset(),
     *,
     terms,
     psi_e_terms,
 ):
     """Correct the two H derivatives with canonical 2D CPML memory."""
-    derivatives = _tm_xy_h_derivatives(hx, hy, resolution, metallic_edges)
+    derivatives = _tm_xy_h_derivatives(
+        hx, hy, resolution, metallic_edges, pmc_edges
+    )
     corrected = tuple(
         correct_cpml_term(derivative, psi, term)
         for derivative, psi, term in zip(derivatives, psi_e_terms, terms, strict=True)
@@ -820,7 +844,7 @@ def te_xy_curl_e_to_h_2d(ex, ey, resolution, hz_shape):
     return curl
 
 
-def _te_xy_h_derivatives(hz, resolution, metallic_edges):
+def _te_xy_h_derivatives(hz, resolution, metallic_edges, pmc_edges=frozenset()):
     """Return padded Hz derivatives on the complete Ex and Ey supports."""
     resolution = _scalar_like(resolution, hz.dtype)
     bottom, top = hz[:1, :], hz[-1:, :]
@@ -833,6 +857,14 @@ def _te_xy_h_derivatives(hz, resolution, metallic_edges):
         left = jnp.zeros_like(left)
     if "right" in metallic_edges:
         right = jnp.zeros_like(right)
+    if "bottom" in pmc_edges:
+        bottom = -bottom
+    if "top" in pmc_edges:
+        top = -top
+    if "left" in pmc_edges:
+        left = -left
+    if "right" in pmc_edges:
+        right = -right
     padded_y = jnp.concatenate((bottom, hz, top), axis=0)
     padded_x = jnp.concatenate((left, hz, right), axis=1)
     return (
@@ -841,9 +873,18 @@ def _te_xy_h_derivatives(hz, resolution, metallic_edges):
     )
 
 
-def te_xy_curl_h_to_e_2d(hz, resolution, ex_shape, ey_shape, metallic_edges):
+def te_xy_curl_h_to_e_2d(
+    hz,
+    resolution,
+    ex_shape,
+    ey_shape,
+    metallic_edges,
+    pmc_edges=frozenset(),
+):
     """Differentiate Hz onto the canonical Ex and Ey supports."""
-    d_hz_dy, d_hz_dx = _te_xy_h_derivatives(hz, resolution, metallic_edges)
+    d_hz_dy, d_hz_dx = _te_xy_h_derivatives(
+        hz, resolution, metallic_edges, pmc_edges
+    )
     curls = d_hz_dy, -d_hz_dx
     if curls[0].shape != ex_shape or curls[1].shape != ey_shape:
         raise ValueError(
@@ -867,9 +908,17 @@ def te_xy_cpml_curl_e_to_h_2d(ex, ey, resolution, *, terms, psi_h_terms):
     return corrected[0][0] + corrected[1][0], tuple(item[1] for item in corrected)
 
 
-def te_xy_cpml_curl_h_to_e_2d(hz, resolution, metallic_edges, *, terms, psi_e_terms):
+def te_xy_cpml_curl_h_to_e_2d(
+    hz,
+    resolution,
+    metallic_edges,
+    pmc_edges=frozenset(),
+    *,
+    terms,
+    psi_e_terms,
+):
     """Correct the Hz derivatives used by the Ex and Ey updates."""
-    derivatives = _te_xy_h_derivatives(hz, resolution, metallic_edges)
+    derivatives = _te_xy_h_derivatives(hz, resolution, metallic_edges, pmc_edges)
     corrected = tuple(
         correct_cpml_term(derivative, psi, term)
         for derivative, psi, term in zip(derivatives, psi_e_terms, terms, strict=True)
@@ -885,7 +934,9 @@ def tm_xy_curl_e_to_h_2d_metric(ez, metrics):
     )
 
 
-def _tm_xy_h_derivatives_metric(hx, hy, metrics, metallic_edges):
+def _tm_xy_h_derivatives_metric(
+    hx, hy, metrics, metallic_edges, pmc_edges=frozenset()
+):
     left, right = hy[:, :1], hy[:, -1:]
     bottom, top = hx[:1, :], hx[-1:, :]
     if "left" in metallic_edges:
@@ -896,6 +947,14 @@ def _tm_xy_h_derivatives_metric(hx, hy, metrics, metallic_edges):
         bottom = jnp.zeros_like(bottom)
     if "top" in metallic_edges:
         top = jnp.zeros_like(top)
+    if "left" in pmc_edges:
+        left = -left
+    if "right" in pmc_edges:
+        right = -right
+    if "bottom" in pmc_edges:
+        bottom = -bottom
+    if "top" in pmc_edges:
+        top = -top
     padded_hy = jnp.concatenate((left, hy, right), axis=1)
     padded_hx = jnp.concatenate((bottom, hx, top), axis=0)
     return (
@@ -904,9 +963,13 @@ def _tm_xy_h_derivatives_metric(hx, hy, metrics, metallic_edges):
     )
 
 
-def tm_xy_curl_h_to_e_2d_metric(hx, hy, metrics, ez_shape, metallic_edges):
+def tm_xy_curl_h_to_e_2d_metric(
+    hx, hy, metrics, ez_shape, metallic_edges, pmc_edges=frozenset()
+):
     """Differentiate H onto Ez using physical center-to-center distances."""
-    d_hy_dx, d_hx_dy = _tm_xy_h_derivatives_metric(hx, hy, metrics, metallic_edges)
+    d_hy_dx, d_hx_dy = _tm_xy_h_derivatives_metric(
+        hx, hy, metrics, metallic_edges, pmc_edges
+    )
     curl = d_hy_dx - d_hx_dy
     if curl.shape != ez_shape:
         raise ValueError(f"curl(H) shape {curl.shape} does not match Ez {ez_shape}")
@@ -931,11 +994,14 @@ def tm_xy_cpml_curl_h_to_e_2d_metric(
     metrics,
     ez_shape,
     metallic_edges,
+    pmc_edges=frozenset(),
     *,
     terms,
     psi_e_terms,
 ):
-    derivatives = _tm_xy_h_derivatives_metric(hx, hy, metrics, metallic_edges)
+    derivatives = _tm_xy_h_derivatives_metric(
+        hx, hy, metrics, metallic_edges, pmc_edges
+    )
     corrected = tuple(
         correct_cpml_term(derivative, psi, term)
         for derivative, psi, term in zip(derivatives, psi_e_terms, terms, strict=True)
@@ -957,7 +1023,7 @@ def te_xy_curl_e_to_h_2d_metric(ex, ey, metrics, hz_shape):
     return curl
 
 
-def _te_xy_h_derivatives_metric(hz, metrics, metallic_edges):
+def _te_xy_h_derivatives_metric(hz, metrics, metallic_edges, pmc_edges=frozenset()):
     bottom, top = hz[:1, :], hz[-1:, :]
     left, right = hz[:, :1], hz[:, -1:]
     if "bottom" in metallic_edges:
@@ -968,6 +1034,14 @@ def _te_xy_h_derivatives_metric(hz, metrics, metallic_edges):
         left = jnp.zeros_like(left)
     if "right" in metallic_edges:
         right = jnp.zeros_like(right)
+    if "bottom" in pmc_edges:
+        bottom = -bottom
+    if "top" in pmc_edges:
+        top = -top
+    if "left" in pmc_edges:
+        left = -left
+    if "right" in pmc_edges:
+        right = -right
     padded_y = jnp.concatenate((bottom, hz, top), axis=0)
     padded_x = jnp.concatenate((left, hz, right), axis=1)
     return (
@@ -976,8 +1050,12 @@ def _te_xy_h_derivatives_metric(hz, metrics, metallic_edges):
     )
 
 
-def te_xy_curl_h_to_e_2d_metric(hz, metrics, ex_shape, ey_shape, metallic_edges):
-    d_hz_dy, d_hz_dx = _te_xy_h_derivatives_metric(hz, metrics, metallic_edges)
+def te_xy_curl_h_to_e_2d_metric(
+    hz, metrics, ex_shape, ey_shape, metallic_edges, pmc_edges=frozenset()
+):
+    d_hz_dy, d_hz_dx = _te_xy_h_derivatives_metric(
+        hz, metrics, metallic_edges, pmc_edges
+    )
     curls = d_hz_dy, -d_hz_dx
     if curls[0].shape != ex_shape or curls[1].shape != ey_shape:
         raise ValueError(
@@ -1000,9 +1078,15 @@ def te_xy_cpml_curl_e_to_h_2d_metric(ex, ey, metrics, *, terms, psi_h_terms):
 
 
 def te_xy_cpml_curl_h_to_e_2d_metric(
-    hz, metrics, metallic_edges, *, terms, psi_e_terms
+    hz,
+    metrics,
+    metallic_edges,
+    pmc_edges=frozenset(),
+    *,
+    terms,
+    psi_e_terms,
 ):
-    derivatives = _te_xy_h_derivatives_metric(hz, metrics, metallic_edges)
+    derivatives = _te_xy_h_derivatives_metric(hz, metrics, metallic_edges, pmc_edges)
     corrected = tuple(
         correct_cpml_term(derivative, psi, term)
         for derivative, psi, term in zip(derivatives, psi_e_terms, terms, strict=True)
@@ -1132,6 +1216,7 @@ def update_e_3d_cpml(eng, ctx, coeffs):
         terms=cpml.e_terms,
         psi_terms=eng.cpml_psi_e_terms,
         metallic_edges=cpml.metallic_edges,
+        pmc_edges=ctx.boundary.pmc_edges,
         dt=ctx.dt_scalar,
         conductivities=(
             coeffs.e_conductivity_x,
@@ -1180,6 +1265,7 @@ def update_e_3d_yee(eng, ctx, coeffs):
         eng.hy,
         eng.hz,
         ctx.boundary.cpml.metallic_edges,
+        ctx.boundary.pmc_edges,
         logical_shapes=ctx.boundary.logical_component_shapes,
     )
     ex, ey, ez = fused_update_e_lossy_3d_material(
@@ -1271,6 +1357,7 @@ def update_e_2d_tm_xy(eng, ctx, coeffs):
         ctx.resolution,
         eng.ez.shape,
         ctx.boundary.metallic_edges_2d,
+        ctx.boundary.pmc_edges,
     )
     return _update_e_tm_from_curl(eng, ctx, coeffs, curl_ez)
 
@@ -1284,6 +1371,7 @@ def update_e_2d_tm_xy_cpml(eng, ctx, coeffs):
         ctx.resolution,
         eng.ez.shape,
         ctx.boundary.metallic_edges_2d,
+        ctx.boundary.pmc_edges,
         terms=cpml.e_terms,
         psi_e_terms=eng.cpml_psi_e_terms,
     )
@@ -1340,6 +1428,7 @@ def update_e_2d_te_xy(eng, ctx, coeffs):
         eng.ex.shape,
         eng.ey.shape,
         ctx.boundary.metallic_edges_2d,
+        ctx.boundary.pmc_edges,
     )
     return _update_e_te_from_curls(eng, ctx, coeffs, curls)
 
@@ -1349,6 +1438,7 @@ def update_e_2d_te_xy_cpml(eng, ctx, coeffs):
         eng.hz,
         ctx.resolution,
         ctx.boundary.metallic_edges_2d,
+        ctx.boundary.pmc_edges,
         terms=ctx.boundary.cpml.e_terms,
         psi_e_terms=eng.cpml_psi_e_terms,
     )
@@ -1390,6 +1480,7 @@ def update_e_3d_cpml_metric(eng, ctx, coeffs):
         terms=cpml.e_terms,
         psi_terms=eng.cpml_psi_e_terms,
         metallic_edges=cpml.metallic_edges,
+        pmc_edges=ctx.boundary.pmc_edges,
         dt=ctx.dt_scalar,
         conductivities=(
             coeffs.e_conductivity_x,
@@ -1441,6 +1532,7 @@ def update_e_3d_yee_metric(eng, ctx, coeffs):
         eng.hy,
         eng.hz,
         ctx.boundary.cpml.metallic_edges,
+        ctx.boundary.pmc_edges,
         logical_shapes=ctx.boundary.logical_component_shapes,
     )
     ex, ey, ez = fused_update_e_lossy_3d_material_metric(
@@ -1487,6 +1579,7 @@ def update_e_2d_tm_xy_metric(eng, ctx, coeffs):
         ctx.metrics,
         eng.ez.shape,
         ctx.boundary.metallic_edges_2d,
+        ctx.boundary.pmc_edges,
     )
     return _update_e_tm_from_curl(eng, ctx, coeffs, curl)
 
@@ -1508,6 +1601,7 @@ def update_e_2d_tm_xy_cpml_metric(eng, ctx, coeffs):
         ctx.metrics,
         eng.ez.shape,
         ctx.boundary.metallic_edges_2d,
+        ctx.boundary.pmc_edges,
         terms=ctx.boundary.cpml.e_terms,
         psi_e_terms=eng.cpml_psi_e_terms,
     )
@@ -1526,6 +1620,7 @@ def update_e_2d_te_xy_metric(eng, ctx, coeffs):
         eng.ex.shape,
         eng.ey.shape,
         ctx.boundary.metallic_edges_2d,
+        ctx.boundary.pmc_edges,
     )
     return _update_e_te_from_curls(eng, ctx, coeffs, curls)
 
@@ -1546,6 +1641,7 @@ def update_e_2d_te_xy_cpml_metric(eng, ctx, coeffs):
         eng.hz,
         ctx.metrics,
         ctx.boundary.metallic_edges_2d,
+        ctx.boundary.pmc_edges,
         terms=ctx.boundary.cpml.e_terms,
         psi_e_terms=eng.cpml_psi_e_terms,
     )

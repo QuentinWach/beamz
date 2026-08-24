@@ -64,6 +64,7 @@ EXPECTED_EXPORTS = {
         "RunTermination",
         "PML",
         "PEC",
+        "PMC",
         "Absorber",
         "display_status",
         "create_plain_progress",
@@ -157,6 +158,7 @@ EXPECTED_EXPORTS = {
         "inf",
         "PML",
         "PEC",
+        "PMC",
         "Absorber",
     ),
 }

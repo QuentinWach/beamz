@@ -14,6 +14,7 @@ from beamz.const import EPS_0, MU_0
 from beamz.design.discretization import MaterialGrid
 from beamz.devices.boundaries import (
     PEC,
+    PMC,
     PML,
     Absorber,
     edges_for_dimension,
@@ -71,6 +72,7 @@ class BoundaryData:
     profiles: Mapping[str, Any] | None
     masks: Mapping[str, Any]
     metallic_edges: frozenset[str]
+    pmc_edges: frozenset[str]
 
 
 class _ComponentSupport:
@@ -113,6 +115,18 @@ def resolve_metallic_edges(boundaries, is_3d: bool) -> frozenset[str]:
         else:
             metallic.difference_update(edges)
     return frozenset(metallic)
+
+
+def resolve_pmc_edges(boundaries, is_3d: bool) -> frozenset[str]:
+    """Apply boundary precedence and return faces using PMC-like parity."""
+    pmc: set[str] = set()
+    for boundary in normalize_boundaries(boundaries):
+        edges = edges_for_dimension(boundary.edges, bool(is_3d))
+        if isinstance(boundary, PMC):
+            pmc.update(edges)
+        else:
+            pmc.difference_update(edges)
+    return frozenset(pmc)
 
 
 def compile_metallic_masks(
@@ -870,4 +884,5 @@ def lower_boundaries(
             polarization_2d=polarization_2d,
         ),
         resolve_metallic_edges(boundaries, len(material_grid.shape) == 3),
+        resolve_pmc_edges(boundaries, len(material_grid.shape) == 3),
     )

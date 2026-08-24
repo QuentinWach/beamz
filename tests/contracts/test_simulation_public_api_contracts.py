@@ -22,6 +22,7 @@ STABLE_SIMULATION_EXPORTS = {
     "ModeSpec",
     "MonitorResults",
     "PEC",
+    "PMC",
     "PML",
     "Port",
     "RunTermination",
@@ -84,6 +85,7 @@ def test_public_specs_have_consistent_reexports():
     assert beamz.GaussianPulse is simulation.GaussianPulse is sources.GaussianPulse
     assert beamz.ModeSpec is simulation.ModeSpec is sources.ModeSpec
     assert beamz.PEC is simulation.PEC is devices.PEC
+    assert beamz.PMC is simulation.PMC is devices.PMC
     assert beamz.PML is simulation.PML is devices.PML
     assert beamz.Absorber is simulation.Absorber is devices.Absorber
     assert hasattr(design, "MaterialGrid")
@@ -104,6 +106,7 @@ def test_public_simulation_methods_have_reference_docstrings():
         simulation.GaussianPulse,
         simulation.ModeSpec,
         simulation.PEC,
+        simulation.PMC,
         simulation.PML,
         simulation.Absorber,
     )

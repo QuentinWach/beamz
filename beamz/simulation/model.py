@@ -486,6 +486,7 @@ class CpmlPlan:
 @dataclass(frozen=True, slots=True, eq=False)
 class BoundaryPlan:
     metallic_edges_2d: frozenset[str]
+    pmc_edges: frozenset[str]
     cpml: CpmlPlan
     metallic: MetallicPlan
     logical_component_shapes: Mapping[str, tuple[int, ...]]
