@@ -46,6 +46,7 @@ class DomainSpec:
     plane_2d: str
     coordinate_offset: tuple[float, float, float]
     polarization_2d: str = "tm"
+    symmetry: tuple[int, int, int] = (0, 0, 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,6 +486,7 @@ class CpmlPlan:
 @dataclass(frozen=True, slots=True, eq=False)
 class BoundaryPlan:
     metallic_edges_2d: frozenset[str]
+    pmc_edges: frozenset[str]
     cpml: CpmlPlan
     metallic: MetallicPlan
     logical_component_shapes: Mapping[str, tuple[int, ...]]

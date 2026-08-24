@@ -13,6 +13,7 @@ import pytest
 import beamz.simulation.api as simulation_core
 from beamz import (
     PEC,
+    PMC,
     PML,
     Absorber,
     Box,
@@ -734,7 +735,9 @@ def test_boundaries_are_canonical_immutable_request_specs():
 
     boundaries = sim.to_request().boundaries
     assert boundaries == tuple(sim.boundaries)
-    assert all(isinstance(boundary, (PEC, PML, Absorber)) for boundary in boundaries)
+    assert all(
+        isinstance(boundary, (PEC, PMC, PML, Absorber)) for boundary in boundaries
+    )
     assert isinstance(hash(boundaries[0]), int)
 
 

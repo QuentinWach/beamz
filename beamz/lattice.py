@@ -521,7 +521,12 @@ def metric_adjacent_difference(array, axis, inverse_distance):
 
 
 def _pad_with_boundary_ghosts(
-    array, axis, metallic_edges, *, logical_size: int | None = None
+    array,
+    axis,
+    metallic_edges,
+    pmc_edges=frozenset(),
+    *,
+    logical_size: int | None = None,
 ):
     logical_size = int(array.shape[axis]) if logical_size is None else int(logical_size)
     if logical_size <= 0 or logical_size > int(array.shape[axis]):
@@ -540,19 +545,33 @@ def _pad_with_boundary_ghosts(
     low_edge, high_edge = (("front", "back"), ("bottom", "top"), ("left", "right"))[
         axis
     ]
+    low_sample = jnp.take(physical, jnp.array([0]), axis)
+    high_sample = jnp.take(physical, jnp.array([logical_size - 1]), axis)
     low = (
-        zero if low_edge in metallic_edges else jnp.take(physical, jnp.array([0]), axis)
+        zero
+        if low_edge in metallic_edges
+        else -low_sample
+        if low_edge in pmc_edges
+        else low_sample
     )
     high = (
         zero
         if high_edge in metallic_edges
-        else jnp.take(physical, jnp.array([logical_size - 1]), axis)
+        else -high_sample
+        if high_edge in pmc_edges
+        else high_sample
     )
     return jnp.concatenate((low, physical, high, storage_padding), axis=axis)
 
 
 def build_h_boundary_views_for_e_3d(
-    hx, hy, hz, metallic_edges=frozenset(), *, logical_shapes=None
+    hx,
+    hy,
+    hz,
+    metallic_edges=frozenset(),
+    pmc_edges=frozenset(),
+    *,
+    logical_shapes=None,
 ):
     """Create the six ghost-padded H views consumed by the 3D E curl."""
     return {
@@ -560,6 +579,7 @@ def build_h_boundary_views_for_e_3d(
             field,
             axis,
             metallic_edges,
+            pmc_edges,
             logical_size=(
                 None if logical_shapes is None else logical_shapes[component][axis]
             ),

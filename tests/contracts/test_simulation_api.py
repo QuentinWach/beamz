@@ -61,6 +61,36 @@ def test_simulation_rejects_invalid_plane_and_resolution():
             _simulation(grid_spec=GridSpec.uniform(resolution))
 
 
+def test_simulation_symmetry_is_immutable_validated_and_part_of_request():
+    sim = _simulation(symmetry=(1, -1, 0))
+
+    assert sim.symmetry == (1, -1, 0)
+    assert sim.to_request().domain.symmetry == (1, -1, 0)
+    assert sim.updated_copy(symmetry=(0, 1, 0)).symmetry == (0, 1, 0)
+    assert sim != _simulation(symmetry=(0, 0, 0))
+
+    for invalid in (
+        (0, 0),
+        (0, 0, 0, 0),
+        (0, 2, 0),
+        (0, 0.5, 0),
+        (0, True, 0),
+        "bad",
+    ):
+        with pytest.raises(ValueError, match="symmetry.*three values"):
+            _simulation(symmetry=invalid)
+
+
+def test_2d_symmetry_rejects_inactive_physical_axis():
+    with pytest.raises(ValueError, match="inactive z-axis"):
+        _simulation(symmetry=(0, 0, 1))
+
+    xz = _simulation(plane_2d="xz", symmetry=(1, 0, -1))
+    assert xz.symmetry == (1, 0, -1)
+    with pytest.raises(ValueError, match="inactive y-axis"):
+        _simulation(plane_2d="xz", symmetry=(0, 1, 0))
+
+
 def test_simulation_rejects_conflicting_or_invalid_time_specifications():
     with pytest.raises(ValueError, match="only one of time.*run_time"):
         _simulation(run_time=1e-15)

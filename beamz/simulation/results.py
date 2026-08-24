@@ -15,8 +15,12 @@ from beamz.design.grid import RectilinearGrid
 from beamz.devices._immutable import immutable_snapshot, readonly_array
 from beamz.devices._placement import SnappedRegion
 from beamz.devices.monitors.compiler import CompiledMonitorSpec
-from beamz.devices.monitors.monitors import _Monitor
-from beamz.lattice import canonical_component_2d
+from beamz.devices.monitors.monitors import FieldRecorder, _Monitor
+from beamz.lattice import (
+    canonical_component_2d,
+    component_shapes,
+    grid_axes_in_physical_frame_2d,
+)
 
 from .model import CompiledGrid, SimulationState
 from .observe import (
@@ -274,6 +278,65 @@ def material_region_for_monitor(simulation, monitor: _Monitor, *, runtime_fields
     )
 
 
+def _expand_2d_monitor_dft(
+    result: MonitorResults,
+    metadata: SimulationMetadata,
+) -> MonitorResults:
+    """Expand a full-span 2D line monitor's colocated DFT samples."""
+    if metadata.is_3d or not result.dft_fields:
+        return result
+    monitor = result.monitor
+    normal_axis = monitor.plane_normal
+    active_axes = tuple(metadata.plane_2d)
+    tangent_axes = tuple(axis for axis in active_axes if axis != normal_axis)
+    if len(tangent_axes) != 1:
+        return result
+    physical_axis = tangent_axes[0]
+    axis_index = {"x": 0, "y": 1, "z": 2}[physical_axis]
+    parity = metadata.symmetry[axis_index]
+    if not parity:
+        return result
+    extent = (metadata.width, metadata.height, metadata.depth)[axis_index]
+    plane = 0.5 * extent
+    lower = monitor.center[axis_index] - 0.5 * monitor.size[axis_index]
+    upper = monitor.center[axis_index] + 0.5 * monitor.size[axis_index]
+    tolerance = 1e-12 * max(abs(extent), 1.0)
+    if not (lower < plane + tolerance and upper > plane - tolerance):
+        return result
+    full_grid = metadata.full_grid or metadata.grid
+    if full_grid is None:
+        return result
+    grid_x, grid_y, _ = grid_axes_in_physical_frame_2d(metadata.plane_2d)
+    grid_axis = {grid_x: "x", grid_y: "y"}[physical_axis]
+    spacing = float(np.min(full_grid.cell_widths(grid_axis)))
+    desired_count = int(round(float(monitor.size[axis_index]) / spacing)) + 1
+    retained_count = desired_count // 2 + 1
+
+    from beamz.simulation.symmetry import reflection_sign
+
+    def expand_mapping(mapping):
+        expanded = {}
+        for component, values in mapping.items():
+            array = np.asarray(values)
+            if array.shape[-1] == desired_count:
+                retained = array[..., :retained_count]
+            elif array.shape[-1] == retained_count:
+                retained = array
+            else:
+                expanded[component] = array
+                continue
+            reflected = np.flip(retained[..., :-1], axis=-1)
+            reflected = reflection_sign(component, physical_axis, parity) * reflected
+            expanded[component] = np.concatenate((retained, reflected), axis=-1)
+        return expanded
+
+    return replace(
+        result,
+        dft_fields=expand_mapping(result.dft_fields),
+        _raw_dft_fields=expand_mapping(result._raw_dft_fields or result.dft_fields),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FieldMetadata:
     """Describe stored field-array shapes and optional material data.
@@ -361,6 +424,12 @@ class SimulationMetadata:
     grid : RectilinearGrid, optional
         Exact physical grid used by the simulation. Older manually constructed
         metadata may omit it and fall back to ``resolution``.
+    symmetry : tuple of int
+        Reflection parity used by the reduced simulation in physical x/y/z order.
+    symmetry_center : tuple of float
+        Public coordinates of the three domain-center reflection planes.
+    full_grid : RectilinearGrid, optional
+        Original full-domain grid retained when ``grid`` is symmetry-reduced.
 
     Notes
     -----
@@ -381,12 +450,21 @@ class SimulationMetadata:
     fields: FieldMetadata
     polarization_2d: str = "tm"
     grid: RectilinearGrid | None = None
+    symmetry: tuple[int, int, int] = (0, 0, 0)
+    symmetry_center: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    full_grid: RectilinearGrid | None = None
 
     def __post_init__(self):
         if not isinstance(self.fields, FieldMetadata):
             raise TypeError("SimulationMetadata.fields must be FieldMetadata.")
         if self.grid is not None and not isinstance(self.grid, RectilinearGrid):
             raise TypeError("SimulationMetadata.grid must be RectilinearGrid or None.")
+        if self.full_grid is not None and not isinstance(
+            self.full_grid, RectilinearGrid
+        ):
+            raise TypeError(
+                "SimulationMetadata.full_grid must be a RectilinearGrid or None."
+            )
         offset = tuple(float(value) for value in self.coordinate_offset)
         if len(offset) != 3:
             raise ValueError(
@@ -410,6 +488,18 @@ class SimulationMetadata:
         object.__setattr__(self, "plane_2d", plane_2d)
         object.__setattr__(self, "polarization_2d", polarization_2d)
         object.__setattr__(self, "coordinate_offset", offset)
+        symmetry = tuple(int(value) for value in self.symmetry)
+        if len(symmetry) != 3 or any(value not in {-1, 0, 1} for value in symmetry):
+            raise ValueError(
+                "SimulationMetadata.symmetry must contain three parity values."
+            )
+        center = tuple(float(value) for value in self.symmetry_center)
+        if len(center) != 3 or not np.all(np.isfinite(center)):
+            raise ValueError(
+                "SimulationMetadata.symmetry_center must be a finite 3-tuple."
+            )
+        object.__setattr__(self, "symmetry", symmetry)
+        object.__setattr__(self, "symmetry_center", center)
         object.__setattr__(self, "time", time)
 
     def canonical_spec(self):
@@ -433,6 +523,9 @@ class SimulationMetadata:
             self.depth,
             self.fields,
             self.grid,
+            self.symmetry,
+            self.symmetry_center,
+            self.full_grid,
         )
 
     def __eq__(self, other):
@@ -486,6 +579,10 @@ class SimulationMetadata:
         fields = runtime_fields
         design = simulation.design
         offset = simulation.coordinate_offset
+        simulation_grid = simulation.grid
+        full_grid = simulation_grid.translated(
+            tuple(-value for value in simulation_grid.origin)
+        )
         grid_shape = tuple(int(v) for v in np.asarray(fields.permittivity).shape)
         components = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
         component_shapes = {}
@@ -530,6 +627,12 @@ class SimulationMetadata:
             # Field arrays are indexed on the compiler's normalized geometry. Imported
             # material grids may retain a nonzero public origin on ``simulation.grid``.
             grid=runtime_fields.geometry,
+            symmetry=simulation.symmetry,
+            symmetry_center=tuple(
+                0.5 * size - shift
+                for size, shift in zip(simulation.size, offset, strict=True)
+            ),
+            full_grid=full_grid,
         )
 
 
@@ -1069,6 +1172,116 @@ class SimulationResults:
             If ``name`` is absent from :attr:`monitors`.
         """
         return self.monitors[str(name)]
+
+    @property
+    def symmetry_expanded(self) -> SimulationResults:
+        """Return domain field recordings reconstructed across mirror planes.
+
+        Full-domain :class:`FieldRecorder` arrays are reflected with the vectorial
+        electric/magnetic component signs implied by the originating simulation.
+        Scalar material arrays are mirrored evenly. Integrated monitor quantities
+        remain unchanged because they represent physical acquisitions rather than
+        stored field support.
+
+        Returns
+        -------
+        SimulationResults
+            Result view whose domain recordings and spatial metadata cover the
+            original full simulation domain.
+        """
+        symmetry = self.metadata.symmetry
+        if not any(symmetry):
+            return self
+
+        from beamz.simulation.symmetry import expand_cell_array, expand_field_array
+
+        expanded_monitors = {}
+        for name, result in self.monitors.items():
+            monitor = result.monitor
+            if (
+                isinstance(monitor, FieldRecorder)
+                and monitor.region == "domain"
+                and result.fields
+            ):
+                fields = {
+                    component: expand_field_array(
+                        values,
+                        component,
+                        symmetry,
+                        is_3d=self.metadata.is_3d,
+                        plane_2d=self.metadata.plane_2d,
+                    )
+                    for component, values in result.fields.items()
+                }
+                result = replace(result, fields=fields)
+            result = _expand_2d_monitor_dft(result, self.metadata)
+            expanded_monitors[name] = result
+
+        full_grid = self.metadata.full_grid or self.metadata.grid
+        if full_grid is None:
+            raise RuntimeError(
+                "Symmetry expansion requires the original full-domain grid."
+            )
+        full_shape = (
+            full_grid.shape_zyx
+            if self.metadata.is_3d
+            else (full_grid.shape[1], full_grid.shape[0])
+        )
+        canonical_shapes = component_shapes(full_shape, self.metadata.polarization_2d)
+        public_shapes = {}
+        for component in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+            canonical = (
+                component
+                if self.metadata.is_3d
+                else canonical_component_2d(
+                    component,
+                    self.metadata.plane_2d,
+                    self.metadata.polarization_2d,
+                )
+            )
+            public_shapes[component] = (
+                (1, 1) if canonical is None else canonical_shapes[canonical]
+            )
+        materials = self.metadata.fields.materials
+        if materials is not None:
+            materials = MaterialRegion(
+                expand_cell_array(
+                    materials.permittivity,
+                    symmetry,
+                    is_3d=self.metadata.is_3d,
+                    plane_2d=self.metadata.plane_2d,
+                ),
+                expand_cell_array(
+                    materials.permeability,
+                    symmetry,
+                    is_3d=self.metadata.is_3d,
+                    plane_2d=self.metadata.plane_2d,
+                ),
+                (0,) * len(full_shape),
+                full_shape,
+            )
+        metadata = replace(
+            self.metadata,
+            symmetry=(0, 0, 0),
+            grid=full_grid,
+            fields=FieldMetadata(
+                grid_shape=full_shape,
+                component_shapes=public_shapes,
+                materials=materials,
+            ),
+        )
+        return replace(self, metadata=metadata, monitors=expanded_monitors)
+
+    @property
+    def symmetry_expanded_copy(self) -> SimulationResults:
+        """Return an explicit immutable copy with mirror symmetry expanded.
+
+        Returns
+        -------
+        SimulationResults
+            Expanded result detached from this result container.
+        """
+        return replace(self.symmetry_expanded)
 
     def launched_power(self, source: int = 0) -> float:
         """Return the internally calibrated net power leaving a mode source.

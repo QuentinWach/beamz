@@ -1,12 +1,13 @@
 import pytest
 
-from beamz import PEC, PML, Absorber
+from beamz import PEC, PMC, PML, Absorber
 
 pytestmark = pytest.mark.unit
 
 
 def test_pec_thickness_is_zero_for_api_parity():
     assert PEC().thickness == pytest.approx(0.0)
+    assert PMC().thickness == pytest.approx(0.0)
 
 
 def test_pec_all_edges_resolve_by_dimensionality():
@@ -33,7 +34,7 @@ def test_pec_explicit_edges_are_preserved():
     assert pec._get_edges_for_dimensionality(True) == ["left", "front"]
 
 
-@pytest.mark.parametrize("boundary_type", [PEC, PML, Absorber])
+@pytest.mark.parametrize("boundary_type", [PEC, PMC, PML, Absorber])
 def test_boundary_edges_are_normalized_and_validated(boundary_type):
     boundary = boundary_type(edges=["LEFT", "Top"])
     assert boundary.edges == ("left", "top")
@@ -42,7 +43,7 @@ def test_boundary_edges_are_normalized_and_validated(boundary_type):
         boundary_type(edges=["lef"])
 
 
-@pytest.mark.parametrize("boundary_type", [PEC, PML, Absorber])
+@pytest.mark.parametrize("boundary_type", [PEC, PMC, PML, Absorber])
 def test_out_of_plane_boundary_edges_require_3d(boundary_type):
     boundary = boundary_type(edges=["front"])
 

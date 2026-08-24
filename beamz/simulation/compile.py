@@ -23,6 +23,7 @@ from beamz.devices._boundary_compile import (
     BoundaryData,
     lower_boundaries,
 )
+from beamz.devices.boundaries import PMC
 from beamz.devices.monitors.compiler import compile_monitor_specs
 from beamz.devices.sources.compiler import compile_source_specs
 from beamz.lattice import (
@@ -70,6 +71,7 @@ class CompiledProgramKey:
     is_3d: bool
     plane_2d: str
     polarization_2d: str
+    symmetry: tuple[int, int, int]
     loop_kind: str
     source_single_slab_dense: bool
     backend: str
@@ -91,6 +93,7 @@ class CompiledProgramKey:
             request.domain.is_3d,
             request.domain.plane_2d,
             request.domain.polarization_2d,
+            request.domain.symmetry,
             request.run.loop_kind,
             request.run.source_single_slab_dense,
             request.run.backend,
@@ -524,6 +527,7 @@ def _compile_boundary(fields, cpml, boundary_data, *, is_3d: bool) -> BoundaryPl
     masks = fields.metallic_masks
     return BoundaryPlan(
         metallic_edges_2d=(frozenset() if is_3d else boundary_data.metallic_edges),
+        pmc_edges=boundary_data.pmc_edges,
         cpml=cpml,
         metallic=MetallicPlan(
             masks["Ex"],
@@ -544,7 +548,7 @@ def compile_simulation(request: SimulationRequest) -> CompiledProgram:
         request.materials,
         component_shapes(request.materials.shape, request.domain.polarization_2d),
         request.boundaries,
-        request.domain.size,
+        request.materials.grid.extent,
         request.run.dt,
         polarization_2d=request.domain.polarization_2d,
     )
@@ -861,8 +865,20 @@ def compile_program(
             "CUDA execution currently supports one GPU; use backend='jax' for "
             "multi-device sharding."
         )
+    has_pmc = any(isinstance(boundary, PMC) for boundary in simulation.boundaries)
+    if requested_backend not in {"auto", "jax"} and (
+        any(simulation.symmetry) or has_pmc
+    ):
+        raise CudaBackendUnavailable(
+            "CUDA execution does not yet support PMC or reduced-domain symmetry; "
+            "use backend='jax'."
+        )
     cuda_problem_supported = (
-        cuda_grid_supported and cuda_material_supported and cuda_sharding_supported
+        cuda_grid_supported
+        and cuda_material_supported
+        and cuda_sharding_supported
+        and not any(simulation.symmetry)
+        and not has_pmc
     )
     resolved_backend = (
         "jax"

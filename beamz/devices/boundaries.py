@@ -94,6 +94,42 @@ class PEC:
 
 
 @dataclass(frozen=True, slots=True)
+class PMC:
+    """Request perfect-magnetic-conductor behavior on domain edges.
+
+    PMC is primarily useful as the even-parity counterpart of a PEC-like mirror
+    plane. It enforces the corresponding vector-field reflection parity at the
+    selected domain faces.
+    """
+
+    edges: BoundaryEdges = "all"
+    thickness: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "edges", normalize_edges(self.edges))
+        object.__setattr__(self, "thickness", 0.0)
+
+    def updated_copy(self, **changes):
+        """Return a validated boundary with selected fields replaced.
+
+        Parameters
+        ----------
+        **changes : object
+            Dataclass fields to replace.
+
+        Returns
+        -------
+        PMC
+            New immutable boundary specification.
+        """
+        return replace(self, **changes)
+
+    def _get_edges_for_dimensionality(self, is_3d):
+        """Compatibility adapter for low-level callers."""
+        return list(edges_for_dimension(self.edges, bool(is_3d)))
+
+
+@dataclass(frozen=True, slots=True)
 class PML:
     """Request a graded absorbing layer on selected domain edges.
 
@@ -263,17 +299,17 @@ class Absorber:
         return list(edges_for_dimension(self.edges, bool(is_3d)))
 
 
-Boundary = PEC | PML | Absorber
+Boundary = PEC | PMC | PML | Absorber
 
 
 def normalize_boundaries(boundaries) -> tuple[Boundary, ...]:
     """Freeze boundary input and preserve Beamz's historical all-PEC default."""
     resolved = tuple(boundaries) if boundaries else (PEC(),)
-    if not all(isinstance(boundary, (PEC, PML, Absorber)) for boundary in resolved):
+    if not all(isinstance(boundary, (PEC, PMC, PML, Absorber)) for boundary in resolved):
         raise TypeError(
-            "boundaries must contain only PEC, PML, or Absorber specifications"
+            "boundaries must contain only PEC, PMC, PML, or Absorber specifications"
         )
     return resolved
 
 
-__all__ = ["Absorber", "Boundary", "PEC", "PML"]
+__all__ = ["Absorber", "Boundary", "PEC", "PMC", "PML"]

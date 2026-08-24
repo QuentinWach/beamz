@@ -26,11 +26,17 @@ The supported `beamz.simulation` surface is intentionally small:
 - `Simulation`, `SimulationState`, `SimulationRun`, `SimulationResults`, `MonitorResults`
 - `AutoTermination`, `RunTermination`
 - `GridSpec`, `GaussianPulse`, `ModeSpec`
-- `Absorber`, `PML`, `PEC`, `Port`
+- `Absorber`, `PML`, `PEC`, `PMC`, `Port`
 
 Numerical Yee helpers, mutable mesh builders, source/monitor lowering, update
 kernels, and compiled plan types remain private implementation details rather
 than forming a second public solver API.
+
+Mirror-symmetric problems can use `Simulation(symmetry=(sx, sy, sz))`, where
+each physical-axis entry is `0` (disabled), `1` (even electric-field parity), or
+`-1` (odd electric-field parity). See the
+[mirror-symmetry guide](../../docs/mirror-symmetry.md) for the workflow and
+validation rules.
 
 ## Choosing an execution method
 

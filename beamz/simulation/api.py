@@ -182,6 +182,42 @@ def _normalize_plane_2d(plane) -> str:
     return plane
 
 
+def _normalize_symmetry(
+    symmetry, *, is_3d: bool, plane_2d: str
+) -> tuple[int, int, int]:
+    """Validate physical-axis reflection parity for one simulation domain."""
+    try:
+        raw_values = tuple(symmetry)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Simulation symmetry must contain exactly three values in {-1, 0, 1}."
+        ) from exc
+    try:
+        valid = len(raw_values) == 3 and all(
+            not isinstance(value, (bool, np.bool_))
+            and np.isfinite(value)
+            and int(value) == value
+            and int(value) in {-1, 0, 1}
+            for value in raw_values
+        )
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not valid:
+        raise ValueError(
+            "Simulation symmetry must contain exactly three values in {-1, 0, 1}."
+        )
+    values = tuple(int(value) for value in raw_values)
+    if not is_3d:
+        inactive = ({"x", "y", "z"} - set(plane_2d)).pop()
+        inactive_index = {"x": 0, "y": 1, "z": 2}[inactive]
+        if values[inactive_index] != 0:
+            raise ValueError(
+                f"Simulation symmetry along inactive {inactive}-axis must be 0 "
+                f"for a {plane_2d!r} 2D simulation."
+            )
+    return values  # type: ignore[return-value]
+
+
 def _time_from_run_time(time, run_time, grid_spec, resolution, dims):
     # Preserve an explicit time grid; otherwise derive a stable step and include the endpoint.
     if time is not None or run_time is None:
@@ -548,6 +584,10 @@ class Simulation:
     normalize_source : int or None, default=0
         Source index used to normalize frequency-domain monitor data. Use ``None``
         to retain raw acquisitions.
+    symmetry : tuple of {-1, 0, 1}, default=(0, 0, 0)
+        Reflection parity across the domain-center planes normal to physical x, y,
+        and z. ``0`` disables reduction, ``1`` selects even (PMC-like) parity,
+        and ``-1`` selects odd (PEC-like) parity.
     raster_options : RasterOptions, optional
         Native raster quality and smoothing policy. Component selection remains
         automatic for the simulation dimensionality. Simulations default to
@@ -606,6 +646,7 @@ class Simulation:
     setup_device_policy: str
     setup_device_resolved: str
     normalize_source: int | None
+    symmetry: tuple[int, int, int]
     raster_options: Any
     coordinate_offset: tuple[float, float, float]
     _uses_realized_grid: bool
@@ -631,6 +672,11 @@ class Simulation:
         run_time: float | None = None,
         setup_device: Literal["auto", "cpu", "default"] | None = None,
         normalize_source: int | None = 0,
+        symmetry: tuple[Literal[-1, 0, 1], Literal[-1, 0, 1], Literal[-1, 0, 1]] = (
+            0,
+            0,
+            0,
+        ),
         raster_options=None,
     ):
         polarization = normalize_polarization_2d(polarization)
@@ -707,6 +753,7 @@ class Simulation:
         # 3. Canonicalize devices, time, plane, and boundaries before resolving the setup
         # device; subsequent cache identity depends on these normalized values.
         is_3d = _design_is_3d(design)
+        symmetry = _normalize_symmetry(symmetry, is_3d=is_3d, plane_2d=plane_2d)
         if is_3d and polarization != "tm":
             raise ValueError("polarization applies only to 2D simulations.")
         if (
@@ -758,6 +805,7 @@ class Simulation:
         object.__setattr__(self, "setup_device_policy", setup_device_policy)
         object.__setattr__(self, "setup_device_resolved", setup_device_resolved)
         object.__setattr__(self, "normalize_source", normalize_source)
+        object.__setattr__(self, "symmetry", symmetry)
         object.__setattr__(self, "raster_options", raster_options)
         object.__setattr__(self, "coordinate_offset", tuple(float(v) for v in offset))
         object.__setattr__(self, "_uses_realized_grid", uses_realized_grid)
@@ -846,6 +894,7 @@ class Simulation:
             self.run_time,
             self.setup_device_policy,
             self.normalize_source,
+            self.symmetry,
             self.raster_options,
         )
 
@@ -907,6 +956,7 @@ class Simulation:
             "run_time",
             "setup_device",
             "normalize_source",
+            "symmetry",
             "raster_options",
         }
         unknown = set(changes) - allowed
@@ -939,6 +989,7 @@ class Simulation:
             "run_time": self.run_time,
             "setup_device": self.setup_device_policy,
             "normalize_source": self.normalize_source,
+            "symmetry": self.symmetry,
             "raster_options": self.raster_options,
         }
         values.update(changes)
@@ -1163,6 +1214,25 @@ class Simulation:
         """
         # 1. Resolve Design's material raster; numerical boundary lowering belongs to compile.py.
         material_grid = self._material_grid(progress=progress)
+        boundaries = self.boundaries
+        if any(self.symmetry):
+            from beamz.simulation.symmetry import (
+                reduce_material_grid,
+                symmetry_boundaries,
+            )
+
+            material_grid = reduce_material_grid(
+                material_grid,
+                self.symmetry,
+                is_3d=self.is_3d,
+                plane_2d=self.plane_2d,
+            )
+            boundaries = symmetry_boundaries(
+                boundaries,
+                self.symmetry,
+                is_3d=self.is_3d,
+                plane_2d=self.plane_2d,
+            )
         requested_steps = int(self.num_steps if num_steps is None else num_steps)
         # 2. Snapshot grid, run, and domain controls into immutable value objects, then
         # attach normalized sources, monitors, boundaries, and sharding configuration.
@@ -1182,12 +1252,13 @@ class Simulation:
                 bool(self.is_3d),
                 str(self.plane_2d),
                 self.coordinate_offset,
-                self.polarization,
+                polarization_2d=self.polarization,
+                symmetry=self.symmetry,
             ),
             material_grid,
             tuple(self.sources),
             tuple(self.monitors),
-            tuple(self.boundaries),
+            tuple(boundaries),
             compiler_sharding,
         )
 
