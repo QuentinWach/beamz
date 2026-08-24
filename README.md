@@ -27,7 +27,7 @@
 - CPU-capable for **fast prototyping**, even on your laptop.
 - Intuitive and **familiar API**.
 - Native **FDFD mode solver** with discrete Yee-grid refinement and validation.
-- **CPML**, absorbing layers and PEC boundaries.
+- **CPML**, absorbing layers, PEC/PMC boundaries, and mirror-symmetry reduction.
 - Unidirectional **mode sources** (single freq. and broadband, Huygens fields + TFSF, TE/TM).
 - **Gaussian sources**, e.g. for grating coupler simulations.
 - Integrated **rasterization module**.

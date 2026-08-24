@@ -46,6 +46,28 @@ def test_symmetry_request_reduces_each_active_axis_and_replaces_cut_absorbers():
     )
 
 
+@pytest.mark.parametrize(
+    ("plane", "symmetry"),
+    [("xy", (1, -1, 0)), ("xz", (1, 0, -1)), ("yz", (0, 1, -1))],
+)
+def test_2d_symmetry_tuple_always_uses_physical_axes(plane, symmetry):
+    time, _ = _time_and_impulse(3)
+    request = bz.Simulation(
+        domain=(4 * bz.um, 4 * bz.um),
+        resolution=1 * bz.um,
+        time=time,
+        plane_2d=plane,
+        boundaries=(bz.PML(edges="all"),),
+        symmetry=symmetry,
+    ).to_request()
+
+    assert request.materials.shape == (2, 2)
+    assert {edge for boundary in request.boundaries for edge in boundary.edges} >= {
+        "right",
+        "top",
+    }
+
+
 def test_symmetry_rejects_asymmetric_material_data():
     epsilon = np.ones((4, 4), dtype=float)
     epsilon[0, 0] = 2.0

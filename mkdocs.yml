@@ -9,6 +9,7 @@ theme:
 
 nav:
   - Getting Started: getting-started.md
+  - Mirror Symmetry: mirror-symmetry.md
   - Migrating to v0.5: migrating-to-v0.5.md
   - Automatic Graded Meshing: graded-meshing.md
 
