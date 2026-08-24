@@ -39,8 +39,7 @@ def test_symmetry_request_reduces_each_active_axis_and_replaces_cut_absorbers():
         for boundary in request.boundaries
     )
     assert any(
-        isinstance(boundary, bz.PMC)
-        and set(boundary.edges) == {"right", "back"}
+        isinstance(boundary, bz.PMC) and set(boundary.edges) == {"right", "back"}
         for boundary in request.boundaries
     )
 
@@ -70,9 +69,7 @@ def test_pmc_ghost_has_odd_magnetic_parity():
     hx = np.zeros((2, 3), dtype=np.float32)
     hy = np.ones((3, 2), dtype=np.float32)
 
-    ordinary = np.asarray(
-        tm_xy_curl_h_to_e_2d(hx, hy, 1.0, (3, 3), frozenset())
-    )
+    ordinary = np.asarray(tm_xy_curl_h_to_e_2d(hx, hy, 1.0, (3, 3), frozenset()))
     pmc = np.asarray(
         tm_xy_curl_h_to_e_2d(
             hx,
@@ -121,12 +118,66 @@ def test_reduced_2d_tm_matches_full_domain_for_even_and_odd_sources(parity):
     )
 
     full = bz.Simulation(**setup).advance(performance=False).state
-    reduced = bz.Simulation(**setup, symmetry=(parity, 0, 0)).advance(
-        performance=False
-    ).state
+    reduced = (
+        bz.Simulation(**setup, symmetry=(parity, 0, 0)).advance(performance=False).state
+    )
 
     for name in ("ez", "hx", "hy"):
         full_field = np.asarray(getattr(full, name))
         reduced_field = np.asarray(getattr(reduced, name))
         retained = full_field[:, : reduced_field.shape[1]]
         np.testing.assert_allclose(reduced_field, retained, rtol=2e-6, atol=2e-12)
+
+
+@pytest.mark.parametrize("parity", [1, -1])
+def test_domain_field_recorder_expands_to_full_vector_solution(parity):
+    time, impulse = _time_and_impulse()
+    sources = (
+        (
+            bz.GaussianSource(
+                position=(0.0, 0.0),
+                width=0.5 * bz.um,
+                signal=impulse,
+            ),
+        )
+        if parity == 1
+        else (
+            bz.GaussianSource(
+                position=(-0.5 * bz.um, 0.0),
+                width=0.3 * bz.um,
+                signal=impulse,
+            ),
+            bz.GaussianSource(
+                position=(0.5 * bz.um, 0.0),
+                width=0.3 * bz.um,
+                signal=-impulse,
+            ),
+        )
+    )
+    recorder = bz.FieldRecorder(("Ez", "Hx", "Hy"), interval=1)
+    setup = dict(
+        domain=(4 * bz.um, 4 * bz.um),
+        resolution=0.2 * bz.um,
+        time=time,
+        sources=sources,
+        monitors=(recorder,),
+        boundaries=(bz.PEC(),),
+    )
+
+    full = bz.Simulation(**setup).run(progress=False, performance=False)
+    reduced = bz.Simulation(**setup, symmetry=(parity, 0, 0)).run(
+        progress=False, performance=False
+    )
+    expanded = reduced.symmetry_expanded
+
+    assert reduced.metadata.symmetry == (parity, 0, 0)
+    assert expanded.metadata.symmetry == (0, 0, 0)
+    assert expanded.metadata.fields.grid_shape == full.metadata.fields.grid_shape
+    assert expanded.metadata.grid.shape == full.metadata.grid.shape
+    for component in recorder.components:
+        np.testing.assert_allclose(
+            expanded[recorder.name].fields[component],
+            full[recorder.name].fields[component],
+            rtol=2e-6,
+            atol=2e-12,
+        )

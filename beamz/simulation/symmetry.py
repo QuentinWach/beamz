@@ -9,7 +9,11 @@ import numpy as np
 from beamz.design.discretization import MaterialGrid
 from beamz.design.grid import RectilinearGrid
 from beamz.devices.boundaries import PEC, PMC, PML, Absorber, edges_for_dimension
-from beamz.lattice import component_shapes, grid_axes_in_physical_frame_2d
+from beamz.lattice import (
+    component_axis_offsets_3d,
+    component_shapes,
+    grid_axes_in_physical_frame_2d,
+)
 
 _PHYSICAL_AXES = ("x", "y", "z")
 _COMPONENT_FOR_YEE = {
@@ -23,6 +27,81 @@ _COMPONENT_FOR_YEE = {
     "mu_hy": "Hy",
     "mu_hz": "Hz",
 }
+
+
+def reflection_sign(component: str, physical_axis: str, parity: int) -> int:
+    """Return the vector-component sign under one requested reflection."""
+    component = str(component)
+    physical_axis = str(physical_axis)
+    normal = component[1].lower() == physical_axis
+    if component.startswith("E"):
+        return -int(parity) if normal else int(parity)
+    if component.startswith("H"):
+        return int(parity) if normal else -int(parity)
+    raise ValueError(f"Unsupported electromagnetic component {component!r}.")
+
+
+def _array_axis_for_physical(
+    physical_axis: str, *, ndim: int, is_3d: bool, plane_2d: str
+) -> int:
+    storage_axis = _storage_axis_for_physical(
+        physical_axis, is_3d=is_3d, plane_2d=plane_2d
+    )
+    spatial_ndim = 3 if is_3d else 2
+    return int(ndim - spatial_ndim + storage_axis)
+
+
+def expand_field_array(
+    values,
+    component: str,
+    symmetry: tuple[int, int, int],
+    *,
+    is_3d: bool,
+    plane_2d: str,
+):
+    """Mirror one reduced E/H array into the full physical domain."""
+    expanded = np.asarray(values)
+    offsets = component_axis_offsets_3d(component)
+    for index, physical_axis in enumerate(_PHYSICAL_AXES):
+        parity = int(symmetry[index])
+        if not parity:
+            continue
+        axis = _array_axis_for_physical(
+            physical_axis,
+            ndim=expanded.ndim,
+            is_3d=is_3d,
+            plane_2d=plane_2d,
+        )
+        has_plane_sample = offsets[physical_axis] == 0.0
+        retained = [slice(None)] * expanded.ndim
+        if has_plane_sample:
+            retained[axis] = slice(0, -1)
+        reflected = np.flip(expanded[tuple(retained)], axis=axis)
+        reflected = reflection_sign(component, physical_axis, parity) * reflected
+        expanded = np.concatenate((expanded, reflected), axis=axis)
+    return expanded
+
+
+def expand_cell_array(
+    values,
+    symmetry: tuple[int, int, int],
+    *,
+    is_3d: bool,
+    plane_2d: str,
+):
+    """Mirror a scalar cell-centered array into the full domain."""
+    expanded = np.asarray(values)
+    for index, physical_axis in enumerate(_PHYSICAL_AXES):
+        if not int(symmetry[index]):
+            continue
+        axis = _array_axis_for_physical(
+            physical_axis,
+            ndim=expanded.ndim,
+            is_3d=is_3d,
+            plane_2d=plane_2d,
+        )
+        expanded = np.concatenate((expanded, np.flip(expanded, axis=axis)), axis=axis)
+    return expanded
 
 
 def symmetry_cut_edges(
@@ -81,9 +160,7 @@ def _storage_axis_for_physical(
     return {grid_x: 1, grid_y: 0}[physical_axis]
 
 
-def _grid_axis_for_physical(
-    physical_axis: str, *, is_3d: bool, plane_2d: str
-) -> str:
+def _grid_axis_for_physical(physical_axis: str, *, is_3d: bool, plane_2d: str) -> str:
     if is_3d:
         return physical_axis
     grid_x, grid_y, _ = grid_axes_in_physical_frame_2d(plane_2d)
@@ -111,9 +188,7 @@ def _crop(values, target_shape: tuple[int, ...], *, prefix: int = 0):
     array = np.asarray(values)
     if array.ndim == 0:
         return array
-    slices = (slice(None),) * prefix + tuple(
-        slice(0, size) for size in target_shape
-    )
+    slices = (slice(None),) * prefix + tuple(slice(0, size) for size in target_shape)
     return array[slices]
 
 
@@ -156,9 +231,7 @@ def reduce_material_grid(
             1e-12 * max(float(np.max(np.abs(edges))), 1.0),
             64.0 * np.finfo(float).eps,
         )
-        if not np.allclose(
-            edges + edges[::-1], 2.0 * center, rtol=0.0, atol=tolerance
-        ):
+        if not np.allclose(edges + edges[::-1], 2.0 * center, rtol=0.0, atol=tolerance):
             raise ValueError(
                 f"Simulation grid must be mirror symmetric along {physical_axis}."
             )
@@ -192,9 +265,7 @@ def reduce_material_grid(
             if axis in reduced_grid_axes
             else edges
         )
-    reduced_grid = RectilinearGrid(
-        new_edges["x"], new_edges["y"], new_edges["z"]
-    )
+    reduced_grid = RectilinearGrid(new_edges["x"], new_edges["y"], new_edges["z"])
     reduced_shape = (
         reduced_grid.shape_zyx
         if is_3d
