@@ -46,6 +46,7 @@ class DomainSpec:
     plane_2d: str
     coordinate_offset: tuple[float, float, float]
     polarization_2d: str = "tm"
+    symmetry: tuple[int, int, int] = (0, 0, 0)
 
 
 @dataclass(frozen=True, slots=True)
