@@ -219,23 +219,12 @@ def update_h(state, ctx, coeffs) -> SimulationState:
     )
     terms = ctx.boundary.cpml.h_terms
     materials = (
-        (
-            coeffs.h_sigma_m_x,
-            coeffs.h_sigma_m_y,
-            coeffs.h_sigma_m_z,
-            _EMPTY,
-            _EMPTY,
-            _EMPTY,
-        )
-        if ctx.config.backend == "cuda_hopper"
-        else (
-            coeffs.h_decay_x,
-            coeffs.h_decay_y,
-            coeffs.h_decay_z,
-            coeffs.h_source_x,
-            coeffs.h_source_y,
-            coeffs.h_source_z,
-        )
+        coeffs.h_decay_x,
+        coeffs.h_decay_y,
+        coeffs.h_decay_z,
+        coeffs.h_source_x,
+        coeffs.h_source_y,
+        coeffs.h_source_z,
     )
     outputs = _ffi_phase(
         target,
@@ -269,23 +258,12 @@ def update_e(state, ctx, coeffs) -> SimulationState:
     )
     terms = ctx.boundary.cpml.e_terms
     materials = (
-        (
-            coeffs.e_conductivity_x,
-            coeffs.e_conductivity_y,
-            coeffs.e_conductivity_z,
-            coeffs.e_permittivity_x,
-            coeffs.e_permittivity_y,
-            coeffs.e_permittivity_z,
-        )
-        if ctx.config.backend == "cuda_hopper"
-        else (
-            coeffs.e_decay_x,
-            coeffs.e_decay_y,
-            coeffs.e_decay_z,
-            coeffs.e_source_x,
-            coeffs.e_source_y,
-            coeffs.e_source_z,
-        )
+        coeffs.e_decay_x,
+        coeffs.e_decay_y,
+        coeffs.e_decay_z,
+        coeffs.e_source_x,
+        coeffs.e_source_y,
+        coeffs.e_source_z,
     )
     outputs = _ffi_phase(
         target,

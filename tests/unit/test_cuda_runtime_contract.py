@@ -753,6 +753,30 @@ def test_hopper_backend_uses_sm90_tiled_target(monkeypatch):
     assert targets == ["beamz_cuda_hopper"]
 
 
+def test_hopper_backend_reuses_streamed_coefficient_abi(monkeypatch):
+    program, state, context = _program_and_state(cpml=False)
+    context = replace(context, config=replace(context.config, backend="cuda_hopper"))
+    captured = []
+
+    def fake_ffi_call(_target, _result_metadata, **_options):
+        def call(*arguments, **_attributes):
+            captured.append(arguments)
+            return arguments[:3]
+
+        return call
+
+    monkeypatch.setattr(cuda_runtime.jax.ffi, "ffi_call", fake_ffi_call)
+
+    cuda_runtime.update_h(state, context, program.coefficients)
+
+    assert captured[0][6] is program.coefficients.h_decay_x
+    assert captured[0][7] is program.coefficients.h_decay_y
+    assert captured[0][8] is program.coefficients.h_decay_z
+    assert captured[0][9] is program.coefficients.h_source_x
+    assert captured[0][10] is program.coefficients.h_source_y
+    assert captured[0][11] is program.coefficients.h_source_z
+
+
 def test_uniform_cuda_coefficients_are_compacted_without_rounding():
     uniform = jnp.full((3, 4, 5), np.float32(1.25))
     varied = uniform.at[1, 2, 3].set(np.nextafter(np.float32(1.25), np.float32(2.0)))
