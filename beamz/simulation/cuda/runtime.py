@@ -41,7 +41,13 @@ def _metallic_edge_mask(edges: frozenset[str]) -> int:
 
 
 def _boundary_code(edges: frozenset[str], terms=()) -> int:
-    """Pack PEC faces and an optional uniform two-sided CPML thickness."""
+    """Pack PEC faces and a CPML thickness safe for every supplied phase.
+
+    A non-zero CPML thickness selects a CUDA specialization which deliberately
+    skips the per-term packed-slab descriptor.  It is therefore valid only when
+    *all* supplied H and E recurrences have the same symmetric slab.  Phase-only
+    FFI calls pass one phase; native program calls pass both phases.
+    """
     thickness = 0
     if terms:
         first = int(terms[0].slab.low)
@@ -118,7 +124,10 @@ def _program_attributes(
         "dt": np.float32(ctx.dt),
         "resolution": np.float32(ctx.resolution),
         "boundary_code": np.int32(
-            _boundary_code(ctx.boundary.cpml.metallic_edges, ctx.boundary.cpml.h_terms)
+            _boundary_code(
+                ctx.boundary.cpml.metallic_edges,
+                (*ctx.boundary.cpml.h_terms, *ctx.boundary.cpml.e_terms),
+            )
         ),
         "metric_kind": _metric_kind_code(ctx),
         "program_layout": np.int32(layout),

@@ -72,6 +72,53 @@ def test_cuda_boundary_code_packs_only_uniform_two_sided_cpml():
     assert cuda_runtime._boundary_code(frozenset({"right"})) == 1 << 5
 
 
+def test_cuda_program_boundary_code_requires_matching_h_and_e_cpml_slabs():
+    _program, _state, context = _program_and_state(cpml=True)
+    uniform_h = tuple(
+        SimpleNamespace(slab=SimpleNamespace(low=4, high=4)) for _ in range(6)
+    )
+    staggered_e = (
+        *uniform_h[:-1],
+        SimpleNamespace(slab=SimpleNamespace(low=3, high=3)),
+    )
+    context = replace(
+        context,
+        boundary=SimpleNamespace(
+            cpml=SimpleNamespace(
+                enabled=True,
+                metallic_edges=frozenset({"front"}),
+                h_terms=uniform_h,
+                e_terms=uniform_h,
+            )
+        ),
+    )
+
+    uniform_attributes = cuda_runtime._program_attributes(
+        context, 3, abi.PROGRAM_LAYOUT_CPML_IN_PLACE
+    )
+    assert uniform_attributes["boundary_code"] == np.int32((4 << 8) | 1)
+
+    context = replace(
+        context,
+        boundary=SimpleNamespace(
+            cpml=SimpleNamespace(
+                enabled=True,
+                metallic_edges=frozenset({"front"}),
+                h_terms=uniform_h,
+                e_terms=staggered_e,
+            )
+        ),
+    )
+    attributes = cuda_runtime._program_attributes(
+        context, 3, abi.PROGRAM_LAYOUT_CPML_IN_PLACE
+    )
+
+    # Program launches pass one boundary code to both phases.  A H-only check
+    # would select the descriptor-free uniform path for E and index its shorter
+    # packed slab with the H thickness.
+    assert attributes["boundary_code"] == np.int32(1)
+
+
 def test_cuda_cpml_bf16_state_is_explicit_and_preserves_continuation(monkeypatch):
     program, state, _context = _program_and_state(cpml=True)
     cuda_program = replace(
