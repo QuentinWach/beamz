@@ -146,10 +146,11 @@ __device__ __forceinline__ float CorrectCpml(
   }
   const int64_t psi_offset = Offset(psi_output, pz, py, px);
   const float old_psi = static_cast<const float*>(psi_input.data)[psi_offset];
-  const float next_psi =
-      Read(b, pz, py, px) * old_psi + Read(a, pz, py, px) * derivative;
+  const float next_psi = beamz::cuda::yee::AdvanceCpmlPsi(
+      Read(b, pz, py, px), old_psi, Read(a, pz, py, px), derivative);
   static_cast<float*>(psi_output.data)[psi_offset] = next_psi;
-  return sign * (derivative * Read(inv_kappa, pz, py, px) + next_psi);
+  return beamz::cuda::yee::CorrectCpmlDerivative(
+      sign, derivative, Read(inv_kappa, pz, py, px), next_psi);
 }
 
 __device__ __forceinline__ void DerivativePlan(int component, int* first_source,
@@ -284,13 +285,8 @@ __global__ __launch_bounds__(256, 2) void UpdateTiled(BeamzLaunch launch,
   float source;
   if (packed_lossless_material) {
     decay = 1.0f;
-    const auto* packed =
-        static_cast<const uint32_t*>(launch.inputs[9 + component].data);
-    const uint32_t word = packed[linear >> 2];
-    const uint32_t code = (word >> (8 * (linear & 3))) & 0xffu;
-    source = code < launch.inputs[6 + component].dims[0]
-                 ? static_cast<const float*>(launch.inputs[6 + component].data)[code]
-                 : 0.0f;
+    source = beamz::cuda::yee::PackedMaterialSource(
+        launch.inputs[6 + component], launch.inputs[9 + component], linear);
   } else {
     decay = Read(launch.inputs[6 + component], z, y, x);
     source = Read(launch.inputs[9 + component], z, y, x);

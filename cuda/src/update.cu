@@ -413,12 +413,9 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
                                          psi_input.data)[psi_offset])
                   : static_cast<const float*>(psi_input.data)[psi_offset];
   }
-  const float next_psi =
-      static_cast<const float *>(
-          b.data)[packed] *
-          old_psi +
-      static_cast<const float*>(a.data)[packed] *
-          derivative;
+  const float next_psi = beamz::cuda::yee::AdvanceCpmlPsi(
+      static_cast<const float*>(b.data)[packed], old_psi,
+      static_cast<const float*>(a.data)[packed], derivative);
   if constexpr (PsiType == kBeamzBF16) {
     static_cast<__nv_bfloat16*>(psi_output.data)[psi_offset] =
         __float2bfloat16_rn(next_psi);
@@ -430,10 +427,9 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
   } else {
     static_cast<float*>(psi_output.data)[psi_offset] = next_psi;
   }
-  return sign *
-         (derivative * static_cast<const float*>(
-                           inv_kappa.data)[packed] +
-          next_psi);
+  return beamz::cuda::yee::CorrectCpmlDerivative(
+      sign, derivative, static_cast<const float*>(inv_kappa.data)[packed],
+      next_psi);
 }
 
 template <int Phase, int Component, bool Cpml, int MetricKind,
@@ -498,13 +494,8 @@ __device__ __forceinline__ void UpdateComponent(const BeamzLaunch& launch,
   float source;
   if constexpr (PackedLosslessMaterial) {
     decay = 1.0f;
-    const auto* packed =
-        static_cast<const uint32_t*>(launch.inputs[9 + Component].data);
-    const uint32_t word = packed[linear >> 2];
-    const uint32_t code = (word >> (8 * (linear & 3))) & 0xffu;
-    source = code < launch.inputs[6 + Component].dims[0]
-                 ? static_cast<const float*>(launch.inputs[6 + Component].data)[code]
-                 : 0.0f;
+    source = beamz::cuda::yee::PackedMaterialSource(
+        launch.inputs[6 + Component], launch.inputs[9 + Component], linear);
   } else {
     decay = Read(launch.inputs[6 + Component], z, y, x);
     source = Read(launch.inputs[9 + Component], z, y, x);

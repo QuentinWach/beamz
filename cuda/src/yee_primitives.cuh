@@ -63,6 +63,29 @@ __device__ __forceinline__ float AdvanceYeeField(int phase, float old_field,
                     : decay * old_field + source * curl;
 }
 
+__device__ __forceinline__ float AdvanceCpmlPsi(float b, float old_psi,
+                                                 float a, float derivative) {
+  return b * old_psi + a * derivative;
+}
+
+__device__ __forceinline__ float CorrectCpmlDerivative(float sign,
+                                                        float derivative,
+                                                        float inv_kappa,
+                                                        float next_psi) {
+  return sign * (derivative * inv_kappa + next_psi);
+}
+
+__device__ __forceinline__ float PackedMaterialSource(
+    const BeamzBuffer& codebook, const BeamzBuffer& packed_codes,
+    int64_t linear) {
+  const auto* packed = static_cast<const uint32_t*>(packed_codes.data);
+  const uint32_t word = packed[linear >> 2];
+  const uint32_t code = (word >> (8 * (linear & 3))) & 0xffu;
+  return code < codebook.dims[0]
+             ? static_cast<const float*>(codebook.data)[code]
+             : 0.0f;
+}
+
 __host__ __device__ __forceinline__ bool PecConstrained(
     const BeamzBuffer& output, int phase, int component, int metallic_edges,
     int z, int y, int x) {
