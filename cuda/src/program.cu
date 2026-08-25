@@ -17,9 +17,17 @@ bool FlagEnabled(const BeamzLaunch& launch, int32_t flag) {
 }
 
 bool FitsIntOffsets(const BeamzBuffer& value) {
+  if (value.rank < 0 || value.rank > 4) return false;
   int64_t elements = 1;
   for (int axis = 0; axis < value.rank; ++axis) {
-    if (value.dims[axis] > std::numeric_limits<int>::max()) return false;
+    if (value.dims[axis] < 0 ||
+        value.dims[axis] > std::numeric_limits<int>::max()) {
+      return false;
+    }
+    if (value.dims[axis] != 0 &&
+        elements > std::numeric_limits<int>::max() / value.dims[axis]) {
+      return false;
+    }
     elements *= value.dims[axis];
     if (elements > std::numeric_limits<int>::max()) return false;
   }
@@ -39,7 +47,8 @@ cudaError_t ValidateSourceGroups(const BeamzSourceGroupLaunch* groups,
     if (group.component < 0 || group.component > 2 || group.timing < 0 ||
         group.timing > 2 || group.coefficients.rank != 4 ||
         group.waveforms.rank != 2 || group.starts.rank != 2 ||
-        group.current_step.rank != 0 ||
+        group.current_step.rank != 0 || group.coincident < 0 ||
+        group.coincident > 1 ||
         !HasType(group.coefficients, kBeamzF32) ||
         !HasType(group.waveforms, kBeamzF32) ||
         !HasType(group.starts, kBeamzS32) ||
@@ -47,8 +56,14 @@ cudaError_t ValidateSourceGroups(const BeamzSourceGroupLaunch* groups,
         group.coefficients.dims[0] != group.waveforms.dims[0] ||
         group.coefficients.dims[0] != group.starts.dims[0] ||
         group.starts.dims[1] != 3 || group.waveforms.dims[1] < 1 ||
+        group.coefficients.dims[1] < 1 || group.coefficients.dims[2] < 1 ||
+        group.coefficients.dims[3] < 1 || group.current_step.data == nullptr ||
+        (group.coefficients.dims[0] > 0 &&
+         (group.coefficients.data == nullptr || group.waveforms.data == nullptr ||
+          group.starts.data == nullptr)) ||
         !FitsIntOffsets(group.coefficients) ||
-        !FitsIntOffsets(group.waveforms) || !FitsIntOffsets(group.starts)) {
+        !FitsIntOffsets(group.waveforms) || !FitsIntOffsets(group.starts) ||
+        !FitsIntOffsets(group.current_step)) {
       return cudaErrorInvalidValue;
     }
   }
@@ -93,14 +108,22 @@ cudaError_t ValidateMonitors(const BeamzDftGroupLaunch* value) {
       monitors.windows.dims[0] < monitors.monitor_count ||
       monitors.windows.dims[1] != 3 || monitors.dft_re.dims[0] < 1 ||
       monitors.dft_im.dims[0] != monitors.dft_re.dims[0] ||
-      monitors.dft_weight.dims[0] < 1) {
+      monitors.dft_weight.dims[0] < 1 || monitors.indices.dims[2] < 1 ||
+      monitors.indices.dims[3] < 1 || monitors.frequencies.dims[1] < 1 ||
+      monitors.indices.data == nullptr ||
+      monitors.weights.data == nullptr || monitors.frequencies.data == nullptr ||
+      monitors.component_masks.data == nullptr || monitors.counts.data == nullptr ||
+      monitors.codes.data == nullptr || monitors.windows.data == nullptr ||
+      monitors.dft_re.data == nullptr || monitors.dft_im.data == nullptr ||
+      monitors.dft_weight.data == nullptr || monitors.time.data == nullptr ||
+      monitors.current_step.data == nullptr) {
     return cudaErrorInvalidValue;
   }
   const BeamzBuffer buffers[] = {
       monitors.indices,         monitors.weights, monitors.frequencies,
       monitors.component_masks, monitors.counts,  monitors.codes,
       monitors.windows,         monitors.dft_re,   monitors.dft_im,
-      monitors.dft_weight};
+      monitors.dft_weight,      monitors.time,     monitors.current_step};
   for (const BeamzBuffer& buffer : buffers) {
     if (!FitsIntOffsets(buffer)) return cudaErrorInvalidValue;
   }

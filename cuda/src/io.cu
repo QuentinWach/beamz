@@ -38,6 +38,12 @@ DftFields MakeDftFields(const BeamzLaunch& h_launch,
   return fields;
 }
 
+__device__ __forceinline__ int64_t ElementCount(const BeamzBuffer& value) {
+  int64_t elements = 1;
+  for (int axis = 0; axis < value.rank; ++axis) elements *= value.dims[axis];
+  return elements;
+}
+
 __device__ __forceinline__ bool SourceCellConstrained(
     const BeamzBuffer& target, int component, int phase, int metallic_edges,
     int z, int y, int x) {
@@ -72,9 +78,11 @@ __device__ __forceinline__ void ApplySourceGroupCell(
     return;
   }
   const auto* starts = static_cast<const int32_t*>(group.starts.data);
-  const int target_z = starts[3 * source_index] + z;
-  const int target_y = starts[3 * source_index + 1] + y;
-  const int target_x = starts[3 * source_index + 2] + x;
+  const int64_t target_z = static_cast<int64_t>(starts[3 * source_index]) + z;
+  const int64_t target_y =
+      static_cast<int64_t>(starts[3 * source_index + 1]) + y;
+  const int64_t target_x =
+      static_cast<int64_t>(starts[3 * source_index + 2]) + x;
   if (target_z < 0 || target_z >= target.dims[0] || target_y < 0 ||
       target_y >= target.dims[1] || target_x < 0 ||
       target_x >= target.dims[2]) {
@@ -86,7 +94,9 @@ __device__ __forceinline__ void ApplySourceGroupCell(
   if (group.timing != 0 &&
       SourceCellConstrained(target, group.component,
                             group.timing == 1 ? 0 : 1, metallic_edges,
-                            target_z, target_y, target_x)) {
+                            static_cast<int>(target_z),
+                            static_cast<int>(target_y),
+                            static_cast<int>(target_x))) {
     return;
   }
   int waveform_index =
@@ -106,9 +116,10 @@ __device__ __forceinline__ void ApplySourceGroupCell(
           static_cast<int>(group.coefficients.dims[3]) +
       x;
   const int target_offset =
-      (target_z * static_cast<int>(target.dims[1]) + target_y) *
+      (static_cast<int>(target_z) * static_cast<int>(target.dims[1]) +
+       static_cast<int>(target_y)) *
           static_cast<int>(target.dims[2]) +
-      target_x;
+      static_cast<int>(target_x);
   const float contribution =
       static_cast<const float*>(group.coefficients.data)[coefficient_offset] *
       static_cast<const float*>(group.waveforms.data)[waveform_offset];
@@ -133,9 +144,9 @@ __global__ void ApplySingleSourceGroup(BeamzBuffer target,
     return;
   }
   const auto* starts = static_cast<const int32_t*>(group.starts.data);
-  const int target_z = starts[0] + z;
-  const int target_y = starts[1] + y;
-  const int target_x = starts[2] + x;
+  const int64_t target_z = static_cast<int64_t>(starts[0]) + z;
+  const int64_t target_y = static_cast<int64_t>(starts[1]) + y;
+  const int64_t target_x = static_cast<int64_t>(starts[2]) + x;
   if (target_z < 0 || target_z >= target.dims[0] || target_y < 0 ||
       target_y >= target.dims[1] || target_x < 0 ||
       target_x >= target.dims[2]) {
@@ -143,7 +154,9 @@ __global__ void ApplySingleSourceGroup(BeamzBuffer target,
   }
   if constexpr (Timing != 0) {
     if (SourceCellConstrained(target, group.component, Timing == 1 ? 0 : 1,
-                              metallic_edges, target_z, target_y, target_x)) {
+                              metallic_edges, static_cast<int>(target_z),
+                              static_cast<int>(target_y),
+                              static_cast<int>(target_x))) {
       return;
     }
   }
@@ -159,9 +172,10 @@ __global__ void ApplySingleSourceGroup(BeamzBuffer target,
           static_cast<int>(group.coefficients.dims[3]) +
       x;
   const int target_offset =
-      (target_z * static_cast<int>(target.dims[1]) + target_y) *
+      (static_cast<int>(target_z) * static_cast<int>(target.dims[1]) +
+       static_cast<int>(target_y)) *
           static_cast<int>(target.dims[2]) +
-      target_x;
+      static_cast<int>(target_x);
   static_cast<float*>(target.data)[target_offset] +=
       static_cast<const float*>(group.coefficients.data)[coefficient_offset] *
       static_cast<const float*>(group.waveforms.data)[waveform_index];
@@ -176,9 +190,9 @@ __device__ __forceinline__ void ApplyCoincidentSourceGroupCell(
     return;
   }
   const auto* starts = static_cast<const int32_t*>(group.starts.data);
-  const int target_z = starts[0] + z;
-  const int target_y = starts[1] + y;
-  const int target_x = starts[2] + x;
+  const int64_t target_z = static_cast<int64_t>(starts[0]) + z;
+  const int64_t target_y = static_cast<int64_t>(starts[1]) + y;
+  const int64_t target_x = static_cast<int64_t>(starts[2]) + x;
   if (target_z < 0 || target_z >= target.dims[0] || target_y < 0 ||
       target_y >= target.dims[1] || target_x < 0 ||
       target_x >= target.dims[2]) {
@@ -187,7 +201,9 @@ __device__ __forceinline__ void ApplyCoincidentSourceGroupCell(
   if (group.timing != 0 &&
       SourceCellConstrained(target, group.component,
                             group.timing == 1 ? 0 : 1, metallic_edges,
-                            target_z, target_y, target_x)) {
+                            static_cast<int>(target_z),
+                            static_cast<int>(target_y),
+                            static_cast<int>(target_x))) {
     return;
   }
   int waveform_index =
@@ -198,9 +214,10 @@ __device__ __forceinline__ void ApplyCoincidentSourceGroupCell(
           ? static_cast<int>(group.waveforms.dims[1]) - 1
           : waveform_index;
   const int target_offset =
-      (target_z * static_cast<int>(target.dims[1]) + target_y) *
+      (static_cast<int>(target_z) * static_cast<int>(target.dims[1]) +
+       static_cast<int>(target_y)) *
           static_cast<int>(target.dims[2]) +
-      target_x;
+      static_cast<int>(target_x);
   float value = static_cast<float*>(target.data)[target_offset];
   const int coefficient_stride =
       static_cast<int>(group.coefficients.dims[1] *
@@ -306,10 +323,28 @@ __global__ void AccumulateDftGroups(DftFields fields,
                            : 1;
   const int value_offset = counts[5 * monitor + 3];
   const int weight_offset = counts[5 * monitor + 4];
-  if (frequency >= frequency_count) return;
+  const int max_frequency_count = static_cast<int>(monitors.frequencies.dims[1]);
+  const int max_points = static_cast<int>(monitors.indices.dims[2]);
+  if (frequency_count < 1 || frequency_count > max_frequency_count ||
+      point_count < 1 || point_count > max_points || value_offset < 0 ||
+      weight_offset < 0 || frequency >= frequency_count) {
+    return;
+  }
+  const int64_t value_count =
+      6LL * frequency_count * point_count;
+  if (static_cast<int64_t>(value_offset) + value_count >
+          monitors.dft_re.dims[0] ||
+      static_cast<int64_t>(value_offset) + value_count >
+          monitors.dft_im.dims[0] ||
+      static_cast<int64_t>(weight_offset) + frequency_count >
+          monitors.dft_weight.dims[0]) {
+    return;
+  }
 
-  const int absolute_step =
-      static_cast<const int32_t*>(monitors.current_step.data)[0] + step_offset;
+  const int64_t absolute_step =
+      static_cast<int64_t>(
+          static_cast<const int32_t*>(monitors.current_step.data)[0]) +
+      step_offset;
   if (absolute_step % interval != 0) return;
   const float time = static_cast<const float*>(monitors.time.data)[0] +
                      static_cast<float>(step_offset + 1) * fields.dt;
@@ -319,7 +354,10 @@ __global__ void AccumulateDftGroups(DftFields fields,
   if (time < start || time > end) return;
 
   const auto* codes = static_cast<const int32_t*>(monitors.codes.data);
-  const int max_frequency_count = static_cast<int>(monitors.frequencies.dims[1]);
+  if ((codes[2 * monitor] != 0 && codes[2 * monitor] != 1) ||
+      (codes[2 * monitor + 1] != 0 && codes[2 * monitor + 1] != 1)) {
+    return;
+  }
   float window = 0.0f;
   float phase_sin = 0.0f;
   float phase_cos = 0.0f;
@@ -348,7 +386,6 @@ __global__ void AccumulateDftGroups(DftFields fields,
       [monitor * 6 + component];
   if (mask == 0.0f) return;
 
-  const int max_points = static_cast<int>(monitors.indices.dims[2]);
   const int neighbors = static_cast<int>(monitors.indices.dims[3]);
   const int plan_base = ((monitor * 6 + component) * max_points + point) *
                         neighbors;
@@ -358,13 +395,16 @@ __global__ void AccumulateDftGroups(DftFields fields,
     const int gather_offset = plan_base + neighbor;
     const int field_offset =
         static_cast<const int32_t*>(monitors.indices.data)[gather_offset];
-    sample += static_cast<const float*>(field.data)[field_offset] *
-              static_cast<const float*>(monitors.weights.data)[gather_offset];
+    if (field_offset >= 0 && field_offset < ElementCount(field)) {
+      sample += static_cast<const float*>(field.data)[field_offset] *
+                static_cast<const float*>(monitors.weights.data)[gather_offset];
+    }
   }
 
   float scale = window;
   if (codes[2 * monitor + 1] == 1) {
     const float length_unit = windows[3 * monitor + 2];
+    if (!isfinite(length_unit) || length_unit <= 0.0f) return;
     scale *= fields.dt * static_cast<float>(interval) * 299792458.0f /
              length_unit / sqrtf(6.2831853071795864769f);
   }

@@ -1,6 +1,7 @@
 #include <cuda_runtime_api.h>
 
 #include <cuda_bf16.h>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -45,9 +46,17 @@ FusedYeePhase MakeFusedYeePhase(const BeamzLaunch& launch) {
 }
 
 bool FitsIntOffsets(const BeamzBuffer& value) {
+  if (value.rank < 0 || value.rank > 4) return false;
   int64_t elements = 1;
   for (int axis = 0; axis < value.rank; ++axis) {
-    if (value.dims[axis] > std::numeric_limits<int>::max()) return false;
+    if (value.dims[axis] < 0 ||
+        value.dims[axis] > std::numeric_limits<int>::max()) {
+      return false;
+    }
+    if (value.dims[axis] != 0 &&
+        elements > std::numeric_limits<int>::max() / value.dims[axis]) {
+      return false;
+    }
     elements *= value.dims[axis];
     if (elements > std::numeric_limits<int>::max()) return false;
   }
@@ -66,9 +75,81 @@ bool SameShape(const BeamzBuffer& left, const BeamzBuffer& right) {
   return true;
 }
 
+bool IsPositive3D(const BeamzBuffer& value) {
+  return value.rank == 3 && value.dims[0] > 0 && value.dims[1] > 0 &&
+         value.dims[2] > 0 && value.data != nullptr;
+}
+
+bool BroadcastsTo(const BeamzBuffer& value, const BeamzBuffer& target) {
+  if (value.rank == 0) return value.data != nullptr;
+  if (value.rank != 3 || value.data == nullptr) return false;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (value.dims[axis] != 1 && value.dims[axis] != target.dims[axis]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// CUDA's three phase outputs are the Yee components of one vector field.  The
+// curl inputs must be the complementary staggered field: forward H curls use
+// one extra cell on their derivative axis; backward E curls use one fewer.
+// Requiring this exact relationship catches mismatched FFI buffers before any
+// kernel computes a flat address from a foreign shape.
+bool IsCompatibleCurlInput(const BeamzBuffer& output,
+                           const BeamzBuffer& source, int axis,
+                           int phase) {
+  if (!IsPositive3D(source)) return false;
+  for (int dimension = 0; dimension < 3; ++dimension) {
+    const int64_t expected =
+        output.dims[dimension] + (dimension == axis ? (phase == 0 ? 1 : -1) : 0);
+    if (expected <= 0 || source.dims[dimension] != expected) return false;
+  }
+  return true;
+}
+
+int64_t Elements(const BeamzBuffer& value) {
+  int64_t elements = 1;
+  for (int axis = 0; axis < value.rank; ++axis) elements *= value.dims[axis];
+  return elements;
+}
+
+int MaxOutputExtent(const BeamzLaunch& launch, int axis) {
+  int extent = 0;
+  for (int component = 0; component < 3; ++component) {
+    const int value = static_cast<int>(launch.outputs[component].dims[axis]);
+    extent = value > extent ? value : extent;
+  }
+  return extent;
+}
+
+bool IsCpmlProfile(const BeamzBuffer& value, int axis) {
+  if (!HasType(value, kBeamzF32) || !IsPositive3D(value)) return false;
+  for (int dimension = 0; dimension < 3; ++dimension) {
+    if (dimension != axis && value.dims[dimension] != 1) return false;
+  }
+  return true;
+}
+
+bool IsCpmlPsi(const BeamzBuffer& value, const BeamzBuffer& target, int axis) {
+  if (!IsPositive3D(value) || value.dims[axis] > target.dims[axis]) return false;
+  for (int dimension = 0; dimension < 3; ++dimension) {
+    if (dimension != axis && value.dims[dimension] != target.dims[dimension]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 cudaError_t ValidatePhase(const BeamzLaunch& launch) {
   if (launch.phase < 0 || launch.phase > 1 || launch.metric_kind < 0 ||
-      launch.metric_kind > 2 || (launch.nterms != 0 && launch.nterms != 6)) {
+      launch.metric_kind > 2 || (launch.nterms != 0 && launch.nterms != 6) ||
+      launch.metallic_edges < 0 || launch.metallic_edges > 63 ||
+      !std::isfinite(launch.dt) || !std::isfinite(launch.resolution) ||
+      !std::isfinite(launch.inv_resolution) || launch.dt <= 0.0f ||
+      launch.resolution <= 0.0f || launch.inv_resolution <= 0.0f ||
+      launch.uniform_cpml_thickness < 0 ||
+      (launch.nterms == 0 && launch.uniform_cpml_thickness != 0)) {
     return cudaErrorInvalidValue;
   }
   const int input_count = launch.nterms == 0 ? 12 : 13 + 4 * launch.nterms;
@@ -80,15 +161,30 @@ cudaError_t ValidatePhase(const BeamzLaunch& launch) {
     if (!FitsIntOffsets(launch.outputs[index])) return cudaErrorInvalidValue;
   }
   for (int component = 0; component < 6; ++component) {
-    if (launch.inputs[component].rank != 3 ||
-        !HasType(launch.inputs[component], kBeamzF32)) {
+    if (!HasType(launch.inputs[component], kBeamzF32) ||
+        !IsPositive3D(launch.inputs[component])) {
       return cudaErrorInvalidValue;
     }
   }
   for (int component = 0; component < 3; ++component) {
-    if (launch.outputs[component].rank != 3 ||
-        !HasType(launch.outputs[component], kBeamzF32) ||
+    if (!HasType(launch.outputs[component], kBeamzF32) ||
+        !IsPositive3D(launch.outputs[component]) ||
         !SameShape(launch.inputs[component], launch.outputs[component])) {
+      return cudaErrorInvalidValue;
+    }
+  }
+  constexpr int first_source[3] = {2, 0, 1};
+  constexpr int second_source[3] = {1, 2, 0};
+  constexpr int first_axis[3] = {1, 0, 2};
+  constexpr int second_axis[3] = {0, 2, 1};
+  for (int component = 0; component < 3; ++component) {
+    const BeamzBuffer& output = launch.outputs[component];
+    if (!IsCompatibleCurlInput(output,
+                               launch.inputs[3 + first_source[component]],
+                               first_axis[component], launch.phase) ||
+        !IsCompatibleCurlInput(output,
+                               launch.inputs[3 + second_source[component]],
+                               second_axis[component], launch.phase)) {
       return cudaErrorInvalidValue;
     }
   }
@@ -102,43 +198,70 @@ cudaError_t ValidatePhase(const BeamzLaunch& launch) {
     const BeamzBuffer& source = launch.inputs[9 + component];
     const bool ordinary_material =
         HasType(decay, kBeamzF32) && HasType(source, kBeamzF32) &&
-        (decay.rank == 0 || decay.rank == 3) &&
-        (source.rank == 0 || source.rank == 3);
+        BroadcastsTo(decay, launch.outputs[component]) &&
+        BroadcastsTo(source, launch.outputs[component]);
     const bool packed_component =
         packed_material && HasType(decay, kBeamzF32) && decay.rank == 1 &&
-        source.rank == 1;
+        source.rank == 1 && decay.data != nullptr && source.data != nullptr &&
+        decay.dims[0] > 0 && source.dims[0] >= 0 &&
+        Elements(source) >= (Elements(launch.outputs[component]) + 3) / 4;
     if (!ordinary_material && !packed_component) return cudaErrorInvalidValue;
   }
   if (launch.nterms != 0) {
     const BeamzBuffer& metadata = launch.inputs[12];
     if (!HasType(metadata, kBeamzS32) || metadata.rank != 2 ||
-        metadata.dims[0] != 6 || metadata.dims[1] != 5) {
+        metadata.dims[0] != 6 || metadata.dims[1] != 5 ||
+        metadata.data == nullptr) {
       return cudaErrorInvalidValue;
     }
     for (int index = 13; index < 13 + 3 * launch.nterms; ++index) {
-      if (!HasType(launch.inputs[index], kBeamzF32) ||
-          launch.inputs[index].rank != 3) {
-        return cudaErrorInvalidValue;
-      }
+      if (launch.inputs[index].data == nullptr) return cudaErrorInvalidValue;
     }
     const int psi_input_base = 13 + 3 * launch.nterms;
+    constexpr int cpml_axes[6] = {1, 0, 0, 2, 2, 1};
     for (int term = 0; term < launch.nterms; ++term) {
       const BeamzBuffer& input = launch.inputs[psi_input_base + term];
       const BeamzBuffer& output = launch.outputs[3 + term];
+      const BeamzBuffer& target = launch.outputs[term / 2];
       const bool supported_type = HasType(input, kBeamzF32) ||
                                   HasType(input, kBeamzBF16);
       if (!supported_type || input.element_type != output.element_type ||
-          input.rank != 3 || output.rank != 3 || !SameShape(input, output)) {
+          !IsCpmlPsi(input, target, cpml_axes[term]) ||
+          !IsCpmlPsi(output, target, cpml_axes[term]) ||
+          !SameShape(input, output)) {
         return cudaErrorInvalidValue;
+      }
+      for (int coefficient = 0; coefficient < 3; ++coefficient) {
+        const BeamzBuffer& profile = launch.inputs[13 + 3 * term + coefficient];
+        if (!IsCpmlProfile(profile, cpml_axes[term])) {
+          return cudaErrorInvalidValue;
+        }
+      }
+      if (launch.uniform_cpml_thickness > 0) {
+        const int64_t packed_extent =
+            2 * static_cast<int64_t>(launch.uniform_cpml_thickness);
+        if (packed_extent > target.dims[cpml_axes[term]] ||
+            input.dims[cpml_axes[term]] != packed_extent) {
+          return cudaErrorInvalidValue;
+        }
+        for (int coefficient = 0; coefficient < 3; ++coefficient) {
+          if (launch.inputs[13 + 3 * term + coefficient]
+                  .dims[cpml_axes[term]] != packed_extent) {
+            return cudaErrorInvalidValue;
+          }
+        }
       }
     }
   }
   for (int axis = 0; axis < 3; ++axis) {
     const BeamzBuffer& metric = launch.metrics[axis];
     if (!FitsIntOffsets(metric) || !HasType(metric, kBeamzF32) ||
-        (launch.metric_kind == 1 && metric.rank != 0) ||
+        (launch.metric_kind == 1 &&
+         (metric.rank != 0 || metric.data == nullptr)) ||
         (launch.metric_kind == 2 &&
-         (metric.rank != 1 || metric.dims[0] < 1))) {
+         (metric.rank != 1 ||
+          metric.dims[0] < MaxOutputExtent(launch, axis) ||
+          metric.data == nullptr))) {
       return cudaErrorInvalidValue;
     }
   }
@@ -252,6 +375,13 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
   const BeamzBuffer& target = launch.outputs[Term / 2];
   const int coordinate = axis == 0 ? z : (axis == 1 ? y : x);
   const int axis_size = static_cast<int>(target.dims[axis]);
+  if (low < 0 || high < 0 ||
+      static_cast<int64_t>(low) + high > axis_size) {
+    // Metadata arrives in a device buffer, so the host cannot inspect its
+    // values without synchronizing every launch. Invalid foreign metadata is a
+    // no-op recurrence rather than an out-of-bounds packed-slab access.
+    return sign * derivative;
+  }
   int packed = -1;
   if (coordinate < low) {
     packed = coordinate;
@@ -268,6 +398,15 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
   const int psi_base = 13 + 3 * launch.nterms;
   const BeamzBuffer& psi_input = launch.inputs[psi_base + Term];
   const BeamzBuffer& psi_output = launch.outputs[3 + Term];
+  const BeamzBuffer& a = launch.inputs[coefficient_base];
+  const BeamzBuffer& b = launch.inputs[coefficient_base + 1];
+  const BeamzBuffer& inv_kappa = launch.inputs[coefficient_base + 2];
+  if (pz < 0 || pz >= psi_output.dims[0] || py < 0 ||
+      py >= psi_output.dims[1] || px < 0 || px >= psi_output.dims[2] ||
+      packed >= a.dims[axis] || packed >= b.dims[axis] ||
+      packed >= inv_kappa.dims[axis]) {
+    return sign * derivative;
+  }
   const int psi_offset = (pz * static_cast<int>(psi_output.dims[1]) + py) *
                              static_cast<int>(psi_output.dims[2]) +
                          px;
@@ -285,9 +424,9 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
   }
   const float next_psi =
       static_cast<const float *>(
-          launch.inputs[coefficient_base + 1].data)[packed] *
+          b.data)[packed] *
           old_psi +
-      static_cast<const float*>(launch.inputs[coefficient_base].data)[packed] *
+      static_cast<const float*>(a.data)[packed] *
           derivative;
   if constexpr (PsiType == kBeamzBF16) {
     static_cast<__nv_bfloat16*>(psi_output.data)[psi_offset] =
@@ -302,7 +441,7 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
   }
   return sign *
          (derivative * static_cast<const float*>(
-                           launch.inputs[coefficient_base + 2].data)[packed] +
+                           inv_kappa.data)[packed] +
           next_psi);
 }
 
@@ -397,7 +536,9 @@ __device__ __forceinline__ void UpdateComponent(const BeamzLaunch& launch,
         static_cast<const uint32_t*>(launch.inputs[9 + Component].data);
     const uint32_t word = packed[linear >> 2];
     const uint32_t code = (word >> (8 * (linear & 3))) & 0xffu;
-    source = static_cast<const float*>(launch.inputs[6 + Component].data)[code];
+    source = code < launch.inputs[6 + Component].dims[0]
+                 ? static_cast<const float*>(launch.inputs[6 + Component].data)[code]
+                 : 0.0f;
   } else {
     decay = Read(launch.inputs[6 + Component], z, y, x);
     source = Read(launch.inputs[9 + Component], z, y, x);
