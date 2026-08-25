@@ -94,7 +94,12 @@ def test_cuda_program_boundary_code_requires_matching_h_and_e_cpml_slabs():
     )
 
     uniform_attributes = cuda_runtime._program_attributes(
-        context, 3, abi.PROGRAM_LAYOUT_CPML_IN_PLACE
+        context,
+        3,
+        cuda_runtime.NativeSchedulePlan(
+            abi.PROGRAM_LAYOUT_CPML_IN_PLACE,
+            abi.NATIVE_SCHEDULE_CPML | abi.NATIVE_SCHEDULE_UNIFORM_CPML,
+        ),
     )
     assert uniform_attributes["boundary_code"] == np.int32((4 << 8) | 1)
 
@@ -110,7 +115,11 @@ def test_cuda_program_boundary_code_requires_matching_h_and_e_cpml_slabs():
         ),
     )
     attributes = cuda_runtime._program_attributes(
-        context, 3, abi.PROGRAM_LAYOUT_CPML_IN_PLACE
+        context,
+        3,
+        cuda_runtime.NativeSchedulePlan(
+            abi.PROGRAM_LAYOUT_CPML_IN_PLACE, abi.NATIVE_SCHEDULE_CPML
+        ),
     )
 
     # Program launches pass one boundary code to both phases.  A H-only check
@@ -284,6 +293,10 @@ def test_cuda_multi_step_ffi_aliases_all_fields(monkeypatch):
         "cpml_enabled": np.int32(0),
         "monitor_count": np.int32(0),
         "coincident_source_group_mask": np.int32(0),
+        "disjoint_source_group_mask": np.int32(0),
+        "schedule_flags": np.int32(
+            abi.NATIVE_SCHEDULE_TEMPORAL | abi.NATIVE_SCHEDULE_GRAPH_CACHE
+        ),
     }
     assert next_state.hx is state.hx
     assert next_state.ez is state.ez
@@ -495,6 +508,47 @@ def test_cuda_source_group_graph_packs_all_phases_and_aliases_state(monkeypatch)
     assert attributes["program_layout"] == np.int32(abi.PROGRAM_LAYOUT_SOURCE_IN_PLACE)
     assert attributes["coincident_source_group_mask"] == np.int32(1)
     assert next_state.cpml_psi_h_terms == state.cpml_psi_h_terms
+
+
+def test_cuda_source_schedule_proves_only_nonoverlapping_batches_are_disjoint():
+    disjoint = SimpleNamespace(
+        coeffs=jnp.ones((2, 3, 4, 5), dtype=jnp.float32),
+        starts_tuple=((0, 0, 0), (0, 0, 5)),
+    )
+    overlapping = SimpleNamespace(
+        coeffs=jnp.ones((2, 3, 4, 5), dtype=jnp.float32),
+        starts_tuple=((0, 0, 0), (0, 0, 4)),
+    )
+
+    assert cuda_runtime._disjoint_source_group_mask((disjoint,) + (None,) * 8) == 1
+    assert cuda_runtime._disjoint_source_group_mask((overlapping,) + (None,) * 8) == 0
+
+
+def test_cuda_schedule_plan_requires_all_combined_cpml_capabilities():
+    program, state, context = _program_and_state(cpml=True)
+    packed = program.coefficients._replace(
+        h_decay_x=jnp.asarray(1.0, dtype=jnp.float32),
+        h_decay_y=jnp.asarray(1.0, dtype=jnp.float32),
+        h_decay_z=jnp.asarray(1.0, dtype=jnp.float32),
+        h_source_x=jnp.asarray(1.0, dtype=jnp.float32),
+        h_source_y=jnp.asarray(1.0, dtype=jnp.float32),
+        h_source_z=jnp.asarray(1.0, dtype=jnp.float32),
+        e_decay_x=jnp.ones((1,), dtype=jnp.float32),
+        e_decay_y=jnp.ones((1,), dtype=jnp.float32),
+        e_decay_z=jnp.ones((1,), dtype=jnp.float32),
+        e_source_x=jnp.zeros((1,), dtype=jnp.int32),
+        e_source_y=jnp.zeros((1,), dtype=jnp.int32),
+        e_source_z=jnp.zeros((1,), dtype=jnp.int32),
+    )
+
+    plan = cuda_runtime._native_schedule_plan(
+        state, context, packed, 3, kind="source", groups=(None,) * 9
+    )
+
+    assert plan.layout == abi.PROGRAM_LAYOUT_SOURCE_TEMPORAL_CPML
+    assert plan.flags & abi.NATIVE_SCHEDULE_COMBINED_CPML_CORE
+    assert plan.flags & abi.NATIVE_SCHEDULE_PACKED_MATERIAL
+    assert plan.flags & abi.NATIVE_SCHEDULE_UNIFORM_CPML
 
 
 def test_cuda_source_group_graph_uses_temporal_cpml_field_banks(monkeypatch):

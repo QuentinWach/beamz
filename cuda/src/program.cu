@@ -16,6 +16,10 @@ bool FlagEnabled(const BeamzLaunch& launch, int32_t flag) {
   return (launch.cuda_flags & flag) != 0;
 }
 
+bool ScheduleFlagEnabled(const BeamzProgramLaunch& program, int32_t flag) {
+  return (program.schedule_flags & flag) != 0;
+}
+
 bool FitsIntOffsets(const BeamzBuffer& value) {
   if (value.rank < 0 || value.rank > 4) return false;
   int64_t elements = 1;
@@ -48,7 +52,8 @@ cudaError_t ValidateSourceGroups(const BeamzSourceGroupLaunch* groups,
         group.timing > 2 || group.coefficients.rank != 4 ||
         group.waveforms.rank != 2 || group.starts.rank != 2 ||
         group.current_step.rank != 0 || group.coincident < 0 ||
-        group.coincident > 1 ||
+        group.coincident > 1 || group.disjoint < 0 || group.disjoint > 1 ||
+        (group.coincident != 0 && group.disjoint != 0) ||
         !HasType(group.coefficients, kBeamzF32) ||
         !HasType(group.waveforms, kBeamzF32) ||
         !HasType(group.starts, kBeamzS32) ||
@@ -66,6 +71,102 @@ cudaError_t ValidateSourceGroups(const BeamzSourceGroupLaunch* groups,
         !FitsIntOffsets(group.current_step)) {
       return cudaErrorInvalidValue;
     }
+  }
+  return cudaSuccess;
+}
+
+bool HasPackedLosslessMaterial(const BeamzLaunch& launch) {
+  if (launch.phase != 1) return false;
+  for (int component = 0; component < 3; ++component) {
+    if (launch.inputs[6 + component].rank != 1 ||
+        launch.inputs[9 + component].rank != 1 ||
+        launch.inputs[9 + component].element_type != kBeamzS32) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool UniformCpml(const BeamzProgramLaunch& program) {
+  if (program.h_ab.nterms != kCpmlTermCount ||
+      program.h_ab.uniform_cpml_thickness <= 0 ||
+      program.e_ab.uniform_cpml_thickness !=
+          program.h_ab.uniform_cpml_thickness) {
+    return false;
+  }
+  if (program.field_bank_count == 2 &&
+      (program.h_ba.uniform_cpml_thickness !=
+           program.h_ab.uniform_cpml_thickness ||
+       program.e_ba.uniform_cpml_thickness !=
+           program.h_ab.uniform_cpml_thickness)) {
+    return false;
+  }
+  return true;
+}
+
+bool CombinedCpmlCoreSupported(const BeamzProgramLaunch& program) {
+  if (!UniformCpml(program) || program.h_ab.metric_kind != 0 ||
+      program.e_ab.metric_kind != 0 ||
+      !HasPackedLosslessMaterial(program.e_ab)) {
+    return false;
+  }
+  if (program.field_bank_count == 2 &&
+      (program.h_ba.metric_kind != 0 || program.e_ba.metric_kind != 0 ||
+       !HasPackedLosslessMaterial(program.e_ba))) {
+    return false;
+  }
+  const BeamzLaunch* h_launches[] = {
+      &program.h_ab, program.field_bank_count == 2 ? &program.h_ba : nullptr};
+  for (const BeamzLaunch* h_launch : h_launches) {
+    if (h_launch == nullptr) continue;
+    for (int material = 0; material < 6; ++material) {
+      if (h_launch->inputs[6 + material].rank != 0) return false;
+    }
+  }
+  const int64_t thickness = program.h_ab.uniform_cpml_thickness;
+  for (int axis = 0; axis < 3; ++axis) {
+    int64_t extent = program.h_ab.outputs[0].dims[axis];
+    for (int component = 1; component < 3; ++component) {
+      if (program.h_ab.outputs[component].dims[axis] < extent) {
+        extent = program.h_ab.outputs[component].dims[axis];
+      }
+    }
+    if (extent <= 2 * thickness) return false;
+  }
+  return true;
+}
+
+cudaError_t ValidateSchedulePlan(const BeamzProgramLaunch& program) {
+  constexpr int32_t kKnownFlags =
+      kNativeScheduleCpml | kNativeScheduleTemporal |
+      kNativeScheduleUniformCpml | kNativeSchedulePackedMaterial |
+      kNativeScheduleCombinedCpmlCore | kNativeScheduleSources |
+      kNativeScheduleMonitors | kNativeScheduleGraphCache;
+  if (program.schedule_flags < 0 ||
+      (program.schedule_flags & ~kKnownFlags) != 0) {
+    return cudaErrorInvalidValue;
+  }
+  const bool cpml = program.h_ab.nterms == kCpmlTermCount;
+  const bool temporal = program.field_bank_count == 2;
+  const bool sources = program.source_group_count != 0;
+  const bool monitors = program.monitors != nullptr;
+  const bool packed_material =
+      HasPackedLosslessMaterial(program.e_ab) &&
+      (program.field_bank_count == 1 ||
+       HasPackedLosslessMaterial(program.e_ba));
+  const bool graph_cache = FlagEnabled(program.h_ab, kBeamzGraphCache);
+  if (ScheduleFlagEnabled(program, kNativeScheduleCpml) != cpml ||
+      ScheduleFlagEnabled(program, kNativeScheduleTemporal) != temporal ||
+      ScheduleFlagEnabled(program, kNativeScheduleUniformCpml) !=
+          UniformCpml(program) ||
+      ScheduleFlagEnabled(program, kNativeSchedulePackedMaterial) !=
+          packed_material ||
+      ScheduleFlagEnabled(program, kNativeScheduleSources) != sources ||
+      ScheduleFlagEnabled(program, kNativeScheduleMonitors) != monitors ||
+      ScheduleFlagEnabled(program, kNativeScheduleGraphCache) != graph_cache ||
+      (ScheduleFlagEnabled(program, kNativeScheduleCombinedCpmlCore) &&
+       !CombinedCpmlCoreSupported(program))) {
+    return cudaErrorInvalidValue;
   }
   return cudaSuccess;
 }
@@ -189,7 +290,11 @@ cudaError_t ValidateProgram(const BeamzProgramLaunch& program) {
       error != cudaSuccess) {
     return error;
   }
-  return ValidateMonitors(program.monitors);
+  if (cudaError_t error = ValidateMonitors(program.monitors);
+      error != cudaSuccess) {
+    return error;
+  }
+  return ValidateSchedulePlan(program);
 }
 
 int LaunchInPlaceProgram(void* raw_stream, const BeamzProgramLaunch& program) {
@@ -203,7 +308,8 @@ int LaunchInPlaceProgram(void* raw_stream, const BeamzProgramLaunch& program) {
   const bool cache_enabled = FlagEnabled(h_launch, kBeamzGraphCache);
   auto enqueue = [&]() {
     cudaError_t error = cudaSuccess;
-    const bool split_cpml = BeamzCpmlScheduleSupported(h_launch, e_launch);
+    const bool split_cpml =
+        ScheduleFlagEnabled(program, kNativeScheduleCombinedCpmlCore);
     auto enqueue_sources = [&](int timing, int32_t step) {
       for (int32_t index = 0; index < source_group_count; ++index) {
         const BeamzSourceGroupLaunch& group = source_groups[index];
@@ -332,7 +438,7 @@ int LaunchTemporalCpmlProgram(void* raw_stream,
       const BeamzLaunch& e_launch = ab ? e_ab : e_ba;
       enqueue_sources(h_launch, e_launch, 0, step);
       if (error != cudaSuccess) return error;
-      if (BeamzCpmlScheduleSupported(h_launch, e_launch)) {
+      if (ScheduleFlagEnabled(program, kNativeScheduleCombinedCpmlCore)) {
         error = BeamzEnqueueCpmlPhase(stream, h_launch);
         if (error != cudaSuccess) return error;
         enqueue_sources(h_launch, e_launch, 1, step);

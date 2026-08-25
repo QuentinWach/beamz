@@ -1,6 +1,6 @@
 {
-  "abi_version": 13,
-  "component_version": "0.13.0",
+  "abi_version": 14,
+  "component_version": "0.14.0",
   "targets": {
     "streamed": "beamz_cuda_streamed",
     "program": "beamz_cuda_program",
@@ -17,6 +17,16 @@
   "default_flags": [
     "graph_cache"
   ],
+  "schedule_flags": {
+    "cpml": 0,
+    "temporal": 1,
+    "uniform_cpml": 2,
+    "packed_material": 3,
+    "combined_cpml_core": 4,
+    "sources": 5,
+    "monitors": 6,
+    "graph_cache": 7
+  },
   "program_layouts": {
     "yee_in_place": 0,
     "yee_temporal": 1,

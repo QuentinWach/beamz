@@ -238,6 +238,7 @@ __device__ __forceinline__ void ApplyCoincidentSourceGroupCell(
   static_cast<float*>(target.data)[target_offset] = value;
 }
 
+template <bool Atomic>
 __global__ void ApplySourceGroupBatched(BeamzBuffer target,
                                         BeamzSourceGroupLaunch group,
                                         int z_blocks, int step_offset,
@@ -247,10 +248,10 @@ __global__ void ApplySourceGroupBatched(BeamzBuffer target,
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
   const int z = source_block_z * blockDim.z + threadIdx.z;
-  // Sources within a group may overlap. A single batched launch must preserve
-  // their additive semantics instead of racing read-modify-write operations.
-  ApplySourceGroupCell<true>(target, group, source_index, step_offset,
-                             metallic_edges, z, y, x);
+  // The compiler marks only statically disjoint slabs as non-atomic. The
+  // conservative default preserves additive semantics for every other group.
+  ApplySourceGroupCell<Atomic>(target, group, source_index, step_offset,
+                               metallic_edges, z, y, x);
 }
 
 __global__ void ApplyCoincidentSourceGroup(BeamzBuffer target,
@@ -297,8 +298,13 @@ cudaError_t LaunchSourceGroup(cudaStream_t stream, const BeamzLaunch& launch,
         target, group, step, launch.metallic_edges);
     return cudaPeekAtLastError();
   }
-  ApplySourceGroupBatched<<<blocks, threads, 0, stream>>>(
-      target, group, z_blocks, step, launch.metallic_edges);
+  if (group.disjoint != 0) {
+    ApplySourceGroupBatched<false><<<blocks, threads, 0, stream>>>(
+        target, group, z_blocks, step, launch.metallic_edges);
+  } else {
+    ApplySourceGroupBatched<true><<<blocks, threads, 0, stream>>>(
+        target, group, z_blocks, step, launch.metallic_edges);
+  }
   return cudaPeekAtLastError();
 }
 

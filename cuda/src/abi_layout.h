@@ -7,8 +7,8 @@
 
 namespace beamz::cuda::abi {
 
-inline constexpr int32_t kAbiVersion = 13;
-inline constexpr char kComponentVersion[] = "0.13.0";
+inline constexpr int32_t kAbiVersion = 14;
+inline constexpr char kComponentVersion[] = "0.14.0";
 inline constexpr char kStreamedTarget[] = "beamz_cuda_streamed";
 inline constexpr char kProgramTarget[] = "beamz_cuda_program";
 inline constexpr char kHopperTarget[] = "beamz_cuda_hopper";
@@ -16,6 +16,15 @@ inline constexpr char kHopperTarget[] = "beamz_cuda_hopper";
 inline constexpr int32_t kBeamzGraphCache = 1 << 7;
 inline constexpr int32_t kBeamzBf16Psi = 1 << 12;
 inline constexpr int32_t kBeamzDefaultFlags = kBeamzGraphCache;
+
+inline constexpr int32_t kNativeScheduleCpml = 1 << 0;
+inline constexpr int32_t kNativeScheduleTemporal = 1 << 1;
+inline constexpr int32_t kNativeScheduleUniformCpml = 1 << 2;
+inline constexpr int32_t kNativeSchedulePackedMaterial = 1 << 3;
+inline constexpr int32_t kNativeScheduleCombinedCpmlCore = 1 << 4;
+inline constexpr int32_t kNativeScheduleSources = 1 << 5;
+inline constexpr int32_t kNativeScheduleMonitors = 1 << 6;
+inline constexpr int32_t kNativeScheduleGraphCache = 1 << 7;
 
 inline constexpr int32_t kProgramLayoutYeeInPlace = 0;
 inline constexpr int32_t kProgramLayoutYeeTemporal = 1;

@@ -127,6 +127,7 @@ void AppendSourceGroup(std::string* key,
   Append(key, value.component);
   Append(key, value.timing);
   Append(key, value.coincident);
+  Append(key, value.disjoint);
 }
 
 void AppendMonitors(std::string* key, const BeamzDftGroupLaunch& value) {
@@ -154,6 +155,7 @@ std::string BeamzGraphKey(const char* schedule, void* stream,
   Append(&key, stream);
   Append(&key, program.field_bank_count);
   Append(&key, program.nsteps);
+  Append(&key, program.schedule_flags);
   AppendLaunch(&key, program.h_ab);
   AppendLaunch(&key, program.e_ab);
   if (program.field_bank_count == 2) {
