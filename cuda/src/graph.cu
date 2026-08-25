@@ -2,6 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -30,6 +33,10 @@ struct GraphCache {
   // independent LRU clocks per device so eviction never destroys a resource
   // while another device is current on the calling thread.
   std::unordered_map<int, DeviceGraphCache> devices;
+  uint64_t hits = 0;
+  uint64_t misses = 0;
+  uint64_t instantiations = 0;
+  uint64_t instantiation_nanoseconds = 0;
 };
 
 GraphCache& CachedGraphs() {
@@ -37,6 +44,35 @@ GraphCache& CachedGraphs() {
   // deliberately bounded cache until process teardown instead.
   static auto* cache = new GraphCache();
   return *cache;
+}
+
+bool GraphCacheStatsEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("BEAMZ_CUDA_GRAPH_CACHE_STATS");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+  }();
+  return enabled;
+}
+
+void ReportGraphCacheStatsLocked(const GraphCache& cache) {
+  if (!GraphCacheStatsEnabled()) return;
+  const uint64_t lookups = cache.hits + cache.misses;
+  // Emit a first sample and periodic summaries. Diagnostics are strictly
+  // opt-in so ordinary graph replays retain the same hot-path cost.
+  if (lookups != 1 && lookups % 128 != 0) return;
+  const double hit_rate = lookups == 0
+                              ? 0.0
+                              : 100.0 * static_cast<double>(cache.hits) / lookups;
+  const double average_ms = cache.instantiations == 0
+                                ? 0.0
+                                : static_cast<double>(cache.instantiation_nanoseconds) /
+                                      cache.instantiations / 1.0e6;
+  std::fprintf(stderr,
+               "BeamZ CUDA graph cache: hits=%llu misses=%llu hit_rate=%.1f%% "
+               "mean_instantiate_ms=%.3f\n",
+               static_cast<unsigned long long>(cache.hits),
+               static_cast<unsigned long long>(cache.misses), hit_rate,
+               average_ms);
 }
 
 void DestroyGraphEntry(GraphCacheEntry entry) {
@@ -194,9 +230,16 @@ cudaError_t BeamzLaunchGraph(cudaStream_t stream, const std::string& key,
     const auto cached = device_cache.entries.find(key);
     if (cached != device_cache.entries.end()) {
       bool launched = false;
-      return LaunchCachedEntryLocked(&device_cache, &cached->second, stream,
-                                     &launched);
+      const cudaError_t error =
+          LaunchCachedEntryLocked(&device_cache, &cached->second, stream,
+                                  &launched);
+      if (GraphCacheStatsEnabled()) {
+        ++cache.hits;
+        ReportGraphCacheStatsLocked(cache);
+      }
+      return error;
     }
+    if (GraphCacheStatsEnabled()) ++cache.misses;
   }
 
   cudaGraph_t graph = nullptr;
@@ -210,7 +253,22 @@ cudaError_t BeamzLaunchGraph(cudaStream_t stream, const std::string& key,
   error = enqueue();
   const cudaError_t end_error = cudaStreamEndCapture(stream, &graph);
   if (error == cudaSuccess) error = end_error;
-  if (error == cudaSuccess) error = cudaGraphInstantiate(&executable, graph, 0);
+  if (error == cudaSuccess) {
+    if (cache_enabled && GraphCacheStatsEnabled()) {
+      const auto instantiate_start = std::chrono::steady_clock::now();
+      error = cudaGraphInstantiate(&executable, graph, 0);
+      const auto instantiate_end = std::chrono::steady_clock::now();
+      const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          instantiate_end - instantiate_start);
+      std::lock_guard<std::mutex> lock(cache.mutex);
+      ++cache.instantiations;
+      cache.instantiation_nanoseconds +=
+          static_cast<uint64_t>(elapsed.count());
+      ReportGraphCacheStatsLocked(cache);
+    } else {
+      error = cudaGraphInstantiate(&executable, graph, 0);
+    }
+  }
   if (error == cudaSuccess && cache_enabled) {
     GraphCacheEntry new_entry{};
     new_entry.executable = executable;

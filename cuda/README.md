@@ -86,6 +86,9 @@ executables. In-flight entries may temporarily exceed the target so the native
 cache never destroys an executable still referenced by a CUDA stream. These
 choices and the CPML precision setting are snapshotted into the immutable
 compiled-program key; native execution never rereads environment variables.
+Set `BEAMZ_CUDA_GRAPH_CACHE_STATS=1` while profiling to emit an initial and then
+periodic cache hit-rate and mean graph-instantiation-time summary. It is off by
+default and has no counter/timing work on normal graph replays.
 
 No CUDA result is promoted without all of the following on real hardware:
 
