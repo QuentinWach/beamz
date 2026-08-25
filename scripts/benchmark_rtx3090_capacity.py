@@ -149,8 +149,20 @@ def _process_gpu_memory_bytes() -> int:
     return 0
 
 
-def _child_environment(allocator_fraction: float) -> dict[str, str]:
+def _child_environment(root: Path, allocator_fraction: float) -> dict[str, str]:
+    """Build a child environment that always imports the revision being timed.
+
+    A benchmark child executes this script from ``scripts/``.  Python therefore
+    does not automatically put the repository root before an installed BeamZ
+    package.  Make the source root explicit, just as the comparison benchmark
+    does, so an editable installation or another checkout cannot silently
+    replace the candidate under measurement.
+    """
     environment = os.environ.copy()
+    source_paths = [str(root)]
+    if previous_path := environment.get("PYTHONPATH"):
+        source_paths.append(previous_path)
+    environment["PYTHONPATH"] = os.pathsep.join(source_paths)
     environment["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     environment["XLA_PYTHON_CLIENT_MEM_FRACTION"] = str(allocator_fraction)
     environment["BEAMZ_DISABLE_JAX_PERSISTENT_CACHE"] = "1"
@@ -209,7 +221,7 @@ def _run_child(
         completed = subprocess.run(
             command,
             cwd=root,
-            env=_child_environment(allocator_fraction),
+            env=_child_environment(root, allocator_fraction),
             capture_output=True,
             text=True,
             timeout=timeout_s,
