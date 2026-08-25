@@ -58,6 +58,10 @@ struct BeamzDftGroupLaunch {
   BeamzBuffer dft_re;
   BeamzBuffer dft_im;
   BeamzBuffer dft_weight;
+  // XLA-owned scratch used by the monitor-heavy phase-cache specialization.
+  BeamzBuffer phase_sin;
+  BeamzBuffer phase_cos;
+  BeamzBuffer phase_window;
   BeamzBuffer time;
   BeamzBuffer current_step;
   int32_t monitor_count;

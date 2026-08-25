@@ -813,12 +813,23 @@ def run_program_steps(
         state.dft_vec_im,
         state.dft_weight_sum,
     )
+    phase_shape = (
+        int(packed_monitors[0].shape[0]),
+        int(packed_monitors[2].shape[1]),
+    )
+    phase_sin = jnp.empty(phase_shape, dtype=jnp.float32)
+    phase_cos = jnp.empty(phase_shape, dtype=jnp.float32)
+    phase_window = jnp.empty(phase_shape, dtype=jnp.float32)
+    result_values = (*result_values, phase_sin, phase_cos, phase_window)
     monitor_output_start = len(arguments) + len(source_arguments) + len(packed_monitors)
     aliases = {
         **aliases,
         monitor_output_start: state_output_count,
         monitor_output_start + 1: state_output_count + 1,
         monitor_output_start + 2: state_output_count + 2,
+        monitor_output_start + 3: state_output_count + 3,
+        monitor_output_start + 4: state_output_count + 4,
+        monitor_output_start + 5: state_output_count + 5,
     }
     call = _ffi_call(abi.CUDA_PROGRAM_TARGET, result_values, aliases)
     outputs = call(
@@ -828,6 +839,9 @@ def run_program_steps(
         state.dft_vec_re,
         state.dft_vec_im,
         state.dft_weight_sum,
+        phase_sin,
+        phase_cos,
+        phase_window,
         state.t,
         state.current_step,
         **_program_attributes(ctx, nsteps, plan),

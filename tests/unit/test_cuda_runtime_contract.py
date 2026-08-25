@@ -647,12 +647,15 @@ def test_cuda_program_graph_packs_monitor_batch_and_aliases_accumulators(monkeyp
 
     target, results, options, arguments, attributes = captured[0]
     assert target == abi.CUDA_PROGRAM_TARGET
-    assert len(results) == 21
-    assert len(arguments) == 113
+    assert len(results) == 24
+    assert len(arguments) == 116
     assert packed[0].shape[:2] == (1, 6)
     assert options["input_output_aliases"][108] == 18
     assert options["input_output_aliases"][109] == 19
     assert options["input_output_aliases"][110] == 20
+    assert options["input_output_aliases"][111] == 21
+    assert options["input_output_aliases"][112] == 22
+    assert options["input_output_aliases"][113] == 23
     assert attributes["monitor_count"] == np.int32(1)
     assert attributes["program_layout"] == np.int32(abi.PROGRAM_LAYOUT_MONITOR_IN_PLACE)
     assert attributes["coincident_source_group_mask"] == np.int32(1)
@@ -704,9 +707,9 @@ def test_cuda_program_graph_uses_temporal_cpml_field_banks(monkeypatch):
 
     target, results, options, arguments, attributes = captured[0]
     assert target == abi.CUDA_PROGRAM_TARGET
-    assert len(results) == 39
-    assert len(arguments) == 131
-    assert arguments[130] is state.current_step
+    assert len(results) == 42
+    assert len(arguments) == 134
+    assert arguments[133] is state.current_step
     assert options["input_output_aliases"] == {
         **{index: index for index in range(6)},
         **{74 + index: 6 + index for index in range(6)},
@@ -716,6 +719,9 @@ def test_cuda_program_graph_uses_temporal_cpml_field_banks(monkeypatch):
         126: 36,
         127: 37,
         128: 38,
+        129: 39,
+        130: 40,
+        131: 41,
     }
     assert attributes["cpml_enabled"] == np.int32(1)
     assert attributes["monitor_count"] == np.int32(1)

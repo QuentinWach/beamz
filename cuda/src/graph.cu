@@ -141,6 +141,9 @@ void AppendMonitors(std::string* key, const BeamzDftGroupLaunch& value) {
   AppendBuffer(key, value.dft_re);
   AppendBuffer(key, value.dft_im);
   AppendBuffer(key, value.dft_weight);
+  AppendBuffer(key, value.phase_sin);
+  AppendBuffer(key, value.phase_cos);
+  AppendBuffer(key, value.phase_window);
   AppendBuffer(key, value.time);
   AppendBuffer(key, value.current_step);
   Append(key, value.monitor_count);

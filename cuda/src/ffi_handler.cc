@@ -216,6 +216,8 @@ void InitializeSourceGroups(
 BeamzDftGroupLaunch InitializeDftGroups(
     const BeamzBuffer* inputs, size_t offset, const BeamzBuffer& dft_re,
     const BeamzBuffer& dft_im, const BeamzBuffer& dft_weight,
+    const BeamzBuffer& phase_sin, const BeamzBuffer& phase_cos,
+    const BeamzBuffer& phase_window,
     int32_t monitor_count) {
   BeamzDftGroupLaunch monitors{};
   monitors.indices = inputs[offset + kMonitorIndicesInput];
@@ -228,6 +230,9 @@ BeamzDftGroupLaunch InitializeDftGroups(
   monitors.dft_re = dft_re;
   monitors.dft_im = dft_im;
   monitors.dft_weight = dft_weight;
+  monitors.phase_sin = phase_sin;
+  monitors.phase_cos = phase_cos;
+  monitors.phase_window = phase_window;
   monitors.time = inputs[offset + kMonitorTimeInput];
   monitors.current_step = inputs[offset + kMonitorCurrentStepInput];
   monitors.monitor_count = monitor_count;
@@ -598,7 +603,7 @@ ffi::Error TemporalProgramCpmlStepsHandler(
                                  kSourceInputCount + kMonitorInputCount;
   constexpr size_t kStateOutputCount =
       2 * kFieldCount + 4 * kCpmlTermCount;
-  constexpr size_t kOutputCount = kStateOutputCount + 3;
+  constexpr size_t kOutputCount = kStateOutputCount + 6;
   if (abi_version != kAbiVersion || nsteps < 1 ||
       metric_kind < 0 || metric_kind > 2 || monitor_count < 1 ||
       coincident_source_group_mask < 0 ||
@@ -628,6 +633,8 @@ ffi::Error TemporalProgramCpmlStepsHandler(
   BeamzDftGroupLaunch monitors = InitializeDftGroups(
       inputs, kMonitorOffset, outputs[kStateOutputCount],
       outputs[kStateOutputCount + 1], outputs[kStateOutputCount + 2],
+      outputs[kStateOutputCount + 3], outputs[kStateOutputCount + 4],
+      outputs[kStateOutputCount + 5],
       monitor_count);
 
   const int error = BeamzLaunchProgram(
@@ -662,7 +669,7 @@ ffi::Error StreamedProgramCpmlStepsHandler(
       kSourceGroupBufferCount * kSourceGroupCount;
   constexpr size_t kInputCapacity =
       kCpmlGraphInputCount + kSourceInputCount + kMonitorInputCount;
-  constexpr size_t kOutputCapacity = kCpmlGraphOutputCount + 3;
+  constexpr size_t kOutputCapacity = kCpmlGraphOutputCount + 6;
   BeamzBuffer inputs[kInputCapacity]{};
   BeamzBuffer outputs[kOutputCapacity]{};
   const size_t graph_input_count =
@@ -673,7 +680,7 @@ ffi::Error StreamedProgramCpmlStepsHandler(
                               graph_input_count + kSourceInputCount +
                                   kMonitorInputCount);
       error.failure()) return error;
-  if (auto error = DecodeRets(rets, outputs, graph_output_count + 3);
+  if (auto error = DecodeRets(rets, outputs, graph_output_count + 6);
       error.failure()) return error;
 
   GraphLaunches launches = InitializeGraphLaunches(
@@ -689,7 +696,10 @@ ffi::Error StreamedProgramCpmlStepsHandler(
   BeamzDftGroupLaunch monitors = InitializeDftGroups(
       inputs, monitor_start, inputs[monitor_start + kMonitorDftReInput],
       inputs[monitor_start + kMonitorDftImInput],
-      inputs[monitor_start + kMonitorDftWeightInput], monitor_count);
+      inputs[monitor_start + kMonitorDftWeightInput],
+      inputs[monitor_start + kMonitorPhaseSinInput],
+      inputs[monitor_start + kMonitorPhaseCosInput],
+      inputs[monitor_start + kMonitorPhaseWindowInput], monitor_count);
 
   const int error = BeamzLaunchProgram(
       stream, InPlaceProgram(launches, nsteps, groups, kSourceGroupCount,

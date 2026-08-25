@@ -180,7 +180,8 @@ cudaError_t ValidateMonitors(const BeamzDftGroupLaunch* value) {
       monitors.codes.rank != 2 || monitors.windows.rank != 2 ||
       monitors.dft_re.rank != 1 || monitors.dft_im.rank != 1 ||
       monitors.dft_weight.rank != 1 || monitors.time.rank != 0 ||
-      monitors.current_step.rank != 0 ||
+      monitors.current_step.rank != 0 || monitors.phase_sin.rank != 2 ||
+      monitors.phase_cos.rank != 2 || monitors.phase_window.rank != 2 ||
       !HasType(monitors.indices, kBeamzS32) ||
       !HasType(monitors.weights, kBeamzF32) ||
       !HasType(monitors.frequencies, kBeamzF32) ||
@@ -191,6 +192,9 @@ cudaError_t ValidateMonitors(const BeamzDftGroupLaunch* value) {
       !HasType(monitors.dft_re, kBeamzF32) ||
       !HasType(monitors.dft_im, kBeamzF32) ||
       !HasType(monitors.dft_weight, kBeamzF32) ||
+      !HasType(monitors.phase_sin, kBeamzF32) ||
+      !HasType(monitors.phase_cos, kBeamzF32) ||
+      !HasType(monitors.phase_window, kBeamzF32) ||
       !HasType(monitors.time, kBeamzF32) ||
       !HasType(monitors.current_step, kBeamzS32) ||
       monitors.indices.dims[0] < monitors.monitor_count ||
@@ -211,20 +215,29 @@ cudaError_t ValidateMonitors(const BeamzDftGroupLaunch* value) {
       monitors.dft_im.dims[0] != monitors.dft_re.dims[0] ||
       monitors.dft_weight.dims[0] < 1 || monitors.indices.dims[2] < 1 ||
       monitors.indices.dims[3] < 1 || monitors.frequencies.dims[1] < 1 ||
+      monitors.phase_sin.dims[0] < monitors.monitor_count ||
+      monitors.phase_sin.dims[1] != monitors.frequencies.dims[1] ||
+      monitors.phase_cos.dims[0] != monitors.phase_sin.dims[0] ||
+      monitors.phase_cos.dims[1] != monitors.phase_sin.dims[1] ||
+      monitors.phase_window.dims[0] != monitors.phase_sin.dims[0] ||
+      monitors.phase_window.dims[1] != monitors.phase_sin.dims[1] ||
       monitors.indices.data == nullptr ||
       monitors.weights.data == nullptr || monitors.frequencies.data == nullptr ||
       monitors.component_masks.data == nullptr || monitors.counts.data == nullptr ||
       monitors.codes.data == nullptr || monitors.windows.data == nullptr ||
       monitors.dft_re.data == nullptr || monitors.dft_im.data == nullptr ||
       monitors.dft_weight.data == nullptr || monitors.time.data == nullptr ||
-      monitors.current_step.data == nullptr) {
+      monitors.current_step.data == nullptr || monitors.phase_sin.data == nullptr ||
+      monitors.phase_cos.data == nullptr ||
+      monitors.phase_window.data == nullptr) {
     return cudaErrorInvalidValue;
   }
   const BeamzBuffer buffers[] = {
       monitors.indices,         monitors.weights, monitors.frequencies,
       monitors.component_masks, monitors.counts,  monitors.codes,
       monitors.windows,         monitors.dft_re,   monitors.dft_im,
-      monitors.dft_weight,      monitors.time,     monitors.current_step};
+      monitors.dft_weight,      monitors.phase_sin, monitors.phase_cos,
+      monitors.phase_window,    monitors.time,     monitors.current_step};
   for (const BeamzBuffer& buffer : buffers) {
     if (!FitsIntOffsets(buffer)) return cudaErrorInvalidValue;
   }

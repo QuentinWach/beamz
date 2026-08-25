@@ -23,6 +23,11 @@ split by responsibility:
 - `update.cu` owns Yee and CPML kernels;
 - `io.cu` owns source injection and DFT monitor accumulation.
 
+For monitor-heavy graphs, `io.cu` first prepares one window and complex phase per
+monitor/frequency into small XLA-owned scratch buffers, then reuses those values
+across every gathered point and field component. Short plans retain the original
+single-kernel path so an extra launch cannot dominate their work.
+
 `abi_layout.json` is the source of truth for target names, layout selectors, and
 positional buffer constants. After editing it, regenerate both language bindings
 with `python scripts/generate_cuda_abi.py`; CI uses `--check` to reject drift.
