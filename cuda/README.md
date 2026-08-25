@@ -74,9 +74,13 @@ queue uses a precision-specific `32 × 4` absorber tile and remaps the same 128
 threads to a `64 × 2` recurrence-free core tile; FP32 retains its measured-optimal
 `64 × 4` queue.
 
-`BEAMZ_CUDA_DISABLE_GRAPH_CACHE=1` remains as a diagnostic switch. It and the
-CPML precision choice are snapshotted into the immutable compiled-program key;
-native execution never rereads environment variables.
+`BEAMZ_CUDA_DISABLE_GRAPH_CACHE=1` remains as a diagnostic switch.
+`BEAMZ_CUDA_GRAPH_CACHE_CAPACITY` sets the completed-entry LRU target (default
+`32`, valid range `0`–`4096`); a capacity of zero disables persistent graph
+executables. In-flight entries may temporarily exceed the target so the native
+cache never destroys an executable still referenced by a CUDA stream. These
+choices and the CPML precision setting are snapshotted into the immutable
+compiled-program key; native execution never rereads environment variables.
 
 No CUDA result is promoted without all of the following on real hardware:
 

@@ -30,6 +30,8 @@ ResolvedBackend = Literal["jax", "cuda_streamed", "cuda_hopper"]
 
 _EXTENSION_MODULE = "beamz._cuda"
 _REGISTERED_MODULE: ModuleType | None = None
+_DEFAULT_CUDA_GRAPH_CACHE_CAPACITY = 32
+_MAX_CUDA_GRAPH_CACHE_CAPACITY = 4096
 
 
 class CudaBackendUnavailable(RuntimeError):
@@ -54,6 +56,31 @@ def cuda_flags_from_env() -> int:
     elif precision not in {"fp32", "float32", ""}:
         raise ValueError("BEAMZ_CUDA_CPML_PSI_PRECISION must be 'fp32' or 'bf16'")
     return flags
+
+
+def cuda_graph_cache_capacity_from_env() -> int:
+    """Snapshot the bounded native graph-cache target for a compiled program.
+
+    A capacity of zero keeps graph capture available but disables persistent
+    executables.  Native eviction may briefly exceed a positive target while
+    every candidate is still running on its CUDA stream.
+    """
+    value = os.environ.get("BEAMZ_CUDA_GRAPH_CACHE_CAPACITY")
+    if value is None or not value.strip():
+        return _DEFAULT_CUDA_GRAPH_CACHE_CAPACITY
+    try:
+        capacity = int(value)
+    except ValueError as exc:
+        raise ValueError(
+            "BEAMZ_CUDA_GRAPH_CACHE_CAPACITY must be an integer from 0 to "
+            f"{_MAX_CUDA_GRAPH_CACHE_CAPACITY}"
+        ) from exc
+    if not 0 <= capacity <= _MAX_CUDA_GRAPH_CACHE_CAPACITY:
+        raise ValueError(
+            "BEAMZ_CUDA_GRAPH_CACHE_CAPACITY must be an integer from 0 to "
+            f"{_MAX_CUDA_GRAPH_CACHE_CAPACITY}"
+        )
+    return capacity
 
 
 @dataclass(frozen=True, slots=True)

@@ -108,7 +108,7 @@ cudaError_t ValidateMonitors(const BeamzDftGroupLaunch* value) {
 }
 
 cudaError_t ValidateProgram(const BeamzProgramLaunch& program) {
-  if (program.nsteps < 1 ||
+  if (program.nsteps < 1 || program.graph_cache_capacity < 0 ||
       (program.field_bank_count != 1 && program.field_bank_count != 2) ||
       program.h_ab.phase != 0 || program.e_ab.phase != 1 ||
       program.h_ab.nterms != program.e_ab.nterms) {
@@ -229,7 +229,8 @@ int LaunchInPlaceProgram(void* raw_stream, const BeamzProgramLaunch& program) {
     }
     return error;
   };
-  return BeamzLaunchGraph(stream, graph_key, cache_enabled, enqueue);
+  return BeamzLaunchGraph(stream, graph_key, cache_enabled,
+                          program.graph_cache_capacity, enqueue);
 }
 
 int LaunchTemporalYeeProgram(void* raw_stream,
@@ -268,7 +269,8 @@ int LaunchTemporalYeeProgram(void* raw_stream,
     }
     return error;
   };
-  return BeamzLaunchGraph(stream, graph_key, cache_enabled, enqueue);
+  return BeamzLaunchGraph(stream, graph_key, cache_enabled,
+                          program.graph_cache_capacity, enqueue);
 }
 
 int LaunchTemporalCpmlProgram(void* raw_stream,
@@ -331,7 +333,8 @@ int LaunchTemporalCpmlProgram(void* raw_stream,
     }
     return error;
   };
-  return BeamzLaunchGraph(stream, graph_key, cache_enabled, enqueue);
+  return BeamzLaunchGraph(stream, graph_key, cache_enabled,
+                          program.graph_cache_capacity, enqueue);
 }
 
 }  // namespace

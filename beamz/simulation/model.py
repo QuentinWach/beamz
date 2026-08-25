@@ -35,6 +35,7 @@ class RunSpec:
     sharding: ShardingToken
     backend: str = "jax"
     cuda_flags: int = 0
+    cuda_graph_cache_capacity: int = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,6 +463,7 @@ class RunConfig:
     backend: str = "jax"
     sharding: ShardingConfig = ShardingConfig()
     cuda_flags: int = 0
+    cuda_graph_cache_capacity: int = 32
 
 
 @dataclass(frozen=True, slots=True, eq=False)

@@ -74,6 +74,7 @@ struct BeamzProgramLaunch {
   const BeamzDftGroupLaunch* monitors;
   int32_t field_bank_count;
   int32_t nsteps;
+  int32_t graph_cache_capacity = 32;
 };
 
 // Returns zero after enqueueing all work, otherwise a CUDA runtime error code.

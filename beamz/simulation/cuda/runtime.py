@@ -120,6 +120,7 @@ def _program_attributes(
     return {
         "abi_version": np.int32(CUDA_ABI_VERSION),
         "cuda_flags": np.int32(ctx.config.cuda_flags),
+        "graph_cache_capacity": np.int32(ctx.config.cuda_graph_cache_capacity),
         "nsteps": np.int32(nsteps),
         "dt": np.float32(ctx.dt),
         "resolution": np.float32(ctx.resolution),

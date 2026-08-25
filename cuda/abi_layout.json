@@ -1,6 +1,6 @@
 {
-  "abi_version": 12,
-  "component_version": "0.12.0",
+  "abi_version": 13,
+  "component_version": "0.13.0",
   "targets": {
     "streamed": "beamz_cuda_streamed",
     "program": "beamz_cuda_program",

@@ -274,6 +274,7 @@ def test_cuda_multi_step_ffi_aliases_all_fields(monkeypatch):
     assert attributes == {
         "abi_version": np.int32(cuda_runtime.CUDA_ABI_VERSION),
         "cuda_flags": np.int32(context.config.cuda_flags),
+        "graph_cache_capacity": np.int32(context.config.cuda_graph_cache_capacity),
         "nsteps": np.int32(7),
         "dt": np.float32(context.dt),
         "resolution": np.float32(context.resolution),

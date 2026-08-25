@@ -104,7 +104,8 @@ BeamzProgramLaunch InPlaceProgram(
     const GraphLaunches& launches, int32_t nsteps,
     const BeamzSourceGroupLaunch* source_groups = nullptr,
     int32_t source_group_count = 0,
-    const BeamzDftGroupLaunch* monitors = nullptr) {
+    const BeamzDftGroupLaunch* monitors = nullptr,
+    int32_t graph_cache_capacity = 32) {
   BeamzProgramLaunch program{};
   program.h_ab = launches.h;
   program.e_ab = launches.e;
@@ -113,6 +114,7 @@ BeamzProgramLaunch InPlaceProgram(
   program.monitors = monitors;
   program.field_bank_count = 1;
   program.nsteps = nsteps;
+  program.graph_cache_capacity = graph_cache_capacity;
   return program;
 }
 
@@ -120,7 +122,8 @@ BeamzProgramLaunch TemporalProgram(
     const TemporalCpmlLaunches& launches, int32_t nsteps,
     const BeamzSourceGroupLaunch* source_groups = nullptr,
     int32_t source_group_count = 0,
-    const BeamzDftGroupLaunch* monitors = nullptr) {
+    const BeamzDftGroupLaunch* monitors = nullptr,
+    int32_t graph_cache_capacity = 32) {
   BeamzProgramLaunch program{};
   program.h_ab = launches.h_ab;
   program.e_ab = launches.e_ab;
@@ -131,6 +134,7 @@ BeamzProgramLaunch TemporalProgram(
   program.monitors = monitors;
   program.field_bank_count = 2;
   program.nsteps = nsteps;
+  program.graph_cache_capacity = graph_cache_capacity;
   return program;
 }
 
@@ -337,7 +341,8 @@ ffi::Error StreamedStepsHandler(void* stream, ffi::RemainingArgs args,
                                 ffi::RemainingRets rets, int32_t abi_version,
                                 int32_t cuda_flags, int32_t nsteps, float dt,
                                 float resolution, int32_t boundary_code,
-                                int32_t metric_kind) {
+                                int32_t metric_kind,
+                                int32_t graph_cache_capacity) {
   if (abi_version != kAbiVersion) {
     return ffi::Error::InvalidArgument("beamz_cuda ABI version mismatch");
   }
@@ -355,7 +360,9 @@ ffi::Error StreamedStepsHandler(void* stream, ffi::RemainingArgs args,
   GraphLaunches launches = InitializeGraphLaunches(
       abi_version, cuda_flags, dt, resolution, boundary_code, metric_kind,
       false, inputs, outputs);
-  const int error = BeamzLaunchProgram(stream, InPlaceProgram(launches, nsteps));
+  const int error = BeamzLaunchProgram(
+      stream, InPlaceProgram(launches, nsteps, nullptr, 0, nullptr,
+                              graph_cache_capacity));
   return error == 0 ? ffi::Error::Success()
                     : ffi::Error::Internal(
                           "BeamZ CUDA multi-step launch failed: " +
@@ -369,7 +376,8 @@ ffi::Error TemporalStepsHandler(void* stream, ffi::RemainingArgs args,
                                 ffi::RemainingRets rets, int32_t abi_version,
                                 int32_t cuda_flags, int32_t nsteps, float dt,
                                 float resolution, int32_t boundary_code,
-                                int32_t metric_kind) {
+                                int32_t metric_kind,
+                                int32_t graph_cache_capacity) {
   if (abi_version != kAbiVersion) {
     return ffi::Error::InvalidArgument("beamz_cuda ABI version mismatch");
   }
@@ -429,6 +437,7 @@ ffi::Error TemporalStepsHandler(void* stream, ffi::RemainingArgs args,
   program.e_ba = e_ba;
   program.field_bank_count = 2;
   program.nsteps = nsteps;
+  program.graph_cache_capacity = graph_cache_capacity;
   const int error = BeamzLaunchProgram(stream, program);
   return error == 0 ? ffi::Error::Success()
                     : ffi::Error::Internal(
@@ -439,7 +448,8 @@ ffi::Error TemporalStepsHandler(void* stream, ffi::RemainingArgs args,
 ffi::Error StreamedCpmlStepsHandler(
     void* stream, ffi::RemainingArgs args, ffi::RemainingRets rets,
     int32_t abi_version, int32_t cuda_flags, int32_t nsteps, float dt,
-    float resolution, int32_t boundary_code, int32_t metric_kind) {
+    float resolution, int32_t boundary_code, int32_t metric_kind,
+    int32_t graph_cache_capacity) {
   if (abi_version != kAbiVersion) {
     return ffi::Error::InvalidArgument("beamz_cuda ABI version mismatch");
   }
@@ -454,7 +464,9 @@ ffi::Error StreamedCpmlStepsHandler(
   GraphLaunches launches = InitializeGraphLaunches(
       abi_version, cuda_flags, dt, resolution, boundary_code, metric_kind,
       true, inputs, outputs);
-  const int error = BeamzLaunchProgram(stream, InPlaceProgram(launches, nsteps));
+  const int error = BeamzLaunchProgram(
+      stream, InPlaceProgram(launches, nsteps, nullptr, 0, nullptr,
+                              graph_cache_capacity));
   return error == 0 ? ffi::Error::Success()
                     : ffi::Error::Internal(
                           "BeamZ CUDA multi-step CPML launch failed: " +
@@ -465,7 +477,8 @@ ffi::Error StreamedSourceGroupsCpmlStepsHandler(
     void* stream, ffi::RemainingArgs args, ffi::RemainingRets rets,
     int32_t abi_version, int32_t cuda_flags, int32_t nsteps, float dt,
     float resolution, int32_t boundary_code, int32_t metric_kind,
-    int32_t cpml_enabled, int32_t coincident_source_group_mask) {
+    int32_t cpml_enabled, int32_t coincident_source_group_mask,
+    int32_t graph_cache_capacity) {
   if (abi_version != kAbiVersion || nsteps < 1 ||
       metric_kind < 0 || metric_kind > 2 || cpml_enabled < 0 ||
       cpml_enabled > 1 || coincident_source_group_mask < 0 ||
@@ -499,7 +512,8 @@ ffi::Error StreamedSourceGroupsCpmlStepsHandler(
   InitializeSourceGroups(groups, inputs, graph_input_count, current_step,
                          coincident_source_group_mask);
   const int error = BeamzLaunchProgram(
-      stream, InPlaceProgram(launches, nsteps, groups, kSourceGroupCount));
+      stream, InPlaceProgram(launches, nsteps, groups, kSourceGroupCount,
+                             nullptr, graph_cache_capacity));
   return error == 0
              ? ffi::Error::Success()
              : ffi::Error::Internal(
@@ -514,7 +528,7 @@ ffi::Error TemporalSourceGroupsCpmlStepsHandler(
     void* stream, ffi::RemainingArgs args, ffi::RemainingRets rets,
     int32_t abi_version, int32_t cuda_flags, int32_t nsteps, float dt,
     float resolution, int32_t boundary_code, int32_t metric_kind,
-    int32_t coincident_source_group_mask) {
+    int32_t coincident_source_group_mask, int32_t graph_cache_capacity) {
   constexpr size_t kGraphInputCount = kCpmlGraphInputCount;
   constexpr size_t kWorkspaceInputCount = 3 * kFieldCount;
   constexpr size_t kSourceInputCount =
@@ -546,7 +560,8 @@ ffi::Error TemporalSourceGroupsCpmlStepsHandler(
   InitializeSourceGroups(groups, inputs, kSourceOffset, current_step,
                          coincident_source_group_mask);
   const int error = BeamzLaunchProgram(
-      stream, TemporalProgram(launches, nsteps, groups, kSourceGroupCount));
+      stream, TemporalProgram(launches, nsteps, groups, kSourceGroupCount,
+                              nullptr, graph_cache_capacity));
   return error == 0
              ? ffi::Error::Success()
              : ffi::Error::Internal(
@@ -558,7 +573,8 @@ ffi::Error TemporalProgramCpmlStepsHandler(
     void* stream, ffi::RemainingArgs args, ffi::RemainingRets rets,
     int32_t abi_version, int32_t cuda_flags, int32_t nsteps, float dt,
     float resolution, int32_t boundary_code, int32_t metric_kind,
-    int32_t monitor_count, int32_t coincident_source_group_mask) {
+    int32_t monitor_count, int32_t coincident_source_group_mask,
+    int32_t graph_cache_capacity) {
   constexpr size_t kGraphInputCount = kCpmlGraphInputCount;
   constexpr size_t kWorkspaceInputCount = 3 * kFieldCount;
   constexpr size_t kSourceInputCount =
@@ -598,7 +614,7 @@ ffi::Error TemporalProgramCpmlStepsHandler(
 
   const int error = BeamzLaunchProgram(
       stream, TemporalProgram(launches, nsteps, groups, kSourceGroupCount,
-                              &monitors));
+                              &monitors, graph_cache_capacity));
   return error == 0
              ? ffi::Error::Success()
              : ffi::Error::Internal(
@@ -611,7 +627,7 @@ ffi::Error StreamedProgramCpmlStepsHandler(
     int32_t abi_version, int32_t cuda_flags, int32_t nsteps, float dt,
     float resolution, int32_t boundary_code, int32_t metric_kind,
     int32_t cpml_enabled, int32_t monitor_count,
-    int32_t coincident_source_group_mask) {
+    int32_t coincident_source_group_mask, int32_t graph_cache_capacity) {
   if (abi_version != kAbiVersion || nsteps < 1 ||
       metric_kind < 0 || metric_kind > 2 || cpml_enabled < 0 ||
       cpml_enabled > 1 || monitor_count < 1 ||
@@ -655,7 +671,7 @@ ffi::Error StreamedProgramCpmlStepsHandler(
 
   const int error = BeamzLaunchProgram(
       stream, InPlaceProgram(launches, nsteps, groups, kSourceGroupCount,
-                             &monitors));
+                             &monitors, graph_cache_capacity));
   return error == 0
              ? ffi::Error::Success()
              : ffi::Error::Internal(
@@ -668,39 +684,45 @@ ffi::Error ProgramHandler(
     int32_t abi_version, int32_t cuda_flags, int32_t nsteps, float dt,
     float resolution, int32_t boundary_code, int32_t metric_kind,
     int32_t program_layout, int32_t cpml_enabled, int32_t monitor_count,
-    int32_t coincident_source_group_mask) {
+    int32_t coincident_source_group_mask, int32_t graph_cache_capacity) {
+  if (graph_cache_capacity < 0 || graph_cache_capacity > 4096) {
+    return ffi::Error::InvalidArgument(
+        "BeamZ CUDA graph-cache capacity must be from 0 to 4096");
+  }
   switch (program_layout) {
     case kProgramLayoutYeeInPlace:
       return StreamedStepsHandler(stream, args, rets, abi_version, cuda_flags,
                                   nsteps, dt, resolution, boundary_code,
-                                  metric_kind);
+                                  metric_kind, graph_cache_capacity);
     case kProgramLayoutYeeTemporal:
       return TemporalStepsHandler(stream, args, rets, abi_version, cuda_flags,
                                   nsteps, dt, resolution, boundary_code,
-                                  metric_kind);
+                                  metric_kind, graph_cache_capacity);
     case kProgramLayoutCpmlInPlace:
       return StreamedCpmlStepsHandler(stream, args, rets, abi_version,
                                       cuda_flags, nsteps, dt, resolution,
-                                      boundary_code, metric_kind);
+                                      boundary_code, metric_kind,
+                                      graph_cache_capacity);
     case kProgramLayoutSourceInPlace:
       return StreamedSourceGroupsCpmlStepsHandler(
           stream, args, rets, abi_version, cuda_flags, nsteps, dt, resolution,
           boundary_code, metric_kind, cpml_enabled,
-          coincident_source_group_mask);
+          coincident_source_group_mask, graph_cache_capacity);
     case kProgramLayoutSourceTemporalCpml:
       return TemporalSourceGroupsCpmlStepsHandler(
           stream, args, rets, abi_version, cuda_flags, nsteps, dt, resolution,
-          boundary_code, metric_kind, coincident_source_group_mask);
+          boundary_code, metric_kind, coincident_source_group_mask,
+          graph_cache_capacity);
     case kProgramLayoutMonitorInPlace:
       return StreamedProgramCpmlStepsHandler(
           stream, args, rets, abi_version, cuda_flags, nsteps, dt, resolution,
           boundary_code, metric_kind, cpml_enabled, monitor_count,
-          coincident_source_group_mask);
+          coincident_source_group_mask, graph_cache_capacity);
     case kProgramLayoutMonitorTemporalCpml:
       return TemporalProgramCpmlStepsHandler(
           stream, args, rets, abi_version, cuda_flags, nsteps, dt, resolution,
           boundary_code, metric_kind, monitor_count,
-          coincident_source_group_mask);
+          coincident_source_group_mask, graph_cache_capacity);
     default:
       return ffi::Error::InvalidArgument(
           "unknown BeamZ CUDA program buffer layout");
@@ -749,7 +771,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Attr<int32_t>("program_layout")
         .Attr<int32_t>("cpml_enabled")
         .Attr<int32_t>("monitor_count")
-        .Attr<int32_t>("coincident_source_group_mask"));
+        .Attr<int32_t>("coincident_source_group_mask")
+        .Attr<int32_t>("graph_cache_capacity"));
 XLA_FFI_DEFINE_HANDLER_SYMBOL(beamz_cuda_hopper, HopperHandler,
                               ffi::Ffi::Bind()
                                   .Ctx<ffi::PlatformStream<void*>>()
