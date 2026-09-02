@@ -1,0 +1,178 @@
+{
+  "schema_version": "beamz.differential/v1",
+  "name": "passive_soi_crossing",
+  "description": "Generic-PDK waveguide crossing from Liu and Poon's Lumerical/Tidy3D comparison.",
+  "dimension": 3,
+  "wavelength_m": 1.55e-06,
+  "resolution_m": 2.9724e-08,
+  "oracle": {
+    "kind": "solver_consensus",
+    "reference": "Liu and Poon, arXiv:2506.16665v3, Sec. 3.2 and Fig. 8"
+  },
+  "materials": {
+    "silicon_n_at_1p55_um": 3.47644,
+    "silica_n_at_1p55_um": 1.44402
+  },
+  "geometry": {
+    "kind": "gdsfactory_component",
+    "component": "crossing",
+    "settings": {},
+    "source_generator_requirement": "gdsfactory==7.8.*",
+    "paper_revision": "arXiv:2506.16665v3",
+    "source_repository": "https://github.com/JPPhotonics/fdtd-pipeline",
+    "source_revision": "622e0a9b7429eaf2335b1000b39e283544a198c4",
+    "source_gds_introduced_revision": "48fc79958cee9c4bf5947d29bc26d137e7f3dd77",
+    "source_gds_path": "gds_library/cells_from_gds/gdsfactory_generic_pdk/crossing.gds",
+    "source_gds_sha256": "b5010e32620d1ea99d89a852dfd993ef9f32da2599cba2eada0569a2e3ca2afd",
+    "layer_stack_reference": {
+      "source_path": "stack_universal.json and gds_library/pdk_universal.py",
+      "z_reference": "Layer zmin values are measured from the shared silicon substrate plane at z=0 um"
+    },
+    "layers": {
+      "core": {
+        "gds": [
+          1,
+          0
+        ],
+        "zmin_um": 0.0,
+        "thickness_m": 2.2e-07,
+        "union_sha256": "e0f54da29fcbdbf64cc72ffff57dc3440df6fca03c9c243024b033b3b66b8314"
+      },
+      "slab": {
+        "gds": [
+          2,
+          0
+        ],
+        "zmin_um": 0.0,
+        "thickness_m": 1.5e-07,
+        "union_sha256": "790a353acaf9895a17bcd1372a6c6f4c6e8653d28fdee1f75bda2e702a74a68e"
+      }
+    },
+    "ports": {
+      "o1": {
+        "center_um": [-4.0, 0.0],
+        "orientation_deg": 180.0,
+        "width_um": 0.5
+      },
+      "o2": {
+        "center_um": [0.0, 4.0],
+        "orientation_deg": 90.0,
+        "width_um": 0.5
+      },
+      "o3": {
+        "center_um": [4.0, 0.0],
+        "orientation_deg": 0.0,
+        "width_um": 0.5
+      },
+      "o4": {
+        "center_um": [0.0, -4.0],
+        "orientation_deg": 270.0,
+        "width_um": 0.5
+      }
+    },
+    "simulation": {
+      "domain_bounds_um": {
+        "x": [-5.0, 5.0],
+        "y": [-5.5, 5.5],
+        "z": [-2.0, 2.0]
+      },
+      "wavelength_center_um": 1.55,
+      "wavelength_spans_nm": [20.0, 50.0],
+      "wavelength_step_nm": 5.0,
+      "frequency_sampling": "Uniform frequency samples between c / wavelength_stop and c / wavelength_start, matching the reference Tidy3D pipeline.",
+      "resolutions_cells_per_wavelength": [6, 10, 15, 20, 25],
+      "resolution_m_basis": "The top-level resolution_m is the 15 cells-per-wavelength spacing in silicon at 1550 nm; each sweep case derives its own uniform cell spacing.",
+      "grid": "Uniform BeamZ grid at the requested cells per wavelength in silicon. The paper uses automatic non-uniform meshing; BeamZ's available automatic grid is not used because port projection currently reports non-passive power on rectilinear grids.",
+      "subpixel": "BeamZ diagonal Farjadpour interface averaging; Tidy3D uses ContourPathAveraging, for which BeamZ has no identical implementation.",
+      "source_port": "o1",
+      "source_mode": "TE0",
+      "source_plane_offset_um": 0.0,
+      "input_monitor_inward_offset_um": 0.5,
+      "output_monitor_inward_offset_um": 0.0,
+      "source_time": "Gaussian pulse with fwidth equal to the simulated frequency span",
+      "source_offset": "Tidy3D default: 5 temporal widths; BeamZ equivalent: 5 / (2 pi)",
+      "source_mode_profiles": "Three profiles for the 20 nm span and six for the 50 nm span, matching the reference pipeline's 10 nm profile spacing. BeamZ uses its native Chebyshev reconstruction nodes.",
+      "output_ports": ["o2", "o3", "o4"],
+      "through_port": "o3",
+      "reference_boundaries": {
+        "lumerical": "default PML on all sides",
+        "tidy3d": "Absorber on all sides"
+      },
+      "beamz_boundary": "1 um graded-conductivity absorber on all sides, matching the reference Tidy3D boundary formulation.",
+      "port_extension_um": 10.0,
+      "run_time_rule": "15 * domain_x * 2 / c",
+      "auto_shutoff": "BeamZ field-energy decay threshold 1e-5 with the configured run time as a hard upper bound, matching Tidy3D's published shutoff threshold as closely as available.",
+      "material_model_limitation": "BeamZ currently uses nondispersive silicon and silica evaluated at 1550 nm; the paper uses fitted dispersive material models.",
+      "published_through_power_1550nm_span20nm": {
+        "value_basis": "Values are stated in Sec. 3.2 except for the Tidy3D values at 10 and 20 cells per wavelength, which are digitized to approximately 0.001 from Fig. 8(a). Consensus is the midpoint of the two solver values.",
+        "6": {
+          "lumerical": 0.954,
+          "tidy3d": 0.939,
+          "consensus": 0.9465,
+          "sources": {
+            "lumerical": "prose",
+            "tidy3d": "prose"
+          }
+        },
+        "10": {
+          "lumerical": 0.954,
+          "tidy3d": 0.958,
+          "consensus": 0.956,
+          "sources": {
+            "lumerical": "prose",
+            "tidy3d": "figure_digitized"
+          }
+        },
+        "15": {
+          "lumerical": 0.957,
+          "tidy3d": 0.959,
+          "consensus": 0.958,
+          "sources": {
+            "lumerical": "prose",
+            "tidy3d": "prose"
+          }
+        },
+        "20": {
+          "lumerical": 0.957,
+          "tidy3d": 0.956,
+          "consensus": 0.9565,
+          "sources": {
+            "lumerical": "prose",
+            "tidy3d": "figure_digitized"
+          }
+        },
+        "25": {
+          "lumerical": 0.957,
+          "tidy3d": 0.957,
+          "consensus": 0.957,
+          "sources": {
+            "lumerical": "prose",
+            "tidy3d": "prose"
+          }
+        }
+      },
+      "published_bandwidth_consistency": {
+        "resolution_ppw": 15,
+        "source_spans_nm": [20.0, 50.0],
+        "observable": "through_te0_power",
+        "max_abs_difference": 0.0011,
+        "value_basis": "Section 3.2 reports at most 0.11% internal difference between the 20 nm and 50 nm transmission spectra."
+      }
+    }
+  },
+  "observables": [
+    {
+      "name": "through_te0_power",
+      "unit": "fraction",
+      "tolerance": "cross_solver"
+    },
+    {
+      "name": "total_output_te0_power",
+      "unit": "fraction",
+      "tolerance": "cross_solver"
+    }
+  ],
+  "adapters": [
+    "beamz"
+  ]
+}
