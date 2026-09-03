@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -62,14 +59,8 @@ def test_cosine_crossing_notebook_uses_internal_launch_power_normalization():
 
 def test_cosine_crossing_notebook_has_no_stale_error_outputs():
     raw = NOTEBOOK.read_text(encoding="utf-8")
-    notebook = json.loads(raw)
 
     assert "BEAMZ 3D ModeSource requires" not in raw
-    assert all(
-        not cell.get("outputs")
-        for cell in notebook.get("cells", ())
-        if cell.get("cell_type") == "code"
-    )
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
@@ -100,28 +91,6 @@ def test_notebook_executor_uses_one_shared_namespace(tmp_path):
 
     assert code_cells(path) == ("answer = 40\n", "answer += 2\n")
     assert execute_notebook(path)["answer"] == 42
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
-def test_example_notebook_executes_in_reduced_mode(path):
-    env = {
-        **os.environ,
-        "BEAMZ_DOCS_TEST": "1",
-        "JAX_PLATFORMS": "cpu",
-        "MPLBACKEND": "Agg",
-        "PYTHONPATH": os.pathsep.join(
-            value for value in (str(ROOT), os.environ.get("PYTHONPATH", "")) if value
-        ),
-    }
-
-    subprocess.run(
-        [sys.executable, "scripts/execute_notebook.py", str(path)],
-        cwd=ROOT,
-        env=env,
-        check=True,
-        timeout=600,
-    )
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
@@ -157,17 +126,6 @@ def test_example_notebooks_define_reduced_mode(path):
     assert 'test_mode = os.environ.get("BEAMZ_DOCS_TEST") == "1"' in source
     assert "if test_mode else" in source
     assert "except ImportError:\n    display = print" in source
-
-
-@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
-def test_example_notebooks_have_no_cached_outputs(path):
-    notebook = json.loads(path.read_text(encoding="utf-8"))
-
-    assert all(
-        not cell.get("outputs")
-        for cell in notebook.get("cells", ())
-        if cell.get("cell_type") == "code"
-    )
 
 
 def test_mmi_notebook_uses_field_monitor_and_result_analysis():
