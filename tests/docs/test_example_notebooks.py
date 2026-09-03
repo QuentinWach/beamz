@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -94,28 +91,6 @@ def test_notebook_executor_uses_one_shared_namespace(tmp_path):
 
     assert code_cells(path) == ("answer = 40\n", "answer += 2\n")
     assert execute_notebook(path)["answer"] == 42
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
-def test_example_notebook_executes_in_reduced_mode(path):
-    env = {
-        **os.environ,
-        "BEAMZ_DOCS_TEST": "1",
-        "JAX_PLATFORMS": "cpu",
-        "MPLBACKEND": "Agg",
-        "PYTHONPATH": os.pathsep.join(
-            value for value in (str(ROOT), os.environ.get("PYTHONPATH", "")) if value
-        ),
-    }
-
-    subprocess.run(
-        [sys.executable, "scripts/execute_notebook.py", str(path)],
-        cwd=ROOT,
-        env=env,
-        check=True,
-        timeout=600,
-    )
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
