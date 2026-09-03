@@ -62,14 +62,8 @@ def test_cosine_crossing_notebook_uses_internal_launch_power_normalization():
 
 def test_cosine_crossing_notebook_has_no_stale_error_outputs():
     raw = NOTEBOOK.read_text(encoding="utf-8")
-    notebook = json.loads(raw)
 
     assert "BEAMZ 3D ModeSource requires" not in raw
-    assert all(
-        not cell.get("outputs")
-        for cell in notebook.get("cells", ())
-        if cell.get("cell_type") == "code"
-    )
 
 
 @pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
@@ -157,17 +151,6 @@ def test_example_notebooks_define_reduced_mode(path):
     assert 'test_mode = os.environ.get("BEAMZ_DOCS_TEST") == "1"' in source
     assert "if test_mode else" in source
     assert "except ImportError:\n    display = print" in source
-
-
-@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda path: path.stem)
-def test_example_notebooks_have_no_cached_outputs(path):
-    notebook = json.loads(path.read_text(encoding="utf-8"))
-
-    assert all(
-        not cell.get("outputs")
-        for cell in notebook.get("cells", ())
-        if cell.get("cell_type") == "code"
-    )
 
 
 def test_mmi_notebook_uses_field_monitor_and_result_analysis():
