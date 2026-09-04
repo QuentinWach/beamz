@@ -80,9 +80,25 @@ def test_3d_mode_source_suppresses_counterpropagating_power_on_both_grids(
         freqs=[frequency],
         name="positive",
     )
+    near_port = Port(
+        center=(source_x + 0.45e-6, 0.0, 0.0),
+        size=plane_size,
+        name="near_mode",
+        direction="+",
+        mode_spec=source.mode_spec,
+    )
+    far_port = Port(
+        center=(source_x + 1.6e-6, 0.0, 0.0),
+        size=plane_size,
+        name="far_mode",
+        direction="+",
+        mode_spec=source.mode_spec,
+    )
     monitors = [
         negative_monitor,
         positive_monitor,
+        near_port.to_monitor([frequency]),
+        far_port.to_monitor([frequency]),
     ]
     simulation = Simulation(
         domain=domain,
@@ -91,7 +107,7 @@ def test_3d_mode_source_suppresses_counterpropagating_power_on_both_grids(
         sources=[source],
         monitors=monitors,
         boundaries=[PML(thickness=0.45e-6, formulation="cpml")],
-        run_time=6.0 / frequency,
+        run_time=20.0 / frequency,
     )
 
     program = simulation.compile()
@@ -130,6 +146,19 @@ def test_3d_mode_source_suppresses_counterpropagating_power_on_both_grids(
 
     assert forward_power > 0.0
     assert counter_power / forward_power < 0.05
+    if direction == "+":
+        waves = sp._extract_port_waves_dft(
+            result,
+            ports=[near_port, far_port],
+            frequencies=[frequency],
+            return_power=True,
+        )
+        near_modal_power = float(np.asarray(waves[near_port.name]["P_minus"])[0])
+        far_modal_power = float(np.asarray(waves[far_port.name]["P_minus"])[0])
+        assert far_modal_power == pytest.approx(near_modal_power, rel=0.02)
+        assert near_modal_power == pytest.approx(
+            abs(float(result[near_port.name].flux[0])), rel=0.02
+        )
 
 
 @pytest.mark.compiled

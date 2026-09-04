@@ -2,6 +2,9 @@ import numpy as np
 import pytest
 
 from beamz.devices.modes._yee import (
+    _center_to_edge_difference,
+    _edge_to_center_difference,
+    _forward_difference,
     refine_x_mode_at_fixed_beta,
     validate_x_mode_refinement,
 )
@@ -43,6 +46,45 @@ def _refinement_fixture():
         "direction_sign": 1.0,
     }
     return shapes, profiles, indices, kwargs
+
+
+def test_rectilinear_difference_operators_preserve_uniform_limit():
+    from scipy import sparse
+
+    spacing = 0.3
+    widths = np.full(5, spacing)
+    forward = _forward_difference(sparse, widths.size, spacing)
+
+    np.testing.assert_allclose(
+        _center_to_edge_difference(sparse, widths).toarray(),
+        forward.toarray(),
+    )
+    np.testing.assert_allclose(
+        _edge_to_center_difference(sparse, widths).toarray(),
+        (-forward.T).toarray(),
+    )
+
+
+def test_rectilinear_difference_operators_use_primal_and_dual_spacings():
+    from scipy import sparse
+
+    widths = np.asarray([0.2, 0.3, 0.5])
+
+    np.testing.assert_allclose(
+        _center_to_edge_difference(sparse, widths).toarray(),
+        [
+            [-1.0 / 0.25, 1.0 / 0.25, 0.0],
+            [0.0, -1.0 / 0.4, 1.0 / 0.4],
+        ],
+    )
+    np.testing.assert_allclose(
+        _edge_to_center_difference(sparse, widths).toarray(),
+        [
+            [1.0 / 0.2, 0.0],
+            [-1.0 / 0.3, 1.0 / 0.3],
+            [0.0, -1.0 / 0.5],
+        ],
+    )
 
 
 def test_fixed_beta_refinement_returns_normalized_yee_shapes():

@@ -314,13 +314,23 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
         if spec.grid is not None
         else spec.resolution
     )
+    transverse_cell_widths = None
+    if spec.grid is not None:
+        transverse_cell_widths = tuple(
+            _component_axis_measure(
+                spec,
+                "Ex",
+                transverse_axis,
+                indices["Ex"][{"z": 0, "y": 1, "x": 2}[transverse_axis]],
+            )
+            for transverse_axis in ("z", "y")
+        )
     k_num = _numeric_wave_number(omega, spec.dt, normal_spacing, selected["neff"])
     boundary_neff = _boundary_refractive_index(spec.scalar_permittivity)
     yee_refinement_eligible = (
         spec.axis == "x"
         and bool(spec.component_permittivity)
         and float(np.real(selected["neff"])) > boundary_neff
-        and (spec.grid is None or spec.grid.is_uniform)
     )
     yee_refinement_requested = bool(spec.yee_refinement)
     yee_refinement_attempted = yee_refinement_requested and yee_refinement_eligible
@@ -354,9 +364,10 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
                 component_permeability=spec.component_permeability,
                 omega=omega,
                 dt=spec.dt,
-                resolution=spec.resolution,
+                resolution=normal_spacing,
                 k_num=seed_k_num,
                 direction_sign=_direction_sign(spec.direction),
+                transverse_cell_widths=transverse_cell_widths,
             )
             yee_refinement_accepted, yee_validation = validate_x_mode_refinement(
                 seed_profiles,
@@ -366,9 +377,13 @@ def solve_beamz_mode(spec: ModePlaneSpec) -> DiscreteMode:
                 component_permeability=spec.component_permeability,
                 omega=omega,
                 dt=spec.dt,
-                resolution=spec.resolution,
+                resolution=normal_spacing,
                 k_num=candidate_k_num,
                 direction_sign=_direction_sign(spec.direction),
+                transverse_cell_widths=transverse_cell_widths,
+                integration_weights=_profile_integration_weights(
+                    spec, candidate, indices
+                ),
             )
             yee_refinement_rejection_reason = str(
                 yee_validation.get("rejection_reason", "")
