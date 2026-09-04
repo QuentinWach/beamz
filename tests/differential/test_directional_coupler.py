@@ -92,7 +92,7 @@ def test_directional_coupler_simulation_uses_paper_stack_and_domain():
     np.testing.assert_allclose(
         np.diff(wide_frequencies), np.diff(wide_frequencies)[0], rtol=1e-12
     )
-    assert simulation.grid.is_uniform
+    assert not simulation.grid.is_uniform
     assert simulation.boundaries[0].formulation == "cpml"
     assert high_resolution_simulation.boundaries[0].formulation == "sponge"
     reference_z_min = case.geometry["simulation"]["domain_bounds_um"]["z"][0]

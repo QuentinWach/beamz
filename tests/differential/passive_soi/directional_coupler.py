@@ -136,10 +136,10 @@ def build_directional_coupler_simulation(
         Absorber,
         FieldMonitor,
         GaussianPulse,
+        GridSpec,
         ModeSpec,
         Port,
         Simulation,
-        dxdt,
         µm,
     )
     from beamz.design.raster import RasterOptions
@@ -159,12 +159,12 @@ def build_directional_coupler_simulation(
     ) * µm
     wavelength_center = float(protocol["wavelength_center_um"]) * µm
     frequencies = reference_frequencies(case, wavelength_span_nm)
-    dx, _ = dxdt(
-        wavelength_center,
-        n_max=float(case.materials["silicon_n_at_1p55_um"]),
-        dims=3,
-        safety_factor=0.999,
-        points_per_wavelength=int(resolution_ppw),
+    grid_spec = GridSpec.auto(
+        min_steps_per_wvl=float(resolution_ppw),
+        wavelength=wavelength_center,
+        courant=0.99,
+        max_scale=1.4,
+        max_total_cells=None,
     )
 
     mode_spec = ModeSpec(polarization="te")
@@ -175,7 +175,7 @@ def build_directional_coupler_simulation(
             center=port_center_and_direction(
                 case,
                 name,
-                inward_offset_um=0.5 if name == "o1" else 0.0,
+                inward_offset_um=0.5,
                 z_center=z_center,
             )[0],
             size=(0.0, transverse_span, z_span),
@@ -183,7 +183,7 @@ def build_directional_coupler_simulation(
             direction=port_center_and_direction(
                 case,
                 name,
-                inward_offset_um=0.5 if name == "o1" else 0.0,
+                inward_offset_um=0.5,
                 z_center=z_center,
             )[1],
             mode_spec=mode_spec,
@@ -234,7 +234,7 @@ def build_directional_coupler_simulation(
         monitors=monitors,
         boundaries=[boundary],
         run_time=15.0 * domain_size_um(case)[0] * µm * 2.0 / LIGHT_SPEED,
-        resolution=dx,
+        grid_spec=grid_spec,
         raster_options=RasterOptions(
             quality="balanced", smoothing="farjadpour_diagonal"
         ),

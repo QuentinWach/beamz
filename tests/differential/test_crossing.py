@@ -86,7 +86,7 @@ def test_crossing_simulation_uses_paper_domain_and_both_silicon_layers():
     np.testing.assert_allclose(
         np.diff(wide_frequencies), np.diff(wide_frequencies)[0], rtol=1e-12
     )
-    assert simulation.grid.is_uniform
+    assert not simulation.grid.is_uniform
     assert simulation.boundaries[0].formulation == "sponge"
     source_time = simulation.sources[0].source_time
     assert source_time.offset / source_time.fwidth < simulation.time[-1]
