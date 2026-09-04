@@ -25,6 +25,7 @@ def refine_x_mode_at_fixed_beta(
     resolution,
     k_num,
     direction_sign,
+    transverse_cell_widths=None,
     _correct_beta=True,
 ):
     """Refine E at the selected beta, then reconstruct H from Faraday's law."""
@@ -43,6 +44,7 @@ def refine_x_mode_at_fixed_beta(
         out,
         resolution=d,
         delta=delta,
+        transverse_cell_widths=transverse_cell_widths,
     )
     eps, mu = _component_material_vectors(
         out,
@@ -129,6 +131,7 @@ def refine_x_mode_at_fixed_beta(
                 resolution=resolution,
                 k_num=k_corrected,
                 direction_sign=direction_sign,
+                transverse_cell_widths=transverse_cell_widths,
                 _correct_beta=False,
             )
             return (
@@ -197,6 +200,8 @@ def validate_x_mode_refinement(
     resolution,
     k_num,
     direction_sign,
+    transverse_cell_widths=None,
+    integration_weights=None,
     minimum_electric_overlap=None,
     minimum_magnetic_overlap=0.5,
     maximum_impedance_change=4.0,
@@ -243,8 +248,12 @@ def validate_x_mode_refinement(
         component_permittivity=component_permittivity,
         component_permeability=component_permeability,
     )
-    seed_energy_ratio = _energy_ratio(seed, eps, mu)
-    candidate_energy_ratio = _energy_ratio(candidate, eps, mu)
+    seed_energy_ratio = _energy_ratio(
+        seed, eps, mu, integration_weights=integration_weights
+    )
+    candidate_energy_ratio = _energy_ratio(
+        candidate, eps, mu, integration_weights=integration_weights
+    )
     diagnostics["seed_energy_ratio"] = seed_energy_ratio
     diagnostics["candidate_energy_ratio"] = candidate_energy_ratio
     diagnostics["energy_ratio_change"] = _ratio_change(
@@ -255,10 +264,16 @@ def validate_x_mode_refinement(
     )
 
     seed_power = _signed_x_power(
-        seed, resolution=resolution, direction_sign=direction_sign
+        seed,
+        resolution=resolution,
+        direction_sign=direction_sign,
+        integration_weights=integration_weights,
     )
     candidate_power = _signed_x_power(
-        candidate, resolution=resolution, direction_sign=direction_sign
+        candidate,
+        resolution=resolution,
+        direction_sign=direction_sign,
+        integration_weights=integration_weights,
     )
     diagnostics["seed_signed_power"] = seed_power
     diagnostics["candidate_signed_power"] = candidate_power
@@ -272,6 +287,7 @@ def validate_x_mode_refinement(
         candidate,
         resolution=float(resolution),
         delta=delta,
+        transverse_cell_widths=transverse_cell_widths,
     )
     omega_d = (
         float(omega)
@@ -313,11 +329,27 @@ def validate_x_mode_refinement(
     return not rejection_reasons, diagnostics
 
 
-def _yee_curl_operators(sparse, profiles, *, resolution, delta):
+def _yee_curl_operators(
+    sparse, profiles, *, resolution, delta, transverse_cell_widths=None
+):
     nz, ny = profiles["Ex"].shape
-    dz = _forward_difference(sparse, nz, resolution)
-    dy = _forward_difference(sparse, ny, resolution)
-    bz, by = -dz.T, -dy.T
+    if transverse_cell_widths is None:
+        dz = _forward_difference(sparse, nz, resolution)
+        dy = _forward_difference(sparse, ny, resolution)
+        bz, by = -dz.T, -dy.T
+    else:
+        widths_z, widths_y = (
+            np.asarray(values, dtype=float).reshape(-1)
+            for values in transverse_cell_widths
+        )
+        if widths_z.size != nz or widths_y.size != ny:
+            raise ValueError(
+                "Rectilinear transverse widths must match the x-normal mode plane"
+            )
+        dz = _center_to_edge_difference(sparse, widths_z)
+        dy = _center_to_edge_difference(sparse, widths_y)
+        bz = _edge_to_center_difference(sparse, widths_z)
+        by = _edge_to_center_difference(sparse, widths_y)
     iz = sparse.eye(nz, format="csc")
     iy = sparse.eye(ny, format="csc")
     izm = sparse.eye(nz - 1, format="csc")
@@ -417,11 +449,21 @@ def _rms_impedance(profiles):
     return float(electric_norm / magnetic_norm)
 
 
-def _energy_ratio(profiles, eps, mu):
+def _energy_ratio(profiles, eps, mu, *, integration_weights=None):
     electric = _component_vector(profiles, _E_COMPONENTS)
     magnetic = _component_vector(profiles, _H_COMPONENTS)
-    electric_energy = _EPS0 * float(np.real(np.vdot(electric, eps * electric)))
-    magnetic_energy = _MU0 * float(np.real(np.vdot(magnetic, mu * magnetic)))
+    electric_weights = _component_weight_vector(
+        profiles, _E_COMPONENTS, integration_weights
+    )
+    magnetic_weights = _component_weight_vector(
+        profiles, _H_COMPONENTS, integration_weights
+    )
+    electric_energy = _EPS0 * float(
+        np.real(np.vdot(electric, electric_weights * eps * electric))
+    )
+    magnetic_energy = _MU0 * float(
+        np.real(np.vdot(magnetic, magnetic_weights * mu * magnetic))
+    )
     if (
         not np.isfinite(electric_energy)
         or not np.isfinite(magnetic_energy)
@@ -441,10 +483,32 @@ def _ratio_change(candidate, seed):
     return float(max(candidate / seed, seed / candidate))
 
 
-def _signed_x_power(profiles, *, resolution, direction_sign):
-    flux = np.vdot(profiles["Hz"].reshape(-1), profiles["Ey"].reshape(-1))
-    flux -= np.vdot(profiles["Hy"].reshape(-1), profiles["Ez"].reshape(-1))
-    return float(0.5 * float(direction_sign) * np.real(flux) * float(resolution) ** 2)
+def _signed_x_power(profiles, *, resolution, direction_sign, integration_weights=None):
+    if integration_weights is None:
+        ey_weights = ez_weights = float(resolution) ** 2
+    else:
+        ey_weights = np.asarray(integration_weights["Ey"], dtype=float).reshape(-1)
+        ez_weights = np.asarray(integration_weights["Ez"], dtype=float).reshape(-1)
+    flux = np.vdot(
+        profiles["Hz"].reshape(-1),
+        ey_weights * profiles["Ey"].reshape(-1),
+    )
+    flux -= np.vdot(
+        profiles["Hy"].reshape(-1),
+        ez_weights * profiles["Ez"].reshape(-1),
+    )
+    return float(0.5 * float(direction_sign) * np.real(flux))
+
+
+def _component_weight_vector(profiles, names, integration_weights):
+    if integration_weights is None:
+        return np.ones(sum(np.asarray(profiles[name]).size for name in names))
+    return np.concatenate(
+        [
+            np.asarray(integration_weights[name], dtype=float).reshape(-1)
+            for name in names
+        ]
+    )
 
 
 def _relative_pair_residual(left, right):
@@ -466,3 +530,47 @@ def _forward_difference(sparse, count, spacing):
     cols = np.column_stack((np.arange(count - 1), np.arange(1, count))).reshape(-1)
     data = np.tile(np.asarray([-1.0, 1.0]) / spacing, count - 1)
     return sparse.csc_matrix((data, (rows, cols)), shape=(count - 1, count))
+
+
+def _center_to_edge_difference(sparse, cell_widths):
+    widths = np.asarray(cell_widths, dtype=float).reshape(-1)
+    spacing = 0.5 * (widths[:-1] + widths[1:])
+    rows = np.repeat(np.arange(widths.size - 1), 2)
+    cols = np.column_stack(
+        (np.arange(widths.size - 1), np.arange(1, widths.size))
+    ).reshape(-1)
+    data = np.column_stack((-1.0 / spacing, 1.0 / spacing)).reshape(-1)
+    return sparse.csc_matrix((data, (rows, cols)), shape=(widths.size - 1, widths.size))
+
+
+def _edge_to_center_difference(sparse, cell_widths):
+    widths = np.asarray(cell_widths, dtype=float).reshape(-1)
+    rows = np.concatenate(
+        (
+            np.asarray([0]),
+            np.repeat(np.arange(1, widths.size - 1), 2),
+            np.asarray([widths.size - 1]),
+        )
+    )
+    cols = np.concatenate(
+        (
+            np.asarray([0]),
+            np.column_stack(
+                (np.arange(widths.size - 2), np.arange(1, widths.size - 1))
+            ).reshape(-1),
+            np.asarray([widths.size - 2]),
+        )
+    )
+    data = np.concatenate(
+        (
+            np.asarray([1.0 / widths[0]]),
+            np.column_stack(
+                (
+                    -1.0 / widths[1:-1],
+                    1.0 / widths[1:-1],
+                )
+            ).reshape(-1),
+            np.asarray([-1.0 / widths[-1]]),
+        )
+    )
+    return sparse.csc_matrix((data, (rows, cols)), shape=(widths.size, widths.size - 1))
