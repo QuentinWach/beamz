@@ -226,7 +226,7 @@ def build_directional_coupler_simulation(
     boundary = (
         Absorber(edges="all", thickness=1.0 * µm)
         if int(resolution_ppw) >= 20
-        else PML(edges="all", formulation="cpml")
+        else PML(edges="all", thickness=1.0 * µm, formulation="cpml")
     )
     simulation = Simulation(
         design=design,

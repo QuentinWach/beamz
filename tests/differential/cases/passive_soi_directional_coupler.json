@@ -94,7 +94,7 @@
         "lumerical": "PML on all sides",
         "tidy3d": "PML at 6, 10, and 15 cells per wavelength; Absorber at 20 and 25"
       },
-      "beamz_boundary": "CPML at 6, 10, and 15 cells per wavelength; a 1 um graded-conductivity absorber at 20 and 25, matching the published Tidy3D formulation changes.",
+      "beamz_boundary": "A 1 um physical absorbing layer on every side: CPML at 6, 10, and 15 cells per wavelength, and a graded-conductivity absorber at 20 and 25. An explicit physical thickness prevents BeamZ's default 12-cell CPML from expanding into the waveguide on the nonuniform mesh.",
       "reference_port_transverse_span_um": 4.5,
       "beamz_port_transverse_span_um": 3.0,
       "beamz_port_span_rationale": "The reference planes extend 0.75 um beyond the 7 um domain and are clipped by the reference solvers; BeamZ modal projection requires an in-domain symmetric plane.",

@@ -94,7 +94,9 @@ def test_directional_coupler_simulation_uses_paper_stack_and_domain():
     )
     assert not simulation.grid.is_uniform
     assert simulation.boundaries[0].formulation == "cpml"
+    assert simulation.boundaries[0].thickness == pytest.approx(1.0e-6)
     assert high_resolution_simulation.boundaries[0].formulation == "sponge"
+    assert high_resolution_simulation.boundaries[0].thickness == pytest.approx(1.0e-6)
     reference_z_min = case.geometry["simulation"]["domain_bounds_um"]["z"][0]
     assert {
         round(structure.z / 1e-6 + reference_z_min, 12)
