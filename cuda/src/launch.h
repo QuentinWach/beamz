@@ -42,6 +42,9 @@ struct BeamzSourceGroupLaunch {
   int32_t component;
   int32_t timing;
   int32_t coincident;
+  // Proven by the Python compiler from static source origins and extents. The
+  // source kernel can replace atomics with ordinary adds only for this case.
+  int32_t disjoint;
 };
 
 struct BeamzDftGroupLaunch {
@@ -55,6 +58,10 @@ struct BeamzDftGroupLaunch {
   BeamzBuffer dft_re;
   BeamzBuffer dft_im;
   BeamzBuffer dft_weight;
+  // XLA-owned scratch used by the monitor-heavy phase-cache specialization.
+  BeamzBuffer phase_sin;
+  BeamzBuffer phase_cos;
+  BeamzBuffer phase_window;
   BeamzBuffer time;
   BeamzBuffer current_step;
   int32_t monitor_count;
@@ -74,6 +81,10 @@ struct BeamzProgramLaunch {
   const BeamzDftGroupLaunch* monitors;
   int32_t field_bank_count;
   int32_t nsteps;
+  int32_t graph_cache_capacity = 32;
+  // One immutable compiler decision, cross-validated once before capture. It
+  // prevents individual launchers from re-inferring incompatible fast paths.
+  int32_t schedule_flags = 0;
 };
 
 // Returns zero after enqueueing all work, otherwise a CUDA runtime error code.

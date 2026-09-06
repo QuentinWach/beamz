@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -35,13 +38,40 @@ _TEMPORAL_FIELD_WORKSPACE_INPUT = abi.TEMPORAL_FIELD_WORKSPACE_INPUT
 _TEMPORAL_PSI_WORKSPACE_INPUT = abi.TEMPORAL_PSI_WORKSPACE_INPUT
 
 
+@dataclass(frozen=True, slots=True)
+class NativeSchedulePlan:
+    """Validated compilation-time choices consumed by the native program ABI.
+
+    The native launcher revalidates these capability bits against decoded buffer
+    shapes before capture.  Keeping the decision here prevents Python, FFI
+    decoding, program scheduling, and leaf kernels from independently guessing
+    which specialization is sound.
+    """
+
+    layout: int
+    flags: int
+    monitor_count: int = 0
+    coincident_source_group_mask: int = 0
+    disjoint_source_group_mask: int = 0
+
+    @property
+    def uses_temporal_fields(self) -> bool:
+        return bool(self.flags & abi.NATIVE_SCHEDULE_TEMPORAL)
+
+
 def _metallic_edge_mask(edges: frozenset[str]) -> int:
     order = ("front", "back", "bottom", "top", "left", "right")
     return sum(1 << index for index, name in enumerate(order) if name in edges)
 
 
 def _boundary_code(edges: frozenset[str], terms=()) -> int:
-    """Pack PEC faces and an optional uniform two-sided CPML thickness."""
+    """Pack PEC faces and a CPML thickness safe for every supplied phase.
+
+    A non-zero CPML thickness selects a CUDA specialization which deliberately
+    skips the per-term packed-slab descriptor.  It is therefore valid only when
+    *all* supplied H and E recurrences have the same symmetric slab.  Phase-only
+    FFI calls pass one phase; native program calls pass both phases.
+    """
     thickness = 0
     if terms:
         first = int(terms[0].slab.low)
@@ -103,28 +133,27 @@ def _metric_kind_code(ctx) -> np.int32:
         ) from exc
 
 
-def _program_attributes(
-    ctx,
-    nsteps: int,
-    layout: int,
-    *,
-    monitor_count: int = 0,
-    coincident_source_group_mask: int = 0,
-):
+def _program_attributes(ctx, nsteps: int, plan: NativeSchedulePlan):
     return {
         "abi_version": np.int32(CUDA_ABI_VERSION),
         "cuda_flags": np.int32(ctx.config.cuda_flags),
+        "graph_cache_capacity": np.int32(ctx.config.cuda_graph_cache_capacity),
         "nsteps": np.int32(nsteps),
         "dt": np.float32(ctx.dt),
         "resolution": np.float32(ctx.resolution),
         "boundary_code": np.int32(
-            _boundary_code(ctx.boundary.cpml.metallic_edges, ctx.boundary.cpml.h_terms)
+            _boundary_code(
+                ctx.boundary.cpml.metallic_edges,
+                (*ctx.boundary.cpml.h_terms, *ctx.boundary.cpml.e_terms),
+            )
         ),
         "metric_kind": _metric_kind_code(ctx),
-        "program_layout": np.int32(layout),
+        "program_layout": np.int32(plan.layout),
         "cpml_enabled": np.int32(ctx.boundary.cpml.enabled),
-        "monitor_count": np.int32(monitor_count),
-        "coincident_source_group_mask": np.int32(coincident_source_group_mask),
+        "monitor_count": np.int32(plan.monitor_count),
+        "coincident_source_group_mask": np.int32(plan.coincident_source_group_mask),
+        "disjoint_source_group_mask": np.int32(plan.disjoint_source_group_mask),
+        "schedule_flags": np.int32(plan.flags),
     }
 
 
@@ -190,23 +219,12 @@ def update_h(state, ctx, coeffs) -> SimulationState:
     )
     terms = ctx.boundary.cpml.h_terms
     materials = (
-        (
-            coeffs.h_sigma_m_x,
-            coeffs.h_sigma_m_y,
-            coeffs.h_sigma_m_z,
-            _EMPTY,
-            _EMPTY,
-            _EMPTY,
-        )
-        if ctx.config.backend == "cuda_hopper"
-        else (
-            coeffs.h_decay_x,
-            coeffs.h_decay_y,
-            coeffs.h_decay_z,
-            coeffs.h_source_x,
-            coeffs.h_source_y,
-            coeffs.h_source_z,
-        )
+        coeffs.h_decay_x,
+        coeffs.h_decay_y,
+        coeffs.h_decay_z,
+        coeffs.h_source_x,
+        coeffs.h_source_y,
+        coeffs.h_source_z,
     )
     outputs = _ffi_phase(
         target,
@@ -240,23 +258,12 @@ def update_e(state, ctx, coeffs) -> SimulationState:
     )
     terms = ctx.boundary.cpml.e_terms
     materials = (
-        (
-            coeffs.e_conductivity_x,
-            coeffs.e_conductivity_y,
-            coeffs.e_conductivity_z,
-            coeffs.e_permittivity_x,
-            coeffs.e_permittivity_y,
-            coeffs.e_permittivity_z,
-        )
-        if ctx.config.backend == "cuda_hopper"
-        else (
-            coeffs.e_decay_x,
-            coeffs.e_decay_y,
-            coeffs.e_decay_z,
-            coeffs.e_source_x,
-            coeffs.e_source_y,
-            coeffs.e_source_z,
-        )
+        coeffs.e_decay_x,
+        coeffs.e_decay_y,
+        coeffs.e_decay_z,
+        coeffs.e_source_x,
+        coeffs.e_source_y,
+        coeffs.e_source_z,
     )
     outputs = _ffi_phase(
         target,
@@ -466,17 +473,91 @@ def _coincident_source_group_mask(groups) -> int:
     return mask
 
 
-def _temporal_cpml_source_groups_supported(ctx, coeffs, nsteps: int) -> bool:
-    """Whether a frozen second field bank can use the fused regular-grid core."""
+def _disjoint_source_group_mask(groups: tuple[Any, ...]) -> int:
+    """Encode groups whose static slabs cannot write the same cell.
+
+    The source starts are compiler-owned literals.  A group earns this flag only
+    when every pair of equal-shaped slabs is separated along at least one axis;
+    dynamic or unavailable origins deliberately retain the atomic implementation.
+    """
+    mask = 0
+    for index, group in enumerate(groups):
+        if group is None:
+            continue
+        raw_starts: Any = getattr(group, "starts_tuple", ())
+        starts: tuple[Any, ...] = tuple(raw_starts)
+        if len(starts) < 2 or any(len(start) != 3 for start in starts):
+            continue
+        extents = tuple(int(size) for size in group.coeffs.shape[1:])
+        if len(extents) != 3:
+            continue
+        if all(
+            any(
+                first[axis] + extents[axis] <= second[axis]
+                or second[axis] + extents[axis] <= first[axis]
+                for axis in range(3)
+            )
+            for first_index, first in enumerate(starts)
+            for second in starts[first_index + 1 :]
+        ):
+            mask |= 1 << index
+    return mask
+
+
+def _uniform_cpml_thickness(ctx) -> int:
+    """Return the one thickness shared by every H/E recurrence, or zero."""
+    return _boundary_code(
+        ctx.boundary.cpml.metallic_edges,
+        (*ctx.boundary.cpml.h_terms, *ctx.boundary.cpml.e_terms),
+    ) >> 8
+
+
+def _packed_e_material(coeffs) -> bool:
+    values = (
+        coeffs.e_decay_x,
+        coeffs.e_decay_y,
+        coeffs.e_decay_z,
+        coeffs.e_source_x,
+        coeffs.e_source_y,
+        coeffs.e_source_z,
+    )
+    return all(value.ndim == 1 for value in values) and all(
+        value.dtype == jnp.int32
+        for value in (coeffs.e_source_x, coeffs.e_source_y, coeffs.e_source_z)
+    )
+
+
+def _combined_cpml_core_supported(state, ctx, coeffs) -> bool:
+    """Prove the combined CPML queue has a non-empty regular-grid core."""
+    if (
+        not ctx.boundary.cpml.enabled
+        or ctx.config.metric_kind != "isotropic_uniform"
+        or _uniform_cpml_thickness(ctx) <= 0
+        or not _packed_e_material(coeffs)
+    ):
+        return False
+    h_values = (
+        coeffs.h_decay_x,
+        coeffs.h_decay_y,
+        coeffs.h_decay_z,
+        coeffs.h_source_x,
+        coeffs.h_source_y,
+        coeffs.h_source_z,
+    )
+    thickness = _uniform_cpml_thickness(ctx)
+    return all(value.ndim == 0 for value in h_values) and all(
+        min(int(field.shape[axis]) for field in _fields(state)[:3]) > 2 * thickness
+        for axis in range(3)
+    )
+
+
+def _temporal_cpml_fields_supported(ctx, coeffs, nsteps: int) -> bool:
+    """Prove that a second field bank can preserve the CPML timestep order."""
     if (
         nsteps < 2
         or not ctx.boundary.cpml.enabled
         or ctx.config.metric_kind != "isotropic_uniform"
-        or (
-            _boundary_code(ctx.boundary.cpml.metallic_edges, ctx.boundary.cpml.h_terms)
-            >> 8
-        )
-        <= 0
+        or _uniform_cpml_thickness(ctx) <= 0
     ):
         return False
     h_values = (
@@ -493,12 +574,104 @@ def _temporal_cpml_source_groups_supported(ctx, coeffs, nsteps: int) -> bool:
     )
 
 
+def _temporal_yee_supported(ctx, coeffs, nsteps: int) -> bool:
+    """Prove that the frozen-field Yee kernel supports this material layout."""
+    if nsteps < 4 or _metallic_edge_mask(ctx.boundary.cpml.metallic_edges) != 63:
+        return False
+    values = (
+        coeffs.h_decay_x,
+        coeffs.h_decay_y,
+        coeffs.h_decay_z,
+        coeffs.h_source_x,
+        coeffs.h_source_y,
+        coeffs.h_source_z,
+        coeffs.e_decay_x,
+        coeffs.e_decay_y,
+        coeffs.e_decay_z,
+        coeffs.e_source_x,
+        coeffs.e_source_y,
+        coeffs.e_source_z,
+    )
+    return all(value.ndim in (0, 3) for value in values)
+
+
+def _native_schedule_plan(
+    state,
+    ctx,
+    coeffs,
+    nsteps: int,
+    *,
+    kind: str,
+    groups=(),
+    monitor_count: int = 0,
+) -> NativeSchedulePlan:
+    """Choose every native fast path once and serialize that proof through FFI."""
+    cpml = bool(ctx.boundary.cpml.enabled)
+    combined_cpml_core = _combined_cpml_core_supported(state, ctx, coeffs)
+    temporal_cpml = _temporal_cpml_fields_supported(ctx, coeffs, nsteps)
+    if kind == "steps":
+        if temporal_cpml:
+            layout = abi.PROGRAM_LAYOUT_SOURCE_TEMPORAL_CPML
+        elif cpml:
+            layout = abi.PROGRAM_LAYOUT_CPML_IN_PLACE
+        elif _temporal_yee_supported(ctx, coeffs, nsteps):
+            layout = abi.PROGRAM_LAYOUT_YEE_TEMPORAL
+        else:
+            layout = abi.PROGRAM_LAYOUT_YEE_IN_PLACE
+    elif kind == "source":
+        layout = (
+            abi.PROGRAM_LAYOUT_SOURCE_TEMPORAL_CPML
+            if temporal_cpml
+            else abi.PROGRAM_LAYOUT_SOURCE_IN_PLACE
+        )
+    elif kind == "monitor":
+        layout = (
+            abi.PROGRAM_LAYOUT_MONITOR_TEMPORAL_CPML
+            if temporal_cpml
+            else abi.PROGRAM_LAYOUT_MONITOR_IN_PLACE
+        )
+    else:
+        raise ValueError(f"unknown native schedule family: {kind!r}")
+
+    flags = 0
+    if cpml:
+        flags |= abi.NATIVE_SCHEDULE_CPML
+    if layout in {
+        abi.PROGRAM_LAYOUT_YEE_TEMPORAL,
+        abi.PROGRAM_LAYOUT_SOURCE_TEMPORAL_CPML,
+        abi.PROGRAM_LAYOUT_MONITOR_TEMPORAL_CPML,
+    }:
+        flags |= abi.NATIVE_SCHEDULE_TEMPORAL
+    if cpml and _uniform_cpml_thickness(ctx) > 0:
+        flags |= abi.NATIVE_SCHEDULE_UNIFORM_CPML
+    if _packed_e_material(coeffs):
+        flags |= abi.NATIVE_SCHEDULE_PACKED_MATERIAL
+    if combined_cpml_core:
+        flags |= abi.NATIVE_SCHEDULE_COMBINED_CPML_CORE
+    if kind in {"source", "monitor"} or layout == abi.PROGRAM_LAYOUT_SOURCE_TEMPORAL_CPML:
+        flags |= abi.NATIVE_SCHEDULE_SOURCES
+    if monitor_count:
+        flags |= abi.NATIVE_SCHEDULE_MONITORS
+    if ctx.config.cuda_flags & abi.CUDA_GRAPH_CACHE:
+        flags |= abi.NATIVE_SCHEDULE_GRAPH_CACHE
+    return NativeSchedulePlan(
+        layout=layout,
+        flags=flags,
+        monitor_count=monitor_count,
+        coincident_source_group_mask=_coincident_source_group_mask(groups),
+        disjoint_source_group_mask=_disjoint_source_group_mask(groups),
+    )
+
+
 def run_source_group_steps(state, ctx, coeffs, groups, nsteps: int) -> SimulationState:
     """Advance packed slab-source groups in every leapfrog phase on CUDA."""
     if nsteps < 1:
         raise ValueError("CUDA step count must be positive")
     source_arguments = _source_group_arguments(groups)
-    use_temporal_cpml = _temporal_cpml_source_groups_supported(ctx, coeffs, nsteps)
+    plan = _native_schedule_plan(
+        state, ctx, coeffs, nsteps, kind="source", groups=groups
+    )
+    use_temporal_cpml = plan.uses_temporal_fields
     arguments, result_values, aliases = (
         _temporal_cpml_graph_io(state, ctx, coeffs)
         if use_temporal_cpml
@@ -509,16 +682,7 @@ def run_source_group_steps(state, ctx, coeffs, groups, nsteps: int) -> Simulatio
         *arguments,
         *source_arguments,
         state.current_step,
-        **_program_attributes(
-            ctx,
-            nsteps,
-            (
-                abi.PROGRAM_LAYOUT_SOURCE_TEMPORAL_CPML
-                if use_temporal_cpml
-                else abi.PROGRAM_LAYOUT_SOURCE_IN_PLACE
-            ),
-            coincident_source_group_mask=_coincident_source_group_mask(groups),
-        ),
+        **_program_attributes(ctx, nsteps, plan),
     )
     if use_temporal_cpml:
         return _replace_temporal_cpml_outputs(state, outputs, nsteps)
@@ -627,7 +791,16 @@ def run_program_steps(
     if state.dft_vec_re.dtype != jnp.float32:
         raise ValueError("CUDA program graph requires float32 DFT accumulators")
     source_arguments = _source_group_arguments(groups)
-    use_temporal_cpml = _temporal_cpml_source_groups_supported(ctx, coeffs, nsteps)
+    plan = _native_schedule_plan(
+        state,
+        ctx,
+        coeffs,
+        nsteps,
+        kind="monitor",
+        groups=groups,
+        monitor_count=int(packed_monitors[0].shape[0]),
+    )
+    use_temporal_cpml = plan.uses_temporal_fields
     arguments, result_values, aliases = (
         _temporal_cpml_graph_io(state, ctx, coeffs)
         if use_temporal_cpml
@@ -640,12 +813,23 @@ def run_program_steps(
         state.dft_vec_im,
         state.dft_weight_sum,
     )
+    phase_shape = (
+        int(packed_monitors[0].shape[0]),
+        int(packed_monitors[2].shape[1]),
+    )
+    phase_sin = jnp.empty(phase_shape, dtype=jnp.float32)
+    phase_cos = jnp.empty(phase_shape, dtype=jnp.float32)
+    phase_window = jnp.empty(phase_shape, dtype=jnp.float32)
+    result_values = (*result_values, phase_sin, phase_cos, phase_window)
     monitor_output_start = len(arguments) + len(source_arguments) + len(packed_monitors)
     aliases = {
         **aliases,
         monitor_output_start: state_output_count,
         monitor_output_start + 1: state_output_count + 1,
         monitor_output_start + 2: state_output_count + 2,
+        monitor_output_start + 3: state_output_count + 3,
+        monitor_output_start + 4: state_output_count + 4,
+        monitor_output_start + 5: state_output_count + 5,
     }
     call = _ffi_call(abi.CUDA_PROGRAM_TARGET, result_values, aliases)
     outputs = call(
@@ -655,19 +839,12 @@ def run_program_steps(
         state.dft_vec_re,
         state.dft_vec_im,
         state.dft_weight_sum,
+        phase_sin,
+        phase_cos,
+        phase_window,
         state.t,
         state.current_step,
-        **_program_attributes(
-            ctx,
-            nsteps,
-            (
-                abi.PROGRAM_LAYOUT_MONITOR_TEMPORAL_CPML
-                if use_temporal_cpml
-                else abi.PROGRAM_LAYOUT_MONITOR_IN_PLACE
-            ),
-            monitor_count=int(packed_monitors[0].shape[0]),
-            coincident_source_group_mask=_coincident_source_group_mask(groups),
-        ),
+        **_program_attributes(ctx, nsteps, plan),
     )
     if use_temporal_cpml:
         next_state = _replace_temporal_cpml_outputs(state, outputs, nsteps)
@@ -686,7 +863,8 @@ def run_steps(state, ctx, coeffs, nsteps: int) -> SimulationState:
     """Advance a source-free, monitor-free Yee run through one CUDA FFI call."""
     if nsteps < 1:
         raise ValueError("CUDA step count must be positive")
-    if _temporal_cpml_source_groups_supported(ctx, coeffs, nsteps):
+    plan = _native_schedule_plan(state, ctx, coeffs, nsteps, kind="steps")
+    if plan.layout == abi.PROGRAM_LAYOUT_SOURCE_TEMPORAL_CPML:
         # The source-group target's empty groups add no graph nodes. Reusing it
         # gives plain CPML runs the same frozen-input field banks without
         # maintaining a second native handler for an identical update graph.
@@ -699,7 +877,7 @@ def run_steps(state, ctx, coeffs, nsteps: int) -> SimulationState:
         call = _ffi_call(abi.CUDA_PROGRAM_TARGET, result_values, aliases)
         outputs = call(
             *arguments,
-            **_program_attributes(ctx, nsteps, abi.PROGRAM_LAYOUT_CPML_IN_PLACE),
+            **_program_attributes(ctx, nsteps, plan),
         )
         return _replace_graph_outputs(state, outputs)
     materials = (
@@ -716,10 +894,7 @@ def run_steps(state, ctx, coeffs, nsteps: int) -> SimulationState:
         coeffs.e_source_y,
         coeffs.e_source_z,
     )
-    temporal_eligible = (
-        nsteps >= 4 and _metallic_edge_mask(ctx.boundary.cpml.metallic_edges) == 63
-    )
-    if temporal_eligible:
+    if plan.layout == abi.PROGRAM_LAYOUT_YEE_TEMPORAL:
         workspace = tuple(jnp.empty_like(value) for value in fields)
         call = _ffi_call(
             abi.CUDA_PROGRAM_TARGET,
@@ -732,7 +907,7 @@ def run_steps(state, ctx, coeffs, nsteps: int) -> SimulationState:
             *materials,
             *_phase_metrics(ctx, _PHASE_H),
             *_phase_metrics(ctx, _PHASE_E),
-            **_program_attributes(ctx, nsteps, abi.PROGRAM_LAYOUT_YEE_TEMPORAL),
+            **_program_attributes(ctx, nsteps, plan),
         )
         return _replace_fields(state, outputs)
     call = _ffi_call(
@@ -745,6 +920,6 @@ def run_steps(state, ctx, coeffs, nsteps: int) -> SimulationState:
         *materials,
         *_phase_metrics(ctx, _PHASE_H),
         *_phase_metrics(ctx, _PHASE_E),
-        **_program_attributes(ctx, nsteps, abi.PROGRAM_LAYOUT_YEE_IN_PLACE),
+        **_program_attributes(ctx, nsteps, plan),
     )
     return _replace_fields(state, outputs)

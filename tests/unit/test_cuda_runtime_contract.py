@@ -72,6 +72,62 @@ def test_cuda_boundary_code_packs_only_uniform_two_sided_cpml():
     assert cuda_runtime._boundary_code(frozenset({"right"})) == 1 << 5
 
 
+def test_cuda_program_boundary_code_requires_matching_h_and_e_cpml_slabs():
+    _program, _state, context = _program_and_state(cpml=True)
+    uniform_h = tuple(
+        SimpleNamespace(slab=SimpleNamespace(low=4, high=4)) for _ in range(6)
+    )
+    staggered_e = (
+        *uniform_h[:-1],
+        SimpleNamespace(slab=SimpleNamespace(low=3, high=3)),
+    )
+    context = replace(
+        context,
+        boundary=SimpleNamespace(
+            cpml=SimpleNamespace(
+                enabled=True,
+                metallic_edges=frozenset({"front"}),
+                h_terms=uniform_h,
+                e_terms=uniform_h,
+            )
+        ),
+    )
+
+    uniform_attributes = cuda_runtime._program_attributes(
+        context,
+        3,
+        cuda_runtime.NativeSchedulePlan(
+            abi.PROGRAM_LAYOUT_CPML_IN_PLACE,
+            abi.NATIVE_SCHEDULE_CPML | abi.NATIVE_SCHEDULE_UNIFORM_CPML,
+        ),
+    )
+    assert uniform_attributes["boundary_code"] == np.int32((4 << 8) | 1)
+
+    context = replace(
+        context,
+        boundary=SimpleNamespace(
+            cpml=SimpleNamespace(
+                enabled=True,
+                metallic_edges=frozenset({"front"}),
+                h_terms=uniform_h,
+                e_terms=staggered_e,
+            )
+        ),
+    )
+    attributes = cuda_runtime._program_attributes(
+        context,
+        3,
+        cuda_runtime.NativeSchedulePlan(
+            abi.PROGRAM_LAYOUT_CPML_IN_PLACE, abi.NATIVE_SCHEDULE_CPML
+        ),
+    )
+
+    # Program launches pass one boundary code to both phases.  A H-only check
+    # would select the descriptor-free uniform path for E and index its shorter
+    # packed slab with the H thickness.
+    assert attributes["boundary_code"] == np.int32(1)
+
+
 def test_cuda_cpml_bf16_state_is_explicit_and_preserves_continuation(monkeypatch):
     program, state, _context = _program_and_state(cpml=True)
     cuda_program = replace(
@@ -227,6 +283,7 @@ def test_cuda_multi_step_ffi_aliases_all_fields(monkeypatch):
     assert attributes == {
         "abi_version": np.int32(cuda_runtime.CUDA_ABI_VERSION),
         "cuda_flags": np.int32(context.config.cuda_flags),
+        "graph_cache_capacity": np.int32(context.config.cuda_graph_cache_capacity),
         "nsteps": np.int32(7),
         "dt": np.float32(context.dt),
         "resolution": np.float32(context.resolution),
@@ -236,6 +293,10 @@ def test_cuda_multi_step_ffi_aliases_all_fields(monkeypatch):
         "cpml_enabled": np.int32(0),
         "monitor_count": np.int32(0),
         "coincident_source_group_mask": np.int32(0),
+        "disjoint_source_group_mask": np.int32(0),
+        "schedule_flags": np.int32(
+            abi.NATIVE_SCHEDULE_TEMPORAL | abi.NATIVE_SCHEDULE_GRAPH_CACHE
+        ),
     }
     assert next_state.hx is state.hx
     assert next_state.ez is state.ez
@@ -449,6 +510,47 @@ def test_cuda_source_group_graph_packs_all_phases_and_aliases_state(monkeypatch)
     assert next_state.cpml_psi_h_terms == state.cpml_psi_h_terms
 
 
+def test_cuda_source_schedule_proves_only_nonoverlapping_batches_are_disjoint():
+    disjoint = SimpleNamespace(
+        coeffs=jnp.ones((2, 3, 4, 5), dtype=jnp.float32),
+        starts_tuple=((0, 0, 0), (0, 0, 5)),
+    )
+    overlapping = SimpleNamespace(
+        coeffs=jnp.ones((2, 3, 4, 5), dtype=jnp.float32),
+        starts_tuple=((0, 0, 0), (0, 0, 4)),
+    )
+
+    assert cuda_runtime._disjoint_source_group_mask((disjoint,) + (None,) * 8) == 1
+    assert cuda_runtime._disjoint_source_group_mask((overlapping,) + (None,) * 8) == 0
+
+
+def test_cuda_schedule_plan_requires_all_combined_cpml_capabilities():
+    program, state, context = _program_and_state(cpml=True)
+    packed = program.coefficients._replace(
+        h_decay_x=jnp.asarray(1.0, dtype=jnp.float32),
+        h_decay_y=jnp.asarray(1.0, dtype=jnp.float32),
+        h_decay_z=jnp.asarray(1.0, dtype=jnp.float32),
+        h_source_x=jnp.asarray(1.0, dtype=jnp.float32),
+        h_source_y=jnp.asarray(1.0, dtype=jnp.float32),
+        h_source_z=jnp.asarray(1.0, dtype=jnp.float32),
+        e_decay_x=jnp.ones((1,), dtype=jnp.float32),
+        e_decay_y=jnp.ones((1,), dtype=jnp.float32),
+        e_decay_z=jnp.ones((1,), dtype=jnp.float32),
+        e_source_x=jnp.zeros((1,), dtype=jnp.int32),
+        e_source_y=jnp.zeros((1,), dtype=jnp.int32),
+        e_source_z=jnp.zeros((1,), dtype=jnp.int32),
+    )
+
+    plan = cuda_runtime._native_schedule_plan(
+        state, context, packed, 3, kind="source", groups=(None,) * 9
+    )
+
+    assert plan.layout == abi.PROGRAM_LAYOUT_SOURCE_TEMPORAL_CPML
+    assert plan.flags & abi.NATIVE_SCHEDULE_COMBINED_CPML_CORE
+    assert plan.flags & abi.NATIVE_SCHEDULE_PACKED_MATERIAL
+    assert plan.flags & abi.NATIVE_SCHEDULE_UNIFORM_CPML
+
+
 def test_cuda_source_group_graph_uses_temporal_cpml_field_banks(monkeypatch):
     program, state, context = _program_and_state(cpml=True)
     coefficients = program.coefficients._replace(
@@ -545,12 +647,15 @@ def test_cuda_program_graph_packs_monitor_batch_and_aliases_accumulators(monkeyp
 
     target, results, options, arguments, attributes = captured[0]
     assert target == abi.CUDA_PROGRAM_TARGET
-    assert len(results) == 21
-    assert len(arguments) == 113
+    assert len(results) == 24
+    assert len(arguments) == 116
     assert packed[0].shape[:2] == (1, 6)
     assert options["input_output_aliases"][108] == 18
     assert options["input_output_aliases"][109] == 19
     assert options["input_output_aliases"][110] == 20
+    assert options["input_output_aliases"][111] == 21
+    assert options["input_output_aliases"][112] == 22
+    assert options["input_output_aliases"][113] == 23
     assert attributes["monitor_count"] == np.int32(1)
     assert attributes["program_layout"] == np.int32(abi.PROGRAM_LAYOUT_MONITOR_IN_PLACE)
     assert attributes["coincident_source_group_mask"] == np.int32(1)
@@ -602,9 +707,9 @@ def test_cuda_program_graph_uses_temporal_cpml_field_banks(monkeypatch):
 
     target, results, options, arguments, attributes = captured[0]
     assert target == abi.CUDA_PROGRAM_TARGET
-    assert len(results) == 39
-    assert len(arguments) == 131
-    assert arguments[130] is state.current_step
+    assert len(results) == 42
+    assert len(arguments) == 134
+    assert arguments[133] is state.current_step
     assert options["input_output_aliases"] == {
         **{index: index for index in range(6)},
         **{74 + index: 6 + index for index in range(6)},
@@ -614,6 +719,9 @@ def test_cuda_program_graph_uses_temporal_cpml_field_banks(monkeypatch):
         126: 36,
         127: 37,
         128: 38,
+        129: 39,
+        130: 40,
+        131: 41,
     }
     assert attributes["cpml_enabled"] == np.int32(1)
     assert attributes["monitor_count"] == np.int32(1)
@@ -649,6 +757,30 @@ def test_hopper_backend_uses_sm90_tiled_target(monkeypatch):
     cuda_runtime.update_h(state, context, program.coefficients)
 
     assert targets == ["beamz_cuda_hopper"]
+
+
+def test_hopper_backend_reuses_streamed_coefficient_abi(monkeypatch):
+    program, state, context = _program_and_state(cpml=False)
+    context = replace(context, config=replace(context.config, backend="cuda_hopper"))
+    captured = []
+
+    def fake_ffi_call(_target, _result_metadata, **_options):
+        def call(*arguments, **_attributes):
+            captured.append(arguments)
+            return arguments[:3]
+
+        return call
+
+    monkeypatch.setattr(cuda_runtime.jax.ffi, "ffi_call", fake_ffi_call)
+
+    cuda_runtime.update_h(state, context, program.coefficients)
+
+    assert captured[0][6] is program.coefficients.h_decay_x
+    assert captured[0][7] is program.coefficients.h_decay_y
+    assert captured[0][8] is program.coefficients.h_decay_z
+    assert captured[0][9] is program.coefficients.h_source_x
+    assert captured[0][10] is program.coefficients.h_source_y
+    assert captured[0][11] is program.coefficients.h_source_z
 
 
 def test_uniform_cuda_coefficients_are_compacted_without_rounding():

@@ -23,6 +23,11 @@ split by responsibility:
 - `update.cu` owns Yee and CPML kernels;
 - `io.cu` owns source injection and DFT monitor accumulation.
 
+For monitor-heavy graphs, `io.cu` first prepares one window and complex phase per
+monitor/frequency into small XLA-owned scratch buffers, then reuses those values
+across every gathered point and field component. Short plans retain the original
+single-kernel path so an extra launch cannot dominate their work.
+
 `abi_layout.json` is the source of truth for target names, layout selectors, and
 positional buffer constants. After editing it, regenerate both language bindings
 with `python scripts/generate_cuda_abi.py`; CI uses `--check` to reject drift.
@@ -74,9 +79,16 @@ queue uses a precision-specific `32 × 4` absorber tile and remaps the same 128
 threads to a `64 × 2` recurrence-free core tile; FP32 retains its measured-optimal
 `64 × 4` queue.
 
-`BEAMZ_CUDA_DISABLE_GRAPH_CACHE=1` remains as a diagnostic switch. It and the
-CPML precision choice are snapshotted into the immutable compiled-program key;
-native execution never rereads environment variables.
+`BEAMZ_CUDA_DISABLE_GRAPH_CACHE=1` remains as a diagnostic switch.
+`BEAMZ_CUDA_GRAPH_CACHE_CAPACITY` sets the completed-entry LRU target (default
+`32`, valid range `0`–`4096`); a capacity of zero disables persistent graph
+executables. In-flight entries may temporarily exceed the target so the native
+cache never destroys an executable still referenced by a CUDA stream. These
+choices and the CPML precision setting are snapshotted into the immutable
+compiled-program key; native execution never rereads environment variables.
+Set `BEAMZ_CUDA_GRAPH_CACHE_STATS=1` while profiling to emit an initial and then
+periodic cache hit-rate and mean graph-instantiation-time summary. It is off by
+default and has no counter/timing work on normal graph replays.
 
 No CUDA result is promoted without all of the following on real hardware:
 

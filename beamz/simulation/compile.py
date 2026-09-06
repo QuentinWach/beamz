@@ -74,6 +74,7 @@ class CompiledProgramKey:
     source_single_slab_dense: bool
     backend: str
     cuda_flags: int
+    cuda_graph_cache_capacity: int
     sharding: ShardingToken
     materials: HashToken
     sources: tuple[HashToken, ...]
@@ -95,6 +96,7 @@ class CompiledProgramKey:
             request.run.source_single_slab_dense,
             request.run.backend,
             request.run.cuda_flags,
+            request.run.cuda_graph_cache_capacity,
             request.run.sharding,
             cache_token(request.materials),
             tuple(cache_token(source) for source in request.sources),
@@ -401,6 +403,7 @@ def _prepare_compilation(
         backend=str(request.run.backend),
         sharding=effective_sharding,
         cuda_flags=int(request.run.cuda_flags),
+        cuda_graph_cache_capacity=int(request.run.cuda_graph_cache_capacity),
     )
     return _CompileSetup(
         dt,
@@ -826,6 +829,7 @@ def compile_program(
     from .backend import (
         CudaBackendUnavailable,
         cuda_flags_from_env,
+        cuda_graph_cache_capacity_from_env,
         normalize_backend,
         resolve_backend,
     )
@@ -870,6 +874,9 @@ def compile_program(
         else resolve_backend(requested_backend)
     )
     cuda_flags = cuda_flags_from_env() if resolved_backend != "jax" else 0
+    cuda_graph_cache_capacity = (
+        cuda_graph_cache_capacity_from_env() if resolved_backend != "jax" else 0
+    )
     request = simulation.to_request(
         num_steps=steps,
         loop_kind=loop_kind,
@@ -879,7 +886,14 @@ def compile_program(
         compiler_sharding=sharding,
         progress=progress,
     )
-    request = replace(request, run=replace(request.run, cuda_flags=cuda_flags))
+    request = replace(
+        request,
+        run=replace(
+            request.run,
+            cuda_flags=cuda_flags,
+            cuda_graph_cache_capacity=cuda_graph_cache_capacity,
+        ),
+    )
     signature = CompiledProgramKey.from_request(request)
     if cached := _PROGRAM_CACHE.get(signature):
         _PROGRAM_CACHE.move_to_end(signature)

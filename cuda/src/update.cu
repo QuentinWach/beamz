@@ -1,11 +1,13 @@
 #include <cuda_runtime_api.h>
 
 #include <cuda_bf16.h>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include "kernels.h"
 #include "launch.h"
+#include "yee_primitives.cuh"
 
 namespace {
 
@@ -45,9 +47,17 @@ FusedYeePhase MakeFusedYeePhase(const BeamzLaunch& launch) {
 }
 
 bool FitsIntOffsets(const BeamzBuffer& value) {
+  if (value.rank < 0 || value.rank > 4) return false;
   int64_t elements = 1;
   for (int axis = 0; axis < value.rank; ++axis) {
-    if (value.dims[axis] > std::numeric_limits<int>::max()) return false;
+    if (value.dims[axis] < 0 ||
+        value.dims[axis] > std::numeric_limits<int>::max()) {
+      return false;
+    }
+    if (value.dims[axis] != 0 &&
+        elements > std::numeric_limits<int>::max() / value.dims[axis]) {
+      return false;
+    }
     elements *= value.dims[axis];
     if (elements > std::numeric_limits<int>::max()) return false;
   }
@@ -66,9 +76,81 @@ bool SameShape(const BeamzBuffer& left, const BeamzBuffer& right) {
   return true;
 }
 
+bool IsPositive3D(const BeamzBuffer& value) {
+  return value.rank == 3 && value.dims[0] > 0 && value.dims[1] > 0 &&
+         value.dims[2] > 0 && value.data != nullptr;
+}
+
+bool BroadcastsTo(const BeamzBuffer& value, const BeamzBuffer& target) {
+  if (value.rank == 0) return value.data != nullptr;
+  if (value.rank != 3 || value.data == nullptr) return false;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (value.dims[axis] != 1 && value.dims[axis] != target.dims[axis]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// CUDA's three phase outputs are the Yee components of one vector field.  The
+// curl inputs must be the complementary staggered field: forward H curls use
+// one extra cell on their derivative axis; backward E curls use one fewer.
+// Requiring this exact relationship catches mismatched FFI buffers before any
+// kernel computes a flat address from a foreign shape.
+bool IsCompatibleCurlInput(const BeamzBuffer& output,
+                           const BeamzBuffer& source, int axis,
+                           int phase) {
+  if (!IsPositive3D(source)) return false;
+  for (int dimension = 0; dimension < 3; ++dimension) {
+    const int64_t expected =
+        output.dims[dimension] + (dimension == axis ? (phase == 0 ? 1 : -1) : 0);
+    if (expected <= 0 || source.dims[dimension] != expected) return false;
+  }
+  return true;
+}
+
+int64_t Elements(const BeamzBuffer& value) {
+  int64_t elements = 1;
+  for (int axis = 0; axis < value.rank; ++axis) elements *= value.dims[axis];
+  return elements;
+}
+
+int MaxOutputExtent(const BeamzLaunch& launch, int axis) {
+  int extent = 0;
+  for (int component = 0; component < 3; ++component) {
+    const int value = static_cast<int>(launch.outputs[component].dims[axis]);
+    extent = value > extent ? value : extent;
+  }
+  return extent;
+}
+
+bool IsCpmlProfile(const BeamzBuffer& value, int axis) {
+  if (!HasType(value, kBeamzF32) || !IsPositive3D(value)) return false;
+  for (int dimension = 0; dimension < 3; ++dimension) {
+    if (dimension != axis && value.dims[dimension] != 1) return false;
+  }
+  return true;
+}
+
+bool IsCpmlPsi(const BeamzBuffer& value, const BeamzBuffer& target, int axis) {
+  if (!IsPositive3D(value) || value.dims[axis] > target.dims[axis]) return false;
+  for (int dimension = 0; dimension < 3; ++dimension) {
+    if (dimension != axis && value.dims[dimension] != target.dims[dimension]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 cudaError_t ValidatePhase(const BeamzLaunch& launch) {
   if (launch.phase < 0 || launch.phase > 1 || launch.metric_kind < 0 ||
-      launch.metric_kind > 2 || (launch.nterms != 0 && launch.nterms != 6)) {
+      launch.metric_kind > 2 || (launch.nterms != 0 && launch.nterms != 6) ||
+      launch.metallic_edges < 0 || launch.metallic_edges > 63 ||
+      !std::isfinite(launch.dt) || !std::isfinite(launch.resolution) ||
+      !std::isfinite(launch.inv_resolution) || launch.dt <= 0.0f ||
+      launch.resolution <= 0.0f || launch.inv_resolution <= 0.0f ||
+      launch.uniform_cpml_thickness < 0 ||
+      (launch.nterms == 0 && launch.uniform_cpml_thickness != 0)) {
     return cudaErrorInvalidValue;
   }
   const int input_count = launch.nterms == 0 ? 12 : 13 + 4 * launch.nterms;
@@ -80,15 +162,28 @@ cudaError_t ValidatePhase(const BeamzLaunch& launch) {
     if (!FitsIntOffsets(launch.outputs[index])) return cudaErrorInvalidValue;
   }
   for (int component = 0; component < 6; ++component) {
-    if (launch.inputs[component].rank != 3 ||
-        !HasType(launch.inputs[component], kBeamzF32)) {
+    if (!HasType(launch.inputs[component], kBeamzF32) ||
+        !IsPositive3D(launch.inputs[component])) {
       return cudaErrorInvalidValue;
     }
   }
   for (int component = 0; component < 3; ++component) {
-    if (launch.outputs[component].rank != 3 ||
-        !HasType(launch.outputs[component], kBeamzF32) ||
+    if (!HasType(launch.outputs[component], kBeamzF32) ||
+        !IsPositive3D(launch.outputs[component]) ||
         !SameShape(launch.inputs[component], launch.outputs[component])) {
+      return cudaErrorInvalidValue;
+    }
+  }
+  for (int component = 0; component < 3; ++component) {
+    const BeamzBuffer& output = launch.outputs[component];
+    const auto first = beamz::cuda::yee::FirstCurlTerm(component);
+    const auto second = beamz::cuda::yee::SecondCurlTerm(component);
+    if (!IsCompatibleCurlInput(output,
+                               launch.inputs[3 + first.source_component],
+                               first.derivative_axis, launch.phase) ||
+        !IsCompatibleCurlInput(output,
+                               launch.inputs[3 + second.source_component],
+                               second.derivative_axis, launch.phase)) {
       return cudaErrorInvalidValue;
     }
   }
@@ -102,43 +197,69 @@ cudaError_t ValidatePhase(const BeamzLaunch& launch) {
     const BeamzBuffer& source = launch.inputs[9 + component];
     const bool ordinary_material =
         HasType(decay, kBeamzF32) && HasType(source, kBeamzF32) &&
-        (decay.rank == 0 || decay.rank == 3) &&
-        (source.rank == 0 || source.rank == 3);
+        BroadcastsTo(decay, launch.outputs[component]) &&
+        BroadcastsTo(source, launch.outputs[component]);
     const bool packed_component =
         packed_material && HasType(decay, kBeamzF32) && decay.rank == 1 &&
-        source.rank == 1;
+        source.rank == 1 && decay.data != nullptr && source.data != nullptr &&
+        decay.dims[0] > 0 && source.dims[0] >= 0 &&
+        Elements(source) >= (Elements(launch.outputs[component]) + 3) / 4;
     if (!ordinary_material && !packed_component) return cudaErrorInvalidValue;
   }
   if (launch.nterms != 0) {
     const BeamzBuffer& metadata = launch.inputs[12];
     if (!HasType(metadata, kBeamzS32) || metadata.rank != 2 ||
-        metadata.dims[0] != 6 || metadata.dims[1] != 5) {
+        metadata.dims[0] != 6 || metadata.dims[1] != 5 ||
+        metadata.data == nullptr) {
       return cudaErrorInvalidValue;
     }
     for (int index = 13; index < 13 + 3 * launch.nterms; ++index) {
-      if (!HasType(launch.inputs[index], kBeamzF32) ||
-          launch.inputs[index].rank != 3) {
-        return cudaErrorInvalidValue;
-      }
+      if (launch.inputs[index].data == nullptr) return cudaErrorInvalidValue;
     }
     const int psi_input_base = 13 + 3 * launch.nterms;
     for (int term = 0; term < launch.nterms; ++term) {
       const BeamzBuffer& input = launch.inputs[psi_input_base + term];
       const BeamzBuffer& output = launch.outputs[3 + term];
+      const BeamzBuffer& target = launch.outputs[term / 2];
       const bool supported_type = HasType(input, kBeamzF32) ||
                                   HasType(input, kBeamzBF16);
       if (!supported_type || input.element_type != output.element_type ||
-          input.rank != 3 || output.rank != 3 || !SameShape(input, output)) {
+          !IsCpmlPsi(input, target, beamz::cuda::yee::CpmlAxis(term)) ||
+          !IsCpmlPsi(output, target, beamz::cuda::yee::CpmlAxis(term)) ||
+          !SameShape(input, output)) {
         return cudaErrorInvalidValue;
+      }
+      for (int coefficient = 0; coefficient < 3; ++coefficient) {
+        const BeamzBuffer& profile = launch.inputs[13 + 3 * term + coefficient];
+        if (!IsCpmlProfile(profile, beamz::cuda::yee::CpmlAxis(term))) {
+          return cudaErrorInvalidValue;
+        }
+      }
+      if (launch.uniform_cpml_thickness > 0) {
+        const int64_t packed_extent =
+            2 * static_cast<int64_t>(launch.uniform_cpml_thickness);
+        if (packed_extent > target.dims[beamz::cuda::yee::CpmlAxis(term)] ||
+            input.dims[beamz::cuda::yee::CpmlAxis(term)] != packed_extent) {
+          return cudaErrorInvalidValue;
+        }
+        for (int coefficient = 0; coefficient < 3; ++coefficient) {
+          if (launch.inputs[13 + 3 * term + coefficient]
+                  .dims[beamz::cuda::yee::CpmlAxis(term)] != packed_extent) {
+            return cudaErrorInvalidValue;
+          }
+        }
       }
     }
   }
   for (int axis = 0; axis < 3; ++axis) {
     const BeamzBuffer& metric = launch.metrics[axis];
     if (!FitsIntOffsets(metric) || !HasType(metric, kBeamzF32) ||
-        (launch.metric_kind == 1 && metric.rank != 0) ||
+        (launch.metric_kind == 1 &&
+         (metric.rank != 0 || metric.data == nullptr)) ||
         (launch.metric_kind == 2 &&
-         (metric.rank != 1 || metric.dims[0] < 1))) {
+         (metric.rank != 1 ||
+          metric.dims[0] < MaxOutputExtent(launch, axis) ||
+          metric.data == nullptr))) {
       return cudaErrorInvalidValue;
     }
   }
@@ -236,9 +357,8 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
                                              int x, const BeamzLaunch& launch) {
   // The 3D compiler emits the six curl terms in this fixed derivative order.
   // CPML coefficient buffers are 1D profiles along their derivative axis.
-  constexpr int axes[6] = {1, 0, 0, 2, 2, 1};
-  constexpr int axis = axes[Term];
-  constexpr float sign = Term % 2 == 0 ? 1.0f : -1.0f;
+  constexpr int axis = beamz::cuda::yee::CpmlAxis(Term);
+  constexpr float sign = beamz::cuda::yee::CpmlSign(Term);
   int low;
   int high;
   if constexpr (UniformCpml) {
@@ -253,12 +373,13 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
   const int coordinate = axis == 0 ? z : (axis == 1 ? y : x);
   const int axis_size = static_cast<int>(target.dims[axis]);
   int packed = -1;
-  if (coordinate < low) {
-    packed = coordinate;
-  } else if (coordinate >= axis_size - high) {
-    packed = low + coordinate - (axis_size - high);
+  if (!beamz::cuda::yee::CpmlPackedCoordinate(coordinate, axis_size, low, high,
+                                               &packed)) {
+    // Metadata arrives in a device buffer, so the host cannot inspect its
+    // values without synchronizing every launch. Invalid foreign metadata is a
+    // no-op recurrence rather than an out-of-bounds packed-slab access.
+    return sign * derivative;
   }
-  if (packed < 0) return sign * derivative;
 
   int pz = z, py = y, px = x;
   if (axis == 0) pz = packed;
@@ -268,6 +389,15 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
   const int psi_base = 13 + 3 * launch.nterms;
   const BeamzBuffer& psi_input = launch.inputs[psi_base + Term];
   const BeamzBuffer& psi_output = launch.outputs[3 + Term];
+  const BeamzBuffer& a = launch.inputs[coefficient_base];
+  const BeamzBuffer& b = launch.inputs[coefficient_base + 1];
+  const BeamzBuffer& inv_kappa = launch.inputs[coefficient_base + 2];
+  if (pz < 0 || pz >= psi_output.dims[0] || py < 0 ||
+      py >= psi_output.dims[1] || px < 0 || px >= psi_output.dims[2] ||
+      packed >= a.dims[axis] || packed >= b.dims[axis] ||
+      packed >= inv_kappa.dims[axis]) {
+    return sign * derivative;
+  }
   const int psi_offset = (pz * static_cast<int>(psi_output.dims[1]) + py) *
                              static_cast<int>(psi_output.dims[2]) +
                          px;
@@ -283,12 +413,9 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
                                          psi_input.data)[psi_offset])
                   : static_cast<const float*>(psi_input.data)[psi_offset];
   }
-  const float next_psi =
-      static_cast<const float *>(
-          launch.inputs[coefficient_base + 1].data)[packed] *
-          old_psi +
-      static_cast<const float*>(launch.inputs[coefficient_base].data)[packed] *
-          derivative;
+  const float next_psi = beamz::cuda::yee::AdvanceCpmlPsi(
+      static_cast<const float*>(b.data)[packed], old_psi,
+      static_cast<const float*>(a.data)[packed], derivative);
   if constexpr (PsiType == kBeamzBF16) {
     static_cast<__nv_bfloat16*>(psi_output.data)[psi_offset] =
         __float2bfloat16_rn(next_psi);
@@ -300,10 +427,9 @@ __device__ __forceinline__ float CorrectCpml(float derivative, int z, int y,
   } else {
     static_cast<float*>(psi_output.data)[psi_offset] = next_psi;
   }
-  return sign *
-         (derivative * static_cast<const float*>(
-                           launch.inputs[coefficient_base + 2].data)[packed] +
-          next_psi);
+  return beamz::cuda::yee::CorrectCpmlDerivative(
+      sign, derivative, static_cast<const float*>(inv_kappa.data)[packed],
+      next_psi);
 }
 
 template <int Phase, int Component, bool Cpml, int MetricKind,
@@ -317,33 +443,10 @@ __device__ __forceinline__ void UpdateComponent(const BeamzLaunch& launch,
   const int linear = (z * static_cast<int>(output.dims[1]) + y) *
                          static_cast<int>(output.dims[2]) +
                      x;
-  constexpr int normal_axis = 2 - Component;
-  constexpr bool constrained = Phase == 0;
-  const int coordinate = normal_axis == 0 ? z : (normal_axis == 1 ? y : x);
-  const int axis_size = static_cast<int>(output.dims[normal_axis]);
-  const bool on_low_wall =
-      coordinate == 0 && (launch.metallic_edges & (1 << (2 * normal_axis)));
-  const bool on_high_wall =
-      coordinate == axis_size - 1 &&
-      (launch.metallic_edges & (1 << (2 * normal_axis + 1)));
   bool zero_on_wall = false;
   if constexpr (HasMetallicEdges) {
-    if constexpr (constrained) {
-      zero_on_wall = on_low_wall || on_high_wall;
-    } else {
-      for (int axis = 0; axis < 3; ++axis) {
-        if (axis == normal_axis) continue;
-        const int axis_coordinate = axis == 0 ? z : (axis == 1 ? y : x);
-        const int size = static_cast<int>(output.dims[axis]);
-        if ((axis_coordinate == 0 &&
-             (launch.metallic_edges & (1 << (2 * axis)))) ||
-            (axis_coordinate == size - 1 &&
-             (launch.metallic_edges & (1 << (2 * axis + 1))))) {
-          zero_on_wall = true;
-          break;
-        }
-      }
-    }
+    zero_on_wall = beamz::cuda::yee::PecConstrained(
+        output, Phase, Component, launch.metallic_edges, z, y, x);
   }
   if constexpr (!Cpml) {
     if (zero_on_wall) {
@@ -351,26 +454,24 @@ __device__ __forceinline__ void UpdateComponent(const BeamzLaunch& launch,
       return;
     }
   }
-  constexpr int first_source[3] = {2, 0, 1};
-  constexpr int second_source[3] = {1, 2, 0};
-  constexpr int first_axis[3] = {1, 0, 2};
-  constexpr int second_axis[3] = {0, 2, 1};
-  const BeamzBuffer& first = launch.inputs[3 + first_source[Component]];
-  const BeamzBuffer& second = launch.inputs[3 + second_source[Component]];
+  constexpr auto first_term = beamz::cuda::yee::FirstCurlTerm(Component);
+  constexpr auto second_term = beamz::cuda::yee::SecondCurlTerm(Component);
+  const BeamzBuffer& first = launch.inputs[3 + first_term.source_component];
+  const BeamzBuffer& second = launch.inputs[3 + second_term.source_component];
   float derivative0;
   float derivative1;
   if constexpr (Phase == 0) {
     derivative0 =
-        ForwardDifference<MetricKind>(first, first_axis[Component], z, y, x,
+        ForwardDifference<MetricKind>(first, first_term.derivative_axis, z, y, x,
                                       launch);
     derivative1 =
-        ForwardDifference<MetricKind>(second, second_axis[Component], z, y, x,
+        ForwardDifference<MetricKind>(second, second_term.derivative_axis, z, y, x,
                                       launch);
   } else {
     derivative0 = BoundaryDifference<MetricKind, HasMetallicEdges>(
-        first, first_axis[Component], z, y, x, launch.metallic_edges, launch);
+        first, first_term.derivative_axis, z, y, x, launch.metallic_edges, launch);
     derivative1 = BoundaryDifference<MetricKind, HasMetallicEdges>(
-        second, second_axis[Component], z, y, x, launch.metallic_edges, launch);
+        second, second_term.derivative_axis, z, y, x, launch.metallic_edges, launch);
   }
   float curl;
   if constexpr (Cpml) {
@@ -393,22 +494,14 @@ __device__ __forceinline__ void UpdateComponent(const BeamzLaunch& launch,
   float source;
   if constexpr (PackedLosslessMaterial) {
     decay = 1.0f;
-    const auto* packed =
-        static_cast<const uint32_t*>(launch.inputs[9 + Component].data);
-    const uint32_t word = packed[linear >> 2];
-    const uint32_t code = (word >> (8 * (linear & 3))) & 0xffu;
-    source = static_cast<const float*>(launch.inputs[6 + Component].data)[code];
+    source = beamz::cuda::yee::PackedMaterialSource(
+        launch.inputs[6 + Component], launch.inputs[9 + Component], linear);
   } else {
     decay = Read(launch.inputs[6 + Component], z, y, x);
     source = Read(launch.inputs[9 + Component], z, y, x);
   }
-  if constexpr (Phase == 0) {
-    static_cast<float*>(output.data)[linear] =
-        decay * old_field - source * curl;
-  } else {
-    static_cast<float*>(output.data)[linear] =
-        decay * old_field + source * curl;
-  }
+  static_cast<float*>(output.data)[linear] =
+      beamz::cuda::yee::AdvanceYeeField(Phase, old_field, decay, source, curl);
 }
 
 template <int Phase, bool Cpml, int MetricKind, bool HasMetallicEdges = true,
@@ -995,23 +1088,6 @@ int UniformPsiType(const BeamzLaunch& launch) {
   return psi_type;
 }
 
-bool CpmlCoreScheduleSupported(const BeamzLaunch& h_launch,
-                               const BeamzLaunch& e_launch) {
-  if (h_launch.nterms != 6 || e_launch.nterms != 6 ||
-      h_launch.metric_kind != 0 ||
-      e_launch.metric_kind != 0 || h_launch.uniform_cpml_thickness <= 0 ||
-      e_launch.uniform_cpml_thickness != h_launch.uniform_cpml_thickness ||
-      !HasPackedLosslessMaterial(e_launch)) {
-    return false;
-  }
-  for (int material = 0; material < 6; ++material) {
-    if (h_launch.inputs[6 + material].rank != 0) return false;
-  }
-  const CpmlGeometry geometry = MakeCpmlGeometry(h_launch);
-  return geometry.high_z > geometry.low &&
-         geometry.high_y > geometry.low && geometry.high_x > geometry.low;
-}
-
 template <int Phase, int PsiType, bool PackedLosslessMaterial>
 void LaunchCombinedCpmlQueueForType(cudaStream_t stream,
                                     const BeamzLaunch& launch,
@@ -1099,11 +1175,6 @@ cudaError_t LaunchCombinedCpmlQueuePhase(cudaStream_t stream,
         stream, launch, geometry);
   }
   return cudaPeekAtLastError();
-}
-
-bool BeamzCpmlScheduleSupported(const BeamzLaunch& h_launch,
-                                const BeamzLaunch& e_launch) {
-  return CpmlCoreScheduleSupported(h_launch, e_launch);
 }
 
 cudaError_t BeamzEnqueueCpmlPhase(cudaStream_t stream,

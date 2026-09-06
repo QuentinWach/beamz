@@ -8,8 +8,6 @@
 // Leaf launchers enqueue one operation and own no graph or timestep policy.
 cudaError_t BeamzValidatePhase(const BeamzLaunch& launch);
 cudaError_t BeamzEnqueuePhase(void* stream, const BeamzLaunch& launch);
-bool BeamzCpmlScheduleSupported(const BeamzLaunch& h_launch,
-                                const BeamzLaunch& e_launch);
 cudaError_t BeamzEnqueueCpmlPhase(cudaStream_t stream,
                                   const BeamzLaunch& launch);
 cudaError_t BeamzEnqueueFusedFullStep(cudaStream_t stream,

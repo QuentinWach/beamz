@@ -26,6 +26,7 @@ def _render_python(schema: dict) -> str:
         "CUDA_STREAMED_TARGETS",
         *(f"CUDA_{name.upper()}" for name in schema["flags"]),
         "CUDA_DEFAULT_FLAGS",
+        *(f"NATIVE_SCHEDULE_{name.upper()}" for name in schema["schedule_flags"]),
         *(f"PROGRAM_LAYOUT_{name.upper()}" for name in schema["program_layouts"]),
         *(name.upper() for name in schema["layout"]),
     ]
@@ -52,6 +53,9 @@ def _render_python(schema: dict) -> str:
         f"CUDA_{name.upper()}" for name in schema["default_flags"]
     )
     lines.extend([f"CUDA_DEFAULT_FLAGS = {default_flags or 0}", ""])
+    for name, bit in schema["schedule_flags"].items():
+        lines.append(f"NATIVE_SCHEDULE_{name.upper()} = 1 << {bit}")
+    lines.append("")
     for name, value in schema["program_layouts"].items():
         lines.append(f"PROGRAM_LAYOUT_{name.upper()} = {value}")
     lines.append("")
@@ -93,6 +97,11 @@ def _render_cpp(schema: dict) -> str:
     lines.extend(
         [f"inline constexpr int32_t kBeamzDefaultFlags = {default_flags or 0};", ""]
     )
+    for name, bit in schema["schedule_flags"].items():
+        lines.append(
+            f"inline constexpr int32_t kNativeSchedule{_pascal_case(name)} = 1 << {bit};"
+        )
+    lines.append("")
     for name, value in schema["program_layouts"].items():
         lines.append(
             f"inline constexpr int32_t kProgramLayout{_pascal_case(name)} = {value};"

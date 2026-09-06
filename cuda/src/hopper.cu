@@ -4,10 +4,11 @@
 
 #include <cstdint>
 
+#include "kernels.h"
+#include "yee_primitives.cuh"
+
 namespace {
 
-constexpr float kEps0 = 8.8541878128e-12f;
-constexpr float kMu0 = 1.25663706212e-6f;
 constexpr int kTileX = 32;
 constexpr int kTileY = 4;
 constexpr int kTileZ = 2;
@@ -16,63 +17,21 @@ constexpr int kAxis1Elements = kTileZ * (kTileY + 2) * kTileX;
 constexpr int kAxis2Elements = kTileZ * kTileY * (kTileX + 2);
 constexpr int kMaxSharedElements = kAxis0Elements;
 
-bool SameShape(const BeamzBuffer& left, const BeamzBuffer& right) {
-  if (left.rank != right.rank) return false;
-  for (int axis = 0; axis < left.rank; ++axis) {
-    if (left.dims[axis] != right.dims[axis]) return false;
+cudaError_t ValidateHopperPhase(const BeamzLaunch& launch) {
+  if (cudaError_t error = BeamzValidatePhase(launch); error != cudaSuccess) {
+    return error;
   }
-  return true;
-}
-
-bool ValidateHopperPhase(const BeamzLaunch& launch) {
-  if (launch.phase < 0 || launch.phase > 1 || launch.metric_kind != 0 ||
-      (launch.nterms != 0 && launch.nterms != 6)) {
-    return false;
-  }
-  for (int component = 0; component < 6; ++component) {
-    if (launch.inputs[component].rank != 3 ||
-        launch.inputs[component].element_type != kBeamzF32) {
-      return false;
+  if (launch.metric_kind != 0) return cudaErrorInvalidValue;
+  // The tiled experiment stages FP32 recurrence state.  The shared validator
+  // accepts BF16 for streamed kernels, but Hopper deliberately rejects it
+  // rather than silently taking a numerically different path.
+  for (int term = 0; term < launch.nterms; ++term) {
+    if (launch.inputs[31 + term].element_type != kBeamzF32 ||
+        launch.outputs[3 + term].element_type != kBeamzF32) {
+      return cudaErrorInvalidValue;
     }
   }
-  for (int component = 0; component < 3; ++component) {
-    if (launch.outputs[component].rank != 3 ||
-        launch.outputs[component].element_type != kBeamzF32 ||
-        !SameShape(launch.inputs[component], launch.outputs[component])) {
-      return false;
-    }
-  }
-  for (int material = 6; material < 12; ++material) {
-    const BeamzBuffer& value = launch.inputs[material];
-    if (value.element_type != kBeamzF32 || value.rank > 3) return false;
-  }
-  if (launch.nterms != 0) {
-    const BeamzBuffer& metadata = launch.inputs[12];
-    if (metadata.element_type != kBeamzS32 || metadata.rank != 2 ||
-        metadata.dims[0] != 6 || metadata.dims[1] != 5) {
-      return false;
-    }
-    for (int index = 13; index < 13 + 3 * launch.nterms; ++index) {
-      if (launch.inputs[index].element_type != kBeamzF32 ||
-          launch.inputs[index].rank != 3) {
-        return false;
-      }
-    }
-    const int psi_input_base = 13 + 3 * launch.nterms;
-    for (int term = 0; term < launch.nterms; ++term) {
-      const BeamzBuffer& input = launch.inputs[psi_input_base + term];
-      const BeamzBuffer& output = launch.outputs[3 + term];
-      if (input.element_type != kBeamzF32 ||
-          output.element_type != kBeamzF32 || input.rank != 3 ||
-          output.rank != 3 || !SameShape(input, output)) {
-        return false;
-      }
-    }
-  }
-  for (const BeamzBuffer& metric : launch.metrics) {
-    if (metric.element_type != kBeamzF32) return false;
-  }
-  return true;
+  return cudaSuccess;
 }
 
 __device__ __forceinline__ int64_t Offset(const BeamzBuffer& value, int z,
@@ -156,20 +115,18 @@ __device__ __forceinline__ float CorrectCpml(
     float derivative, int term, int z, int y, int x,
     const BeamzLaunch& launch) {
   const auto* descriptor = static_cast<const int32_t*>(launch.inputs[12].data);
-  const int axis = descriptor[term * 5 + 1];
+  const int axis = beamz::cuda::yee::CpmlAxis(term);
   const int low = descriptor[term * 5 + 2];
   const int high = descriptor[term * 5 + 3];
-  const float sign = static_cast<float>(descriptor[term * 5 + 4]);
+  const float sign = beamz::cuda::yee::CpmlSign(term);
   const BeamzBuffer& target = launch.outputs[term / 2];
   const int coordinate = axis == 0 ? z : (axis == 1 ? y : x);
   const int axis_size = static_cast<int>(target.dims[axis]);
   int packed = -1;
-  if (coordinate < low) {
-    packed = coordinate;
-  } else if (coordinate >= axis_size - high) {
-    packed = low + coordinate - (axis_size - high);
+  if (!beamz::cuda::yee::CpmlPackedCoordinate(coordinate, axis_size, low, high,
+                                               &packed)) {
+    return sign * derivative;
   }
-  if (packed < 0) return sign * derivative;
   int pz = z, py = y, px = x;
   if (axis == 0) pz = packed;
   if (axis == 1) py = packed;
@@ -178,37 +135,34 @@ __device__ __forceinline__ float CorrectCpml(
   const int psi_base = 13 + 3 * launch.nterms;
   const BeamzBuffer& psi_input = launch.inputs[psi_base + term];
   const BeamzBuffer& psi_output = launch.outputs[3 + term];
+  const BeamzBuffer& a = launch.inputs[coefficient_base];
+  const BeamzBuffer& b = launch.inputs[coefficient_base + 1];
+  const BeamzBuffer& inv_kappa = launch.inputs[coefficient_base + 2];
+  if (pz < 0 || pz >= psi_output.dims[0] || py < 0 ||
+      py >= psi_output.dims[1] || px < 0 || px >= psi_output.dims[2] ||
+      packed >= a.dims[axis] || packed >= b.dims[axis] ||
+      packed >= inv_kappa.dims[axis]) {
+    return sign * derivative;
+  }
   const int64_t psi_offset = Offset(psi_output, pz, py, px);
   const float old_psi = static_cast<const float*>(psi_input.data)[psi_offset];
-  const float next_psi =
-      Read(launch.inputs[coefficient_base + 1], pz, py, px) * old_psi +
-      Read(launch.inputs[coefficient_base], pz, py, px) * derivative;
+  const float next_psi = beamz::cuda::yee::AdvanceCpmlPsi(
+      Read(b, pz, py, px), old_psi, Read(a, pz, py, px), derivative);
   static_cast<float*>(psi_output.data)[psi_offset] = next_psi;
-  return sign *
-         (derivative * Read(launch.inputs[coefficient_base + 2], pz, py, px) +
-          next_psi);
+  return beamz::cuda::yee::CorrectCpmlDerivative(
+      sign, derivative, Read(inv_kappa, pz, py, px), next_psi);
 }
 
 __device__ __forceinline__ void DerivativePlan(int component, int* first_source,
                                                int* second_source,
                                                int* first_axis,
                                                int* second_axis) {
-  if (component == 0) {
-    *first_source = 2;
-    *second_source = 1;
-    *first_axis = 1;
-    *second_axis = 0;
-  } else if (component == 1) {
-    *first_source = 0;
-    *second_source = 2;
-    *first_axis = 0;
-    *second_axis = 2;
-  } else {
-    *first_source = 1;
-    *second_source = 0;
-    *first_axis = 2;
-    *second_axis = 1;
-  }
+  const auto first = beamz::cuda::yee::FirstCurlTerm(component);
+  const auto second = beamz::cuda::yee::SecondCurlTerm(component);
+  *first_source = first.source_component;
+  *second_source = second.source_component;
+  *first_axis = first.derivative_axis;
+  *second_axis = second.derivative_axis;
 }
 
 __device__ __forceinline__ float SharedForward(const float* tile, int axis,
@@ -278,6 +232,12 @@ __global__ __launch_bounds__(256, 2) void UpdateTiled(BeamzLaunch launch,
   const int y = base_y + threadIdx.y;
   const int z = base_z + threadIdx.z;
   if (x >= output.dims[2] || y >= output.dims[1] || z >= output.dims[0]) return;
+  const bool zero_on_wall = beamz::cuda::yee::PecConstrained(
+      output, launch.phase, component, launch.metallic_edges, z, y, x);
+  if (launch.nterms == 0 && zero_on_wall) {
+    static_cast<float*>(output.data)[Offset(output, z, y, x)] = 0.0f;
+    return;
+  }
   const int lx = threadIdx.x;
   const int ly = threadIdx.y;
   const int lz = threadIdx.z;
@@ -311,31 +271,35 @@ __global__ __launch_bounds__(256, 2) void UpdateTiled(BeamzLaunch launch,
                 CorrectCpml(derivative1, 2 * component + 1, z, y, x, launch)
           : derivative0 - derivative1;
   const int64_t linear = Offset(output, z, y, x);
-  const float old_field = static_cast<const float*>(input.data)[linear];
-  if (launch.phase == 0) {
-    const float sigma = Read(launch.inputs[6 + component], z, y, x);
-    const float alpha = sigma * (0.5f * launch.dt / kMu0);
-    static_cast<float*>(output.data)[linear] =
-        ((1.0f - alpha) * old_field - (launch.dt / kMu0) * curl) /
-        (1.0f + alpha);
-  } else {
-    const float conductivity = Read(launch.inputs[6 + component], z, y, x);
-    const float inverse_permittivity =
-        1.0f / Read(launch.inputs[9 + component], z, y, x);
-    const float beta = conductivity * (0.5f * launch.dt / kEps0) *
-                       inverse_permittivity;
-    static_cast<float*>(output.data)[linear] =
-        ((1.0f - beta) * old_field +
-         (launch.dt / kEps0) * inverse_permittivity * curl) /
-        (1.0f + beta);
+  if (zero_on_wall) {
+    // Match streamed CPML semantics: advance psi before masking a PEC field.
+    static_cast<float*>(output.data)[linear] = 0.0f;
+    return;
   }
+  const float old_field = static_cast<const float*>(input.data)[linear];
+  const bool packed_lossless_material =
+      launch.phase == 1 && launch.inputs[6 + component].rank == 1 &&
+      launch.inputs[9 + component].rank == 1 &&
+      launch.inputs[9 + component].element_type == kBeamzS32;
+  float decay;
+  float source;
+  if (packed_lossless_material) {
+    decay = 1.0f;
+    source = beamz::cuda::yee::PackedMaterialSource(
+        launch.inputs[6 + component], launch.inputs[9 + component], linear);
+  } else {
+    decay = Read(launch.inputs[6 + component], z, y, x);
+    source = Read(launch.inputs[9 + component], z, y, x);
+  }
+  static_cast<float*>(output.data)[linear] = beamz::cuda::yee::AdvanceYeeField(
+      launch.phase, old_field, decay, source, curl);
 }
 
 }  // namespace
 
 int BeamzLaunchHopper(void* raw_stream, const BeamzLaunch& launch) {
-  if (!ValidateHopperPhase(launch)) {
-    return static_cast<int>(cudaErrorInvalidValue);
+  if (cudaError_t error = ValidateHopperPhase(launch); error != cudaSuccess) {
+    return static_cast<int>(error);
   }
   auto stream = reinterpret_cast<cudaStream_t>(raw_stream);
   const dim3 threads(kTileX, kTileY, kTileZ);

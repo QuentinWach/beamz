@@ -2,17 +2,41 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 
 namespace {
 
-constexpr size_t kMaxCachedGraphs = 32;
+// A graph executable stays alive until the event recorded after its most recent
+// replay completes. The event gives cache eviction a non-blocking lifetime
+// check instead of assuming that submission means completion.
+struct GraphCacheEntry {
+  cudaGraphExec_t executable = nullptr;
+  cudaEvent_t completion = nullptr;
+  uint64_t last_used = 0;
+  bool completion_recorded = false;
+};
+
+struct DeviceGraphCache {
+  std::unordered_map<std::string, GraphCacheEntry> entries;
+  uint64_t use_clock = 0;
+};
 
 struct GraphCache {
   std::mutex mutex;
-  std::unordered_map<std::string, cudaGraphExec_t> entries;
+  // Graph executables and CUDA events belong to their creating device. Keep
+  // independent LRU clocks per device so eviction never destroys a resource
+  // while another device is current on the calling thread.
+  std::unordered_map<int, DeviceGraphCache> devices;
+  uint64_t hits = 0;
+  uint64_t misses = 0;
+  uint64_t instantiations = 0;
+  uint64_t instantiation_nanoseconds = 0;
 };
 
 GraphCache& CachedGraphs() {
@@ -20,6 +44,84 @@ GraphCache& CachedGraphs() {
   // deliberately bounded cache until process teardown instead.
   static auto* cache = new GraphCache();
   return *cache;
+}
+
+bool GraphCacheStatsEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("BEAMZ_CUDA_GRAPH_CACHE_STATS");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+  }();
+  return enabled;
+}
+
+void ReportGraphCacheStatsLocked(const GraphCache& cache) {
+  if (!GraphCacheStatsEnabled()) return;
+  const uint64_t lookups = cache.hits + cache.misses;
+  // Emit a first sample and periodic summaries. Diagnostics are strictly
+  // opt-in so ordinary graph replays retain the same hot-path cost.
+  if (lookups != 1 && lookups % 128 != 0) return;
+  const double hit_rate = lookups == 0
+                              ? 0.0
+                              : 100.0 * static_cast<double>(cache.hits) / lookups;
+  const double average_ms = cache.instantiations == 0
+                                ? 0.0
+                                : static_cast<double>(cache.instantiation_nanoseconds) /
+                                      cache.instantiations / 1.0e6;
+  std::fprintf(stderr,
+               "BeamZ CUDA graph cache: hits=%llu misses=%llu hit_rate=%.1f%% "
+               "mean_instantiate_ms=%.3f\n",
+               static_cast<unsigned long long>(cache.hits),
+               static_cast<unsigned long long>(cache.misses), hit_rate,
+               average_ms);
+}
+
+void DestroyGraphEntry(GraphCacheEntry entry) {
+  if (entry.completion != nullptr) cudaEventDestroy(entry.completion);
+  if (entry.executable != nullptr) cudaGraphExecDestroy(entry.executable);
+}
+
+// Evict one completed least-recently-used entry at a time. An oversubscribed
+// cache is intentional when every executable is in flight: retaining a small
+// temporary overflow is both safer and faster than synchronizing the stream or
+// destroying an executable that another caller's work still references.
+void PruneCompletedEntriesLocked(DeviceGraphCache* cache, size_t capacity) {
+  while (cache->entries.size() > capacity) {
+    auto victim = cache->entries.end();
+    uint64_t victim_use = std::numeric_limits<uint64_t>::max();
+    for (auto it = cache->entries.begin(); it != cache->entries.end(); ++it) {
+      GraphCacheEntry& entry = it->second;
+      if (!entry.completion_recorded ||
+          cudaEventQuery(entry.completion) != cudaSuccess) {
+        continue;
+      }
+      if (entry.last_used < victim_use) {
+        victim = it;
+        victim_use = entry.last_used;
+      }
+    }
+    if (victim == cache->entries.end()) return;
+    GraphCacheEntry entry = victim->second;
+    cache->entries.erase(victim);
+    // cudaEventQuery above established that this executable is no longer
+    // referenced by its stream, so releasing it cannot race another caller.
+    DestroyGraphEntry(entry);
+  }
+}
+
+cudaError_t LaunchCachedEntryLocked(DeviceGraphCache* cache,
+                                    GraphCacheEntry* entry,
+                                    cudaStream_t stream, bool* launched) {
+  *launched = false;
+  const cudaError_t launch_error = cudaGraphLaunch(entry->executable, stream);
+  if (launch_error != cudaSuccess) return launch_error;
+  *launched = true;
+
+  entry->last_used = ++cache->use_clock;
+  const cudaError_t event_error = cudaEventRecord(entry->completion, stream);
+  // Do not use an older event to free a newer in-flight launch. A context error
+  // is returned to the caller and the process-lifetime cache remains safe.
+  entry->completion_recorded = event_error == cudaSuccess;
+  return event_error;
 }
 
 template <typename T>
@@ -61,6 +163,7 @@ void AppendSourceGroup(std::string* key,
   Append(key, value.component);
   Append(key, value.timing);
   Append(key, value.coincident);
+  Append(key, value.disjoint);
 }
 
 void AppendMonitors(std::string* key, const BeamzDftGroupLaunch& value) {
@@ -74,6 +177,9 @@ void AppendMonitors(std::string* key, const BeamzDftGroupLaunch& value) {
   AppendBuffer(key, value.dft_re);
   AppendBuffer(key, value.dft_im);
   AppendBuffer(key, value.dft_weight);
+  AppendBuffer(key, value.phase_sin);
+  AppendBuffer(key, value.phase_cos);
+  AppendBuffer(key, value.phase_window);
   AppendBuffer(key, value.time);
   AppendBuffer(key, value.current_step);
   Append(key, value.monitor_count);
@@ -88,6 +194,7 @@ std::string BeamzGraphKey(const char* schedule, void* stream,
   Append(&key, stream);
   Append(&key, program.field_bank_count);
   Append(&key, program.nsteps);
+  Append(&key, program.schedule_flags);
   AppendLaunch(&key, program.h_ab);
   AppendLaunch(&key, program.e_ab);
   if (program.field_bank_count == 2) {
@@ -105,15 +212,34 @@ std::string BeamzGraphKey(const char* schedule, void* stream,
 }
 
 cudaError_t BeamzLaunchGraph(cudaStream_t stream, const std::string& key,
-                             bool cache_enabled,
+                             bool cache_enabled, int32_t cache_capacity,
                              const std::function<cudaError_t()>& enqueue) {
+  cache_enabled = cache_enabled && cache_capacity > 0;
+  const size_t capacity = static_cast<size_t>(cache_capacity);
   GraphCache& cache = CachedGraphs();
+  int device = -1;
+  if (cache_enabled && cudaGetDevice(&device) != cudaSuccess) {
+    // Capturing is still useful after a cache bookkeeping failure, but never
+    // insert a resource whose owning device is unknown.
+    cache_enabled = false;
+  }
   if (cache_enabled) {
     std::lock_guard<std::mutex> lock(cache.mutex);
-    const auto cached = cache.entries.find(key);
-    if (cached != cache.entries.end()) {
-      return cudaGraphLaunch(cached->second, stream);
+    DeviceGraphCache& device_cache = cache.devices[device];
+    PruneCompletedEntriesLocked(&device_cache, capacity);
+    const auto cached = device_cache.entries.find(key);
+    if (cached != device_cache.entries.end()) {
+      bool launched = false;
+      const cudaError_t error =
+          LaunchCachedEntryLocked(&device_cache, &cached->second, stream,
+                                  &launched);
+      if (GraphCacheStatsEnabled()) {
+        ++cache.hits;
+        ReportGraphCacheStatsLocked(cache);
+      }
+      return error;
     }
+    if (GraphCacheStatsEnabled()) ++cache.misses;
   }
 
   cudaGraph_t graph = nullptr;
@@ -127,22 +253,66 @@ cudaError_t BeamzLaunchGraph(cudaStream_t stream, const std::string& key,
   error = enqueue();
   const cudaError_t end_error = cudaStreamEndCapture(stream, &graph);
   if (error == cudaSuccess) error = end_error;
-  if (error == cudaSuccess) error = cudaGraphInstantiate(&executable, graph, 0);
+  if (error == cudaSuccess) {
+    if (cache_enabled && GraphCacheStatsEnabled()) {
+      const auto instantiate_start = std::chrono::steady_clock::now();
+      error = cudaGraphInstantiate(&executable, graph, 0);
+      const auto instantiate_end = std::chrono::steady_clock::now();
+      const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          instantiate_end - instantiate_start);
+      std::lock_guard<std::mutex> lock(cache.mutex);
+      ++cache.instantiations;
+      cache.instantiation_nanoseconds +=
+          static_cast<uint64_t>(elapsed.count());
+      ReportGraphCacheStatsLocked(cache);
+    } else {
+      error = cudaGraphInstantiate(&executable, graph, 0);
+    }
+  }
   if (error == cudaSuccess && cache_enabled) {
-    std::lock_guard<std::mutex> lock(cache.mutex);
-    if (cache.entries.size() >= kMaxCachedGraphs) {
-      for (const auto& entry : cache.entries) {
-        cudaGraphExecDestroy(entry.second);
+    GraphCacheEntry new_entry{};
+    new_entry.executable = executable;
+    error =
+        cudaEventCreateWithFlags(&new_entry.completion, cudaEventDisableTiming);
+    if (error != cudaSuccess) {
+      // An event-allocation failure only disables the optional cache. The
+      // already-instantiated graph remains a valid one-shot launch.
+      cache_enabled = false;
+      error = cudaGraphLaunch(executable, stream);
+    } else {
+      GraphCacheEntry duplicate{};
+      bool destroy_duplicate = false;
+      GraphCacheEntry failed_entry{};
+      bool destroy_failed_entry = false;
+      {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        DeviceGraphCache& device_cache = cache.devices[device];
+        PruneCompletedEntriesLocked(&device_cache, capacity);
+        const auto [entry, inserted] =
+            device_cache.entries.emplace(key, new_entry);
+        if (!inserted) {
+          // Captures can race between host threads. Reuse the first complete
+          // executable and dispose of the unlaunched duplicate after unlocking.
+          duplicate = new_entry;
+          destroy_duplicate = true;
+          executable = nullptr;
+        } else {
+          executable = nullptr;  // Cache now owns the executable and its event.
+        }
+        bool launched = false;
+        error = LaunchCachedEntryLocked(&device_cache, &entry->second, stream,
+                                        &launched);
+        if (inserted && !launched) {
+          // A failed launch never reached the stream, so its event and
+          // executable can be removed immediately.
+          failed_entry = entry->second;
+          device_cache.entries.erase(entry);
+          destroy_failed_entry = true;
+        }
       }
-      cache.entries.clear();
+      if (destroy_duplicate) DestroyGraphEntry(duplicate);
+      if (destroy_failed_entry) DestroyGraphEntry(failed_entry);
     }
-    const auto [entry, inserted] = cache.entries.emplace(key, executable);
-    if (!inserted) {
-      cudaGraphExecDestroy(executable);
-      executable = entry->second;
-    }
-    // Keep the executable protected from concurrent eviction until submission.
-    error = cudaGraphLaunch(executable, stream);
   } else if (error == cudaSuccess) {
     error = cudaGraphLaunch(executable, stream);
   }

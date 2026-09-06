@@ -38,6 +38,12 @@ DftFields MakeDftFields(const BeamzLaunch& h_launch,
   return fields;
 }
 
+__device__ __forceinline__ int64_t ElementCount(const BeamzBuffer& value) {
+  int64_t elements = 1;
+  for (int axis = 0; axis < value.rank; ++axis) elements *= value.dims[axis];
+  return elements;
+}
+
 __device__ __forceinline__ bool SourceCellConstrained(
     const BeamzBuffer& target, int component, int phase, int metallic_edges,
     int z, int y, int x) {
@@ -72,9 +78,11 @@ __device__ __forceinline__ void ApplySourceGroupCell(
     return;
   }
   const auto* starts = static_cast<const int32_t*>(group.starts.data);
-  const int target_z = starts[3 * source_index] + z;
-  const int target_y = starts[3 * source_index + 1] + y;
-  const int target_x = starts[3 * source_index + 2] + x;
+  const int64_t target_z = static_cast<int64_t>(starts[3 * source_index]) + z;
+  const int64_t target_y =
+      static_cast<int64_t>(starts[3 * source_index + 1]) + y;
+  const int64_t target_x =
+      static_cast<int64_t>(starts[3 * source_index + 2]) + x;
   if (target_z < 0 || target_z >= target.dims[0] || target_y < 0 ||
       target_y >= target.dims[1] || target_x < 0 ||
       target_x >= target.dims[2]) {
@@ -86,7 +94,9 @@ __device__ __forceinline__ void ApplySourceGroupCell(
   if (group.timing != 0 &&
       SourceCellConstrained(target, group.component,
                             group.timing == 1 ? 0 : 1, metallic_edges,
-                            target_z, target_y, target_x)) {
+                            static_cast<int>(target_z),
+                            static_cast<int>(target_y),
+                            static_cast<int>(target_x))) {
     return;
   }
   int waveform_index =
@@ -106,9 +116,10 @@ __device__ __forceinline__ void ApplySourceGroupCell(
           static_cast<int>(group.coefficients.dims[3]) +
       x;
   const int target_offset =
-      (target_z * static_cast<int>(target.dims[1]) + target_y) *
+      (static_cast<int>(target_z) * static_cast<int>(target.dims[1]) +
+       static_cast<int>(target_y)) *
           static_cast<int>(target.dims[2]) +
-      target_x;
+      static_cast<int>(target_x);
   const float contribution =
       static_cast<const float*>(group.coefficients.data)[coefficient_offset] *
       static_cast<const float*>(group.waveforms.data)[waveform_offset];
@@ -133,9 +144,9 @@ __global__ void ApplySingleSourceGroup(BeamzBuffer target,
     return;
   }
   const auto* starts = static_cast<const int32_t*>(group.starts.data);
-  const int target_z = starts[0] + z;
-  const int target_y = starts[1] + y;
-  const int target_x = starts[2] + x;
+  const int64_t target_z = static_cast<int64_t>(starts[0]) + z;
+  const int64_t target_y = static_cast<int64_t>(starts[1]) + y;
+  const int64_t target_x = static_cast<int64_t>(starts[2]) + x;
   if (target_z < 0 || target_z >= target.dims[0] || target_y < 0 ||
       target_y >= target.dims[1] || target_x < 0 ||
       target_x >= target.dims[2]) {
@@ -143,7 +154,9 @@ __global__ void ApplySingleSourceGroup(BeamzBuffer target,
   }
   if constexpr (Timing != 0) {
     if (SourceCellConstrained(target, group.component, Timing == 1 ? 0 : 1,
-                              metallic_edges, target_z, target_y, target_x)) {
+                              metallic_edges, static_cast<int>(target_z),
+                              static_cast<int>(target_y),
+                              static_cast<int>(target_x))) {
       return;
     }
   }
@@ -159,9 +172,10 @@ __global__ void ApplySingleSourceGroup(BeamzBuffer target,
           static_cast<int>(group.coefficients.dims[3]) +
       x;
   const int target_offset =
-      (target_z * static_cast<int>(target.dims[1]) + target_y) *
+      (static_cast<int>(target_z) * static_cast<int>(target.dims[1]) +
+       static_cast<int>(target_y)) *
           static_cast<int>(target.dims[2]) +
-      target_x;
+      static_cast<int>(target_x);
   static_cast<float*>(target.data)[target_offset] +=
       static_cast<const float*>(group.coefficients.data)[coefficient_offset] *
       static_cast<const float*>(group.waveforms.data)[waveform_index];
@@ -176,9 +190,9 @@ __device__ __forceinline__ void ApplyCoincidentSourceGroupCell(
     return;
   }
   const auto* starts = static_cast<const int32_t*>(group.starts.data);
-  const int target_z = starts[0] + z;
-  const int target_y = starts[1] + y;
-  const int target_x = starts[2] + x;
+  const int64_t target_z = static_cast<int64_t>(starts[0]) + z;
+  const int64_t target_y = static_cast<int64_t>(starts[1]) + y;
+  const int64_t target_x = static_cast<int64_t>(starts[2]) + x;
   if (target_z < 0 || target_z >= target.dims[0] || target_y < 0 ||
       target_y >= target.dims[1] || target_x < 0 ||
       target_x >= target.dims[2]) {
@@ -187,7 +201,9 @@ __device__ __forceinline__ void ApplyCoincidentSourceGroupCell(
   if (group.timing != 0 &&
       SourceCellConstrained(target, group.component,
                             group.timing == 1 ? 0 : 1, metallic_edges,
-                            target_z, target_y, target_x)) {
+                            static_cast<int>(target_z),
+                            static_cast<int>(target_y),
+                            static_cast<int>(target_x))) {
     return;
   }
   int waveform_index =
@@ -198,9 +214,10 @@ __device__ __forceinline__ void ApplyCoincidentSourceGroupCell(
           ? static_cast<int>(group.waveforms.dims[1]) - 1
           : waveform_index;
   const int target_offset =
-      (target_z * static_cast<int>(target.dims[1]) + target_y) *
+      (static_cast<int>(target_z) * static_cast<int>(target.dims[1]) +
+       static_cast<int>(target_y)) *
           static_cast<int>(target.dims[2]) +
-      target_x;
+      static_cast<int>(target_x);
   float value = static_cast<float*>(target.data)[target_offset];
   const int coefficient_stride =
       static_cast<int>(group.coefficients.dims[1] *
@@ -221,6 +238,7 @@ __device__ __forceinline__ void ApplyCoincidentSourceGroupCell(
   static_cast<float*>(target.data)[target_offset] = value;
 }
 
+template <bool Atomic>
 __global__ void ApplySourceGroupBatched(BeamzBuffer target,
                                         BeamzSourceGroupLaunch group,
                                         int z_blocks, int step_offset,
@@ -230,10 +248,10 @@ __global__ void ApplySourceGroupBatched(BeamzBuffer target,
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
   const int z = source_block_z * blockDim.z + threadIdx.z;
-  // Sources within a group may overlap. A single batched launch must preserve
-  // their additive semantics instead of racing read-modify-write operations.
-  ApplySourceGroupCell<true>(target, group, source_index, step_offset,
-                             metallic_edges, z, y, x);
+  // The compiler marks only statically disjoint slabs as non-atomic. The
+  // conservative default preserves additive semantics for every other group.
+  ApplySourceGroupCell<Atomic>(target, group, source_index, step_offset,
+                               metallic_edges, z, y, x);
 }
 
 __global__ void ApplyCoincidentSourceGroup(BeamzBuffer target,
@@ -280,12 +298,66 @@ cudaError_t LaunchSourceGroup(cudaStream_t stream, const BeamzLaunch& launch,
         target, group, step, launch.metallic_edges);
     return cudaPeekAtLastError();
   }
-  ApplySourceGroupBatched<<<blocks, threads, 0, stream>>>(
-      target, group, z_blocks, step, launch.metallic_edges);
+  if (group.disjoint != 0) {
+    ApplySourceGroupBatched<false><<<blocks, threads, 0, stream>>>(
+        target, group, z_blocks, step, launch.metallic_edges);
+  } else {
+    ApplySourceGroupBatched<true><<<blocks, threads, 0, stream>>>(
+        target, group, z_blocks, step, launch.metallic_edges);
+  }
   return cudaPeekAtLastError();
 }
 
-template <bool SingleMonitor>
+__global__ void PrepareDftPhases(DftFields fields, BeamzDftGroupLaunch monitors,
+                                 int step_offset) {
+  const int frequency = blockIdx.x * blockDim.x + threadIdx.x;
+  const int monitor = blockIdx.y;
+  const int max_frequency_count = static_cast<int>(monitors.frequencies.dims[1]);
+  if (monitor >= monitors.monitor_count || frequency >= max_frequency_count) {
+    return;
+  }
+  const int phase_offset = monitor * max_frequency_count + frequency;
+  float window = 0.0f;
+  float phase_sin = 0.0f;
+  float phase_cos = 0.0f;
+  const auto* counts = static_cast<const int32_t*>(monitors.counts.data);
+  const int frequency_count = counts[5 * monitor];
+  const int interval = counts[5 * monitor + 2] > 0
+                           ? counts[5 * monitor + 2]
+                           : 1;
+  const auto* codes = static_cast<const int32_t*>(monitors.codes.data);
+  if (frequency < frequency_count && frequency_count > 0 &&
+      frequency_count <= max_frequency_count &&
+      (codes[2 * monitor] == 0 || codes[2 * monitor] == 1) &&
+      (codes[2 * monitor + 1] == 0 || codes[2 * monitor + 1] == 1)) {
+    const int64_t absolute_step =
+        static_cast<int64_t>(
+            static_cast<const int32_t*>(monitors.current_step.data)[0]) +
+        step_offset;
+    const float time = static_cast<const float*>(monitors.time.data)[0] +
+                       static_cast<float>(step_offset + 1) * fields.dt;
+    const auto* windows = static_cast<const float*>(monitors.windows.data);
+    const float start = windows[3 * monitor];
+    const float end = windows[3 * monitor + 1];
+    if (absolute_step % interval == 0 && time >= start && time <= end) {
+      window = 1.0f;
+      if (codes[2 * monitor] == 1 && isfinite(end) && end > start) {
+        const float tau =
+            fminf(fmaxf((time - start) / (end - start), 0.0f), 1.0f);
+        window = 0.5f * (1.0f - cosf(6.2831853071795864769f * tau));
+      }
+      const float frequency_hz =
+          static_cast<const float*>(monitors.frequencies.data)[phase_offset];
+      sincosf(6.2831853071795864769f * frequency_hz * time, &phase_sin,
+              &phase_cos);
+    }
+  }
+  static_cast<float*>(monitors.phase_window.data)[phase_offset] = window;
+  static_cast<float*>(monitors.phase_sin.data)[phase_offset] = phase_sin;
+  static_cast<float*>(monitors.phase_cos.data)[phase_offset] = phase_cos;
+}
+
+template <bool SingleMonitor, bool CachedPhase>
 __global__ void AccumulateDftGroups(DftFields fields,
                                     BeamzDftGroupLaunch monitors,
                                     int step_offset) {
@@ -306,39 +378,66 @@ __global__ void AccumulateDftGroups(DftFields fields,
                            : 1;
   const int value_offset = counts[5 * monitor + 3];
   const int weight_offset = counts[5 * monitor + 4];
-  if (frequency >= frequency_count) return;
-
-  const int absolute_step =
-      static_cast<const int32_t*>(monitors.current_step.data)[0] + step_offset;
-  if (absolute_step % interval != 0) return;
-  const float time = static_cast<const float*>(monitors.time.data)[0] +
-                     static_cast<float>(step_offset + 1) * fields.dt;
-  const auto* windows = static_cast<const float*>(monitors.windows.data);
-  const float start = windows[3 * monitor];
-  const float end = windows[3 * monitor + 1];
-  if (time < start || time > end) return;
+  const int max_frequency_count = static_cast<int>(monitors.frequencies.dims[1]);
+  const int max_points = static_cast<int>(monitors.indices.dims[2]);
+  if (frequency_count < 1 || frequency_count > max_frequency_count ||
+      point_count < 1 || point_count > max_points || value_offset < 0 ||
+      weight_offset < 0 || frequency >= frequency_count) {
+    return;
+  }
+  const int64_t value_count =
+      6LL * frequency_count * point_count;
+  if (static_cast<int64_t>(value_offset) + value_count >
+          monitors.dft_re.dims[0] ||
+      static_cast<int64_t>(value_offset) + value_count >
+          monitors.dft_im.dims[0] ||
+      static_cast<int64_t>(weight_offset) + frequency_count >
+          monitors.dft_weight.dims[0]) {
+    return;
+  }
 
   const auto* codes = static_cast<const int32_t*>(monitors.codes.data);
-  const int max_frequency_count = static_cast<int>(monitors.frequencies.dims[1]);
+  if ((codes[2 * monitor] != 0 && codes[2 * monitor] != 1) ||
+      (codes[2 * monitor + 1] != 0 && codes[2 * monitor + 1] != 1)) {
+    return;
+  }
+  const auto* windows = static_cast<const float*>(monitors.windows.data);
   float window = 0.0f;
   float phase_sin = 0.0f;
   float phase_cos = 0.0f;
-  if (threadIdx.x == 0) {
-    window = 1.0f;
-    if (codes[2 * monitor] == 1 && isfinite(end) && end > start) {
-      const float tau =
-          fminf(fmaxf((time - start) / (end - start), 0.0f), 1.0f);
-      window = 0.5f * (1.0f - cosf(6.2831853071795864769f * tau));
+  if constexpr (CachedPhase) {
+    const int phase_offset = monitor * max_frequency_count + frequency;
+    window = static_cast<const float*>(monitors.phase_window.data)[phase_offset];
+    phase_sin = static_cast<const float*>(monitors.phase_sin.data)[phase_offset];
+    phase_cos = static_cast<const float*>(monitors.phase_cos.data)[phase_offset];
+    if (window == 0.0f) return;
+  } else if (threadIdx.x == 0) {
+    const int64_t absolute_step =
+        static_cast<int64_t>(
+            static_cast<const int32_t*>(monitors.current_step.data)[0]) +
+        step_offset;
+    const float time = static_cast<const float*>(monitors.time.data)[0] +
+                       static_cast<float>(step_offset + 1) * fields.dt;
+    const float start = windows[3 * monitor];
+    const float end = windows[3 * monitor + 1];
+    if (absolute_step % interval == 0 && time >= start && time <= end) {
+      window = 1.0f;
+      if (codes[2 * monitor] == 1 && isfinite(end) && end > start) {
+        const float tau =
+            fminf(fmaxf((time - start) / (end - start), 0.0f), 1.0f);
+        window = 0.5f * (1.0f - cosf(6.2831853071795864769f * tau));
+      }
+      const float frequency_hz =
+          static_cast<const float*>(monitors.frequencies.data)
+              [monitor * max_frequency_count + frequency];
+      sincosf(6.2831853071795864769f * frequency_hz * time, &phase_sin,
+              &phase_cos);
     }
-    const float frequency_hz =
-        static_cast<const float*>(monitors.frequencies.data)
-            [monitor * max_frequency_count + frequency];
-    sincosf(6.2831853071795864769f * frequency_hz * time, &phase_sin,
-            &phase_cos);
   }
   window = __shfl_sync(0xffffffff, window, 0);
   phase_sin = __shfl_sync(0xffffffff, phase_sin, 0);
   phase_cos = __shfl_sync(0xffffffff, phase_cos, 0);
+  if (window == 0.0f) return;
   if (point >= point_count) return;
   if (component == 0 && point == 0) {
     static_cast<float*>(monitors.dft_weight.data)
@@ -348,7 +447,6 @@ __global__ void AccumulateDftGroups(DftFields fields,
       [monitor * 6 + component];
   if (mask == 0.0f) return;
 
-  const int max_points = static_cast<int>(monitors.indices.dims[2]);
   const int neighbors = static_cast<int>(monitors.indices.dims[3]);
   const int plan_base = ((monitor * 6 + component) * max_points + point) *
                         neighbors;
@@ -358,13 +456,16 @@ __global__ void AccumulateDftGroups(DftFields fields,
     const int gather_offset = plan_base + neighbor;
     const int field_offset =
         static_cast<const int32_t*>(monitors.indices.data)[gather_offset];
-    sample += static_cast<const float*>(field.data)[field_offset] *
-              static_cast<const float*>(monitors.weights.data)[gather_offset];
+    if (field_offset >= 0 && field_offset < ElementCount(field)) {
+      sample += static_cast<const float*>(field.data)[field_offset] *
+                static_cast<const float*>(monitors.weights.data)[gather_offset];
+    }
   }
 
   float scale = window;
   if (codes[2 * monitor + 1] == 1) {
     const float length_unit = windows[3 * monitor + 2];
+    if (!isfinite(length_unit) || length_unit <= 0.0f) return;
     scale *= fields.dt * static_cast<float>(interval) * 299792458.0f /
              length_unit / sqrtf(6.2831853071795864769f);
   }
@@ -390,11 +491,35 @@ cudaError_t LaunchDftGroups(cudaStream_t stream, const BeamzLaunch& h_launch,
       (monitors.indices.dims[2] + threads.x - 1) / threads.x,
       (monitors.frequencies.dims[1] + threads.y - 1) / threads.y,
       (monitors.monitor_count * 6 + threads.z - 1) / threads.z);
-  if (monitors.monitor_count == 1) {
-    AccumulateDftGroups<true><<<blocks, threads, 0, stream>>>(
+  // A phase is shared by every component and point of one monitor/frequency.
+  // For monitor-heavy work, one tiny producer launch removes repeated sincosf
+  // calls from every 32-point block. Small plans keep the original fused path
+  // so an extra kernel launch cannot dominate a short gather.
+  const bool cache_phase = monitors.indices.dims[2] > kTileX ||
+                           monitors.monitor_count * monitors.frequencies.dims[1] >=
+                               32;
+  if (cache_phase) {
+    const dim3 phase_threads(kTileX);
+    const dim3 phase_blocks(
+        (monitors.frequencies.dims[1] + phase_threads.x - 1) / phase_threads.x,
+        monitors.monitor_count);
+    PrepareDftPhases<<<phase_blocks, phase_threads, 0, stream>>>(fields,
+                                                                  monitors, step);
+    if (cudaError_t error = cudaPeekAtLastError(); error != cudaSuccess) {
+      return error;
+    }
+  }
+  if (monitors.monitor_count == 1 && cache_phase) {
+    AccumulateDftGroups<true, true><<<blocks, threads, 0, stream>>>(
+        fields, monitors, step);
+  } else if (monitors.monitor_count == 1) {
+    AccumulateDftGroups<true, false><<<blocks, threads, 0, stream>>>(
+        fields, monitors, step);
+  } else if (cache_phase) {
+    AccumulateDftGroups<false, true><<<blocks, threads, 0, stream>>>(
         fields, monitors, step);
   } else {
-    AccumulateDftGroups<false><<<blocks, threads, 0, stream>>>(
+    AccumulateDftGroups<false, false><<<blocks, threads, 0, stream>>>(
         fields, monitors, step);
   }
   return cudaPeekAtLastError();

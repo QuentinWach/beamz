@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from argparse import Namespace
 from datetime import datetime, timezone
 
 import pytest
 
 from scripts.benchmark_rtx3090_capacity import (
+    _child_environment,
     _load_checkpoint,
     _looks_like_gpu_oom,
     _waveguide_simulation,
@@ -170,6 +172,19 @@ def test_gpu_oom_classifier_recognizes_allocator_failures(message):
 
 def test_gpu_oom_classifier_does_not_hide_unrelated_child_errors():
     assert not _looks_like_gpu_oom("ValueError: modal plane is outside the domain")
+
+
+def test_capacity_child_environment_prefers_the_requested_source_root(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("PYTHONPATH", "/an/unrelated/beamz")
+
+    environment = _child_environment(tmp_path, 0.92)
+
+    assert environment["PYTHONPATH"].split(os.pathsep) == [
+        str(tmp_path),
+        "/an/unrelated/beamz",
+    ]
 
 
 def test_capacity_checkpoint_round_trips_completed_attempts(tmp_path):

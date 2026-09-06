@@ -365,8 +365,19 @@ def test_cuda_policy_participates_in_compiled_program_identity():
             ),
         )
     )
+    smaller_cache_key = CompiledProgramKey.from_request(
+        replace(
+            request,
+            run=replace(
+                request.run,
+                cuda_flags=backend_runtime.CUDA_DEFAULT_FLAGS,
+                cuda_graph_cache_capacity=8,
+            ),
+        )
+    )
 
     assert default_key != uncached_key
+    assert default_key != smaller_cache_key
 
 
 def test_cuda_policy_is_snapshotted_when_program_is_compiled(monkeypatch):
@@ -375,13 +386,33 @@ def test_cuda_policy_is_snapshotted_when_program_is_compiled(monkeypatch):
         "resolve_backend",
         lambda backend: "cuda_streamed" if backend == "cuda_streamed" else backend,
     )
+    monkeypatch.delenv("BEAMZ_CUDA_GRAPH_CACHE_CAPACITY", raising=False)
     simulation = _rectilinear_3d_simulation()
     simulation.clear_compiled_cache()
 
     first = simulation.compile(backend="cuda_streamed")
     monkeypatch.setenv("BEAMZ_CUDA_DISABLE_GRAPH_CACHE", "1")
+    monkeypatch.setenv("BEAMZ_CUDA_GRAPH_CACHE_CAPACITY", "8")
     second = simulation.compile(backend="cuda_streamed")
 
     assert first.config.cuda_flags & backend_runtime.CUDA_GRAPH_CACHE
     assert not second.config.cuda_flags & backend_runtime.CUDA_GRAPH_CACHE
+    assert first.config.cuda_graph_cache_capacity == 32
+    assert second.config.cuda_graph_cache_capacity == 8
     assert first is not second
+
+
+def test_cuda_graph_cache_capacity_policy_is_bounded(monkeypatch):
+    monkeypatch.delenv("BEAMZ_CUDA_GRAPH_CACHE_CAPACITY", raising=False)
+    assert backend_runtime.cuda_graph_cache_capacity_from_env() == 32
+
+    monkeypatch.setenv("BEAMZ_CUDA_GRAPH_CACHE_CAPACITY", "0")
+    assert backend_runtime.cuda_graph_cache_capacity_from_env() == 0
+
+    monkeypatch.setenv("BEAMZ_CUDA_GRAPH_CACHE_CAPACITY", "4097")
+    with pytest.raises(ValueError, match="must be an integer from 0 to 4096"):
+        backend_runtime.cuda_graph_cache_capacity_from_env()
+
+    monkeypatch.setenv("BEAMZ_CUDA_GRAPH_CACHE_CAPACITY", "many")
+    with pytest.raises(ValueError, match="must be an integer from 0 to 4096"):
+        backend_runtime.cuda_graph_cache_capacity_from_env()
